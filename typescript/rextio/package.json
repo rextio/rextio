@@ -1,0 +1,15 @@
+{
+  "name": "rextio",
+  "version": "0.0.1",
+  "description": "The Rust-Extended I/O for Web. (Coming Soon)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Song Si-young",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rextio/rextio.git"
+  }
+}
