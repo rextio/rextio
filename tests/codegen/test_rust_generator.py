@@ -33,7 +33,7 @@ def sum_squares(xs: list[float]) -> float:
     assert "fn app__sum_squares(xs: Vec<f64>) -> PyResult<f64> {" in source
     assert "for x in xs.iter().cloned() {" in source
     assert "return Ok(x * x);" in source
-    assert "total = total + app__square(x)?;" in source
+    assert "total = total + app__square(x.clone())?;" in source
     assert "fn _rextio_native(m: &Bound<'_, PyModule>) -> PyResult<()> {" in source
     assert "m.add_function(wrap_pyfunction!(app__square, m)?)?;" in source
     assert "m.add_function(wrap_pyfunction!(app__sum_squares, m)?)?;" in source
@@ -70,7 +70,33 @@ def score(x: float) -> float:
 
     assert "fn demo_codegen__math_ops__square(x: f64) -> PyResult<f64> {" in source
     assert "fn demo_codegen__scoring__score(x: f64) -> PyResult<f64> {" in source
-    assert "return Ok(demo_codegen__math_ops__square(x)? + 1.0);" in source
+    assert "return Ok(demo_codegen__math_ops__square(x.clone())? + 1.0);" in source
+
+
+def test_native_call_clones_name_arguments_to_avoid_moving_reused_values(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def total(values: list[float]) -> float:
+    result = 0.0
+    for value in values:
+        result += value
+    return result
+
+@rextio.native
+def compute(values: list[float]) -> float:
+    subtotal = total(values)
+    return subtotal + values[0]
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "let mut subtotal = app__total(values.clone())?;" in source
+    assert "return Ok(subtotal + values[0].clone());" in source
 
 
 def test_generates_rust_for_if_range_len_indexing_and_while(tmp_path: Path) -> None:

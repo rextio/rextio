@@ -183,9 +183,14 @@ class _FunctionRenderer:
         if rust_name is None:
             rust_name = self.native_names.get((self.function.module_name, expr.function))
         if rust_name is not None:
-            args = ", ".join(self.render_expr(arg) for arg in expr.args)
+            args = ", ".join(self.render_call_arg(arg) for arg in expr.args)
             return f"{rust_name}({args})?"
         raise RustCodegenError(f"unsupported call during Rust codegen: {expr.function}")
+
+    def render_call_arg(self, expr: ExprIR) -> str:
+        if isinstance(expr, NameIR):
+            return f"{expr.id}.clone()"
+        return self.render_expr(expr)
 
 
 def _render_function(
