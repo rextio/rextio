@@ -96,6 +96,75 @@ def add(a: int, b: int) -> int:
     assert data["native_build"]["status"] == "failed"
 
 
+def test_build_uses_maturin_when_available(
+    tmp_path: Path,
+    fake_maturin: Path,
+    capsys,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[rust]
+build_tool = "maturin"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython"])
+
+    captured = capsys.readouterr()
+    build_report = tmp_path / ".rextio" / "reports" / "build.json"
+    data = json.loads(build_report.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert "rust build tool: maturin" in captured.out
+    assert data["native_build"]["tool"] == "maturin"
+    assert Path(data["native_build"]["installed_path"]).exists()
+
+
+def test_build_respects_cargo_build_tool_config(
+    tmp_path: Path,
+    fake_cargo: Path,
+    capsys,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[rust]
+build_tool = "cargo"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython"])
+
+    captured = capsys.readouterr()
+    build_report = tmp_path / ".rextio" / "reports" / "build.json"
+    data = json.loads(build_report.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert "rust build tool: cargo" in captured.out
+    assert data["native_build"]["tool"] == "cargo"
+
+
 def test_build_reports_codegen_failure_and_keeps_fallback(
     tmp_path: Path,
     monkeypatch,

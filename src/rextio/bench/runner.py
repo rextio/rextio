@@ -12,6 +12,7 @@ from typing import Any, get_args, get_origin, get_type_hints
 from rextio.analyzer.models import FunctionAnalysis, ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
+from rextio.config.loader import load_config
 from rextio.fallback.module_copy import fallback_module_name
 
 
@@ -33,7 +34,13 @@ def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> Be
     if not function.accepted:
         raise BenchError(f"target function is not accepted for native compilation: {target}")
 
-    build_result = build_hybrid_artifact(project_root, analysis, fallback="cpython")
+    config = load_config(project_root)
+    build_result = build_hybrid_artifact(
+        project_root,
+        analysis,
+        fallback="cpython",
+        build_tool=config.rust.build_tool,
+    )
     if build_result.native_build.status != "built":
         raise BenchError(build_result.native_build.message)
 

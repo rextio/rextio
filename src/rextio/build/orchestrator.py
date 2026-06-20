@@ -11,6 +11,7 @@ from rextio.build.cargo_builder import (
     build_native_extension_with_cargo,
     skipped_native_build,
 )
+from rextio.build.maturin_builder import build_native_extension_with_maturin
 from rextio.codegen.rust.cargo import (
     render_cargo_config_toml,
     render_cargo_toml,
@@ -47,7 +48,12 @@ class BuildResult:
         }
 
 
-def build_hybrid_artifact(project_root: Path, analysis: ProjectAnalysis, fallback: str) -> BuildResult:
+def build_hybrid_artifact(
+    project_root: Path,
+    analysis: ProjectAnalysis,
+    fallback: str,
+    build_tool: str = "cargo",
+) -> BuildResult:
     layout = ArtifactLayout(project_root)
     _reset_generated_dir(layout.rust_dir)
     _reset_generated_dir(layout.python_dir)
@@ -60,7 +66,7 @@ def build_hybrid_artifact(project_root: Path, analysis: ProjectAnalysis, fallbac
         encoding="utf-8",
     )
     _write_python_fallback_tree(analysis, layout.python_dir)
-    native_build = _generate_and_build_native(analysis, layout)
+    native_build = _generate_and_build_native(analysis, layout, build_tool)
 
     result = BuildResult(
         fallback=fallback,
@@ -97,7 +103,11 @@ def _reset_generated_dir(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _generate_and_build_native(analysis: ProjectAnalysis, layout: ArtifactLayout) -> NativeBuildResult:
+def _generate_and_build_native(
+    analysis: ProjectAnalysis,
+    layout: ArtifactLayout,
+    build_tool: str,
+) -> NativeBuildResult:
     if not analysis.accepted_native_functions:
         return skipped_native_build("No accepted native functions were found.")
     try:
@@ -114,7 +124,55 @@ def _generate_and_build_native(analysis: ProjectAnalysis, layout: ArtifactLayout
         )
 
     _write_rust_project(layout, rust_source)
-    return build_native_extension_with_cargo(layout.rust_dir, layout.python_dir)
+    return _build_native_with_selected_tool(layout, build_tool)
+
+
+def _build_native_with_selected_tool(layout: ArtifactLayout, build_tool: str) -> NativeBuildResult:
+    normalized = build_tool.lower()
+    if normalized == "cargo":
+        return build_native_extension_with_cargo(layout.rust_dir, layout.python_dir)
+    if normalized == "maturin":
+        result = build_native_extension_with_maturin(layout.rust_dir, layout.python_dir)
+        if result.status == "built":
+            return result
+        if "maturin was not found" not in result.message:
+            return result
+        cargo_result = build_native_extension_with_cargo(layout.rust_dir, layout.python_dir)
+        if cargo_result.status == "built":
+            return NativeBuildResult(
+                status="built",
+                tool="cargo",
+                message=(
+                    "maturin was not found, so Rextio built the generated native module "
+                    "with Cargo fallback."
+                ),
+                command=cargo_result.command,
+                artifact_path=cargo_result.artifact_path,
+                installed_path=cargo_result.installed_path,
+                stdout=cargo_result.stdout,
+                stderr=cargo_result.stderr,
+            )
+        return NativeBuildResult(
+            status="failed",
+            tool="maturin",
+            message=(
+                "RXT060 Build failed while compiling generated Rust module. "
+                "Cause: maturin was not found, and Cargo fallback also failed. "
+                f"Cargo result: {cargo_result.message}"
+            ),
+            command=cargo_result.command,
+            stdout=cargo_result.stdout,
+            stderr=cargo_result.stderr,
+        )
+    return NativeBuildResult(
+        status="failed",
+        tool=build_tool,
+        message=(
+            "RXT060 Build failed while compiling generated Rust module. "
+            f"Cause: unsupported Rust build tool: {build_tool}. "
+            'Suggestion: use [rust] build_tool = "maturin" or "cargo".'
+        ),
+    )
 
 
 def _write_rust_project(layout: ArtifactLayout, rust_source: str) -> None:

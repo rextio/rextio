@@ -7,6 +7,7 @@ from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import build_hybrid_artifact
+from rextio.config.loader import load_config
 
 
 def run(args: Namespace) -> int:
@@ -18,6 +19,7 @@ def run(args: Namespace) -> int:
         return 1
 
     analysis = analyze_project(project_root)
+    config = load_config(project_root)
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:
         reports_dir = project_root / ".rextio" / "reports"
@@ -40,9 +42,15 @@ def run(args: Namespace) -> int:
         print(f"Suggestion: run rextio check {project_root}")
         return 1
 
-    result = build_hybrid_artifact(project_root, analysis, args.fallback)
+    result = build_hybrid_artifact(
+        project_root,
+        analysis,
+        args.fallback,
+        build_tool=config.rust.build_tool,
+    )
     print("Rextio build")
     print(f"  fallback: {args.fallback}")
+    print(f"  rust build tool: {config.rust.build_tool}")
     print(f"  accepted native functions: {result.accepted_native_count}")
     print(f"  rejected native functions: {result.rejected_native_count}")
     print(f"  generated Rust project: {result.layout.rust_dir}")
