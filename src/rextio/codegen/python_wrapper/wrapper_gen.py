@@ -29,6 +29,7 @@ def render_wrapper_module(module: ModuleAnalysis) -> str:
         "from rextio.runtime.flags import native_disabled",
         "from rextio.runtime.native_loader import load_native_function",
         "",
+        *_fallback_module_import_lines(import_prefix, fallback_name),
         f"from {import_prefix}{fallback_name} import *  # noqa: F401,F403",
     ]
     for function in accepted:
@@ -46,7 +47,17 @@ def render_wrapper_module(module: ModuleAnalysis) -> str:
         lines.extend(_render_wrapper_function(function, node))
         lines.append("")
 
+    for function in accepted:
+        lines.append(f"_rextio_fallback_module.{function.name} = {function.name}")
+    lines.append("")
+
     return "\n".join(lines)
+
+
+def _fallback_module_import_lines(import_prefix: str, fallback_name: str) -> list[str]:
+    if import_prefix == ".":
+        return [f"from . import {fallback_name} as _rextio_fallback_module"]
+    return [f"import {fallback_name} as _rextio_fallback_module"]
 
 
 def _render_native_binding(function: FunctionAnalysis) -> list[str]:
