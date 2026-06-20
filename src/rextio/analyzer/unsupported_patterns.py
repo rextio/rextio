@@ -17,6 +17,10 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.DictComp,
     ast.SetComp,
     ast.GeneratorExp,
+    ast.List,
+    ast.Tuple,
+    ast.Dict,
+    ast.Set,
     ast.Await,
     ast.Yield,
     ast.YieldFrom,
@@ -34,6 +38,20 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.Global,
     ast.Nonlocal,
     ast.Match,
+    ast.FloorDiv,
+    ast.Pow,
+    ast.MatMult,
+    ast.BitAnd,
+    ast.BitOr,
+    ast.BitXor,
+    ast.LShift,
+    ast.RShift,
+    ast.UAdd,
+    ast.Invert,
+    ast.Is,
+    ast.IsNot,
+    ast.In,
+    ast.NotIn,
     ast.Try,
     ast.With,
     ast.AsyncWith,
@@ -131,35 +149,43 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
 
 
 def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
-    for child in ast.walk(node):
-        if child is node:
-            continue
-        if isinstance(child, ast.FunctionDef):
-            _add_unsupported_syntax(function, child, "nested functions are not supported")
-            continue
-        if isinstance(child, UNSUPPORTED_SYNTAX):
-            _add_unsupported_syntax(function, child, _unsupported_message(child))
-            continue
-        if isinstance(child, ast.Call):
-            target = dotted_name(child.func)
-            if target in DYNAMIC_FEATURES:
-                function.add_diagnostic(
-                    Diagnostic(
-                        code="RXT020",
-                        severity="error",
-                        message=f"dynamic Python feature is not supported: {target}",
-                        file_path=function.file_path,
-                        line=child.lineno,
-                        column=child.col_offset,
-                        function_name=function.qualname,
-                        suggestion="Remove the dynamic call from the native candidate or let it run as fallback.",
-                    )
-                )
+    for statement in node.body:
+        for child in ast.walk(statement):
+            if isinstance(child, ast.FunctionDef):
+                _add_unsupported_syntax(function, child, "nested functions are not supported")
+                continue
+            if isinstance(child, UNSUPPORTED_SYNTAX):
+                _add_unsupported_syntax(function, child, _unsupported_message(child))
+                continue
+            if isinstance(child, ast.Call):
+                _validate_call(function, child)
+
+
+def _validate_call(function: FunctionAnalysis, node: ast.Call) -> None:
+    if node.keywords:
+        _add_unsupported_syntax(function, node, "keyword call arguments are not supported")
+
+    target = dotted_name(node.func)
+    if target in DYNAMIC_FEATURES:
+        function.add_diagnostic(
+            Diagnostic(
+                code="RXT020",
+                severity="error",
+                message=f"dynamic Python feature is not supported: {target}",
+                file_path=function.file_path,
+                line=node.lineno,
+                column=node.col_offset,
+                function_name=function.qualname,
+                suggestion="Remove the dynamic call from the native candidate or let it run as fallback.",
+            )
+        )
 
 
 def _unsupported_message(node: ast.AST) -> str:
     if isinstance(node, (ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp)):
         return "comprehensions are not supported in Public 1 native functions"
+    if isinstance(node, (ast.List, ast.Tuple, ast.Dict, ast.Set)):
+        return "container literals are not supported in Public 1 native functions"
     if isinstance(node, (ast.Import, ast.ImportFrom)):
         return "imports inside native functions are not supported"
     if isinstance(node, (ast.With, ast.AsyncWith)):
@@ -188,6 +214,24 @@ def _unsupported_message(node: ast.AST) -> str:
         return "global and nonlocal statements are not supported in native functions"
     if isinstance(node, ast.Match):
         return "match statements are not supported in native functions"
+    if isinstance(
+        node,
+        (
+            ast.FloorDiv,
+            ast.Pow,
+            ast.MatMult,
+            ast.BitAnd,
+            ast.BitOr,
+            ast.BitXor,
+            ast.LShift,
+            ast.RShift,
+        ),
+    ):
+        return "this binary operator is not supported in native functions"
+    if isinstance(node, (ast.UAdd, ast.Invert)):
+        return "this unary operator is not supported in native functions"
+    if isinstance(node, (ast.Is, ast.IsNot, ast.In, ast.NotIn)):
+        return "identity and membership comparisons are not supported in native functions"
     return f"unsupported syntax in native function: {type(node).__name__}"
 
 

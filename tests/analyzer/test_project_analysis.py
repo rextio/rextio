@@ -199,6 +199,104 @@ def slice_bad(xs: list[int]) -> int:
     }
 
 
+def test_rejects_unsupported_literal_syntax(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def list_bad() -> list[int]:
+    return [1, 2]
+
+@rextio.native
+def tuple_bad(x: int) -> int:
+    pair = (x, x)
+    return pair[0]
+
+@rextio.native
+def dict_bad(x: int) -> int:
+    values = {"x": x}
+    return x
+
+@rextio.native
+def set_bad(x: int) -> int:
+    values = {x}
+    return x
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.dict_bad",
+        "app.list_bad",
+        "app.set_bad",
+        "app.tuple_bad",
+    }
+
+
+def test_rejects_unsupported_operator_syntax(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def pow_bad(x: int) -> int:
+    return x ** 2
+
+@rextio.native
+def membership_bad(xs: list[int]) -> bool:
+    return 1 in xs
+
+@rextio.native
+def identity_bad(x: int) -> bool:
+    return x is None
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.identity_bad",
+        "app.membership_bad",
+        "app.pow_bad",
+    }
+
+
+def test_rejects_keyword_call_arguments(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def square(x: int) -> int:
+    return x * x
+
+@rextio.native
+def keyword_bad(x: int) -> int:
+    return square(x=x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.square"
+    ]
+    assert [function.qualname for function in analysis.rejected_native_functions] == [
+        "app.keyword_bad"
+    ]
+
+
 def test_rejects_native_to_fallback_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,
