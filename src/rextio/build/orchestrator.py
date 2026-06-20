@@ -6,7 +6,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
-from rextio.codegen.rust.cargo import render_cargo_toml, render_pyproject_toml
+from rextio.build.cargo_builder import (
+    NativeBuildResult,
+    build_native_extension_with_cargo,
+    skipped_native_build,
+)
+from rextio.codegen.rust.cargo import (
+    render_cargo_config_toml,
+    render_cargo_toml,
+    render_pyproject_toml,
+)
 from rextio.codegen.rust.generator import generate_rust_module
 from rextio.codegen.python_wrapper.wrapper_gen import render_wrapper_module
 from rextio.fallback.cpython import (
@@ -24,6 +33,7 @@ class BuildResult:
     layout: ArtifactLayout
     accepted_native_count: int
     rejected_native_count: int
+    native_build: NativeBuildResult
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -32,6 +42,7 @@ class BuildResult:
             "generated_python": str(self.layout.python_dir),
             "accepted_native_count": self.accepted_native_count,
             "rejected_native_count": self.rejected_native_count,
+            "native_build": self.native_build.to_dict(),
         }
 
 
@@ -48,21 +59,28 @@ def build_hybrid_artifact(project_root: Path, analysis: ProjectAnalysis, fallbac
 
     (layout.rust_dir / "Cargo.toml").write_text(render_cargo_toml(), encoding="utf-8")
     (layout.rust_dir / "pyproject.toml").write_text(render_pyproject_toml(), encoding="utf-8")
+    (layout.rust_dir / ".cargo").mkdir(parents=True, exist_ok=True)
+    (layout.rust_dir / ".cargo" / "config.toml").write_text(
+        render_cargo_config_toml(),
+        encoding="utf-8",
+    )
     (layout.rust_src_dir / "lib.rs").write_text(rust_source, encoding="utf-8")
     (layout.reports_dir / "check.json").write_text(
         json.dumps(analysis.to_dict(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     _write_python_fallback_tree(analysis, layout.python_dir)
+    native_build = _build_native_if_needed(analysis, layout)
 
     result = BuildResult(
         fallback=fallback,
         layout=layout,
         accepted_native_count=len(analysis.accepted_native_functions),
         rejected_native_count=len(analysis.rejected_native_functions),
+        native_build=native_build,
     )
     (layout.reports_dir / "build.json").write_text(
-        json.dumps({"status": "generated", **result.to_dict()}, indent=2, sort_keys=True) + "\n",
+        json.dumps({"status": _build_status(native_build), **result.to_dict()}, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return result
@@ -87,3 +105,15 @@ def _write_python_fallback_tree(analysis: ProjectAnalysis, python_root: Path) ->
 def _reset_generated_dir(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
+
+
+def _build_native_if_needed(analysis: ProjectAnalysis, layout: ArtifactLayout) -> NativeBuildResult:
+    if not analysis.accepted_native_functions:
+        return skipped_native_build("No accepted native functions were found.")
+    return build_native_extension_with_cargo(layout.rust_dir, layout.python_dir)
+
+
+def _build_status(native_build: NativeBuildResult) -> str:
+    if native_build.status == "failed":
+        return "native-build-failed"
+    return "built"

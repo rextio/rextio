@@ -8,7 +8,11 @@ from types import ModuleType
 from rextio.cli.main import main
 
 
-def test_generated_wrapper_falls_back_when_native_missing(tmp_path: Path, monkeypatch) -> None:
+def test_generated_wrapper_falls_back_when_native_missing(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+) -> None:
     source = tmp_path / "src" / "demo_runtime" / "scoring.py"
     source.parent.mkdir(parents=True)
     source.write_text(
@@ -35,7 +39,11 @@ def helper(x: int) -> int:
     assert module.helper(7) == 17
 
 
-def test_generated_wrapper_respects_disable_native_flag(tmp_path: Path, monkeypatch) -> None:
+def test_generated_wrapper_respects_disable_native_flag(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+) -> None:
     source = tmp_path / "src" / "demo_disable" / "scoring.py"
     source.parent.mkdir(parents=True)
     source.write_text(
@@ -62,7 +70,11 @@ def add(a: int, b: int) -> int:
     assert module.add(2, 3) == 5
 
 
-def test_generated_wrapper_uses_native_when_available(tmp_path: Path, monkeypatch) -> None:
+def test_generated_wrapper_uses_native_when_available(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+) -> None:
     source = tmp_path / "src" / "demo_native" / "scoring.py"
     source.parent.mkdir(parents=True)
     source.write_text(

@@ -47,6 +47,13 @@ def run(args: Namespace) -> int:
     print(f"  rejected native functions: {result.rejected_native_count}")
     print(f"  generated Rust project: {result.layout.rust_dir}")
     print(f"  generated Python package tree: {result.layout.python_dir}")
+    print(f"  native build: {result.native_build.status}")
+    if result.native_build.installed_path:
+        print(f"  native module: {result.native_build.installed_path}")
     print(f"  wrote {result.layout.reports_dir / 'build.json'}")
-    print("  native compilation with maturin will be added in the next build slice")
+    if result.native_build.status == "failed":
+        print(result.native_build.message)
+        if result.native_build.stderr:
+            print(result.native_build.stderr)
+        return 1
     return 0

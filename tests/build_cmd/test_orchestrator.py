@@ -6,7 +6,11 @@ from pathlib import Path
 from rextio.cli.main import main
 
 
-def test_build_generates_rust_project_for_accepted_native_only(tmp_path: Path, capsys) -> None:
+def test_build_generates_rust_project_for_accepted_native_only(
+    tmp_path: Path,
+    capsys,
+    fake_cargo: Path,
+) -> None:
     (tmp_path / "app.py").write_text(
         """
 import rextio
@@ -39,6 +43,7 @@ def rejected(x: int) -> int:
     assert "generated Rust project" in captured.out
     assert "generated Python package tree" in captured.out
     assert (rust_dir / "Cargo.toml").exists()
+    assert (rust_dir / ".cargo" / "config.toml").exists()
     assert (rust_dir / "pyproject.toml").exists()
     assert lib_rs.exists()
     assert "fn add(a: i64, b: i64) -> PyResult<i64>" in lib_rs.read_text(encoding="utf-8")
@@ -52,7 +57,38 @@ def rejected(x: int) -> int:
     assert "def rejected" not in wrapper_source
     assert "def rejected" in fallback_app_py.read_text(encoding="utf-8")
     data = json.loads(build_report.read_text(encoding="utf-8"))
-    assert data["status"] == "generated"
+    assert data["status"] == "built"
     assert data["accepted_native_count"] == 1
     assert data["rejected_native_count"] == 1
     assert data["generated_python"] == str(python_dir)
+    assert data["native_build"]["status"] == "built"
+    assert Path(data["native_build"]["installed_path"]).exists()
+
+
+def test_build_reports_native_build_failure_when_cargo_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("PATH", "")
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython"])
+
+    captured = capsys.readouterr()
+    build_report = tmp_path / ".rextio" / "reports" / "build.json"
+    data = json.loads(build_report.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert "RXT060 Build failed while compiling generated Rust module" in captured.out
+    assert data["status"] == "native-build-failed"
+    assert data["native_build"]["status"] == "failed"
