@@ -23,6 +23,9 @@ def test_real_cargo_build_imports_native_and_preserves_fallback(
         """
 [rust]
 build_tool = "cargo"
+
+[policy]
+native_marker = "decorator"
 """,
         encoding="utf-8",
     )

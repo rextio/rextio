@@ -26,7 +26,7 @@ def rejected(x: int) -> int:
         encoding="utf-8",
     )
 
-    analysis = analyze_project(tmp_path)
+    analysis = analyze_project(tmp_path, native_marker="decorator")
     plan = create_build_plan(analysis, "cpython")
     functions = {function.name: function for module in analysis.modules for function in module.functions}
 

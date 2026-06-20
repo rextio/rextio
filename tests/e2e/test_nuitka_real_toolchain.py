@@ -17,6 +17,13 @@ def test_nuitka_fallback_build_records_real_compiled_artifacts(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
     (tmp_path / "app.py").write_text(
         """
 def add(a: int, b: int) -> int:
