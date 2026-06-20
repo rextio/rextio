@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -30,12 +31,23 @@ def add(a: int, b: int) -> int:
     exit_code = main(["bench", "bench_app.add", "--project-root", str(tmp_path)])
 
     captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "bench.json").read_text(encoding="utf-8")
+    )
 
     assert exit_code == 0
     assert "Rextio bench bench_app.add" in captured.out
     assert "Python fallback:" in captured.out
     assert "Rust native:" in captured.out
     assert "Speedup:" in captured.out
+    assert "bench.json" in captured.out
+    assert report["status"] == "benchmarked"
+    assert report["target"] == "bench_app.add"
+    assert report["iterations"] == 1000
+    assert isinstance(report["fallback_ms"], float)
+    assert isinstance(report["native_ms"], float)
+    assert isinstance(report["speedup"], float)
+    assert report["build"]["native_build"]["status"] == "built"
 
 
 def test_bench_rejects_non_native_target(tmp_path: Path, capsys) -> None:

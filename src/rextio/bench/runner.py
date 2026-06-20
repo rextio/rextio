@@ -25,6 +25,16 @@ class BenchResult:
     iterations: int
     build_result: BuildResult
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "target": self.target,
+            "iterations": self.iterations,
+            "fallback_ms": self.fallback_ms,
+            "native_ms": self.native_ms,
+            "speedup": self.speedup,
+            "build": self.build_result.to_dict(),
+        }
+
 
 def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> BenchResult:
     config = load_config(project_root)

@@ -61,10 +61,12 @@ in place.
   reports/
     check.json
     build.json
+    bench.json
 ```
 
 `rextio check` writes `.rextio/reports/check.json`. `rextio build` writes both
-check and build reports.
+check and build reports. `rextio bench` writes `.rextio/reports/bench.json`
+with a structured fallback/native timing comparison.
 
 ## Policy Configuration
 
