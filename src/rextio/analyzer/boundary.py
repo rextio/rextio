@@ -109,15 +109,15 @@ def _add_python_loop_boundary_warnings(
                     or not call.in_loop
                 ):
                     continue
-                if function.has_diagnostic("RXT071", call.line, call.column):
+                if function.has_diagnostic("RXT073", call.line, call.column):
                     continue
                 function.add_diagnostic(
                     Diagnostic(
-                        code="RXT071",
+                        code="RXT073",
                         severity="warning",
                         message=(
-                            f"possible excessive Python/Rust boundary crossing: "
-                            f"{call.target} is called inside a Python loop"
+                            f"native function call inside Python loop may erase speedup: "
+                            f"{call.target}"
                         ),
                         file_path=function.file_path,
                         line=call.line,

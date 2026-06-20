@@ -387,7 +387,7 @@ def process_all(xs: list[float]) -> list[float]:
     analysis = analyze_project(tmp_path)
 
     assert [function.qualname for function in analysis.accepted_native_functions] == ["app.score_one"]
-    assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT071"]
+    assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT073"]
 
 
 def test_warns_for_python_loop_calling_imported_native_function(tmp_path: Path) -> None:
@@ -421,7 +421,7 @@ def process_all(xs: list[float]) -> list[float]:
     assert [function.qualname for function in analysis.accepted_native_functions] == [
         "myapp.math_ops.score_one"
     ]
-    assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT071"]
+    assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT073"]
 
 
 def test_project_scanner_respects_rextioignore(tmp_path: Path) -> None:

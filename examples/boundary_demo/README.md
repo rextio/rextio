@@ -12,4 +12,4 @@ It includes:
 rextio check examples/boundary_demo
 ```
 
-Expected diagnostics include `RXT070` and `RXT071`.
+Expected diagnostics include `RXT070` and `RXT073`.

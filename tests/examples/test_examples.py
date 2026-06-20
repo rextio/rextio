@@ -33,7 +33,7 @@ def test_fallback_demo_has_native_score_and_boundary_warning() -> None:
     assert [function.qualname for function in analysis.accepted_native_functions] == [
         "fallback_demo.scoring.score_one"
     ]
-    assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT071"]
+    assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT073"]
 
 
 def test_boundary_demo_shows_rejection_and_warning() -> None:
@@ -49,4 +49,4 @@ def test_boundary_demo_shows_rejection_and_warning() -> None:
     assert [function.qualname for function in analysis.rejected_native_functions] == [
         "boundary_demo.pipeline.compute_rejected"
     ]
-    assert {"RXT070", "RXT071"}.issubset(diagnostics)
+    assert {"RXT070", "RXT073"}.issubset(diagnostics)
