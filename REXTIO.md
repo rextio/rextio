@@ -13,6 +13,11 @@ Python source
 Native compilation is an optimization. Fallback Python behavior must remain
 available, including when `REXTIO_DISABLE_NATIVE=1` is set.
 
+By default, Rextio discovers eligible module-level typed functions
+automatically. Projects can set `[policy] native_marker = "decorator"` when
+they want only explicitly marked `@rextio.native` functions to become native
+candidates.
+
 ## Smoke Flow
 
 ```text

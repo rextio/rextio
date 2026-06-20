@@ -10,7 +10,7 @@ build_tool = "maturin"
 nuitka = "experimental"
 
 [policy]
-native_marker = "decorator"
+native_marker = "auto"
 require_type_hints = true
 allow_dynamic_features = false
 boundary_warnings = true
