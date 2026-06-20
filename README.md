@@ -25,3 +25,20 @@ rextio clean
 The initial implementation focuses on project initialization, native marker
 detection, subset diagnostics, static boundary diagnostics, runtime disable
 flags, and deterministic check reports.
+
+## Examples
+
+Public 1 includes focused local examples:
+
+- `examples/pure_math`: simple typed math functions compiled as native hot paths.
+- `examples/fastapi_scoring`: FastAPI stays Python. `compute_score` becomes Rust native.
+- `examples/fallback_demo`: generated wrappers use Python fallback when native is missing or `REXTIO_DISABLE_NATIVE=1`.
+- `examples/boundary_demo`: conservative boundary rejection and Python-loop boundary warnings.
+
+Try:
+
+```text
+rextio check examples/pure_math
+rextio build examples/pure_math --fallback=cpython
+rextio check examples/boundary_demo
+```
