@@ -77,6 +77,24 @@ def process_all(xs: list[float]) -> list[float]:
     assert data["diagnostics"] == []
 
 
+def test_check_reports_config_error(tmp_path: Path, capsys) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+allow_dynamic_features = true
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["check", str(tmp_path)])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "RXT060 Configuration error" in captured.out
+    assert "allow_dynamic_features" in captured.out
+
+
 def test_clean_removes_generated_artifacts(tmp_path: Path, capsys) -> None:
     for name in ("build", "generated", "reports"):
         path = tmp_path / ".rextio" / name

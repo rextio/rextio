@@ -7,13 +7,19 @@ from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import build_hybrid_artifact
-from rextio.config.loader import load_config
+from rextio.config.loader import ConfigError, load_config
 from rextio.fallback.nuitka import nuitka_not_implemented_message, nuitka_unavailable_message
 
 
 def run(args: Namespace) -> int:
     project_root = Path(args.project_root).resolve()
-    config = load_config(project_root)
+    try:
+        config = load_config(project_root)
+    except ConfigError as exc:
+        print("RXT060 Build failed while loading configuration.")
+        print(f"Cause: {exc}")
+        print(f"Suggestion: fix {project_root / 'rextio.toml'} and rerun rextio build.")
+        return 1
     fallback = args.fallback or config.build.fallback_backend
     if fallback not in {"cpython", "nuitka"}:
         print("RXT060 Build failed while preparing fallback backend.")

@@ -76,6 +76,10 @@ with a structured fallback/native timing comparison.
 
 ## Policy Configuration
 
+Public 1 validates `rextio.toml` conservatively and rejects unknown sections,
+unknown keys, unsupported backends, and policy values outside the Public 1
+scope.
+
 Boundary warnings are enabled by default. Projects that want strict safety
 errors without Python-loop boundary warnings can set:
 

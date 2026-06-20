@@ -12,7 +12,7 @@ from typing import Any, get_args, get_origin, get_type_hints
 from rextio.analyzer.models import FunctionAnalysis, ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
-from rextio.config.loader import load_config
+from rextio.config.loader import ConfigError, load_config
 from rextio.fallback.module_copy import fallback_module_name
 
 
@@ -37,7 +37,10 @@ class BenchResult:
 
 
 def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> BenchResult:
-    config = load_config(project_root)
+    try:
+        config = load_config(project_root)
+    except ConfigError as exc:
+        raise BenchError(f"configuration error: {exc}") from exc
     analysis = analyze_project(
         project_root,
         boundary_warnings=config.policy.boundary_warnings,

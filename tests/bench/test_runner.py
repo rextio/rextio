@@ -67,6 +67,25 @@ def add(a: int, b: int) -> int:
     assert "RXT060 Benchmark failed" in captured.out
 
 
+def test_bench_reports_config_error(tmp_path: Path, capsys) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+require_type_hints = false
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["bench", "bench_app.add", "--project-root", str(tmp_path)])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "RXT060 Benchmark failed" in captured.out
+    assert "configuration error" in captured.out
+    assert "require_type_hints" in captured.out
+
+
 def test_bench_supports_native_function_in_package_init(
     tmp_path: Path,
     monkeypatch,

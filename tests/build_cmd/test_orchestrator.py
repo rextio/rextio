@@ -255,7 +255,29 @@ fallback_backend = "unsupported"
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "unsupported fallback backend: unsupported" in captured.out
+    assert "RXT060 Build failed while loading configuration." in captured.out
+    assert "unsupported config value for [build].fallback_backend" in captured.out
+
+
+def test_build_reports_unsupported_native_backend(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[build]
+native_backend = "llvm"
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path)])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "RXT060 Build failed while loading configuration." in captured.out
+    assert "unsupported config value for [build].native_backend" in captured.out
 
 
 def test_build_respects_boundary_warnings_policy(

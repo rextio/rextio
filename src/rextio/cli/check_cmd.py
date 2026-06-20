@@ -6,7 +6,7 @@ from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.config.loader import load_config
+from rextio.config.loader import ConfigError, load_config
 
 
 def format_check_report(analysis: ProjectAnalysis) -> str:
@@ -46,7 +46,12 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
 
 def run(args: Namespace) -> int:
     project_root = Path(args.project_root).resolve()
-    config = load_config(project_root)
+    try:
+        config = load_config(project_root)
+    except ConfigError as exc:
+        print("Rextio check")
+        print(f"RXT060 Configuration error: {exc}")
+        return 1
     analysis = analyze_project(
         project_root,
         boundary_warnings=config.policy.boundary_warnings,
