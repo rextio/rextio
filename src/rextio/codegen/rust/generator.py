@@ -161,7 +161,7 @@ class _FunctionRenderer:
         if isinstance(expr, CallIR):
             return self.render_call(expr)
         if isinstance(expr, IndexIR):
-            return f"{self.render_expr(expr.value)}[{self.render_expr(expr.index)}]"
+            return f"{self.render_expr(expr.value)}[{self.render_expr(expr.index)}].clone()"
         raise RustCodegenError(f"unsupported expression IR: {type(expr).__name__}")
 
     def render_compare(self, expr: CompareIR) -> str:
@@ -194,7 +194,7 @@ def render_literal(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
-        return json.dumps(value)
+        return f"String::from({json.dumps(value)})"
     return repr(value)
 
 

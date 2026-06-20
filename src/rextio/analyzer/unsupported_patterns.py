@@ -20,6 +20,20 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.Await,
     ast.Yield,
     ast.YieldFrom,
+    ast.Break,
+    ast.Continue,
+    ast.Pass,
+    ast.Assert,
+    ast.Raise,
+    ast.Delete,
+    ast.NamedExpr,
+    ast.IfExp,
+    ast.JoinedStr,
+    ast.Starred,
+    ast.Slice,
+    ast.Global,
+    ast.Nonlocal,
+    ast.Match,
     ast.Try,
     ast.With,
     ast.AsyncWith,
@@ -152,6 +166,28 @@ def _unsupported_message(node: ast.AST) -> str:
         return "context managers are not supported in native functions"
     if isinstance(node, ast.Try):
         return "exception handling is not supported in native functions"
+    if isinstance(node, (ast.Break, ast.Continue)):
+        return "break and continue are not supported in Public 1 native functions"
+    if isinstance(node, ast.Pass):
+        return "pass statements are not supported in native functions"
+    if isinstance(node, (ast.Assert, ast.Raise)):
+        return "explicit exception flow is not supported in native functions"
+    if isinstance(node, ast.Delete):
+        return "delete statements are not supported in native functions"
+    if isinstance(node, ast.NamedExpr):
+        return "assignment expressions are not supported in native functions"
+    if isinstance(node, ast.IfExp):
+        return "conditional expressions are not supported in native functions"
+    if isinstance(node, ast.JoinedStr):
+        return "f-strings are not supported in native functions"
+    if isinstance(node, ast.Starred):
+        return "starred expressions are not supported in native functions"
+    if isinstance(node, ast.Slice):
+        return "slice expressions are not supported in native functions"
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return "global and nonlocal statements are not supported in native functions"
+    if isinstance(node, ast.Match):
+        return "match statements are not supported in native functions"
     return f"unsupported syntax in native function: {type(node).__name__}"
 
 

@@ -44,7 +44,7 @@ def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> Be
     if build_result.native_build.status != "built":
         raise BenchError(build_result.native_build.message)
 
-    _prepend_sys_path(build_result.layout.python_dir)
+    _prepend_sys_path(build_result.layout.build_python_dir)
     wrapper_func = _import_function(function.module_name, function.name)
     fallback_func = _import_function(_fallback_import_name(analysis, function), function.name)
     args = _sample_args(fallback_func)
@@ -85,6 +85,8 @@ def _fallback_import_name(analysis: ProjectAnalysis, function: FunctionAnalysis)
     if module is None:
         raise BenchError(f"module was not found for target: {function.qualname}")
     fallback_name = fallback_module_name(module)
+    if Path(module.file_path).name == "__init__.py":
+        return f"{module.module_name}.{fallback_name}"
     if "." not in module.module_name:
         return fallback_name
     package = module.module_name.rsplit(".", 1)[0]

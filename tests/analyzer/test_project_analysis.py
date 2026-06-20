@@ -81,6 +81,58 @@ def bad(x: float) -> float:
     assert [function.qualname for function in analysis.rejected_native_functions] == ["app.bad"]
 
 
+def test_rejects_unsupported_control_flow_syntax(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def bad(xs: list[int]) -> int:
+    total = 0
+    for x in xs:
+        if x < 0:
+            break
+        total = total + x
+    return total
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.bad"]
+
+
+def test_rejects_unsupported_expression_syntax(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def walrus_bad(xs: list[int]) -> int:
+    if (n := len(xs)) > 0:
+        return n
+    return 0
+
+@rextio.native
+def slice_bad(xs: list[int]) -> int:
+    return xs[0:1][0]
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.slice_bad",
+        "app.walrus_bad",
+    }
+
+
 def test_rejects_native_to_fallback_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,

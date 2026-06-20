@@ -8,7 +8,7 @@ from typing import Any
 def load_native_module(module_name: str) -> ModuleType | None:
     try:
         return import_module(module_name)
-    except ImportError:
+    except Exception:
         return None
 
 

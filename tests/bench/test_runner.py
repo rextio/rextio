@@ -53,3 +53,33 @@ def add(a: int, b: int) -> int:
 
     assert exit_code == 1
     assert "RXT060 Benchmark failed" in captured.out
+
+
+def test_bench_supports_native_function_in_package_init(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+    capsys,
+) -> None:
+    source = tmp_path / "src" / "bench_pkg" / "__init__.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+    native_module = ModuleType("_rextio_native")
+    native_module.bench_pkg__add = lambda a, b: a + b
+    monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
+
+    exit_code = main(["bench", "bench_pkg.add", "--project-root", str(tmp_path)])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Rextio bench bench_pkg.add" in captured.out

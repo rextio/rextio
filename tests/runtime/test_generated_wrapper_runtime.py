@@ -39,6 +39,40 @@ def helper(x: int) -> int:
     assert module.helper(7) == 17
 
 
+def test_generated_wrapper_falls_back_when_native_import_crashes(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+) -> None:
+    source = tmp_path / "src" / "demo_broken_native" / "scoring.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
+    build_python = tmp_path / ".rextio" / "build" / "python"
+    for native_artifact in build_python.glob("_rextio_native*"):
+        native_artifact.unlink()
+    (build_python / "_rextio_native.py").write_text(
+        "raise RuntimeError('broken native import')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(build_python))
+    importlib.invalidate_caches()
+
+    module = importlib.import_module("demo_broken_native.scoring")
+
+    assert module.add(2, 3) == 5
+
+
 def test_build_python_artifact_imports_generated_wrapper(
     tmp_path: Path,
     monkeypatch,

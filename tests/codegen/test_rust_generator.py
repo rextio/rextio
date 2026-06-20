@@ -65,8 +65,30 @@ def decrement_to_zero(n: int) -> int:
 
     assert "fn app__count_positive(xs: Vec<i64>) -> PyResult<i64> {" in source
     assert "for i in 0..xs.len() {" in source
-    assert "if xs[i] > 0 {" in source
+    assert "if xs[i].clone() > 0 {" in source
     assert "count = count + 1;" in source
     assert "fn app__decrement_to_zero(mut n: i64) -> PyResult<i64> {" in source
     assert "while n > 0 {" in source
     assert "n = n - 1;" in source
+
+
+def test_generates_rust_for_string_literal_and_string_indexing(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def default_label() -> str:
+    return "ready"
+
+@rextio.native
+def first_label(values: list[str]) -> str:
+    return values[0]
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert 'return Ok(String::from("ready"));' in source
+    assert "return Ok(values[0].clone());" in source
