@@ -142,7 +142,7 @@ class _FunctionRenderer:
             and expr.args[0].function == "len"
             and len(expr.args[0].args) == 1
         ):
-            return f"0..{self.render_expr(expr.args[0].args[0])}.len()"
+            return f"0..({self.render_expr(expr.args[0].args[0])}.len() as i64)"
         if isinstance(expr, CallIR) and expr.function == "range" and len(expr.args) == 1:
             return f"0..{self.render_expr(expr.args[0])}"
         raise RustCodegenError("unsupported for-loop iterable")
@@ -163,8 +163,12 @@ class _FunctionRenderer:
         if isinstance(expr, CallIR):
             return self.render_call(expr)
         if isinstance(expr, IndexIR):
-            return f"{self.render_expr(expr.value)}[{self.render_expr(expr.index)}].clone()"
+            return f"{self.render_expr(expr.value)}[{self.render_index(expr.index)}].clone()"
         raise RustCodegenError(f"unsupported expression IR: {type(expr).__name__}")
+
+    def render_index(self, expr: ExprIR) -> str:
+        rendered = strip_wrapping_parens(self.render_expr(expr))
+        return f"{rendered} as usize"
 
     def render_compare(self, expr: CompareIR) -> str:
         if len(expr.ops) != len(expr.comparators):
