@@ -27,6 +27,23 @@ rextio clean demo
 Generated artifacts live under `.rextio/` and user source files are not
 rewritten during build.
 
+## Release Verification
+
+Run the regular test suite first:
+
+```text
+PYTHONPATH=src pytest
+```
+
+The suite includes an editable-install CLI smoke test. Cargo-specific tests are
+skipped when Cargo is unavailable, and the Nuitka fallback E2E is skipped when
+Nuitka is unavailable. To explicitly verify real local toolchains, run:
+
+```text
+PYTHONPATH=src pytest tests/e2e/test_pure_math_real_toolchain.py
+PYTHONPATH=src pytest tests/e2e/test_nuitka_real_toolchain.py
+```
+
 ## Boundary Safety
 
 Native functions may call accepted native functions and supported builtins.
