@@ -170,6 +170,92 @@ def add(a: int, b: int) -> int:
     assert data["native_build"]["tool"] == "cargo"
 
 
+def test_build_uses_configured_fallback_backend_when_argument_is_omitted(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("PATH", "")
+    (tmp_path / "rextio.toml").write_text(
+        """
+[build]
+fallback_backend = "nuitka"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path)])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "Nuitka fallback was requested, but Nuitka is not installed." in captured.out
+
+
+def test_build_fallback_argument_overrides_config(
+    tmp_path: Path,
+    fake_cargo: Path,
+    capsys,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[build]
+fallback_backend = "nuitka"
+
+[rust]
+build_tool = "cargo"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython"])
+
+    captured = capsys.readouterr()
+    build_report = tmp_path / ".rextio" / "reports" / "build.json"
+    data = json.loads(build_report.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert "fallback: cpython" in captured.out
+    assert data["fallback"] == "cpython"
+
+
+def test_build_reports_unsupported_configured_fallback_backend(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[build]
+fallback_backend = "unsupported"
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path)])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "unsupported fallback backend: unsupported" in captured.out
+
+
 def test_build_respects_boundary_warnings_policy(
     tmp_path: Path,
     fake_cargo: Path,

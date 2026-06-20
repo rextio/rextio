@@ -46,6 +46,10 @@ Nuitka fallback packaging is experimental. If `--fallback=nuitka` is requested
 without Nuitka installed, Rextio reports a clear `RXT060` error and suggests
 `--fallback=cpython`.
 
+`rextio build` uses `[build] fallback_backend` from `rextio.toml` when
+`--fallback` is omitted. Passing `--fallback=cpython` or `--fallback=nuitka`
+overrides the project setting for that run.
+
 ## Generated Artifacts
 
 Rextio writes generated files under `.rextio/` and does not modify source files

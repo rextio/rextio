@@ -28,8 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     build_parser_.add_argument(
         "--fallback",
         choices=("cpython", "nuitka"),
-        default="cpython",
-        help="Fallback backend.",
+        default=None,
+        help="Fallback backend. Overrides [build] fallback_backend in rextio.toml.",
     )
     build_parser_.set_defaults(handler=build_cmd.run)
 

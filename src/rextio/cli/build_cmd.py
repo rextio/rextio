@@ -13,16 +13,23 @@ from rextio.fallback.nuitka import nuitka_not_implemented_message, nuitka_unavai
 
 def run(args: Namespace) -> int:
     project_root = Path(args.project_root).resolve()
-    if args.fallback == "nuitka" and shutil.which("nuitka") is None:
+    config = load_config(project_root)
+    fallback = args.fallback or config.build.fallback_backend
+    if fallback not in {"cpython", "nuitka"}:
+        print("RXT060 Build failed while preparing fallback backend.")
+        print(f"Cause: unsupported fallback backend: {fallback}")
+        print('Suggestion: use fallback_backend = "cpython" or run rextio build --fallback=cpython')
+        return 1
+
+    if fallback == "nuitka" and shutil.which("nuitka") is None:
         print("RXT060 Build failed while preparing Nuitka fallback.")
         print(nuitka_unavailable_message())
         return 1
-    if args.fallback == "nuitka":
+    if fallback == "nuitka":
         print("RXT060 Build failed while preparing Nuitka fallback.")
         print(nuitka_not_implemented_message())
         return 1
 
-    config = load_config(project_root)
     analysis = analyze_project(
         project_root,
         boundary_warnings=config.policy.boundary_warnings,
@@ -34,7 +41,7 @@ def run(args: Namespace) -> int:
         (reports_dir / "build.json").write_text(
             json.dumps(
                 {
-                    "fallback": args.fallback,
+                    "fallback": fallback,
                     "analysis": analysis.to_dict(),
                     "status": "analysis-failed",
                 },
@@ -52,11 +59,11 @@ def run(args: Namespace) -> int:
     result = build_hybrid_artifact(
         project_root,
         analysis,
-        args.fallback,
+        fallback,
         build_tool=config.rust.build_tool,
     )
     print("Rextio build")
-    print(f"  fallback: {args.fallback}")
+    print(f"  fallback: {fallback}")
     print(f"  rust build tool: {config.rust.build_tool}")
     print(f"  accepted native functions: {result.accepted_native_count}")
     print(f"  rejected native functions: {result.rejected_native_count}")
