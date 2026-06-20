@@ -7,6 +7,8 @@ from types import ModuleType
 
 from rextio.cli.main import main
 
+REPO_SRC = Path(__file__).resolve().parents[2] / "src"
+
 
 def test_generated_wrapper_falls_back_when_native_missing(
     tmp_path: Path,
@@ -101,6 +103,48 @@ def add(a: int, b: int) -> int:
     module = importlib.import_module("demo_artifact.scoring")
 
     assert module.add(2, 3) == 105
+
+
+def test_build_python_artifact_contains_runtime_helpers(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+) -> None:
+    source = tmp_path / "src" / "demo_standalone" / "scoring.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
+    build_python = tmp_path / ".rextio" / "build" / "python"
+    assert (build_python / "rextio" / "__init__.py").exists()
+    assert (build_python / "rextio" / "runtime" / "flags.py").exists()
+    assert (build_python / "rextio" / "runtime" / "native_loader.py").exists()
+
+    for module_name in list(sys.modules):
+        if module_name == "rextio" or module_name.startswith("rextio."):
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
+    pruned_path = [
+        path
+        for path in sys.path
+        if not _same_path(path, REPO_SRC)
+    ]
+    monkeypatch.setattr(sys, "path", [str(build_python), *pruned_path])
+    importlib.invalidate_caches()
+
+    module = importlib.import_module("demo_standalone.scoring")
+    rextio_module = importlib.import_module("rextio")
+
+    assert module.add(2, 3) == 5
+    assert Path(rextio_module.__file__).is_relative_to(build_python)
 
 
 def test_generated_wrapper_respects_disable_native_flag(
@@ -379,3 +423,12 @@ def compute(x: int) -> int:
 
     assert first_module.compute(1) == 11
     assert second_module.compute(1) == 21
+
+
+def _same_path(value: str, expected: Path) -> bool:
+    if not value:
+        return False
+    try:
+        return Path(value).resolve() == expected.resolve()
+    except OSError:
+        return False

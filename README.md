@@ -59,6 +59,8 @@ in place.
 .rextio/
   build/
     python/
+      rextio/
+        runtime/
   generated/
     rust/
     python/

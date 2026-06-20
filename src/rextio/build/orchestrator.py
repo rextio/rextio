@@ -68,6 +68,7 @@ def build_hybrid_artifact(
         encoding="utf-8",
     )
     _write_python_fallback_tree(analysis, layout.python_dir)
+    _write_runtime_support(layout.python_dir)
     native_build = _generate_and_build_native(analysis, layout, build_tool)
     _write_build_artifact(layout)
 
@@ -110,6 +111,22 @@ def _write_build_artifact(layout: ArtifactLayout) -> None:
     if layout.build_python_dir.exists():
         shutil.rmtree(layout.build_python_dir)
     shutil.copytree(layout.python_dir, layout.build_python_dir)
+
+
+def _write_runtime_support(python_root: Path) -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    rextio_root = python_root / "rextio"
+    rextio_root.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(package_root / "__init__.py", rextio_root / "__init__.py")
+
+    runtime_destination = rextio_root / "runtime"
+    if runtime_destination.exists():
+        shutil.rmtree(runtime_destination)
+    shutil.copytree(
+        package_root / "runtime",
+        runtime_destination,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
 
 
 def _generate_and_build_native(
