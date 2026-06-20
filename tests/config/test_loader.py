@@ -7,6 +7,26 @@ import pytest
 from rextio.config.loader import ConfigError, load_config
 
 
+def test_load_config_defaults_to_auto_native_discovery(tmp_path: Path) -> None:
+    config = load_config(tmp_path)
+
+    assert config.policy.native_marker == "auto"
+
+
+def test_load_config_allows_decorator_only_native_discovery(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.policy.native_marker == "decorator"
+
+
 def test_load_config_rejects_unknown_top_level_section(tmp_path: Path) -> None:
     (tmp_path / "rextio.toml").write_text(
         """
@@ -52,3 +72,15 @@ allow_dynamic_features = true
     with pytest.raises(ConfigError, match=r"allow_dynamic_features"):
         load_config(tmp_path)
 
+
+def test_load_config_rejects_unknown_native_marker_policy(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "always"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"native_marker"):
+        load_config(tmp_path)

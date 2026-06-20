@@ -13,7 +13,7 @@ DEFAULT_CONFIG = {
         "nuitka": "experimental",
     },
     "policy": {
-        "native_marker": "decorator",
+        "native_marker": "auto",
         "require_type_hints": True,
         "allow_dynamic_features": False,
         "boundary_warnings": True,

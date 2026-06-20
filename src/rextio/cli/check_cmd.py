@@ -55,6 +55,7 @@ def run(args: Namespace) -> int:
     analysis = analyze_project(
         project_root,
         boundary_warnings=config.policy.boundary_warnings,
+        native_marker=config.policy.native_marker,
     )
     write_check_report(project_root, analysis)
     if args.json:

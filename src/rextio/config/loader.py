@@ -90,7 +90,7 @@ def _validate_config_values(
     _require_value("rust", "binding", rust["binding"], {"pyo3"})
     _require_value("rust", "build_tool", rust["build_tool"], {"cargo", "maturin"})
     _require_value("fallback", "nuitka", fallback["nuitka"], {"experimental"})
-    _require_value("policy", "native_marker", policy["native_marker"], {"decorator"})
+    _require_value("policy", "native_marker", policy["native_marker"], {"auto", "decorator"})
     if policy["require_type_hints"] is not True:
         raise ConfigError("Public 1 requires [policy] require_type_hints = true")
     if policy["allow_dynamic_features"] is not False:

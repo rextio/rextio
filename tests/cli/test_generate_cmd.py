@@ -12,6 +12,13 @@ def test_generate_writes_sources_without_running_rust_or_nuitka_builds(
     capsys,
 ) -> None:
     monkeypatch.setenv("PATH", "")
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
     (tmp_path / "app.py").write_text(
         """
 import rextio

@@ -51,6 +51,13 @@ def add(a: int, b: int) -> int:
 
 
 def test_bench_rejects_non_native_target(tmp_path: Path, capsys) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
     (tmp_path / "bench_app.py").write_text(
         """
 def add(a: int, b: int) -> int:

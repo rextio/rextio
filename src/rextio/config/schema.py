@@ -22,7 +22,7 @@ class FallbackConfig:
 
 @dataclass(frozen=True)
 class PolicyConfig:
-    native_marker: str = "decorator"
+    native_marker: str = "auto"
     require_type_hints: bool = True
     allow_dynamic_features: bool = False
     boundary_warnings: bool = True

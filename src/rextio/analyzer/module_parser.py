@@ -6,10 +6,11 @@ from pathlib import Path
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis
 from rextio.analyzer.native_marker import dotted_name, has_native_marker
+from rextio.analyzer.type_collector import is_supported_type
 from rextio.analyzer.unsupported_patterns import validate_native_function
 
 
-def parse_module(path: Path, project_root: Path) -> ModuleAnalysis:
+def parse_module(path: Path, project_root: Path, native_marker: str = "auto") -> ModuleAnalysis:
     module_name = module_name_for_path(path, project_root)
     module = ModuleAnalysis(module_name=module_name, file_path=str(path))
     try:
@@ -32,7 +33,7 @@ def parse_module(path: Path, project_root: Path) -> ModuleAnalysis:
         module_name=module_name,
         is_package_module=path.name == "__init__.py",
     )
-    module.functions = _collect_module_functions(tree, module)
+    module.functions = _collect_module_functions(tree, module, native_marker)
     module.functions.extend(_collect_native_methods(tree, module))
     return module
 
@@ -97,11 +98,17 @@ def _resolve_import_from_base(
     return ".".join(package_parts)
 
 
-def _collect_module_functions(tree: ast.Module, module: ModuleAnalysis) -> list[FunctionAnalysis]:
+def _collect_module_functions(
+    tree: ast.Module,
+    module: ModuleAnalysis,
+    native_marker: str,
+) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
     for node in tree.body:
         if not isinstance(node, ast.FunctionDef):
             continue
+        calls = collect_call_sites(node)
+        has_marker = has_native_marker(node)
         function = FunctionAnalysis(
             name=node.name,
             qualname=f"{module.module_name}.{node.name}" if module.module_name else node.name,
@@ -109,13 +116,42 @@ def _collect_module_functions(tree: ast.Module, module: ModuleAnalysis) -> list[
             file_path=module.file_path,
             line=node.lineno,
             column=node.col_offset,
-            is_native_candidate=has_native_marker(node),
-            calls=collect_call_sites(node),
+            is_native_candidate=has_marker,
+            calls=calls,
         )
-        if function.is_native_candidate:
+        if has_marker:
             validate_native_function(node, function)
+        elif native_marker == "auto" and _is_auto_native_candidate(node, function):
+            function.is_native_candidate = True
+            function.accepted = True
         functions.append(function)
     return functions
+
+
+def _is_auto_native_candidate(node: ast.FunctionDef, function: FunctionAnalysis) -> bool:
+    if node.decorator_list or not _has_supported_signature(node):
+        return False
+    probe = FunctionAnalysis(
+        name=function.name,
+        qualname=function.qualname,
+        module_name=function.module_name,
+        file_path=function.file_path,
+        line=function.line,
+        column=function.column,
+        is_native_candidate=True,
+        calls=list(function.calls),
+    )
+    validate_native_function(node, probe)
+    return probe.accepted
+
+
+def _has_supported_signature(node: ast.FunctionDef) -> bool:
+    if node.args.vararg is not None or node.args.kwarg is not None:
+        return False
+    args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    if any(arg.annotation is None or not is_supported_type(arg.annotation) for arg in args):
+        return False
+    return node.returns is not None and is_supported_type(node.returns)
 
 
 def _collect_native_methods(tree: ast.Module, module: ModuleAnalysis) -> list[FunctionAnalysis]:

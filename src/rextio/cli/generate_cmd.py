@@ -23,6 +23,7 @@ def run(args: Namespace) -> int:
     analysis = analyze_project(
         project_root,
         boundary_warnings=config.policy.boundary_warnings,
+        native_marker=config.policy.native_marker,
     )
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:

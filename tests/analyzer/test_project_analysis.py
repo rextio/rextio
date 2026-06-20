@@ -37,7 +37,7 @@ def sum_squares(xs: list[float]) -> float:
 """,
     )
 
-    analysis = analyze_project(tmp_path)
+    analysis = analyze_project(tmp_path, native_marker="decorator")
 
     assert [function.qualname for function in analysis.accepted_native_functions] == [
         "myapp.scoring.square",
@@ -72,13 +72,58 @@ def score(x: float) -> float:
 """,
     )
 
-    analysis = analyze_project(tmp_path)
+    analysis = analyze_project(tmp_path, native_marker="decorator")
 
     assert [function.qualname for function in analysis.accepted_native_functions] == [
         "myapp.math_ops.square",
         "myapp.scoring.score",
     ]
     assert analysis.rejected_native_functions == []
+
+
+def test_auto_discovers_unmarked_typed_supported_functions(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+def square(x: float) -> float:
+    return x * x
+
+def sum_squares(xs: list[float]) -> float:
+    total = 0.0
+    for x in xs:
+        total += square(x)
+    return total
+
+def fallback_only(xs):
+    return xs
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.square",
+        "app.sum_squares",
+    ]
+    assert analysis.rejected_native_functions == []
+    assert analysis.diagnostics == []
+
+
+def test_decorator_policy_disables_auto_discovery(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert analysis.native_candidates == []
+    assert analysis.diagnostics == []
 
 
 def test_rejects_cross_module_native_to_fallback_calls(tmp_path: Path) -> None:
@@ -104,7 +149,7 @@ def score(x: float) -> float:
 """,
     )
 
-    analysis = analyze_project(tmp_path)
+    analysis = analyze_project(tmp_path, native_marker="decorator")
 
     assert "RXT070" in {diagnostic.code for diagnostic in analysis.diagnostics}
     assert [function.qualname for function in analysis.rejected_native_functions] == [
@@ -141,7 +186,7 @@ def bad(x: float) -> float:
 """,
     )
 
-    analysis = analyze_project(tmp_path)
+    analysis = analyze_project(tmp_path, native_marker="decorator")
 
     assert "RXT020" in {diagnostic.code for diagnostic in analysis.diagnostics}
     assert [function.qualname for function in analysis.rejected_native_functions] == ["app.bad"]
@@ -383,7 +428,7 @@ def compute(x: float) -> float:
 """,
     )
 
-    analysis = analyze_project(tmp_path)
+    analysis = analyze_project(tmp_path, native_marker="decorator")
 
     assert "RXT070" in {diagnostic.code for diagnostic in analysis.diagnostics}
     assert [function.qualname for function in analysis.rejected_native_functions] == ["app.compute"]

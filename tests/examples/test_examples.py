@@ -8,12 +8,13 @@ from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.cli.main import main
+from rextio.config.loader import load_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_pure_math_example_has_required_native_candidates() -> None:
-    analysis = analyze_project(REPO_ROOT / "examples" / "pure_math")
+    analysis = _analyze_configured_example("pure_math")
 
     assert [function.qualname for function in analysis.accepted_native_functions] == [
         "pure_math.math_ops.count_positive",
@@ -34,7 +35,7 @@ def test_pure_math_readme_documents_benchmark_flow() -> None:
 
 
 def test_fastapi_scoring_keeps_framework_shell_in_fallback() -> None:
-    analysis = analyze_project(REPO_ROOT / "examples" / "fastapi_scoring")
+    analysis = _analyze_configured_example("fastapi_scoring")
 
     assert [function.qualname for function in analysis.accepted_native_functions] == [
         "fastapi_scoring.scoring.compute_score"
@@ -43,7 +44,7 @@ def test_fastapi_scoring_keeps_framework_shell_in_fallback() -> None:
 
 
 def test_fallback_demo_has_native_score_and_boundary_warning() -> None:
-    analysis = analyze_project(REPO_ROOT / "examples" / "fallback_demo")
+    analysis = _analyze_configured_example("fallback_demo")
 
     assert [function.qualname for function in analysis.accepted_native_functions] == [
         "fallback_demo.scoring.score_one"
@@ -52,7 +53,7 @@ def test_fallback_demo_has_native_score_and_boundary_warning() -> None:
 
 
 def test_boundary_demo_shows_rejection_and_warning() -> None:
-    analysis = analyze_project(REPO_ROOT / "examples" / "boundary_demo")
+    analysis = _analyze_configured_example("boundary_demo")
     diagnostics = {diagnostic.code for diagnostic in analysis.diagnostics}
 
     assert "boundary_demo.pipeline.square" in [
@@ -104,6 +105,16 @@ def _copy_example(tmp_path: Path, example_name: str) -> Path:
     destination = tmp_path / example_name
     shutil.copytree(source, destination)
     return destination
+
+
+def _analyze_configured_example(example_name: str):
+    project_root = REPO_ROOT / "examples" / example_name
+    config = load_config(project_root)
+    return analyze_project(
+        project_root,
+        boundary_warnings=config.policy.boundary_warnings,
+        native_marker=config.policy.native_marker,
+    )
 
 
 def _force_cargo_build_tool(project_root: Path) -> None:

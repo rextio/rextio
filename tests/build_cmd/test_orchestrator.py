@@ -14,6 +14,13 @@ def test_build_generates_rust_project_for_accepted_native_only(
     capsys,
     fake_cargo: Path,
 ) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
     (tmp_path / "app.py").write_text(
         """
 import rextio

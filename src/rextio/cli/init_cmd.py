@@ -15,7 +15,7 @@ build_tool = "maturin"
 nuitka = "experimental"
 
 [policy]
-native_marker = "decorator"
+native_marker = "auto"
 require_type_hints = true
 allow_dynamic_features = false
 boundary_warnings = true
@@ -25,7 +25,11 @@ DEFAULT_REXTIO_MD = """# Rextio Project
 
 This project is configured for Rextio Public 1.
 
-Mark eligible typed Python functions with `@rextio.native`, then run:
+Rextio discovers eligible typed Python functions automatically. To require
+explicit markers, set `[policy] native_marker = "decorator"` and mark functions
+with `@rextio.native`.
+
+Then run:
 
 ```text
 rextio check
