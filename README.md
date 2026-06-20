@@ -75,6 +75,14 @@ to Python when native import fails or when native execution is disabled:
 REXTIO_DISABLE_NATIVE=1
 ```
 
+`REXTIO_NATIVE_MODE` can be set when a project needs explicit runtime behavior:
+
+```text
+REXTIO_NATIVE_MODE=auto      # default: use native when available, otherwise fallback
+REXTIO_NATIVE_MODE=fallback  # force Python fallback
+REXTIO_NATIVE_MODE=native    # require generated native functions to be available
+```
+
 Use `.rextioignore` to keep generated or irrelevant Python files out of Rextio
 analysis.
 

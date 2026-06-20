@@ -134,6 +134,70 @@ def add(a: int, b: int) -> int:
     assert module.add(2, 3) == 5
 
 
+def test_generated_wrapper_respects_native_mode_fallback(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+) -> None:
+    source = tmp_path / "src" / "demo_mode_fallback" / "scoring.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+    native_module = ModuleType("_rextio_native")
+    native_module.demo_mode_fallback__scoring__add = lambda a, b: 999
+    monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
+    monkeypatch.setenv("REXTIO_NATIVE_MODE", "fallback")
+
+    assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
+    monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "generated" / "python"))
+    importlib.invalidate_caches()
+
+    module = importlib.import_module("demo_mode_fallback.scoring")
+
+    assert module.add(2, 3) == 5
+
+
+def test_generated_wrapper_native_mode_requires_native_function(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+) -> None:
+    source = tmp_path / "src" / "demo_mode_native" / "scoring.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("REXTIO_NATIVE_MODE", "native")
+
+    assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
+    monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "generated" / "python"))
+    importlib.invalidate_caches()
+
+    module = importlib.import_module("demo_mode_native.scoring")
+
+    try:
+        module.add(2, 3)
+    except RuntimeError as exc:
+        assert "native mode requires generated native function" in str(exc)
+    else:
+        raise AssertionError("native mode should fail when native function is unavailable")
+
+
 def test_generated_wrapper_uses_native_when_available(
     tmp_path: Path,
     monkeypatch,

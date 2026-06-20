@@ -27,7 +27,7 @@ def render_wrapper_module(module: ModuleAnalysis) -> str:
     lines = [
         GENERATED_PYTHON_HEADER,
         "",
-        "from rextio.runtime.flags import native_disabled",
+        "from rextio.runtime.flags import native_disabled, native_required",
         "from rextio.runtime.native_loader import load_native_function",
         "",
         *_fallback_module_import_lines(import_prefix, fallback_name),
@@ -75,7 +75,13 @@ def _render_wrapper_function(function: FunctionAnalysis, node: ast.FunctionDef) 
     call_args = _call_args(node)
     return [
         f"def {function.name}({signature}){_return_annotation(node)}:",
-        f"    if native_disabled() or _native_{function.name} is None:",
+        "    if native_disabled():",
+        f"        return _fallback_{function.name}({call_args})",
+        f"    if _native_{function.name} is None:",
+        "        if native_required():",
+        "            raise RuntimeError(",
+        f'                "native mode requires generated native function: {function.qualname}"',
+        "            )",
         f"        return _fallback_{function.name}({call_args})",
         f"    return _native_{function.name}({call_args})",
     ]

@@ -9,6 +9,10 @@ def native_disabled() -> bool:
     ) == "fallback"
 
 
+def native_required() -> bool:
+    return os.environ.get("REXTIO_DISABLE_NATIVE") != "1" and native_mode() == "native"
+
+
 def native_mode() -> str:
     mode = os.environ.get("REXTIO_NATIVE_MODE", "auto")
     if mode not in {"auto", "native", "fallback"}:
