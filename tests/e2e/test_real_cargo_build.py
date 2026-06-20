@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -75,3 +77,56 @@ def rejected(x: int) -> int:
 
     monkeypatch.setenv("REXTIO_DISABLE_NATIVE", "1")
     assert module.add(2, 3) == 5
+
+    wheels = sorted((tmp_path / "dist").glob("*.whl"))
+    assert len(wheels) == 1
+    wheel_venv = tmp_path / "wheel_venv"
+    env = os.environ.copy()
+    _create_venv(wheel_venv, env)
+    wheel_python = _venv_bin(wheel_venv, "python")
+    _run([str(wheel_python), "-m", "pip", "install", str(wheels[0])], env=env)
+    _run(
+        [
+            str(wheel_python),
+            "-c",
+            (
+                "import importlib\n"
+                "native = importlib.import_module('_rextio_native')\n"
+                "assert native.e2e_app__math_ops__add(2, 3) == 5\n"
+                "from e2e_app import math_ops\n"
+                "assert math_ops.add(2, 3) == 5\n"
+                "assert math_ops.rejected(5) == 15\n"
+            ),
+        ],
+        env=env,
+    )
+    _run(
+        [
+            str(wheel_python),
+            "-c",
+            "from e2e_app import math_ops\nassert math_ops.add(2, 3) == 5\n",
+        ],
+        env={**env, "REXTIO_DISABLE_NATIVE": "1"},
+    )
+
+
+def _venv_bin(venv_dir: Path, name: str) -> Path:
+    if sys.platform == "win32":
+        suffix = ".exe" if name == "python" else ""
+        return venv_dir / "Scripts" / f"{name}{suffix}"
+    return venv_dir / "bin" / name
+
+
+def _create_venv(venv_dir: Path, env: dict[str, str]) -> None:
+    base_python = getattr(sys, "_base_executable", sys.executable) or sys.executable
+    _run([base_python, "-m", "venv", str(venv_dir)], env=env)
+
+
+def _run(command: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
