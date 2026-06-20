@@ -8,6 +8,7 @@ from rextio.analyzer.native_marker import dotted_name, is_native_decorator
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 
 DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
+NUMERIC_TYPES = {"int", "float"}
 
 UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.AsyncFunctionDef,
@@ -149,7 +150,9 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
 
 
 def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+    type_env = _initial_type_env(node)
     for statement in node.body:
+        _validate_statement_types(statement, function, type_env)
         for child in ast.walk(statement):
             if isinstance(child, ast.FunctionDef):
                 _add_unsupported_syntax(function, child, "nested functions are not supported")
@@ -159,6 +162,219 @@ def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
                 continue
             if isinstance(child, ast.Call):
                 _validate_call(function, child)
+
+
+def _initial_type_env(node: ast.FunctionDef) -> dict[str, str]:
+    env: dict[str, str] = {}
+    args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    for arg in args:
+        if arg.annotation is not None and is_supported_type(arg.annotation):
+            env[arg.arg] = annotation_name(arg.annotation)
+    return env
+
+
+def _validate_statement_types(
+    node: ast.stmt,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> None:
+    if isinstance(node, ast.Assign):
+        value_type = _infer_expr_type(node.value, function, env)
+        for target in node.targets:
+            if isinstance(target, ast.Name) and value_type is not None:
+                env[target.id] = value_type
+        return
+    if isinstance(node, ast.AnnAssign):
+        value_type = _infer_expr_type(node.value, function, env) if node.value is not None else None
+        annotated_type = (
+            annotation_name(node.annotation)
+            if node.annotation is not None and is_supported_type(node.annotation)
+            else value_type
+        )
+        if isinstance(node.target, ast.Name) and annotated_type is not None:
+            env[node.target.id] = annotated_type
+        return
+    if isinstance(node, ast.AugAssign):
+        target_type = _infer_expr_type(node.target, function, env)
+        value_type = _infer_expr_type(node.value, function, env)
+        result_type = _infer_binop_type(node.op, target_type, value_type, function, node)
+        if isinstance(node.target, ast.Name) and result_type is not None:
+            env[node.target.id] = result_type
+        return
+    if isinstance(node, ast.Return):
+        if node.value is not None:
+            _infer_expr_type(node.value, function, env)
+        return
+    if isinstance(node, ast.If):
+        _infer_expr_type(node.test, function, env)
+        _validate_statement_list_types(node.body, function, dict(env))
+        _validate_statement_list_types(node.orelse, function, dict(env))
+        return
+    if isinstance(node, ast.For):
+        iterable_type = _infer_expr_type(node.iter, function, env)
+        body_env = dict(env)
+        if isinstance(node.target, ast.Name):
+            item_type = _iter_item_type(node.iter, iterable_type)
+            if item_type is not None:
+                body_env[node.target.id] = item_type
+        _validate_statement_list_types(node.body, function, body_env)
+        _validate_statement_list_types(node.orelse, function, dict(env))
+        return
+    if isinstance(node, ast.While):
+        _infer_expr_type(node.test, function, env)
+        _validate_statement_list_types(node.body, function, dict(env))
+        _validate_statement_list_types(node.orelse, function, dict(env))
+
+
+def _validate_statement_list_types(
+    statements: list[ast.stmt],
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> None:
+    for statement in statements:
+        _validate_statement_types(statement, function, env)
+
+
+def _infer_expr_type(
+    node: ast.AST | None,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> str | None:
+    if node is None:
+        return "None"
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool):
+            return "bool"
+        if isinstance(node.value, int):
+            return "int"
+        if isinstance(node.value, float):
+            return "float"
+        if isinstance(node.value, str):
+            return "str"
+        if node.value is None:
+            return "None"
+        return None
+    if isinstance(node, ast.Name):
+        return env.get(node.id)
+    if isinstance(node, ast.BinOp):
+        left = _infer_expr_type(node.left, function, env)
+        right = _infer_expr_type(node.right, function, env)
+        return _infer_binop_type(node.op, left, right, function, node)
+    if isinstance(node, ast.UnaryOp):
+        value_type = _infer_expr_type(node.operand, function, env)
+        return _infer_unary_type(node.op, value_type, function, node)
+    if isinstance(node, ast.BoolOp):
+        for value in node.values:
+            value_type = _infer_expr_type(value, function, env)
+            if value_type is not None and value_type != "bool":
+                _add_unsupported_syntax(
+                    function,
+                    value,
+                    f"boolean operations require bool operands in Public 1, got {value_type}",
+                )
+        return "bool"
+    if isinstance(node, ast.Compare):
+        _validate_compare_types(node, function, env)
+        return "bool"
+    if isinstance(node, ast.Call):
+        for arg in node.args:
+            _infer_expr_type(arg, function, env)
+        if dotted_name(node.func) == "len" and len(node.args) == 1:
+            return "int"
+        return None
+    if isinstance(node, ast.Subscript):
+        value_type = _infer_expr_type(node.value, function, env)
+        _infer_expr_type(node.slice, function, env)
+        if value_type is not None and value_type.startswith("list[") and value_type.endswith("]"):
+            return value_type[5:-1]
+        return None
+    return None
+
+
+def _infer_binop_type(
+    op: ast.operator,
+    left: str | None,
+    right: str | None,
+    function: FunctionAnalysis,
+    node: ast.AST,
+) -> str | None:
+    if not isinstance(op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod)):
+        return None
+    if left is None or right is None:
+        return None
+    if isinstance(op, ast.Div) and left == "int" and right == "int":
+        _add_unsupported_syntax(
+            function,
+            node,
+            "int division is not supported in Public 1 native functions",
+        )
+        return None
+    if left not in NUMERIC_TYPES or right not in NUMERIC_TYPES:
+        _add_unsupported_syntax(
+            function,
+            node,
+            f"operator is not supported for inferred operand types: {left} and {right}",
+        )
+        return None
+    if left != right:
+        _add_unsupported_syntax(
+            function,
+            node,
+            f"mixed numeric operand types are not supported: {left} and {right}",
+        )
+        return None
+    return left
+
+
+def _infer_unary_type(
+    op: ast.unaryop,
+    value_type: str | None,
+    function: FunctionAnalysis,
+    node: ast.AST,
+) -> str | None:
+    if isinstance(op, ast.Not):
+        if value_type is not None and value_type != "bool":
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"not operator requires bool in Public 1 native functions, got {value_type}",
+            )
+        return "bool"
+    if isinstance(op, ast.USub):
+        if value_type in NUMERIC_TYPES:
+            return value_type
+        if value_type is not None:
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"unary minus is not supported for inferred operand type: {value_type}",
+            )
+    return None
+
+
+def _validate_compare_types(
+    node: ast.Compare,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> None:
+    left_type = _infer_expr_type(node.left, function, env)
+    for op, comparator in zip(node.ops, node.comparators, strict=True):
+        right_type = _infer_expr_type(comparator, function, env)
+        if left_type is not None and right_type is not None and left_type != right_type:
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"mixed comparison operand types are not supported: {left_type} and {right_type}",
+            )
+        left_type = right_type
+
+
+def _iter_item_type(node: ast.AST, iterable_type: str | None) -> str | None:
+    if iterable_type is not None and iterable_type.startswith("list[") and iterable_type.endswith("]"):
+        return iterable_type[5:-1]
+    if isinstance(node, ast.Call) and dotted_name(node.func) == "range":
+        return "int"
+    return None
 
 
 def _validate_call(function: FunctionAnalysis, node: ast.Call) -> None:

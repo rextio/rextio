@@ -269,6 +269,42 @@ def identity_bad(x: int) -> bool:
     }
 
 
+def test_rejects_operations_with_unsafe_public_1_type_semantics(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def int_division_bad(x: int, y: int) -> int:
+    return x / y
+
+@rextio.native
+def string_concat_bad(left: str, right: str) -> str:
+    return left + right
+
+@rextio.native
+def mixed_numeric_bad(x: float, y: int) -> float:
+    return x + y
+
+@rextio.native
+def int_truthiness_bad(x: int, y: int) -> bool:
+    return x and y
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.int_truthiness_bad",
+        "app.int_division_bad",
+        "app.mixed_numeric_bad",
+        "app.string_concat_bad",
+    }
+
+
 def test_rejects_keyword_call_arguments(tmp_path: Path) -> None:
     write_module(
         tmp_path,

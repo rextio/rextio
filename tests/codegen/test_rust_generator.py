@@ -175,3 +175,20 @@ def sum_indices(xs: list[int]) -> int:
     assert "for i in 0..(xs.len() as i64) {" in source
     assert "total = total + i;" in source
     assert "total = total + xs[i as usize].clone();" in source
+
+
+def test_len_lowers_to_public_1_int(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def size_plus_first(xs: list[int]) -> int:
+    return len(xs) + xs[0]
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "return Ok((xs.len() as i64) + xs[0 as usize].clone());" in source

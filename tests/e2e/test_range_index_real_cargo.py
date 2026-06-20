@@ -36,6 +36,10 @@ def sum_indices(xs: list[int]) -> int:
         total += i
         total += xs[i]
     return total
+
+@rextio.native
+def size_plus_first(xs: list[int]) -> int:
+    return len(xs) + xs[0]
 """,
         encoding="utf-8",
     )
@@ -55,3 +59,4 @@ def sum_indices(xs: list[int]) -> int:
     module = importlib.import_module("range_app.math_ops")
 
     assert module.sum_indices([10, 20, 30]) == 63
+    assert module.size_plus_first([10, 20, 30]) == 13

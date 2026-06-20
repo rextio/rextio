@@ -182,7 +182,7 @@ class _FunctionRenderer:
 
     def render_call(self, expr: CallIR) -> str:
         if expr.function == "len" and len(expr.args) == 1:
-            return f"{self.render_expr(expr.args[0])}.len()"
+            return f"({self.render_expr(expr.args[0])}.len() as i64)"
         rust_name = self.native_names_by_qualname.get(expr.function)
         if rust_name is None:
             rust_name = self.native_names.get((self.function.module_name, expr.function))

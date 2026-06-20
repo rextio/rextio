@@ -69,6 +69,9 @@ diagnostics, usually `RXT010`:
 - keyword call arguments
 - unsupported operators such as `**`, `//`, matrix multiply, bitwise operators,
   shifts, unary plus, and bitwise invert
+- operations whose inferred operand types would not preserve Python semantics,
+  such as `str + str`, `bool + bool`, mixed `int`/`float` arithmetic, and
+  `int / int`
 - identity and membership comparisons such as `is`, `is not`, `in`, and
   `not in`
 
