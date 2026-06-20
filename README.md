@@ -26,6 +26,16 @@ The initial implementation focuses on project initialization, native marker
 detection, subset diagnostics, static boundary diagnostics, runtime disable
 flags, and deterministic check reports.
 
+## Public 1 Scope
+
+Public 1 supports a small typed Python subset for explicitly marked
+module-level functions. Unsupported syntax, dynamic features, unsafe
+native-to-fallback calls, and unresolved external calls are rejected from native
+compilation and kept on Python fallback where possible.
+
+See [Unsupported Features in Public 1](docs/unsupported-features.md) for the
+supported subset, boundary limits, diagnostics, and non-goals.
+
 ## Build Prerequisites
 
 Native builds require Rust and Cargo. Rextio can also use `maturin` when
