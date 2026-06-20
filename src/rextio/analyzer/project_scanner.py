@@ -69,9 +69,9 @@ def _is_ignored(relative: Path, ignore_patterns: list[str]) -> bool:
     return False
 
 
-def analyze_project(project_root: Path | str) -> ProjectAnalysis:
+def analyze_project(project_root: Path | str, boundary_warnings: bool = True) -> ProjectAnalysis:
     root = Path(project_root).resolve()
     analysis = ProjectAnalysis(project_root=root)
     analysis.modules = [parse_module(path, root) for path in scan_python_files(root)]
-    apply_boundary_checks(analysis)
+    apply_boundary_checks(analysis, boundary_warnings=boundary_warnings)
     return analysis

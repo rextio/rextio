@@ -56,6 +56,16 @@ in place.
 `rextio check` writes `.rextio/reports/check.json`. `rextio build` writes both
 check and build reports.
 
+## Policy Configuration
+
+Boundary warnings are enabled by default. Projects that want strict safety
+errors without Python-loop boundary warnings can set:
+
+```toml
+[policy]
+boundary_warnings = false
+```
+
 ## Fallback Safety
 
 Generated wrappers use native functions when available and safe. They fall back

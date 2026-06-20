@@ -27,14 +27,17 @@ class BenchResult:
 
 
 def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> BenchResult:
-    analysis = analyze_project(project_root)
+    config = load_config(project_root)
+    analysis = analyze_project(
+        project_root,
+        boundary_warnings=config.policy.boundary_warnings,
+    )
     function = _find_target(analysis, target)
     if function is None:
         raise BenchError(f"target function was not found: {target}")
     if not function.accepted:
         raise BenchError(f"target function is not accepted for native compilation: {target}")
 
-    config = load_config(project_root)
     build_result = build_hybrid_artifact(
         project_root,
         analysis,

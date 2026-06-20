@@ -42,6 +42,41 @@ def add(a: int, b: int) -> int:
     assert report["accepted_native"] == ["app.add"]
 
 
+def test_check_respects_boundary_warnings_policy(tmp_path: Path, capsys) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+boundary_warnings = false
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def score_one(x: float) -> float:
+    return x * 2.0
+
+def process_all(xs: list[float]) -> list[float]:
+    out = []
+    for x in xs:
+        out.append(score_one(x))
+    return out
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["check", str(tmp_path), "--json"])
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert data["accepted_native"] == ["app.score_one"]
+    assert data["diagnostics"] == []
+
+
 def test_clean_removes_generated_artifacts(tmp_path: Path, capsys) -> None:
     for name in ("build", "generated", "reports"):
         path = tmp_path / ".rextio" / name

@@ -170,6 +170,49 @@ def add(a: int, b: int) -> int:
     assert data["native_build"]["tool"] == "cargo"
 
 
+def test_build_respects_boundary_warnings_policy(
+    tmp_path: Path,
+    fake_cargo: Path,
+    capsys,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[rust]
+build_tool = "cargo"
+
+[policy]
+boundary_warnings = false
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def score_one(x: float) -> float:
+    return x * 2.0
+
+def process_all(xs: list[float]) -> list[float]:
+    out = []
+    for x in xs:
+        out.append(score_one(x))
+    return out
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython"])
+
+    capsys.readouterr()
+    check_report = tmp_path / ".rextio" / "reports" / "check.json"
+    data = json.loads(check_report.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert data["accepted_native"] == ["app.score_one"]
+    assert data["diagnostics"] == []
+
+
 def test_build_reports_clear_error_when_nuitka_is_missing(
     tmp_path: Path,
     monkeypatch,

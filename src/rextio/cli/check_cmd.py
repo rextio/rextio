@@ -6,6 +6,7 @@ from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
+from rextio.config.loader import load_config
 
 
 def format_check_report(analysis: ProjectAnalysis) -> str:
@@ -45,7 +46,11 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
 
 def run(args: Namespace) -> int:
     project_root = Path(args.project_root).resolve()
-    analysis = analyze_project(project_root)
+    config = load_config(project_root)
+    analysis = analyze_project(
+        project_root,
+        boundary_warnings=config.policy.boundary_warnings,
+    )
     write_check_report(project_root, analysis)
     if args.json:
         print(json.dumps(analysis.to_dict(), indent=2, sort_keys=True))

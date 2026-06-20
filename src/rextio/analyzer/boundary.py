@@ -14,7 +14,7 @@ BOUNDARY_DIAGNOSTIC_MESSAGES = {
 }
 
 
-def apply_boundary_checks(analysis: ProjectAnalysis) -> None:
+def apply_boundary_checks(analysis: ProjectAnalysis, boundary_warnings: bool = True) -> None:
     resolver = FunctionResolver(analysis)
     for function in analysis.native_candidates:
         function.accepted = not function.error_diagnostics
@@ -32,7 +32,8 @@ def apply_boundary_checks(analysis: ProjectAnalysis) -> None:
                     function.accepted = False
                     changed = True
 
-    _add_python_loop_boundary_warnings(analysis, resolver)
+    if boundary_warnings:
+        _add_python_loop_boundary_warnings(analysis, resolver)
 
 
 def _first_boundary_error(

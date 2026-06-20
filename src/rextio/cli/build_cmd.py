@@ -22,8 +22,11 @@ def run(args: Namespace) -> int:
         print(nuitka_not_implemented_message())
         return 1
 
-    analysis = analyze_project(project_root)
     config = load_config(project_root)
+    analysis = analyze_project(
+        project_root,
+        boundary_warnings=config.policy.boundary_warnings,
+    )
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:
         reports_dir = project_root / ".rextio" / "reports"
