@@ -91,7 +91,8 @@ class _FunctionRenderer:
                 return [f"{prefix}return Ok(());"]
             return [f"{prefix}return Ok({strip_wrapping_parens(self.render_expr(statement.value))});"]
         if isinstance(statement, IfIR):
-            lines = [f"{prefix}if {self.render_expr(statement.condition)} {{"]
+            condition = strip_wrapping_parens(self.render_expr(statement.condition))
+            lines = [f"{prefix}if {condition} {{"]
             lines.extend(self.render_block(statement.body, indent + 1))
             if statement.orelse.statements:
                 lines.append(f"{prefix}}} else {{")
@@ -105,7 +106,8 @@ class _FunctionRenderer:
             lines.append(f"{prefix}}}")
             return lines
         if isinstance(statement, WhileIR):
-            lines = [f"{prefix}while {self.render_expr(statement.condition)} {{"]
+            condition = strip_wrapping_parens(self.render_expr(statement.condition))
+            lines = [f"{prefix}while {condition} {{"]
             lines.extend(self.render_block(statement.body, indent + 1))
             lines.append(f"{prefix}}}")
             return lines
@@ -181,7 +183,17 @@ def render_literal(value: object) -> str:
 
 
 def strip_wrapping_parens(value: str) -> str:
-    if value.startswith("(") and value.endswith(")"):
+    if not value.startswith("(") or not value.endswith(")"):
+        return value
+    depth = 0
+    for index, char in enumerate(value):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0 and index != len(value) - 1:
+                return value
+    if depth == 0:
         return value[1:-1]
     return value
 

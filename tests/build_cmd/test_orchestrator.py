@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import rextio.build.orchestrator as orchestrator
 from rextio.cli.main import main
+from rextio.codegen.rust.generator import RustCodegenError
 
 
 def test_build_generates_rust_project_for_accepted_native_only(
@@ -92,3 +94,39 @@ def add(a: int, b: int) -> int:
     assert "RXT060 Build failed while compiling generated Rust module" in captured.out
     assert data["status"] == "native-build-failed"
     assert data["native_build"]["status"] == "failed"
+
+
+def test_build_reports_codegen_failure_and_keeps_fallback(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    def fail_codegen(_module_ir):
+        raise RustCodegenError("synthetic codegen failure")
+
+    monkeypatch.setattr(orchestrator, "generate_rust_module", fail_codegen)
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython"])
+
+    captured = capsys.readouterr()
+    python_dir = tmp_path / ".rextio" / "generated" / "python"
+    build_report = tmp_path / ".rextio" / "reports" / "build.json"
+    data = json.loads(build_report.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert "RXT050 Codegen failure" in captured.out
+    assert data["status"] == "codegen-failed"
+    assert data["native_build"]["tool"] == "codegen"
+    assert (python_dir / "app.py").exists()
+    assert (python_dir / "_fallback_app.py").exists()

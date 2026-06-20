@@ -17,13 +17,14 @@ from rextio.codegen.rust.cargo import (
     render_pyproject_toml,
 )
 from rextio.codegen.rust.generator import generate_rust_module
+from rextio.codegen.rust.generator import RustCodegenError
 from rextio.codegen.python_wrapper.wrapper_gen import render_wrapper_module
 from rextio.fallback.cpython import (
     generated_path_for_module,
     write_cpython_fallback,
     write_plain_cpython_module,
 )
-from rextio.ir.lowering import lower_project
+from rextio.ir.lowering import LoweringError, lower_project
 from rextio.build.artifact_layout import ArtifactLayout
 
 
@@ -54,23 +55,12 @@ def build_hybrid_artifact(project_root: Path, analysis: ProjectAnalysis, fallbac
     layout.python_dir.mkdir(parents=True, exist_ok=True)
     layout.reports_dir.mkdir(parents=True, exist_ok=True)
 
-    module_ir = lower_project(analysis)
-    rust_source = generate_rust_module(module_ir)
-
-    (layout.rust_dir / "Cargo.toml").write_text(render_cargo_toml(), encoding="utf-8")
-    (layout.rust_dir / "pyproject.toml").write_text(render_pyproject_toml(), encoding="utf-8")
-    (layout.rust_dir / ".cargo").mkdir(parents=True, exist_ok=True)
-    (layout.rust_dir / ".cargo" / "config.toml").write_text(
-        render_cargo_config_toml(),
-        encoding="utf-8",
-    )
-    (layout.rust_src_dir / "lib.rs").write_text(rust_source, encoding="utf-8")
     (layout.reports_dir / "check.json").write_text(
         json.dumps(analysis.to_dict(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     _write_python_fallback_tree(analysis, layout.python_dir)
-    native_build = _build_native_if_needed(analysis, layout)
+    native_build = _generate_and_build_native(analysis, layout)
 
     result = BuildResult(
         fallback=fallback,
@@ -107,13 +97,41 @@ def _reset_generated_dir(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _build_native_if_needed(analysis: ProjectAnalysis, layout: ArtifactLayout) -> NativeBuildResult:
+def _generate_and_build_native(analysis: ProjectAnalysis, layout: ArtifactLayout) -> NativeBuildResult:
     if not analysis.accepted_native_functions:
         return skipped_native_build("No accepted native functions were found.")
+    try:
+        module_ir = lower_project(analysis)
+        rust_source = generate_rust_module(module_ir)
+    except (LoweringError, RustCodegenError) as exc:
+        return NativeBuildResult(
+            status="failed",
+            tool="codegen",
+            message=(
+                "RXT050 Codegen failure while generating Rust for accepted native functions. "
+                f"Cause: {exc}. Fallback Python files were still generated."
+            ),
+        )
+
+    _write_rust_project(layout, rust_source)
     return build_native_extension_with_cargo(layout.rust_dir, layout.python_dir)
 
 
+def _write_rust_project(layout: ArtifactLayout, rust_source: str) -> None:
+    layout.rust_src_dir.mkdir(parents=True, exist_ok=True)
+    (layout.rust_dir / "Cargo.toml").write_text(render_cargo_toml(), encoding="utf-8")
+    (layout.rust_dir / "pyproject.toml").write_text(render_pyproject_toml(), encoding="utf-8")
+    (layout.rust_dir / ".cargo").mkdir(parents=True, exist_ok=True)
+    (layout.rust_dir / ".cargo" / "config.toml").write_text(
+        render_cargo_config_toml(),
+        encoding="utf-8",
+    )
+    (layout.rust_src_dir / "lib.rs").write_text(rust_source, encoding="utf-8")
+
+
 def _build_status(native_build: NativeBuildResult) -> str:
+    if native_build.tool == "codegen" and native_build.status == "failed":
+        return "codegen-failed"
     if native_build.status == "failed":
         return "native-build-failed"
     return "built"

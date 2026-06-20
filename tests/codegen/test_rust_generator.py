@@ -37,3 +37,36 @@ def sum_squares(xs: list[float]) -> float:
     assert "fn _rextio_native(m: &Bound<'_, PyModule>) -> PyResult<()> {" in source
     assert "m.add_function(wrap_pyfunction!(square, m)?)?;" in source
     assert "m.add_function(wrap_pyfunction!(sum_squares, m)?)?;" in source
+
+
+def test_generates_rust_for_if_range_len_indexing_and_while(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def count_positive(xs: list[int]) -> int:
+    count = 0
+    for i in range(len(xs)):
+        if xs[i] > 0:
+            count += 1
+    return count
+
+@rextio.native
+def decrement_to_zero(n: int) -> int:
+    while n > 0:
+        n -= 1
+    return n
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "fn count_positive(xs: Vec<i64>) -> PyResult<i64> {" in source
+    assert "for i in 0..xs.len() {" in source
+    assert "if xs[i] > 0 {" in source
+    assert "count = count + 1;" in source
+    assert "fn decrement_to_zero(mut n: i64) -> PyResult<i64> {" in source
+    assert "while n > 0 {" in source
+    assert "n = n - 1;" in source
