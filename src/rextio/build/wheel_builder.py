@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import sys
+import sysconfig
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,9 +42,11 @@ def build_artifact_wheel(
 
     name = _normalize_distribution_name(project_root.name or "rextio_hybrid_artifact")
     version = "0.1.0"
+    wheel_tag = _wheel_tag(python_dir)
+    root_is_purelib = "false" if _has_native_extension(python_dir) else "true"
     dist_info = f"{name}-{version}.dist-info"
     dist_dir.mkdir(parents=True, exist_ok=True)
-    wheel_path = dist_dir / f"{name}-{version}-py3-none-any.whl"
+    wheel_path = dist_dir / f"{name}-{version}-{wheel_tag}.whl"
     if wheel_path.exists():
         wheel_path.unlink()
 
@@ -64,8 +68,8 @@ def build_artifact_wheel(
             f"{dist_info}/WHEEL": (
                 "Wheel-Version: 1.0\n"
                 "Generator: rextio\n"
-                "Root-Is-Purelib: true\n"
-                "Tag: py3-none-any\n"
+                f"Root-Is-Purelib: {root_is_purelib}\n"
+                f"Tag: {wheel_tag}\n"
             ).encode("utf-8"),
         }
         for relative, data in metadata_entries.items():
@@ -89,6 +93,23 @@ def _normalize_distribution_name(value: str) -> str:
     if not normalized:
         return "rextio_hybrid_artifact"
     return normalized.lower()
+
+
+def _wheel_tag(python_dir: Path) -> str:
+    if not _has_native_extension(python_dir):
+        return "py3-none-any"
+    python_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    abi_tag = python_tag
+    platform_tag = sysconfig.get_platform().replace("-", "_").replace(".", "_")
+    return f"{python_tag}-{abi_tag}-{platform_tag}"
+
+
+def _has_native_extension(python_dir: Path) -> bool:
+    return any(_is_native_extension(path.name) for path in python_dir.rglob("*") if path.is_file())
+
+
+def _is_native_extension(filename: str) -> bool:
+    return filename.startswith("_rextio_native") and filename.endswith((".so", ".pyd", ".dll", ".dylib"))
 
 
 def _write_bytes(archive: zipfile.ZipFile, relative: str, data: bytes) -> None:
