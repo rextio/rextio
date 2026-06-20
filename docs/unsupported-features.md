@@ -129,3 +129,5 @@ Public 1 does not include:
 
 Nuitka fallback packaging is experimental in Public 1. If requested and not
 available, Rextio reports a clear `RXT060` error and suggests CPython fallback.
+If Nuitka is available, Rextio invokes it for generated fallback modules and
+records the result in `.rextio/reports/build.json`.

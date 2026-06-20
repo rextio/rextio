@@ -347,17 +347,11 @@ def add(a: int, b: int) -> int:
     assert "rextio build --fallback=cpython" in captured.out
 
 
-def test_build_reports_clear_error_when_nuitka_is_available_but_experimental(
+def test_build_invokes_nuitka_when_requested_and_available(
     tmp_path: Path,
-    monkeypatch,
+    fake_nuitka: Path,
     capsys,
 ) -> None:
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    nuitka = bin_dir / "nuitka"
-    nuitka.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    nuitka.chmod(0o755)
-    monkeypatch.setenv("PATH", str(bin_dir))
     (tmp_path / "app.py").write_text(
         """
 def add(a: int, b: int) -> int:
@@ -369,10 +363,17 @@ def add(a: int, b: int) -> int:
     exit_code = main(["build", str(tmp_path), "--fallback=nuitka"])
 
     captured = capsys.readouterr()
+    build_report = tmp_path / ".rextio" / "reports" / "build.json"
+    data = json.loads(build_report.read_text(encoding="utf-8"))
 
-    assert exit_code == 1
-    assert "Nuitka fallback is experimental" in captured.out
-    assert "rextio build --fallback=cpython" in captured.out
+    assert exit_code == 0
+    assert "fallback: nuitka" in captured.out
+    assert "fallback packaging: built" in captured.out
+    assert data["fallback_build"]["backend"] == "nuitka"
+    assert data["fallback_build"]["status"] == "built"
+    assert data["fallback_build"]["command"]
+    assert data["fallback_build"]["compiled_artifacts"]
+    assert fake_nuitka.with_name("nuitka.log").exists()
 
 
 def test_build_reports_codegen_failure_and_keeps_fallback(

@@ -54,3 +54,29 @@ with zipfile.ZipFile(wheel, "w") as archive:
     maturin.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
     return maturin
+
+
+@pytest.fixture
+def fake_nuitka(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    bin_dir = tmp_path / "fake-nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text(
+        """#!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+source = Path(args[args.index("--module") + 1])
+out = Path(args[args.index("--output-dir") + 1])
+out.mkdir(parents=True, exist_ok=True)
+(out / f"{source.stem}.cpython-311-darwin.so").write_bytes(b"fake nuitka module")
+log = Path(__file__).with_name("nuitka.log")
+with log.open("a", encoding="utf-8") as handle:
+    handle.write(" ".join(args) + "\\n")
+""",
+        encoding="utf-8",
+    )
+    nuitka.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return nuitka

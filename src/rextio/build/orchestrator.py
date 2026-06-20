@@ -20,22 +20,28 @@ from rextio.codegen.rust.cargo import (
 from rextio.codegen.rust.generator import generate_rust_module
 from rextio.codegen.rust.generator import RustCodegenError
 from rextio.codegen.python_wrapper.wrapper_gen import render_wrapper_module
+from rextio.fallback.build_result import FallbackBuildResult, cpython_fallback_build_result
 from rextio.fallback.cpython import (
     generated_path_for_module,
     write_cpython_fallback,
     write_plain_cpython_module,
 )
+from rextio.fallback.nuitka import build_nuitka_fallback
 from rextio.ir.lowering import LoweringError, lower_project
 from rextio.build.artifact_layout import ArtifactLayout
+from rextio.partition.build_plan import BuildPlan, create_build_plan
+from rextio.partition.fallback_plan import FallbackPlan
 
 
 @dataclass(frozen=True)
 class BuildResult:
     fallback: str
     layout: ArtifactLayout
+    plan: BuildPlan
     accepted_native_count: int
     rejected_native_count: int
     native_build: NativeBuildResult
+    fallback_build: FallbackBuildResult
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -43,9 +49,11 @@ class BuildResult:
             "generated_rust": str(self.layout.rust_dir),
             "generated_python": str(self.layout.python_dir),
             "build_python": str(self.layout.build_python_dir),
+            "plan": self.plan.to_dict(),
             "accepted_native_count": self.accepted_native_count,
             "rejected_native_count": self.rejected_native_count,
             "native_build": self.native_build.to_dict(),
+            "fallback_build": self.fallback_build.to_dict(),
         }
 
 
@@ -56,6 +64,7 @@ def build_hybrid_artifact(
     build_tool: str = "cargo",
 ) -> BuildResult:
     layout = ArtifactLayout(project_root)
+    plan = create_build_plan(analysis, fallback)
     _reset_generated_dir(layout.build_dir)
     _reset_generated_dir(layout.rust_dir)
     _reset_generated_dir(layout.python_dir)
@@ -67,39 +76,42 @@ def build_hybrid_artifact(
         json.dumps(analysis.to_dict(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    _write_python_fallback_tree(analysis, layout.python_dir)
+    _write_python_fallback_tree(plan.fallback, layout.python_dir)
     _write_runtime_support(layout.python_dir)
-    native_build = _generate_and_build_native(analysis, layout, build_tool)
+    native_build = _generate_and_build_native(plan, layout, build_tool)
     _write_build_artifact(layout)
+    fallback_build = _build_fallback_backend(fallback, layout)
 
     result = BuildResult(
         fallback=fallback,
         layout=layout,
-        accepted_native_count=len(analysis.accepted_native_functions),
-        rejected_native_count=len(analysis.rejected_native_functions),
+        plan=plan,
+        accepted_native_count=plan.native.accepted_count,
+        rejected_native_count=plan.native.rejected_count,
         native_build=native_build,
+        fallback_build=fallback_build,
     )
     (layout.reports_dir / "build.json").write_text(
-        json.dumps({"status": _build_status(native_build), **result.to_dict()}, indent=2, sort_keys=True) + "\n",
+        json.dumps(
+            {"status": _build_status(native_build, fallback_build), **result.to_dict()},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
         encoding="utf-8",
     )
     return result
 
 
-def _write_python_fallback_tree(analysis: ProjectAnalysis, python_root: Path) -> None:
-    for module in sorted(analysis.modules, key=lambda item: item.module_name):
-        accepted = [
-            function
-            for function in module.functions
-            if function.is_native_candidate and function.accepted
-        ]
-        if not accepted:
-            write_plain_cpython_module(module, python_root)
+def _write_python_fallback_tree(plan: FallbackPlan, python_root: Path) -> None:
+    for module_plan in plan.modules:
+        if not module_plan.needs_wrapper:
+            write_plain_cpython_module(module_plan.module, python_root)
             continue
-        write_cpython_fallback(module, python_root)
-        wrapper_path = generated_path_for_module(module, python_root)
+        write_cpython_fallback(module_plan.module, python_root)
+        wrapper_path = generated_path_for_module(module_plan.module, python_root)
         wrapper_path.parent.mkdir(parents=True, exist_ok=True)
-        wrapper_path.write_text(render_wrapper_module(module), encoding="utf-8")
+        wrapper_path.write_text(render_wrapper_module(module_plan.module), encoding="utf-8")
 
 
 def _reset_generated_dir(path: Path) -> None:
@@ -130,14 +142,14 @@ def _write_runtime_support(python_root: Path) -> None:
 
 
 def _generate_and_build_native(
-    analysis: ProjectAnalysis,
+    plan: BuildPlan,
     layout: ArtifactLayout,
     build_tool: str,
 ) -> NativeBuildResult:
-    if not analysis.accepted_native_functions:
+    if not plan.native.accepted_functions:
         return skipped_native_build("No accepted native functions were found.")
     try:
-        module_ir = lower_project(analysis)
+        module_ir = lower_project(plan.analysis)
         rust_source = generate_rust_module(module_ir)
     except (LoweringError, RustCodegenError) as exc:
         return NativeBuildResult(
@@ -151,6 +163,21 @@ def _generate_and_build_native(
 
     _write_rust_project(layout, rust_source)
     return _build_native_with_selected_tool(layout, build_tool)
+
+
+def _build_fallback_backend(fallback: str, layout: ArtifactLayout) -> FallbackBuildResult:
+    if fallback == "cpython":
+        return cpython_fallback_build_result()
+    if fallback == "nuitka":
+        return build_nuitka_fallback(layout.build_python_dir)
+    return FallbackBuildResult(
+        status="failed",
+        backend=fallback,
+        message=(
+            "RXT060 Build failed while preparing fallback backend. "
+            f"Cause: unsupported fallback backend: {fallback}."
+        ),
+    )
 
 
 def _build_native_with_selected_tool(layout: ArtifactLayout, build_tool: str) -> NativeBuildResult:
@@ -213,7 +240,12 @@ def _write_rust_project(layout: ArtifactLayout, rust_source: str) -> None:
     (layout.rust_src_dir / "lib.rs").write_text(rust_source, encoding="utf-8")
 
 
-def _build_status(native_build: NativeBuildResult) -> str:
+def _build_status(
+    native_build: NativeBuildResult,
+    fallback_build: FallbackBuildResult,
+) -> str:
+    if fallback_build.status == "failed":
+        return "fallback-build-failed"
     if native_build.tool == "codegen" and native_build.status == "failed":
         return "codegen-failed"
     if native_build.status == "failed":

@@ -26,6 +26,17 @@ The initial implementation focuses on project initialization, native marker
 detection, subset diagnostics, static boundary diagnostics, runtime disable
 flags, and deterministic check reports.
 
+Typical local flow:
+
+```text
+python -m pip install -e .
+rextio init --project-root path/to/project
+rextio check path/to/project
+rextio build path/to/project --fallback=cpython
+rextio bench myapp.scoring.compute_score --project-root path/to/project
+rextio clean path/to/project
+```
+
 ## Public 1 Scope
 
 Public 1 supports a small typed Python subset for explicitly marked
@@ -44,7 +55,9 @@ Rextio falls back to Cargo when possible.
 
 Nuitka fallback packaging is experimental. If `--fallback=nuitka` is requested
 without Nuitka installed, Rextio reports a clear `RXT060` error and suggests
-`--fallback=cpython`.
+`--fallback=cpython`. When Nuitka is installed, Rextio invokes it on generated
+Python fallback modules while still keeping the CPython fallback files in the
+build artifact.
 
 `rextio build` uses `[build] fallback_backend` from `rextio.toml` when
 `--fallback` is omitted. Passing `--fallback=cpython` or `--fallback=nuitka`
@@ -108,6 +121,18 @@ REXTIO_NATIVE_MODE=native    # require generated native functions to be availabl
 Use `.rextioignore` to keep generated or irrelevant Python files out of Rextio
 analysis.
 
+## Boundary Diagnostics
+
+Public 1 boundary checks are static and conservative:
+
+- `RXT070`: a native function calls fallback-only Python code.
+- `RXT072`: a native function depends on a rejected native function.
+- `RXT073`: fallback Python calls a native function inside a loop.
+
+`RXT070` and `RXT072` reject the native candidate. `RXT073` is a warning; the
+function remains eligible because some native calls are still heavy enough to be
+worth crossing the boundary.
+
 ## Examples
 
 Public 1 includes focused local examples:
@@ -122,5 +147,6 @@ Try:
 ```text
 rextio check examples/pure_math
 rextio build examples/pure_math --fallback=cpython
+rextio bench pure_math.math_ops.sum_squares --project-root examples/pure_math
 rextio check examples/boundary_demo
 ```

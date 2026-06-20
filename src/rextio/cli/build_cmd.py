@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-import shutil
 from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import build_hybrid_artifact
 from rextio.config.loader import ConfigError, load_config
-from rextio.fallback.nuitka import nuitka_not_implemented_message, nuitka_unavailable_message
+from rextio.fallback.nuitka import nuitka_available, nuitka_unavailable_message
 
 
 def run(args: Namespace) -> int:
@@ -27,13 +26,9 @@ def run(args: Namespace) -> int:
         print('Suggestion: use fallback_backend = "cpython" or run rextio build --fallback=cpython')
         return 1
 
-    if fallback == "nuitka" and shutil.which("nuitka") is None:
+    if fallback == "nuitka" and not nuitka_available():
         print("RXT060 Build failed while preparing Nuitka fallback.")
         print(nuitka_unavailable_message())
-        return 1
-    if fallback == "nuitka":
-        print("RXT060 Build failed while preparing Nuitka fallback.")
-        print(nuitka_not_implemented_message())
         return 1
 
     analysis = analyze_project(
@@ -77,9 +72,15 @@ def run(args: Namespace) -> int:
     print(f"  generated Python package tree: {result.layout.python_dir}")
     print(f"  build artifact: {result.layout.build_python_dir}")
     print(f"  native build: {result.native_build.status}")
+    print(f"  fallback packaging: {result.fallback_build.status}")
     if result.native_build.installed_path:
         print(f"  native module: {result.native_build.installed_path}")
     print(f"  wrote {result.layout.reports_dir / 'build.json'}")
+    if result.fallback_build.status == "failed":
+        print(result.fallback_build.message)
+        if result.fallback_build.stderr:
+            print(result.fallback_build.stderr)
+        return 1
     if result.native_build.status == "failed":
         print(result.native_build.message)
         if result.native_build.stderr:
