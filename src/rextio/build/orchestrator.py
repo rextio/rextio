@@ -17,6 +17,11 @@ from rextio.codegen.rust.cargo import (
     render_cargo_toml,
     render_pyproject_toml,
 )
+from rextio.build.wheel_builder import (
+    WheelBuildResult,
+    build_artifact_wheel,
+    skipped_wheel,
+)
 from rextio.codegen.rust.generator import generate_rust_module
 from rextio.codegen.rust.generator import RustCodegenError
 from rextio.codegen.python_wrapper.wrapper_gen import render_wrapper_module
@@ -42,6 +47,7 @@ class BuildResult:
     rejected_native_count: int
     native_build: NativeBuildResult
     fallback_build: FallbackBuildResult
+    wheel_build: WheelBuildResult
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -54,6 +60,7 @@ class BuildResult:
             "rejected_native_count": self.rejected_native_count,
             "native_build": self.native_build.to_dict(),
             "fallback_build": self.fallback_build.to_dict(),
+            "wheel_build": self.wheel_build.to_dict(),
         }
 
 
@@ -81,6 +88,7 @@ def build_hybrid_artifact(
     native_build = _generate_and_build_native(plan, layout, build_tool)
     _write_build_artifact(layout)
     fallback_build = _build_fallback_backend(fallback, layout)
+    wheel_build = _build_wheel_artifact(project_root, layout, native_build, fallback_build)
 
     result = BuildResult(
         fallback=fallback,
@@ -90,6 +98,7 @@ def build_hybrid_artifact(
         rejected_native_count=plan.native.rejected_count,
         native_build=native_build,
         fallback_build=fallback_build,
+        wheel_build=wheel_build,
     )
     (layout.reports_dir / "build.json").write_text(
         json.dumps(
@@ -178,6 +187,19 @@ def _build_fallback_backend(fallback: str, layout: ArtifactLayout) -> FallbackBu
             f"Cause: unsupported fallback backend: {fallback}."
         ),
     )
+
+
+def _build_wheel_artifact(
+    project_root: Path,
+    layout: ArtifactLayout,
+    native_build: NativeBuildResult,
+    fallback_build: FallbackBuildResult,
+) -> WheelBuildResult:
+    if fallback_build.status != "built":
+        return skipped_wheel("Fallback packaging failed, so no wheel was generated.")
+    if native_build.status == "failed":
+        return skipped_wheel("Native build failed, so no wheel was generated.")
+    return build_artifact_wheel(project_root, layout.build_python_dir, layout.dist_dir)
 
 
 def _build_native_with_selected_tool(layout: ArtifactLayout, build_tool: str) -> NativeBuildResult:

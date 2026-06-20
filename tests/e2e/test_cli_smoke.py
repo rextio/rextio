@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import venv
+import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -65,6 +66,10 @@ def add(a: int, b: int) -> int:
     build = _run([str(rextio), "build", str(project_root), "--fallback=cpython"], env=env)
     assert "Rextio build" in build.stdout
     assert (project_root / ".rextio" / "build" / "python").exists()
+    wheels = sorted((project_root / "dist").glob("*.whl"))
+    assert len(wheels) == 1
+    with zipfile.ZipFile(wheels[0]) as archive:
+        assert "smoke_pkg/math_ops.py" in archive.namelist()
 
     bench = _run(
         [

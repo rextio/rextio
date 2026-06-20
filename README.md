@@ -81,11 +81,16 @@ in place.
     check.json
     build.json
     bench.json
+dist/
+  <project>-0.1.0-py3-none-any.whl
 ```
 
 `rextio check` writes `.rextio/reports/check.json`. `rextio build` writes both
 check and build reports. `rextio bench` writes `.rextio/reports/bench.json`
 with a structured fallback/native timing comparison.
+
+When `rextio build` succeeds, it also writes a generated hybrid artifact wheel
+under `dist/`.
 
 ## Policy Configuration
 

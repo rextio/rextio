@@ -75,6 +75,8 @@ def run(args: Namespace) -> int:
     print(f"  fallback packaging: {result.fallback_build.status}")
     if result.native_build.installed_path:
         print(f"  native module: {result.native_build.installed_path}")
+    if result.wheel_build.path:
+        print(f"  wheel artifact: {result.wheel_build.path}")
     print(f"  wrote {result.layout.reports_dir / 'build.json'}")
     if result.fallback_build.status == "failed":
         print(result.fallback_build.message)

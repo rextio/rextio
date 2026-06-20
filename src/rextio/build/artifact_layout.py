@@ -25,6 +25,10 @@ class ArtifactLayout:
         return self.build_dir / "python"
 
     @property
+    def dist_dir(self) -> Path:
+        return self.root / "dist"
+
+    @property
     def rust_dir(self) -> Path:
         return self.generated_dir / "rust"
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 import rextio.build.orchestrator as orchestrator
@@ -37,6 +38,7 @@ def rejected(x: int) -> int:
     rust_dir = tmp_path / ".rextio" / "generated" / "rust"
     python_dir = tmp_path / ".rextio" / "generated" / "python"
     build_python_dir = tmp_path / ".rextio" / "build" / "python"
+    dist_dir = tmp_path / "dist"
     lib_rs = rust_dir / "src" / "lib.rs"
     app_py = python_dir / "app.py"
     fallback_app_py = python_dir / "_fallback_app.py"
@@ -72,6 +74,17 @@ def rejected(x: int) -> int:
     assert data["build_python"] == str(build_python_dir)
     assert data["native_build"]["status"] == "built"
     assert Path(data["native_build"]["installed_path"]).exists()
+    assert data["wheel_build"]["status"] == "built"
+    assert Path(data["wheel_build"]["path"]).exists()
+    assert Path(data["wheel_build"]["path"]).is_relative_to(dist_dir)
+    assert "wheel artifact" in captured.out
+    with zipfile.ZipFile(data["wheel_build"]["path"]) as archive:
+        names = set(archive.namelist())
+    assert "app.py" in names
+    assert "_fallback_app.py" in names
+    assert "rextio/runtime/flags.py" in names
+    assert any(name.endswith(".dist-info/WHEEL") for name in names)
+    assert any(name.endswith(".dist-info/RECORD") for name in names)
 
 
 def test_build_reports_native_build_failure_when_cargo_is_missing(
@@ -101,6 +114,8 @@ def add(a: int, b: int) -> int:
     assert "RXT060 Build failed while compiling generated Rust module" in captured.out
     assert data["status"] == "native-build-failed"
     assert data["native_build"]["status"] == "failed"
+    assert data["wheel_build"]["status"] == "skipped"
+    assert data["wheel_build"]["path"] is None
 
 
 def test_build_uses_maturin_when_available(
