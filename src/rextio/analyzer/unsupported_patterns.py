@@ -151,8 +151,9 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
 
 def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
     type_env = _initial_type_env(node)
+    return_type = annotation_name(node.returns) if node.returns is not None and is_supported_type(node.returns) else None
     for statement in node.body:
-        _validate_statement_types(statement, function, type_env)
+        _validate_statement_types(statement, function, type_env, return_type)
         for child in ast.walk(statement):
             if isinstance(child, ast.FunctionDef):
                 _add_unsupported_syntax(function, child, "nested functions are not supported")
@@ -177,6 +178,7 @@ def _validate_statement_types(
     node: ast.stmt,
     function: FunctionAnalysis,
     env: dict[str, str],
+    return_type: str | None,
 ) -> None:
     if isinstance(node, ast.Assign):
         value_type = _infer_expr_type(node.value, function, env)
@@ -191,6 +193,8 @@ def _validate_statement_types(
             if node.annotation is not None and is_supported_type(node.annotation)
             else value_type
         )
+        if value_type is not None and annotated_type is not None:
+            _validate_type_match(value_type, annotated_type, function, node)
         if isinstance(node.target, ast.Name) and annotated_type is not None:
             env[node.target.id] = annotated_type
         return
@@ -202,13 +206,16 @@ def _validate_statement_types(
             env[node.target.id] = result_type
         return
     if isinstance(node, ast.Return):
+        value_type = "None"
         if node.value is not None:
-            _infer_expr_type(node.value, function, env)
+            value_type = _infer_expr_type(node.value, function, env)
+        if value_type is not None and return_type is not None:
+            _validate_type_match(value_type, return_type, function, node)
         return
     if isinstance(node, ast.If):
         _infer_expr_type(node.test, function, env)
-        _validate_statement_list_types(node.body, function, dict(env))
-        _validate_statement_list_types(node.orelse, function, dict(env))
+        _validate_statement_list_types(node.body, function, dict(env), return_type)
+        _validate_statement_list_types(node.orelse, function, dict(env), return_type)
         return
     if isinstance(node, ast.For):
         iterable_type = _infer_expr_type(node.iter, function, env)
@@ -217,22 +224,38 @@ def _validate_statement_types(
             item_type = _iter_item_type(node.iter, iterable_type)
             if item_type is not None:
                 body_env[node.target.id] = item_type
-        _validate_statement_list_types(node.body, function, body_env)
-        _validate_statement_list_types(node.orelse, function, dict(env))
+        _validate_statement_list_types(node.body, function, body_env, return_type)
+        _validate_statement_list_types(node.orelse, function, dict(env), return_type)
         return
     if isinstance(node, ast.While):
         _infer_expr_type(node.test, function, env)
-        _validate_statement_list_types(node.body, function, dict(env))
-        _validate_statement_list_types(node.orelse, function, dict(env))
+        _validate_statement_list_types(node.body, function, dict(env), return_type)
+        _validate_statement_list_types(node.orelse, function, dict(env), return_type)
 
 
 def _validate_statement_list_types(
     statements: list[ast.stmt],
     function: FunctionAnalysis,
     env: dict[str, str],
+    return_type: str | None,
 ) -> None:
     for statement in statements:
-        _validate_statement_types(statement, function, env)
+        _validate_statement_types(statement, function, env, return_type)
+
+
+def _validate_type_match(
+    actual: str,
+    expected: str,
+    function: FunctionAnalysis,
+    node: ast.AST,
+) -> None:
+    if actual == expected:
+        return
+    _add_unsupported_syntax(
+        function,
+        node,
+        f"inferred type {actual} does not match expected type {expected}",
+    )
 
 
 def _infer_expr_type(

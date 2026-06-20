@@ -305,6 +305,40 @@ def int_truthiness_bad(x: int, y: int) -> bool:
     }
 
 
+def test_rejects_inferred_type_mismatch_against_annotations(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def bad_return(x: int) -> int:
+    return "wrong"
+
+@rextio.native
+def bad_local(x: int) -> int:
+    total: int = 1.0
+    return total
+
+@rextio.native
+def good_none(x: int) -> None:
+    return None
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.good_none"
+    ]
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.bad_local",
+        "app.bad_return",
+    }
+
+
 def test_rejects_keyword_call_arguments(tmp_path: Path) -> None:
     write_module(
         tmp_path,
