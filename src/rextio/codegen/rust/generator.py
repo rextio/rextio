@@ -43,7 +43,7 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
     rendered = [
         (
             names_by_qualname[function.qualname],
-            _render_function(function, names_by_module_and_name),
+            _render_function(function, names_by_qualname, names_by_module_and_name),
         )
         for function in sorted(module_ir.functions, key=lambda item: item.qualname)
     ]
@@ -63,9 +63,11 @@ class _FunctionRenderer:
     def __init__(
         self,
         function: FunctionIR,
+        native_names_by_qualname: dict[str, str],
         native_names: dict[tuple[str, str], str],
     ) -> None:
         self.function = function
+        self.native_names_by_qualname = native_names_by_qualname
         self.native_names = native_names
         self.declared = {param.name for param in function.params}
 
@@ -177,15 +179,21 @@ class _FunctionRenderer:
     def render_call(self, expr: CallIR) -> str:
         if expr.function == "len" and len(expr.args) == 1:
             return f"{self.render_expr(expr.args[0])}.len()"
-        rust_name = self.native_names.get((self.function.module_name, expr.function))
+        rust_name = self.native_names_by_qualname.get(expr.function)
+        if rust_name is None:
+            rust_name = self.native_names.get((self.function.module_name, expr.function))
         if rust_name is not None:
             args = ", ".join(self.render_expr(arg) for arg in expr.args)
             return f"{rust_name}({args})?"
         raise RustCodegenError(f"unsupported call during Rust codegen: {expr.function}")
 
 
-def _render_function(function: FunctionIR, native_names: dict[tuple[str, str], str]) -> str:
-    return _FunctionRenderer(function, native_names).render()
+def _render_function(
+    function: FunctionIR,
+    native_names_by_qualname: dict[str, str],
+    native_names: dict[tuple[str, str], str],
+) -> str:
+    return _FunctionRenderer(function, native_names_by_qualname, native_names).render()
 
 
 def render_literal(value: object) -> str:

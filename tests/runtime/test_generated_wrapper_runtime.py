@@ -200,6 +200,49 @@ def process_all(xs: list[int]) -> list[int]:
     assert module.process_all([1, 2, 3]) == [101, 102, 103]
 
 
+def test_cross_module_fallback_calls_imported_native_wrapper(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+) -> None:
+    math_ops = tmp_path / "src" / "demo_cross_module" / "math_ops.py"
+    scoring = tmp_path / "src" / "demo_cross_module" / "scoring.py"
+    math_ops.parent.mkdir(parents=True)
+    math_ops.write_text(
+        """
+import rextio
+
+@rextio.native
+def square(x: float) -> float:
+    return x * x
+""",
+        encoding="utf-8",
+    )
+    scoring.write_text(
+        """
+import rextio
+
+from .math_ops import square
+
+@rextio.native
+def score(x: float) -> float:
+    return square(x) + 1.0
+""",
+        encoding="utf-8",
+    )
+    native_module = ModuleType("_rextio_native")
+    native_module.demo_cross_module__math_ops__square = lambda x: x + 100.0
+    monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
+
+    assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
+    monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "generated" / "python"))
+    importlib.invalidate_caches()
+
+    module = importlib.import_module("demo_cross_module.scoring")
+
+    assert module.score(2.0) == 103.0
+
+
 def test_native_wrapper_can_replace_package_init(
     tmp_path: Path,
     monkeypatch,

@@ -39,6 +39,40 @@ def sum_squares(xs: list[float]) -> float:
     assert "m.add_function(wrap_pyfunction!(app__sum_squares, m)?)?;" in source
 
 
+def test_generates_rust_for_cross_module_native_calls(tmp_path: Path) -> None:
+    math_ops = tmp_path / "src" / "demo_codegen" / "math_ops.py"
+    scoring = tmp_path / "src" / "demo_codegen" / "scoring.py"
+    math_ops.parent.mkdir(parents=True)
+    math_ops.write_text(
+        """
+import rextio
+
+@rextio.native
+def square(x: float) -> float:
+    return x * x
+""",
+        encoding="utf-8",
+    )
+    scoring.write_text(
+        """
+import rextio
+
+from .math_ops import square
+
+@rextio.native
+def score(x: float) -> float:
+    return square(x) + 1.0
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "fn demo_codegen__math_ops__square(x: f64) -> PyResult<f64> {" in source
+    assert "fn demo_codegen__scoring__score(x: f64) -> PyResult<f64> {" in source
+    assert "return Ok(demo_codegen__math_ops__square(x)? + 1.0);" in source
+
+
 def test_generates_rust_for_if_range_len_indexing_and_while(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """

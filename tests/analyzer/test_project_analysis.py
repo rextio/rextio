@@ -46,6 +46,72 @@ def sum_squares(xs: list[float]) -> float:
     assert analysis.rejected_native_functions == []
 
 
+def test_accepts_cross_module_native_to_native_calls(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "src/myapp/math_ops.py",
+        """
+import rextio
+
+@rextio.native
+def square(x: float) -> float:
+    return x * x
+""",
+    )
+    write_module(
+        tmp_path,
+        "src/myapp/scoring.py",
+        """
+import rextio
+
+from .math_ops import square
+
+@rextio.native
+def score(x: float) -> float:
+    return square(x) + 1.0
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "myapp.math_ops.square",
+        "myapp.scoring.score",
+    ]
+    assert analysis.rejected_native_functions == []
+
+
+def test_rejects_cross_module_native_to_fallback_calls(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "src/myapp/helpers.py",
+        """
+def adjust(x: float) -> float:
+    return x + 1.0
+""",
+    )
+    write_module(
+        tmp_path,
+        "src/myapp/scoring.py",
+        """
+import rextio
+
+from .helpers import adjust
+
+@rextio.native
+def score(x: float) -> float:
+    return adjust(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert "RXT070" in {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert [function.qualname for function in analysis.rejected_native_functions] == [
+        "myapp.scoring.score"
+    ]
+
+
 def test_rejects_missing_type_annotations(tmp_path: Path) -> None:
     write_module(
         tmp_path,
@@ -223,6 +289,40 @@ def process_all(xs: list[float]) -> list[float]:
     analysis = analyze_project(tmp_path)
 
     assert [function.qualname for function in analysis.accepted_native_functions] == ["app.score_one"]
+    assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT071"]
+
+
+def test_warns_for_python_loop_calling_imported_native_function(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "src/myapp/math_ops.py",
+        """
+import rextio
+
+@rextio.native
+def score_one(x: float) -> float:
+    return x * 2.0
+""",
+    )
+    write_module(
+        tmp_path,
+        "src/myapp/pipeline.py",
+        """
+from .math_ops import score_one
+
+def process_all(xs: list[float]) -> list[float]:
+    out = []
+    for x in xs:
+        out.append(score_one(x))
+    return out
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "myapp.math_ops.score_one"
+    ]
     assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT071"]
 
 

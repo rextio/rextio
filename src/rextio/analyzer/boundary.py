@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, ProjectAnalysis
 
@@ -14,6 +15,7 @@ BOUNDARY_DIAGNOSTIC_MESSAGES = {
 
 
 def apply_boundary_checks(analysis: ProjectAnalysis) -> None:
+    resolver = FunctionResolver(analysis)
     for function in analysis.native_candidates:
         function.accepted = not function.error_diagnostics
 
@@ -24,54 +26,61 @@ def apply_boundary_checks(analysis: ProjectAnalysis) -> None:
             for function in sorted(module.functions, key=lambda item: item.qualname):
                 if not function.is_native_candidate or not function.accepted:
                     continue
-                diagnostic = _first_boundary_error(module, function)
+                diagnostic = _first_boundary_error(module, function, resolver)
                 if diagnostic is not None:
                     function.add_diagnostic(diagnostic)
                     function.accepted = False
                     changed = True
 
-    _add_python_loop_boundary_warnings(analysis)
+    _add_python_loop_boundary_warnings(analysis, resolver)
 
 
-def _first_boundary_error(module: ModuleAnalysis, function: FunctionAnalysis) -> Diagnostic | None:
-    functions_by_name = module.functions_by_name
+def _first_boundary_error(
+    module: ModuleAnalysis,
+    function: FunctionAnalysis,
+    resolver: FunctionResolver,
+) -> Diagnostic | None:
     for call in function.calls:
         target = call.target
         if target in SUPPORTED_BUILTINS:
             continue
-        if target in functions_by_name:
-            dependency = functions_by_name[target]
-            if not dependency.is_native_candidate:
-                return Diagnostic(
-                    code="RXT070",
-                    severity="error",
-                    message=f"native function calls fallback-only function: {target}",
-                    file_path=function.file_path,
-                    line=call.line,
-                    column=call.column,
-                    function_name=function.qualname,
-                    suggestion=(
-                        "Mark the dependency as @rextio.native if it belongs to the supported subset, "
-                        "or remove the call from the native function."
-                    ),
-                )
-            if not dependency.accepted:
-                return Diagnostic(
-                    code="RXT072",
-                    severity="error",
-                    message=f"native dependency rejected, so caller must fall back: {target}",
-                    file_path=function.file_path,
-                    line=call.line,
-                    column=call.column,
-                    function_name=function.qualname,
-                    suggestion="Fix the rejected native dependency or keep this caller on fallback.",
-                )
+        resolved = resolver.resolve(module, target)
+        dependency = resolved.function
+        if dependency is not None and not dependency.is_native_candidate:
+            return Diagnostic(
+                code="RXT070",
+                severity="error",
+                message=f"native function calls fallback-only function: {resolved.resolved_target}",
+                file_path=function.file_path,
+                line=call.line,
+                column=call.column,
+                function_name=function.qualname,
+                suggestion=(
+                    "Mark the dependency as @rextio.native if it belongs to the supported subset, "
+                    "or remove the call from the native function."
+                ),
+            )
+        if dependency is not None and not dependency.accepted:
+            return Diagnostic(
+                code="RXT072",
+                severity="error",
+                message=f"native dependency rejected, so caller must fall back: {resolved.resolved_target}",
+                file_path=function.file_path,
+                line=call.line,
+                column=call.column,
+                function_name=function.qualname,
+                suggestion="Fix the rejected native dependency or keep this caller on fallback.",
+            )
+        if dependency is not None:
             continue
 
         return Diagnostic(
             code="RXT030",
             severity="error",
-            message=f"unsupported external package or unresolved call in native function: {target}",
+            message=(
+                "unsupported external package or unresolved call in native function: "
+                f"{resolved.resolved_target}"
+            ),
             file_path=function.file_path,
             line=call.line,
             column=call.column,
@@ -81,20 +90,23 @@ def _first_boundary_error(module: ModuleAnalysis, function: FunctionAnalysis) ->
     return None
 
 
-def _add_python_loop_boundary_warnings(analysis: ProjectAnalysis) -> None:
+def _add_python_loop_boundary_warnings(
+    analysis: ProjectAnalysis,
+    resolver: FunctionResolver,
+) -> None:
     for module in analysis.modules:
-        accepted_native = {
-            function.name
-            for function in module.functions
-            if function.is_native_candidate and function.accepted
-        }
-        if not accepted_native:
-            continue
         for function in module.functions:
             if function.is_native_candidate and function.accepted:
                 continue
             for call in function.calls:
-                if call.target not in accepted_native or not call.in_loop:
+                resolved = resolver.resolve(module, call.target)
+                dependency = resolved.function
+                if (
+                    dependency is None
+                    or not dependency.is_native_candidate
+                    or not dependency.accepted
+                    or not call.in_loop
+                ):
                     continue
                 if function.has_diagnostic("RXT071", call.line, call.column):
                     continue

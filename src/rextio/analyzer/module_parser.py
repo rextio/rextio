@@ -27,7 +27,11 @@ def parse_module(path: Path, project_root: Path) -> ModuleAnalysis:
         )
         return module
 
-    module.imports = _collect_imports(tree)
+    module.imports = _collect_imports(
+        tree,
+        module_name=module_name,
+        is_package_module=path.name == "__init__.py",
+    )
     module.functions = _collect_module_functions(tree, module)
     module.functions.extend(_collect_native_methods(tree, module))
     return module
@@ -43,7 +47,11 @@ def module_name_for_path(path: Path, project_root: Path) -> str:
     return ".".join(parts)
 
 
-def _collect_imports(tree: ast.Module) -> dict[str, str]:
+def _collect_imports(
+    tree: ast.Module,
+    module_name: str,
+    is_package_module: bool,
+) -> dict[str, str]:
     imports: dict[str, str] = {}
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -51,12 +59,42 @@ def _collect_imports(tree: ast.Module) -> dict[str, str]:
                 visible = alias.asname or alias.name.split(".", 1)[0]
                 imports[visible] = alias.name
         elif isinstance(node, ast.ImportFrom):
-            if node.module is None:
+            base_module = _resolve_import_from_base(
+                module_name,
+                node.module,
+                node.level,
+                is_package_module,
+            )
+            if base_module is None:
                 continue
             for alias in node.names:
                 visible = alias.asname or alias.name
-                imports[visible] = f"{node.module}.{alias.name}"
+                imports[visible] = f"{base_module}.{alias.name}" if base_module else alias.name
     return imports
+
+
+def _resolve_import_from_base(
+    module_name: str,
+    imported_module: str | None,
+    level: int,
+    is_package_module: bool,
+) -> str | None:
+    if level == 0:
+        return imported_module
+
+    package_parts = module_name.split(".") if module_name else []
+    if not is_package_module and package_parts:
+        package_parts = package_parts[:-1]
+
+    drop_count = level - 1
+    if drop_count:
+        if drop_count > len(package_parts):
+            return None
+        package_parts = package_parts[:-drop_count]
+
+    if imported_module:
+        package_parts.extend(imported_module.split("."))
+    return ".".join(package_parts)
 
 
 def _collect_module_functions(tree: ast.Module, module: ModuleAnalysis) -> list[FunctionAnalysis]:
