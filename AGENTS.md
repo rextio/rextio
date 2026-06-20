@@ -26,7 +26,7 @@ Python source
 
 Public 1 must demonstrate all of the following:
 
-1. A Python project can mark functions with `@rextio.native`.
+1. A Python project can let Rextio discover eligible typed functions automatically, and can optionally mark functions with `@rextio.native`.
 2. Rextio can check whether those functions belong to the supported subset.
 3. Rextio can reject unsafe native-to-fallback call boundaries.
 4. Rextio can warn about likely excessive Python-to-Rust boundary crossings.
@@ -348,7 +348,7 @@ build_tool = "maturin"
 nuitka = "experimental"
 
 [policy]
-native_marker = "decorator"
+native_marker = "auto"
 require_type_hints = true
 allow_dynamic_features = false
 boundary_warnings = true
@@ -360,6 +360,7 @@ Checks the project and prints diagnostics.
 
 It must detect:
 
+* automatically discoverable typed native candidates
 * `@rextio.native`
 * missing type annotations
 * unsupported argument types
@@ -505,7 +506,7 @@ Python list[str]   -> Vec<String>
 
 ### 7.2 Supported Syntax
 
-Support inside `@rextio.native` functions:
+Support inside native candidate functions:
 
 * module-level function definitions
 * typed arguments
@@ -526,7 +527,7 @@ Support inside `@rextio.native` functions:
 
 ### 7.3 Unsupported Syntax
 
-Reject inside `@rextio.native` functions:
+Reject inside native candidate functions:
 
 * class definitions
 * instance methods
@@ -563,11 +564,12 @@ Do not silently generate incorrect Rust.
 
 ---
 
-## 8. Native Marker
+## 8. Native Discovery and Marker
 
-Public 1 uses explicit opt-in.
+Public 1 defaults to automatic native candidate discovery for module-level typed
+functions that fit the supported subset and pass boundary checks.
 
-A function is native candidate only if marked:
+`@rextio.native` remains supported as an explicit marker:
 
 ```python
 import rextio
@@ -580,9 +582,22 @@ def sum_squares(xs: list[float]) -> float:
     return total
 ```
 
-Do not automatically compile arbitrary functions in Public 1.
+Projects that want decorator-only behavior can opt out of automatic discovery:
 
-Automatic native candidate discovery can be added later.
+```toml
+[policy]
+native_marker = "decorator"
+```
+
+When `native_marker = "decorator"`, only functions marked with `@rextio.native`
+are native candidates.
+
+When `native_marker = "auto"` (the default), Rextio may treat unmarked
+module-level functions as native candidates if they have supported type
+annotations and pass the same subset and boundary checks as marked functions.
+
+Do not compile untyped functions or functions outside the supported Public 1
+subset. Automatic discovery must remain conservative and deterministic.
 
 ---
 
@@ -1266,7 +1281,7 @@ Rextio converts Python projects to Rust.
 Prefer:
 
 ```text
-Rextio compiles explicitly marked, typed Python functions to Rust native modules and packages the rest as safe Python fallback.
+Rextio compiles eligible typed Python functions to Rust native modules and packages the rest as safe Python fallback. Projects can opt out of automatic discovery and require `@rextio.native`.
 ```
 
 Also mention:
@@ -1328,7 +1343,7 @@ Implement in this order:
 1. CLI skeleton
 2. config loader
 3. project scanner
-4. `@rextio.native` detector
+4. native candidate discovery and `@rextio.native` detector
 5. subset checker for simple functions
 6. diagnostics model
 7. dependency graph for function calls
