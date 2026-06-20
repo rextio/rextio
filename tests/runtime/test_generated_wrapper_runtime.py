@@ -39,6 +39,36 @@ def helper(x: int) -> int:
     assert module.helper(7) == 17
 
 
+def test_build_python_artifact_imports_generated_wrapper(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+) -> None:
+    source = tmp_path / "src" / "demo_artifact" / "scoring.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+    native_module = ModuleType("_rextio_native")
+    native_module.demo_artifact__scoring__add = lambda a, b: a + b + 100
+    monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
+
+    assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
+    monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "build" / "python"))
+    importlib.invalidate_caches()
+
+    module = importlib.import_module("demo_artifact.scoring")
+
+    assert module.add(2, 3) == 105
+
+
 def test_generated_wrapper_respects_disable_native_flag(
     tmp_path: Path,
     monkeypatch,
@@ -57,7 +87,7 @@ def add(a: int, b: int) -> int:
         encoding="utf-8",
     )
     native_module = ModuleType("_rextio_native")
-    native_module.add = lambda a, b: 999
+    native_module.demo_disable__scoring__add = lambda a, b: 999
     monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
     monkeypatch.setenv("REXTIO_DISABLE_NATIVE", "1")
 
@@ -88,7 +118,7 @@ def add(a: int, b: int) -> int:
         encoding="utf-8",
     )
     native_module = ModuleType("_rextio_native")
-    native_module.add = lambda a, b: 999
+    native_module.demo_native__scoring__add = lambda a, b: 999
     monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
 
     assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
@@ -124,7 +154,7 @@ def process_all(xs: list[int]) -> list[int]:
         encoding="utf-8",
     )
     native_module = ModuleType("_rextio_native")
-    native_module.score_one = lambda x: x + 100
+    native_module.demo_bridge__scoring__score_one = lambda x: x + 100
     monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
 
     assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
@@ -154,7 +184,7 @@ def ping(x: int) -> int:
         encoding="utf-8",
     )
     native_module = ModuleType("_rextio_native")
-    native_module.ping = lambda x: x + 50
+    native_module.demo_init__ping = lambda x: x + 50
     monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
 
     assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
@@ -164,3 +194,47 @@ def ping(x: int) -> int:
     module = importlib.import_module("demo_init")
 
     assert module.ping(2) == 52
+
+
+def test_native_export_names_do_not_collide_across_modules(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+) -> None:
+    first = tmp_path / "src" / "same_name" / "first.py"
+    second = tmp_path / "src" / "same_name" / "second.py"
+    first.parent.mkdir(parents=True)
+    first.write_text(
+        """
+import rextio
+
+@rextio.native
+def compute(x: int) -> int:
+    return x + 1
+""",
+        encoding="utf-8",
+    )
+    second.write_text(
+        """
+import rextio
+
+@rextio.native
+def compute(x: int) -> int:
+    return x + 2
+""",
+        encoding="utf-8",
+    )
+    native_module = ModuleType("_rextio_native")
+    native_module.same_name__first__compute = lambda x: x + 10
+    native_module.same_name__second__compute = lambda x: x + 20
+    monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
+
+    assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
+    monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "build" / "python"))
+    importlib.invalidate_caches()
+
+    first_module = importlib.import_module("same_name.first")
+    second_module = importlib.import_module("same_name.second")
+
+    assert first_module.compute(1) == 11
+    assert second_module.compute(1) == 21

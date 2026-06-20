@@ -24,7 +24,7 @@ def add(a: int, b: int) -> int:
         encoding="utf-8",
     )
     native_module = ModuleType("_rextio_native")
-    native_module.add = lambda a, b: a + b
+    native_module.bench_app__add = lambda a, b: a + b
     monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
 
     exit_code = main(["bench", "bench_app.add", "--project-root", str(tmp_path)])

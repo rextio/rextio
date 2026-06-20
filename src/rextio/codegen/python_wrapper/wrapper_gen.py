@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 
 from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis
+from rextio.codegen.native_names import native_function_name
 from rextio.fallback.fallback_marker import GENERATED_PYTHON_HEADER
 from rextio.fallback.module_copy import fallback_module_name
 
@@ -64,7 +65,7 @@ def _render_native_binding(function: FunctionAnalysis) -> list[str]:
     return [
         f"_native_{function.name} = load_native_function(",
         '    module_name="_rextio_native",',
-        f'    function_name="{function.name}",',
+        f'    function_name="{native_function_name(function.qualname)}",',
         ")",
     ]
 

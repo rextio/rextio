@@ -17,6 +17,14 @@ class ArtifactLayout:
         return self.rextio_dir / "generated"
 
     @property
+    def build_dir(self) -> Path:
+        return self.rextio_dir / "build"
+
+    @property
+    def build_python_dir(self) -> Path:
+        return self.build_dir / "python"
+
+    @property
     def rust_dir(self) -> Path:
         return self.generated_dir / "rust"
 

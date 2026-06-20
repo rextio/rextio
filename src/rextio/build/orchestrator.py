@@ -42,6 +42,7 @@ class BuildResult:
             "fallback": self.fallback,
             "generated_rust": str(self.layout.rust_dir),
             "generated_python": str(self.layout.python_dir),
+            "build_python": str(self.layout.build_python_dir),
             "accepted_native_count": self.accepted_native_count,
             "rejected_native_count": self.rejected_native_count,
             "native_build": self.native_build.to_dict(),
@@ -55,6 +56,7 @@ def build_hybrid_artifact(
     build_tool: str = "cargo",
 ) -> BuildResult:
     layout = ArtifactLayout(project_root)
+    _reset_generated_dir(layout.build_dir)
     _reset_generated_dir(layout.rust_dir)
     _reset_generated_dir(layout.python_dir)
     layout.rust_src_dir.mkdir(parents=True, exist_ok=True)
@@ -67,6 +69,7 @@ def build_hybrid_artifact(
     )
     _write_python_fallback_tree(analysis, layout.python_dir)
     native_build = _generate_and_build_native(analysis, layout, build_tool)
+    _write_build_artifact(layout)
 
     result = BuildResult(
         fallback=fallback,
@@ -101,6 +104,12 @@ def _write_python_fallback_tree(analysis: ProjectAnalysis, python_root: Path) ->
 def _reset_generated_dir(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
+
+
+def _write_build_artifact(layout: ArtifactLayout) -> None:
+    if layout.build_python_dir.exists():
+        shutil.rmtree(layout.build_python_dir)
+    shutil.copytree(layout.python_dir, layout.build_python_dir)
 
 
 def _generate_and_build_native(

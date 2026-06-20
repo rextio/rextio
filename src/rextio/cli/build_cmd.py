@@ -8,7 +8,7 @@ from pathlib import Path
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import build_hybrid_artifact
 from rextio.config.loader import load_config
-from rextio.fallback.nuitka import nuitka_unavailable_message
+from rextio.fallback.nuitka import nuitka_not_implemented_message, nuitka_unavailable_message
 
 
 def run(args: Namespace) -> int:
@@ -16,6 +16,10 @@ def run(args: Namespace) -> int:
     if args.fallback == "nuitka" and shutil.which("nuitka") is None:
         print("RXT060 Build failed while preparing Nuitka fallback.")
         print(nuitka_unavailable_message())
+        return 1
+    if args.fallback == "nuitka":
+        print("RXT060 Build failed while preparing Nuitka fallback.")
+        print(nuitka_not_implemented_message())
         return 1
 
     analysis = analyze_project(project_root)
@@ -55,6 +59,7 @@ def run(args: Namespace) -> int:
     print(f"  rejected native functions: {result.rejected_native_count}")
     print(f"  generated Rust project: {result.layout.rust_dir}")
     print(f"  generated Python package tree: {result.layout.python_dir}")
+    print(f"  build artifact: {result.layout.build_python_dir}")
     print(f"  native build: {result.native_build.status}")
     if result.native_build.installed_path:
         print(f"  native module: {result.native_build.installed_path}")

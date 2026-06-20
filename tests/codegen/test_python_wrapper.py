@@ -32,6 +32,7 @@ def helper(x: int) -> int:
     assert "from ._fallback_scoring import *  # noqa: F401,F403" in wrapper
     assert "from ._fallback_scoring import add as _fallback_add" in wrapper
     assert "_native_add = load_native_function(" in wrapper
+    assert 'function_name="demo_pkg__scoring__add"' in wrapper
     assert "def add(a: int, b: int) -> int:" in wrapper
     assert "return _fallback_add(a, b)" in wrapper
     assert "return _native_add(a, b)" in wrapper

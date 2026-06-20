@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 
+from rextio.codegen.native_names import native_function_name
 from rextio.codegen.rust.pyo3 import render_pyo3_module
 from rextio.codegen.rust.type_map import rust_type
 from rextio.ir.nodes import (
@@ -31,9 +32,19 @@ class RustCodegenError(RuntimeError):
 
 
 def generate_rust_module(module_ir: ModuleIR) -> str:
-    names = {function.name: rust_identifier(function.name) for function in module_ir.functions}
+    names_by_qualname = {
+        function.qualname: rust_identifier(native_function_name(function.qualname))
+        for function in module_ir.functions
+    }
+    names_by_module_and_name = {
+        (function.module_name, function.name): names_by_qualname[function.qualname]
+        for function in module_ir.functions
+    }
     rendered = [
-        (names[function.name], _render_function(function, names))
+        (
+            names_by_qualname[function.qualname],
+            _render_function(function, names_by_module_and_name),
+        )
         for function in sorted(module_ir.functions, key=lambda item: item.qualname)
     ]
     return render_pyo3_module(rendered)
@@ -49,7 +60,11 @@ def rust_identifier(value: str) -> str:
 
 
 class _FunctionRenderer:
-    def __init__(self, function: FunctionIR, native_names: dict[str, str]) -> None:
+    def __init__(
+        self,
+        function: FunctionIR,
+        native_names: dict[tuple[str, str], str],
+    ) -> None:
         self.function = function
         self.native_names = native_names
         self.declared = {param.name for param in function.params}
@@ -61,9 +76,10 @@ class _FunctionRenderer:
             for param in self.function.params
         )
         return_type = rust_type(self.function.return_type)
+        rust_name = rust_identifier(native_function_name(self.function.qualname))
         lines = [
             "#[pyfunction]",
-            f"fn {rust_identifier(self.function.name)}({params}) -> PyResult<{return_type}> {{",
+            f"fn {rust_name}({params}) -> PyResult<{return_type}> {{",
         ]
         lines.extend(self.render_block(self.function.body, indent=1))
         if not _block_always_returns(self.function.body):
@@ -161,14 +177,14 @@ class _FunctionRenderer:
     def render_call(self, expr: CallIR) -> str:
         if expr.function == "len" and len(expr.args) == 1:
             return f"{self.render_expr(expr.args[0])}.len()"
-        rust_name = self.native_names.get(expr.function)
+        rust_name = self.native_names.get((self.function.module_name, expr.function))
         if rust_name is not None:
             args = ", ".join(self.render_expr(arg) for arg in expr.args)
             return f"{rust_name}({args})?"
         raise RustCodegenError(f"unsupported call during Rust codegen: {expr.function}")
 
 
-def _render_function(function: FunctionIR, native_names: dict[str, str]) -> str:
+def _render_function(function: FunctionIR, native_names: dict[tuple[str, str], str]) -> str:
     return _FunctionRenderer(function, native_names).render()
 
 

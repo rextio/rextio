@@ -43,6 +43,8 @@ in place.
 
 ```text
 .rextio/
+  build/
+    python/
   generated/
     rust/
     python/
