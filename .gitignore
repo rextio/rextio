@@ -27,3 +27,5 @@ env/
 
 # Rust generated/build artifacts
 /target/
+target/
+crates/*/Cargo.lock

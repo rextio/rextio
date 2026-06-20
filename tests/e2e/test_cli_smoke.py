@@ -4,7 +4,6 @@ import json
 import os
 import subprocess
 import sys
-import venv
 import zipfile
 from pathlib import Path
 
@@ -16,10 +15,10 @@ def test_editable_install_cli_smoke(
     fake_cargo: Path,
 ) -> None:
     venv_dir = tmp_path / "venv"
-    venv.EnvBuilder(with_pip=True).create(venv_dir)
+    env = os.environ.copy()
+    _create_venv(venv_dir, env)
     python = _venv_bin(venv_dir, "python")
     rextio = _venv_bin(venv_dir, "rextio")
-    env = os.environ.copy()
 
     _run([str(python), "-m", "pip", "install", "-e", str(REPO_ROOT)], env=env)
 
@@ -71,6 +70,20 @@ def add(a: int, b: int) -> int:
     with zipfile.ZipFile(wheels[0]) as archive:
         assert "smoke_pkg/math_ops.py" in archive.namelist()
 
+    artifact_venv = tmp_path / "artifact_venv"
+    _create_venv(artifact_venv, env)
+    artifact_python = _venv_bin(artifact_venv, "python")
+    _run([str(artifact_python), "-m", "pip", "install", str(wheels[0])], env=env)
+    artifact_env = {**env, "REXTIO_DISABLE_NATIVE": "1"}
+    _run(
+        [
+            str(artifact_python),
+            "-c",
+            "from smoke_pkg.math_ops import add\nassert add(2, 3) == 5\n",
+        ],
+        env=artifact_env,
+    )
+
     bench = _run(
         [
             str(rextio),
@@ -96,6 +109,11 @@ def _venv_bin(venv_dir: Path, name: str) -> Path:
         suffix = ".exe" if name in {"python", "rextio"} else ""
         return venv_dir / "Scripts" / f"{name}{suffix}"
     return venv_dir / "bin" / name
+
+
+def _create_venv(venv_dir: Path, env: dict[str, str]) -> None:
+    base_python = getattr(sys, "_base_executable", sys.executable) or sys.executable
+    _run([base_python, "-m", "venv", str(venv_dir)], env=env)
 
 
 def _run(command: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:

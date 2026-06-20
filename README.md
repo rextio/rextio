@@ -91,7 +91,9 @@ with a structured fallback/native timing comparison.
 
 When `rextio build` succeeds, it also writes a generated hybrid artifact wheel
 under `dist/`. Pure fallback wheels use `py3-none-any`; wheels that include the
-generated native extension use the local CPython/platform tag.
+generated native extension use the local CPython/platform tag. The test suite
+installs this wheel into a fresh environment and verifies that packaged fallback
+imports still work with `REXTIO_DISABLE_NATIVE=1`.
 
 ## Policy Configuration
 

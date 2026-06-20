@@ -42,7 +42,13 @@ Nuitka is unavailable. To explicitly verify real local toolchains, run:
 ```text
 PYTHONPATH=src pytest tests/e2e/test_pure_math_real_toolchain.py
 PYTHONPATH=src pytest tests/e2e/test_nuitka_real_toolchain.py
+cargo test --manifest-path crates/rextio_runtime/Cargo.toml
 ```
+
+The editable-install smoke also installs the generated artifact wheel into a
+fresh virtual environment and imports the generated package with
+`REXTIO_DISABLE_NATIVE=1`, so release checks cover the packaged fallback path as
+well as the build directory path.
 
 ## Boundary Safety
 

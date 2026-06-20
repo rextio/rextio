@@ -1,0 +1,12 @@
+[package]
+name = "rextio_runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Small internal helper runtime for generated Rextio Rust code."
+license = "MIT"
+
+[lib]
+name = "rextio_runtime"
+path = "src/lib.rs"
+
+[dependencies]

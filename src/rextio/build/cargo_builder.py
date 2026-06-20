@@ -48,14 +48,25 @@ def build_native_extension_with_cargo(rust_dir: Path, python_dir: Path) -> Nativ
             ),
         )
 
-    command = [cargo, "build", "--release", "--manifest-path", str(rust_dir / "Cargo.toml")]
-    completed = subprocess.run(
-        command,
-        cwd=rust_dir,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    command = _cargo_build_command(cargo, rust_dir, offline=False)
+    completed = _run_cargo(command, rust_dir)
+    if completed.returncode != 0:
+        if _should_retry_offline(completed.stderr):
+            offline_command = _cargo_build_command(cargo, rust_dir, offline=True)
+            offline_completed = _run_cargo(offline_command, rust_dir)
+            if offline_completed.returncode == 0:
+                command = offline_command
+                completed = offline_completed
+            else:
+                return NativeBuildResult(
+                    status="failed",
+                    tool="cargo",
+                    message="RXT060 Build failed while compiling generated Rust module.",
+                    command=offline_command,
+                    stdout=_tail(_retry_output(completed.stdout, offline_completed.stdout)),
+                    stderr=_tail(_retry_output(completed.stderr, offline_completed.stderr)),
+                )
+
     if completed.returncode != 0:
         return NativeBuildResult(
             status="failed",
@@ -93,6 +104,46 @@ def build_native_extension_with_cargo(rust_dir: Path, python_dir: Path) -> Nativ
         stdout=_tail(completed.stdout),
         stderr=_tail(completed.stderr),
     )
+
+
+def _cargo_build_command(cargo: str, rust_dir: Path, *, offline: bool) -> list[str]:
+    command = [cargo, "build", "--release"]
+    if offline:
+        command.append("--offline")
+    command.extend(["--manifest-path", str(rust_dir / "Cargo.toml")])
+    return command
+
+
+def _run_cargo(command: list[str], rust_dir: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        cwd=rust_dir,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _should_retry_offline(stderr: str) -> bool:
+    normalized = stderr.lower()
+    network_markers = (
+        "download of config.json failed",
+        "failed to download",
+        "failed to get",
+        "unable to update registry",
+        "couldn't connect",
+        "could not resolve host",
+        "timeout was reached",
+    )
+    return any(marker in normalized for marker in network_markers)
+
+
+def _retry_output(first: str, second: str) -> str:
+    if not first:
+        return second
+    if not second:
+        return first
+    return f"{first}\nOffline retry:\n{second}"
 
 
 def _find_cargo_artifact(rust_dir: Path) -> Path | None:
