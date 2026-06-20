@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis
+from rextio.fallback.fallback_marker import GENERATED_PYTHON_HEADER
+from rextio.fallback.module_copy import fallback_module_name
+
+
+def render_wrapper_module(module: ModuleAnalysis) -> str:
+    accepted = sorted(
+        [
+            function
+            for function in module.functions
+            if function.is_native_candidate and function.accepted
+        ],
+        key=lambda function: function.name,
+    )
+    if not accepted:
+        raise ValueError(f"module has no accepted native functions: {module.module_name}")
+
+    function_nodes = _function_nodes(Path(module.file_path))
+    fallback_name = fallback_module_name(module)
+    import_prefix = "." if "." in module.module_name or Path(module.file_path).name == "__init__.py" else ""
+    lines = [
+        GENERATED_PYTHON_HEADER,
+        "",
+        "from rextio.runtime.flags import native_disabled",
+        "from rextio.runtime.native_loader import load_native_function",
+        "",
+        f"from {import_prefix}{fallback_name} import *  # noqa: F401,F403",
+    ]
+    for function in accepted:
+        lines.append(
+            f"from {import_prefix}{fallback_name} import {function.name} as _fallback_{function.name}"
+        )
+    lines.append("")
+
+    for function in accepted:
+        lines.extend(_render_native_binding(function))
+        lines.append("")
+
+    for function in accepted:
+        node = function_nodes[function.name]
+        lines.extend(_render_wrapper_function(function, node))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _render_native_binding(function: FunctionAnalysis) -> list[str]:
+    return [
+        f"_native_{function.name} = load_native_function(",
+        '    module_name="_rextio_native",',
+        f'    function_name="{function.name}",',
+        ")",
+    ]
+
+
+def _render_wrapper_function(function: FunctionAnalysis, node: ast.FunctionDef) -> list[str]:
+    signature = _signature(node)
+    call_args = _call_args(node)
+    return [
+        f"def {function.name}({signature}){_return_annotation(node)}:",
+        f"    if native_disabled() or _native_{function.name} is None:",
+        f"        return _fallback_{function.name}({call_args})",
+        f"    return _native_{function.name}({call_args})",
+    ]
+
+
+def _signature(node: ast.FunctionDef) -> str:
+    parts: list[str] = []
+    positional = [*node.args.posonlyargs, *node.args.args]
+    defaults = [None] * (len(positional) - len(node.args.defaults)) + list(node.args.defaults)
+    for arg, default in zip(positional, defaults, strict=True):
+        parts.append(_render_arg(arg, default))
+    if node.args.kwonlyargs:
+        parts.append("*")
+        for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults, strict=True):
+            parts.append(_render_arg(arg, default))
+    return ", ".join(parts)
+
+
+def _render_arg(arg: ast.arg, default: ast.expr | None) -> str:
+    rendered = arg.arg
+    if arg.annotation is not None:
+        rendered += f": {ast.unparse(arg.annotation)}"
+    if default is not None:
+        rendered += f" = {ast.unparse(default)}"
+    return rendered
+
+
+def _return_annotation(node: ast.FunctionDef) -> str:
+    if node.returns is None:
+        return ""
+    return f" -> {ast.unparse(node.returns)}"
+
+
+def _call_args(node: ast.FunctionDef) -> str:
+    args = [arg.arg for arg in [*node.args.posonlyargs, *node.args.args]]
+    args.extend(f"{arg.arg}={arg.arg}" for arg in node.args.kwonlyargs)
+    return ", ".join(args)
+
+
+def _function_nodes(path: Path) -> dict[str, ast.FunctionDef]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
