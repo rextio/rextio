@@ -44,8 +44,7 @@ def build_nuitka_fallback(python_dir: Path) -> FallbackBuildResult:
             nuitka,
             "--module",
             str(target),
-            "--output-dir",
-            str(target.parent),
+            f"--output-dir={target.parent}",
             "--remove-output",
         ]
         commands.append(command)

@@ -68,7 +68,11 @@ from pathlib import Path
 
 args = sys.argv[1:]
 source = Path(args[args.index("--module") + 1])
-out = Path(args[args.index("--output-dir") + 1])
+output_arg = next(arg for arg in args if arg == "--output-dir" or arg.startswith("--output-dir="))
+if output_arg == "--output-dir":
+    out = Path(args[args.index("--output-dir") + 1])
+else:
+    out = Path(output_arg.split("=", 1)[1])
 out.mkdir(parents=True, exist_ok=True)
 (out / f"{source.stem}.cpython-311-darwin.so").write_bytes(b"fake nuitka module")
 log = Path(__file__).with_name("nuitka.log")
