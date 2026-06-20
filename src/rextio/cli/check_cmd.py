@@ -46,8 +46,20 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
 def run(args: Namespace) -> int:
     project_root = Path(args.project_root).resolve()
     analysis = analyze_project(project_root)
+    write_check_report(project_root, analysis)
     if args.json:
         print(json.dumps(analysis.to_dict(), indent=2, sort_keys=True))
     else:
         print(format_check_report(analysis))
     return 1 if analysis.has_error_diagnostics else 0
+
+
+def write_check_report(project_root: Path, analysis: ProjectAnalysis) -> Path:
+    reports_dir = project_root / ".rextio" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    report_path = reports_dir / "check.json"
+    report_path.write_text(
+        json.dumps(analysis.to_dict(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return report_path

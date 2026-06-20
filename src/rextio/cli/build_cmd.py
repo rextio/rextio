@@ -8,14 +8,14 @@ from pathlib import Path
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import build_hybrid_artifact
 from rextio.config.loader import load_config
+from rextio.fallback.nuitka import nuitka_unavailable_message
 
 
 def run(args: Namespace) -> int:
     project_root = Path(args.project_root).resolve()
     if args.fallback == "nuitka" and shutil.which("nuitka") is None:
         print("RXT060 Build failed while preparing Nuitka fallback.")
-        print("Cause: Nuitka fallback was requested, but Nuitka is not installed.")
-        print("Suggestion: install Nuitka or run: rextio build --fallback=cpython")
+        print(nuitka_unavailable_message())
         return 1
 
     analysis = analyze_project(project_root)

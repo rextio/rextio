@@ -172,3 +172,54 @@ def process_all(xs: list[float]) -> list[float]:
 
     assert [function.qualname for function in analysis.accepted_native_functions] == ["app.score_one"]
     assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT071"]
+
+
+def test_project_scanner_respects_rextioignore(tmp_path: Path) -> None:
+    (tmp_path / ".rextioignore").write_text(
+        """
+# generated input
+ignored_pkg/
+*_generated.py
+""",
+        encoding="utf-8",
+    )
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def accepted(x: int) -> int:
+    return x
+""",
+    )
+    write_module(
+        tmp_path,
+        "ignored_pkg/bad.py",
+        """
+import rextio
+
+@rextio.native
+def ignored(x):
+    return x
+""",
+    )
+    write_module(
+        tmp_path,
+        "also_generated.py",
+        """
+import rextio
+
+@rextio.native
+def ignored(x):
+    return x
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.accepted"
+    ]
+    assert analysis.diagnostics == []

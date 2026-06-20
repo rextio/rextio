@@ -165,6 +165,30 @@ def add(a: int, b: int) -> int:
     assert data["native_build"]["tool"] == "cargo"
 
 
+def test_build_reports_clear_error_when_nuitka_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("PATH", "")
+    (tmp_path / "app.py").write_text(
+        """
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=nuitka"])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "RXT060 Build failed while preparing Nuitka fallback." in captured.out
+    assert "Nuitka fallback was requested, but Nuitka is not installed." in captured.out
+    assert "rextio build --fallback=cpython" in captured.out
+
+
 def test_build_reports_codegen_failure_and_keeps_fallback(
     tmp_path: Path,
     monkeypatch,

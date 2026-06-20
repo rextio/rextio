@@ -34,10 +34,12 @@ def add(a: int, b: int) -> int:
 
     captured = capsys.readouterr()
     data = json.loads(captured.out)
+    report = json.loads((tmp_path / ".rextio" / "reports" / "check.json").read_text(encoding="utf-8"))
 
     assert exit_code == 0
     assert data["accepted_native"] == ["app.add"]
     assert data["diagnostics"] == []
+    assert report["accepted_native"] == ["app.add"]
 
 
 def test_clean_removes_generated_artifacts(tmp_path: Path, capsys) -> None:

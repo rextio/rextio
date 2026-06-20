@@ -26,6 +26,46 @@ The initial implementation focuses on project initialization, native marker
 detection, subset diagnostics, static boundary diagnostics, runtime disable
 flags, and deterministic check reports.
 
+## Build Prerequisites
+
+Native builds require Rust and Cargo. Rextio can also use `maturin` when
+configured with `[rust] build_tool = "maturin"`; if maturin is unavailable,
+Rextio falls back to Cargo when possible.
+
+Nuitka fallback packaging is experimental. If `--fallback=nuitka` is requested
+without Nuitka installed, Rextio reports a clear `RXT060` error and suggests
+`--fallback=cpython`.
+
+## Generated Artifacts
+
+Rextio writes generated files under `.rextio/` and does not modify source files
+in place.
+
+```text
+.rextio/
+  generated/
+    rust/
+    python/
+  reports/
+    check.json
+    build.json
+```
+
+`rextio check` writes `.rextio/reports/check.json`. `rextio build` writes both
+check and build reports.
+
+## Fallback Safety
+
+Generated wrappers use native functions when available and safe. They fall back
+to Python when native import fails or when native execution is disabled:
+
+```text
+REXTIO_DISABLE_NATIVE=1
+```
+
+Use `.rextioignore` to keep generated or irrelevant Python files out of Rextio
+analysis.
+
 ## Examples
 
 Public 1 includes focused local examples:
