@@ -39,6 +39,41 @@ from rextio.partition.fallback_plan import FallbackPlan
 
 
 @dataclass(frozen=True)
+class NativeSourceResult:
+    status: str
+    message: str
+    path: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "message": self.message,
+            "path": self.path,
+        }
+
+
+@dataclass(frozen=True)
+class GenerateResult:
+    fallback: str
+    layout: ArtifactLayout
+    plan: BuildPlan
+    accepted_native_count: int
+    rejected_native_count: int
+    native_source: NativeSourceResult
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "fallback": self.fallback,
+            "generated_rust": str(self.layout.rust_dir),
+            "generated_python": str(self.layout.python_dir),
+            "plan": self.plan.to_dict(),
+            "accepted_native_count": self.accepted_native_count,
+            "rejected_native_count": self.rejected_native_count,
+            "native_source": self.native_source.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class BuildResult:
     fallback: str
     layout: ArtifactLayout
@@ -73,16 +108,8 @@ def build_hybrid_artifact(
     layout = ArtifactLayout(project_root)
     plan = create_build_plan(analysis, fallback)
     _reset_generated_dir(layout.build_dir)
-    _reset_generated_dir(layout.rust_dir)
-    _reset_generated_dir(layout.python_dir)
-    layout.rust_src_dir.mkdir(parents=True, exist_ok=True)
-    layout.python_dir.mkdir(parents=True, exist_ok=True)
-    layout.reports_dir.mkdir(parents=True, exist_ok=True)
-
-    (layout.reports_dir / "check.json").write_text(
-        json.dumps(analysis.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _prepare_generated_sources(layout)
+    _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir)
     _write_runtime_support(layout.python_dir)
     native_build = _generate_and_build_native(plan, layout, build_tool)
@@ -110,6 +137,54 @@ def build_hybrid_artifact(
         encoding="utf-8",
     )
     return result
+
+
+def generate_source_artifact(
+    project_root: Path,
+    analysis: ProjectAnalysis,
+    fallback: str,
+) -> GenerateResult:
+    layout = ArtifactLayout(project_root)
+    plan = create_build_plan(analysis, fallback)
+    _prepare_generated_sources(layout)
+    _write_check_report(layout, analysis)
+    _write_python_fallback_tree(plan.fallback, layout.python_dir)
+    _write_runtime_support(layout.python_dir)
+    native_source = _generate_native_source(plan, layout)
+
+    result = GenerateResult(
+        fallback=fallback,
+        layout=layout,
+        plan=plan,
+        accepted_native_count=plan.native.accepted_count,
+        rejected_native_count=plan.native.rejected_count,
+        native_source=native_source,
+    )
+    (layout.reports_dir / "generate.json").write_text(
+        json.dumps(
+            {"status": _generate_status(native_source), **result.to_dict()},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return result
+
+
+def _prepare_generated_sources(layout: ArtifactLayout) -> None:
+    _reset_generated_dir(layout.rust_dir)
+    _reset_generated_dir(layout.python_dir)
+    layout.rust_src_dir.mkdir(parents=True, exist_ok=True)
+    layout.python_dir.mkdir(parents=True, exist_ok=True)
+    layout.reports_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _write_check_report(layout: ArtifactLayout, analysis: ProjectAnalysis) -> None:
+    (layout.reports_dir / "check.json").write_text(
+        json.dumps(analysis.to_dict(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _write_python_fallback_tree(plan: FallbackPlan, python_root: Path) -> None:
@@ -157,21 +232,41 @@ def _generate_and_build_native(
 ) -> NativeBuildResult:
     if not plan.native.accepted_functions:
         return skipped_native_build("No accepted native functions were found.")
-    try:
-        module_ir = lower_project(plan.analysis)
-        rust_source = generate_rust_module(module_ir)
-    except (LoweringError, RustCodegenError) as exc:
+    native_source = _generate_native_source(plan, layout)
+    if native_source.status == "failed":
         return NativeBuildResult(
             status="failed",
             tool="codegen",
             message=(
                 "RXT050 Codegen failure while generating Rust for accepted native functions. "
-                f"Cause: {exc}. Fallback Python files were still generated."
+                f"Cause: {native_source.message}. Fallback Python files were still generated."
             ),
         )
 
-    _write_rust_project(layout, rust_source)
     return _build_native_with_selected_tool(layout, build_tool)
+
+
+def _generate_native_source(plan: BuildPlan, layout: ArtifactLayout) -> NativeSourceResult:
+    if not plan.native.accepted_functions:
+        return NativeSourceResult(
+            status="skipped",
+            message="No accepted native functions were found.",
+        )
+    try:
+        module_ir = lower_project(plan.analysis)
+        rust_source = generate_rust_module(module_ir)
+    except (LoweringError, RustCodegenError) as exc:
+        return NativeSourceResult(
+            status="failed",
+            message=str(exc),
+        )
+
+    _write_rust_project(layout, rust_source)
+    return NativeSourceResult(
+        status="generated",
+        message="Generated Rust source for accepted native functions.",
+        path=str(layout.rust_src_dir / "lib.rs"),
+    )
 
 
 def _build_fallback_backend(fallback: str, layout: ArtifactLayout) -> FallbackBuildResult:
@@ -273,3 +368,9 @@ def _build_status(
     if native_build.status == "failed":
         return "native-build-failed"
     return "built"
+
+
+def _generate_status(native_source: NativeSourceResult) -> str:
+    if native_source.status == "failed":
+        return "codegen-failed"
+    return "generated"

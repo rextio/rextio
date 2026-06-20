@@ -7,6 +7,7 @@ Initial public MVP for Rextio as a local hybrid build tool.
 ### Added
 
 - CLI commands: `rextio init`, `rextio check`, `rextio build`, `rextio bench`, and `rextio clean`.
+- Source-only generation command: `rextio generate`.
 - Explicit `@rextio.native` detection for typed module-level Python functions.
 - Conservative Public 1 subset checks for supported scalar/list types, simple control flow, indexing, and native-to-native calls.
 - Deterministic diagnostics for unsupported syntax, dynamic Python features, external calls, and unsafe boundaries.

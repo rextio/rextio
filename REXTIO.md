@@ -19,6 +19,7 @@ available, including when `REXTIO_DISABLE_NATIVE=1` is set.
 python -m pip install -e .
 rextio init --project-root demo
 rextio check demo
+rextio generate demo --fallback=cpython
 rextio build demo --fallback=cpython
 rextio bench demo_app.compute --project-root demo
 rextio clean demo
@@ -26,6 +27,10 @@ rextio clean demo
 
 Generated artifacts live under `.rextio/` and user source files are not
 rewritten during build.
+
+Use `rextio generate` when you want only generated source files. It writes Rust
+and Python source under `.rextio/generated/` and skips Rust, Nuitka, wheel, and
+build artifact compilation steps.
 
 ## Release Verification
 

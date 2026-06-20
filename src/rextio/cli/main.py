@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
-from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, init_cmd
+from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, generate_cmd, init_cmd
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,6 +32,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fallback backend. Overrides [build] fallback_backend in rextio.toml.",
     )
     build_parser_.set_defaults(handler=build_cmd.run)
+
+    generate_parser = subparsers.add_parser(
+        "generate",
+        help="Generate Rust and Python source artifacts without compiling.",
+    )
+    generate_parser.add_argument(
+        "project_root",
+        nargs="?",
+        default=".",
+        help="Project root to generate source artifacts for.",
+    )
+    generate_parser.add_argument(
+        "--fallback",
+        choices=("cpython", "nuitka"),
+        default=None,
+        help="Fallback backend label. Overrides [build] fallback_backend in rextio.toml.",
+    )
+    generate_parser.set_defaults(handler=generate_cmd.run)
 
     bench_parser = subparsers.add_parser("bench", help="Benchmark a specific function.")
     bench_parser.add_argument("target", help="Fully qualified function name.")

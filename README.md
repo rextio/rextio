@@ -17,6 +17,7 @@ call native functions.
 ```text
 rextio init
 rextio check
+rextio generate
 rextio build
 rextio bench
 rextio clean
@@ -32,6 +33,7 @@ Typical local flow:
 python -m pip install -e .
 rextio init --project-root path/to/project
 rextio check path/to/project
+rextio generate path/to/project --fallback=cpython
 rextio build path/to/project --fallback=cpython
 rextio bench myapp.scoring.compute_score --project-root path/to/project
 rextio clean path/to/project
@@ -88,6 +90,10 @@ dist/
 `rextio check` writes `.rextio/reports/check.json`. `rextio build` writes both
 check and build reports. `rextio bench` writes `.rextio/reports/bench.json`
 with a structured fallback/native timing comparison.
+
+`rextio generate` runs analysis and writes generated Rust/PyO3 and Python
+wrapper/fallback source under `.rextio/generated/` without invoking Cargo,
+maturin, or Nuitka and without creating `.rextio/build/` or `dist/`.
 
 When `rextio build` succeeds, it also writes a generated hybrid artifact wheel
 under `dist/`. Pure fallback wheels use `py3-none-any`; wheels that include the
@@ -154,6 +160,7 @@ Try:
 
 ```text
 rextio check examples/pure_math
+rextio generate examples/pure_math --fallback=cpython
 rextio build examples/pure_math --fallback=cpython
 rextio bench pure_math.math_ops.sum_squares --project-root examples/pure_math
 rextio check examples/boundary_demo
