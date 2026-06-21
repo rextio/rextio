@@ -29,6 +29,8 @@ def rust_type(rxt_type: RxtType) -> str:
     if isinstance(rxt_type, RxtList):
         return f"Vec<{rust_type(rxt_type.item_type)}>"
     if isinstance(rxt_type, RxtSet):
+        if isinstance(rxt_type.item_type, RxtFloat):
+            return "Vec<f64>"
         return f"HashSet<{rust_type(rxt_type.item_type)}>"
     if isinstance(rxt_type, RxtTuple):
         if len(rxt_type.item_types) == 1:

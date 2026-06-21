@@ -9,7 +9,8 @@ from rextio.analyzer.type_collector import annotation_name, is_supported_type
 
 DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
 NUMERIC_TYPES = {"int", "float"}
-SET_ITEM_TYPES = {"int", "bool", "str"}
+DICT_KEY_TYPES = {"int", "bool", "str"}
+SET_ITEM_TYPES = {"int", "float", "bool", "str"}
 
 UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.AsyncFunctionDef,
@@ -428,11 +429,9 @@ def _infer_expr_type(
             return item_types[index]
         if _is_dict_type(value_type):
             key_type, value_item_type = _dict_item_types(value_type)
-            if key_type != "str":
-                return None
             slice_type = infer_child(node.slice)
-            if slice_type != "str":
-                _add_unsupported_syntax(function, node.slice, f"dict keys must be str, got {slice_type}")
+            if slice_type != key_type:
+                _add_unsupported_syntax(function, node.slice, f"dict keys must be {key_type}, got {slice_type}")
                 return None
             return value_item_type
         return None
@@ -512,7 +511,7 @@ def _infer_dict_type(
         _add_unsupported_syntax(
             function,
             node,
-            "empty dict literals require a supported dict[str, int|float|str] annotation",
+            "empty dict literals require a supported dict[...] annotation",
         )
         return None
 
@@ -520,18 +519,23 @@ def _infer_dict_type(
     value_types = [_infer_expr_type(value, function, env) for value in node.values]
     if any(key_type is None for key_type in key_types) or any(value_type is None for value_type in value_types):
         return None
-    if set(key_types) != {"str"}:
-        _add_unsupported_syntax(function, node, "dict literals support only str keys")
+    unique_key_types = set(key_types)
+    if len(unique_key_types) != 1:
+        _add_unsupported_syntax(function, node, "dict literal keys must have one supported type")
+        return None
+    key_type = key_types[0]
+    if key_type not in DICT_KEY_TYPES:
+        _add_unsupported_syntax(function, node, f"dict keys must be int, bool, or str, got {key_type}")
         return None
     unique_value_types = set(value_types)
     if len(unique_value_types) != 1:
         _add_unsupported_syntax(function, node, "dict literal values must have one supported type")
         return None
     value_type = value_types[0]
-    if value_type not in {"int", "float", "str"}:
-        _add_unsupported_syntax(function, node, f"dict values must be int, float, or str, got {value_type}")
+    if value_type is None or not _is_supported_dict_value_type(value_type):
+        _add_unsupported_syntax(function, node, f"dict value type is not supported: {value_type}")
         return None
-    dict_type = f"dict[str, {value_type}]"
+    dict_type = f"dict[{key_type}, {value_type}]"
     if expected_type is not None and _is_dict_type(expected_type):
         _validate_type_match(dict_type, expected_type, function, node)
     return dict_type
@@ -594,17 +598,17 @@ def _infer_dict_comprehension_type(
         named_expr_binding_env=binding_env,
         active_comprehension_targets=comprehension_targets,
     )
-    if key_type != "str":
-        _add_unsupported_syntax(function, node.key, f"dict comprehension keys must be str, got {key_type}")
+    if key_type not in DICT_KEY_TYPES:
+        _add_unsupported_syntax(function, node.key, f"dict comprehension keys must be int, bool, or str, got {key_type}")
         return None
-    if value_type not in {"int", "float", "str"}:
+    if value_type is None or not _is_supported_dict_value_type(value_type):
         _add_unsupported_syntax(
             function,
             node.value,
-            f"dict comprehension values must be int, float, or str, got {value_type}",
+            f"dict comprehension value type is not supported: {value_type}",
         )
         return None
-    return f"dict[str, {value_type}]"
+    return f"dict[{key_type}, {value_type}]"
 
 
 def _infer_set_comprehension_type(
@@ -629,7 +633,7 @@ def _infer_set_comprehension_type(
         _add_unsupported_syntax(
             function,
             node.elt,
-            f"set comprehension item type must be int, bool, or str, got {item_type}",
+            f"set comprehension item type must be int, float, bool, or str, got {item_type}",
         )
         return None
     return f"set[{item_type}]"
@@ -962,6 +966,8 @@ def _validate_compare_types(
 def _iter_item_type(node: ast.AST, iterable_type: str | None) -> str | None:
     if _is_list_type(iterable_type):
         return _list_item_type(iterable_type)
+    if _is_set_type(iterable_type):
+        return _set_item_type(iterable_type)
     if isinstance(node, ast.Call) and dotted_name(node.func) == "range":
         return "int"
     return None
@@ -1163,6 +1169,27 @@ def _is_supported_list_item_type(value: str) -> bool:
         return True
     item_type = _list_item_type(value)
     return item_type is not None and _is_supported_list_item_type(item_type)
+
+
+def _is_supported_dict_value_type(value: str) -> bool:
+    if value in {"int", "float", "bool", "str"}:
+        return True
+    if _is_list_type(value):
+        item_type = _list_item_type(value)
+        return item_type is not None and _is_supported_list_item_type(item_type)
+    if _is_tuple_type(value):
+        return all(item_type in {"int", "float", "bool", "str"} for item_type in _tuple_item_types(value))
+    if _is_dict_type(value):
+        key_type, value_type = _dict_item_types(value)
+        return (
+            key_type in DICT_KEY_TYPES
+            and value_type is not None
+            and _is_supported_dict_value_type(value_type)
+        )
+    optional_item = _optional_item_type(value)
+    if optional_item is not None:
+        return _is_supported_dict_value_type(optional_item)
+    return False
 
 
 def _is_tuple_type(value: str | None) -> bool:
