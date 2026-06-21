@@ -36,6 +36,7 @@ from rextio.ir.lowering import LoweringError, lower_project
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.partition.build_plan import BuildPlan, create_build_plan
 from rextio.partition.fallback_plan import FallbackPlan
+from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,7 @@ class NativeSourceResult:
 @dataclass(frozen=True)
 class GenerateResult:
     fallback: str
+    boundary_fallback_threshold: int
     layout: ArtifactLayout
     plan: BuildPlan
     accepted_native_count: int
@@ -64,6 +66,7 @@ class GenerateResult:
     def to_dict(self) -> dict[str, object]:
         return {
             "fallback": self.fallback,
+            "boundary_fallback_threshold": self.boundary_fallback_threshold,
             "generated_rust": str(self.layout.rust_dir),
             "generated_python": str(self.layout.python_dir),
             "plan": self.plan.to_dict(),
@@ -76,6 +79,7 @@ class GenerateResult:
 @dataclass(frozen=True)
 class BuildResult:
     fallback: str
+    boundary_fallback_threshold: int
     layout: ArtifactLayout
     plan: BuildPlan
     accepted_native_count: int
@@ -87,6 +91,7 @@ class BuildResult:
     def to_dict(self) -> dict[str, object]:
         return {
             "fallback": self.fallback,
+            "boundary_fallback_threshold": self.boundary_fallback_threshold,
             "generated_rust": str(self.layout.rust_dir),
             "generated_python": str(self.layout.python_dir),
             "build_python": str(self.layout.build_python_dir),
@@ -104,13 +109,14 @@ def build_hybrid_artifact(
     analysis: ProjectAnalysis,
     fallback: str,
     build_tool: str = "cargo",
+    boundary_fallback_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
 ) -> BuildResult:
     layout = ArtifactLayout(project_root)
     plan = create_build_plan(analysis, fallback)
     _reset_generated_dir(layout.build_dir)
     _prepare_generated_sources(layout)
     _write_check_report(layout, analysis)
-    _write_python_fallback_tree(plan.fallback, layout.python_dir)
+    _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
     native_build = _generate_and_build_native(plan, layout, build_tool)
     _write_build_artifact(layout)
@@ -119,6 +125,7 @@ def build_hybrid_artifact(
 
     result = BuildResult(
         fallback=fallback,
+        boundary_fallback_threshold=boundary_fallback_threshold,
         layout=layout,
         plan=plan,
         accepted_native_count=plan.native.accepted_count,
@@ -143,17 +150,19 @@ def generate_source_artifact(
     project_root: Path,
     analysis: ProjectAnalysis,
     fallback: str,
+    boundary_fallback_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
 ) -> GenerateResult:
     layout = ArtifactLayout(project_root)
     plan = create_build_plan(analysis, fallback)
     _prepare_generated_sources(layout)
     _write_check_report(layout, analysis)
-    _write_python_fallback_tree(plan.fallback, layout.python_dir)
+    _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
     native_source = _generate_native_source(plan, layout)
 
     result = GenerateResult(
         fallback=fallback,
+        boundary_fallback_threshold=boundary_fallback_threshold,
         layout=layout,
         plan=plan,
         accepted_native_count=plan.native.accepted_count,
@@ -187,7 +196,11 @@ def _write_check_report(layout: ArtifactLayout, analysis: ProjectAnalysis) -> No
     )
 
 
-def _write_python_fallback_tree(plan: FallbackPlan, python_root: Path) -> None:
+def _write_python_fallback_tree(
+    plan: FallbackPlan,
+    python_root: Path,
+    boundary_fallback_threshold: int,
+) -> None:
     for module_plan in plan.modules:
         if not module_plan.needs_wrapper:
             write_plain_cpython_module(module_plan.module, python_root)
@@ -195,7 +208,10 @@ def _write_python_fallback_tree(plan: FallbackPlan, python_root: Path) -> None:
         write_cpython_fallback(module_plan.module, python_root)
         wrapper_path = generated_path_for_module(module_plan.module, python_root)
         wrapper_path.parent.mkdir(parents=True, exist_ok=True)
-        wrapper_path.write_text(render_wrapper_module(module_plan.module), encoding="utf-8")
+        wrapper_path.write_text(
+            render_wrapper_module(module_plan.module, boundary_fallback_threshold),
+            encoding="utf-8",
+        )
 
 
 def _reset_generated_dir(path: Path) -> None:

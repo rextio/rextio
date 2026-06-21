@@ -21,6 +21,8 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - CPython fallback packaging and generated wrappers that preserve fallback behavior.
 - Experimental Nuitka fallback packaging with clear unavailable-tool reporting.
 - Runtime controls: `REXTIO_DISABLE_NATIVE=1` and `REXTIO_NATIVE_MODE`.
+- Runtime boundary fallback threshold for repeated Python-to-native wrapper crossings.
+- `--fallback-threshold` for embedding a generated-code default threshold in `rextio build` and `rextio generate`.
 - Generated hybrid artifact wheel under `dist/`.
 - Example projects for pure math, FastAPI scoring, fallback safety, and boundary diagnostics.
 - Focused end-to-end tests for build/import/runtime behavior, real Cargo builds, generated wheels, and Nuitka when installed.
@@ -28,5 +30,5 @@ Initial public MVP for Rextio as a local hybrid build tool.
 ### Notes
 
 Public 1 is intentionally narrow. It does not provide full Python compatibility,
-NumPy/pandas support, framework migration, JIT behavior, or runtime boundary-cost
-optimization.
+NumPy/pandas support, framework migration, JIT behavior, or full runtime
+boundary-cost optimization.

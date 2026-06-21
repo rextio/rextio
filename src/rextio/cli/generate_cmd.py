@@ -47,9 +47,15 @@ def run(args: Namespace) -> int:
         print(f"Suggestion: run rextio check {project_root}")
         return 1
 
-    result = generate_source_artifact(project_root, analysis, fallback)
+    result = generate_source_artifact(
+        project_root,
+        analysis,
+        fallback,
+        boundary_fallback_threshold=args.fallback_threshold,
+    )
     print("Rextio generate")
     print(f"  fallback: {fallback}")
+    print(f"  boundary fallback threshold: {args.fallback_threshold}")
     print(f"  accepted native functions: {result.accepted_native_count}")
     print(f"  rejected native functions: {result.rejected_native_count}")
     print(f"  generated Rust project: {result.layout.rust_dir}")

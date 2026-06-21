@@ -104,3 +104,31 @@ def rejected(x: int) -> int:
     assert not (tmp_path / ".rextio" / "build").exists()
     assert not (tmp_path / "dist").exists()
     assert not list(tmp_path.rglob("*.so"))
+
+
+def test_generate_embeds_fallback_threshold(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["generate", str(tmp_path), "--fallback-threshold=3"])
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "generate.json").read_text(encoding="utf-8")
+    )
+    wrapper_source = (
+        tmp_path / ".rextio" / "generated" / "python" / "app.py"
+    ).read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "boundary fallback threshold: 3" in captured.out
+    assert report["boundary_fallback_threshold"] == 3
+    assert 'boundary_fallback_required("app.add", 3)' in wrapper_source

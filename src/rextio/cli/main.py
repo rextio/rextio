@@ -4,6 +4,7 @@ import argparse
 from collections.abc import Sequence
 
 from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, generate_cmd, init_cmd
+from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,6 +32,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Fallback backend. Overrides [build] fallback_backend in rextio.toml.",
     )
+    build_parser_.add_argument(
+        "--fallback-threshold",
+        type=_non_negative_int,
+        default=DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+        help=(
+            "Python-to-native wrapper calls allowed before generated fallback is used. "
+            "Use 0 to disable threshold fallback."
+        ),
+    )
     build_parser_.set_defaults(handler=build_cmd.run)
 
     generate_parser = subparsers.add_parser(
@@ -48,6 +58,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("cpython", "nuitka"),
         default=None,
         help="Fallback backend label. Overrides [build] fallback_backend in rextio.toml.",
+    )
+    generate_parser.add_argument(
+        "--fallback-threshold",
+        type=_non_negative_int,
+        default=DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+        help=(
+            "Python-to-native wrapper calls allowed before generated fallback is used. "
+            "Use 0 to disable threshold fallback."
+        ),
     )
     generate_parser.set_defaults(handler=generate_cmd.run)
 
@@ -67,6 +86,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.handler(args))
+
+
+def _non_negative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a non-negative integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return parsed
 
 
 if __name__ == "__main__":
