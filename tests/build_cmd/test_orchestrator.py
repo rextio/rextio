@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -125,6 +127,116 @@ def add(a: int, b: int) -> int:
     assert 'boundary_fallback_required("app.add", 4)' in wrapper_source
 
 
+def test_build_uses_configured_threshold_and_executable_options(
+    tmp_path: Path,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[build]
+fallback_backend = "cpython"
+fallback_threshold = 6
+
+[rust]
+build_tool = "cargo"
+
+[executable]
+entrypoint = "demo_cli.app:main"
+name = "config-tool"
+backend = "zipapp"
+""",
+        encoding="utf-8",
+    )
+    package = tmp_path / "src" / "demo_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text(
+        """
+def main() -> int:
+    print("config executable ok")
+    return 0
+
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    executable = tmp_path / "dist" / "config-tool.pyz"
+    wrapper_source = (
+        tmp_path / ".rextio" / "build" / "python" / "demo_cli" / "app.py"
+    ).read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "boundary fallback threshold: 6" in captured.out
+    assert "executable backend: zipapp" in captured.out
+    assert report["boundary_fallback_threshold"] == 6
+    assert report["executable_build"]["path"] == str(executable)
+    assert report["executable_build"]["entrypoint"] == "demo_cli.app:main"
+    assert 'boundary_fallback_required("demo_cli.app.add", 6)' in wrapper_source
+
+
+def test_build_cli_overrides_environment_and_config_options(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    monkeypatch.setenv("REXTIO_BOUNDARY_FALLBACK_THRESHOLD", "8")
+    monkeypatch.setenv("REXTIO_EXECUTABLE_ENTRYPOINT", "demo_cli.app:main")
+    monkeypatch.setenv("REXTIO_EXECUTABLE_NAME", "env-tool")
+    (tmp_path / "rextio.toml").write_text(
+        """
+[build]
+fallback_threshold = 6
+
+[rust]
+build_tool = "cargo"
+""",
+        encoding="utf-8",
+    )
+    package = tmp_path / "src" / "demo_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text(
+        """
+def main() -> int:
+    return 0
+
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback-threshold=4",
+            "--executable-name=cli-tool",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+
+    assert exit_code == 0
+    assert "boundary fallback threshold: 4" in captured.out
+    assert report["boundary_fallback_threshold"] == 4
+    assert report["executable_build"]["path"] == str(tmp_path / "dist" / "cli-tool.pyz")
+    assert report["executable_build"]["entrypoint"] == "demo_cli.app:main"
+
+
 def test_build_generates_zipapp_executable(
     tmp_path: Path,
     capsys,
@@ -160,8 +272,10 @@ def main() -> int:
 
     assert exit_code == 0
     assert "executable artifact: built" in captured.out
+    assert "executable backend: zipapp" in captured.out
     assert f"executable: {executable}" in captured.out
     assert report["executable_build"]["status"] == "built"
+    assert report["executable_build"]["backend"] == "zipapp"
     assert report["executable_build"]["path"] == str(executable)
     assert report["executable_build"]["entrypoint"] == "demo_cli.app:main"
     completed = subprocess.run(
@@ -171,6 +285,97 @@ def main() -> int:
         text=True,
     )
     assert completed.stdout.strip() == "zipapp ok"
+
+
+def test_build_generates_nuitka_standalone_executable(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    package = tmp_path / "src" / "demo_nuitka_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text(
+        """
+def main() -> int:
+    print("nuitka ok")
+    return 0
+""",
+        encoding="utf-8",
+    )
+    fake_nuitka = _fake_executable_nuitka(tmp_path)
+    monkeypatch.setenv("PATH", f"{fake_nuitka.parent}{os.pathsep}{fake_cargo.parent}")
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--entrypoint=demo_nuitka_cli.app:main",
+            "--executable-name=demo-nuitka",
+            "--executable-backend=nuitka",
+            "--nuitka-mode=standalone",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    executable = tmp_path / "dist" / "demo-nuitka.dist" / "demo-nuitka"
+
+    assert exit_code == 0
+    assert "executable artifact: built" in captured.out
+    assert "executable backend: nuitka" in captured.out
+    assert report["executable_build"]["status"] == "built"
+    assert report["executable_build"]["backend"] == "nuitka"
+    assert report["executable_build"]["path"] == str(executable)
+    assert report["executable_build"]["command"]
+    assert "--standalone" in report["executable_build"]["command"]
+
+
+def test_build_reports_missing_nuitka_for_executable(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    monkeypatch.setenv("PATH", f"{fake_cargo.parent}{os.pathsep}{Path(sys.executable).parent}")
+    original_which = shutil.which
+
+    def without_nuitka(name: str) -> str | None:
+        if name == "nuitka":
+            return None
+        return original_which(name)
+
+    monkeypatch.setattr("rextio.build.executable_builder.shutil.which", without_nuitka)
+    (tmp_path / "app.py").write_text(
+        """
+def main() -> int:
+    return 0
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--entrypoint=app:main",
+            "--executable-backend=nuitka",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+
+    assert exit_code == 1
+    assert "Nuitka is not installed" in captured.out
+    assert report["status"] == "executable-build-failed"
+    assert report["executable_build"]["backend"] == "nuitka"
 
 
 def test_build_reports_invalid_zipapp_entrypoint(
@@ -538,3 +743,30 @@ def add(a: int, b: int) -> int:
     assert data["native_build"]["tool"] == "codegen"
     assert (python_dir / "app.py").exists()
     assert (python_dir / "_fallback_app.py").exists()
+
+
+def _fake_executable_nuitka(tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "fake-executable-nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text(
+        f"""#!{sys.executable}
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+out = Path(next(arg.split("=", 1)[1] for arg in args if arg.startswith("--output-dir=")))
+name = next(arg.split("=", 1)[1] for arg in args if arg.startswith("--output-filename="))
+out.mkdir(parents=True, exist_ok=True)
+if "--onefile" in args:
+    target = out / name
+else:
+    target = out / f"{{name}}.dist" / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+target.write_text("#!/usr/bin/env python3\\nprint('fake nuitka executable')\\n", encoding="utf-8")
+target.chmod(0o755)
+""",
+        encoding="utf-8",
+    )
+    nuitka.chmod(0o755)
+    return nuitka

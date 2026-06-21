@@ -66,9 +66,39 @@ without Nuitka installed, Rextio reports a clear `RXT060` error and suggests
 Python fallback modules while still keeping the CPython fallback files in the
 build artifact.
 
-`rextio build` uses `[build] fallback_backend` from `rextio.toml` when
-`--fallback` is omitted. Passing `--fallback=cpython` or `--fallback=nuitka`
-overrides the project setting for that run.
+## Configuration Sources
+
+Build and analysis settings use this precedence:
+
+```text
+CLI parameter > environment variable > rextio.toml > built-in default
+```
+
+Command routing and output-shape arguments such as `project_root`, `bench`
+targets, `init --force`, and `check --json` remain command-line only. Project
+behavior settings can be configured from any of these sources:
+
+| `rextio.toml` key | CLI parameter | Environment variable |
+| --- | --- | --- |
+| `[build] native_backend` | `--native-backend` | `REXTIO_NATIVE_BACKEND` |
+| `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
+| `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
+| `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
+| `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
+| `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
+| `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
+| `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
+| `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
+| `[executable] nuitka_mode` | `--nuitka-mode` | `REXTIO_NUITKA_MODE` |
+| `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
+| `[policy] require_type_hints` | `--require-type-hints` / `--no-require-type-hints` | `REXTIO_REQUIRE_TYPE_HINTS` |
+| `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
+| `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
+
+Public 1 still validates values conservatively. For example,
+`native_backend = "rust"` and `binding = "pyo3"` are the only supported native
+backend and Rust binding today, but they can still be pinned through all three
+configuration surfaces for reproducible scripts.
 
 ## Generated Artifacts
 
@@ -91,6 +121,8 @@ in place.
 dist/
   <project>-0.1.0-<tag>.whl
   <executable-name>.pyz
+  <executable-name>
+  <executable-name>.dist/
 ```
 
 `rextio check` writes `.rextio/reports/check.json`. `rextio build` writes both
@@ -114,6 +146,25 @@ Python zipapp (`.pyz`), so the target machine still needs a compatible Python
 interpreter. Native extension modules cannot be imported directly from inside a
 zipapp, so generated wrappers keep fallback safety and use Python fallback when
 the native module is unavailable.
+
+Nuitka executable artifacts are also available when Nuitka is installed:
+
+```text
+rextio build path/to/project \
+  --entrypoint=myapp.cli:main \
+  --executable-backend=nuitka \
+  --nuitka-mode=standalone
+
+rextio build path/to/project \
+  --entrypoint=myapp.cli:main \
+  --executable-backend=nuitka \
+  --nuitka-mode=onefile
+```
+
+Standalone mode writes a Nuitka `.dist` application directory under `dist/`.
+Onefile mode writes a single Nuitka executable under `dist/`. Nuitka executable
+packaging is still toolchain-dependent; if Nuitka is unavailable, Rextio reports
+a clear `RXT060` error and suggests the zipapp backend.
 
 ## Policy Configuration
 
@@ -171,11 +222,13 @@ REXTIO_NATIVE_MODE=native    # require generated native functions to be availabl
 Repeated Python-to-native wrapper calls are allowed at first. If a function's
 wrapper is crossed more than `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` times, later
 calls use the generated Python fallback for that function. The default threshold
-is `1000`. `rextio generate --fallback-threshold=N` and
-`rextio build --fallback-threshold=N` embed a generated-code default for that
-artifact. The runtime environment variable overrides that embedded default. Set
-the threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this
-automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses this threshold.
+is `1000`. `rextio generate --fallback-threshold=N`,
+`rextio build --fallback-threshold=N`, `REXTIO_BOUNDARY_FALLBACK_THRESHOLD`, and
+`[build] fallback_threshold = N` can set the generated-code default for that
+artifact. At runtime, `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` overrides the embedded
+default. Set the threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to
+disable this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses this
+threshold.
 
 Use `.rextioignore` to keep generated or irrelevant Python files out of Rextio
 analysis.

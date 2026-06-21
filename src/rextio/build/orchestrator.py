@@ -13,6 +13,7 @@ from rextio.build.cargo_builder import (
 )
 from rextio.build.executable_builder import (
     ExecutableBuildResult,
+    build_nuitka_executable,
     build_zipapp_executable,
     skipped_executable,
 )
@@ -119,6 +120,8 @@ def build_hybrid_artifact(
     boundary_fallback_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
     executable_entrypoint: str | None = None,
     executable_name: str | None = None,
+    executable_backend: str = "zipapp",
+    nuitka_mode: str = "standalone",
 ) -> BuildResult:
     layout = ArtifactLayout(project_root)
     plan = create_build_plan(analysis, fallback)
@@ -137,6 +140,8 @@ def build_hybrid_artifact(
         fallback_build,
         executable_entrypoint,
         executable_name,
+        executable_backend,
+        nuitka_mode,
     )
 
     result = BuildResult(
@@ -339,6 +344,8 @@ def _build_executable_artifact(
     fallback_build: FallbackBuildResult,
     entrypoint: str | None,
     executable_name: str | None,
+    executable_backend: str,
+    nuitka_mode: str,
 ) -> ExecutableBuildResult:
     if entrypoint is None:
         return skipped_executable("No executable entrypoint was requested.")
@@ -346,11 +353,30 @@ def _build_executable_artifact(
         return skipped_executable("Fallback packaging failed, so no executable was generated.")
     if native_build.status == "failed":
         return skipped_executable("Native build failed, so no executable was generated.")
-    return build_zipapp_executable(
-        layout.build_python_dir,
-        layout.dist_dir,
-        entrypoint,
-        executable_name,
+    if executable_backend == "zipapp":
+        return build_zipapp_executable(
+            layout.build_python_dir,
+            layout.dist_dir,
+            entrypoint,
+            executable_name,
+        )
+    if executable_backend == "nuitka":
+        return build_nuitka_executable(
+            layout.build_python_dir,
+            layout.dist_dir,
+            entrypoint,
+            executable_name,
+            nuitka_mode,
+        )
+    return ExecutableBuildResult(
+        status="failed",
+        path=None,
+        message=(
+            "RXT060 Executable build failed because the executable backend was unsupported. "
+            'Use "zipapp" or "nuitka".'
+        ),
+        entrypoint=entrypoint,
+        backend=executable_backend,
     )
 
 

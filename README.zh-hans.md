@@ -65,6 +65,37 @@ Nuitka，同时仍在构建产物中保留 CPython fallback 文件。
 `[build] fallback_backend`。传入 `--fallback=cpython` 或 `--fallback=nuitka` 会覆盖
 本次运行的项目设置。
 
+## 配置来源
+
+构建和分析设置按以下优先级解析：
+
+```text
+CLI parameter > environment variable > rextio.toml > built-in default
+```
+
+`project_root`、bench target、`init --force`、`check --json` 等决定命令执行方式或输出
+形式的参数仍然只属于 command line。项目行为设置可以从以下任一来源配置：
+
+| `rextio.toml` key | CLI parameter | Environment variable |
+| --- | --- | --- |
+| `[build] native_backend` | `--native-backend` | `REXTIO_NATIVE_BACKEND` |
+| `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
+| `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
+| `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
+| `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
+| `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
+| `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
+| `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
+| `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
+| `[executable] nuitka_mode` | `--nuitka-mode` | `REXTIO_NUITKA_MODE` |
+| `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
+| `[policy] require_type_hints` | `--require-type-hints` / `--no-require-type-hints` | `REXTIO_REQUIRE_TYPE_HINTS` |
+| `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
+| `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
+
+Public 1 仍会保守地验证取值。例如当前支持的 native backend 只有 `rust`，Rust binding
+只有 `pyo3`，但仍可通过三种配置入口固定它们，以便脚本可复现。
+
 ## 生成产物
 
 Rextio 会把生成文件写入 `.rextio/` 下，不会原地修改用户源文件。
@@ -85,6 +116,8 @@ Rextio 会把生成文件写入 `.rextio/` 下，不会原地修改用户源文�
 dist/
   <project>-0.1.0-<tag>.whl
   <executable-name>.pyz
+  <executable-name>
+  <executable-name>.dist/
 ```
 
 `rextio check` 会写入 `.rextio/reports/check.json`。`rextio build` 会同时写入 check 和
@@ -105,6 +138,24 @@ artifact。可以使用 `--executable-name=name` 控制输出文件名；否则 
 entrypoint 模块派生名称。结果是 Python zipapp（`.pyz`），因此目标机器仍需要兼容的
 Python 解释器。Native extension 模块不能直接从 zipapp 内部 import，所以生成的
 wrapper 会保留 fallback 安全性，并在 native 模块不可用时使用 Python fallback。
+
+安装 Nuitka 后，也可以生成 Nuitka executable artifact：
+
+```text
+rextio build path/to/project \
+  --entrypoint=myapp.cli:main \
+  --executable-backend=nuitka \
+  --nuitka-mode=standalone
+
+rextio build path/to/project \
+  --entrypoint=myapp.cli:main \
+  --executable-backend=nuitka \
+  --nuitka-mode=onefile
+```
+
+standalone 模式会在 `dist/` 下写入 Nuitka `.dist` 应用目录。onefile 模式会在 `dist/`
+下写入单个 Nuitka 可执行文件。Nuitka executable 打包仍依赖本地 toolchain。如果
+Nuitka 不可用，Rextio 会报告明确的 `RXT060` 错误并建议使用 zipapp backend。
 
 ## 策略配置
 
@@ -158,10 +209,11 @@ REXTIO_NATIVE_MODE=native    # 要求生成的 native 函数可用
 重复的 Python-to-native wrapper 调用一开始是允许的。如果某个函数的 wrapper crossing
 次数超过 `REXTIO_BOUNDARY_FALLBACK_THRESHOLD`，后续调用会使用该函数生成的 Python
 fallback。默认阈值为 `1000`。`rextio generate --fallback-threshold=N` 和
-`rextio build --fallback-threshold=N` 会为该 artifact embed 一个生成代码默认值。
-运行时环境变量会覆盖这个 embed 的默认值。将阈值设为 `0`，或设置
-`REXTIO_DISABLE_BOUNDARY_FALLBACK=1`，可以禁用此自动 fallback。
-`REXTIO_NATIVE_MODE=native` 会绕过该阈值。
+`rextio build --fallback-threshold=N`、`REXTIO_BOUNDARY_FALLBACK_THRESHOLD`、
+`[build] fallback_threshold = N` 都可以为该 artifact 设置生成代码默认值。运行时
+`REXTIO_BOUNDARY_FALLBACK_THRESHOLD` 会覆盖这个 embed 的默认值。将阈值设为 `0`，或设置
+`REXTIO_DISABLE_BOUNDARY_FALLBACK=1`，可以禁用此自动 fallback。`REXTIO_NATIVE_MODE=native`
+会绕过该阈值。
 
 使用 `.rextioignore` 可以让 Rextio 分析忽略生成文件或无关的 Python 文件。
 

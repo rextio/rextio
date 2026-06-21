@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.config.loader import ConfigError, load_config
+from rextio.config.loader import ConfigError, load_config, override_config
 
 
 def format_check_report(analysis: ProjectAnalysis) -> str:
@@ -47,7 +48,15 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
 def run(args: Namespace) -> int:
     project_root = Path(args.project_root).resolve()
     try:
-        config = load_config(project_root)
+        config = override_config(
+            load_config(project_root, environ=os.environ),
+            {
+                ("policy", "native_marker"): args.native_marker,
+                ("policy", "require_type_hints"): args.require_type_hints,
+                ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
+                ("policy", "boundary_warnings"): args.boundary_warnings,
+            },
+        )
     except ConfigError as exc:
         print("Rextio check")
         print(f"RXT060 Configuration error: {exc}")

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 class BuildConfig:
     native_backend: str = "rust"
     fallback_backend: str = "cpython"
+    fallback_threshold: int = 1000
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,14 @@ class RustConfig:
 @dataclass(frozen=True)
 class FallbackConfig:
     nuitka: str = "experimental"
+
+
+@dataclass(frozen=True)
+class ExecutableConfig:
+    entrypoint: str | None = None
+    name: str | None = None
+    backend: str = "zipapp"
+    nuitka_mode: str = "standalone"
 
 
 @dataclass(frozen=True)
@@ -33,4 +42,5 @@ class RextioConfig:
     build: BuildConfig = BuildConfig()
     rust: RustConfig = RustConfig()
     fallback: FallbackConfig = FallbackConfig()
+    executable: ExecutableConfig = ExecutableConfig()
     policy: PolicyConfig = PolicyConfig()

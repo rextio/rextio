@@ -1,25 +1,39 @@
 from __future__ import annotations
 
 import json
+import os
 from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import generate_source_artifact
-from rextio.config.loader import ConfigError, load_config
+from rextio.config.loader import ConfigError, load_config, override_config
 
 
 def run(args: Namespace) -> int:
     project_root = Path(args.project_root).resolve()
     try:
-        config = load_config(project_root)
+        config = override_config(
+            load_config(project_root, environ=os.environ),
+            {
+                ("build", "native_backend"): args.native_backend,
+                ("build", "fallback_backend"): args.fallback,
+                ("build", "fallback_threshold"): args.fallback_threshold,
+                ("rust", "binding"): args.rust_binding,
+                ("fallback", "nuitka"): args.nuitka_fallback,
+                ("policy", "native_marker"): args.native_marker,
+                ("policy", "require_type_hints"): args.require_type_hints,
+                ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
+                ("policy", "boundary_warnings"): args.boundary_warnings,
+            },
+        )
     except ConfigError as exc:
         print("RXT060 Generate failed while loading configuration.")
         print(f"Cause: {exc}")
         print(f"Suggestion: fix {project_root / 'rextio.toml'} and rerun rextio generate.")
         return 1
 
-    fallback = args.fallback or config.build.fallback_backend
+    fallback = config.build.fallback_backend
     analysis = analyze_project(
         project_root,
         boundary_warnings=config.policy.boundary_warnings,
@@ -51,11 +65,11 @@ def run(args: Namespace) -> int:
         project_root,
         analysis,
         fallback,
-        boundary_fallback_threshold=args.fallback_threshold,
+        boundary_fallback_threshold=config.build.fallback_threshold,
     )
     print("Rextio generate")
     print(f"  fallback: {fallback}")
-    print(f"  boundary fallback threshold: {args.fallback_threshold}")
+    print(f"  boundary fallback threshold: {config.build.fallback_threshold}")
     print(f"  accepted native functions: {result.accepted_native_count}")
     print(f"  rejected native functions: {result.rejected_native_count}")
     print(f"  generated Rust project: {result.layout.rust_dir}")

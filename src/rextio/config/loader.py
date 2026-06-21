@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import tomllib
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from rextio.config.defaults import DEFAULT_CONFIG
 from rextio.config.schema import (
     BuildConfig,
+    ExecutableConfig,
     FallbackConfig,
     PolicyConfig,
     RextioConfig,
@@ -19,15 +21,33 @@ class ConfigError(RuntimeError):
 
 
 CONFIG_KEYS = {
-    "build": {"native_backend", "fallback_backend"},
+    "build": {"native_backend", "fallback_backend", "fallback_threshold"},
     "rust": {"binding", "build_tool"},
     "fallback": {"nuitka"},
+    "executable": {"entrypoint", "name", "backend", "nuitka_mode"},
     "policy": {
         "native_marker",
         "require_type_hints",
         "allow_dynamic_features",
         "boundary_warnings",
     },
+}
+
+ENVIRONMENT_OVERRIDES = {
+    "REXTIO_NATIVE_BACKEND": ("build", "native_backend", "string"),
+    "REXTIO_FALLBACK_BACKEND": ("build", "fallback_backend", "string"),
+    "REXTIO_BOUNDARY_FALLBACK_THRESHOLD": ("build", "fallback_threshold", "integer"),
+    "REXTIO_RUST_BINDING": ("rust", "binding", "string"),
+    "REXTIO_RUST_BUILD_TOOL": ("rust", "build_tool", "string"),
+    "REXTIO_NUITKA_FALLBACK": ("fallback", "nuitka", "string"),
+    "REXTIO_EXECUTABLE_ENTRYPOINT": ("executable", "entrypoint", "optional_string"),
+    "REXTIO_EXECUTABLE_NAME": ("executable", "name", "optional_string"),
+    "REXTIO_EXECUTABLE_BACKEND": ("executable", "backend", "string"),
+    "REXTIO_NUITKA_MODE": ("executable", "nuitka_mode", "string"),
+    "REXTIO_NATIVE_MARKER": ("policy", "native_marker", "string"),
+    "REXTIO_REQUIRE_TYPE_HINTS": ("policy", "require_type_hints", "boolean"),
+    "REXTIO_ALLOW_DYNAMIC_FEATURES": ("policy", "allow_dynamic_features", "boolean"),
+    "REXTIO_BOUNDARY_WARNINGS": ("policy", "boundary_warnings", "boolean"),
 }
 
 
@@ -42,7 +62,10 @@ def _section(data: dict[str, object], name: str) -> dict[str, object]:
     raise ConfigError(f"config section [{name}] must be a table")
 
 
-def load_config(project_root: Path) -> RextioConfig:
+def load_config(
+    project_root: Path,
+    environ: Mapping[str, str] | None = None,
+) -> RextioConfig:
     path = project_root / "rextio.toml"
     raw: dict[str, object] = dict(DEFAULT_CONFIG)
     if path.exists():
@@ -59,12 +82,51 @@ def load_config(project_root: Path) -> RextioConfig:
     build = {**DEFAULT_CONFIG["build"], **_section(raw, "build")}
     rust = {**DEFAULT_CONFIG["rust"], **_section(raw, "rust")}
     fallback = {**DEFAULT_CONFIG["fallback"], **_section(raw, "fallback")}
+    executable = {**DEFAULT_CONFIG["executable"], **_section(raw, "executable")}
     policy = {**DEFAULT_CONFIG["policy"], **_section(raw, "policy")}
-    _validate_config_values(build, rust, fallback, policy)
+    if environ is not None:
+        _apply_environment_overrides(build, rust, fallback, executable, policy, environ)
+    return _build_config(build, rust, fallback, executable, policy)
+
+
+def override_config(
+    config: RextioConfig,
+    overrides: Mapping[tuple[str, str], object | None],
+) -> RextioConfig:
+    build = asdict(config.build)
+    rust = asdict(config.rust)
+    fallback = asdict(config.fallback)
+    executable = asdict(config.executable)
+    policy = asdict(config.policy)
+    sections = {
+        "build": build,
+        "rust": rust,
+        "fallback": fallback,
+        "executable": executable,
+        "policy": policy,
+    }
+    for (section, key), value in overrides.items():
+        if value is None:
+            continue
+        if section not in sections or key not in CONFIG_KEYS[section]:
+            raise ConfigError(f"unsupported config override: [{section}].{key}")
+        sections[section][key] = value
+    return _build_config(build, rust, fallback, executable, policy)
+
+
+def _build_config(
+    build: dict[str, Any],
+    rust: dict[str, Any],
+    fallback: dict[str, Any],
+    executable: dict[str, Any],
+    policy: dict[str, Any],
+) -> RextioConfig:
+    _validate_config_values(build, rust, fallback, executable, policy)
     return RextioConfig(
         build=BuildConfig(**build),
         rust=RustConfig(**rust),
         fallback=FallbackConfig(**fallback),
+        executable=ExecutableConfig(**executable),
         policy=PolicyConfig(**policy),
     )
 
@@ -73,13 +135,19 @@ def _validate_config_values(
     build: dict[str, Any],
     rust: dict[str, Any],
     fallback: dict[str, Any],
+    executable: dict[str, Any],
     policy: dict[str, Any],
 ) -> None:
     _require_string("build", "native_backend", build["native_backend"])
     _require_string("build", "fallback_backend", build["fallback_backend"])
+    _require_non_negative_int("build", "fallback_threshold", build["fallback_threshold"])
     _require_string("rust", "binding", rust["binding"])
     _require_string("rust", "build_tool", rust["build_tool"])
     _require_string("fallback", "nuitka", fallback["nuitka"])
+    _require_optional_string("executable", "entrypoint", executable["entrypoint"])
+    _require_optional_string("executable", "name", executable["name"])
+    _require_string("executable", "backend", executable["backend"])
+    _require_string("executable", "nuitka_mode", executable["nuitka_mode"])
     _require_string("policy", "native_marker", policy["native_marker"])
     _require_bool("policy", "require_type_hints", policy["require_type_hints"])
     _require_bool("policy", "allow_dynamic_features", policy["allow_dynamic_features"])
@@ -90,6 +158,8 @@ def _validate_config_values(
     _require_value("rust", "binding", rust["binding"], {"pyo3"})
     _require_value("rust", "build_tool", rust["build_tool"], {"cargo", "maturin"})
     _require_value("fallback", "nuitka", fallback["nuitka"], {"experimental"})
+    _require_value("executable", "backend", executable["backend"], {"zipapp", "nuitka"})
+    _require_value("executable", "nuitka_mode", executable["nuitka_mode"], {"standalone", "onefile"})
     _require_value("policy", "native_marker", policy["native_marker"], {"auto", "decorator"})
     if policy["require_type_hints"] is not True:
         raise ConfigError("Public 1 requires [policy] require_type_hints = true")
@@ -102,9 +172,21 @@ def _require_string(section: str, key: str, value: Any) -> None:
         raise ConfigError(f"[{section}].{key} must be a string")
 
 
+def _require_optional_string(section: str, key: str, value: Any) -> None:
+    if value is not None and not isinstance(value, str):
+        raise ConfigError(f"[{section}].{key} must be a string when set")
+
+
 def _require_bool(section: str, key: str, value: Any) -> None:
     if not isinstance(value, bool):
         raise ConfigError(f"[{section}].{key} must be a boolean")
+
+
+def _require_non_negative_int(section: str, key: str, value: Any) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ConfigError(f"[{section}].{key} must be a non-negative integer")
+    if value < 0:
+        raise ConfigError(f"[{section}].{key} must be a non-negative integer")
 
 
 def _require_value(section: str, key: str, value: str, allowed: set[str]) -> None:
@@ -112,3 +194,43 @@ def _require_value(section: str, key: str, value: str, allowed: set[str]) -> Non
         return
     options = ", ".join(f'"{option}"' for option in sorted(allowed))
     raise ConfigError(f"unsupported config value for [{section}].{key}: {value!r}. Use {options}.")
+
+
+def _apply_environment_overrides(
+    build: dict[str, Any],
+    rust: dict[str, Any],
+    fallback: dict[str, Any],
+    executable: dict[str, Any],
+    policy: dict[str, Any],
+    environ: Mapping[str, str],
+) -> None:
+    sections = {
+        "build": build,
+        "rust": rust,
+        "fallback": fallback,
+        "executable": executable,
+        "policy": policy,
+    }
+    for env_name, (section, key, kind) in ENVIRONMENT_OVERRIDES.items():
+        raw_value = environ.get(env_name)
+        if raw_value in {None, ""}:
+            continue
+        sections[section][key] = _parse_environment_value(env_name, raw_value, kind)
+
+
+def _parse_environment_value(env_name: str, raw_value: str, kind: str) -> object:
+    if kind in {"string", "optional_string"}:
+        return raw_value
+    if kind == "integer":
+        try:
+            return int(raw_value)
+        except ValueError as exc:
+            raise ConfigError(f"environment variable {env_name} must be a non-negative integer") from exc
+    if kind == "boolean":
+        lowered = raw_value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+        raise ConfigError(f"environment variable {env_name} must be a boolean")
+    raise ConfigError(f"unsupported environment override kind: {kind}")

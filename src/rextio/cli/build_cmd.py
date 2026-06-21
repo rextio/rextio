@@ -1,25 +1,44 @@
 from __future__ import annotations
 
 import json
+import os
 from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import build_hybrid_artifact
-from rextio.config.loader import ConfigError, load_config
+from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.fallback.nuitka import nuitka_available, nuitka_unavailable_message
 
 
 def run(args: Namespace) -> int:
     project_root = Path(args.project_root).resolve()
     try:
-        config = load_config(project_root)
+        config = override_config(
+            load_config(project_root, environ=os.environ),
+            {
+                ("build", "native_backend"): args.native_backend,
+                ("build", "fallback_backend"): args.fallback,
+                ("build", "fallback_threshold"): args.fallback_threshold,
+                ("rust", "binding"): args.rust_binding,
+                ("rust", "build_tool"): args.rust_build_tool,
+                ("fallback", "nuitka"): args.nuitka_fallback,
+                ("executable", "entrypoint"): args.entrypoint,
+                ("executable", "name"): args.executable_name,
+                ("executable", "backend"): args.executable_backend,
+                ("executable", "nuitka_mode"): args.nuitka_mode,
+                ("policy", "native_marker"): args.native_marker,
+                ("policy", "require_type_hints"): args.require_type_hints,
+                ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
+                ("policy", "boundary_warnings"): args.boundary_warnings,
+            },
+        )
     except ConfigError as exc:
         print("RXT060 Build failed while loading configuration.")
         print(f"Cause: {exc}")
         print(f"Suggestion: fix {project_root / 'rextio.toml'} and rerun rextio build.")
         return 1
-    fallback = args.fallback or config.build.fallback_backend
+    fallback = config.build.fallback_backend
     if fallback not in {"cpython", "nuitka"}:
         print("RXT060 Build failed while preparing fallback backend.")
         print(f"Cause: unsupported fallback backend: {fallback}")
@@ -63,13 +82,15 @@ def run(args: Namespace) -> int:
         analysis,
         fallback,
         build_tool=config.rust.build_tool,
-        boundary_fallback_threshold=args.fallback_threshold,
-        executable_entrypoint=args.entrypoint,
-        executable_name=args.executable_name,
+        boundary_fallback_threshold=config.build.fallback_threshold,
+        executable_entrypoint=config.executable.entrypoint,
+        executable_name=config.executable.name,
+        executable_backend=config.executable.backend,
+        nuitka_mode=config.executable.nuitka_mode,
     )
     print("Rextio build")
     print(f"  fallback: {fallback}")
-    print(f"  boundary fallback threshold: {args.fallback_threshold}")
+    print(f"  boundary fallback threshold: {config.build.fallback_threshold}")
     print(f"  rust build tool: {config.rust.build_tool}")
     print(f"  accepted native functions: {result.accepted_native_count}")
     print(f"  rejected native functions: {result.rejected_native_count}")
@@ -79,6 +100,8 @@ def run(args: Namespace) -> int:
     print(f"  native build: {result.native_build.status}")
     print(f"  fallback packaging: {result.fallback_build.status}")
     print(f"  executable artifact: {result.executable_build.status}")
+    if config.executable.entrypoint:
+        print(f"  executable backend: {config.executable.backend}")
     if result.native_build.installed_path:
         print(f"  native module: {result.native_build.installed_path}")
     if result.wheel_build.path:
