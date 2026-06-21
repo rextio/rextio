@@ -1,5 +1,7 @@
 # Rextio
 
+[한국어](README.ko.md) | [简体中文](README.zh-hans.md) | [繁體中文](README.zh-hant.md) | [日本語](README.ja.md)
+
 Rextio compiles eligible typed Python functions to Rust native modules and
 packages the rest as safe Python fallback.
 

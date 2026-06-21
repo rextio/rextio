@@ -1,0 +1,189 @@
+# Rextio
+
+[English](README.md) | [한국어](README.ko.md) | [简体中文](README.zh-hans.md) | [日本語](README.ja.md)
+
+Rextio 會把符合條件、帶型別標註的 Python 函式編譯為 Rust 原生模組，並把其餘程式碼
+封裝為安全的 Python fallback。
+
+Public 1 的範圍刻意保持很窄。它是面向使用 typed Python 熱路徑專案的本機 CLI 和
+建置工具 MVP。Rextio 預設會自動發現符合條件的 typed 函式；專案也可以選擇停用自動
+發現，並要求使用 `@rextio.native` 標記。Rextio 不宣稱提供完整 Python 相容性、
+完整 NumPy 支援、框架遷移、JIT 行為，或完整的執行階段邊界成本最佳化器。
+
+Public 1 包含保守的靜態邊界檢查。它會拒絕呼叫 fallback-only 程式碼的 native 函式，
+當 Python 迴圈反覆呼叫 native 函式時發出警告，並且在重複的 Python/Rust 邊界
+crossing 超過簡單執行階段閾值後，讓產生的 wrapper 將該 native 函式切換到 fallback。
+
+## 目前命令
+
+```text
+rextio init
+rextio check
+rextio generate
+rextio build
+rextio bench
+rextio clean
+```
+
+初始實作著重於專案初始化、native 候選發現、subset 診斷、靜態邊界診斷、執行階段
+停用旗標，以及確定性的 check report。
+
+典型本機流程：
+
+```text
+python -m pip install -e .
+rextio init --project-root path/to/project
+rextio check path/to/project
+rextio generate path/to/project --fallback=cpython
+rextio build path/to/project --fallback=cpython
+rextio bench myapp.scoring.compute_score --project-root path/to/project
+rextio clean path/to/project
+```
+
+## Public 1 範圍
+
+Public 1 支援一個面向模組層級函式的小型 typed Python subset。符合條件的 typed 函式
+預設會成為 native 候選。不支援的語法、動態特性、不安全的 native-to-fallback
+呼叫，以及無法解析的外部呼叫，都會從 native 編譯中被拒絕，並在可能時保留為 Python
+fallback。
+
+關於支援的 subset、邊界限制、診斷和非目標，請參閱
+[Public 1 不支援的功能](docs/unsupported-features.md)。
+
+## 建置前提
+
+Native 建置需要 Rust 和 Cargo。設定 `[rust] build_tool = "maturin"` 時，Rextio 也可以
+使用 `maturin`；如果 maturin 不可用，Rextio 會在可能時 fallback 到 Cargo。
+
+Nuitka fallback 封裝是實驗性的。如果在未安裝 Nuitka 的情況下要求
+`--fallback=nuitka`，Rextio 會回報明確的 `RXT060` 錯誤並建議使用
+`--fallback=cpython`。安裝 Nuitka 後，Rextio 會對產生的 Python fallback 模組執行
+Nuitka，同時仍在建置產物中保留 CPython fallback 檔案。
+
+省略 `--fallback` 時，`rextio build` 會使用 `rextio.toml` 中的
+`[build] fallback_backend`。傳入 `--fallback=cpython` 或 `--fallback=nuitka` 會覆寫
+本次執行的專案設定。
+
+## 產生的產物
+
+Rextio 會把產生的檔案寫入 `.rextio/` 下，不會就地修改使用者原始檔。
+
+```text
+.rextio/
+  build/
+    python/
+      rextio/
+        runtime/
+  generated/
+    rust/
+    python/
+  reports/
+    check.json
+    build.json
+    bench.json
+dist/
+  <project>-0.1.0-<tag>.whl
+```
+
+`rextio check` 會寫入 `.rextio/reports/check.json`。`rextio build` 會同時寫入 check 和
+build report。`rextio bench` 會寫入 `.rextio/reports/bench.json`，其中包含結構化的
+fallback/native 計時比較。
+
+`rextio generate` 會執行分析，並在 `.rextio/generated/` 下寫入產生的 Rust/PyO3 和
+Python wrapper/fallback 原始碼；它不會呼叫 Cargo、maturin 或 Nuitka，也不會建立
+`.rextio/build/` 或 `dist/`。
+
+`rextio build` 成功後，還會在 `dist/` 下寫入產生的 hybrid artifact wheel。純
+fallback wheel 使用 `py3-none-any`；包含產生 native extension 的 wheel 使用本機
+CPython/platform tag。測試套件會把該 wheel 安裝到全新環境中，並用
+`REXTIO_DISABLE_NATIVE=1` 驗證封裝後的 fallback import 仍能運作。
+
+## 策略設定
+
+Public 1 會保守地驗證 `rextio.toml`，並拒絕未知 section、未知 key、不支援的 backend，
+以及超出 Public 1 範圍的策略值。
+
+邊界警告預設啟用。希望只保留嚴格安全錯誤、不要 Python-loop 邊界警告的專案可以設定：
+
+```toml
+[policy]
+boundary_warnings = false
+```
+
+自動 native discovery 預設啟用：
+
+```toml
+[policy]
+native_marker = "auto"
+```
+
+只希望使用明確 native 候選的專案可以停用 auto discovery：
+
+```toml
+[policy]
+native_marker = "decorator"
+```
+
+在 decorator-only 模式下，只有用 `@rextio.native` 標記的函式才會成為 native 候選。
+
+即使啟用了自動 native discovery，也可以使用 `@rextio.exempt` 讓某個函式保留在
+Python fallback。exempt 函式永遠不會被 emit 到產生的 Rust；呼叫它們的 native 候選
+會依正常的 native-to-fallback 邊界規則被拒絕。
+
+## Fallback 安全性
+
+產生的 wrapper 會在可用且安全時使用 native 函式。當 native import 失敗，或 native
+執行被停用時，它們會 fallback 到 Python。
+
+```text
+REXTIO_DISABLE_NATIVE=1
+```
+
+當專案需要明確的執行階段行為時，可以設定 `REXTIO_NATIVE_MODE`：
+
+```text
+REXTIO_NATIVE_MODE=auto      # 預設：可用時使用 native，否則 fallback
+REXTIO_NATIVE_MODE=fallback  # 強制 Python fallback
+REXTIO_NATIVE_MODE=native    # 要求產生的 native 函式可用
+```
+
+重複的 Python-to-native wrapper 呼叫一開始是允許的。如果某個函式的 wrapper crossing
+次數超過 `REXTIO_BOUNDARY_FALLBACK_THRESHOLD`，後續呼叫會使用該函式產生的 Python
+fallback。預設閾值為 `1000`。`rextio generate --fallback-threshold=N` 和
+`rextio build --fallback-threshold=N` 會為該 artifact embed 一個產生程式碼預設值。
+執行階段環境變數會覆寫這個 embed 的預設值。將閾值設為 `0`，或設定
+`REXTIO_DISABLE_BOUNDARY_FALLBACK=1`，可以停用此自動 fallback。
+`REXTIO_NATIVE_MODE=native` 會繞過該閾值。
+
+使用 `.rextioignore` 可以讓 Rextio 分析忽略產生檔案或無關的 Python 檔案。
+
+## 邊界診斷
+
+Public 1 的邊界檢查是靜態且保守的：
+
+- `RXT070`：native 函式呼叫了 fallback-only Python 程式碼。
+- `RXT072`：native 函式依賴被拒絕的 native 函式。
+- `RXT073`：fallback Python 在迴圈中呼叫 native 函式。
+
+`RXT070` 和 `RXT072` 會拒絕 native 候選。`RXT073` 是警告；該函式仍然符合條件，並且
+一開始可以使用 native，但當重複的執行階段 crossing 超過設定閾值後，產生的 wrapper
+會 fallback 到 CPython/Nuitka fallback 路徑。
+
+## 範例
+
+Public 1 包含聚焦的本機範例：
+
+- `examples/pure_math`：編譯為 native hot path 的簡單 typed 數學函式。
+- `examples/fastapi_scoring`：FastAPI 保持 Python，`compute_score` 變為 Rust native。
+- `examples/fallback_demo`：當 native 缺失或設定 `REXTIO_DISABLE_NATIVE=1` 時，產生的 wrapper 使用 Python fallback。
+- `examples/boundary_demo`：透過 `@rextio.exempt` 展示保守邊界拒絕，以及 Python-loop 邊界警告。
+
+試一試：
+
+```text
+rextio check examples/pure_math
+rextio generate examples/pure_math --fallback=cpython
+rextio build examples/pure_math --fallback=cpython
+rextio bench pure_math.math_ops.sum_squares --project-root examples/pure_math
+rextio check examples/boundary_demo
+```
