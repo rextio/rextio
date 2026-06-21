@@ -27,17 +27,18 @@ Python source
 Public 1 must demonstrate all of the following:
 
 1. A Python project can let Rextio discover eligible typed functions automatically, and can optionally mark functions with `@rextio.native`.
-2. Rextio can check whether those functions belong to the supported subset.
-3. Rextio can reject unsafe native-to-fallback call boundaries.
-4. Rextio can warn about likely excessive Python-to-Rust boundary crossings.
-5. Rextio can generate Rust code for supported typed Python functions.
-6. Rextio can generate PyO3 bindings.
-7. Rextio can build the generated Rust module with Cargo/maturin.
-8. Rextio can preserve Python fallback behavior.
-9. Rextio can package a hybrid output where native functions are used when available and fallback functions are used otherwise.
-10. Rextio can optionally invoke Nuitka for fallback packaging.
-11. Rextio can run simple benchmarks comparing Python fallback and Rust native execution.
-12. Rextio can provide a clear demo project showing a normal Python app with a Rust-compiled hot path.
+2. A Python project can mark functions with `@rextio.exempt` to keep them on Python fallback.
+3. Rextio can check whether those functions belong to the supported subset.
+4. Rextio can reject unsafe native-to-fallback call boundaries.
+5. Rextio can warn about likely excessive Python-to-Rust boundary crossings.
+6. Rextio can generate Rust code for supported typed Python functions.
+7. Rextio can generate PyO3 bindings.
+8. Rextio can build the generated Rust module with Cargo/maturin.
+9. Rextio can preserve Python fallback behavior.
+10. Rextio can package a hybrid output where native functions are used when available and fallback functions are used otherwise.
+11. Rextio can optionally invoke Nuitka for fallback packaging.
+12. Rextio can run simple benchmarks comparing Python fallback and Rust native execution.
+13. Rextio can provide a clear demo project showing a normal Python app with a Rust-compiled hot path.
 
 The first public release must feel like a usable hybrid compiler/build tool, not merely a static analyzer.
 
@@ -362,6 +363,7 @@ It must detect:
 
 * automatically discoverable typed native candidates
 * `@rextio.native`
+* `@rextio.exempt`
 * missing type annotations
 * unsupported argument types
 * unsupported return types
@@ -564,7 +566,7 @@ Do not silently generate incorrect Rust.
 
 ---
 
-## 8. Native Discovery and Marker
+## 8. Native Discovery, Marker, and Exemptions
 
 Public 1 defaults to automatic native candidate discovery for module-level typed
 functions that fit the supported subset and pass boundary checks.
@@ -595,6 +597,21 @@ are native candidates.
 When `native_marker = "auto"` (the default), Rextio may treat unmarked
 module-level functions as native candidates if they have supported type
 annotations and pass the same subset and boundary checks as marked functions.
+
+`@rextio.exempt` always opts a function out of native compilation:
+
+```python
+import rextio
+
+@rextio.exempt
+def must_stay_python(x: float) -> float:
+    return x + 1.0
+```
+
+Exemptions take precedence over automatic discovery and over `@rextio.native`.
+An exempt function must never be emitted into generated Rust. If a native
+candidate calls an exempt function, treat that callee as fallback-only and apply
+the normal native-to-fallback boundary rejection.
 
 Do not compile untyped functions or functions outside the supported Public 1
 subset. Automatic discovery must remain conservative and deterministic.

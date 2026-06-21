@@ -6,6 +6,40 @@ from pathlib import Path
 from rextio.cli.main import main
 
 
+def test_generate_never_emits_exempt_functions_to_rust(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def keep_python(x: int) -> int:
+    return x + 1
+
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["generate", str(tmp_path), "--fallback=cpython"])
+
+    capsys.readouterr()
+    rust_source = (
+        tmp_path / ".rextio" / "generated" / "rust" / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+    fallback_source = (
+        tmp_path / ".rextio" / "generated" / "python" / "_fallback_app.py"
+    ).read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "fn app__add(a: i64, b: i64) -> PyResult<i64>" in rust_source
+    assert "keep_python" not in rust_source
+    assert "def keep_python" in fallback_source
+
+
 def test_generate_writes_sources_without_running_rust_or_nuitka_builds(
     tmp_path: Path,
     monkeypatch,

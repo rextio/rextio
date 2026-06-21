@@ -14,6 +14,8 @@ fallback Python.
 Public 1 native candidates must be module-level typed functions. Rextio
 discovers eligible candidates automatically by default. Projects can set
 `[policy] native_marker = "decorator"` to require `@rextio.native`.
+Use `@rextio.exempt` to keep a function on Python fallback even when it has a
+supported typed signature.
 
 Supported types:
 
@@ -49,7 +51,8 @@ Rextio rejects these inside native candidates with structured diagnostics,
 usually `RXT010`:
 
 - classes and instance methods
-- decorators other than `@rextio.native`
+- unsupported decorators on native candidates; `@rextio.exempt` opts a function
+  out of native candidacy instead
 - async functions and `await`
 - generators and `yield`
 - lambdas and nested functions
@@ -104,6 +107,7 @@ Native functions may call:
 Native functions must not call:
 
 - fallback-only user functions (`RXT070`)
+- exempt user functions (`RXT070`)
 - rejected native candidates (`RXT072`)
 - unsupported external packages or unresolved functions (`RXT030`)
 - I/O, network, database, or ORM functions
