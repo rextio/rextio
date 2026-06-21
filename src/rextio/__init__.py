@@ -14,4 +14,10 @@ def native(func: F) -> F:
     return func
 
 
-__all__ = ["__version__", "native"]
+def exempt(func: F) -> F:
+    """Mark a function as excluded from Rextio native compilation."""
+    setattr(func, "__rextio_exempt__", True)
+    return func
+
+
+__all__ = ["__version__", "exempt", "native"]

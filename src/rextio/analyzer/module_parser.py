@@ -5,7 +5,7 @@ from pathlib import Path
 
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis
-from rextio.analyzer.native_marker import dotted_name, has_native_marker
+from rextio.analyzer.native_marker import dotted_name, has_exempt_marker, has_native_marker
 from rextio.analyzer.type_collector import is_supported_type
 from rextio.analyzer.unsupported_patterns import validate_native_function
 
@@ -108,6 +108,7 @@ def _collect_module_functions(
         if not isinstance(node, ast.FunctionDef):
             continue
         calls = collect_call_sites(node)
+        has_exempt = has_exempt_marker(node)
         has_marker = has_native_marker(node)
         function = FunctionAnalysis(
             name=node.name,
@@ -119,7 +120,9 @@ def _collect_module_functions(
             is_native_candidate=has_marker,
             calls=calls,
         )
-        if has_marker:
+        if has_exempt:
+            function.is_native_candidate = False
+        elif has_marker:
             validate_native_function(node, function)
         elif native_marker == "auto" and _is_auto_native_candidate(node, function):
             function.is_native_candidate = True

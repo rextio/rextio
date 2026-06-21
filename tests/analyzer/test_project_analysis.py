@@ -110,6 +110,79 @@ def fallback_only(xs):
     assert analysis.diagnostics == []
 
 
+def test_exempt_marker_prevents_auto_native_discovery(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+def keep_python(x: int) -> int:
+    return x + 1
+
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.add"]
+    assert "app.keep_python" not in [
+        function.qualname for function in analysis.native_candidates
+    ]
+    assert analysis.diagnostics == []
+
+
+def test_exempt_marker_takes_precedence_over_native_marker(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+@rextio.native
+def keep_python(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert analysis.native_candidates == []
+    assert analysis.diagnostics == []
+
+
+def test_native_call_to_exempt_function_is_rejected_as_fallback_boundary(
+    tmp_path: Path,
+) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+def helper(x: float) -> float:
+    return x * x
+
+@rextio.native
+def compute(x: float) -> float:
+    return helper(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert "RXT070" in {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert [function.qualname for function in analysis.rejected_native_functions] == [
+        "app.compute"
+    ]
+    assert "app.helper" not in [function.qualname for function in analysis.native_candidates]
+
+
 def test_decorator_policy_disables_auto_discovery(tmp_path: Path) -> None:
     write_module(
         tmp_path,
