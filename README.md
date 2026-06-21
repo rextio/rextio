@@ -91,6 +91,8 @@ in place.
 dist/
   <project>-0.1.0-<tag>.whl
   <executable-name>.pyz
+  <executable-name>
+  <executable-name>.dist/
 ```
 
 `rextio check` writes `.rextio/reports/check.json`. `rextio build` writes both
@@ -114,6 +116,25 @@ Python zipapp (`.pyz`), so the target machine still needs a compatible Python
 interpreter. Native extension modules cannot be imported directly from inside a
 zipapp, so generated wrappers keep fallback safety and use Python fallback when
 the native module is unavailable.
+
+Nuitka executable artifacts are also available when Nuitka is installed:
+
+```text
+rextio build path/to/project \
+  --entrypoint=myapp.cli:main \
+  --executable-backend=nuitka \
+  --nuitka-mode=standalone
+
+rextio build path/to/project \
+  --entrypoint=myapp.cli:main \
+  --executable-backend=nuitka \
+  --nuitka-mode=onefile
+```
+
+Standalone mode writes a Nuitka `.dist` application directory under `dist/`.
+Onefile mode writes a single Nuitka executable under `dist/`. Nuitka executable
+packaging is still toolchain-dependent; if Nuitka is unavailable, Rextio reports
+a clear `RXT060` error and suggests the zipapp backend.
 
 ## Policy Configuration
 

@@ -85,6 +85,8 @@ Rextio 會把產生的檔案寫入 `.rextio/` 下，不會就地修改使用者�
 dist/
   <project>-0.1.0-<tag>.whl
   <executable-name>.pyz
+  <executable-name>
+  <executable-name>.dist/
 ```
 
 `rextio check` 會寫入 `.rextio/reports/check.json`。`rextio build` 會同時寫入 check 和
@@ -105,6 +107,24 @@ artifact。可以使用 `--executable-name=name` 控制輸出檔名；否則 Rex
 entrypoint 模組推導名稱。結果是 Python zipapp（`.pyz`），因此目標機器仍需要相容的
 Python 直譯器。Native extension 模組不能直接從 zipapp 內部 import，所以產生的
 wrapper 會保留 fallback 安全性，並在 native 模組不可用時使用 Python fallback。
+
+安裝 Nuitka 後，也可以產生 Nuitka executable artifact：
+
+```text
+rextio build path/to/project \
+  --entrypoint=myapp.cli:main \
+  --executable-backend=nuitka \
+  --nuitka-mode=standalone
+
+rextio build path/to/project \
+  --entrypoint=myapp.cli:main \
+  --executable-backend=nuitka \
+  --nuitka-mode=onefile
+```
+
+standalone 模式會在 `dist/` 下寫入 Nuitka `.dist` 應用程式目錄。onefile 模式會在
+`dist/` 下寫入單一 Nuitka 可執行檔。Nuitka executable 封裝仍依賴本機 toolchain。
+如果 Nuitka 不可用，Rextio 會回報明確的 `RXT060` 錯誤並建議使用 zipapp backend。
 
 ## 策略設定
 

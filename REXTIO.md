@@ -69,6 +69,11 @@ well as the build directory path.
 extension modules are not loaded directly from inside the zipapp, so generated
 wrappers preserve fallback behavior when `_rextio_native` is unavailable.
 
+`rextio build --entrypoint=module:function --executable-backend=nuitka` invokes
+Nuitka for executable packaging. Use `--nuitka-mode=standalone` for a `.dist`
+application directory or `--nuitka-mode=onefile` for a single executable. Nuitka
+must be installed for this backend.
+
 ## Boundary Safety
 
 Native functions may call accepted native functions and supported builtins.

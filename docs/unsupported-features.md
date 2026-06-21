@@ -153,5 +153,12 @@ Zipapp executable artifacts are supported through
 `rextio build --entrypoint=module:function`. They still require a compatible
 Python interpreter on the target machine. Native extension modules are not
 loaded directly from inside the zipapp, so generated wrappers use Python fallback
-when `_rextio_native` is unavailable. Python-free standalone binaries remain out
-of scope for Public 1.
+when `_rextio_native` is unavailable. Python-free standalone binaries without
+Nuitka remain out of scope for Public 1.
+
+Nuitka executable artifacts are supported with
+`--executable-backend=nuitka --nuitka-mode=standalone` or
+`--executable-backend=nuitka --nuitka-mode=onefile`. This backend is available
+only when Nuitka is installed and remains dependent on the local Nuitka
+toolchain. Rextio does not guarantee cross-platform packaging of arbitrary
+third-party dependencies in Public 1.

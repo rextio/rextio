@@ -91,6 +91,8 @@ Rextio は生成ファイルを `.rextio/` 以下に書き込み、ユーザー�
 dist/
   <project>-0.1.0-<tag>.whl
   <executable-name>.pyz
+  <executable-name>
+  <executable-name>.dist/
 ```
 
 `rextio check` は `.rextio/reports/check.json` を書き込みます。`rextio build` は check
@@ -113,6 +115,25 @@ Rextio は entrypoint モジュールから名前を導出します。結果は 
 なので、対象マシンには互換性のある Python インタープリタが必要です。Native extension
 モジュールは zipapp 内部から直接 import できないため、生成された wrapper は fallback
 安全性を維持し、native モジュールを利用できない場合は Python fallback を使用します。
+
+Nuitka がインストールされている場合は、Nuitka executable artifact も利用できます。
+
+```text
+rextio build path/to/project \
+  --entrypoint=myapp.cli:main \
+  --executable-backend=nuitka \
+  --nuitka-mode=standalone
+
+rextio build path/to/project \
+  --entrypoint=myapp.cli:main \
+  --executable-backend=nuitka \
+  --nuitka-mode=onefile
+```
+
+standalone モードは `dist/` 以下に Nuitka の `.dist` アプリケーションディレクトリを
+書き込みます。onefile モードは `dist/` 以下に単一の Nuitka 実行ファイルを書き込みます。
+Nuitka executable パッケージングは、引き続きローカル toolchain に依存します。Nuitka が
+利用できない場合、Rextio は明確な `RXT060` エラーを報告し、zipapp backend を提案します。
 
 ## ポリシー設定
 
