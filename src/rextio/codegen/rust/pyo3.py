@@ -9,6 +9,7 @@ def render_pyo3_module(functions: list[tuple[str, str]], module_name: str = "_re
         "",
         "use pyo3::prelude::*;",
         "use std::collections::HashMap;",
+        "use std::collections::HashSet;",
         "",
     ]
     for _rust_name, function_source in functions:

@@ -42,6 +42,7 @@ from rextio.ir.types import (
     RxtList,
     RxtNone,
     RxtOptional,
+    RxtSet,
     RxtStr,
     RxtTuple,
     RxtType,
@@ -483,6 +484,8 @@ def default_return(return_type: str) -> str:
         return "Vec::new()"
     if return_type.startswith("HashMap<"):
         return "HashMap::new()"
+    if return_type.startswith("HashSet<"):
+        return "HashSet::new()"
     if return_type.startswith("Option<"):
         return "None"
     if return_type == "i64":

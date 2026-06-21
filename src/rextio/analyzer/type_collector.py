@@ -4,7 +4,8 @@ import ast
 
 SUPPORTED_SCALARS = {"int", "float", "bool", "str"}
 SUPPORTED_LIST_ITEMS = {"int", "float", "bool", "str"}
-SUPPORTED_DICT_VALUES = {"int", "float"}
+SUPPORTED_DICT_VALUES = {"int", "float", "str"}
+SUPPORTED_SET_ITEMS = {"int", "bool", "str"}
 
 
 def annotation_name(node: ast.AST | None) -> str:
@@ -39,6 +40,8 @@ def _display_type(node: ast.AST | None) -> str | None:
         value_name = _annotation_dotted_name(node.value)
         if value_name == "list" and _is_supported_list_item(node.slice):
             return f"list[{_display_type(node.slice)}]"
+        if value_name == "set" and _is_supported_set_item(node.slice):
+            return f"set[{_display_type(node.slice)}]"
         if value_name == "tuple":
             tuple_items = _tuple_slice_items(node.slice)
             if tuple_items and all(_is_supported_tuple_item(item) for item in tuple_items):
@@ -57,7 +60,15 @@ def _display_type(node: ast.AST | None) -> str | None:
 
 
 def _is_supported_list_item(node: ast.AST) -> bool:
-    return isinstance(node, ast.Name) and node.id in SUPPORTED_LIST_ITEMS
+    if isinstance(node, ast.Name):
+        return node.id in SUPPORTED_LIST_ITEMS
+    if isinstance(node, ast.Subscript) and _annotation_dotted_name(node.value) == "list":
+        return _is_supported_list_item(node.slice)
+    return False
+
+
+def _is_supported_set_item(node: ast.AST) -> bool:
+    return isinstance(node, ast.Name) and node.id in SUPPORTED_SET_ITEMS
 
 
 def _is_supported_tuple_item(node: ast.AST) -> bool:

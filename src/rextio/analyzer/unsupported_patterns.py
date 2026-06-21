@@ -9,6 +9,7 @@ from rextio.analyzer.type_collector import annotation_name, is_supported_type
 
 DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
 NUMERIC_TYPES = {"int", "float"}
+SET_ITEM_TYPES = {"int", "bool", "str"}
 
 UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.AsyncFunctionDef,
@@ -109,7 +110,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                     line=arg.lineno,
                     column=arg.col_offset,
                     function_name=function.qualname,
-                    suggestion="Use int, float, bool, str, None, or list[...] with a supported scalar item.",
+                    suggestion="Use a supported Public 1 scalar or collection type.",
                 )
             )
 
@@ -136,7 +137,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                 line=node.lineno,
                 column=node.col_offset,
                 function_name=function.qualname,
-                suggestion="Use int, float, bool, str, None, or list[...] with a supported scalar item.",
+                suggestion="Use a supported Public 1 scalar or collection type.",
             )
         )
 
@@ -347,8 +348,8 @@ def _infer_expr_type(
     if isinstance(node, ast.Subscript):
         value_type = _infer_expr_type(node.value, function, env)
         _infer_expr_type(node.slice, function, env)
-        if value_type is not None and value_type.startswith("list[") and value_type.endswith("]"):
-            return value_type[5:-1]
+        if _is_list_type(value_type):
+            return _list_item_type(value_type)
         if _is_tuple_type(value_type):
             item_types = _tuple_item_types(value_type)
             index = _constant_int(node.slice)
@@ -401,7 +402,7 @@ def _infer_list_type(
         )
         return None
     item_type = item_types[0]
-    if item_type not in {"int", "float", "bool", "str"}:
+    if item_type is None or not _is_supported_list_item_type(item_type):
         _add_unsupported_syntax(
             function,
             node,
@@ -446,7 +447,7 @@ def _infer_dict_type(
         _add_unsupported_syntax(
             function,
             node,
-            "empty dict literals require a supported dict[str, int|float] annotation",
+            "empty dict literals require a supported dict[str, int|float|str] annotation",
         )
         return None
 
@@ -459,11 +460,11 @@ def _infer_dict_type(
         return None
     unique_value_types = set(value_types)
     if len(unique_value_types) != 1:
-        _add_unsupported_syntax(function, node, "dict literal values must have one supported numeric type")
+        _add_unsupported_syntax(function, node, "dict literal values must have one supported type")
         return None
     value_type = value_types[0]
-    if value_type not in {"int", "float"}:
-        _add_unsupported_syntax(function, node, f"dict values must be int or float, got {value_type}")
+    if value_type not in {"int", "float", "str"}:
+        _add_unsupported_syntax(function, node, f"dict values must be int, float, or str, got {value_type}")
         return None
     dict_type = f"dict[str, {value_type}]"
     if expected_type is not None and _is_dict_type(expected_type):
@@ -657,8 +658,8 @@ def _validate_compare_types(
 
 
 def _iter_item_type(node: ast.AST, iterable_type: str | None) -> str | None:
-    if iterable_type is not None and iterable_type.startswith("list[") and iterable_type.endswith("]"):
-        return iterable_type[5:-1]
+    if _is_list_type(iterable_type):
+        return _list_item_type(iterable_type)
     if isinstance(node, ast.Call) and dotted_name(node.func) == "range":
         return "int"
     return None
@@ -748,7 +749,7 @@ def _validate_enumerate_call(
         _add_unsupported_syntax(
             function,
             node.args[0],
-            "enumerate currently supports list[int|float|bool|str] variables only",
+            "enumerate currently supports supported list[...] variables only",
         )
 
 
@@ -769,7 +770,7 @@ def _validate_zip_call(
             _add_unsupported_syntax(
                 function,
                 arg,
-                "zip currently supports list[int|float|bool|str] variables only",
+                "zip currently supports supported list[...] variables only",
             )
             continue
         item_types.append(item_type)
@@ -855,6 +856,13 @@ def _list_item_type(value: str | None) -> str | None:
     return None
 
 
+def _is_supported_list_item_type(value: str) -> bool:
+    if value in {"int", "float", "bool", "str"}:
+        return True
+    item_type = _list_item_type(value)
+    return item_type is not None and _is_supported_list_item_type(item_type)
+
+
 def _is_tuple_type(value: str | None) -> bool:
     return value is not None and value.startswith("tuple[") and value.endswith("]")
 
@@ -876,6 +884,16 @@ def _dict_item_types(value: str | None) -> tuple[str | None, str | None]:
     if len(items) != 2:
         return None, None
     return items[0], items[1]
+
+
+def _is_set_type(value: str | None) -> bool:
+    return value is not None and value.startswith("set[") and value.endswith("]")
+
+
+def _set_item_type(value: str | None) -> str | None:
+    if _is_set_type(value):
+        return value[4:-1]
+    return None
 
 
 def _is_optional_type(value: str | None) -> bool:
