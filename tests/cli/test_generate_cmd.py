@@ -167,3 +167,82 @@ def add(a: int, b: int) -> int:
     assert report["fallback"] == "nuitka"
     assert report["boundary_fallback_threshold"] == 9
     assert 'boundary_fallback_required("app.add", 9)' in wrapper_source
+
+
+def test_generate_reports_target_and_active_mapper(tmp_path: Path, capsys) -> None:
+    mapper_dir = tmp_path / "mappers" / "numpy-rust"
+    mapper_dir.mkdir(parents=True)
+    (mapper_dir / "rextio-mapper.toml").write_text(
+        """
+[mapper]
+id = "numpy-rust"
+target_language = "rust"
+target_versions = ["stable"]
+rules = ["numpy.ndarray"]
+
+[mapper.target_build_options]
+binding = "pyo3"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "rextio.toml").write_text(
+        """
+[target]
+version = "stable"
+
+[target.build_options]
+binding = "pyo3"
+
+[mappers]
+paths = ["mappers/numpy-rust"]
+enabled = ["numpy-rust"]
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["generate", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "generate.json").read_text(encoding="utf-8")
+    )
+
+    assert exit_code == 0
+    assert "target language: rust" in captured.out
+    assert "target version: stable" in captured.out
+    assert "active mappers: 1" in captured.out
+    assert report["target"]["spec"]["language"] == "rust"
+    assert report["target"]["spec"]["version"] == "stable"
+    assert report["target"]["mappers"]["active"][0]["id"] == "numpy-rust"
+
+
+def test_generate_reports_unimplemented_target_language(tmp_path: Path, capsys) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["generate", str(tmp_path), "--target-language=mojo", "--target-version=25.1"])
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "generate.json").read_text(encoding="utf-8")
+    )
+
+    assert exit_code == 1
+    assert "target language: mojo" in captured.out
+    assert "target version: 25.1" in captured.out
+    assert "no codegen backend is implemented" in captured.out
+    assert report["status"] == "codegen-failed"
+    assert report["target"]["spec"]["language"] == "mojo"
+    assert not report["target"]["spec"]["implemented"]

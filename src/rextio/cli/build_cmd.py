@@ -7,8 +7,10 @@ from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import build_hybrid_artifact
+from rextio.cli.config_overrides import key_value_overrides, tuple_overrides
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.fallback.nuitka import nuitka_available, nuitka_unavailable_message
+from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
 def run(args: Namespace) -> int:
@@ -23,6 +25,11 @@ def run(args: Namespace) -> int:
                 ("rust", "binding"): args.rust_binding,
                 ("rust", "build_tool"): args.rust_build_tool,
                 ("fallback", "nuitka"): args.nuitka_fallback,
+                ("target", "version"): args.target_version,
+                ("target", "build_options"): key_value_overrides(args.target_build_option),
+                ("mappers", "paths"): tuple_overrides(args.mapper_path),
+                ("mappers", "enabled"): tuple_overrides(args.mapper_enabled),
+                ("mappers", "repository"): args.mapper_repository,
                 ("executable", "entrypoint"): args.entrypoint,
                 ("executable", "name"): args.executable_name,
                 ("executable", "backend"): args.executable_backend,
@@ -33,7 +40,8 @@ def run(args: Namespace) -> int:
                 ("policy", "boundary_warnings"): args.boundary_warnings,
             },
         )
-    except ConfigError as exc:
+        target_plan = create_target_plan(project_root, config)
+    except (ConfigError, TargetPlanError) as exc:
         print("RXT060 Build failed while loading configuration.")
         print(f"Cause: {exc}")
         print(f"Suggestion: fix {project_root / 'rextio.toml'} and rerun rextio build.")
@@ -87,14 +95,22 @@ def run(args: Namespace) -> int:
         executable_name=config.executable.name,
         executable_backend=config.executable.backend,
         nuitka_mode=config.executable.nuitka_mode,
+        target_plan=target_plan,
     )
     print("Rextio build")
+    print(f"  target language: {target_plan.spec.language}")
+    if target_plan.spec.version:
+        print(f"  target version: {target_plan.spec.version}")
+    print(f"  active mappers: {len(target_plan.mappers.active)}")
     print(f"  fallback: {fallback}")
     print(f"  boundary fallback threshold: {config.build.fallback_threshold}")
     print(f"  rust build tool: {config.rust.build_tool}")
     print(f"  accepted native functions: {result.accepted_native_count}")
     print(f"  rejected native functions: {result.rejected_native_count}")
-    print(f"  generated Rust project: {result.layout.rust_dir}")
+    if target_plan.spec.language == "rust":
+        print(f"  generated Rust project: {result.layout.rust_dir}")
+    else:
+        print(f"  generated native project: {result.layout.target_dir(target_plan.spec.language)}")
     print(f"  generated Python package tree: {result.layout.python_dir}")
     print(f"  build artifact: {result.layout.build_python_dir}")
     print(f"  native build: {result.native_build.status}")

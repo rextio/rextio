@@ -178,6 +178,23 @@ def test_check_rejects_unsupported_cli_policy_override(tmp_path: Path, capsys) -
     assert "allow_dynamic_features" in captured.out
 
 
+def test_check_reports_mapper_configuration_error(tmp_path: Path, capsys) -> None:
+    exit_code = main(
+        [
+            "check",
+            str(tmp_path),
+            "--mapper-path=mappers/missing",
+            "--enable-mapper=numpy-rust",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "RXT060 Configuration error" in captured.out
+    assert "mapper path does not contain a manifest" in captured.out
+
+
 def test_check_reports_config_error(tmp_path: Path, capsys) -> None:
     (tmp_path / "rextio.toml").write_text(
         """

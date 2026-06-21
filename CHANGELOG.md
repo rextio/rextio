@@ -27,6 +27,7 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Zipapp executable artifact generation with `rextio build --entrypoint=module:function`.
 - Nuitka standalone/onefile executable artifact generation with `--executable-backend=nuitka`.
 - Mirrored build and analysis settings across CLI parameters, environment variables, and `rextio.toml`.
+- Target planning metadata for future Rust/Mojo/Julia backends and local mapper plugin manifests.
 - Example projects for pure math, FastAPI scoring, fallback safety, and boundary diagnostics.
 - Focused end-to-end tests for build/import/runtime behavior, real Cargo builds, generated wheels, and Nuitka when installed.
 

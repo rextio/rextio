@@ -43,6 +43,7 @@ from rextio.build.artifact_layout import ArtifactLayout
 from rextio.partition.build_plan import BuildPlan, create_build_plan
 from rextio.partition.fallback_plan import FallbackPlan
 from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
+from rextio.targets.plan import TargetPlan, default_target_plan
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class NativeSourceResult:
 class GenerateResult:
     fallback: str
     boundary_fallback_threshold: int
+    target_plan: TargetPlan
     layout: ArtifactLayout
     plan: BuildPlan
     accepted_native_count: int
@@ -73,6 +75,8 @@ class GenerateResult:
         return {
             "fallback": self.fallback,
             "boundary_fallback_threshold": self.boundary_fallback_threshold,
+            "target": self.target_plan.to_dict(),
+            "generated_native": str(self.layout.target_dir(self.target_plan.spec.language)),
             "generated_rust": str(self.layout.rust_dir),
             "generated_python": str(self.layout.python_dir),
             "plan": self.plan.to_dict(),
@@ -86,6 +90,7 @@ class GenerateResult:
 class BuildResult:
     fallback: str
     boundary_fallback_threshold: int
+    target_plan: TargetPlan
     layout: ArtifactLayout
     plan: BuildPlan
     accepted_native_count: int
@@ -99,6 +104,8 @@ class BuildResult:
         return {
             "fallback": self.fallback,
             "boundary_fallback_threshold": self.boundary_fallback_threshold,
+            "target": self.target_plan.to_dict(),
+            "generated_native": str(self.layout.target_dir(self.target_plan.spec.language)),
             "generated_rust": str(self.layout.rust_dir),
             "generated_python": str(self.layout.python_dir),
             "build_python": str(self.layout.build_python_dir),
@@ -122,15 +129,17 @@ def build_hybrid_artifact(
     executable_name: str | None = None,
     executable_backend: str = "zipapp",
     nuitka_mode: str = "standalone",
+    target_plan: TargetPlan | None = None,
 ) -> BuildResult:
+    target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
     plan = create_build_plan(analysis, fallback)
     _reset_generated_dir(layout.build_dir)
-    _prepare_generated_sources(layout)
+    _prepare_generated_sources(layout, target_plan)
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
-    native_build = _generate_and_build_native(plan, layout, build_tool)
+    native_build = _generate_and_build_native(plan, layout, build_tool, target_plan)
     _write_build_artifact(layout)
     fallback_build = _build_fallback_backend(fallback, layout)
     wheel_build = _build_wheel_artifact(project_root, layout, native_build, fallback_build)
@@ -147,6 +156,7 @@ def build_hybrid_artifact(
     result = BuildResult(
         fallback=fallback,
         boundary_fallback_threshold=boundary_fallback_threshold,
+        target_plan=target_plan,
         layout=layout,
         plan=plan,
         accepted_native_count=plan.native.accepted_count,
@@ -176,18 +186,21 @@ def generate_source_artifact(
     analysis: ProjectAnalysis,
     fallback: str,
     boundary_fallback_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+    target_plan: TargetPlan | None = None,
 ) -> GenerateResult:
+    target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
     plan = create_build_plan(analysis, fallback)
-    _prepare_generated_sources(layout)
+    _prepare_generated_sources(layout, target_plan)
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
-    native_source = _generate_native_source(plan, layout)
+    native_source = _generate_native_source(plan, layout, target_plan)
 
     result = GenerateResult(
         fallback=fallback,
         boundary_fallback_threshold=boundary_fallback_threshold,
+        target_plan=target_plan,
         layout=layout,
         plan=plan,
         accepted_native_count=plan.native.accepted_count,
@@ -206,10 +219,13 @@ def generate_source_artifact(
     return result
 
 
-def _prepare_generated_sources(layout: ArtifactLayout) -> None:
-    _reset_generated_dir(layout.rust_dir)
+def _prepare_generated_sources(layout: ArtifactLayout, target_plan: TargetPlan) -> None:
+    _reset_generated_dir(layout.target_dir(target_plan.spec.language))
     _reset_generated_dir(layout.python_dir)
-    layout.rust_src_dir.mkdir(parents=True, exist_ok=True)
+    if target_plan.spec.language == "rust":
+        layout.rust_src_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        layout.target_dir(target_plan.spec.language).mkdir(parents=True, exist_ok=True)
     layout.python_dir.mkdir(parents=True, exist_ok=True)
     layout.reports_dir.mkdir(parents=True, exist_ok=True)
 
@@ -270,28 +286,50 @@ def _generate_and_build_native(
     plan: BuildPlan,
     layout: ArtifactLayout,
     build_tool: str,
+    target_plan: TargetPlan,
 ) -> NativeBuildResult:
     if not plan.native.accepted_functions:
         return skipped_native_build("No accepted native functions were found.")
-    native_source = _generate_native_source(plan, layout)
+    native_source = _generate_native_source(plan, layout, target_plan)
     if native_source.status == "failed":
         return NativeBuildResult(
             status="failed",
             tool="codegen",
             message=(
-                "RXT050 Codegen failure while generating Rust for accepted native functions. "
+                "RXT050 Codegen failure while generating native target code. "
                 f"Cause: {native_source.message}. Fallback Python files were still generated."
             ),
         )
 
-    return _build_native_with_selected_tool(layout, build_tool)
+    if target_plan.spec.language == "rust":
+        return _build_native_with_selected_tool(layout, build_tool)
+    return NativeBuildResult(
+        status="failed",
+        tool=target_plan.spec.language,
+        message=(
+            "RXT060 Build failed while compiling generated native module. "
+            f"Cause: target language {target_plan.spec.language!r} is not implemented."
+        ),
+    )
 
 
-def _generate_native_source(plan: BuildPlan, layout: ArtifactLayout) -> NativeSourceResult:
+def _generate_native_source(
+    plan: BuildPlan,
+    layout: ArtifactLayout,
+    target_plan: TargetPlan,
+) -> NativeSourceResult:
     if not plan.native.accepted_functions:
         return NativeSourceResult(
             status="skipped",
             message="No accepted native functions were found.",
+        )
+    if target_plan.spec.language != "rust":
+        return NativeSourceResult(
+            status="failed",
+            message=(
+                f"target language {target_plan.spec.language!r} is configurable, but no "
+                "codegen backend is implemented for it yet"
+            ),
         )
     try:
         module_ir = lower_project(plan.analysis)

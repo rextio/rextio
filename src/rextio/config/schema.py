@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,19 @@ class RustConfig:
 @dataclass(frozen=True)
 class FallbackConfig:
     nuitka: str = "experimental"
+
+
+@dataclass(frozen=True)
+class TargetConfig:
+    version: str | None = None
+    build_options: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MapperConfig:
+    paths: tuple[str, ...] = ()
+    enabled: tuple[str, ...] = ()
+    repository: str | None = None
 
 
 @dataclass(frozen=True)
@@ -42,5 +55,7 @@ class RextioConfig:
     build: BuildConfig = BuildConfig()
     rust: RustConfig = RustConfig()
     fallback: FallbackConfig = FallbackConfig()
+    target: TargetConfig = TargetConfig()
+    mappers: MapperConfig = MapperConfig()
     executable: ExecutableConfig = ExecutableConfig()
     policy: PolicyConfig = PolicyConfig()

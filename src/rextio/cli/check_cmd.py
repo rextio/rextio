@@ -7,7 +7,9 @@ from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
+from rextio.cli.config_overrides import key_value_overrides, tuple_overrides
 from rextio.config.loader import ConfigError, load_config, override_config
+from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
 def format_check_report(analysis: ProjectAnalysis) -> str:
@@ -51,13 +53,20 @@ def run(args: Namespace) -> int:
         config = override_config(
             load_config(project_root, environ=os.environ),
             {
+                ("build", "native_backend"): args.native_backend,
+                ("target", "version"): args.target_version,
+                ("target", "build_options"): key_value_overrides(args.target_build_option),
+                ("mappers", "paths"): tuple_overrides(args.mapper_path),
+                ("mappers", "enabled"): tuple_overrides(args.mapper_enabled),
+                ("mappers", "repository"): args.mapper_repository,
                 ("policy", "native_marker"): args.native_marker,
                 ("policy", "require_type_hints"): args.require_type_hints,
                 ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
                 ("policy", "boundary_warnings"): args.boundary_warnings,
             },
         )
-    except ConfigError as exc:
+        create_target_plan(project_root, config)
+    except (ConfigError, TargetPlanError) as exc:
         print("Rextio check")
         print(f"RXT060 Configuration error: {exc}")
         return 1

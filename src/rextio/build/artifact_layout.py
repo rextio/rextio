@@ -30,11 +30,14 @@ class ArtifactLayout:
 
     @property
     def rust_dir(self) -> Path:
-        return self.generated_dir / "rust"
+        return self.target_dir("rust")
 
     @property
     def rust_src_dir(self) -> Path:
         return self.rust_dir / "src"
+
+    def target_dir(self, language: str) -> Path:
+        return self.generated_dir / language
 
     @property
     def python_dir(self) -> Path:

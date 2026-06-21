@@ -144,6 +144,9 @@ Public 1 does not include:
 - automatic native region fusion
 - JIT, Cranelift, LLVM, or MLIR integration
 - cloud build, SaaS dashboards, or GitHub app workflows
+- Mojo or Julia native code generation
+- downloading mapper plugins from a mapper repository
+- concrete third-party mapper rules such as NumPy-to-rust-numpy
 
 Nuitka fallback packaging is experimental in Public 1. If requested and not
 available, Rextio reports a clear `RXT060` error and suggests CPython fallback.
@@ -165,3 +168,11 @@ with `[executable] backend`, `[executable] nuitka_mode`, or matching
 Nuitka is installed and remains dependent on the local Nuitka toolchain. Rextio
 does not guarantee cross-platform packaging of arbitrary third-party
 dependencies in Public 1.
+
+`native_backend = "mojo"` and `native_backend = "julia"` are accepted only as
+target-planning values. They allow Rextio to record target version,
+target-specific build options, and matching local mapper metadata, but Public 1
+does not generate Mojo or Julia source. Local mapper plugin folders may be
+listed under `[mappers] paths`; each folder must contain `rextio-mapper.toml` or
+`mapper.toml`. Mapper repository download and concrete mapper transformations
+are reserved for later work.
