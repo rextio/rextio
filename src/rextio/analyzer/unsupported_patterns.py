@@ -18,7 +18,6 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.DictComp,
     ast.SetComp,
     ast.GeneratorExp,
-    ast.Dict,
     ast.Set,
     ast.Await,
     ast.Yield,
@@ -39,14 +38,11 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.Pow,
     ast.MatMult,
     ast.BitAnd,
-    ast.BitOr,
     ast.BitXor,
     ast.LShift,
     ast.RShift,
     ast.UAdd,
     ast.Invert,
-    ast.Is,
-    ast.IsNot,
     ast.In,
     ast.NotIn,
     ast.Try,
@@ -179,6 +175,9 @@ def _validate_statement_types(
     if isinstance(node, ast.Assign):
         value_type = _infer_expr_type(node.value, function, env)
         for target in node.targets:
+            if isinstance(target, ast.Subscript):
+                _validate_dict_set(target, node.value, function, env)
+                continue
             if not isinstance(target, ast.Name):
                 _add_unsupported_syntax(function, target, "assignment targets must be local names")
                 continue
@@ -286,7 +285,7 @@ def _validate_type_match(
     function: FunctionAnalysis,
     node: ast.AST,
 ) -> None:
-    if actual == expected:
+    if _types_assignable(actual, expected):
         return
     _add_unsupported_syntax(
         function,
@@ -320,12 +319,9 @@ def _infer_expr_type(
     if isinstance(node, ast.List):
         return _infer_list_type(node, function, env, expected_type)
     if isinstance(node, ast.Tuple):
-        _add_unsupported_syntax(
-            function,
-            node,
-            "tuple literals are not supported except for enumerate/zip loop targets",
-        )
-        return None
+        return _infer_tuple_type(node, function, env, expected_type)
+    if isinstance(node, ast.Dict):
+        return _infer_dict_type(node, function, env, expected_type)
     if isinstance(node, ast.BinOp):
         left = _infer_expr_type(node.left, function, env)
         right = _infer_expr_type(node.right, function, env)
@@ -353,6 +349,26 @@ def _infer_expr_type(
         _infer_expr_type(node.slice, function, env)
         if value_type is not None and value_type.startswith("list[") and value_type.endswith("]"):
             return value_type[5:-1]
+        if _is_tuple_type(value_type):
+            item_types = _tuple_item_types(value_type)
+            index = _constant_int(node.slice)
+            if index is None or index < 0 or index >= len(item_types):
+                _add_unsupported_syntax(
+                    function,
+                    node,
+                    "tuple indexes must be in-range int literals",
+                )
+                return None
+            return item_types[index]
+        if _is_dict_type(value_type):
+            key_type, value_item_type = _dict_item_types(value_type)
+            if key_type != "str":
+                return None
+            slice_type = _infer_expr_type(node.slice, function, env)
+            if slice_type != "str":
+                _add_unsupported_syntax(function, node.slice, f"dict keys must be str, got {slice_type}")
+                return None
+            return value_item_type
         return None
     return None
 
@@ -393,6 +409,66 @@ def _infer_list_type(
         )
         return None
     return f"list[{item_type}]"
+
+
+def _infer_tuple_type(
+    node: ast.Tuple,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+    expected_type: str | None,
+) -> str | None:
+    if not node.elts:
+        _add_unsupported_syntax(function, node, "empty tuple literals are not supported")
+        return None
+
+    item_types = [_infer_expr_type(item, function, env) for item in node.elts]
+    if any(item_type is None for item_type in item_types):
+        return None
+    tuple_type = f"tuple[{', '.join(item_types)}]"
+    if expected_type is not None and _is_tuple_type(expected_type):
+        _validate_type_match(tuple_type, expected_type, function, node)
+    return tuple_type
+
+
+def _infer_dict_type(
+    node: ast.Dict,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+    expected_type: str | None,
+) -> str | None:
+    if any(key is None for key in node.keys):
+        _add_unsupported_syntax(function, node, "dictionary unpacking is not supported")
+        return None
+
+    if not node.keys:
+        if expected_type is not None and _is_dict_type(expected_type):
+            return expected_type
+        _add_unsupported_syntax(
+            function,
+            node,
+            "empty dict literals require a supported dict[str, int|float] annotation",
+        )
+        return None
+
+    key_types = [_infer_expr_type(key, function, env) for key in node.keys if key is not None]
+    value_types = [_infer_expr_type(value, function, env) for value in node.values]
+    if any(key_type is None for key_type in key_types) or any(value_type is None for value_type in value_types):
+        return None
+    if set(key_types) != {"str"}:
+        _add_unsupported_syntax(function, node, "dict literals support only str keys")
+        return None
+    unique_value_types = set(value_types)
+    if len(unique_value_types) != 1:
+        _add_unsupported_syntax(function, node, "dict literal values must have one supported numeric type")
+        return None
+    value_type = value_types[0]
+    if value_type not in {"int", "float"}:
+        _add_unsupported_syntax(function, node, f"dict values must be int or float, got {value_type}")
+        return None
+    dict_type = f"dict[str, {value_type}]"
+    if expected_type is not None and _is_dict_type(expected_type):
+        _validate_type_match(dict_type, expected_type, function, node)
+    return dict_type
 
 
 def _infer_call_type(
@@ -501,6 +577,11 @@ def _infer_binop_type(
     node: ast.AST,
 ) -> str | None:
     if not isinstance(op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod)):
+        _add_unsupported_syntax(
+            function,
+            node,
+            "this binary operator is not supported in native functions",
+        )
         return None
     if left is None or right is None:
         return None
@@ -562,7 +643,11 @@ def _validate_compare_types(
     left_type = _infer_expr_type(node.left, function, env)
     for op, comparator in zip(node.ops, node.comparators, strict=True):
         right_type = _infer_expr_type(comparator, function, env)
-        if left_type is not None and right_type is not None and left_type != right_type:
+        if (
+            left_type is not None
+            and right_type is not None
+            and not _types_comparable(left_type, right_type)
+        ):
             _add_unsupported_syntax(
                 function,
                 node,
@@ -691,6 +776,32 @@ def _validate_zip_call(
     return item_types if len(item_types) == 2 else []
 
 
+def _validate_dict_set(
+    target: ast.Subscript,
+    value: ast.AST,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> None:
+    if not isinstance(target.value, ast.Name):
+        _add_unsupported_syntax(function, target, "dict assignment targets must be local names")
+        return
+    target_type = _infer_expr_type(target.value, function, env)
+    if not _is_dict_type(target_type):
+        _add_unsupported_syntax(function, target, f"subscript assignment requires a supported dict, got {target_type}")
+        return
+    key_type, value_type = _dict_item_types(target_type)
+    slice_type = _infer_expr_type(target.slice, function, env)
+    assigned_type = _infer_expr_type(value, function, env)
+    if slice_type != key_type:
+        _add_unsupported_syntax(function, target.slice, f"dict assignment key must be {key_type}, got {slice_type}")
+    if assigned_type is not None and not _types_assignable(assigned_type, value_type):
+        _add_unsupported_syntax(
+            function,
+            value,
+            f"dict assignment value type {assigned_type} does not match {value_type}",
+        )
+
+
 def _validate_range_call(
     node: ast.Call,
     function: FunctionAnalysis,
@@ -744,6 +855,82 @@ def _list_item_type(value: str | None) -> str | None:
     return None
 
 
+def _is_tuple_type(value: str | None) -> bool:
+    return value is not None and value.startswith("tuple[") and value.endswith("]")
+
+
+def _tuple_item_types(value: str | None) -> list[str]:
+    if not _is_tuple_type(value):
+        return []
+    return _split_type_args(value[6:-1])
+
+
+def _is_dict_type(value: str | None) -> bool:
+    return value is not None and value.startswith("dict[") and value.endswith("]")
+
+
+def _dict_item_types(value: str | None) -> tuple[str | None, str | None]:
+    if not _is_dict_type(value):
+        return None, None
+    items = _split_type_args(value[5:-1])
+    if len(items) != 2:
+        return None, None
+    return items[0], items[1]
+
+
+def _is_optional_type(value: str | None) -> bool:
+    return value is not None and value.startswith("Optional[") and value.endswith("]")
+
+
+def _optional_item_type(value: str | None) -> str | None:
+    if _is_optional_type(value):
+        return value[9:-1]
+    return None
+
+
+def _types_assignable(actual: str, expected: str) -> bool:
+    if actual == expected:
+        return True
+    expected_item = _optional_item_type(expected)
+    if expected_item is not None:
+        return actual == "None" or actual == expected_item
+    return False
+
+
+def _types_comparable(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    left_item = _optional_item_type(left)
+    right_item = _optional_item_type(right)
+    if left_item is not None:
+        return right == "None" or right == left_item
+    if right_item is not None:
+        return left == "None" or left == right_item
+    return False
+
+
+def _split_type_args(value: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for index, char in enumerate(value):
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(value[start:index].strip())
+            start = index + 1
+    parts.append(value[start:].strip())
+    return [part for part in parts if part]
+
+
+def _constant_int(node: ast.AST) -> int | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+        return node.value
+    return None
+
+
 def _is_append_call(node: ast.AST) -> bool:
     return (
         isinstance(node, ast.Call)
@@ -785,8 +972,8 @@ def _validate_call(function: FunctionAnalysis, node: ast.Call) -> None:
 def _unsupported_message(node: ast.AST) -> str:
     if isinstance(node, (ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp)):
         return "comprehensions are not supported in Public 1 native functions"
-    if isinstance(node, (ast.Tuple, ast.Dict, ast.Set)):
-        return "container literals are not supported in Public 1 native functions"
+    if isinstance(node, ast.Set):
+        return "set literals are not supported in Public 1 native functions"
     if isinstance(node, (ast.Import, ast.ImportFrom)):
         return "imports inside native functions are not supported"
     if isinstance(node, (ast.With, ast.AsyncWith)):
@@ -820,7 +1007,6 @@ def _unsupported_message(node: ast.AST) -> str:
             ast.Pow,
             ast.MatMult,
             ast.BitAnd,
-            ast.BitOr,
             ast.BitXor,
             ast.LShift,
             ast.RShift,
@@ -829,8 +1015,8 @@ def _unsupported_message(node: ast.AST) -> str:
         return "this binary operator is not supported in native functions"
     if isinstance(node, (ast.UAdd, ast.Invert)):
         return "this unary operator is not supported in native functions"
-    if isinstance(node, (ast.Is, ast.IsNot, ast.In, ast.NotIn)):
-        return "identity and membership comparisons are not supported in native functions"
+    if isinstance(node, (ast.In, ast.NotIn)):
+        return "membership comparisons are not supported in native functions"
     return f"unsupported syntax in native function: {type(node).__name__}"
 
 

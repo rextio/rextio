@@ -1,6 +1,17 @@
 from __future__ import annotations
 
-from rextio.ir.types import RxtBool, RxtFloat, RxtInt, RxtList, RxtNone, RxtStr, RxtType
+from rextio.ir.types import (
+    RxtBool,
+    RxtDict,
+    RxtFloat,
+    RxtInt,
+    RxtList,
+    RxtNone,
+    RxtOptional,
+    RxtStr,
+    RxtTuple,
+    RxtType,
+)
 
 
 def rust_type(rxt_type: RxtType) -> str:
@@ -16,4 +27,12 @@ def rust_type(rxt_type: RxtType) -> str:
         return "()"
     if isinstance(rxt_type, RxtList):
         return f"Vec<{rust_type(rxt_type.item_type)}>"
+    if isinstance(rxt_type, RxtTuple):
+        if len(rxt_type.item_types) == 1:
+            return f"({rust_type(rxt_type.item_types[0])},)"
+        return f"({', '.join(rust_type(item_type) for item_type in rxt_type.item_types)})"
+    if isinstance(rxt_type, RxtDict):
+        return f"HashMap<{rust_type(rxt_type.key_type)}, {rust_type(rxt_type.value_type)}>"
+    if isinstance(rxt_type, RxtOptional):
+        return f"Option<{rust_type(rxt_type.item_type)}>"
     raise TypeError(f"unsupported Rextio type for Rust: {type(rxt_type).__name__}")

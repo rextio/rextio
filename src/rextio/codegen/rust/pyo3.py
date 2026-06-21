@@ -8,6 +8,7 @@ def render_pyo3_module(functions: list[tuple[str, str]], module_name: str = "_re
         GENERATED_HEADER,
         "",
         "use pyo3::prelude::*;",
+        "use std::collections::HashMap;",
         "",
     ]
     for _rust_name, function_source in functions:
