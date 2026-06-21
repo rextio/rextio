@@ -65,6 +65,37 @@ Nuitka，同時仍在建置產物中保留 CPython fallback 檔案。
 `[build] fallback_backend`。傳入 `--fallback=cpython` 或 `--fallback=nuitka` 會覆寫
 本次執行的專案設定。
 
+## 設定來源
+
+建置和分析設定按以下優先順序解析：
+
+```text
+CLI parameter > environment variable > rextio.toml > built-in default
+```
+
+`project_root`、bench target、`init --force`、`check --json` 等決定命令執行方式或輸出
+形式的參數仍然只屬於 command line。專案行為設定可以從以下任一來源設定：
+
+| `rextio.toml` key | CLI parameter | Environment variable |
+| --- | --- | --- |
+| `[build] native_backend` | `--native-backend` | `REXTIO_NATIVE_BACKEND` |
+| `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
+| `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
+| `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
+| `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
+| `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
+| `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
+| `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
+| `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
+| `[executable] nuitka_mode` | `--nuitka-mode` | `REXTIO_NUITKA_MODE` |
+| `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
+| `[policy] require_type_hints` | `--require-type-hints` / `--no-require-type-hints` | `REXTIO_REQUIRE_TYPE_HINTS` |
+| `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
+| `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
+
+Public 1 仍會保守地驗證取值。例如目前支援的 native backend 只有 `rust`，Rust binding
+只有 `pyo3`，但仍可透過三種設定入口固定它們，以便 script 可重現。
+
 ## 產生的產物
 
 Rextio 會把產生的檔案寫入 `.rextio/` 下，不會就地修改使用者原始檔。
@@ -178,10 +209,11 @@ REXTIO_NATIVE_MODE=native    # 要求產生的 native 函式可用
 重複的 Python-to-native wrapper 呼叫一開始是允許的。如果某個函式的 wrapper crossing
 次數超過 `REXTIO_BOUNDARY_FALLBACK_THRESHOLD`，後續呼叫會使用該函式產生的 Python
 fallback。預設閾值為 `1000`。`rextio generate --fallback-threshold=N` 和
-`rextio build --fallback-threshold=N` 會為該 artifact embed 一個產生程式碼預設值。
-執行階段環境變數會覆寫這個 embed 的預設值。將閾值設為 `0`，或設定
-`REXTIO_DISABLE_BOUNDARY_FALLBACK=1`，可以停用此自動 fallback。
-`REXTIO_NATIVE_MODE=native` 會繞過該閾值。
+`rextio build --fallback-threshold=N`、`REXTIO_BOUNDARY_FALLBACK_THRESHOLD`、
+`[build] fallback_threshold = N` 都可以為該 artifact 設定產生程式碼預設值。執行階段
+`REXTIO_BOUNDARY_FALLBACK_THRESHOLD` 會覆寫這個 embed 的預設值。將閾值設為 `0`，或設定
+`REXTIO_DISABLE_BOUNDARY_FALLBACK=1`，可以停用此自動 fallback。`REXTIO_NATIVE_MODE=native`
+會繞過該閾值。
 
 使用 `.rextioignore` 可以讓 Rextio 分析忽略產生檔案或無關的 Python 檔案。
 

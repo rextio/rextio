@@ -345,6 +345,7 @@ Default `rextio.toml`:
 [build]
 native_backend = "rust"
 fallback_backend = "cpython"
+fallback_threshold = 1000
 
 [rust]
 binding = "pyo3"
@@ -352,6 +353,12 @@ build_tool = "maturin"
 
 [fallback]
 nuitka = "experimental"
+
+[executable]
+# entrypoint = "myapp.cli:main"
+# name = "myapp"
+backend = "zipapp"
+nuitka_mode = "standalone"
 
 [policy]
 native_marker = "auto"
@@ -412,13 +419,48 @@ Minimum supported options:
 
 ```text
 rextio build
+rextio build --native-backend=rust
 rextio build --fallback=cpython
 rextio build --fallback=nuitka
 rextio build --fallback-threshold=1000
+rextio build --rust-binding=pyo3
+rextio build --rust-build-tool=maturin
+rextio build --native-marker=auto
+rextio build --no-boundary-warnings
 rextio build --entrypoint=myapp.cli:main
+rextio build --entrypoint=myapp.cli:main --executable-name=myapp
 rextio build --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=standalone
 rextio build --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 ```
+
+Build and analysis settings should resolve with this precedence:
+
+```text
+CLI parameter > environment variable > rextio.toml > built-in default
+```
+
+Supported environment variable mirrors:
+
+```text
+REXTIO_NATIVE_BACKEND
+REXTIO_FALLBACK_BACKEND
+REXTIO_BOUNDARY_FALLBACK_THRESHOLD
+REXTIO_RUST_BINDING
+REXTIO_RUST_BUILD_TOOL
+REXTIO_NUITKA_FALLBACK
+REXTIO_EXECUTABLE_ENTRYPOINT
+REXTIO_EXECUTABLE_NAME
+REXTIO_EXECUTABLE_BACKEND
+REXTIO_NUITKA_MODE
+REXTIO_NATIVE_MARKER
+REXTIO_REQUIRE_TYPE_HINTS
+REXTIO_ALLOW_DYNAMIC_FEATURES
+REXTIO_BOUNDARY_WARNINGS
+```
+
+Command routing and output formatting flags such as project roots, bench
+targets, `init --force`, and `check --json` are command-line concerns rather
+than project configuration.
 
 Behavior:
 
@@ -1041,8 +1083,9 @@ REXTIO_DISABLE_BOUNDARY_FALLBACK=1
 
 `rextio build --fallback-threshold=N` and
 `rextio generate --fallback-threshold=N` should embed the generated-code default
-threshold. `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` overrides the embedded default at
-runtime.
+threshold. `[build] fallback_threshold = N` should configure the same generated
+default from `rextio.toml`. `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` overrides the
+embedded default at runtime.
 
 Optional:
 

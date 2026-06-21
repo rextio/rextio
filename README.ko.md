@@ -70,6 +70,39 @@ fallback 모듈에 Nuitka를 실행하면서도 CPython fallback 파일을 빌�
 사용합니다. `--fallback=cpython` 또는 `--fallback=nuitka`를 전달하면 해당 실행에서
 프로젝트 설정을 덮어씁니다.
 
+## 설정 소스
+
+빌드 및 분석 설정은 다음 우선순위로 해석됩니다.
+
+```text
+CLI parameter > environment variable > rextio.toml > built-in default
+```
+
+`project_root`, bench target, `init --force`, `check --json`처럼 명령 실행 방식이나
+출력 형태를 정하는 인자는 command-line 전용입니다. 프로젝트 동작 설정은 다음 세 경로
+어디서든 지정할 수 있습니다.
+
+| `rextio.toml` key | CLI parameter | Environment variable |
+| --- | --- | --- |
+| `[build] native_backend` | `--native-backend` | `REXTIO_NATIVE_BACKEND` |
+| `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
+| `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
+| `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
+| `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
+| `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
+| `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
+| `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
+| `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
+| `[executable] nuitka_mode` | `--nuitka-mode` | `REXTIO_NUITKA_MODE` |
+| `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
+| `[policy] require_type_hints` | `--require-type-hints` / `--no-require-type-hints` | `REXTIO_REQUIRE_TYPE_HINTS` |
+| `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
+| `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
+
+Public 1은 여전히 값을 보수적으로 검증합니다. 예를 들어 현재 지원되는 native backend는
+`rust`, Rust binding은 `pyo3`뿐이지만 재현 가능한 스크립트를 위해 세 설정 표면 모두에서
+고정할 수 있습니다.
+
 ## 생성 산출물
 
 Rextio는 생성 파일을 `.rextio/` 아래에 쓰며, 사용자 소스 파일을 제자리에서 수정하지
@@ -189,11 +222,12 @@ REXTIO_NATIVE_MODE=native    # 생성된 native 함수가 사용 가능해야 �
 반복되는 Python-to-native wrapper 호출은 처음에는 허용됩니다. 함수의 wrapper crossing
 횟수가 `REXTIO_BOUNDARY_FALLBACK_THRESHOLD`를 초과하면 이후 호출은 해당 함수의 생성된
 Python fallback을 사용합니다. 기본 임계값은 `1000`입니다.
-`rextio generate --fallback-threshold=N`과 `rextio build --fallback-threshold=N`은 해당
-artifact의 생성 코드 기본값을 embed합니다. 런타임 환경변수는 embed된 기본값보다
-우선합니다. 임계값을 `0`으로 설정하거나 `REXTIO_DISABLE_BOUNDARY_FALLBACK=1`을
-설정하면 이 자동 fallback이 비활성화됩니다. `REXTIO_NATIVE_MODE=native`는 이
-임계값을 우회합니다.
+`rextio generate --fallback-threshold=N`, `rextio build --fallback-threshold=N`,
+`REXTIO_BOUNDARY_FALLBACK_THRESHOLD`, `[build] fallback_threshold = N`으로 해당 artifact의
+생성 코드 기본값을 설정할 수 있습니다. 런타임에서는
+`REXTIO_BOUNDARY_FALLBACK_THRESHOLD`가 embed된 기본값보다 우선합니다. 임계값을 `0`으로
+설정하거나 `REXTIO_DISABLE_BOUNDARY_FALLBACK=1`을 설정하면 이 자동 fallback이
+비활성화됩니다. `REXTIO_NATIVE_MODE=native`는 이 임계값을 우회합니다.
 
 Rextio 분석에서 생성 파일 또는 관련 없는 Python 파일을 제외하려면 `.rextioignore`를
 사용하세요.

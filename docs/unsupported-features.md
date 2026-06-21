@@ -120,10 +120,11 @@ Generated wrappers count Python-to-native wrapper crossings per function. If the
 count exceeds `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` (`1000` by default), later
 calls use the generated CPython/Nuitka fallback path for that function. Use
 `rextio generate --fallback-threshold=N` or
-`rextio build --fallback-threshold=N` to embed the generated-code default. The
-runtime environment variable overrides that embedded default. Set the threshold
-to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this automatic
-fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
+`rextio build --fallback-threshold=N`, set `REXTIO_BOUNDARY_FALLBACK_THRESHOLD`,
+or configure `[build] fallback_threshold = N` to embed the generated-code
+default. The runtime environment variable overrides that embedded default. Set
+the threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable
+this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 
 ## Out of Scope for Public 1
 
@@ -158,7 +159,9 @@ Nuitka remain out of scope for Public 1.
 
 Nuitka executable artifacts are supported with
 `--executable-backend=nuitka --nuitka-mode=standalone` or
-`--executable-backend=nuitka --nuitka-mode=onefile`. This backend is available
-only when Nuitka is installed and remains dependent on the local Nuitka
-toolchain. Rextio does not guarantee cross-platform packaging of arbitrary
-third-party dependencies in Public 1.
+`--executable-backend=nuitka --nuitka-mode=onefile`; the same values can be set
+with `[executable] backend`, `[executable] nuitka_mode`, or matching
+`REXTIO_EXECUTABLE_*` environment variables. This backend is available only when
+Nuitka is installed and remains dependent on the local Nuitka toolchain. Rextio
+does not guarantee cross-platform packaging of arbitrary third-party
+dependencies in Public 1.

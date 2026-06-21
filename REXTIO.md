@@ -41,6 +41,30 @@ Use `rextio generate` when you want only generated source files. It writes Rust
 and Python source under `.rextio/generated/` and skips Rust, Nuitka, wheel, and
 build artifact compilation steps.
 
+## Configuration Sources
+
+Build and analysis settings resolve in this order:
+
+```text
+CLI parameter > environment variable > rextio.toml > built-in default
+```
+
+Every project behavior setting in `rextio.toml` has a matching command-line
+flag and environment variable. Common examples:
+
+```text
+--fallback / REXTIO_FALLBACK_BACKEND / [build] fallback_backend
+--fallback-threshold / REXTIO_BOUNDARY_FALLBACK_THRESHOLD / [build] fallback_threshold
+--native-marker / REXTIO_NATIVE_MARKER / [policy] native_marker
+--boundary-warnings / REXTIO_BOUNDARY_WARNINGS / [policy] boundary_warnings
+--entrypoint / REXTIO_EXECUTABLE_ENTRYPOINT / [executable] entrypoint
+--executable-backend / REXTIO_EXECUTABLE_BACKEND / [executable] backend
+--nuitka-mode / REXTIO_NUITKA_MODE / [executable] nuitka_mode
+```
+
+Public 1 still rejects unsupported values. The supported native backend is
+`rust`, and the supported Rust binding is `pyo3`.
+
 ## Release Verification
 
 Run the regular test suite first:
@@ -89,7 +113,8 @@ Generated wrappers also keep a per-function runtime crossing count. After a
 function's Python-to-native wrapper calls exceed
 `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` (`1000` by default), later calls use the
 generated Python fallback path for that function. `rextio generate` and
-`rextio build` accept `--fallback-threshold=N` to embed the generated-code
-default. The runtime environment variable overrides that embedded default. Set
-the threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this
-automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
+`rextio build` accept `--fallback-threshold=N`, and projects can set
+`[build] fallback_threshold = N`, to embed the generated-code default. The
+runtime environment variable overrides that embedded default. Set the threshold
+to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this automatic
+fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
