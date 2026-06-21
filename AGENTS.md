@@ -616,16 +616,28 @@ Support inside native candidate functions:
 * typed return values
 * local variables
 * assignment
+* local variable annotations with initializers, such as `total: float = 0.0`
+* augmented assignment: `+=`, `-=`, `*=`, `/=`
 * arithmetic operations
 * boolean operations
 * comparisons
 * `if` / `elif` / `else`
 * `for x in xs`
 * `for i in range(len(xs))`
+* `for i in range(n)`
+* `for i in range(start, stop)`
+* `for i in range(start, stop, step)` when `step` is a positive int literal
 * `while`
+* `break`
+* `continue`
 * `return`
+* list literals for supported list item types, including typed empty lists such
+  as `out: list[int] = []`
+* `list.append(x)` for `list[int]`, `list[float]`, `list[bool]`, and `list[str]`
 * calls to other accepted native functions
 * `len(x)`
+* limited `abs`, `min`, `max`, and `sum` builtins
+* limited `math.sqrt`, `math.sin`, `math.cos`, and `math.floor`
 * simple indexing such as `xs[i]`
 
 ### 7.3 Unsupported Syntax
@@ -643,6 +655,7 @@ Reject inside native candidate functions:
 * closures
 * nested functions
 * comprehensions in Public 1
+* tuple, dict, and set literals in Public 1
 * dynamic import
 * `getattr`
 * `setattr`

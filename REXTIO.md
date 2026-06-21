@@ -41,6 +41,21 @@ Use `rextio generate` when you want only generated source files. It writes Rust
 and Python source under `.rextio/generated/` and skips Rust, Nuitka, wheel, and
 build artifact compilation steps.
 
+## Native Subset
+
+Public 1 native candidates support module-level typed functions with scalar
+types and `list[int|float|bool|str]`. The current Rust backend handles
+assignment, typed local annotations with initializers, augmented assignment,
+`if`, `while`, `for x in xs`, `range(n)`, `range(start, stop)`,
+`range(start, stop, step)` with a positive int literal step, `break`,
+`continue`, simple indexing, list literals, and `list.append(...)` for supported
+list item types.
+
+Supported builtin calls are limited to `len`, `abs`, two-argument `min`/`max`,
+and `sum` over `list[int]` or `list[float]`. Supported `math` calls are
+`math.sqrt`, `math.sin`, `math.cos`, and `math.floor`. Empty list literals must
+use a supported local annotation such as `out: list[int] = []`.
+
 ## Configuration Sources
 
 Build and analysis settings resolve in this order:
