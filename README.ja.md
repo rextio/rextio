@@ -39,6 +39,7 @@ rextio init --project-root path/to/project
 rextio check path/to/project
 rextio generate path/to/project --fallback=cpython
 rextio build path/to/project --fallback=cpython
+rextio build path/to/project --fallback=cpython --entrypoint=myapp.cli:main
 rextio bench myapp.scoring.compute_score --project-root path/to/project
 rextio clean path/to/project
 ```
@@ -89,6 +90,7 @@ Rextio は生成ファイルを `.rextio/` 以下に書き込み、ユーザー�
     bench.json
 dist/
   <project>-0.1.0-<tag>.whl
+  <executable-name>.pyz
 ```
 
 `rextio check` は `.rextio/reports/check.json` を書き込みます。`rextio build` は check
@@ -104,6 +106,13 @@ wrapper/fallback ソースを `.rextio/generated/` 以下に書き込みます�
 extension を含む wheel はローカルの CPython/platform tag を使用します。テストスイートは
 この wheel を新しい環境にインストールし、`REXTIO_DISABLE_NATIVE=1` でパッケージ済み
 fallback import が引き続き動作することを検証します。
+
+`rextio build --entrypoint=module:function` は、`dist/` 以下に zipapp 実行 artifact も
+生成します。出力ファイル名は `--executable-name=name` で指定できます。省略した場合、
+Rextio は entrypoint モジュールから名前を導出します。結果は Python zipapp（`.pyz`）
+なので、対象マシンには互換性のある Python インタープリタが必要です。Native extension
+モジュールは zipapp 内部から直接 import できないため、生成された wrapper は fallback
+安全性を維持し、native モジュールを利用できない場合は Python fallback を使用します。
 
 ## ポリシー設定
 
@@ -195,6 +204,7 @@ Public 1 には焦点を絞ったローカル例が含まれています。
 rextio check examples/pure_math
 rextio generate examples/pure_math --fallback=cpython
 rextio build examples/pure_math --fallback=cpython
+rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 rextio bench pure_math.math_ops.sum_squares --project-root examples/pure_math
 rextio check examples/boundary_demo
 ```

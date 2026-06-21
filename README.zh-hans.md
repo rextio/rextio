@@ -36,6 +36,7 @@ rextio init --project-root path/to/project
 rextio check path/to/project
 rextio generate path/to/project --fallback=cpython
 rextio build path/to/project --fallback=cpython
+rextio build path/to/project --fallback=cpython --entrypoint=myapp.cli:main
 rextio bench myapp.scoring.compute_score --project-root path/to/project
 rextio clean path/to/project
 ```
@@ -83,6 +84,7 @@ Rextio 会把生成文件写入 `.rextio/` 下，不会原地修改用户源文�
     bench.json
 dist/
   <project>-0.1.0-<tag>.whl
+  <executable-name>.pyz
 ```
 
 `rextio check` 会写入 `.rextio/reports/check.json`。`rextio build` 会同时写入 check 和
@@ -97,6 +99,12 @@ Python wrapper/fallback 源码；它不会调用 Cargo、maturin 或 Nuitka，�
 fallback wheel 使用 `py3-none-any`；包含生成 native extension 的 wheel 使用本地
 CPython/platform tag。测试套件会把该 wheel 安装到全新环境中，并用
 `REXTIO_DISABLE_NATIVE=1` 验证打包后的 fallback import 仍能工作。
+
+`rextio build --entrypoint=module:function` 还会在 `dist/` 下生成 zipapp 可执行
+artifact。可以使用 `--executable-name=name` 控制输出文件名；否则 Rextio 会从
+entrypoint 模块派生名称。结果是 Python zipapp（`.pyz`），因此目标机器仍需要兼容的
+Python 解释器。Native extension 模块不能直接从 zipapp 内部 import，所以生成的
+wrapper 会保留 fallback 安全性，并在 native 模块不可用时使用 Python fallback。
 
 ## 策略配置
 
@@ -184,6 +192,7 @@ Public 1 包含聚焦的本地示例：
 rextio check examples/pure_math
 rextio generate examples/pure_math --fallback=cpython
 rextio build examples/pure_math --fallback=cpython
+rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 rextio bench pure_math.math_ops.sum_squares --project-root examples/pure_math
 rextio check examples/boundary_demo
 ```

@@ -29,6 +29,7 @@ rextio init --project-root demo
 rextio check demo
 rextio generate demo --fallback=cpython
 rextio build demo --fallback=cpython
+rextio build demo --fallback=cpython --entrypoint=demo_app.cli:main
 rextio bench demo_app.compute --project-root demo
 rextio clean demo
 ```
@@ -62,6 +63,11 @@ The editable-install smoke also installs the generated artifact wheel into a
 fresh virtual environment and imports the generated package with
 `REXTIO_DISABLE_NATIVE=1`, so release checks cover the packaged fallback path as
 well as the build directory path.
+
+`rextio build --entrypoint=module:function` generates a zipapp executable under
+`dist/`. The artifact still needs a compatible Python interpreter. Native
+extension modules are not loaded directly from inside the zipapp, so generated
+wrappers preserve fallback behavior when `_rextio_native` is unavailable.
 
 ## Boundary Safety
 

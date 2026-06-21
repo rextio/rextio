@@ -41,6 +41,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Use 0 to disable threshold fallback."
         ),
     )
+    build_parser_.add_argument(
+        "--entrypoint",
+        default=None,
+        help="Generate a zipapp executable for the given module:function entrypoint.",
+    )
+    build_parser_.add_argument(
+        "--executable-name",
+        default=None,
+        help="Executable artifact name without extension. Defaults to the entrypoint module name.",
+    )
     build_parser_.set_defaults(handler=build_cmd.run)
 
     generate_parser = subparsers.add_parser(
