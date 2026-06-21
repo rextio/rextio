@@ -133,6 +133,11 @@ native_marker = "decorator"
 In decorator-only mode, only functions marked with `@rextio.native` are native
 candidates.
 
+Use `@rextio.exempt` to keep a function on Python fallback even when automatic
+native discovery is enabled. Exempt functions are never emitted into generated
+Rust; native candidates that call them are rejected by the normal
+native-to-fallback boundary rule.
+
 ## Fallback Safety
 
 Generated wrappers use native functions when available and safe. They fall back
@@ -172,7 +177,7 @@ Public 1 includes focused local examples:
 - `examples/pure_math`: simple typed math functions compiled as native hot paths.
 - `examples/fastapi_scoring`: FastAPI stays Python. `compute_score` becomes Rust native.
 - `examples/fallback_demo`: generated wrappers use Python fallback when native is missing or `REXTIO_DISABLE_NATIVE=1`.
-- `examples/boundary_demo`: conservative boundary rejection and Python-loop boundary warnings with decorator-only discovery.
+- `examples/boundary_demo`: conservative boundary rejection through `@rextio.exempt` and Python-loop boundary warnings.
 
 Try:
 

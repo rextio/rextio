@@ -14,6 +14,7 @@ def sum_squares(xs: list[float]) -> float:
     return total
 
 
+@rextio.exempt
 def fallback_helper(x: float) -> float:
     return x + 10.0
 

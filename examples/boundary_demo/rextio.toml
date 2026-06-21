@@ -10,9 +10,7 @@ build_tool = "maturin"
 nuitka = "experimental"
 
 [policy]
-# This demo uses decorator-only discovery so fallback_helper remains fallback-only
-# and compute_rejected demonstrates RXT070 boundary rejection.
-native_marker = "decorator"
+native_marker = "auto"
 require_type_hints = true
 allow_dynamic_features = false
 boundary_warnings = true

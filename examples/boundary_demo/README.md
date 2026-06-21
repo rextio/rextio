@@ -5,7 +5,7 @@ This example shows boundary safety and warnings.
 It includes:
 
 - accepted native-to-native calls
-- a rejected native function calling fallback-only code
+- a rejected native function calling `@rextio.exempt` fallback-only code
 - a Python fallback loop repeatedly calling a native function
 
 ```text

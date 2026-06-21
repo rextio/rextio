@@ -18,6 +18,9 @@ automatically. Projects can set `[policy] native_marker = "decorator"` when
 they want only explicitly marked `@rextio.native` functions to become native
 candidates.
 
+Use `@rextio.exempt` on functions that must stay on Python fallback. Exemptions
+override automatic discovery and explicit native markers.
+
 ## Smoke Flow
 
 ```text
