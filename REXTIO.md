@@ -44,19 +44,22 @@ build artifact compilation steps.
 ## Native Subset
 
 Public 1 native candidates support module-level typed functions with scalar
-types and `list[int|float|bool|str]`. The current Rust backend handles
-assignment, typed local annotations with initializers, augmented assignment,
-`if`, `while`, `for x in xs`, `range(n)`, `range(start, stop)`,
+types, `list[int|float|bool|str]`, fixed tuples, limited
+`dict[str, int|float]`, and `Optional[T]` / `T | None`. The current Rust backend
+handles assignment, typed local annotations with initializers, augmented
+assignment, `if`, `while`, `for x in xs`, `range(n)`, `range(start, stop)`,
 `range(start, stop, step)` with a positive int literal step,
 `for i, x in enumerate(xs)`, `for x, y in zip(xs, ys)`, `break`, `continue`,
-simple indexing, list literals, and `list.append(...)` for supported list item
-types.
+simple indexing, list literals, fixed tuple literals, limited dict read/write,
+and `list.append(...)` for supported list item types.
 
 Supported builtin calls are limited to `len`, `abs`, two-argument `min`/`max`,
 and `sum` over `list[int]` or `list[float]`. Supported `math` calls are
 `math.sqrt`, `math.sin`, `math.cos`, and `math.floor`. Empty list literals must
 use a supported local annotation such as `out: list[int] = []`. `enumerate` and
-`zip` are supported only as batch loop iterables over list variables.
+`zip` are supported only as batch loop iterables over list variables. Empty dict
+literals require a supported `dict[str, int|float]` annotation. Dataclasses are
+not part of the Public 1 native subset.
 
 ## Configuration Sources
 

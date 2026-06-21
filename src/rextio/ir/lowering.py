@@ -16,6 +16,8 @@ from rextio.ir.nodes import (
     CallIR,
     CompareIR,
     ContinueIR,
+    DictIR,
+    DictSetIR,
     ExprIR,
     ForIR,
     FunctionIR,
@@ -29,6 +31,7 @@ from rextio.ir.nodes import (
     ReturnIR,
     StatementIR,
     TargetIR,
+    TupleIR,
     TupleTargetIR,
     UnaryOpIR,
     WhileIR,
@@ -92,6 +95,13 @@ def lower_statement(
     if isinstance(node, ast.Assign):
         if len(node.targets) != 1:
             raise LoweringError("multiple assignment targets are not supported")
+        if isinstance(node.targets[0], ast.Subscript):
+            target = node.targets[0]
+            return DictSetIR(
+                target=lower_name_target(target.value),
+                key=lower_expr(target.slice, module, resolver),
+                value=lower_expr(node.value, module, resolver),
+            )
         return AssignIR(
             target=lower_name_target(node.targets[0]),
             value=lower_expr(node.value, module, resolver),
@@ -100,6 +110,7 @@ def lower_statement(
         return AssignIR(
             target=lower_name_target(node.target),
             value=lower_expr(node.value, module, resolver),
+            target_type=type_from_annotation(node.annotation),
         )
     if isinstance(node, ast.AugAssign):
         target = lower_name_target(node.target)
@@ -164,6 +175,18 @@ def lower_expr(
         return NameIR(node.id)
     if isinstance(node, ast.List):
         return ListIR(items=[lower_expr(item, module, resolver) for item in node.elts])
+    if isinstance(node, ast.Tuple):
+        return TupleIR(items=[lower_expr(item, module, resolver) for item in node.elts])
+    if isinstance(node, ast.Dict):
+        if any(key is None for key in node.keys):
+            raise LoweringError("dictionary unpacking cannot be lowered")
+        return DictIR(
+            items=[
+                (lower_expr(key, module, resolver), lower_expr(value, module, resolver))
+                for key, value in zip(node.keys, node.values, strict=True)
+                if key is not None
+            ]
+        )
     if isinstance(node, ast.BinOp):
         return BinaryOpIR(
             left=lower_expr(node.left, module, resolver),
@@ -249,6 +272,10 @@ def lower_compare_op(node: ast.cmpop) -> str:
         return ">"
     if isinstance(node, ast.GtE):
         return ">="
+    if isinstance(node, ast.Is):
+        return "=="
+    if isinstance(node, ast.IsNot):
+        return "!="
     raise LoweringError(f"unsupported comparison operator: {type(node).__name__}")
 
 

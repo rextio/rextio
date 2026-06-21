@@ -28,6 +28,10 @@ Supported types:
 - `list[float]`
 - `list[bool]`
 - `list[str]`
+- fixed tuples such as `tuple[int, float]`
+- `dict[str, int]`
+- `dict[str, float]`
+- `Optional[T]` and `T | None` for supported `T`
 
 Supported syntax is intentionally small:
 
@@ -54,6 +58,11 @@ Supported syntax is intentionally small:
 - typed empty list literals such as `out: list[int] = []`
 - `list.append(x)` for `list[int]`, `list[float]`, `list[bool]`, and
   `list[str]`
+- fixed tuple literals and constant tuple indexing such as `pair[0]`
+- limited dict literals, `d[key]` reads, and `d[key] = value` writes for
+  `dict[str, int]` and `dict[str, float]`
+- `Optional[T]` / `T | None` annotations, `None` returns, and `is None` /
+  `is not None` checks
 - calls to accepted native functions
 - `len(x)`
 - `abs(x)` for `int` and `float`
@@ -74,8 +83,12 @@ usually `RXT010`:
 - generators and `yield`
 - lambdas and nested functions
 - comprehensions
-- tuple, dict, and set literals
+- set literals
+- general tuple and dict semantics outside the fixed tuple and
+  `dict[str, int|float]` subset
+- dataclasses
 - empty list literals without a supported `list[...]` annotation
+- empty dict literals without a supported `dict[str, int|float]` annotation
 - `enumerate` outside a `for i, x in enumerate(xs)` loop
 - `zip` outside a `for x, y in zip(xs, ys)` loop
 - `enumerate` or `zip` over non-list expressions

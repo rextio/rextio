@@ -7,6 +7,8 @@ from rextio.ir.nodes import (
     BlockIR,
     CallIR,
     CompareIR,
+    DictIR,
+    DictSetIR,
     ExprIR,
     ForIR,
     FunctionIR,
@@ -16,6 +18,7 @@ from rextio.ir.nodes import (
     ModuleIR,
     ReturnIR,
     StatementIR,
+    TupleIR,
     UnaryOpIR,
     WhileIR,
 )
@@ -64,6 +67,11 @@ def _statement_calls(statement: StatementIR, functions: dict[str, FunctionIR]) -
         return _expr_calls(statement.value, functions)
     if isinstance(statement, AppendIR):
         return _expr_calls(statement.value, functions)
+    if isinstance(statement, DictSetIR):
+        return (
+            _expr_calls(statement.key, functions)
+            | _expr_calls(statement.value, functions)
+        )
     if isinstance(statement, ReturnIR):
         return _expr_calls(statement.value, functions) if statement.value is not None else set()
     if isinstance(statement, IfIR):
@@ -108,5 +116,16 @@ def _expr_calls(expr: ExprIR, functions: dict[str, FunctionIR]) -> set[str]:
         calls: set[str] = set()
         for item in expr.items:
             calls.update(_expr_calls(item, functions))
+        return calls
+    if isinstance(expr, TupleIR):
+        calls: set[str] = set()
+        for item in expr.items:
+            calls.update(_expr_calls(item, functions))
+        return calls
+    if isinstance(expr, DictIR):
+        calls: set[str] = set()
+        for key, value in expr.items:
+            calls.update(_expr_calls(key, functions))
+            calls.update(_expr_calls(value, functions))
         return calls
     return set()

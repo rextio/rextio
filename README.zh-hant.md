@@ -51,17 +51,20 @@ fallback。
 關於支援的 subset、邊界限制、診斷和非目標，請參閱
 [Public 1 不支援的功能](docs/unsupported-features.md)。
 
-目前 native 候選支援 scalar 和 `list[...]` 型別、算術、比較、`if`、`while`、
-`for x in xs`、`range(...)` 迴圈、`for i, x in enumerate(xs)`、
-`for x, y in zip(xs, ys)`、`break`、`continue`、augmented assignment、帶型別的區域
-annotation、簡單索引、list literal，以及支援的 list item 型別上的
-`list.append(...)`。Builtin 支援刻意限制為 `len`、`abs`、兩個參數的 `min`/`max`，
-以及 `sum(list[int|float])`。支援的 `math` subset 是 `math.sqrt`、`math.sin`、
-`math.cos` 和 `math.floor`。
+目前 native 候選支援 scalar、`list[...]`、fixed `tuple[...]`、有限的
+`dict[str, int|float]`，以及 `Optional[T]` / `T | None` 型別。支援的語法包括算術、
+比較、`if`、`while`、`for x in xs`、`range(...)` 迴圈、
+`for i, x in enumerate(xs)`、`for x, y in zip(xs, ys)`、`break`、`continue`、
+augmented assignment、帶型別的區域 annotation、簡單索引、list literal、fixed tuple
+literal、有限的 dict read/write，以及支援的 list item 型別上的 `list.append(...)`。
+Builtin 支援刻意限制為 `len`、`abs`、兩個參數的 `min`/`max`，以及
+`sum(list[int|float])`。支援的 `math` subset 是 `math.sqrt`、`math.sin`、`math.cos`
+和 `math.floor`。
 
 這些擴充形式仍保持保守：空 list literal 需要受支援的 `list[...]` 區域 annotation，
 且 `range(start, stop, step)` 目前要求 `step` 是正的 int literal。`enumerate` 和
-`zip` 僅支援作為 list 變數上的 batch loop iterable。
+`zip` 僅支援作為 list 變數上的 batch loop iterable。Dict 支援僅限
+`dict[str, int]` 和 `dict[str, float]`；dataclass 仍不在 Public 1 native 編譯範圍內。
 
 ## 建置前提
 

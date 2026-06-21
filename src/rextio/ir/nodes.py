@@ -72,9 +72,28 @@ class BlockIR(IRNode):
 class AssignIR(StatementIR):
     target: "NameIR"
     value: ExprIR
+    target_type: RxtType | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {"kind": "assign", "target": self.target.to_dict(), "value": self.value.to_dict()}
+        data = {"kind": "assign", "target": self.target.to_dict(), "value": self.value.to_dict()}
+        if self.target_type is not None:
+            data["target_type"] = self.target_type.to_dict()
+        return data
+
+
+@dataclass(frozen=True)
+class DictSetIR(StatementIR):
+    target: "NameIR"
+    key: ExprIR
+    value: ExprIR
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "dict_set",
+            "target": self.target.to_dict(),
+            "key": self.key.to_dict(),
+            "value": self.value.to_dict(),
+        }
 
 
 @dataclass(frozen=True)
@@ -238,6 +257,27 @@ class ListIR(ExprIR):
 
     def to_dict(self) -> dict[str, object]:
         return {"kind": "list", "items": [item.to_dict() for item in self.items]}
+
+
+@dataclass(frozen=True)
+class TupleIR(ExprIR):
+    items: list[ExprIR]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "tuple", "items": [item.to_dict() for item in self.items]}
+
+
+@dataclass(frozen=True)
+class DictIR(ExprIR):
+    items: list[tuple[ExprIR, ExprIR]]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "dict",
+            "items": [
+                {"key": key.to_dict(), "value": value.to_dict()} for key, value in self.items
+            ],
+        }
 
 
 @dataclass(frozen=True)

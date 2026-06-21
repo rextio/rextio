@@ -226,9 +226,68 @@ def labels() -> list[str]:
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
-    assert "let mut out = vec![];" in source
+    assert "let mut out: Vec<i64> = vec![];" in source
     assert "out.push(x.clone());" in source
     assert 'return Ok(vec![String::from("ready"), String::from("set")]);' in source
+
+
+def test_generates_rust_for_fixed_tuples_limited_dicts_and_optional_types(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+from typing import Optional
+import rextio
+
+@rextio.native
+def first_value(pair: tuple[int, float]) -> int:
+    return pair[0]
+
+@rextio.native
+def make_pair(x: int, y: float) -> tuple[int, float]:
+    return (x, y)
+
+@rextio.native
+def read_score(scores: dict[str, int], key: str) -> int:
+    return scores[key]
+
+@rextio.native
+def build_weights() -> dict[str, float]:
+    weights: dict[str, float] = {}
+    weights["a"] = 1.5
+    return weights
+
+@rextio.native
+def maybe(flag: bool, x: int) -> Optional[int]:
+    if flag:
+        return x
+    return None
+
+@rextio.native
+def echo(value: int | None) -> int | None:
+    if value is None:
+        return None
+    return value
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "use std::collections::HashMap;" in source
+    assert "fn app__first_value(pair: (i64, f64)) -> PyResult<i64> {" in source
+    assert "return Ok(pair.0.clone());" in source
+    assert "fn app__make_pair(x: i64, y: f64) -> PyResult<(i64, f64)> {" in source
+    assert "return Ok((x, y));" in source
+    assert "fn app__read_score(scores: HashMap<String, i64>, key: String) -> PyResult<i64> {" in source
+    assert "scores.get(&key).cloned().ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(key.clone()))?" in source
+    assert "let mut weights: HashMap<String, f64> = HashMap::new();" in source
+    assert 'weights.insert(String::from("a"), 1.5);' in source
+    assert "fn app__maybe(flag: bool, x: i64) -> PyResult<Option<i64>> {" in source
+    assert "return Ok(Some(x));" in source
+    assert "return Ok(None);" in source
+    assert "fn app__echo(value: Option<i64>) -> PyResult<Option<i64>> {" in source
+    assert "if value == None {" in source
 
 
 def test_generates_rust_for_enumerate_and_zip_batch_loops(tmp_path: Path) -> None:

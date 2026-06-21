@@ -329,7 +329,7 @@ def slice_bad(xs: list[int]) -> int:
     }
 
 
-def test_rejects_unsupported_literal_syntax(tmp_path: Path) -> None:
+def test_rejects_remaining_unsupported_literal_syntax(tmp_path: Path) -> None:
     write_module(
         tmp_path,
         "app.py",
@@ -341,14 +341,18 @@ def list_ok() -> list[int]:
     return [1, 2]
 
 @rextio.native
-def tuple_bad(x: int) -> int:
+def tuple_ok(x: int) -> int:
     pair = (x, x)
     return pair[0]
 
 @rextio.native
-def dict_bad(x: int) -> int:
+def dict_ok(x: int) -> int:
     values = {"x": x}
     return x
+
+@rextio.native
+def dict_value_bad(x: str) -> dict[str, int]:
+    return {"x": x}
 
 @rextio.native
 def set_bad(x: int) -> int:
@@ -361,12 +365,98 @@ def set_bad(x: int) -> int:
 
     assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
     assert [function.qualname for function in analysis.accepted_native_functions] == [
-        "app.list_ok"
+        "app.dict_ok",
+        "app.list_ok",
+        "app.tuple_ok",
     ]
     assert {function.qualname for function in analysis.rejected_native_functions} == {
-        "app.dict_bad",
+        "app.dict_value_bad",
         "app.set_bad",
-        "app.tuple_bad",
+    }
+
+
+def test_accepts_fixed_tuples_limited_dicts_and_optional_types(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+from typing import Optional
+import rextio
+
+@rextio.native
+def first_value(pair: tuple[int, float]) -> int:
+    return pair[0]
+
+@rextio.native
+def make_pair(x: int, y: float) -> tuple[int, float]:
+    return (x, y)
+
+@rextio.native
+def read_score(scores: dict[str, int], key: str) -> int:
+    return scores[key]
+
+@rextio.native
+def build_weights() -> dict[str, float]:
+    weights: dict[str, float] = {}
+    weights["a"] = 1.5
+    return weights
+
+@rextio.native
+def maybe(flag: bool, x: int) -> Optional[int]:
+    if flag:
+        return x
+    return None
+
+@rextio.native
+def echo(value: int | None) -> int | None:
+    if value is None:
+        return None
+    return value
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.build_weights",
+        "app.echo",
+        "app.first_value",
+        "app.make_pair",
+        "app.maybe",
+        "app.read_score",
+    ]
+    assert analysis.rejected_native_functions == []
+
+
+def test_rejects_unsupported_dict_and_optional_operations(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def non_str_key() -> dict[int, int]:
+    return {1: 2}
+
+@rextio.native
+def dict_wrong_value(scores: dict[str, int]) -> dict[str, int]:
+    scores["a"] = 1.5
+    return scores
+
+@rextio.native
+def optional_arithmetic(value: int | None) -> int:
+    return value + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT003", "RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.dict_wrong_value",
+        "app.non_str_key",
+        "app.optional_arithmetic",
     }
 
 
