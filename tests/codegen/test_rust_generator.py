@@ -323,6 +323,71 @@ def dot(xs: list[float], ys: list[float]) -> float:
     assert "total = total + (x * y);" in source
 
 
+def test_generates_rust_for_comprehensions_and_nested_collections(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def inc(x: int) -> int:
+    return x + 1
+
+@rextio.native
+def squares(xs: list[int]) -> list[int]:
+    return [inc(x) for x in xs if x > 0]
+
+@rextio.native
+def indexed(xs: list[int]) -> list[int]:
+    return [i + x for i, x in enumerate(xs)]
+
+@rextio.native
+def flatten(rows: list[list[int]]) -> list[int]:
+    return [x for row in rows for x in row]
+
+@rextio.native
+def nested(rows: list[list[int]]) -> list[list[int]]:
+    return [[x + 1 for x in row] for row in rows]
+
+@rextio.native
+def labels(xs: list[str]) -> dict[str, str]:
+    return {x: x for x in xs}
+
+@rextio.native
+def lookup(scores: dict[str, int], xs: list[str]) -> list[int]:
+    return [scores[x] for x in xs]
+
+@rextio.native
+def unique(xs: list[int]) -> set[int]:
+    return {x for x in xs if x > 0}
+
+@rextio.native
+def last_positive(xs: list[int]) -> int:
+    out = [y for x in xs if (y := x) > 0]
+    return y
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "fn app__nested(rows: Vec<Vec<i64>>) -> PyResult<Vec<Vec<i64>>> {" in source
+    assert "let mut __rextio_list_1 = Vec::new();" in source
+    assert "for row in rows.iter().cloned() {" in source
+    assert "for x in row.iter().cloned() {" in source
+    assert "__rextio_list_1.push(app__inc(x.clone())?);" in source
+    assert (
+        "for (i, x) in xs.iter().cloned().enumerate()"
+        ".map(|(i, value)| (i as i64, value)) {"
+    ) in source
+    assert "fn app__labels(xs: Vec<String>) -> PyResult<HashMap<String, String>> {" in source
+    assert "__rextio_dict_1.insert(x.clone(), x.clone());" in source
+    assert "scores.get(&x).cloned().ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(x.clone()))?" in source
+    assert "fn app__unique(xs: Vec<i64>) -> PyResult<HashSet<i64>> {" in source
+    assert "let mut y: Option<i64> = None;" in source
+    assert "y = Some(x.clone());" in source
+    assert "PyUnboundLocalError" in source
+
+
 def test_generates_native_helpers_before_callers(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """

@@ -6,6 +6,7 @@ from rextio.ir.nodes import (
     BinaryOpIR,
     BlockIR,
     CallIR,
+    DictComprehensionIR,
     CompareIR,
     DictIR,
     DictSetIR,
@@ -14,9 +15,13 @@ from rextio.ir.nodes import (
     FunctionIR,
     IfIR,
     IndexIR,
+    ListComprehensionIR,
     ListIR,
     ModuleIR,
+    NamedExprIR,
     ReturnIR,
+    SetComprehensionIR,
+    SetIR,
     StatementIR,
     TupleIR,
     UnaryOpIR,
@@ -117,6 +122,13 @@ def _expr_calls(expr: ExprIR, functions: dict[str, FunctionIR]) -> set[str]:
         for item in expr.items:
             calls.update(_expr_calls(item, functions))
         return calls
+    if isinstance(expr, ListComprehensionIR):
+        calls = _expr_calls(expr.item, functions)
+        for generator in expr.generators:
+            calls.update(_expr_calls(generator.iterable, functions))
+            for condition in generator.conditions:
+                calls.update(_expr_calls(condition, functions))
+        return calls
     if isinstance(expr, TupleIR):
         calls: set[str] = set()
         for item in expr.items:
@@ -128,4 +140,25 @@ def _expr_calls(expr: ExprIR, functions: dict[str, FunctionIR]) -> set[str]:
             calls.update(_expr_calls(key, functions))
             calls.update(_expr_calls(value, functions))
         return calls
+    if isinstance(expr, DictComprehensionIR):
+        calls = _expr_calls(expr.key, functions) | _expr_calls(expr.value, functions)
+        for generator in expr.generators:
+            calls.update(_expr_calls(generator.iterable, functions))
+            for condition in generator.conditions:
+                calls.update(_expr_calls(condition, functions))
+        return calls
+    if isinstance(expr, SetIR):
+        calls: set[str] = set()
+        for item in expr.items:
+            calls.update(_expr_calls(item, functions))
+        return calls
+    if isinstance(expr, SetComprehensionIR):
+        calls = _expr_calls(expr.item, functions)
+        for generator in expr.generators:
+            calls.update(_expr_calls(generator.iterable, functions))
+            for condition in generator.conditions:
+                calls.update(_expr_calls(condition, functions))
+        return calls
+    if isinstance(expr, NamedExprIR):
+        return _expr_calls(expr.value, functions)
     return set()

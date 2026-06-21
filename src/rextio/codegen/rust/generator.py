@@ -13,8 +13,10 @@ from rextio.ir.nodes import (
     BlockIR,
     BreakIR,
     CallIR,
+    ComprehensionGeneratorIR,
     CompareIR,
     ContinueIR,
+    DictComprehensionIR,
     DictIR,
     DictSetIR,
     ExprIR,
@@ -22,11 +24,15 @@ from rextio.ir.nodes import (
     FunctionIR,
     IfIR,
     IndexIR,
+    ListComprehensionIR,
     ListIR,
     LiteralIR,
     ModuleIR,
     NameIR,
+    NamedExprIR,
     ReturnIR,
+    SetComprehensionIR,
+    SetIR,
     StatementIR,
     TargetIR,
     TupleIR,
@@ -103,6 +109,8 @@ class _FunctionRenderer:
         self.native_return_types = native_return_types
         self.declared = {param.name for param in function.params}
         self.variable_types = {param.name: param.type for param in function.params}
+        self.maybe_bound_types: dict[str, RxtType] = {}
+        self.temp_index = 0
 
     def render(self) -> str:
         assigned_names = _assigned_names(self.function.body)
@@ -131,6 +139,7 @@ class _FunctionRenderer:
     def render_statement(self, statement: StatementIR, indent: int) -> list[str]:
         prefix = _indent(indent)
         if isinstance(statement, AssignIR):
+            lines = self.named_expr_prelude(statement.value, indent)
             target = statement.target.id
             target_type = statement.target_type or self.infer_expr_type(statement.value)
             value = strip_expr_if_safe(
@@ -139,21 +148,30 @@ class _FunctionRenderer:
             )
             if target_type is not None:
                 self.variable_types[target] = target_type
+            if target in self.maybe_bound_types:
+                return [*lines, f"{prefix}{target} = Some({value});"]
             if target in self.declared:
-                return [f"{prefix}{target} = {value};"]
+                return [*lines, f"{prefix}{target} = {value};"]
             self.declared.add(target)
             if statement.target_type is not None and _needs_local_type_annotation(statement.value, statement.target_type):
-                return [f"{prefix}let mut {target}: {rust_type(statement.target_type)} = {value};"]
-            return [f"{prefix}let mut {target} = {value};"]
+                return [*lines, f"{prefix}let mut {target}: {rust_type(statement.target_type)} = {value};"]
+            return [*lines, f"{prefix}let mut {target} = {value};"]
         if isinstance(statement, DictSetIR):
+            lines = [
+                *self.named_expr_prelude(statement.key, indent),
+                *self.named_expr_prelude(statement.value, indent),
+            ]
             self.declared.add(statement.target.id)
             return [
+                *lines,
                 f"{prefix}{statement.target.id}.insert("
-                f"{strip_wrapping_parens(self.render_expr(statement.key))}, "
+                f"{strip_wrapping_parens(self.render_call_arg(statement.key))}, "
                 f"{strip_wrapping_parens(self.render_call_arg(statement.value))});"
             ]
         if isinstance(statement, AppendIR):
+            lines = self.named_expr_prelude(statement.value, indent)
             return [
+                *lines,
                 f"{prefix}{statement.target.id}.push("
                 f"{strip_wrapping_parens(self.render_call_arg(statement.value))});"
             ]
@@ -164,14 +182,16 @@ class _FunctionRenderer:
         if isinstance(statement, ReturnIR):
             if statement.value is None:
                 return [f"{prefix}return Ok(());"]
+            lines = self.named_expr_prelude(statement.value, indent)
             value = strip_expr_if_safe(
                 statement.value,
                 self.render_expr_with_expected(statement.value, self.function.return_type),
             )
-            return [f"{prefix}return Ok({value});"]
+            return [*lines, f"{prefix}return Ok({value});"]
         if isinstance(statement, IfIR):
+            lines = self.named_expr_prelude(statement.condition, indent)
             condition = strip_wrapping_parens(self.render_expr(statement.condition))
-            lines = [f"{prefix}if {condition} {{"]
+            lines.append(f"{prefix}if {condition} {{")
             lines.extend(self.render_block(statement.body, indent + 1))
             if statement.orelse.statements:
                 lines.append(f"{prefix}}} else {{")
@@ -179,17 +199,21 @@ class _FunctionRenderer:
             lines.append(f"{prefix}}}")
             return lines
         if isinstance(statement, ForIR):
+            lines = self.named_expr_prelude(statement.iterable, indent)
+            iterable = self.render_iterable(statement.iterable)
             lines = [
+                *lines,
                 f"{prefix}for {self.render_loop_target(statement.target)} "
-                f"in {self.render_iterable(statement.iterable)} {{"
+                f"in {iterable} {{"
             ]
             self.declared.update(target_names(statement.target))
             lines.extend(self.render_block(statement.body, indent + 1))
             lines.append(f"{prefix}}}")
             return lines
         if isinstance(statement, WhileIR):
+            lines = self.named_expr_prelude(statement.condition, indent)
             condition = strip_wrapping_parens(self.render_expr(statement.condition))
-            lines = [f"{prefix}while {condition} {{"]
+            lines.append(f"{prefix}while {condition} {{")
             lines.extend(self.render_block(statement.body, indent + 1))
             lines.append(f"{prefix}}}")
             return lines
@@ -239,9 +263,13 @@ class _FunctionRenderer:
         if isinstance(expr, LiteralIR):
             return render_literal(expr.value)
         if isinstance(expr, NameIR):
+            if expr.id in self.maybe_bound_types:
+                return self.render_maybe_bound_name(expr.id)
             return expr.id
         if isinstance(expr, ListIR):
             return f"vec![{', '.join(self.render_expr(item) for item in expr.items)}]"
+        if isinstance(expr, ListComprehensionIR):
+            return self.render_list_comprehension(expr)
         if isinstance(expr, TupleIR):
             if len(expr.items) == 1:
                 return f"({self.render_expr(expr.items[0])},)"
@@ -259,6 +287,20 @@ class _FunctionRenderer:
             lines.append("    map")
             lines.append("}")
             return "\n".join(lines)
+        if isinstance(expr, DictComprehensionIR):
+            return self.render_dict_comprehension(expr)
+        if isinstance(expr, SetIR):
+            if not expr.items:
+                return "HashSet::new()"
+            lines = ["{"]
+            lines.append("    let mut set = HashSet::new();")
+            for item in expr.items:
+                lines.append(f"    set.insert({strip_wrapping_parens(self.render_call_arg(item))});")
+            lines.append("    set")
+            lines.append("}")
+            return "\n".join(lines)
+        if isinstance(expr, SetComprehensionIR):
+            return self.render_set_comprehension(expr)
         if isinstance(expr, BinaryOpIR):
             op = {"and": "&&", "or": "||"}.get(expr.op, expr.op)
             return f"({self.render_expr(expr.left)} {op} {self.render_expr(expr.right)})"
@@ -271,7 +313,315 @@ class _FunctionRenderer:
             return self.render_call(expr)
         if isinstance(expr, IndexIR):
             return self.render_index_expr(expr)
+        if isinstance(expr, NamedExprIR):
+            return self.render_named_expr(expr)
         raise RustCodegenError(f"unsupported expression IR: {type(expr).__name__}")
+
+    def render_list_comprehension(self, expr: ListComprehensionIR) -> str:
+        target = self.next_temp("__rextio_list")
+        lines = ["{"]
+        lines.append(f"    let mut {target} = Vec::new();")
+        lines.extend(
+            self.render_comprehension_generators(
+                expr.generators,
+                1,
+                lambda indent: [
+                    f"{_indent(indent)}{target}.push("
+                    f"{strip_wrapping_parens(self.render_call_arg(expr.item))});"
+                ],
+            )
+        )
+        lines.append(f"    {target}")
+        lines.append("}")
+        return "\n".join(lines)
+
+    def render_dict_comprehension(self, expr: DictComprehensionIR) -> str:
+        target = self.next_temp("__rextio_dict")
+        lines = ["{"]
+        lines.append(f"    let mut {target} = HashMap::new();")
+        lines.extend(
+            self.render_comprehension_generators(
+                expr.generators,
+                1,
+                lambda indent: [
+                    f"{_indent(indent)}{target}.insert("
+                    f"{strip_wrapping_parens(self.render_call_arg(expr.key))}, "
+                    f"{strip_wrapping_parens(self.render_call_arg(expr.value))});"
+                ],
+            )
+        )
+        lines.append(f"    {target}")
+        lines.append("}")
+        return "\n".join(lines)
+
+    def render_set_comprehension(self, expr: SetComprehensionIR) -> str:
+        target = self.next_temp("__rextio_set")
+        lines = ["{"]
+        lines.append(f"    let mut {target} = HashSet::new();")
+        lines.extend(
+            self.render_comprehension_generators(
+                expr.generators,
+                1,
+                lambda indent: [
+                    f"{_indent(indent)}{target}.insert("
+                    f"{strip_wrapping_parens(self.render_call_arg(expr.item))});"
+                ],
+            )
+        )
+        lines.append(f"    {target}")
+        lines.append("}")
+        return "\n".join(lines)
+
+    def render_comprehension_generators(
+        self,
+        generators: list[ComprehensionGeneratorIR],
+        index: int,
+        render_leaf: callable,
+    ) -> list[str]:
+        if index > len(generators):
+            return render_leaf(index)
+        generator = generators[index - 1]
+        prefix = _indent(index)
+        iterable = self.render_iterable(generator.iterable)
+        lines = [
+            f"{prefix}for {self.render_loop_target(generator.target)} in {iterable} {{"
+        ]
+        saved_types = dict(self.variable_types)
+        self.bind_target_types(generator.target, self.iterable_target_types(generator.iterable))
+        if generator.conditions:
+            condition = " && ".join(
+                strip_wrapping_parens(self.render_expr(condition))
+                for condition in generator.conditions
+            )
+            lines.append(f"{_indent(index + 1)}if {condition} {{")
+            lines.extend(self.render_comprehension_generators(generators, index + 1, render_leaf))
+            lines.append(f"{_indent(index + 1)}}}")
+        else:
+            lines.extend(self.render_comprehension_generators(generators, index + 1, render_leaf))
+        self.variable_types = saved_types
+        lines.append(f"{prefix}}}")
+        return lines
+
+    def iterable_target_types(self, expr: ExprIR) -> list[RxtType]:
+        if isinstance(expr, CallIR) and expr.function == "enumerate" and len(expr.args) == 1:
+            item_type = self.iterable_item_type(expr.args[0])
+            return [RxtInt(), item_type] if item_type is not None else []
+        if isinstance(expr, CallIR) and expr.function == "zip" and len(expr.args) == 2:
+            item_types = [self.iterable_item_type(arg) for arg in expr.args]
+            return [item for item in item_types if item is not None]
+        if isinstance(expr, CallIR) and expr.function == "range":
+            return [RxtInt()]
+        item_type = self.iterable_item_type(expr)
+        return [item_type] if item_type is not None else []
+
+    def iterable_item_type(self, expr: ExprIR) -> RxtType | None:
+        value_type = self.infer_expr_type(expr)
+        if isinstance(value_type, (RxtList, RxtSet)):
+            return value_type.item_type
+        return None
+
+    def bind_target_types(self, target: TargetIR, item_types: list[RxtType]) -> None:
+        if isinstance(target, NameIR) and len(item_types) == 1:
+            self.variable_types[target.id] = item_types[0]
+            return
+        if isinstance(target, TupleTargetIR) and len(target.items) == len(item_types):
+            for item, item_type in zip(target.items, item_types, strict=True):
+                self.variable_types[item.id] = item_type
+
+    def render_named_expr(self, expr: NamedExprIR) -> str:
+        target = expr.target.id
+        value = strip_expr_if_safe(
+            expr.value,
+            self.render_call_arg(expr.value),
+        )
+        if target in self.maybe_bound_types:
+            return (
+                f"{{ {target} = Some({value}); "
+                f"{self.render_maybe_bound_name(target)} }}"
+            )
+        return f"{{ {target} = {value}; {target}.clone() }}"
+
+    def render_maybe_bound_name(self, name: str) -> str:
+        message = json.dumps(f"local variable '{name}' referenced before assignment")
+        return (
+            f"{name}.clone().ok_or_else(|| "
+            f"pyo3::exceptions::PyUnboundLocalError::new_err({message}))?"
+        )
+
+    def next_temp(self, prefix: str) -> str:
+        self.temp_index += 1
+        return f"{prefix}_{self.temp_index}"
+
+    def named_expr_prelude(self, expr: ExprIR, indent: int) -> list[str]:
+        bindings = self.collect_named_expr_bindings(expr)
+        lines: list[str] = []
+        for name, binding_type in bindings.items():
+            if name in self.declared:
+                self.variable_types[name] = self.variable_types.get(name, binding_type)
+                continue
+            self.declared.add(name)
+            self.variable_types[name] = binding_type
+            self.maybe_bound_types[name] = binding_type
+            lines.append(
+                f"{_indent(indent)}let mut {name}: Option<{rust_type(binding_type)}> = None;"
+            )
+        return lines
+
+    def collect_named_expr_bindings(self, expr: ExprIR) -> dict[str, RxtType]:
+        bindings: dict[str, RxtType] = {}
+        scope = dict(self.variable_types)
+        self.collect_named_expr_bindings_in_expr(expr, scope, scope, bindings)
+        return bindings
+
+    def collect_named_expr_bindings_in_expr(
+        self,
+        expr: ExprIR,
+        scope: dict[str, RxtType],
+        binding_scope: dict[str, RxtType],
+        bindings: dict[str, RxtType],
+    ) -> None:
+        if isinstance(expr, NamedExprIR):
+            self.collect_named_expr_bindings_in_expr(expr.value, scope, binding_scope, bindings)
+            value_type = self.infer_expr_type_in_scope(expr.value, scope)
+            if value_type is None:
+                raise RustCodegenError("cannot infer assignment expression type")
+            bindings.setdefault(expr.target.id, value_type)
+            scope[expr.target.id] = value_type
+            binding_scope[expr.target.id] = value_type
+            return
+        if isinstance(expr, BinaryOpIR):
+            self.collect_named_expr_bindings_in_expr(expr.left, scope, binding_scope, bindings)
+            self.collect_named_expr_bindings_in_expr(expr.right, scope, binding_scope, bindings)
+            return
+        if isinstance(expr, UnaryOpIR):
+            self.collect_named_expr_bindings_in_expr(expr.value, scope, binding_scope, bindings)
+            return
+        if isinstance(expr, CompareIR):
+            self.collect_named_expr_bindings_in_expr(expr.left, scope, binding_scope, bindings)
+            for comparator in expr.comparators:
+                self.collect_named_expr_bindings_in_expr(comparator, scope, binding_scope, bindings)
+            return
+        if isinstance(expr, CallIR):
+            for arg in expr.args:
+                self.collect_named_expr_bindings_in_expr(arg, scope, binding_scope, bindings)
+            return
+        if isinstance(expr, IndexIR):
+            self.collect_named_expr_bindings_in_expr(expr.value, scope, binding_scope, bindings)
+            self.collect_named_expr_bindings_in_expr(expr.index, scope, binding_scope, bindings)
+            return
+        if isinstance(expr, ListIR):
+            for item in expr.items:
+                self.collect_named_expr_bindings_in_expr(item, scope, binding_scope, bindings)
+            return
+        if isinstance(expr, TupleIR):
+            for item in expr.items:
+                self.collect_named_expr_bindings_in_expr(item, scope, binding_scope, bindings)
+            return
+        if isinstance(expr, DictIR):
+            for key, value in expr.items:
+                self.collect_named_expr_bindings_in_expr(key, scope, binding_scope, bindings)
+                self.collect_named_expr_bindings_in_expr(value, scope, binding_scope, bindings)
+            return
+        if isinstance(expr, SetIR):
+            for item in expr.items:
+                self.collect_named_expr_bindings_in_expr(item, scope, binding_scope, bindings)
+            return
+        if isinstance(expr, ListComprehensionIR):
+            self.collect_named_expr_bindings_in_comprehension(
+                expr.generators,
+                [expr.item],
+                scope,
+                binding_scope,
+                bindings,
+            )
+            return
+        if isinstance(expr, DictComprehensionIR):
+            self.collect_named_expr_bindings_in_comprehension(
+                expr.generators,
+                [expr.key, expr.value],
+                scope,
+                binding_scope,
+                bindings,
+            )
+            return
+        if isinstance(expr, SetComprehensionIR):
+            self.collect_named_expr_bindings_in_comprehension(
+                expr.generators,
+                [expr.item],
+                scope,
+                binding_scope,
+                bindings,
+            )
+
+    def collect_named_expr_bindings_in_comprehension(
+        self,
+        generators: list[ComprehensionGeneratorIR],
+        result_exprs: list[ExprIR],
+        scope: dict[str, RxtType],
+        binding_scope: dict[str, RxtType],
+        bindings: dict[str, RxtType],
+    ) -> None:
+        comp_scope = dict(scope)
+        for generator in generators:
+            self.collect_named_expr_bindings_in_expr(
+                generator.iterable,
+                comp_scope,
+                binding_scope,
+                bindings,
+            )
+            item_types = self.iterable_target_types_in_scope(generator.iterable, comp_scope)
+            self.bind_target_types_to_scope(generator.target, item_types, comp_scope)
+            for condition in generator.conditions:
+                self.collect_named_expr_bindings_in_expr(
+                    condition,
+                    comp_scope,
+                    binding_scope,
+                    bindings,
+                )
+        for result_expr in result_exprs:
+            self.collect_named_expr_bindings_in_expr(
+                result_expr,
+                comp_scope,
+                binding_scope,
+                bindings,
+            )
+
+    def infer_expr_type_in_scope(
+        self,
+        expr: ExprIR,
+        scope: dict[str, RxtType],
+    ) -> RxtType | None:
+        saved_types = self.variable_types
+        self.variable_types = scope
+        try:
+            return self.infer_expr_type(expr)
+        finally:
+            self.variable_types = saved_types
+
+    def iterable_target_types_in_scope(
+        self,
+        expr: ExprIR,
+        scope: dict[str, RxtType],
+    ) -> list[RxtType]:
+        saved_types = self.variable_types
+        self.variable_types = scope
+        try:
+            return self.iterable_target_types(expr)
+        finally:
+            self.variable_types = saved_types
+
+    def bind_target_types_to_scope(
+        self,
+        target: TargetIR,
+        item_types: list[RxtType],
+        scope: dict[str, RxtType],
+    ) -> None:
+        if isinstance(target, NameIR) and len(item_types) == 1:
+            scope[target.id] = item_types[0]
+            return
+        if isinstance(target, TupleTargetIR) and len(target.items) == len(item_types):
+            for item, item_type in zip(target.items, item_types, strict=True):
+                scope[item.id] = item_type
 
     def render_index(self, expr: ExprIR) -> str:
         rendered = strip_wrapping_parens(self.render_expr(expr))
@@ -331,6 +681,8 @@ class _FunctionRenderer:
 
     def render_call_arg(self, expr: ExprIR) -> str:
         if isinstance(expr, NameIR):
+            if expr.id in self.maybe_bound_types:
+                return self.render_expr(expr)
             return f"{expr.id}.clone()"
         return self.render_expr(expr)
 
@@ -371,6 +723,14 @@ class _FunctionRenderer:
             if item_type is None:
                 return None
             return RxtList(item_type)
+        if isinstance(expr, ListComprehensionIR):
+            saved_types = dict(self.variable_types)
+            self.bind_comprehension_generator_types(expr.generators)
+            item_type = self.infer_expr_type(expr.item)
+            self.variable_types = saved_types
+            if item_type is None:
+                return None
+            return RxtList(item_type)
         if isinstance(expr, TupleIR):
             item_types: list[RxtType] = []
             for item in expr.items:
@@ -388,6 +748,30 @@ class _FunctionRenderer:
             if key_type is None or value_type is None:
                 return None
             return RxtDict(key_type, value_type)
+        if isinstance(expr, DictComprehensionIR):
+            saved_types = dict(self.variable_types)
+            self.bind_comprehension_generator_types(expr.generators)
+            key_type = self.infer_expr_type(expr.key)
+            value_type = self.infer_expr_type(expr.value)
+            self.variable_types = saved_types
+            if key_type is None or value_type is None:
+                return None
+            return RxtDict(key_type, value_type)
+        if isinstance(expr, SetIR):
+            if not expr.items:
+                return None
+            item_type = self.infer_expr_type(expr.items[0])
+            if item_type is None:
+                return None
+            return RxtSet(item_type)
+        if isinstance(expr, SetComprehensionIR):
+            saved_types = dict(self.variable_types)
+            self.bind_comprehension_generator_types(expr.generators)
+            item_type = self.infer_expr_type(expr.item)
+            self.variable_types = saved_types
+            if item_type is None:
+                return None
+            return RxtSet(item_type)
         if isinstance(expr, BinaryOpIR):
             return self.infer_expr_type(expr.left)
         if isinstance(expr, UnaryOpIR):
@@ -408,7 +792,21 @@ class _FunctionRenderer:
                 return value_type.value_type
         if isinstance(expr, CallIR):
             return self.call_return_type(expr)
+        if isinstance(expr, NamedExprIR):
+            value_type = self.infer_expr_type(expr.value)
+            if value_type is not None:
+                self.variable_types[expr.target.id] = value_type
+            return value_type
         return None
+
+    def bind_comprehension_generator_types(
+        self,
+        generators: list[ComprehensionGeneratorIR],
+    ) -> None:
+        for generator in generators:
+            self.bind_target_types(generator.target, self.iterable_target_types(generator.iterable))
+            for condition in generator.conditions:
+                self.infer_expr_type(condition)
 
     def call_return_type(self, expr: CallIR) -> RxtType | None:
         if expr.function == "len":
@@ -508,20 +906,93 @@ def _assigned_names(block: BlockIR) -> set[str]:
     for statement in block.statements:
         if isinstance(statement, AssignIR):
             names.add(statement.target.id)
+            names.update(_expr_assigned_names(statement.value))
         elif isinstance(statement, DictSetIR):
             names.add(statement.target.id)
+            names.update(_expr_assigned_names(statement.key))
+            names.update(_expr_assigned_names(statement.value))
         elif isinstance(statement, AppendIR):
             names.add(statement.target.id)
+            names.update(_expr_assigned_names(statement.value))
+        elif isinstance(statement, ReturnIR):
+            if statement.value is not None:
+                names.update(_expr_assigned_names(statement.value))
         elif isinstance(statement, IfIR):
+            names.update(_expr_assigned_names(statement.condition))
             names.update(_assigned_names(statement.body))
             names.update(_assigned_names(statement.orelse))
         elif isinstance(statement, ForIR):
             names.update(target_names(statement.target))
+            names.update(_expr_assigned_names(statement.iterable))
             names.update(_assigned_names(statement.body))
             names.update(_assigned_names(statement.orelse))
         elif isinstance(statement, WhileIR):
+            names.update(_expr_assigned_names(statement.condition))
             names.update(_assigned_names(statement.body))
             names.update(_assigned_names(statement.orelse))
+    return names
+
+
+def _expr_assigned_names(expr: ExprIR) -> set[str]:
+    if isinstance(expr, NamedExprIR):
+        return {expr.target.id} | _expr_assigned_names(expr.value)
+    if isinstance(expr, BinaryOpIR):
+        return _expr_assigned_names(expr.left) | _expr_assigned_names(expr.right)
+    if isinstance(expr, UnaryOpIR):
+        return _expr_assigned_names(expr.value)
+    if isinstance(expr, CompareIR):
+        names = _expr_assigned_names(expr.left)
+        for comparator in expr.comparators:
+            names.update(_expr_assigned_names(comparator))
+        return names
+    if isinstance(expr, CallIR):
+        names: set[str] = set()
+        for arg in expr.args:
+            names.update(_expr_assigned_names(arg))
+        return names
+    if isinstance(expr, IndexIR):
+        return _expr_assigned_names(expr.value) | _expr_assigned_names(expr.index)
+    if isinstance(expr, ListIR):
+        names: set[str] = set()
+        for item in expr.items:
+            names.update(_expr_assigned_names(item))
+        return names
+    if isinstance(expr, TupleIR):
+        names: set[str] = set()
+        for item in expr.items:
+            names.update(_expr_assigned_names(item))
+        return names
+    if isinstance(expr, DictIR):
+        names: set[str] = set()
+        for key, value in expr.items:
+            names.update(_expr_assigned_names(key))
+            names.update(_expr_assigned_names(value))
+        return names
+    if isinstance(expr, SetIR):
+        names: set[str] = set()
+        for item in expr.items:
+            names.update(_expr_assigned_names(item))
+        return names
+    if isinstance(expr, ListComprehensionIR):
+        return _comprehension_assigned_names(expr.generators, [expr.item])
+    if isinstance(expr, DictComprehensionIR):
+        return _comprehension_assigned_names(expr.generators, [expr.key, expr.value])
+    if isinstance(expr, SetComprehensionIR):
+        return _comprehension_assigned_names(expr.generators, [expr.item])
+    return set()
+
+
+def _comprehension_assigned_names(
+    generators: list[ComprehensionGeneratorIR],
+    result_exprs: list[ExprIR],
+) -> set[str]:
+    names: set[str] = set()
+    for generator in generators:
+        names.update(_expr_assigned_names(generator.iterable))
+        for condition in generator.conditions:
+            names.update(_expr_assigned_names(condition))
+    for result_expr in result_exprs:
+        names.update(_expr_assigned_names(result_expr))
     return names
 
 
@@ -547,7 +1018,7 @@ def same_type(left: RxtType | None, right: RxtType | None) -> bool:
 
 def _needs_local_type_annotation(expr: ExprIR, target_type: RxtType) -> bool:
     return (
-        (isinstance(expr, (DictIR, ListIR)) and not expr.items)
+        (isinstance(expr, (DictIR, ListIR, SetIR)) and not expr.items)
         or (isinstance(expr, LiteralIR) and expr.value is None)
         or isinstance(target_type, RxtOptional)
     )

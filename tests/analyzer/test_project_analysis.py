@@ -428,6 +428,98 @@ def echo(value: int | None) -> int | None:
     assert analysis.rejected_native_functions == []
 
 
+def test_accepts_comprehensions_nested_lists_sets_dict_str_values_and_walrus(
+    tmp_path: Path,
+) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def inc(x: int) -> int:
+    return x + 1
+
+@rextio.native
+def squares(xs: list[int]) -> list[int]:
+    return [inc(x) for x in xs if x > 0]
+
+@rextio.native
+def flatten(rows: list[list[int]]) -> list[int]:
+    return [x for row in rows for x in row]
+
+@rextio.native
+def nested(rows: list[list[int]]) -> list[list[int]]:
+    return [[x + 1 for x in row] for row in rows]
+
+@rextio.native
+def labels(xs: list[str]) -> dict[str, str]:
+    return {x: x for x in xs}
+
+@rextio.native
+def unique(xs: list[int]) -> set[int]:
+    return {x for x in xs if x > 0}
+
+@rextio.native
+def last_positive(xs: list[int]) -> int:
+    out = [y for x in xs if (y := x) > 0]
+    return y
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.flatten",
+        "app.inc",
+        "app.labels",
+        "app.last_positive",
+        "app.nested",
+        "app.squares",
+        "app.unique",
+    ]
+    assert analysis.rejected_native_functions == []
+
+
+def test_rejects_unsupported_comprehension_edges(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def walrus_outside(xs: list[int]) -> int:
+    if (n := len(xs)) > 0:
+        return n
+    return 0
+
+@rextio.native
+def walrus_rebind(xs: list[int]) -> list[int]:
+    return [(x := x + 1) for x in xs]
+
+@rextio.native
+def set_float(xs: list[float]) -> set[float]:
+    return {x for x in xs}
+
+@rextio.native
+def dict_bad(xs: list[str]) -> dict[str, int]:
+    return {x: x for x in xs}
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT003", "RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.dict_bad",
+        "app.set_float",
+        "app.walrus_outside",
+        "app.walrus_rebind",
+    }
+
+
 def test_rejects_unsupported_dict_and_optional_operations(tmp_path: Path) -> None:
     write_module(
         tmp_path,
