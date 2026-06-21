@@ -51,20 +51,23 @@ fallback。
 有关支持的 subset、边界限制、诊断和非目标，请参阅
 [Public 1 不支持的功能](docs/unsupported-features.md)。
 
-当前 native 候选支持 scalar、`list[...]`、fixed `tuple[...]`、有限的
-`dict[str, int|float]`，以及 `Optional[T]` / `T | None` 类型。支持的语法包括算术、
+当前 native 候选支持 scalar、`list[...]` 与 `list[list[T]]`、fixed `tuple[...]`、有限的
+`dict[str, int|float|str]`、有限的 `set[int|bool|str]`，以及 `Optional[T]` / `T | None` 类型。支持的语法包括算术、
 比较、`if`、`while`、`for x in xs`、`range(...)` 循环、
 `for i, x in enumerate(xs)`、`for x, y in zip(xs, ys)`、`break`、`continue`、
 augmented assignment、带类型的局部 annotation、简单索引、list literal、fixed tuple
-literal、有限的 dict read/write，以及支持的 list item 类型上的 `list.append(...)`。
+literal、有限的 dict read/write、有限的 list/dict/set comprehension、comprehension 内的
+assignment expression，以及支持的 list item 类型上的 `list.append(...)`。
 Builtin 支持有意限制为 `len`、`abs`、两个参数的 `min`/`max`，以及
 `sum(list[int|float])`。支持的 `math` subset 是 `math.sqrt`、`math.sin`、`math.cos`
 和 `math.floor`。
 
 这些扩展形式仍保持保守：空 list literal 需要受支持的 `list[...]` 局部 annotation，
 并且 `range(start, stop, step)` 目前要求 `step` 是正的 int literal。`enumerate` 和
-`zip` 仅支持作为 list 变量上的 batch loop iterable。Dict 支持仅限
-`dict[str, int]` 和 `dict[str, float]`；dataclass 仍不在 Public 1 native 编译范围内。
+`zip` 仅支持作为 list 变量上的 batch loop 或 comprehension iterable。Native subset
+现在支持有限的 list/dict/set comprehension、comprehension 内的 assignment expression、
+`list[list[T]]`、`dict[str, int|float|str]`，以及 `set[int|bool|str]` comprehension；
+dataclass 仍不在 Public 1 native 编译范围内。
 
 ## 构建前提
 

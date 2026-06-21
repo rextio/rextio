@@ -14,8 +14,10 @@ from rextio.ir.nodes import (
     BlockIR,
     BreakIR,
     CallIR,
+    ComprehensionGeneratorIR,
     CompareIR,
     ContinueIR,
+    DictComprehensionIR,
     DictIR,
     DictSetIR,
     ExprIR,
@@ -23,12 +25,16 @@ from rextio.ir.nodes import (
     FunctionIR,
     IfIR,
     IndexIR,
+    ListComprehensionIR,
     ListIR,
     LiteralIR,
     ModuleIR,
     NameIR,
+    NamedExprIR,
     ParamIR,
     ReturnIR,
+    SetComprehensionIR,
+    SetIR,
     StatementIR,
     TargetIR,
     TupleIR,
@@ -175,6 +181,11 @@ def lower_expr(
         return NameIR(node.id)
     if isinstance(node, ast.List):
         return ListIR(items=[lower_expr(item, module, resolver) for item in node.elts])
+    if isinstance(node, ast.ListComp):
+        return ListComprehensionIR(
+            item=lower_expr(node.elt, module, resolver),
+            generators=lower_comprehension_generators(node.generators, module, resolver),
+        )
     if isinstance(node, ast.Tuple):
         return TupleIR(items=[lower_expr(item, module, resolver) for item in node.elts])
     if isinstance(node, ast.Dict):
@@ -186,6 +197,19 @@ def lower_expr(
                 for key, value in zip(node.keys, node.values, strict=True)
                 if key is not None
             ]
+        )
+    if isinstance(node, ast.DictComp):
+        return DictComprehensionIR(
+            key=lower_expr(node.key, module, resolver),
+            value=lower_expr(node.value, module, resolver),
+            generators=lower_comprehension_generators(node.generators, module, resolver),
+        )
+    if isinstance(node, ast.Set):
+        return SetIR(items=[lower_expr(item, module, resolver) for item in node.elts])
+    if isinstance(node, ast.SetComp):
+        return SetComprehensionIR(
+            item=lower_expr(node.elt, module, resolver),
+            generators=lower_comprehension_generators(node.generators, module, resolver),
         )
     if isinstance(node, ast.BinOp):
         return BinaryOpIR(
@@ -219,6 +243,11 @@ def lower_expr(
             value=lower_expr(node.value, module, resolver),
             index=lower_expr(node.slice, module, resolver),
         )
+    if isinstance(node, ast.NamedExpr):
+        return NamedExprIR(
+            target=lower_name_target(node.target),
+            value=lower_expr(node.value, module, resolver),
+        )
     raise LoweringError(f"unsupported expression during IR lowering: {type(node).__name__}")
 
 
@@ -235,6 +264,25 @@ def lower_loop_target(node: ast.AST) -> TargetIR:
         items = [lower_name_target(item) for item in node.elts]
         return TupleTargetIR(items=items)
     raise LoweringError(f"unsupported for-loop target: {type(node).__name__}")
+
+
+def lower_comprehension_generators(
+    generators: list[ast.comprehension],
+    module: ModuleAnalysis,
+    resolver: FunctionResolver,
+) -> list[ComprehensionGeneratorIR]:
+    lowered: list[ComprehensionGeneratorIR] = []
+    for generator in generators:
+        if generator.is_async:
+            raise LoweringError("async comprehensions cannot be lowered")
+        lowered.append(
+            ComprehensionGeneratorIR(
+                target=lower_loop_target(generator.target),
+                iterable=lower_expr(generator.iter, module, resolver),
+                conditions=[lower_expr(condition, module, resolver) for condition in generator.ifs],
+            )
+        )
+    return lowered
 
 
 def lower_binary_op(node: ast.operator) -> str:

@@ -591,9 +591,14 @@ list[int]
 list[float]
 list[bool]
 list[str]
+list[list[T]]
 tuple[int, float]
 dict[str, int]
 dict[str, float]
+dict[str, str]
+set[int]
+set[bool]
+set[str]
 Optional[T]
 T | None
 ```
@@ -610,9 +615,14 @@ Python list[int]   -> Vec<i64>
 Python list[float] -> Vec<f64>
 Python list[bool]  -> Vec<bool>
 Python list[str]   -> Vec<String>
+Python list[list[T]] -> Vec<Vec<T>>
 Python tuple[...]   -> Rust fixed tuple
 Python dict[str, int]   -> HashMap<String, i64>
 Python dict[str, float] -> HashMap<String, f64>
+Python dict[str, str]   -> HashMap<String, String>
+Python set[int]     -> HashSet<i64>
+Python set[bool]    -> HashSet<bool>
+Python set[str]     -> HashSet<String>
 Python Optional[T]  -> Option<T>
 Python T | None     -> Option<T>
 ```
@@ -647,8 +657,17 @@ Support inside native candidate functions:
   as `out: list[int] = []`
 * `list.append(x)` for `list[int]`, `list[float]`, `list[bool]`, and `list[str]`
 * fixed tuple literals and constant indexing for supported scalar item types
-* limited `dict[str, int]` and `dict[str, float]` literals, constant/variable
+* limited `dict[str, int]`, `dict[str, float]`, and `dict[str, str]` literals, constant/variable
   string-key reads, and `d[key] = value` writes
+* list comprehensions over supported `list`, `range`, `enumerate`, and `zip`
+  iterables, including optional `if` clauses and multi-generator flattening
+* nested list comprehensions that produce `list[list[T]]`
+* limited dict comprehensions producing `dict[str, int]`, `dict[str, float]`,
+  or `dict[str, str]`
+* limited set comprehensions producing `set[int]`, `set[bool]`, or `set[str]`
+* assignment expressions inside comprehensions, with Python-style binding into
+  the containing function scope and rejection when rebinding comprehension
+  iteration variables
 * `Optional[T]` / `T | None` annotations with `None` returns and `is None` /
   `is not None` checks
 * calls to other accepted native functions
@@ -671,13 +690,14 @@ Reject inside native candidate functions:
 * lambdas
 * closures
 * nested functions
-* comprehensions in Public 1
+* generator expressions
+* assignment expressions outside comprehensions
 * set literals in Public 1
-* general tuple or dict semantics beyond the fixed tuple and limited
-  `dict[str, int|float]` subset
+* general tuple, dict, or set semantics beyond the fixed tuple, limited
+  `dict[str, int|float|str]`, and limited `set[int|bool|str]` subsets
 * dataclasses in Public 1
-* `enumerate` outside a `for i, x in enumerate(xs)` loop
-* `zip` outside a `for x, y in zip(xs, ys)` loop
+* `enumerate` outside a supported loop or comprehension iterable
+* `zip` outside a supported loop or comprehension iterable
 * dynamic import
 * `getattr`
 * `setattr`

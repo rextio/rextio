@@ -57,6 +57,20 @@ class RxtList(RxtType):
 
 
 @dataclass(frozen=True)
+class RxtSet(RxtType):
+    item_type: RxtType
+
+    def display_name(self) -> str:
+        return f"set[{self.item_type.display_name()}]"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "set",
+            "item_type": self.item_type.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class RxtTuple(RxtType):
     item_types: tuple[RxtType, ...]
 
@@ -122,6 +136,8 @@ def type_from_annotation(node: ast.AST | None) -> RxtType:
     if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
         if node.value.id == "list":
             return RxtList(type_from_annotation(node.slice))
+        if node.value.id == "set":
+            return RxtSet(type_from_annotation(node.slice))
         if node.value.id == "tuple":
             return RxtTuple(tuple(type_from_annotation(item) for item in _tuple_slice_items(node.slice)))
         if node.value.id == "dict":

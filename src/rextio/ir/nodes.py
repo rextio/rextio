@@ -281,6 +281,82 @@ class DictIR(ExprIR):
 
 
 @dataclass(frozen=True)
+class SetIR(ExprIR):
+    items: list[ExprIR]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "set", "items": [item.to_dict() for item in self.items]}
+
+
+@dataclass(frozen=True)
+class ComprehensionGeneratorIR(IRNode):
+    target: TargetIR
+    iterable: ExprIR
+    conditions: list[ExprIR]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "target": self.target.to_dict(),
+            "iterable": self.iterable.to_dict(),
+            "conditions": [condition.to_dict() for condition in self.conditions],
+        }
+
+
+@dataclass(frozen=True)
+class ListComprehensionIR(ExprIR):
+    item: ExprIR
+    generators: list[ComprehensionGeneratorIR]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "list_comprehension",
+            "item": self.item.to_dict(),
+            "generators": [generator.to_dict() for generator in self.generators],
+        }
+
+
+@dataclass(frozen=True)
+class DictComprehensionIR(ExprIR):
+    key: ExprIR
+    value: ExprIR
+    generators: list[ComprehensionGeneratorIR]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "dict_comprehension",
+            "key": self.key.to_dict(),
+            "value": self.value.to_dict(),
+            "generators": [generator.to_dict() for generator in self.generators],
+        }
+
+
+@dataclass(frozen=True)
+class SetComprehensionIR(ExprIR):
+    item: ExprIR
+    generators: list[ComprehensionGeneratorIR]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "set_comprehension",
+            "item": self.item.to_dict(),
+            "generators": [generator.to_dict() for generator in self.generators],
+        }
+
+
+@dataclass(frozen=True)
+class NamedExprIR(ExprIR):
+    target: "NameIR"
+    value: ExprIR
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "named_expr",
+            "target": self.target.to_dict(),
+            "value": self.value.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class IndexIR(ExprIR):
     value: ExprIR
     index: ExprIR

@@ -9,14 +9,12 @@ from rextio.analyzer.type_collector import annotation_name, is_supported_type
 
 DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
 NUMERIC_TYPES = {"int", "float"}
+SET_ITEM_TYPES = {"int", "bool", "str"}
 
 UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.AsyncFunctionDef,
     ast.ClassDef,
     ast.Lambda,
-    ast.ListComp,
-    ast.DictComp,
-    ast.SetComp,
     ast.GeneratorExp,
     ast.Set,
     ast.Await,
@@ -26,7 +24,6 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.Assert,
     ast.Raise,
     ast.Delete,
-    ast.NamedExpr,
     ast.IfExp,
     ast.JoinedStr,
     ast.Starred,
@@ -109,7 +106,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                     line=arg.lineno,
                     column=arg.col_offset,
                     function_name=function.qualname,
-                    suggestion="Use int, float, bool, str, None, or list[...] with a supported scalar item.",
+                    suggestion="Use a supported Public 1 scalar or collection type.",
                 )
             )
 
@@ -136,7 +133,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                 line=node.lineno,
                 column=node.col_offset,
                 function_name=function.qualname,
-                suggestion="Use int, float, bool, str, None, or list[...] with a supported scalar item.",
+                suggestion="Use a supported Public 1 scalar or collection type.",
             )
         )
 
@@ -299,7 +296,29 @@ def _infer_expr_type(
     function: FunctionAnalysis,
     env: dict[str, str],
     expected_type: str | None = None,
+    *,
+    allow_named_expr: bool = False,
+    named_expr_binding_env: dict[str, str] | None = None,
+    active_comprehension_targets: set[str] | None = None,
 ) -> str | None:
+    binding_env = named_expr_binding_env if named_expr_binding_env is not None else env
+    active_targets = active_comprehension_targets or set()
+
+    def infer_child(
+        child: ast.AST | None,
+        child_env: dict[str, str] | None = None,
+        child_expected_type: str | None = None,
+    ) -> str | None:
+        return _infer_expr_type(
+            child,
+            function,
+            child_env if child_env is not None else env,
+            child_expected_type,
+            allow_named_expr=allow_named_expr,
+            named_expr_binding_env=binding_env,
+            active_comprehension_targets=active_targets,
+        )
+
     if node is None:
         return "None"
     if isinstance(node, ast.Constant):
@@ -318,20 +337,53 @@ def _infer_expr_type(
         return env.get(node.id)
     if isinstance(node, ast.List):
         return _infer_list_type(node, function, env, expected_type)
+    if isinstance(node, ast.ListComp):
+        return _infer_list_comprehension_type(
+            node,
+            function,
+            env,
+            binding_env,
+            active_targets,
+        )
     if isinstance(node, ast.Tuple):
         return _infer_tuple_type(node, function, env, expected_type)
     if isinstance(node, ast.Dict):
         return _infer_dict_type(node, function, env, expected_type)
+    if isinstance(node, ast.DictComp):
+        return _infer_dict_comprehension_type(
+            node,
+            function,
+            env,
+            binding_env,
+            active_targets,
+        )
+    if isinstance(node, ast.SetComp):
+        return _infer_set_comprehension_type(
+            node,
+            function,
+            env,
+            binding_env,
+            active_targets,
+        )
+    if isinstance(node, ast.NamedExpr):
+        return _infer_named_expr_type(
+            node,
+            function,
+            env,
+            binding_env,
+            allow_named_expr,
+            active_targets,
+        )
     if isinstance(node, ast.BinOp):
-        left = _infer_expr_type(node.left, function, env)
-        right = _infer_expr_type(node.right, function, env)
+        left = infer_child(node.left)
+        right = infer_child(node.right)
         return _infer_binop_type(node.op, left, right, function, node)
     if isinstance(node, ast.UnaryOp):
-        value_type = _infer_expr_type(node.operand, function, env)
+        value_type = infer_child(node.operand)
         return _infer_unary_type(node.op, value_type, function, node)
     if isinstance(node, ast.BoolOp):
         for value in node.values:
-            value_type = _infer_expr_type(value, function, env)
+            value_type = infer_child(value)
             if value_type is not None and value_type != "bool":
                 _add_unsupported_syntax(
                     function,
@@ -340,15 +392,29 @@ def _infer_expr_type(
                 )
         return "bool"
     if isinstance(node, ast.Compare):
-        _validate_compare_types(node, function, env)
+        _validate_compare_types(
+            node,
+            function,
+            env,
+            allow_named_expr=allow_named_expr,
+            named_expr_binding_env=binding_env,
+            active_comprehension_targets=active_targets,
+        )
         return "bool"
     if isinstance(node, ast.Call):
-        return _infer_call_type(node, function, env)
+        return _infer_call_type(
+            node,
+            function,
+            env,
+            allow_named_expr=allow_named_expr,
+            named_expr_binding_env=binding_env,
+            active_comprehension_targets=active_targets,
+        )
     if isinstance(node, ast.Subscript):
-        value_type = _infer_expr_type(node.value, function, env)
-        _infer_expr_type(node.slice, function, env)
-        if value_type is not None and value_type.startswith("list[") and value_type.endswith("]"):
-            return value_type[5:-1]
+        value_type = infer_child(node.value)
+        infer_child(node.slice)
+        if _is_list_type(value_type):
+            return _list_item_type(value_type)
         if _is_tuple_type(value_type):
             item_types = _tuple_item_types(value_type)
             index = _constant_int(node.slice)
@@ -364,7 +430,7 @@ def _infer_expr_type(
             key_type, value_item_type = _dict_item_types(value_type)
             if key_type != "str":
                 return None
-            slice_type = _infer_expr_type(node.slice, function, env)
+            slice_type = infer_child(node.slice)
             if slice_type != "str":
                 _add_unsupported_syntax(function, node.slice, f"dict keys must be str, got {slice_type}")
                 return None
@@ -401,7 +467,7 @@ def _infer_list_type(
         )
         return None
     item_type = item_types[0]
-    if item_type not in {"int", "float", "bool", "str"}:
+    if item_type is None or not _is_supported_list_item_type(item_type):
         _add_unsupported_syntax(
             function,
             node,
@@ -446,7 +512,7 @@ def _infer_dict_type(
         _add_unsupported_syntax(
             function,
             node,
-            "empty dict literals require a supported dict[str, int|float] annotation",
+            "empty dict literals require a supported dict[str, int|float|str] annotation",
         )
         return None
 
@@ -459,11 +525,11 @@ def _infer_dict_type(
         return None
     unique_value_types = set(value_types)
     if len(unique_value_types) != 1:
-        _add_unsupported_syntax(function, node, "dict literal values must have one supported numeric type")
+        _add_unsupported_syntax(function, node, "dict literal values must have one supported type")
         return None
     value_type = value_types[0]
-    if value_type not in {"int", "float"}:
-        _add_unsupported_syntax(function, node, f"dict values must be int or float, got {value_type}")
+    if value_type not in {"int", "float", "str"}:
+        _add_unsupported_syntax(function, node, f"dict values must be int, float, or str, got {value_type}")
         return None
     dict_type = f"dict[str, {value_type}]"
     if expected_type is not None and _is_dict_type(expected_type):
@@ -471,13 +537,233 @@ def _infer_dict_type(
     return dict_type
 
 
+def _infer_list_comprehension_type(
+    node: ast.ListComp,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+    binding_env: dict[str, str],
+    active_targets: set[str],
+) -> str | None:
+    comp_env = _bind_comprehension_generators(node.generators, function, env, binding_env, active_targets)
+    if comp_env is None:
+        return None
+    item_type = _infer_expr_type(
+        node.elt,
+        function,
+        comp_env,
+        allow_named_expr=True,
+        named_expr_binding_env=binding_env,
+        active_comprehension_targets=active_targets | _comprehension_target_names(node.generators),
+    )
+    if item_type is None:
+        return None
+    if not _is_supported_list_item_type(item_type):
+        _add_unsupported_syntax(
+            function,
+            node,
+            f"list comprehension item type is not supported: {item_type}",
+        )
+        return None
+    return f"list[{item_type}]"
+
+
+def _infer_dict_comprehension_type(
+    node: ast.DictComp,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+    binding_env: dict[str, str],
+    active_targets: set[str],
+) -> str | None:
+    comp_env = _bind_comprehension_generators(node.generators, function, env, binding_env, active_targets)
+    if comp_env is None:
+        return None
+    comprehension_targets = active_targets | _comprehension_target_names(node.generators)
+    key_type = _infer_expr_type(
+        node.key,
+        function,
+        comp_env,
+        allow_named_expr=True,
+        named_expr_binding_env=binding_env,
+        active_comprehension_targets=comprehension_targets,
+    )
+    value_type = _infer_expr_type(
+        node.value,
+        function,
+        comp_env,
+        allow_named_expr=True,
+        named_expr_binding_env=binding_env,
+        active_comprehension_targets=comprehension_targets,
+    )
+    if key_type != "str":
+        _add_unsupported_syntax(function, node.key, f"dict comprehension keys must be str, got {key_type}")
+        return None
+    if value_type not in {"int", "float", "str"}:
+        _add_unsupported_syntax(
+            function,
+            node.value,
+            f"dict comprehension values must be int, float, or str, got {value_type}",
+        )
+        return None
+    return f"dict[str, {value_type}]"
+
+
+def _infer_set_comprehension_type(
+    node: ast.SetComp,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+    binding_env: dict[str, str],
+    active_targets: set[str],
+) -> str | None:
+    comp_env = _bind_comprehension_generators(node.generators, function, env, binding_env, active_targets)
+    if comp_env is None:
+        return None
+    item_type = _infer_expr_type(
+        node.elt,
+        function,
+        comp_env,
+        allow_named_expr=True,
+        named_expr_binding_env=binding_env,
+        active_comprehension_targets=active_targets | _comprehension_target_names(node.generators),
+    )
+    if item_type not in SET_ITEM_TYPES:
+        _add_unsupported_syntax(
+            function,
+            node.elt,
+            f"set comprehension item type must be int, bool, or str, got {item_type}",
+        )
+        return None
+    return f"set[{item_type}]"
+
+
+def _bind_comprehension_generators(
+    generators: list[ast.comprehension],
+    function: FunctionAnalysis,
+    env: dict[str, str],
+    binding_env: dict[str, str],
+    active_targets: set[str],
+) -> dict[str, str] | None:
+    if not generators:
+        _add_unsupported_syntax(function, function, "comprehensions require at least one generator")
+        return None
+    comp_env = dict(env)
+    comprehension_targets = active_targets | _comprehension_target_names(generators)
+    for generator in generators:
+        if generator.is_async:
+            _add_unsupported_syntax(function, generator, "async comprehensions are not supported")
+            return None
+        item_types = _comprehension_iter_item_types(generator.iter, function, comp_env)
+        _bind_loop_target_types(generator.target, item_types, function, comp_env)
+        for condition in generator.ifs:
+            condition_type = _infer_expr_type(
+                condition,
+                function,
+                comp_env,
+                allow_named_expr=True,
+                named_expr_binding_env=binding_env,
+                active_comprehension_targets=comprehension_targets,
+            )
+            if condition_type is not None and condition_type != "bool":
+                _add_unsupported_syntax(
+                    function,
+                    condition,
+                    f"comprehension if clauses must be bool, got {condition_type}",
+                )
+    return comp_env
+
+
+def _comprehension_iter_item_types(
+    node: ast.AST,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> list[str]:
+    if isinstance(node, ast.Call) and (_is_enumerate_call(node) or _is_zip_call(node)):
+        return _iter_unpack_types(node, function, env)
+    iterable_type = _infer_expr_type(node, function, env)
+    item_type = _iter_item_type(node, iterable_type)
+    return [item_type] if item_type is not None else []
+
+
+def _infer_named_expr_type(
+    node: ast.NamedExpr,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+    binding_env: dict[str, str],
+    allow_named_expr: bool,
+    active_targets: set[str],
+) -> str | None:
+    if not allow_named_expr:
+        _add_unsupported_syntax(
+            function,
+            node,
+            "assignment expressions are supported only inside comprehensions",
+        )
+        return None
+    if not isinstance(node.target, ast.Name):
+        _add_unsupported_syntax(function, node.target, "assignment expression targets must be local names")
+        return None
+    if node.target.id in active_targets:
+        _add_unsupported_syntax(
+            function,
+            node.target,
+            "assignment expressions cannot rebind comprehension iteration variables",
+        )
+        return None
+    value_type = _infer_expr_type(
+        node.value,
+        function,
+        env,
+        allow_named_expr=True,
+        named_expr_binding_env=binding_env,
+        active_comprehension_targets=active_targets,
+    )
+    if value_type is not None:
+        env[node.target.id] = value_type
+        binding_env[node.target.id] = value_type
+    return value_type
+
+
+def _comprehension_target_names(generators: list[ast.comprehension]) -> set[str]:
+    names: set[str] = set()
+    for generator in generators:
+        names.update(_target_names(generator.target))
+    return names
+
+
+def _target_names(target: ast.AST) -> set[str]:
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, ast.Tuple):
+        names: set[str] = set()
+        for item in target.elts:
+            names.update(_target_names(item))
+        return names
+    return set()
+
+
 def _infer_call_type(
     node: ast.Call,
     function: FunctionAnalysis,
     env: dict[str, str],
+    *,
+    allow_named_expr: bool = False,
+    named_expr_binding_env: dict[str, str] | None = None,
+    active_comprehension_targets: set[str] | None = None,
 ) -> str | None:
+    binding_env = named_expr_binding_env if named_expr_binding_env is not None else env
+    active_targets = active_comprehension_targets or set()
+
+    def infer_arg(arg: ast.AST) -> str | None:
+        return _infer_expr_type(
+            arg,
+            function,
+            env,
+            allow_named_expr=allow_named_expr,
+            named_expr_binding_env=binding_env,
+            active_comprehension_targets=active_targets,
+        )
+
     for arg in node.args:
-        _infer_expr_type(arg, function, env)
+        infer_arg(arg)
 
     target = dotted_name(node.func)
     if target == "len":
@@ -500,7 +786,7 @@ def _infer_call_type(
     if target == "abs":
         if not _require_arg_count("abs", node, function, {1}):
             return None
-        arg_type = _infer_expr_type(node.args[0], function, env)
+        arg_type = infer_arg(node.args[0])
         if arg_type in NUMERIC_TYPES:
             return arg_type
         _add_unsupported_syntax(function, node, f"abs requires int or float, got {arg_type}")
@@ -508,7 +794,7 @@ def _infer_call_type(
     if target in {"min", "max"}:
         if not _require_arg_count(target, node, function, {2}):
             return None
-        arg_types = [_infer_expr_type(arg, function, env) for arg in node.args]
+        arg_types = [infer_arg(arg) for arg in node.args]
         if arg_types[0] in NUMERIC_TYPES and arg_types[0] == arg_types[1]:
             return arg_types[0]
         _add_unsupported_syntax(
@@ -520,7 +806,7 @@ def _infer_call_type(
     if target == "sum":
         if not _require_arg_count("sum", node, function, {1}):
             return None
-        arg_type = _infer_expr_type(node.args[0], function, env)
+        arg_type = infer_arg(node.args[0])
         item_type = _list_item_type(arg_type)
         if item_type in NUMERIC_TYPES:
             return item_type
@@ -529,7 +815,7 @@ def _infer_call_type(
     if target in {"math.sqrt", "math.sin", "math.cos"}:
         if not _require_arg_count(target, node, function, {1}):
             return None
-        arg_type = _infer_expr_type(node.args[0], function, env)
+        arg_type = infer_arg(node.args[0])
         if arg_type == "float":
             return "float"
         _add_unsupported_syntax(function, node, f"{target} requires a float argument")
@@ -537,7 +823,7 @@ def _infer_call_type(
     if target == "math.floor":
         if not _require_arg_count("math.floor", node, function, {1}):
             return None
-        arg_type = _infer_expr_type(node.args[0], function, env)
+        arg_type = infer_arg(node.args[0])
         if arg_type == "float":
             return "int"
         _add_unsupported_syntax(function, node, "math.floor requires a float argument")
@@ -639,10 +925,27 @@ def _validate_compare_types(
     node: ast.Compare,
     function: FunctionAnalysis,
     env: dict[str, str],
+    *,
+    allow_named_expr: bool = False,
+    named_expr_binding_env: dict[str, str] | None = None,
+    active_comprehension_targets: set[str] | None = None,
 ) -> None:
-    left_type = _infer_expr_type(node.left, function, env)
+    binding_env = named_expr_binding_env if named_expr_binding_env is not None else env
+    active_targets = active_comprehension_targets or set()
+
+    def infer_side(side: ast.AST) -> str | None:
+        return _infer_expr_type(
+            side,
+            function,
+            env,
+            allow_named_expr=allow_named_expr,
+            named_expr_binding_env=binding_env,
+            active_comprehension_targets=active_targets,
+        )
+
+    left_type = infer_side(node.left)
     for op, comparator in zip(node.ops, node.comparators, strict=True):
-        right_type = _infer_expr_type(comparator, function, env)
+        right_type = infer_side(comparator)
         if (
             left_type is not None
             and right_type is not None
@@ -657,8 +960,8 @@ def _validate_compare_types(
 
 
 def _iter_item_type(node: ast.AST, iterable_type: str | None) -> str | None:
-    if iterable_type is not None and iterable_type.startswith("list[") and iterable_type.endswith("]"):
-        return iterable_type[5:-1]
+    if _is_list_type(iterable_type):
+        return _list_item_type(iterable_type)
     if isinstance(node, ast.Call) and dotted_name(node.func) == "range":
         return "int"
     return None
@@ -748,7 +1051,7 @@ def _validate_enumerate_call(
         _add_unsupported_syntax(
             function,
             node.args[0],
-            "enumerate currently supports list[int|float|bool|str] variables only",
+            "enumerate currently supports supported list[...] variables only",
         )
 
 
@@ -769,7 +1072,7 @@ def _validate_zip_call(
             _add_unsupported_syntax(
                 function,
                 arg,
-                "zip currently supports list[int|float|bool|str] variables only",
+                "zip currently supports supported list[...] variables only",
             )
             continue
         item_types.append(item_type)
@@ -855,6 +1158,13 @@ def _list_item_type(value: str | None) -> str | None:
     return None
 
 
+def _is_supported_list_item_type(value: str) -> bool:
+    if value in {"int", "float", "bool", "str"}:
+        return True
+    item_type = _list_item_type(value)
+    return item_type is not None and _is_supported_list_item_type(item_type)
+
+
 def _is_tuple_type(value: str | None) -> bool:
     return value is not None and value.startswith("tuple[") and value.endswith("]")
 
@@ -876,6 +1186,16 @@ def _dict_item_types(value: str | None) -> tuple[str | None, str | None]:
     if len(items) != 2:
         return None, None
     return items[0], items[1]
+
+
+def _is_set_type(value: str | None) -> bool:
+    return value is not None and value.startswith("set[") and value.endswith("]")
+
+
+def _set_item_type(value: str | None) -> str | None:
+    if _is_set_type(value):
+        return value[4:-1]
+    return None
 
 
 def _is_optional_type(value: str | None) -> bool:

@@ -28,9 +28,14 @@ Supported types:
 - `list[float]`
 - `list[bool]`
 - `list[str]`
+- `list[list[T]]` where `T` is a supported scalar list item type
 - fixed tuples such as `tuple[int, float]`
 - `dict[str, int]`
 - `dict[str, float]`
+- `dict[str, str]`
+- `set[int]`
+- `set[bool]`
+- `set[str]`
 - `Optional[T]` and `T | None` for supported `T`
 
 Supported syntax is intentionally small:
@@ -60,7 +65,15 @@ Supported syntax is intentionally small:
   `list[str]`
 - fixed tuple literals and constant tuple indexing such as `pair[0]`
 - limited dict literals, `d[key]` reads, and `d[key] = value` writes for
-  `dict[str, int]` and `dict[str, float]`
+  `dict[str, int]`, `dict[str, float]`, and `dict[str, str]`
+- list comprehensions over supported `list`, `range`, `enumerate`, and `zip`
+  iterables, including optional `if` clauses and multi-generator flattening
+- nested list comprehensions that produce `list[list[T]]`
+- limited dict comprehensions producing `dict[str, int]`, `dict[str, float]`,
+  or `dict[str, str]`
+- limited set comprehensions producing `set[int]`, `set[bool]`, or `set[str]`
+- assignment expressions inside comprehensions; targets bind in the containing
+  function scope and cannot rebind comprehension iteration variables
 - `Optional[T]` / `T | None` annotations, `None` returns, and `is None` /
   `is not None` checks
 - calls to accepted native functions
@@ -82,15 +95,18 @@ usually `RXT010`:
 - async functions and `await`
 - generators and `yield`
 - lambdas and nested functions
-- comprehensions
+- generator expressions
+- assignment expressions outside comprehensions
 - set literals
 - general tuple and dict semantics outside the fixed tuple and
-  `dict[str, int|float]` subset
+  `dict[str, int|float|str]` subset
+- general set semantics outside the limited `set[int|bool|str]` comprehension
+  subset
 - dataclasses
 - empty list literals without a supported `list[...]` annotation
-- empty dict literals without a supported `dict[str, int|float]` annotation
-- `enumerate` outside a `for i, x in enumerate(xs)` loop
-- `zip` outside a `for x, y in zip(xs, ys)` loop
+- empty dict literals without a supported `dict[str, int|float|str]` annotation
+- `enumerate` outside a supported loop or comprehension iterable
+- `zip` outside a supported loop or comprehension iterable
 - `enumerate` or `zip` over non-list expressions
 - slices such as `xs[1:]`
 - f-strings
@@ -101,7 +117,7 @@ usually `RXT010`:
 - imports inside native functions
 - `global` and `nonlocal`
 - `match`
-- assignment expressions
+- assignment expressions outside comprehensions
 - starred expressions
 - arbitrary `*args` and `**kwargs`
 - keyword call arguments
