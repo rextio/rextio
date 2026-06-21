@@ -6,12 +6,24 @@ from pathlib import Path
 
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis
-from rextio.analyzer.native_marker import dotted_name, has_exempt_marker, has_native_marker
+from rextio.analyzer.native_marker import (
+    NativeMarker,
+    dotted_name,
+    has_exempt_marker,
+    native_marker_for_function,
+)
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.analyzer.unsupported_patterns import validate_native_function
+from rextio.targets.models import normalize_target_language
 
 
-def parse_module(path: Path, project_root: Path, native_marker: str = "auto") -> ModuleAnalysis:
+def parse_module(
+    path: Path,
+    project_root: Path,
+    native_marker: str = "auto",
+    target_language: str = "rust",
+) -> ModuleAnalysis:
+    target_language = normalize_target_language(target_language)
     module_name = module_name_for_path(path, project_root)
     module = ModuleAnalysis(module_name=module_name, file_path=str(path))
     try:
@@ -35,8 +47,14 @@ def parse_module(path: Path, project_root: Path, native_marker: str = "auto") ->
         is_package_module=path.name == "__init__.py",
     )
     stub_signatures = _load_stub_signatures(path)
-    module.functions = _collect_module_functions(tree, module, native_marker, stub_signatures)
-    module.functions.extend(_collect_native_methods(tree, module))
+    module.functions = _collect_module_functions(
+        tree,
+        module,
+        native_marker,
+        stub_signatures,
+        target_language,
+    )
+    module.functions.extend(_collect_native_methods(tree, module, target_language))
     return module
 
 
@@ -111,18 +129,26 @@ def _collect_module_functions(
     module: ModuleAnalysis,
     native_marker: str,
     stub_signatures: dict[str, StubSignature],
+    target_language: str,
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
     for node in tree.body:
         if isinstance(node, ast.AsyncFunctionDef):
-            if has_native_marker(node) and not has_exempt_marker(node):
-                functions.append(_rejected_async_function(node, module))
+            marker = native_marker_for_function(node)
+            if marker is not None and not has_exempt_marker(node):
+                if marker.error:
+                    functions.append(
+                        _rejected_native_marker_function(node, module, marker, target_language)
+                    )
+                elif _native_marker_applies(marker, target_language):
+                    functions.append(_rejected_async_function(node, module, target_language))
             continue
         if not isinstance(node, ast.FunctionDef):
             continue
         calls = collect_call_sites(node)
         has_exempt = has_exempt_marker(node)
-        has_marker = has_native_marker(node)
+        marker = native_marker_for_function(node)
+        has_marker = marker is not None
         stub_signature = stub_signatures.get(node.name, StubSignature())
         function = FunctionAnalysis(
             name=node.name,
@@ -135,19 +161,33 @@ def _collect_module_functions(
             calls=calls,
             inferred_arg_types=dict(stub_signature.arg_types),
             inferred_return_type=stub_signature.return_type,
+            native_target_language=_marker_target_language(marker, target_language),
         )
         if has_exempt:
             function.is_native_candidate = False
+            function.native_target_language = None
+        elif marker is not None and marker.error:
+            _add_native_marker_diagnostic(function, node, marker)
+        elif marker is not None and not _native_marker_applies(marker, target_language):
+            function.is_native_candidate = False
         elif has_marker:
             validate_native_function(node, function)
-        elif native_marker == "auto" and _is_auto_native_candidate(node, function):
+        elif native_marker == "auto" and _is_auto_native_candidate(
+            node,
+            function,
+            target_language,
+        ):
             function.is_native_candidate = True
             function.accepted = True
         functions.append(function)
     return functions
 
 
-def _is_auto_native_candidate(node: ast.FunctionDef, function: FunctionAnalysis) -> bool:
+def _is_auto_native_candidate(
+    node: ast.FunctionDef,
+    function: FunctionAnalysis,
+    target_language: str,
+) -> bool:
     if node.decorator_list:
         return False
     probe = FunctionAnalysis(
@@ -161,13 +201,44 @@ def _is_auto_native_candidate(node: ast.FunctionDef, function: FunctionAnalysis)
         calls=list(function.calls),
         inferred_arg_types=dict(function.inferred_arg_types),
         inferred_return_type=function.inferred_return_type,
+        native_target_language=target_language,
     )
     validate_native_function(node, probe)
     if probe.accepted:
         function.inferred_arg_types = dict(probe.inferred_arg_types)
         function.inferred_return_type = probe.inferred_return_type
+        function.native_target_language = target_language
         return True
     return False
+
+
+def _native_marker_applies(marker: NativeMarker, target_language: str) -> bool:
+    return marker.target_language is None or marker.target_language == target_language
+
+
+def _marker_target_language(marker: NativeMarker | None, target_language: str) -> str | None:
+    if marker is None:
+        return None
+    return marker.target_language or target_language
+
+
+def _add_native_marker_diagnostic(
+    function: FunctionAnalysis,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    marker: NativeMarker,
+) -> None:
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT010",
+            severity="error",
+            message=marker.error or "unsupported @rextio.native marker",
+            file_path=function.file_path,
+            line=node.lineno,
+            column=node.col_offset,
+            function_name=function.qualname,
+            suggestion='Use @rextio.native or @rextio.native(target="rust").',
+        )
+    )
 
 
 def _has_supported_signature(node: ast.FunctionDef) -> bool:
@@ -203,13 +274,27 @@ def _load_stub_signatures(path: Path) -> dict[str, StubSignature]:
     return signatures
 
 
-def _collect_native_methods(tree: ast.Module, module: ModuleAnalysis) -> list[FunctionAnalysis]:
+def _collect_native_methods(
+    tree: ast.Module,
+    module: ModuleAnalysis,
+    target_language: str,
+) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
             continue
         for child in node.body:
-            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) or not has_native_marker(child):
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            marker = native_marker_for_function(child)
+            if marker is None or has_exempt_marker(child):
+                continue
+            if marker.error:
+                functions.append(
+                    _rejected_native_marker_method(child, module, node.name, marker, target_language)
+                )
+                continue
+            if not _native_marker_applies(marker, target_language):
                 continue
             qualname = (
                 f"{module.module_name}.{node.name}.{child.name}"
@@ -226,6 +311,7 @@ def _collect_native_methods(tree: ast.Module, module: ModuleAnalysis) -> list[Fu
                 is_native_candidate=True,
                 accepted=False,
                 calls=collect_call_sites(child),
+                native_target_language=_marker_target_language(marker, target_language),
             )
             function.add_diagnostic(
                 Diagnostic(
@@ -246,6 +332,7 @@ def _collect_native_methods(tree: ast.Module, module: ModuleAnalysis) -> list[Fu
 def _rejected_async_function(
     node: ast.AsyncFunctionDef,
     module: ModuleAnalysis,
+    target_language: str,
 ) -> FunctionAnalysis:
     function = FunctionAnalysis(
         name=node.name,
@@ -257,6 +344,7 @@ def _rejected_async_function(
         is_native_candidate=True,
         accepted=False,
         calls=[],
+        native_target_language=target_language,
     )
     function.add_diagnostic(
         Diagnostic(
@@ -270,6 +358,56 @@ def _rejected_async_function(
             suggestion="Keep async code on Python fallback and move synchronous hot paths into typed native functions.",
         )
     )
+    return function
+
+
+def _rejected_native_marker_function(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    module: ModuleAnalysis,
+    marker: NativeMarker,
+    target_language: str,
+) -> FunctionAnalysis:
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=f"{module.module_name}.{node.name}" if module.module_name else node.name,
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        is_native_candidate=True,
+        accepted=False,
+        calls=[],
+        native_target_language=_marker_target_language(marker, target_language),
+    )
+    _add_native_marker_diagnostic(function, node, marker)
+    return function
+
+
+def _rejected_native_marker_method(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    module: ModuleAnalysis,
+    class_name: str,
+    marker: NativeMarker,
+    target_language: str,
+) -> FunctionAnalysis:
+    qualname = (
+        f"{module.module_name}.{class_name}.{node.name}"
+        if module.module_name
+        else f"{class_name}.{node.name}"
+    )
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=qualname,
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        is_native_candidate=True,
+        accepted=False,
+        calls=collect_call_sites(node),
+        native_target_language=_marker_target_language(marker, target_language),
+    )
+    _add_native_marker_diagnostic(function, node, marker)
     return function
 
 
