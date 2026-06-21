@@ -110,6 +110,85 @@ def fallback_only(xs):
     assert analysis.diagnostics == []
 
 
+def test_auto_discovers_contextually_inferred_unannotated_functions(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+def add_one(x):
+    return x + 1
+
+def scale(x):
+    return x * 2.0
+
+def choose(flag):
+    if flag:
+        return "yes"
+    return "no"
+
+def sum_squares(xs):
+    total = 0
+    for x in xs:
+        total += x * x
+    return total
+
+def fallback_only(x):
+    return x
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.add_one",
+        "app.choose",
+        "app.scale",
+        "app.sum_squares",
+    ]
+    by_name = {function.name: function for function in analysis.accepted_native_functions}
+    assert by_name["add_one"].inferred_arg_types == {"x": "int"}
+    assert by_name["add_one"].inferred_return_type == "int"
+    assert by_name["scale"].inferred_arg_types == {"x": "float"}
+    assert by_name["scale"].inferred_return_type == "float"
+    assert by_name["choose"].inferred_arg_types == {"flag": "bool"}
+    assert by_name["choose"].inferred_return_type == "str"
+    assert by_name["sum_squares"].inferred_arg_types == {"xs": "list[int]"}
+    assert by_name["sum_squares"].inferred_return_type == "int"
+    assert "app.fallback_only" not in [function.qualname for function in analysis.native_candidates]
+    assert analysis.diagnostics == []
+
+
+def test_uses_sibling_pyi_signatures_for_native_discovery(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "src/stubbed/ops.py",
+        """
+def dot(xs, ys):
+    total = 0.0
+    for x, y in zip(xs, ys):
+        total += x * y
+    return total
+""",
+    )
+    write_module(
+        tmp_path,
+        "src/stubbed/ops.pyi",
+        """
+def dot(xs: list[float], ys: list[float]) -> float: ...
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "stubbed.ops.dot",
+    ]
+    function = analysis.accepted_native_functions[0]
+    assert function.inferred_arg_types == {"xs": "list[float]", "ys": "list[float]"}
+    assert function.inferred_return_type == "float"
+    assert analysis.diagnostics == []
+
+
 def test_exempt_marker_prevents_auto_native_discovery(tmp_path: Path) -> None:
     write_module(
         tmp_path,

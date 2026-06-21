@@ -2,12 +2,13 @@
 
 [English](README.md) | [한국어](README.ko.md) | [繁體中文](README.zh-hant.md) | [日本語](README.ja.md)
 
-Rextio 会把符合条件、带类型标注的 Python 函数编译为 Rust 原生模块，并把其余代码
+Rextio 会把符合条件、可静态解析类型的 Python 函数编译为 Rust 原生模块，并把其余代码
 打包为安全的 Python fallback。
 
-Public 1 的范围刻意保持很窄。它是一个面向使用 typed Python 热路径项目的本地 CLI
-和构建工具 MVP。Rextio 默认自动发现符合条件的 typed 函数；项目也可以选择退出自动
-发现，并要求使用 `@rextio.native` 标记。Rextio 不声称提供完整 Python 兼容性、
+Public 1 的范围刻意保持很窄。它是一个面向可静态解析类型的 Python 热路径项目的本地 CLI
+和构建工具 MVP。Rextio 默认自动发现类型来自 annotation、同名 `.pyi` stub 或保守本地
+上下文推断的符合条件函数；项目也可以选择退出自动发现，并要求使用 `@rextio.native`
+标记。Rextio 不声称提供完整 Python 兼容性、
 完整 NumPy 支持、框架迁移、JIT 行为，或完整的运行时边界成本优化器。
 
 Public 1 包含保守的静态边界检查。它会拒绝调用 fallback-only 代码的 native 函数，
@@ -43,10 +44,11 @@ rextio clean path/to/project
 
 ## Public 1 范围
 
-Public 1 支持一个面向模块级函数的小型 typed Python subset。符合条件的 typed 函数
-默认会成为 native 候选。不受支持的语法、动态特性、不安全的 native-to-fallback
-调用，以及无法解析的外部调用，都会从 native 编译中被拒绝，并在可能时保留为 Python
-fallback。
+Public 1 支持一个面向模块级函数的小型静态类型 subset。当 Rextio 能从 source
+annotation、同名 `.pyi` stub 或保守本地上下文推断解析所有参数和返回类型时，符合条件的
+函数默认会成为 native 候选。不受支持的语法、未解析的类型、动态特性、不安全的
+native-to-fallback 调用，以及无法解析的外部调用，都会从 native 编译中被拒绝，并在可能时
+保留为 Python fallback。
 
 有关支持的 subset、边界限制、诊断和非目标，请参阅
 [Public 1 不支持的功能](docs/unsupported-features.md)。
@@ -69,6 +71,11 @@ Builtin 支持有意限制为 `len`、`abs`、两个参数的 `min`/`max`，以�
 `list[list[T]]`、固定 `dict[K, V]`，以及 `set[int|float|bool|str]` comprehension。
 class/object、exception、context manager、async、generator 和 dynamic attribute 语义仍保留在
 Python fallback；dataclass 也仍不在 Public 1 native 编译范围内。
+
+类型推断刻意保持窄范围。Rextio 可以从常量、算术、比较、`if` test、loop、indexing、
+comprehension 和受支持 builtin 推断简单 scalar 与 collection signature。缺少 source
+annotation 时，会优先参考同名 `.pyi` 文件的 signature。类型仍然模糊时，该函数保留在
+Python fallback。
 
 ## 构建前提
 

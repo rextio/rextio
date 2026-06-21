@@ -82,9 +82,9 @@ def _render_wrapper_function(
 ) -> list[str]:
     signature = _signature(node)
     call_args = _call_args(node)
-    native_call_args = _native_call_args(node)
+    native_call_args = _native_call_args(function, node)
     native_return = f"_native_{function.name}({native_call_args})"
-    if _is_set_annotation(node.returns):
+    if _is_set_type(_return_type_name(function, node)):
         native_return = f"set({native_return})"
     return [
         f"def {function.name}({signature}){_return_annotation(node)}:",
@@ -139,26 +139,33 @@ def _call_args(node: ast.FunctionDef) -> str:
     return ", ".join(args)
 
 
-def _native_call_args(node: ast.FunctionDef) -> str:
+def _native_call_args(function: FunctionAnalysis, node: ast.FunctionDef) -> str:
     args = [
-        _native_arg(arg.arg, arg.annotation)
+        _native_arg(arg.arg, _arg_type_name(function, arg))
         for arg in [*node.args.posonlyargs, *node.args.args]
     ]
     args.extend(
-        f"{arg.arg}={_native_arg(arg.arg, arg.annotation)}" for arg in node.args.kwonlyargs
+        f"{arg.arg}={_native_arg(arg.arg, _arg_type_name(function, arg))}" for arg in node.args.kwonlyargs
     )
     return ", ".join(args)
 
 
-def _native_arg(name: str, annotation: ast.AST | None) -> str:
-    if _annotation_name(annotation) == "set[float]":
+def _native_arg(name: str, type_name: str | None) -> str:
+    if type_name == "set[float]":
         return f"list({name})"
     return name
 
 
-def _is_set_annotation(node: ast.AST | None) -> bool:
-    annotation = _annotation_name(node)
-    return annotation is not None and annotation.startswith("set[") and annotation.endswith("]")
+def _is_set_type(type_name: str | None) -> bool:
+    return type_name is not None and type_name.startswith("set[") and type_name.endswith("]")
+
+
+def _arg_type_name(function: FunctionAnalysis, arg: ast.arg) -> str | None:
+    return _annotation_name(arg.annotation) or function.inferred_arg_types.get(arg.arg)
+
+
+def _return_type_name(function: FunctionAnalysis, node: ast.FunctionDef) -> str | None:
+    return _annotation_name(node.returns) or function.inferred_return_type
 
 
 def _annotation_name(node: ast.AST | None) -> str | None:
