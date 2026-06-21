@@ -44,6 +44,8 @@ Supported syntax is intentionally small:
 - `for i in range(n)`
 - `for i in range(start, stop)`
 - `for i in range(start, stop, step)` when `step` is a positive int literal
+- `for i, x in enumerate(xs)`
+- `for x, y in zip(xs, ys)`
 - `while`
 - `break`
 - `continue`
@@ -74,6 +76,9 @@ usually `RXT010`:
 - comprehensions
 - tuple, dict, and set literals
 - empty list literals without a supported `list[...]` annotation
+- `enumerate` outside a `for i, x in enumerate(xs)` loop
+- `zip` outside a `for x, y in zip(xs, ys)` loop
+- `enumerate` or `zip` over non-list expressions
 - slices such as `xs[1:]`
 - f-strings
 - `pass`
@@ -132,7 +137,9 @@ Native functions must not call:
 
 Fallback Python code may call native functions. If fallback Python code calls a
 native function inside a Python loop, Rextio emits `RXT073` because repeated
-Python/Rust boundary crossings may erase speedup.
+Python/Rust boundary crossings may erase speedup. The suggestion points users
+toward native batch loops that Public 1 can compile, including `for x in xs`,
+`for i, x in enumerate(xs)`, and `for x, y in zip(xs, ys)`.
 
 Generated wrappers count Python-to-native wrapper crossings per function. If the
 count exceeds `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` (`1000` by default), later

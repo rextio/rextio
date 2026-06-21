@@ -55,16 +55,18 @@ See [Unsupported Features in Public 1](docs/unsupported-features.md) for the
 supported subset, boundary limits, diagnostics, and non-goals.
 
 Current native candidates support scalar and `list[...]` types, arithmetic,
-comparisons, `if`, `while`, `for x in xs`, `range(...)` loops, `break`,
-`continue`, augmented assignment, typed local annotations, simple indexing, list
-literals, and `list.append(...)` for supported list item types. Builtin support
-is intentionally limited to `len`, `abs`, two-argument `min`/`max`, and
+comparisons, `if`, `while`, `for x in xs`, `range(...)` loops,
+`for i, x in enumerate(xs)`, `for x, y in zip(xs, ys)`, `break`, `continue`,
+augmented assignment, typed local annotations, simple indexing, list literals,
+and `list.append(...)` for supported list item types. Builtin support is
+intentionally limited to `len`, `abs`, two-argument `min`/`max`, and
 `sum(list[int|float])`. The supported `math` subset is `math.sqrt`, `math.sin`,
 `math.cos`, and `math.floor`.
 
 The expanded forms remain conservative: empty list literals need a supported
 `list[...]` local annotation, and `range(start, stop, step)` currently requires
-`step` to be a positive int literal.
+`step` to be a positive int literal. `enumerate` and `zip` are supported only as
+batch loop iterables over list variables.
 
 ## Build Prerequisites
 

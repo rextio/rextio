@@ -52,14 +52,16 @@ fallback。
 [Public 1 不支持的功能](docs/unsupported-features.md)。
 
 当前 native 候选支持 scalar 和 `list[...]` 类型、算术、比较、`if`、`while`、
-`for x in xs`、`range(...)` 循环、`break`、`continue`、augmented assignment、
-带类型的局部 annotation、简单索引、list literal，以及支持的 list item 类型上的
+`for x in xs`、`range(...)` 循环、`for i, x in enumerate(xs)`、
+`for x, y in zip(xs, ys)`、`break`、`continue`、augmented assignment、带类型的局部
+annotation、简单索引、list literal，以及支持的 list item 类型上的
 `list.append(...)`。Builtin 支持有意限制为 `len`、`abs`、两个参数的 `min`/`max`，
 以及 `sum(list[int|float])`。支持的 `math` subset 是 `math.sqrt`、`math.sin`、
 `math.cos` 和 `math.floor`。
 
 这些扩展形式仍保持保守：空 list literal 需要受支持的 `list[...]` 局部 annotation，
-并且 `range(start, stop, step)` 目前要求 `step` 是正的 int literal。
+并且 `range(start, stop, step)` 目前要求 `step` 是正的 int literal。`enumerate` 和
+`zip` 仅支持作为 list 变量上的 batch loop iterable。
 
 ## 构建前提
 
