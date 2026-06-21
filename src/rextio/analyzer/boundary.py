@@ -4,7 +4,18 @@ from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, ProjectAnalysis
 
-SUPPORTED_BUILTINS = {"len", "range"}
+SUPPORTED_INTERNAL_CALLS = {
+    "abs",
+    "len",
+    "max",
+    "min",
+    "range",
+    "sum",
+    "math.cos",
+    "math.floor",
+    "math.sin",
+    "math.sqrt",
+}
 
 BOUNDARY_DIAGNOSTIC_MESSAGES = {
     "RXT070": "Native function calls fallback-only function.",
@@ -43,9 +54,9 @@ def _first_boundary_error(
 ) -> Diagnostic | None:
     for call in function.calls:
         target = call.target
-        if target in SUPPORTED_BUILTINS:
-            continue
         resolved = resolver.resolve(module, target)
+        if target in SUPPORTED_INTERNAL_CALLS or target.endswith(".append"):
+            continue
         dependency = resolved.function
         if dependency is not None and not dependency.is_native_candidate:
             return Diagnostic(

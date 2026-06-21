@@ -33,16 +33,31 @@ Supported syntax is intentionally small:
 
 - typed arguments and return values
 - local variable assignment
+- local variable annotations with initializers, such as `total: float = 0.0`
+- augmented assignment: `+=`, `-=`, `*=`, `/=`
 - arithmetic with supported operators
 - boolean operations
 - comparisons with supported comparison operators
 - `if` / `elif` / `else`
 - `for x in xs`
 - `for i in range(len(xs))`
+- `for i in range(n)`
+- `for i in range(start, stop)`
+- `for i in range(start, stop, step)` when `step` is a positive int literal
 - `while`
+- `break`
+- `continue`
 - `return`
+- list literals for supported item types
+- typed empty list literals such as `out: list[int] = []`
+- `list.append(x)` for `list[int]`, `list[float]`, `list[bool]`, and
+  `list[str]`
 - calls to accepted native functions
 - `len(x)`
+- `abs(x)` for `int` and `float`
+- two-argument `min(x, y)` and `max(x, y)` for matching numeric types
+- `sum(xs)` for `list[int]` and `list[float]`
+- `math.sqrt`, `math.sin`, `math.cos`, and `math.floor`
 - simple indexing such as `xs[i]`
 
 ## Unsupported Native Syntax
@@ -57,10 +72,11 @@ usually `RXT010`:
 - generators and `yield`
 - lambdas and nested functions
 - comprehensions
-- container literals such as `[]`, `()`, `{}`, and set literals
+- tuple, dict, and set literals
+- empty list literals without a supported `list[...]` annotation
 - slices such as `xs[1:]`
 - f-strings
-- `break`, `continue`, and `pass`
+- `pass`
 - `try` / `except` / `finally`
 - `raise` and `assert`
 - context managers
@@ -102,7 +118,9 @@ does not depend on fallback-only Python code.
 Native functions may call:
 
 - accepted native functions
-- supported builtins such as `len` and `range`
+- supported builtins such as `len`, `range`, `abs`, `min`, `max`, and `sum`
+- the supported `math` subset: `math.sqrt`, `math.sin`, `math.cos`, and
+  `math.floor`
 
 Native functions must not call:
 

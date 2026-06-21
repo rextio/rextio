@@ -54,6 +54,17 @@ Public 1 は、モジュールレベル関数向けの小さな型付き Python 
 対応 subset、境界の制限、診断、非目標については
 [Public 1 で未対応の機能](docs/unsupported-features.md)を参照してください。
 
+現在の native 候補は、scalar と `list[...]` 型、算術、比較、`if`、`while`、
+`for x in xs`、`range(...)` ループ、`break`、`continue`、augmented assignment、
+型付きローカル annotation、単純な indexing、list literal、対応 list item 型への
+`list.append(...)` をサポートします。Builtin の対応は意図的に `len`、`abs`、
+2 引数の `min`/`max`、`sum(list[int|float])` に限定されています。対応する
+`math` subset は `math.sqrt`、`math.sin`、`math.cos`、`math.floor` です。
+
+これらの拡張形式も保守的に扱われます。空の list literal には対応する `list[...]`
+ローカル annotation が必要で、`range(start, stop, step)` は現時点では `step` が
+正の int literal である必要があります。
+
 ## ビルド前提条件
 
 Native ビルドには Rust と Cargo が必要です。`[rust] build_tool = "maturin"` が設定

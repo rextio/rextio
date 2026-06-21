@@ -177,6 +177,88 @@ def sum_indices(xs: list[int]) -> int:
     assert "total = total + xs[i as usize].clone();" in source
 
 
+def test_generates_rust_for_range_variants_break_and_continue(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def stepped_total(n: int) -> int:
+    total = 0
+    for i in range(1, n, 2):
+        if i > 10:
+            break
+        if i == 5:
+            continue
+        total += i
+    return total
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "for i in (1..n).step_by(2 as usize) {" in source
+    assert "break;" in source
+    assert "continue;" in source
+    assert "total = total + i;" in source
+
+
+def test_generates_rust_for_list_literals_and_append(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def collect_positive(xs: list[int]) -> list[int]:
+    out: list[int] = []
+    for x in xs:
+        if x > 0:
+            out.append(x)
+    return out
+
+@rextio.native
+def labels() -> list[str]:
+    return ["ready", "set"]
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "let mut out = vec![];" in source
+    assert "out.push(x.clone());" in source
+    assert 'return Ok(vec![String::from("ready"), String::from("set")]);' in source
+
+
+def test_generates_rust_for_limited_builtins_and_math_subset(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import math
+import rextio
+
+@rextio.native
+def numeric(values: list[float], x: float) -> float:
+    total: float = sum(values)
+    return math.sqrt(x) + math.sin(x) + math.cos(x) + max(total, abs(x))
+
+@rextio.native
+def lower(x: float, y: float) -> int:
+    return min(math.floor(x), math.floor(y))
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "let mut total = (values).iter().cloned().sum();" in source
+    assert "(x).sqrt()" in source
+    assert "(x).sin()" in source
+    assert "(x).cos()" in source
+    assert "(total).max((x).abs())" in source
+    assert "return Ok((((x).floor() as i64)).min(((y).floor() as i64)));" in source
+
+
 def test_len_lowers_to_public_1_int(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """

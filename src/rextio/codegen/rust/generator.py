@@ -7,16 +7,20 @@ from rextio.codegen.native_names import native_function_name
 from rextio.codegen.rust.pyo3 import render_pyo3_module
 from rextio.codegen.rust.type_map import rust_type
 from rextio.ir.nodes import (
+    AppendIR,
     AssignIR,
     BinaryOpIR,
     BlockIR,
+    BreakIR,
     CallIR,
     CompareIR,
+    ContinueIR,
     ExprIR,
     ForIR,
     FunctionIR,
     IfIR,
     IndexIR,
+    ListIR,
     LiteralIR,
     ModuleIR,
     NameIR,
@@ -104,6 +108,15 @@ class _FunctionRenderer:
                 return [f"{prefix}{target} = {value};"]
             self.declared.add(target)
             return [f"{prefix}let mut {target} = {value};"]
+        if isinstance(statement, AppendIR):
+            return [
+                f"{prefix}{statement.target.id}.push("
+                f"{strip_wrapping_parens(self.render_call_arg(statement.value))});"
+            ]
+        if isinstance(statement, BreakIR):
+            return [f"{prefix}break;"]
+        if isinstance(statement, ContinueIR):
+            return [f"{prefix}continue;"]
         if isinstance(statement, ReturnIR):
             if statement.value is None:
                 return [f"{prefix}return Ok(());"]
@@ -145,6 +158,13 @@ class _FunctionRenderer:
             return f"0..({self.render_expr(expr.args[0].args[0])}.len() as i64)"
         if isinstance(expr, CallIR) and expr.function == "range" and len(expr.args) == 1:
             return f"0..{self.render_expr(expr.args[0])}"
+        if isinstance(expr, CallIR) and expr.function == "range" and len(expr.args) == 2:
+            return f"{self.render_expr(expr.args[0])}..{self.render_expr(expr.args[1])}"
+        if isinstance(expr, CallIR) and expr.function == "range" and len(expr.args) == 3:
+            return (
+                f"({self.render_expr(expr.args[0])}..{self.render_expr(expr.args[1])})"
+                f".step_by({strip_wrapping_parens(self.render_expr(expr.args[2]))} as usize)"
+            )
         raise RustCodegenError("unsupported for-loop iterable")
 
     def render_expr(self, expr: ExprIR) -> str:
@@ -152,6 +172,8 @@ class _FunctionRenderer:
             return render_literal(expr.value)
         if isinstance(expr, NameIR):
             return expr.id
+        if isinstance(expr, ListIR):
+            return f"vec![{', '.join(self.render_expr(item) for item in expr.items)}]"
         if isinstance(expr, BinaryOpIR):
             op = {"and": "&&", "or": "||"}.get(expr.op, expr.op)
             return f"({self.render_expr(expr.left)} {op} {self.render_expr(expr.right)})"
@@ -183,6 +205,22 @@ class _FunctionRenderer:
     def render_call(self, expr: CallIR) -> str:
         if expr.function == "len" and len(expr.args) == 1:
             return f"({self.render_expr(expr.args[0])}.len() as i64)"
+        if expr.function == "abs" and len(expr.args) == 1:
+            return f"({self.render_expr(expr.args[0])}).abs()"
+        if expr.function == "min" and len(expr.args) == 2:
+            return f"({self.render_expr(expr.args[0])}).min({self.render_expr(expr.args[1])})"
+        if expr.function == "max" and len(expr.args) == 2:
+            return f"({self.render_expr(expr.args[0])}).max({self.render_expr(expr.args[1])})"
+        if expr.function == "sum" and len(expr.args) == 1:
+            return f"({self.render_expr(expr.args[0])}).iter().cloned().sum()"
+        if expr.function == "math.sqrt" and len(expr.args) == 1:
+            return f"({self.render_expr(expr.args[0])}).sqrt()"
+        if expr.function == "math.sin" and len(expr.args) == 1:
+            return f"({self.render_expr(expr.args[0])}).sin()"
+        if expr.function == "math.cos" and len(expr.args) == 1:
+            return f"({self.render_expr(expr.args[0])}).cos()"
+        if expr.function == "math.floor" and len(expr.args) == 1:
+            return f"(({self.render_expr(expr.args[0])}).floor() as i64)"
         rust_name = self.native_names_by_qualname.get(expr.function)
         if rust_name is None:
             rust_name = self.native_names.get((self.function.module_name, expr.function))
@@ -259,6 +297,8 @@ def _assigned_names(block: BlockIR) -> set[str]:
     names: set[str] = set()
     for statement in block.statements:
         if isinstance(statement, AssignIR):
+            names.add(statement.target.id)
+        elif isinstance(statement, AppendIR):
             names.add(statement.target.id)
         elif isinstance(statement, IfIR):
             names.update(_assigned_names(statement.body))
