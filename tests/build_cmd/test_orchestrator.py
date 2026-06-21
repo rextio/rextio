@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -121,6 +123,81 @@ def add(a: int, b: int) -> int:
     assert "boundary fallback threshold: 4" in captured.out
     assert report["boundary_fallback_threshold"] == 4
     assert 'boundary_fallback_required("app.add", 4)' in wrapper_source
+
+
+def test_build_generates_zipapp_executable(
+    tmp_path: Path,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    package = tmp_path / "src" / "demo_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text(
+        """
+def main() -> int:
+    print("zipapp ok")
+    return 0
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--entrypoint=demo_cli.app:main",
+            "--executable-name=demo-tool",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    executable = tmp_path / "dist" / "demo-tool.pyz"
+
+    assert exit_code == 0
+    assert "executable artifact: built" in captured.out
+    assert f"executable: {executable}" in captured.out
+    assert report["executable_build"]["status"] == "built"
+    assert report["executable_build"]["path"] == str(executable)
+    assert report["executable_build"]["entrypoint"] == "demo_cli.app:main"
+    completed = subprocess.run(
+        [sys.executable, str(executable)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout.strip() == "zipapp ok"
+
+
+def test_build_reports_invalid_zipapp_entrypoint(
+    tmp_path: Path,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+def main() -> int:
+    return 0
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--entrypoint=not-a-module"])
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+
+    assert exit_code == 1
+    assert "executable artifact: failed" in captured.out
+    assert "Use module:function" in captured.out
+    assert report["status"] == "executable-build-failed"
+    assert report["executable_build"]["status"] == "failed"
 
 
 def test_build_reports_native_build_failure_when_cargo_is_missing(

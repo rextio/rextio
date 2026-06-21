@@ -11,6 +11,11 @@ from rextio.build.cargo_builder import (
     build_native_extension_with_cargo,
     skipped_native_build,
 )
+from rextio.build.executable_builder import (
+    ExecutableBuildResult,
+    build_zipapp_executable,
+    skipped_executable,
+)
 from rextio.build.maturin_builder import build_native_extension_with_maturin
 from rextio.codegen.rust.cargo import (
     render_cargo_config_toml,
@@ -87,6 +92,7 @@ class BuildResult:
     native_build: NativeBuildResult
     fallback_build: FallbackBuildResult
     wheel_build: WheelBuildResult
+    executable_build: ExecutableBuildResult
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -101,6 +107,7 @@ class BuildResult:
             "native_build": self.native_build.to_dict(),
             "fallback_build": self.fallback_build.to_dict(),
             "wheel_build": self.wheel_build.to_dict(),
+            "executable_build": self.executable_build.to_dict(),
         }
 
 
@@ -110,6 +117,8 @@ def build_hybrid_artifact(
     fallback: str,
     build_tool: str = "cargo",
     boundary_fallback_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+    executable_entrypoint: str | None = None,
+    executable_name: str | None = None,
 ) -> BuildResult:
     layout = ArtifactLayout(project_root)
     plan = create_build_plan(analysis, fallback)
@@ -122,6 +131,13 @@ def build_hybrid_artifact(
     _write_build_artifact(layout)
     fallback_build = _build_fallback_backend(fallback, layout)
     wheel_build = _build_wheel_artifact(project_root, layout, native_build, fallback_build)
+    executable_build = _build_executable_artifact(
+        layout,
+        native_build,
+        fallback_build,
+        executable_entrypoint,
+        executable_name,
+    )
 
     result = BuildResult(
         fallback=fallback,
@@ -133,10 +149,14 @@ def build_hybrid_artifact(
         native_build=native_build,
         fallback_build=fallback_build,
         wheel_build=wheel_build,
+        executable_build=executable_build,
     )
     (layout.reports_dir / "build.json").write_text(
         json.dumps(
-            {"status": _build_status(native_build, fallback_build), **result.to_dict()},
+            {
+                "status": _build_status(native_build, fallback_build, executable_build),
+                **result.to_dict(),
+            },
             indent=2,
             sort_keys=True,
         )
@@ -313,6 +333,27 @@ def _build_wheel_artifact(
     return build_artifact_wheel(project_root, layout.build_python_dir, layout.dist_dir)
 
 
+def _build_executable_artifact(
+    layout: ArtifactLayout,
+    native_build: NativeBuildResult,
+    fallback_build: FallbackBuildResult,
+    entrypoint: str | None,
+    executable_name: str | None,
+) -> ExecutableBuildResult:
+    if entrypoint is None:
+        return skipped_executable("No executable entrypoint was requested.")
+    if fallback_build.status != "built":
+        return skipped_executable("Fallback packaging failed, so no executable was generated.")
+    if native_build.status == "failed":
+        return skipped_executable("Native build failed, so no executable was generated.")
+    return build_zipapp_executable(
+        layout.build_python_dir,
+        layout.dist_dir,
+        entrypoint,
+        executable_name,
+    )
+
+
 def _build_native_with_selected_tool(layout: ArtifactLayout, build_tool: str) -> NativeBuildResult:
     normalized = build_tool.lower()
     if normalized == "cargo":
@@ -376,6 +417,7 @@ def _write_rust_project(layout: ArtifactLayout, rust_source: str) -> None:
 def _build_status(
     native_build: NativeBuildResult,
     fallback_build: FallbackBuildResult,
+    executable_build: ExecutableBuildResult | None = None,
 ) -> str:
     if fallback_build.status == "failed":
         return "fallback-build-failed"
@@ -383,6 +425,8 @@ def _build_status(
         return "codegen-failed"
     if native_build.status == "failed":
         return "native-build-failed"
+    if executable_build is not None and executable_build.status == "failed":
+        return "executable-build-failed"
     return "built"
 
 

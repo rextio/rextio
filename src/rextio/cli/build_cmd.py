@@ -64,6 +64,8 @@ def run(args: Namespace) -> int:
         fallback,
         build_tool=config.rust.build_tool,
         boundary_fallback_threshold=args.fallback_threshold,
+        executable_entrypoint=args.entrypoint,
+        executable_name=args.executable_name,
     )
     print("Rextio build")
     print(f"  fallback: {fallback}")
@@ -76,10 +78,13 @@ def run(args: Namespace) -> int:
     print(f"  build artifact: {result.layout.build_python_dir}")
     print(f"  native build: {result.native_build.status}")
     print(f"  fallback packaging: {result.fallback_build.status}")
+    print(f"  executable artifact: {result.executable_build.status}")
     if result.native_build.installed_path:
         print(f"  native module: {result.native_build.installed_path}")
     if result.wheel_build.path:
         print(f"  wheel artifact: {result.wheel_build.path}")
+    if result.executable_build.path:
+        print(f"  executable: {result.executable_build.path}")
     print(f"  wrote {result.layout.reports_dir / 'build.json'}")
     if result.fallback_build.status == "failed":
         print(result.fallback_build.message)
@@ -90,5 +95,8 @@ def run(args: Namespace) -> int:
         print(result.native_build.message)
         if result.native_build.stderr:
             print(result.native_build.stderr)
+        return 1
+    if result.executable_build.status == "failed":
+        print(result.executable_build.message)
         return 1
     return 0
