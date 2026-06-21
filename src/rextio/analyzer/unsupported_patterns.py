@@ -336,6 +336,13 @@ def _infer_expr_type(
         return None
     if isinstance(node, ast.Name):
         return env.get(node.id)
+    if isinstance(node, ast.Attribute):
+        _add_unsupported_syntax(
+            function,
+            node,
+            "dynamic attribute access is not supported in native functions",
+        )
+        return None
     if isinstance(node, ast.List):
         return _infer_list_type(node, function, env, expected_type)
     if isinstance(node, ast.ListComp):

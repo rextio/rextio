@@ -265,6 +265,59 @@ def bad(x: float) -> float:
     assert [function.qualname for function in analysis.rejected_native_functions] == ["app.bad"]
 
 
+def test_rejects_object_async_generator_and_dynamic_attribute_native_features(
+    tmp_path: Path,
+) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+class Scoring:
+    @rextio.native
+    def score(self, x: int) -> int:
+        return x + 1
+
+@rextio.native
+async def async_bad(x: int) -> int:
+    return x
+
+@rextio.native
+def try_bad(x: int) -> int:
+    try:
+        return x
+    except Exception:
+        return 0
+
+@rextio.native
+def with_bad(x: int) -> int:
+    with x:
+        return x
+
+@rextio.native
+def generator_bad(x: int) -> int:
+    yield x
+
+@rextio.native
+def dynamic_attr_bad(x: int) -> int:
+    return x.value
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.Scoring.score",
+        "app.async_bad",
+        "app.dynamic_attr_bad",
+        "app.generator_bad",
+        "app.try_bad",
+        "app.with_bad",
+    }
+
+
 def test_accepts_low_risk_control_flow_and_range_forms(tmp_path: Path) -> None:
     write_module(
         tmp_path,

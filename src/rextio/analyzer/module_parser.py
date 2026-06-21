@@ -105,6 +105,10 @@ def _collect_module_functions(
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
     for node in tree.body:
+        if isinstance(node, ast.AsyncFunctionDef):
+            if has_native_marker(node) and not has_exempt_marker(node):
+                functions.append(_rejected_async_function(node, module))
+            continue
         if not isinstance(node, ast.FunctionDef):
             continue
         calls = collect_call_sites(node)
@@ -163,7 +167,7 @@ def _collect_native_methods(tree: ast.Module, module: ModuleAnalysis) -> list[Fu
         if not isinstance(node, ast.ClassDef):
             continue
         for child in node.body:
-            if not isinstance(child, ast.FunctionDef) or not has_native_marker(child):
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) or not has_native_marker(child):
                 continue
             qualname = (
                 f"{module.module_name}.{node.name}.{child.name}"
@@ -195,6 +199,36 @@ def _collect_native_methods(tree: ast.Module, module: ModuleAnalysis) -> list[Fu
             )
             functions.append(function)
     return functions
+
+
+def _rejected_async_function(
+    node: ast.AsyncFunctionDef,
+    module: ModuleAnalysis,
+) -> FunctionAnalysis:
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=f"{module.module_name}.{node.name}" if module.module_name else node.name,
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        is_native_candidate=True,
+        accepted=False,
+        calls=[],
+    )
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT010",
+            severity="error",
+            message="async functions are not supported as native functions",
+            file_path=module.file_path,
+            line=node.lineno,
+            column=node.col_offset,
+            function_name=function.qualname,
+            suggestion="Keep async code on Python fallback and move synchronous hot paths into typed native functions.",
+        )
+    )
+    return function
 
 
 class _CallCollector(ast.NodeVisitor):
@@ -241,7 +275,7 @@ class _CallCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def collect_call_sites(node: ast.FunctionDef) -> list[CallSite]:
+def collect_call_sites(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[CallSite]:
     collector = _CallCollector()
     collector.visit(node)
     return collector.calls
