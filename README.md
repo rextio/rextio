@@ -54,13 +54,15 @@ are rejected from native compilation and kept on Python fallback where possible.
 See [Unsupported Features in Public 1](docs/unsupported-features.md) for the
 supported subset, boundary limits, diagnostics, and non-goals.
 
-Current native candidates support scalar, `list[...]`, fixed `tuple[...]`,
-limited `dict[str, int|float]`, and `Optional[T]` / `T | None` types. Supported
+Current native candidates support scalar, `list[...]` including
+`list[list[T]]`, fixed `tuple[...]`, limited `dict[str, int|float|str]`,
+limited `set[int|bool|str]`, and `Optional[T]` / `T | None` types. Supported
 syntax includes arithmetic, comparisons, `if`, `while`, `for x in xs`,
 `range(...)` loops, `for i, x in enumerate(xs)`, `for x, y in zip(xs, ys)`,
 `break`, `continue`, augmented assignment, typed local annotations, simple
-indexing, list literals, fixed tuple literals, limited dict read/write, and
-`list.append(...)` for supported list item types. Builtin support is
+indexing, list literals, fixed tuple literals, limited dict read/write,
+limited list/dict/set comprehensions, assignment expressions inside
+comprehensions, and `list.append(...)` for supported list item types. Builtin support is
 intentionally limited to `len`, `abs`, two-argument `min`/`max`, and
 `sum(list[int|float])`. The supported `math` subset is `math.sqrt`, `math.sin`,
 `math.cos`, and `math.floor`.
@@ -68,9 +70,10 @@ intentionally limited to `len`, `abs`, two-argument `min`/`max`, and
 The expanded forms remain conservative: empty list literals need a supported
 `list[...]` local annotation, and `range(start, stop, step)` currently requires
 `step` to be a positive int literal. `enumerate` and `zip` are supported only as
-batch loop iterables over list variables. Dict support is limited to
-`dict[str, int]` and `dict[str, float]`; dataclasses are still outside Public 1
-native compilation.
+batch loop or comprehension iterables over list variables. Dict support is
+limited to `dict[str, int]`, `dict[str, float]`, and `dict[str, str]`; set
+support is limited to `set[int]`, `set[bool]`, and `set[str]` comprehensions.
+Dataclasses are still outside Public 1 native compilation.
 
 ## Build Prerequisites
 
