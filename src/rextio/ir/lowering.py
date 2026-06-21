@@ -28,6 +28,8 @@ from rextio.ir.nodes import (
     ParamIR,
     ReturnIR,
     StatementIR,
+    TargetIR,
+    TupleTargetIR,
     UnaryOpIR,
     WhileIR,
 )
@@ -135,7 +137,7 @@ def lower_statement(
         )
     if isinstance(node, ast.For):
         return ForIR(
-            target=lower_name_target(node.target),
+            target=lower_loop_target(node.target),
             iterable=lower_expr(node.iter, module, resolver),
             body=lower_block(node.body, module, resolver),
             orelse=lower_block(node.orelse, module, resolver),
@@ -203,6 +205,15 @@ def lower_name_target(node: ast.AST) -> NameIR:
     return NameIR(node.id)
 
 
+def lower_loop_target(node: ast.AST) -> TargetIR:
+    if isinstance(node, ast.Name):
+        return NameIR(node.id)
+    if isinstance(node, ast.Tuple):
+        items = [lower_name_target(item) for item in node.elts]
+        return TupleTargetIR(items=items)
+    raise LoweringError(f"unsupported for-loop target: {type(node).__name__}")
+
+
 def lower_binary_op(node: ast.operator) -> str:
     if isinstance(node, ast.Add):
         return "+"
@@ -253,6 +264,8 @@ def _lower_call_target(
         "min",
         "range",
         "sum",
+        "enumerate",
+        "zip",
         "math.floor",
         "math.cos",
         "math.sin",

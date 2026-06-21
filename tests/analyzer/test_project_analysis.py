@@ -401,6 +401,78 @@ def labels() -> list[str]:
     assert analysis.rejected_native_functions == []
 
 
+def test_accepts_enumerate_and_zip_batch_loops(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def indexed_offsets(xs: list[int]) -> list[int]:
+    out: list[int] = []
+    for i, x in enumerate(xs):
+        out.append(i + x)
+    return out
+
+@rextio.native
+def dot(xs: list[float], ys: list[float]) -> float:
+    total = 0.0
+    for x, y in zip(xs, ys):
+        total += x * y
+    return total
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.dot",
+        "app.indexed_offsets",
+    ]
+    assert analysis.rejected_native_functions == []
+
+
+def test_rejects_unsupported_enumerate_and_zip_forms(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def enumerate_without_unpack(xs: list[int]) -> int:
+    total = 0
+    for pair in enumerate(xs):
+        total += 1
+    return total
+
+@rextio.native
+def zip_wrong_arity(xs: list[int], ys: list[int]) -> int:
+    total = 0
+    for x, y, z in zip(xs, ys):
+        total += x + y + z
+    return total
+
+@rextio.native
+def zip_non_list(xs: list[int], n: int) -> int:
+    total = 0
+    for x, y in zip(xs, n):
+        total += x
+    return total
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.enumerate_without_unpack",
+        "app.zip_non_list",
+        "app.zip_wrong_arity",
+    }
+
+
 def test_rejects_ambiguous_empty_list_and_non_literal_range_step(tmp_path: Path) -> None:
     write_module(
         tmp_path,
@@ -679,6 +751,8 @@ def process_all(xs: list[float]) -> list[float]:
 
     assert [function.qualname for function in analysis.accepted_native_functions] == ["app.score_one"]
     assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT073"]
+    assert "enumerate(xs)" in analysis.boundary_warnings[0].suggestion
+    assert "zip(xs, ys)" in analysis.boundary_warnings[0].suggestion
 
 
 def test_warns_for_python_loop_calling_imported_native_function(tmp_path: Path) -> None:

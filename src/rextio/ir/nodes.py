@@ -19,6 +19,10 @@ class ExprIR(IRNode):
     pass
 
 
+class TargetIR(IRNode):
+    pass
+
+
 @dataclass(frozen=True)
 class ModuleIR(IRNode):
     functions: list["FunctionIR"]
@@ -122,7 +126,7 @@ class IfIR(StatementIR):
 
 @dataclass(frozen=True)
 class ForIR(StatementIR):
-    target: "NameIR"
+    target: TargetIR
     iterable: ExprIR
     body: BlockIR
     orelse: BlockIR
@@ -205,11 +209,19 @@ class CallIR(ExprIR):
 
 
 @dataclass(frozen=True)
-class NameIR(ExprIR):
+class NameIR(ExprIR, TargetIR):
     id: str
 
     def to_dict(self) -> dict[str, object]:
         return {"kind": "name", "id": self.id}
+
+
+@dataclass(frozen=True)
+class TupleTargetIR(TargetIR):
+    items: list[NameIR]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "tuple_target", "items": [item.to_dict() for item in self.items]}
 
 
 @dataclass(frozen=True)

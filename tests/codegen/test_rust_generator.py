@@ -231,6 +231,61 @@ def labels() -> list[str]:
     assert 'return Ok(vec![String::from("ready"), String::from("set")]);' in source
 
 
+def test_generates_rust_for_enumerate_and_zip_batch_loops(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def indexed_offsets(xs: list[int]) -> list[int]:
+    out: list[int] = []
+    for i, x in enumerate(xs):
+        out.append(i + x)
+    return out
+
+@rextio.native
+def dot(xs: list[float], ys: list[float]) -> float:
+    total = 0.0
+    for x, y in zip(xs, ys):
+        total += x * y
+    return total
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert (
+        "for (i, x) in xs.iter().cloned().enumerate()"
+        ".map(|(i, value)| (i as i64, value)) {"
+    ) in source
+    assert "out.push(i + x);" in source
+    assert "for (x, y) in xs.iter().cloned().zip(ys.iter().cloned()) {" in source
+    assert "total = total + (x * y);" in source
+
+
+def test_generates_native_helpers_before_callers(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def a_compute(x: int) -> int:
+    return z_helper(x) + 1
+
+@rextio.native
+def z_helper(x: int) -> int:
+    return x * 2
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert source.index("fn app__z_helper") < source.index("fn app__a_compute")
+    assert "return Ok(app__z_helper(x.clone())? + 1);" in source
+
+
 def test_generates_rust_for_limited_builtins_and_math_subset(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """

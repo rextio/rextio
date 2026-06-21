@@ -26,6 +26,8 @@ from rextio.ir.nodes import (
     NameIR,
     ReturnIR,
     StatementIR,
+    TargetIR,
+    TupleTargetIR,
     UnaryOpIR,
     WhileIR,
 )
@@ -49,7 +51,7 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
             names_by_qualname[function.qualname],
             _render_function(function, names_by_qualname, names_by_module_and_name),
         )
-        for function in sorted(module_ir.functions, key=lambda item: item.qualname)
+        for function in module_ir.functions
     ]
     return render_pyo3_module(rendered)
 
@@ -131,8 +133,11 @@ class _FunctionRenderer:
             lines.append(f"{prefix}}}")
             return lines
         if isinstance(statement, ForIR):
-            lines = [f"{prefix}for {statement.target.id} in {self.render_iterable(statement.iterable)} {{"]
-            self.declared.add(statement.target.id)
+            lines = [
+                f"{prefix}for {self.render_loop_target(statement.target)} "
+                f"in {self.render_iterable(statement.iterable)} {{"
+            ]
+            self.declared.update(target_names(statement.target))
             lines.extend(self.render_block(statement.body, indent + 1))
             lines.append(f"{prefix}}}")
             return lines
@@ -147,6 +152,16 @@ class _FunctionRenderer:
     def render_iterable(self, expr: ExprIR) -> str:
         if isinstance(expr, NameIR):
             return f"{expr.id}.iter().cloned()"
+        if isinstance(expr, CallIR) and expr.function == "enumerate" and len(expr.args) == 1:
+            return (
+                f"{self.render_expr(expr.args[0])}.iter().cloned().enumerate()"
+                ".map(|(i, value)| (i as i64, value))"
+            )
+        if isinstance(expr, CallIR) and expr.function == "zip" and len(expr.args) == 2:
+            return (
+                f"{self.render_expr(expr.args[0])}.iter().cloned()"
+                f".zip({self.render_expr(expr.args[1])}.iter().cloned())"
+            )
         if (
             isinstance(expr, CallIR)
             and expr.function == "range"
@@ -166,6 +181,13 @@ class _FunctionRenderer:
                 f".step_by({strip_wrapping_parens(self.render_expr(expr.args[2]))} as usize)"
             )
         raise RustCodegenError("unsupported for-loop iterable")
+
+    def render_loop_target(self, target: TargetIR) -> str:
+        if isinstance(target, NameIR):
+            return target.id
+        if isinstance(target, TupleTargetIR):
+            return f"({', '.join(item.id for item in target.items)})"
+        raise RustCodegenError(f"unsupported loop target IR: {type(target).__name__}")
 
     def render_expr(self, expr: ExprIR) -> str:
         if isinstance(expr, LiteralIR):
@@ -304,10 +326,18 @@ def _assigned_names(block: BlockIR) -> set[str]:
             names.update(_assigned_names(statement.body))
             names.update(_assigned_names(statement.orelse))
         elif isinstance(statement, ForIR):
-            names.add(statement.target.id)
+            names.update(target_names(statement.target))
             names.update(_assigned_names(statement.body))
             names.update(_assigned_names(statement.orelse))
         elif isinstance(statement, WhileIR):
             names.update(_assigned_names(statement.body))
             names.update(_assigned_names(statement.orelse))
     return names
+
+
+def target_names(target: TargetIR) -> set[str]:
+    if isinstance(target, NameIR):
+        return {target.id}
+    if isinstance(target, TupleTargetIR):
+        return {item.id for item in target.items}
+    return set()
