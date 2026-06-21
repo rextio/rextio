@@ -4,7 +4,6 @@ import argparse
 from collections.abc import Sequence
 
 from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, generate_cmd, init_cmd
-from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,47 +21,83 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser = subparsers.add_parser("check", help="Analyze native candidates.")
     check_parser.add_argument("project_root", nargs="?", default=".", help="Project root to check.")
     check_parser.add_argument("--json", action="store_true", help="Print structured JSON.")
+    _add_policy_options(check_parser)
     check_parser.set_defaults(handler=check_cmd.run)
 
     build_parser_ = subparsers.add_parser("build", help="Build a hybrid artifact.")
     build_parser_.add_argument("project_root", nargs="?", default=".", help="Project root to build.")
     build_parser_.add_argument(
+        "--native-backend",
+        choices=("rust",),
+        default=None,
+        help="Native backend. Overrides REXTIO_NATIVE_BACKEND and [build] native_backend.",
+    )
+    build_parser_.add_argument(
         "--fallback",
         choices=("cpython", "nuitka"),
         default=None,
-        help="Fallback backend. Overrides [build] fallback_backend in rextio.toml.",
+        help="Fallback backend. Overrides REXTIO_FALLBACK_BACKEND and [build] fallback_backend.",
     )
     build_parser_.add_argument(
         "--fallback-threshold",
         type=_non_negative_int,
-        default=DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+        default=None,
         help=(
             "Python-to-native wrapper calls allowed before generated fallback is used. "
+            "Overrides REXTIO_BOUNDARY_FALLBACK_THRESHOLD and [build] fallback_threshold. "
             "Use 0 to disable threshold fallback."
         ),
     )
     build_parser_.add_argument(
+        "--rust-binding",
+        choices=("pyo3",),
+        default=None,
+        help="Rust binding backend. Overrides REXTIO_RUST_BINDING and [rust] binding.",
+    )
+    build_parser_.add_argument(
+        "--rust-build-tool",
+        choices=("cargo", "maturin"),
+        default=None,
+        help="Rust build tool. Overrides REXTIO_RUST_BUILD_TOOL and [rust] build_tool.",
+    )
+    build_parser_.add_argument(
+        "--nuitka-fallback",
+        choices=("experimental",),
+        default=None,
+        help="Nuitka fallback policy. Overrides REXTIO_NUITKA_FALLBACK and [fallback] nuitka.",
+    )
+    build_parser_.add_argument(
         "--entrypoint",
         default=None,
-        help="Generate a zipapp executable for the given module:function entrypoint.",
+        help=(
+            "Generate an executable artifact for the given module:function entrypoint. "
+            "Overrides REXTIO_EXECUTABLE_ENTRYPOINT and [executable] entrypoint."
+        ),
     )
     build_parser_.add_argument(
         "--executable-name",
         default=None,
-        help="Executable artifact name without extension. Defaults to the entrypoint module name.",
+        help=(
+            "Executable artifact name without extension. Overrides REXTIO_EXECUTABLE_NAME "
+            "and [executable] name."
+        ),
     )
     build_parser_.add_argument(
         "--executable-backend",
         choices=("zipapp", "nuitka"),
-        default="zipapp",
-        help="Executable artifact backend to use when --entrypoint is provided.",
+        default=None,
+        help=(
+            "Executable artifact backend to use when an entrypoint is configured. "
+            "Overrides REXTIO_EXECUTABLE_BACKEND and [executable] backend."
+        ),
     )
     build_parser_.add_argument(
         "--nuitka-mode",
         choices=("standalone", "onefile"),
-        default="standalone",
-        help="Nuitka executable mode used with --executable-backend=nuitka.",
+        default=None,
+        help="Nuitka executable mode. Overrides REXTIO_NUITKA_MODE and [executable] nuitka_mode.",
     )
+    _add_policy_options(build_parser_)
     build_parser_.set_defaults(handler=build_cmd.run)
 
     generate_parser = subparsers.add_parser(
@@ -76,20 +111,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Project root to generate source artifacts for.",
     )
     generate_parser.add_argument(
+        "--native-backend",
+        choices=("rust",),
+        default=None,
+        help="Native backend. Overrides REXTIO_NATIVE_BACKEND and [build] native_backend.",
+    )
+    generate_parser.add_argument(
         "--fallback",
         choices=("cpython", "nuitka"),
         default=None,
-        help="Fallback backend label. Overrides [build] fallback_backend in rextio.toml.",
+        help="Fallback backend label. Overrides REXTIO_FALLBACK_BACKEND and [build] fallback_backend.",
     )
     generate_parser.add_argument(
         "--fallback-threshold",
         type=_non_negative_int,
-        default=DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+        default=None,
         help=(
             "Python-to-native wrapper calls allowed before generated fallback is used. "
+            "Overrides REXTIO_BOUNDARY_FALLBACK_THRESHOLD and [build] fallback_threshold. "
             "Use 0 to disable threshold fallback."
         ),
     )
+    generate_parser.add_argument(
+        "--rust-binding",
+        choices=("pyo3",),
+        default=None,
+        help="Rust binding backend. Overrides REXTIO_RUST_BINDING and [rust] binding.",
+    )
+    generate_parser.add_argument(
+        "--nuitka-fallback",
+        choices=("experimental",),
+        default=None,
+        help="Nuitka fallback policy. Overrides REXTIO_NUITKA_FALLBACK and [fallback] nuitka.",
+    )
+    _add_policy_options(generate_parser)
     generate_parser.set_defaults(handler=generate_cmd.run)
 
     bench_parser = subparsers.add_parser("bench", help="Benchmark a specific function.")
@@ -118,6 +173,36 @@ def _non_negative_int(value: str) -> int:
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be a non-negative integer")
     return parsed
+
+
+def _add_policy_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--native-marker",
+        choices=("auto", "decorator"),
+        default=None,
+        help="Native discovery policy. Overrides REXTIO_NATIVE_MARKER and [policy] native_marker.",
+    )
+    parser.add_argument(
+        "--require-type-hints",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Require type hints. Overrides REXTIO_REQUIRE_TYPE_HINTS and [policy] require_type_hints.",
+    )
+    parser.add_argument(
+        "--allow-dynamic-features",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Allow dynamic Python features. Overrides REXTIO_ALLOW_DYNAMIC_FEATURES and "
+            "[policy] allow_dynamic_features."
+        ),
+    )
+    parser.add_argument(
+        "--boundary-warnings",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Emit boundary warnings. Overrides REXTIO_BOUNDARY_WARNINGS and [policy] boundary_warnings.",
+    )
 
 
 if __name__ == "__main__":

@@ -123,6 +123,61 @@ def process_all(xs: list[float]) -> list[float]:
     assert data["diagnostics"] == []
 
 
+def test_check_environment_overrides_policy_config(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("REXTIO_NATIVE_MARKER", "auto")
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["check", str(tmp_path), "--json"])
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert data["accepted_native"] == ["app.add"]
+
+
+def test_check_cli_overrides_environment_policy(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("REXTIO_NATIVE_MARKER", "auto")
+    (tmp_path / "app.py").write_text(
+        """
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["check", str(tmp_path), "--json", "--native-marker=decorator"])
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert data["accepted_native"] == []
+
+
+def test_check_rejects_unsupported_cli_policy_override(tmp_path: Path, capsys) -> None:
+    exit_code = main(["check", str(tmp_path), "--allow-dynamic-features"])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "RXT060 Configuration error" in captured.out
+    assert "allow_dynamic_features" in captured.out
+
+
 def test_check_reports_config_error(tmp_path: Path, capsys) -> None:
     (tmp_path / "rextio.toml").write_text(
         """

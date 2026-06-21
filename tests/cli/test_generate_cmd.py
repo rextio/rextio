@@ -132,3 +132,38 @@ def add(a: int, b: int) -> int:
     assert "boundary fallback threshold: 3" in captured.out
     assert report["boundary_fallback_threshold"] == 3
     assert 'boundary_fallback_required("app.add", 3)' in wrapper_source
+
+
+def test_generate_uses_configured_fallback_and_threshold(tmp_path: Path, capsys) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[build]
+fallback_backend = "nuitka"
+fallback_threshold = 9
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["generate", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "generate.json").read_text(encoding="utf-8")
+    )
+    wrapper_source = (
+        tmp_path / ".rextio" / "generated" / "python" / "app.py"
+    ).read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "fallback: nuitka" in captured.out
+    assert "boundary fallback threshold: 9" in captured.out
+    assert report["fallback"] == "nuitka"
+    assert report["boundary_fallback_threshold"] == 9
+    assert 'boundary_fallback_required("app.add", 9)' in wrapper_source

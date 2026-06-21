@@ -127,6 +127,116 @@ def add(a: int, b: int) -> int:
     assert 'boundary_fallback_required("app.add", 4)' in wrapper_source
 
 
+def test_build_uses_configured_threshold_and_executable_options(
+    tmp_path: Path,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[build]
+fallback_backend = "cpython"
+fallback_threshold = 6
+
+[rust]
+build_tool = "cargo"
+
+[executable]
+entrypoint = "demo_cli.app:main"
+name = "config-tool"
+backend = "zipapp"
+""",
+        encoding="utf-8",
+    )
+    package = tmp_path / "src" / "demo_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text(
+        """
+def main() -> int:
+    print("config executable ok")
+    return 0
+
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    executable = tmp_path / "dist" / "config-tool.pyz"
+    wrapper_source = (
+        tmp_path / ".rextio" / "build" / "python" / "demo_cli" / "app.py"
+    ).read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "boundary fallback threshold: 6" in captured.out
+    assert "executable backend: zipapp" in captured.out
+    assert report["boundary_fallback_threshold"] == 6
+    assert report["executable_build"]["path"] == str(executable)
+    assert report["executable_build"]["entrypoint"] == "demo_cli.app:main"
+    assert 'boundary_fallback_required("demo_cli.app.add", 6)' in wrapper_source
+
+
+def test_build_cli_overrides_environment_and_config_options(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    monkeypatch.setenv("REXTIO_BOUNDARY_FALLBACK_THRESHOLD", "8")
+    monkeypatch.setenv("REXTIO_EXECUTABLE_ENTRYPOINT", "demo_cli.app:main")
+    monkeypatch.setenv("REXTIO_EXECUTABLE_NAME", "env-tool")
+    (tmp_path / "rextio.toml").write_text(
+        """
+[build]
+fallback_threshold = 6
+
+[rust]
+build_tool = "cargo"
+""",
+        encoding="utf-8",
+    )
+    package = tmp_path / "src" / "demo_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text(
+        """
+def main() -> int:
+    return 0
+
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback-threshold=4",
+            "--executable-name=cli-tool",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+
+    assert exit_code == 0
+    assert "boundary fallback threshold: 4" in captured.out
+    assert report["boundary_fallback_threshold"] == 4
+    assert report["executable_build"]["path"] == str(tmp_path / "dist" / "cli-tool.pyz")
+    assert report["executable_build"]["entrypoint"] == "demo_cli.app:main"
+
+
 def test_build_generates_zipapp_executable(
     tmp_path: Path,
     capsys,

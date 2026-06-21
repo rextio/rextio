@@ -6,6 +6,7 @@ from pathlib import Path
 DEFAULT_CONFIG = """[build]
 native_backend = "rust"
 fallback_backend = "cpython"
+fallback_threshold = 1000
 
 [rust]
 binding = "pyo3"
@@ -13,6 +14,12 @@ build_tool = "maturin"
 
 [fallback]
 nuitka = "experimental"
+
+[executable]
+# entrypoint = "myapp.cli:main"
+# name = "myapp"
+backend = "zipapp"
+nuitka_mode = "standalone"
 
 [policy]
 native_marker = "auto"
