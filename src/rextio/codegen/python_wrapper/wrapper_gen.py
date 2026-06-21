@@ -7,9 +7,13 @@ from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis
 from rextio.codegen.native_names import native_function_name
 from rextio.fallback.fallback_marker import GENERATED_PYTHON_HEADER
 from rextio.fallback.module_copy import fallback_module_name
+from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
 
 
-def render_wrapper_module(module: ModuleAnalysis) -> str:
+def render_wrapper_module(
+    module: ModuleAnalysis,
+    boundary_fallback_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+) -> str:
     accepted = sorted(
         [
             function
@@ -46,7 +50,7 @@ def render_wrapper_module(module: ModuleAnalysis) -> str:
 
     for function in accepted:
         node = function_nodes[function.name]
-        lines.extend(_render_wrapper_function(function, node))
+        lines.extend(_render_wrapper_function(function, node, boundary_fallback_threshold))
         lines.append("")
 
     for function in accepted:
@@ -71,7 +75,11 @@ def _render_native_binding(function: FunctionAnalysis) -> list[str]:
     ]
 
 
-def _render_wrapper_function(function: FunctionAnalysis, node: ast.FunctionDef) -> list[str]:
+def _render_wrapper_function(
+    function: FunctionAnalysis,
+    node: ast.FunctionDef,
+    boundary_fallback_threshold: int,
+) -> list[str]:
     signature = _signature(node)
     call_args = _call_args(node)
     return [
@@ -84,7 +92,10 @@ def _render_wrapper_function(function: FunctionAnalysis, node: ast.FunctionDef) 
         f'                "native mode requires generated native function: {function.qualname}"',
         "            )",
         f"        return _fallback_{function.name}({call_args})",
-        f'    if not native_required() and boundary_fallback_required("{function.qualname}"):',
+        (
+            f'    if not native_required() and boundary_fallback_required("{function.qualname}", '
+            f"{boundary_fallback_threshold}):"
+        ),
         f"        return _fallback_{function.name}({call_args})",
         f"    return _native_{function.name}({call_args})",
     ]

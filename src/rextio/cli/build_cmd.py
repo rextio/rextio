@@ -63,9 +63,11 @@ def run(args: Namespace) -> int:
         analysis,
         fallback,
         build_tool=config.rust.build_tool,
+        boundary_fallback_threshold=args.fallback_threshold,
     )
     print("Rextio build")
     print(f"  fallback: {fallback}")
+    print(f"  boundary fallback threshold: {args.fallback_threshold}")
     print(f"  rust build tool: {config.rust.build_tool}")
     print(f"  accepted native functions: {result.accepted_native_count}")
     print(f"  rejected native functions: {result.rejected_native_count}")

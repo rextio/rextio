@@ -38,7 +38,7 @@ def helper(x: int) -> int:
     assert "def add(a: int, b: int) -> int:" in wrapper
     assert "if native_required():" in wrapper
     assert "native mode requires generated native function: demo_pkg.scoring.add" in wrapper
-    assert 'boundary_fallback_required("demo_pkg.scoring.add")' in wrapper
+    assert 'boundary_fallback_required("demo_pkg.scoring.add", 1000)' in wrapper
     assert "return _fallback_add(a, b)" in wrapper
     assert "return _native_add(a, b)" in wrapper
     assert "_rextio_fallback_module.add = add" in wrapper

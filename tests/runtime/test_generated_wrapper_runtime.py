@@ -337,9 +337,8 @@ def process_all(xs: list[int]) -> list[int]:
     native_module = ModuleType("_rextio_native")
     native_module.demo_boundary_threshold__scoring__score_one = lambda x: x + 100
     monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
-    monkeypatch.setenv("REXTIO_BOUNDARY_FALLBACK_THRESHOLD", "2")
 
-    assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
+    assert main(["build", str(tmp_path), "--fallback=cpython", "--fallback-threshold=2"]) == 0
     monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "generated" / "python"))
     importlib.invalidate_caches()
 

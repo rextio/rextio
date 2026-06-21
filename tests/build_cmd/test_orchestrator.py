@@ -94,6 +94,35 @@ def rejected(x: int) -> int:
     assert any(name.endswith(".dist-info/RECORD") for name in names)
 
 
+def test_build_embeds_fallback_threshold(
+    tmp_path: Path,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython", "--fallback-threshold=4"])
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    wrapper_source = (
+        tmp_path / ".rextio" / "build" / "python" / "app.py"
+    ).read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "boundary fallback threshold: 4" in captured.out
+    assert report["boundary_fallback_threshold"] == 4
+    assert 'boundary_fallback_required("app.add", 4)' in wrapper_source
+
+
 def test_build_reports_native_build_failure_when_cargo_is_missing(
     tmp_path: Path,
     monkeypatch,

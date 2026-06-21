@@ -19,25 +19,28 @@ class _BoundaryFallbackState:
 _STATE = _BoundaryFallbackState()
 
 
-def boundary_fallback_threshold() -> int:
+def boundary_fallback_threshold(default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD) -> int:
     raw_value = os.environ.get(THRESHOLD_ENV)
     if raw_value in {None, ""}:
-        return DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
+        return _valid_default_threshold(default_threshold)
     try:
         value = int(raw_value)
     except ValueError:
-        return DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
+        return _valid_default_threshold(default_threshold)
     if value < 0:
-        return DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
+        return _valid_default_threshold(default_threshold)
     return value
 
 
-def boundary_fallback_disabled() -> bool:
-    return os.environ.get(DISABLE_ENV) == "1" or boundary_fallback_threshold() == 0
+def boundary_fallback_disabled(default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD) -> bool:
+    return os.environ.get(DISABLE_ENV) == "1" or boundary_fallback_threshold(default_threshold) == 0
 
 
-def boundary_fallback_required(function_name: str) -> bool:
-    threshold = boundary_fallback_threshold()
+def boundary_fallback_required(
+    function_name: str,
+    default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+) -> bool:
+    threshold = boundary_fallback_threshold(default_threshold)
     if threshold == 0 or os.environ.get(DISABLE_ENV) == "1":
         return False
 
@@ -62,3 +65,9 @@ def reset_boundary_fallback_state() -> None:
     with _STATE.lock:
         _STATE.counts.clear()
         _STATE.fallback_functions.clear()
+
+
+def _valid_default_threshold(default_threshold: int) -> int:
+    if default_threshold < 0:
+        return DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
+    return default_threshold

@@ -77,6 +77,8 @@ function.
 Generated wrappers also keep a per-function runtime crossing count. After a
 function's Python-to-native wrapper calls exceed
 `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` (`1000` by default), later calls use the
-generated Python fallback path for that function. Set the threshold to `0` or set
-`REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this automatic fallback.
-`REXTIO_NATIVE_MODE=native` bypasses the threshold.
+generated Python fallback path for that function. `rextio generate` and
+`rextio build` accept `--fallback-threshold=N` to embed the generated-code
+default. The runtime environment variable overrides that embedded default. Set
+the threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this
+automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.

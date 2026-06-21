@@ -411,6 +411,7 @@ Minimum supported options:
 rextio build
 rextio build --fallback=cpython
 rextio build --fallback=nuitka
+rextio build --fallback-threshold=1000
 ```
 
 Behavior:
@@ -423,6 +424,7 @@ Behavior:
 * Invoke maturin or Cargo as needed.
 * Copy fallback Python modules.
 * Generate import-compatible wrappers.
+* Embed the default runtime boundary fallback threshold in generated wrappers.
 * Produce a build artifact under `.rextio/build/`.
 * Optionally produce a wheel under `dist/`.
 
@@ -1013,6 +1015,11 @@ Support runtime boundary fallback controls:
 REXTIO_BOUNDARY_FALLBACK_THRESHOLD=1000
 REXTIO_DISABLE_BOUNDARY_FALLBACK=1
 ```
+
+`rextio build --fallback-threshold=N` and
+`rextio generate --fallback-threshold=N` should embed the generated-code default
+threshold. `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` overrides the embedded default at
+runtime.
 
 Optional:
 

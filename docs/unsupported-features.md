@@ -118,9 +118,12 @@ Python/Rust boundary crossings may erase speedup.
 
 Generated wrappers count Python-to-native wrapper crossings per function. If the
 count exceeds `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` (`1000` by default), later
-calls use the generated CPython/Nuitka fallback path for that function. Set the
-threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this
-automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
+calls use the generated CPython/Nuitka fallback path for that function. Use
+`rextio generate --fallback-threshold=N` or
+`rextio build --fallback-threshold=N` to embed the generated-code default. The
+runtime environment variable overrides that embedded default. Set the threshold
+to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this automatic
+fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 
 ## Out of Scope for Public 1
 

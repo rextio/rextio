@@ -32,6 +32,25 @@ def test_boundary_fallback_required_after_threshold(monkeypatch) -> None:
     assert boundary_fallback_count("demo.score_one") == 3
 
 
+def test_boundary_fallback_uses_provided_default_threshold(monkeypatch) -> None:
+    reset_boundary_fallback_state()
+    monkeypatch.delenv("REXTIO_BOUNDARY_FALLBACK_THRESHOLD", raising=False)
+
+    assert not boundary_fallback_required("demo.score_one", 2)
+    assert not boundary_fallback_required("demo.score_one", 2)
+    assert boundary_fallback_required("demo.score_one", 2)
+
+
+def test_boundary_fallback_env_overrides_provided_default_threshold(monkeypatch) -> None:
+    reset_boundary_fallback_state()
+    monkeypatch.setenv("REXTIO_BOUNDARY_FALLBACK_THRESHOLD", "3")
+
+    assert not boundary_fallback_required("demo.score_one", 1)
+    assert not boundary_fallback_required("demo.score_one", 1)
+    assert not boundary_fallback_required("demo.score_one", 1)
+    assert boundary_fallback_required("demo.score_one", 1)
+
+
 def test_boundary_fallback_tracks_functions_independently(monkeypatch) -> None:
     reset_boundary_fallback_state()
     monkeypatch.setenv("REXTIO_BOUNDARY_FALLBACK_THRESHOLD", "2")

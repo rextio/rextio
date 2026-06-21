@@ -159,8 +159,11 @@ REXTIO_NATIVE_MODE=native    # require generated native functions to be availabl
 Repeated Python-to-native wrapper calls are allowed at first. If a function's
 wrapper is crossed more than `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` times, later
 calls use the generated Python fallback for that function. The default threshold
-is `1000`; set it to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable
-this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses this threshold.
+is `1000`. `rextio generate --fallback-threshold=N` and
+`rextio build --fallback-threshold=N` embed a generated-code default for that
+artifact. The runtime environment variable overrides that embedded default. Set
+the threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this
+automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses this threshold.
 
 Use `.rextioignore` to keep generated or irrelevant Python files out of Rextio
 analysis.
