@@ -66,6 +66,8 @@ def run(args: Namespace) -> int:
         boundary_fallback_threshold=args.fallback_threshold,
         executable_entrypoint=args.entrypoint,
         executable_name=args.executable_name,
+        executable_backend=args.executable_backend,
+        nuitka_mode=args.nuitka_mode,
     )
     print("Rextio build")
     print(f"  fallback: {fallback}")
@@ -79,6 +81,8 @@ def run(args: Namespace) -> int:
     print(f"  native build: {result.native_build.status}")
     print(f"  fallback packaging: {result.fallback_build.status}")
     print(f"  executable artifact: {result.executable_build.status}")
+    if args.entrypoint:
+        print(f"  executable backend: {args.executable_backend}")
     if result.native_build.installed_path:
         print(f"  native module: {result.native_build.installed_path}")
     if result.wheel_build.path:

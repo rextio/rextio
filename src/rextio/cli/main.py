@@ -51,6 +51,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Executable artifact name without extension. Defaults to the entrypoint module name.",
     )
+    build_parser_.add_argument(
+        "--executable-backend",
+        choices=("zipapp", "nuitka"),
+        default="zipapp",
+        help="Executable artifact backend to use when --entrypoint is provided.",
+    )
+    build_parser_.add_argument(
+        "--nuitka-mode",
+        choices=("standalone", "onefile"),
+        default="standalone",
+        help="Nuitka executable mode used with --executable-backend=nuitka.",
+    )
     build_parser_.set_defaults(handler=build_cmd.run)
 
     generate_parser = subparsers.add_parser(
