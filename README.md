@@ -7,11 +7,12 @@ Public 1 is intentionally narrow. It is a local CLI and build-tool MVP for
 projects that use typed Python hot paths. Rextio discovers eligible typed
 functions by default; projects can opt out and require `@rextio.native` markers.
 It does not claim full Python compatibility, full NumPy support, framework
-migration, JIT behavior, or runtime boundary-cost optimization.
+migration, JIT behavior, or a full runtime boundary-cost optimizer.
 
 Public 1 includes conservative static boundary checks. It rejects native
-functions that call fallback-only code and warns when Python loops repeatedly
-call native functions.
+functions that call fallback-only code, warns when Python loops repeatedly call
+native functions, and generated wrappers switch that native function to fallback
+after repeated Python/Rust crossings exceed a simple runtime threshold.
 
 ## Current commands
 
@@ -155,6 +156,12 @@ REXTIO_NATIVE_MODE=fallback  # force Python fallback
 REXTIO_NATIVE_MODE=native    # require generated native functions to be available
 ```
 
+Repeated Python-to-native wrapper calls are allowed at first. If a function's
+wrapper is crossed more than `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` times, later
+calls use the generated Python fallback for that function. The default threshold
+is `1000`; set it to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable
+this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses this threshold.
+
 Use `.rextioignore` to keep generated or irrelevant Python files out of Rextio
 analysis.
 
@@ -167,8 +174,9 @@ Public 1 boundary checks are static and conservative:
 - `RXT073`: fallback Python calls a native function inside a loop.
 
 `RXT070` and `RXT072` reject the native candidate. `RXT073` is a warning; the
-function remains eligible because some native calls are still heavy enough to be
-worth crossing the boundary.
+function remains eligible and may use native initially, but generated wrappers
+fall back to the CPython/Nuitka fallback path after repeated runtime crossings
+exceed the configured threshold.
 
 ## Examples
 

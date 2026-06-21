@@ -116,6 +116,12 @@ Fallback Python code may call native functions. If fallback Python code calls a
 native function inside a Python loop, Rextio emits `RXT073` because repeated
 Python/Rust boundary crossings may erase speedup.
 
+Generated wrappers count Python-to-native wrapper crossings per function. If the
+count exceeds `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` (`1000` by default), later
+calls use the generated CPython/Nuitka fallback path for that function. Set the
+threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this
+automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
+
 ## Out of Scope for Public 1
 
 Public 1 does not include:
@@ -130,7 +136,7 @@ Public 1 does not include:
 - generator compilation
 - monkey patching support
 - runtime profiling-based optimization
-- runtime boundary-cost modeling
+- full runtime boundary-cost modeling
 - automatic native region fusion
 - JIT, Cranelift, LLVM, or MLIR integration
 - cloud build, SaaS dashboards, or GitHub app workflows

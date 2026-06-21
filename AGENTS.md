@@ -31,14 +31,15 @@ Public 1 must demonstrate all of the following:
 3. Rextio can check whether those functions belong to the supported subset.
 4. Rextio can reject unsafe native-to-fallback call boundaries.
 5. Rextio can warn about likely excessive Python-to-Rust boundary crossings.
-6. Rextio can generate Rust code for supported typed Python functions.
-7. Rextio can generate PyO3 bindings.
-8. Rextio can build the generated Rust module with Cargo/maturin.
-9. Rextio can preserve Python fallback behavior.
-10. Rextio can package a hybrid output where native functions are used when available and fallback functions are used otherwise.
-11. Rextio can optionally invoke Nuitka for fallback packaging.
-12. Rextio can run simple benchmarks comparing Python fallback and Rust native execution.
-13. Rextio can provide a clear demo project showing a normal Python app with a Rust-compiled hot path.
+6. Rextio can use generated Python fallback after repeated Python-to-Rust wrapper crossings exceed a simple runtime threshold.
+7. Rextio can generate Rust code for supported typed Python functions.
+8. Rextio can generate PyO3 bindings.
+9. Rextio can build the generated Rust module with Cargo/maturin.
+10. Rextio can preserve Python fallback behavior.
+11. Rextio can package a hybrid output where native functions are used when available and fallback functions are used otherwise.
+12. Rextio can optionally invoke Nuitka for fallback packaging.
+13. Rextio can run simple benchmarks comparing Python fallback and Rust native execution.
+14. Rextio can provide a clear demo project showing a normal Python app with a Rust-compiled hot path.
 
 The first public release must feel like a usable hybrid compiler/build tool, not merely a static analyzer.
 
@@ -52,7 +53,7 @@ Do not implement these in Public 1 unless explicitly requested:
 * GitHub App
 * Cloud build service
 * Runtime profiling-based automatic fallback
-* Runtime boundary-cost model
+* Full runtime boundary-cost model
 * Runtime-weighted native/fallback optimization
 * JIT
 * Cranelift
@@ -113,13 +114,14 @@ When this variable is set, the package must use fallback implementations.
 
 Crossing between Python fallback code and Rust native code can be expensive.
 
-Public 1 must not implement a full cost model, but it must enforce conservative static safety rules:
+Public 1 must not implement a full cost model, but it must enforce conservative static safety rules and a simple runtime crossing threshold:
 
 * Native functions must not call fallback-only functions.
 * Native functions must not call unsupported external package functions.
 * Native functions may call only accepted native functions and supported builtins/standard functions.
 * Python fallback code may call native functions.
-* Python fallback loops that repeatedly call native functions should produce warnings, not automatic fallback.
+* Python fallback loops that repeatedly call native functions should produce warnings.
+* Generated wrappers may initially cross into native code, but should use CPython/Nuitka fallback for that function after repeated wrapper crossings exceed `REXTIO_BOUNDARY_FALLBACK_THRESHOLD`.
 
 ### 3.4 Do Not Modify User Source In-Place During Build
 
@@ -740,20 +742,23 @@ Suggestion:
 Move the loop into a native batch function.
 ```
 
-Do not automatically disable native compilation in this case. A native function may be heavy enough to justify repeated boundary crossings.
+Do not reject native compilation at analysis time for this case. A native
+function may be heavy enough to justify some boundary crossings. Generated
+wrappers should use native initially, then switch that function to the generated
+CPython/Nuitka fallback path after runtime wrapper crossings exceed
+`REXTIO_BOUNDARY_FALLBACK_THRESHOLD`.
 
-### 9.6 Do Not Implement Runtime Boundary Cost Model in Public 1
+### 9.6 Do Not Implement a Full Runtime Boundary Cost Model in Public 1
 
 Do not implement:
 
 * runtime profiling-based automatic fallback
-* automatic disabling of native functions based on observed call count
 * runtime-weighted native coverage
 * boundary overhead measurement
-* cost-threshold policy
 * automatic native region fusion
 
-These belong to Phase 2.5 or later.
+These belong to Phase 2.5 or later. Public 1 may include a simple per-function
+wrapper crossing threshold that falls back after repeated Python-to-native calls.
 
 ### 9.7 Boundary Diagnostics
 
@@ -963,7 +968,9 @@ Wrapper behavior:
 4. Preserve the public function name.
 5. Keep type annotations where feasible.
 
-Wrappers should not attempt runtime boundary-cost optimization in Public 1.
+Wrappers should not attempt full runtime boundary-cost optimization in Public 1.
+They may apply the simple per-function boundary crossing threshold described in
+the boundary policy.
 
 ---
 
@@ -1000,6 +1007,13 @@ Support at least:
 REXTIO_DISABLE_NATIVE=1
 ```
 
+Support runtime boundary fallback controls:
+
+```text
+REXTIO_BOUNDARY_FALLBACK_THRESHOLD=1000
+REXTIO_DISABLE_BOUNDARY_FALLBACK=1
+```
+
 Optional:
 
 ```text
@@ -1018,6 +1032,10 @@ In `auto` mode:
 
 1. Use native if available.
 2. Fall back to Python otherwise.
+3. Fall back to Python for a function after repeated wrapper crossings exceed `REXTIO_BOUNDARY_FALLBACK_THRESHOLD`.
+
+In `native` mode, require generated native functions to be available and bypass
+the runtime boundary fallback threshold.
 
 Runtime flags must not override compile-time safety. A function rejected by subset or boundary checks must not be generated as native.
 
@@ -1304,7 +1322,7 @@ Rextio compiles eligible typed Python functions to Rust native modules and packa
 Also mention:
 
 ```text
-Public 1 includes conservative static boundary checks. It rejects native functions that call fallback-only code and warns when Python loops repeatedly call native functions.
+Public 1 includes conservative static boundary checks. It rejects native functions that call fallback-only code, warns when Python loops repeatedly call native functions, and uses generated fallback after repeated wrapper crossings exceed a simple runtime threshold.
 ```
 
 Do not claim full Python compatibility.
@@ -1313,7 +1331,7 @@ Do not claim full NumPy support.
 
 Do not claim framework migration.
 
-Do not claim runtime boundary-cost optimization.
+Do not claim full runtime boundary-cost optimization.
 
 Do not claim production-ready JIT.
 
@@ -1386,7 +1404,7 @@ Do not start with SaaS.
 
 Do not start with framework plugins.
 
-Do not start with profiling or runtime boundary-cost optimization.
+Do not start with profiling or full runtime boundary-cost optimization.
 
 ---
 
@@ -1412,7 +1430,7 @@ The architecture may leave extension points for these, but do not implement them
 * package adapter registry
 * NumPy subset
 * profiling and optimization intelligence
-* runtime boundary-cost model
+* full runtime boundary-cost model
 * runtime-weighted native coverage
 * native region fusion suggestions
 * GitHub PR integration

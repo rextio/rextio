@@ -73,3 +73,10 @@ such as `RXT070`, `RXT072`, and `RXT030`.
 Fallback Python may call native functions. If it does so inside a Python loop,
 Rextio emits `RXT073` with the suggestion to move the loop into a native batch
 function.
+
+Generated wrappers also keep a per-function runtime crossing count. After a
+function's Python-to-native wrapper calls exceed
+`REXTIO_BOUNDARY_FALLBACK_THRESHOLD` (`1000` by default), later calls use the
+generated Python fallback path for that function. Set the threshold to `0` or set
+`REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this automatic fallback.
+`REXTIO_NATIVE_MODE=native` bypasses the threshold.
