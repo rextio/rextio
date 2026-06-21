@@ -30,10 +30,10 @@ Supported types:
 - `list[str]`
 - `list[list[T]]` where `T` is a supported scalar list item type
 - fixed tuples such as `tuple[int, float]`
-- `dict[str, int]`
-- `dict[str, float]`
-- `dict[str, str]`
+- fixed `dict[K, V]` where `K` is `int`, `bool`, or `str` and `V` is a
+  supported fixed value type
 - `set[int]`
+- `set[float]`
 - `set[bool]`
 - `set[str]`
 - `Optional[T]` and `T | None` for supported `T`
@@ -65,13 +65,13 @@ Supported syntax is intentionally small:
   `list[str]`
 - fixed tuple literals and constant tuple indexing such as `pair[0]`
 - limited dict literals, `d[key]` reads, and `d[key] = value` writes for
-  `dict[str, int]`, `dict[str, float]`, and `dict[str, str]`
+  supported fixed `dict[K, V]` types
 - list comprehensions over supported `list`, `range`, `enumerate`, and `zip`
   iterables, including optional `if` clauses and multi-generator flattening
 - nested list comprehensions that produce `list[list[T]]`
-- limited dict comprehensions producing `dict[str, int]`, `dict[str, float]`,
-  or `dict[str, str]`
-- limited set comprehensions producing `set[int]`, `set[bool]`, or `set[str]`
+- limited dict comprehensions producing supported fixed `dict[K, V]` types
+- limited set comprehensions producing `set[int]`, `set[float]`, `set[bool]`,
+  or `set[str]`
 - assignment expressions inside comprehensions; targets bind in the containing
   function scope and cannot rebind comprehension iteration variables
 - `Optional[T]` / `T | None` annotations, `None` returns, and `is None` /
@@ -98,13 +98,13 @@ usually `RXT010`:
 - generator expressions
 - assignment expressions outside comprehensions
 - set literals
-- general tuple and dict semantics outside the fixed tuple and
-  `dict[str, int|float|str]` subset
-- general set semantics outside the limited `set[int|bool|str]` comprehension
-  subset
+- general tuple and dict semantics outside the fixed tuple and limited fixed
+  `dict[K, V]` subset
+- general set semantics outside the limited `set[int|float|bool|str]`
+  comprehension subset
 - dataclasses
 - empty list literals without a supported `list[...]` annotation
-- empty dict literals without a supported `dict[str, int|float|str]` annotation
+- empty dict literals without a supported fixed `dict[K, V]` annotation
 - `enumerate` outside a supported loop or comprehension iterable
 - `zip` outside a supported loop or comprehension iterable
 - `enumerate` or `zip` over non-list expressions

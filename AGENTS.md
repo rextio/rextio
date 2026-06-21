@@ -593,10 +593,9 @@ list[bool]
 list[str]
 list[list[T]]
 tuple[int, float]
-dict[str, int]
-dict[str, float]
-dict[str, str]
+dict[K, V] where K is int, bool, or str and V is a supported fixed value type
 set[int]
+set[float]
 set[bool]
 set[str]
 Optional[T]
@@ -617,10 +616,9 @@ Python list[bool]  -> Vec<bool>
 Python list[str]   -> Vec<String>
 Python list[list[T]] -> Vec<Vec<T>>
 Python tuple[...]   -> Rust fixed tuple
-Python dict[str, int]   -> HashMap<String, i64>
-Python dict[str, float] -> HashMap<String, f64>
-Python dict[str, str]   -> HashMap<String, String>
+Python dict[K, V]   -> HashMap<K, V> for supported fixed K and V
 Python set[int]     -> HashSet<i64>
+Python set[float]   -> Vec<f64> internally, restored to Python set by wrappers
 Python set[bool]    -> HashSet<bool>
 Python set[str]     -> HashSet<String>
 Python Optional[T]  -> Option<T>
@@ -657,14 +655,14 @@ Support inside native candidate functions:
   as `out: list[int] = []`
 * `list.append(x)` for `list[int]`, `list[float]`, `list[bool]`, and `list[str]`
 * fixed tuple literals and constant indexing for supported scalar item types
-* limited `dict[str, int]`, `dict[str, float]`, and `dict[str, str]` literals, constant/variable
-  string-key reads, and `d[key] = value` writes
+* limited `dict[K, V]` literals, key reads, and `d[key] = value` writes for
+  supported fixed key/value types
 * list comprehensions over supported `list`, `range`, `enumerate`, and `zip`
   iterables, including optional `if` clauses and multi-generator flattening
 * nested list comprehensions that produce `list[list[T]]`
-* limited dict comprehensions producing `dict[str, int]`, `dict[str, float]`,
-  or `dict[str, str]`
-* limited set comprehensions producing `set[int]`, `set[bool]`, or `set[str]`
+* limited dict comprehensions producing supported fixed `dict[K, V]` types
+* limited set comprehensions producing `set[int]`, `set[float]`, `set[bool]`,
+  or `set[str]`
 * assignment expressions inside comprehensions, with Python-style binding into
   the containing function scope and rejection when rebinding comprehension
   iteration variables
@@ -693,8 +691,8 @@ Reject inside native candidate functions:
 * generator expressions
 * assignment expressions outside comprehensions
 * set literals in Public 1
-* general tuple, dict, or set semantics beyond the fixed tuple, limited
-  `dict[str, int|float|str]`, and limited `set[int|bool|str]` subsets
+* general tuple, dict, or set semantics beyond the fixed tuple, limited fixed
+  `dict[K, V]`, and limited `set[int|float|bool|str]` subsets
 * dataclasses in Public 1
 * `enumerate` outside a supported loop or comprehension iterable
 * `zip` outside a supported loop or comprehension iterable
