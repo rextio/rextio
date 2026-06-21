@@ -57,6 +57,37 @@ nuitka_mode = "onefile"
     assert config.executable.nuitka_mode == "onefile"
 
 
+def test_load_config_reads_target_and_mapper_options(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[build]
+native_backend = "mojo"
+
+[target]
+version = "25.1"
+
+[target.build_options]
+optimization = "speed"
+abi = "cpython"
+
+[mappers]
+paths = ["mappers/numpy-mojo"]
+enabled = ["numpy-mojo"]
+repository = "https://example.invalid/rextio-mappers"
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.build.native_backend == "mojo"
+    assert config.target.version == "25.1"
+    assert config.target.build_options == {"optimization": "speed", "abi": "cpython"}
+    assert config.mappers.paths == ("mappers/numpy-mojo",)
+    assert config.mappers.enabled == ("numpy-mojo",)
+    assert config.mappers.repository == "https://example.invalid/rextio-mappers"
+
+
 def test_load_config_applies_environment_overrides(tmp_path: Path) -> None:
     (tmp_path / "rextio.toml").write_text(
         """
@@ -77,6 +108,12 @@ boundary_warnings = true
             "REXTIO_FALLBACK_BACKEND": "nuitka",
             "REXTIO_BOUNDARY_FALLBACK_THRESHOLD": "5",
             "REXTIO_RUST_BUILD_TOOL": "cargo",
+            "REXTIO_TARGET_LANGUAGE": "julia",
+            "REXTIO_TARGET_VERSION": "1.11",
+            "REXTIO_TARGET_BUILD_OPTIONS": "profile=release,threads=auto",
+            "REXTIO_MAPPER_PATHS": "mappers/numpy-julia",
+            "REXTIO_MAPPERS_ENABLED": "numpy-julia",
+            "REXTIO_MAPPER_REPOSITORY": "https://example.invalid/rextio-mappers",
             "REXTIO_EXECUTABLE_ENTRYPOINT": "demo.cli:main",
             "REXTIO_EXECUTABLE_NAME": "demo-env",
             "REXTIO_EXECUTABLE_BACKEND": "nuitka",
@@ -89,6 +126,12 @@ boundary_warnings = true
     assert config.build.fallback_backend == "nuitka"
     assert config.build.fallback_threshold == 5
     assert config.rust.build_tool == "cargo"
+    assert config.build.native_backend == "julia"
+    assert config.target.version == "1.11"
+    assert config.target.build_options == {"profile": "release", "threads": "auto"}
+    assert config.mappers.paths == ("mappers/numpy-julia",)
+    assert config.mappers.enabled == ("numpy-julia",)
+    assert config.mappers.repository == "https://example.invalid/rextio-mappers"
     assert config.executable.entrypoint == "demo.cli:main"
     assert config.executable.name == "demo-env"
     assert config.executable.backend == "nuitka"
@@ -108,13 +151,21 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
         ),
         {
             ("build", "fallback_backend"): "cpython",
+            ("build", "native_backend"): "mojo",
             ("build", "fallback_threshold"): 3,
+            ("target", "version"): "25.1",
+            ("target", "build_options"): {"profile": "debug"},
+            ("mappers", "paths"): ("mappers/numpy-mojo",),
             ("policy", "native_marker"): "decorator",
         },
     )
 
+    assert config.build.native_backend == "mojo"
     assert config.build.fallback_backend == "cpython"
     assert config.build.fallback_threshold == 3
+    assert config.target.version == "25.1"
+    assert config.target.build_options == {"profile": "debug"}
+    assert config.mappers.paths == ("mappers/numpy-mojo",)
     assert config.policy.native_marker == "decorator"
 
 
@@ -152,6 +203,24 @@ def test_load_config_rejects_invalid_environment_integer(tmp_path: Path) -> None
 def test_load_config_rejects_invalid_environment_boolean(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"REXTIO_BOUNDARY_WARNINGS"):
         load_config(tmp_path, environ={"REXTIO_BOUNDARY_WARNINGS": "maybe"})
+
+
+def test_load_config_rejects_invalid_environment_target_build_options(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"REXTIO_TARGET_BUILD_OPTIONS"):
+        load_config(tmp_path, environ={"REXTIO_TARGET_BUILD_OPTIONS": "profile"})
+
+
+def test_load_config_rejects_non_string_target_build_option(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[target.build_options]
+profile = 1
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"target.*build_options"):
+        load_config(tmp_path)
 
 
 def test_load_config_rejects_non_table_section(tmp_path: Path) -> None:

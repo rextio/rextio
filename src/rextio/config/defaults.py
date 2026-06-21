@@ -16,6 +16,15 @@ DEFAULT_CONFIG = {
     "fallback": {
         "nuitka": "experimental",
     },
+    "target": {
+        "version": None,
+        "build_options": {},
+    },
+    "mappers": {
+        "paths": (),
+        "enabled": (),
+        "repository": None,
+    },
     "executable": {
         "entrypoint": None,
         "name": None,

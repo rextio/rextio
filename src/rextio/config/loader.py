@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import asdict
 from pathlib import Path
@@ -10,9 +11,11 @@ from rextio.config.schema import (
     BuildConfig,
     ExecutableConfig,
     FallbackConfig,
+    MapperConfig,
     PolicyConfig,
     RextioConfig,
     RustConfig,
+    TargetConfig,
 )
 
 
@@ -24,6 +27,8 @@ CONFIG_KEYS = {
     "build": {"native_backend", "fallback_backend", "fallback_threshold"},
     "rust": {"binding", "build_tool"},
     "fallback": {"nuitka"},
+    "target": {"version", "build_options"},
+    "mappers": {"paths", "enabled", "repository"},
     "executable": {"entrypoint", "name", "backend", "nuitka_mode"},
     "policy": {
         "native_marker",
@@ -35,11 +40,17 @@ CONFIG_KEYS = {
 
 ENVIRONMENT_OVERRIDES = {
     "REXTIO_NATIVE_BACKEND": ("build", "native_backend", "string"),
+    "REXTIO_TARGET_LANGUAGE": ("build", "native_backend", "string"),
     "REXTIO_FALLBACK_BACKEND": ("build", "fallback_backend", "string"),
     "REXTIO_BOUNDARY_FALLBACK_THRESHOLD": ("build", "fallback_threshold", "integer"),
     "REXTIO_RUST_BINDING": ("rust", "binding", "string"),
     "REXTIO_RUST_BUILD_TOOL": ("rust", "build_tool", "string"),
     "REXTIO_NUITKA_FALLBACK": ("fallback", "nuitka", "string"),
+    "REXTIO_TARGET_VERSION": ("target", "version", "optional_string"),
+    "REXTIO_TARGET_BUILD_OPTIONS": ("target", "build_options", "string_map"),
+    "REXTIO_MAPPER_PATHS": ("mappers", "paths", "path_list"),
+    "REXTIO_MAPPERS_ENABLED": ("mappers", "enabled", "string_list"),
+    "REXTIO_MAPPER_REPOSITORY": ("mappers", "repository", "optional_string"),
     "REXTIO_EXECUTABLE_ENTRYPOINT": ("executable", "entrypoint", "optional_string"),
     "REXTIO_EXECUTABLE_NAME": ("executable", "name", "optional_string"),
     "REXTIO_EXECUTABLE_BACKEND": ("executable", "backend", "string"),
@@ -82,11 +93,13 @@ def load_config(
     build = {**DEFAULT_CONFIG["build"], **_section(raw, "build")}
     rust = {**DEFAULT_CONFIG["rust"], **_section(raw, "rust")}
     fallback = {**DEFAULT_CONFIG["fallback"], **_section(raw, "fallback")}
+    target = {**DEFAULT_CONFIG["target"], **_section(raw, "target")}
+    mappers = {**DEFAULT_CONFIG["mappers"], **_section(raw, "mappers")}
     executable = {**DEFAULT_CONFIG["executable"], **_section(raw, "executable")}
     policy = {**DEFAULT_CONFIG["policy"], **_section(raw, "policy")}
     if environ is not None:
-        _apply_environment_overrides(build, rust, fallback, executable, policy, environ)
-    return _build_config(build, rust, fallback, executable, policy)
+        _apply_environment_overrides(build, rust, fallback, target, mappers, executable, policy, environ)
+    return _build_config(build, rust, fallback, target, mappers, executable, policy)
 
 
 def override_config(
@@ -96,12 +109,16 @@ def override_config(
     build = asdict(config.build)
     rust = asdict(config.rust)
     fallback = asdict(config.fallback)
+    target = asdict(config.target)
+    mappers = asdict(config.mappers)
     executable = asdict(config.executable)
     policy = asdict(config.policy)
     sections = {
         "build": build,
         "rust": rust,
         "fallback": fallback,
+        "target": target,
+        "mappers": mappers,
         "executable": executable,
         "policy": policy,
     }
@@ -111,21 +128,29 @@ def override_config(
         if section not in sections or key not in CONFIG_KEYS[section]:
             raise ConfigError(f"unsupported config override: [{section}].{key}")
         sections[section][key] = value
-    return _build_config(build, rust, fallback, executable, policy)
+    return _build_config(build, rust, fallback, target, mappers, executable, policy)
 
 
 def _build_config(
     build: dict[str, Any],
     rust: dict[str, Any],
     fallback: dict[str, Any],
+    target: dict[str, Any],
+    mappers: dict[str, Any],
     executable: dict[str, Any],
     policy: dict[str, Any],
 ) -> RextioConfig:
-    _validate_config_values(build, rust, fallback, executable, policy)
+    _validate_config_values(build, rust, fallback, target, mappers, executable, policy)
     return RextioConfig(
         build=BuildConfig(**build),
         rust=RustConfig(**rust),
         fallback=FallbackConfig(**fallback),
+        target=TargetConfig(**target),
+        mappers=MapperConfig(
+            paths=tuple(mappers["paths"]),
+            enabled=tuple(mappers["enabled"]),
+            repository=mappers["repository"],
+        ),
         executable=ExecutableConfig(**executable),
         policy=PolicyConfig(**policy),
     )
@@ -135,6 +160,8 @@ def _validate_config_values(
     build: dict[str, Any],
     rust: dict[str, Any],
     fallback: dict[str, Any],
+    target: dict[str, Any],
+    mappers: dict[str, Any],
     executable: dict[str, Any],
     policy: dict[str, Any],
 ) -> None:
@@ -144,6 +171,11 @@ def _validate_config_values(
     _require_string("rust", "binding", rust["binding"])
     _require_string("rust", "build_tool", rust["build_tool"])
     _require_string("fallback", "nuitka", fallback["nuitka"])
+    _require_optional_string("target", "version", target["version"])
+    _require_string_map("target", "build_options", target["build_options"])
+    _require_string_list("mappers", "paths", mappers["paths"])
+    _require_string_list("mappers", "enabled", mappers["enabled"])
+    _require_optional_string("mappers", "repository", mappers["repository"])
     _require_optional_string("executable", "entrypoint", executable["entrypoint"])
     _require_optional_string("executable", "name", executable["name"])
     _require_string("executable", "backend", executable["backend"])
@@ -153,7 +185,7 @@ def _validate_config_values(
     _require_bool("policy", "allow_dynamic_features", policy["allow_dynamic_features"])
     _require_bool("policy", "boundary_warnings", policy["boundary_warnings"])
 
-    _require_value("build", "native_backend", build["native_backend"], {"rust"})
+    _require_value("build", "native_backend", build["native_backend"], {"julia", "mojo", "rust"})
     _require_value("build", "fallback_backend", build["fallback_backend"], {"cpython", "nuitka"})
     _require_value("rust", "binding", rust["binding"], {"pyo3"})
     _require_value("rust", "build_tool", rust["build_tool"], {"cargo", "maturin"})
@@ -189,6 +221,21 @@ def _require_non_negative_int(section: str, key: str, value: Any) -> None:
         raise ConfigError(f"[{section}].{key} must be a non-negative integer")
 
 
+def _require_string_map(section: str, key: str, value: Any) -> None:
+    if not isinstance(value, dict):
+        raise ConfigError(f"[{section}].{key} must be a table")
+    for option_key, option_value in value.items():
+        if not isinstance(option_key, str) or not isinstance(option_value, str):
+            raise ConfigError(f"[{section}].{key} must contain string keys and string values")
+
+
+def _require_string_list(section: str, key: str, value: Any) -> None:
+    if not isinstance(value, (list, tuple)):
+        raise ConfigError(f"[{section}].{key} must be a list of strings")
+    if not all(isinstance(item, str) for item in value):
+        raise ConfigError(f"[{section}].{key} must be a list of strings")
+
+
 def _require_value(section: str, key: str, value: str, allowed: set[str]) -> None:
     if value in allowed:
         return
@@ -200,6 +247,8 @@ def _apply_environment_overrides(
     build: dict[str, Any],
     rust: dict[str, Any],
     fallback: dict[str, Any],
+    target: dict[str, Any],
+    mappers: dict[str, Any],
     executable: dict[str, Any],
     policy: dict[str, Any],
     environ: Mapping[str, str],
@@ -208,6 +257,8 @@ def _apply_environment_overrides(
         "build": build,
         "rust": rust,
         "fallback": fallback,
+        "target": target,
+        "mappers": mappers,
         "executable": executable,
         "policy": policy,
     }
@@ -226,6 +277,12 @@ def _parse_environment_value(env_name: str, raw_value: str, kind: str) -> object
             return int(raw_value)
         except ValueError as exc:
             raise ConfigError(f"environment variable {env_name} must be a non-negative integer") from exc
+    if kind == "string_map":
+        return _parse_string_map(env_name, raw_value)
+    if kind == "string_list":
+        return _parse_string_list(raw_value, separator=",")
+    if kind == "path_list":
+        return _parse_string_list(raw_value, separator=os.pathsep)
     if kind == "boolean":
         lowered = raw_value.strip().lower()
         if lowered in {"1", "true", "yes", "on"}:
@@ -234,3 +291,19 @@ def _parse_environment_value(env_name: str, raw_value: str, kind: str) -> object
             return False
         raise ConfigError(f"environment variable {env_name} must be a boolean")
     raise ConfigError(f"unsupported environment override kind: {kind}")
+
+
+def _parse_string_map(env_name: str, raw_value: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for item in _parse_string_list(raw_value, separator=","):
+        if "=" not in item:
+            raise ConfigError(f"environment variable {env_name} must use KEY=VALUE entries")
+        key, value = item.split("=", 1)
+        if not key:
+            raise ConfigError(f"environment variable {env_name} must not contain empty keys")
+        values[key] = value
+    return values
+
+
+def _parse_string_list(raw_value: str, separator: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in raw_value.split(separator) if item.strip())
