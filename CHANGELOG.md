@@ -24,6 +24,7 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Runtime boundary fallback threshold for repeated Python-to-native wrapper crossings.
 - `--fallback-threshold` for embedding a generated-code default threshold in `rextio build` and `rextio generate`.
 - Generated hybrid artifact wheel under `dist/`.
+- Zipapp executable artifact generation with `rextio build --entrypoint=module:function`.
 - Example projects for pure math, FastAPI scoring, fallback safety, and boundary diagnostics.
 - Focused end-to-end tests for build/import/runtime behavior, real Cargo builds, generated wheels, and Nuitka when installed.
 

@@ -148,3 +148,10 @@ Nuitka fallback packaging is experimental in Public 1. If requested and not
 available, Rextio reports a clear `RXT060` error and suggests CPython fallback.
 If Nuitka is available, Rextio invokes it for generated fallback modules and
 records the result in `.rextio/reports/build.json`.
+
+Zipapp executable artifacts are supported through
+`rextio build --entrypoint=module:function`. They still require a compatible
+Python interpreter on the target machine. Native extension modules are not
+loaded directly from inside the zipapp, so generated wrappers use Python fallback
+when `_rextio_native` is unavailable. Python-free standalone binaries remain out
+of scope for Public 1.

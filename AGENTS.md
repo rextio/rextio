@@ -38,8 +38,9 @@ Public 1 must demonstrate all of the following:
 10. Rextio can preserve Python fallback behavior.
 11. Rextio can package a hybrid output where native functions are used when available and fallback functions are used otherwise.
 12. Rextio can optionally invoke Nuitka for fallback packaging.
-13. Rextio can run simple benchmarks comparing Python fallback and Rust native execution.
-14. Rextio can provide a clear demo project showing a normal Python app with a Rust-compiled hot path.
+13. Rextio can optionally generate a zipapp executable artifact for a configured Python entrypoint.
+14. Rextio can run simple benchmarks comparing Python fallback and Rust native execution.
+15. Rextio can provide a clear demo project showing a normal Python app with a Rust-compiled hot path.
 
 The first public release must feel like a usable hybrid compiler/build tool, not merely a static analyzer.
 
@@ -60,6 +61,7 @@ Do not implement these in Public 1 unless explicitly requested:
 * LLVM integration
 * MLIR
 * FastAPI-to-Axum conversion
+* Python-free standalone executable generation
 * Django conversion
 * Flask conversion
 * SQLAlchemy/Django ORM conversion
@@ -412,6 +414,7 @@ rextio build
 rextio build --fallback=cpython
 rextio build --fallback=nuitka
 rextio build --fallback-threshold=1000
+rextio build --entrypoint=myapp.cli:main
 ```
 
 Behavior:
@@ -427,10 +430,17 @@ Behavior:
 * Embed the default runtime boundary fallback threshold in generated wrappers.
 * Produce a build artifact under `.rextio/build/`.
 * Optionally produce a wheel under `dist/`.
+* Optionally produce a zipapp executable artifact under `dist/` when `--entrypoint=module:function` is provided.
 
 Nuitka fallback is experimental in Public 1.
 
 CPython fallback is stable and required.
+
+Zipapp executable artifacts require a compatible Python interpreter on the
+target machine. Native extension modules are not imported directly from inside
+the zipapp, so generated wrappers must preserve fallback behavior when
+`_rextio_native` is unavailable. Do not claim Python-free standalone executable
+support in Public 1.
 
 ### 6.4 `rextio bench`
 
@@ -924,6 +934,9 @@ Preferred generated layout:
   reports/
     check.json
     build.json
+dist/
+  <project>-0.1.0-<tag>.whl
+  <executable-name>.pyz
 ```
 
 Build output should not require users to understand this layout.

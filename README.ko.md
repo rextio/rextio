@@ -39,6 +39,7 @@ rextio init --project-root path/to/project
 rextio check path/to/project
 rextio generate path/to/project --fallback=cpython
 rextio build path/to/project --fallback=cpython
+rextio build path/to/project --fallback=cpython --entrypoint=myapp.cli:main
 rextio bench myapp.scoring.compute_score --project-root path/to/project
 rextio clean path/to/project
 ```
@@ -89,6 +90,7 @@ Rextio는 생성 파일을 `.rextio/` 아래에 쓰며, 사용자 소스 파일�
     bench.json
 dist/
   <project>-0.1.0-<tag>.whl
+  <executable-name>.pyz
 ```
 
 `rextio check`는 `.rextio/reports/check.json`을 씁니다. `rextio build`는 check 및
@@ -104,6 +106,13 @@ fallback wheel은 `py3-none-any`를 사용하고, 생성된 native extension이 
 로컬 CPython/platform tag를 사용합니다. 테스트 스위트는 이 wheel을 새 환경에
 설치하고 `REXTIO_DISABLE_NATIVE=1`로 패키징된 fallback import가 계속 동작하는지
 검증합니다.
+
+`rextio build --entrypoint=module:function`은 `dist/` 아래에 zipapp 실행 artifact도
+생성합니다. 출력 파일 이름은 `--executable-name=name`으로 지정할 수 있으며, 생략하면
+Rextio가 entrypoint 모듈에서 이름을 파생합니다. 결과물은 Python zipapp(`.pyz`)이므로
+대상 머신에는 호환되는 Python 인터프리터가 필요합니다. Native extension 모듈은 zipapp
+내부에서 직접 import할 수 없으므로, generated wrapper는 fallback 안전성을 유지하고
+native 모듈을 사용할 수 없을 때 Python fallback을 사용합니다.
 
 ## 정책 설정
 
@@ -195,6 +204,7 @@ Public 1에는 집중된 로컬 예제가 포함됩니다.
 rextio check examples/pure_math
 rextio generate examples/pure_math --fallback=cpython
 rextio build examples/pure_math --fallback=cpython
+rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 rextio bench pure_math.math_ops.sum_squares --project-root examples/pure_math
 rextio check examples/boundary_demo
 ```

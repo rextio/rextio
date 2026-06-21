@@ -39,6 +39,7 @@ rextio init --project-root path/to/project
 rextio check path/to/project
 rextio generate path/to/project --fallback=cpython
 rextio build path/to/project --fallback=cpython
+rextio build path/to/project --fallback=cpython --entrypoint=myapp.cli:main
 rextio bench myapp.scoring.compute_score --project-root path/to/project
 rextio clean path/to/project
 ```
@@ -89,6 +90,7 @@ in place.
     bench.json
 dist/
   <project>-0.1.0-<tag>.whl
+  <executable-name>.pyz
 ```
 
 `rextio check` writes `.rextio/reports/check.json`. `rextio build` writes both
@@ -104,6 +106,14 @@ under `dist/`. Pure fallback wheels use `py3-none-any`; wheels that include the
 generated native extension use the local CPython/platform tag. The test suite
 installs this wheel into a fresh environment and verifies that packaged fallback
 imports still work with `REXTIO_DISABLE_NATIVE=1`.
+
+`rextio build --entrypoint=module:function` also generates a zipapp executable
+artifact under `dist/`. Use `--executable-name=name` to control the output file
+name; otherwise Rextio derives it from the entrypoint module. The result is a
+Python zipapp (`.pyz`), so the target machine still needs a compatible Python
+interpreter. Native extension modules cannot be imported directly from inside a
+zipapp, so generated wrappers keep fallback safety and use Python fallback when
+the native module is unavailable.
 
 ## Policy Configuration
 
@@ -198,6 +208,7 @@ Try:
 rextio check examples/pure_math
 rextio generate examples/pure_math --fallback=cpython
 rextio build examples/pure_math --fallback=cpython
+rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 rextio bench pure_math.math_ops.sum_squares --project-root examples/pure_math
 rextio check examples/boundary_demo
 ```
