@@ -18,7 +18,6 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.DictComp,
     ast.SetComp,
     ast.GeneratorExp,
-    ast.Tuple,
     ast.Dict,
     ast.Set,
     ast.Await,
@@ -180,10 +179,16 @@ def _validate_statement_types(
     if isinstance(node, ast.Assign):
         value_type = _infer_expr_type(node.value, function, env)
         for target in node.targets:
-            if isinstance(target, ast.Name) and value_type is not None:
+            if not isinstance(target, ast.Name):
+                _add_unsupported_syntax(function, target, "assignment targets must be local names")
+                continue
+            if value_type is not None:
                 env[target.id] = value_type
         return
     if isinstance(node, ast.AnnAssign):
+        if not isinstance(node.target, ast.Name):
+            _add_unsupported_syntax(function, node.target, "annotated assignment targets must be local names")
+            return
         annotated_type = (
             annotation_name(node.annotation)
             if node.annotation is not None and is_supported_type(node.annotation)
@@ -206,14 +211,17 @@ def _validate_statement_types(
         value_type = _infer_expr_type(node.value, function, env, expected_type=annotated_type)
         if value_type is not None and annotated_type is not None:
             _validate_type_match(value_type, annotated_type, function, node)
-        if isinstance(node.target, ast.Name) and annotated_type is not None:
+        if annotated_type is not None:
             env[node.target.id] = annotated_type
         return
     if isinstance(node, ast.AugAssign):
+        if not isinstance(node.target, ast.Name):
+            _add_unsupported_syntax(function, node.target, "augmented assignment targets must be local names")
+            return
         target_type = _infer_expr_type(node.target, function, env)
         value_type = _infer_expr_type(node.value, function, env)
         result_type = _infer_binop_type(node.op, target_type, value_type, function, node)
-        if isinstance(node.target, ast.Name) and result_type is not None:
+        if result_type is not None:
             env[node.target.id] = result_type
         return
     if isinstance(node, ast.Expr):
@@ -240,12 +248,19 @@ def _validate_statement_types(
         _validate_statement_list_types(node.orelse, function, dict(env), return_type)
         return
     if isinstance(node, ast.For):
-        iterable_type = _infer_expr_type(node.iter, function, env)
         body_env = dict(env)
-        if isinstance(node.target, ast.Name):
+        if _is_enumerate_call(node.iter) or _is_zip_call(node.iter):
+            item_types = _iter_unpack_types(node.iter, function, env)
+            _bind_loop_target_types(node.target, item_types, function, body_env)
+        else:
+            iterable_type = _infer_expr_type(node.iter, function, env)
             item_type = _iter_item_type(node.iter, iterable_type)
-            if item_type is not None:
-                body_env[node.target.id] = item_type
+            _bind_loop_target_types(
+                node.target,
+                [item_type] if item_type is not None else [],
+                function,
+                body_env,
+            )
         _validate_statement_list_types(node.body, function, body_env, return_type)
         _validate_statement_list_types(node.orelse, function, dict(env), return_type)
         return
@@ -304,6 +319,13 @@ def _infer_expr_type(
         return env.get(node.id)
     if isinstance(node, ast.List):
         return _infer_list_type(node, function, env, expected_type)
+    if isinstance(node, ast.Tuple):
+        _add_unsupported_syntax(
+            function,
+            node,
+            "tuple literals are not supported except for enumerate/zip loop targets",
+        )
+        return None
     if isinstance(node, ast.BinOp):
         left = _infer_expr_type(node.left, function, env)
         right = _infer_expr_type(node.right, function, env)
@@ -388,6 +410,16 @@ def _infer_call_type(
         return "int"
     if target == "range":
         _validate_range_call(node, function, env)
+        return None
+    if target == "enumerate":
+        _add_unsupported_syntax(
+            function,
+            node,
+            "enumerate is supported only as a for-loop iterable",
+        )
+        return None
+    if target == "zip":
+        _add_unsupported_syntax(function, node, "zip is supported only as a for-loop iterable")
         return None
     if target == "abs":
         if not _require_arg_count("abs", node, function, {1}):
@@ -547,6 +579,118 @@ def _iter_item_type(node: ast.AST, iterable_type: str | None) -> str | None:
     return None
 
 
+def _iter_unpack_types(
+    node: ast.AST,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> list[str]:
+    if isinstance(node, ast.Call) and _is_enumerate_call(node):
+        _validate_enumerate_call(node, function, env)
+        item_type = _list_item_type(_infer_expr_type(node.args[0], function, env))
+        return ["int", item_type] if item_type is not None else []
+    if isinstance(node, ast.Call) and _is_zip_call(node):
+        item_types = _validate_zip_call(node, function, env)
+        return item_types
+    return []
+
+
+def _bind_loop_target_types(
+    target: ast.AST,
+    item_types: list[str],
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> None:
+    if isinstance(target, ast.Name):
+        if len(item_types) == 1:
+            env[target.id] = item_types[0]
+            return
+        if len(item_types) == 0:
+            _add_unsupported_syntax(
+                function,
+                target,
+                "for-loop iterable must be a supported list, range, enumerate, or zip",
+            )
+            return
+        _add_unsupported_syntax(
+            function,
+            target,
+            "enumerate and zip loop targets must unpack into local names",
+        )
+        return
+
+    if isinstance(target, ast.Tuple):
+        names = [item for item in target.elts if isinstance(item, ast.Name)]
+        if len(names) != len(target.elts):
+            _add_unsupported_syntax(function, target, "for-loop unpack targets must be local names")
+            return
+        if len(item_types) == 0:
+            _add_unsupported_syntax(
+                function,
+                target,
+                "for-loop iterable must be a supported enumerate or zip call",
+            )
+            return
+        if len(names) != len(item_types):
+            _add_unsupported_syntax(
+                function,
+                target,
+                f"for-loop unpack target count {len(names)} does not match iterable item count {len(item_types)}",
+            )
+            return
+        for name, item_type in zip(names, item_types, strict=True):
+            env[name.id] = item_type
+        return
+
+    _add_unsupported_syntax(function, target, "for-loop targets must be local names")
+
+
+def _validate_enumerate_call(
+    node: ast.Call,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> None:
+    if not _require_arg_count("enumerate", node, function, {1}):
+        return
+    if not isinstance(node.args[0], ast.Name):
+        _add_unsupported_syntax(
+            function,
+            node.args[0],
+            "enumerate currently supports list variables only",
+        )
+        return
+    item_type = _list_item_type(_infer_expr_type(node.args[0], function, env))
+    if item_type is None:
+        _add_unsupported_syntax(
+            function,
+            node.args[0],
+            "enumerate currently supports list[int|float|bool|str] variables only",
+        )
+
+
+def _validate_zip_call(
+    node: ast.Call,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> list[str]:
+    if not _require_arg_count("zip", node, function, {2}):
+        return []
+    item_types: list[str] = []
+    for arg in node.args:
+        if not isinstance(arg, ast.Name):
+            _add_unsupported_syntax(function, arg, "zip currently supports list variables only")
+            continue
+        item_type = _list_item_type(_infer_expr_type(arg, function, env))
+        if item_type is None:
+            _add_unsupported_syntax(
+                function,
+                arg,
+                "zip currently supports list[int|float|bool|str] variables only",
+            )
+            continue
+        item_types.append(item_type)
+    return item_types if len(item_types) == 2 else []
+
+
 def _validate_range_call(
     node: ast.Call,
     function: FunctionAnalysis,
@@ -608,6 +752,14 @@ def _is_append_call(node: ast.AST) -> bool:
         and len(node.args) == 1
         and not node.keywords
     )
+
+
+def _is_enumerate_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and dotted_name(node.func) == "enumerate"
+
+
+def _is_zip_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and dotted_name(node.func) == "zip"
 
 
 def _validate_call(function: FunctionAnalysis, node: ast.Call) -> None:

@@ -11,6 +11,8 @@ SUPPORTED_INTERNAL_CALLS = {
     "min",
     "range",
     "sum",
+    "enumerate",
+    "zip",
     "math.cos",
     "math.floor",
     "math.sin",
@@ -134,6 +136,9 @@ def _add_python_loop_boundary_warnings(
                         line=call.line,
                         column=call.column,
                         function_name=function.qualname,
-                        suggestion="Move the loop into a native batch function.",
+                        suggestion=(
+                            "Move the loop into a native batch function. Supported batch loops include "
+                            "for x in xs, for i, x in enumerate(xs), and for x, y in zip(xs, ys)."
+                        ),
                     )
                 )

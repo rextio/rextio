@@ -47,14 +47,16 @@ Public 1 native candidates support module-level typed functions with scalar
 types and `list[int|float|bool|str]`. The current Rust backend handles
 assignment, typed local annotations with initializers, augmented assignment,
 `if`, `while`, `for x in xs`, `range(n)`, `range(start, stop)`,
-`range(start, stop, step)` with a positive int literal step, `break`,
-`continue`, simple indexing, list literals, and `list.append(...)` for supported
-list item types.
+`range(start, stop, step)` with a positive int literal step,
+`for i, x in enumerate(xs)`, `for x, y in zip(xs, ys)`, `break`, `continue`,
+simple indexing, list literals, and `list.append(...)` for supported list item
+types.
 
 Supported builtin calls are limited to `len`, `abs`, two-argument `min`/`max`,
 and `sum` over `list[int]` or `list[float]`. Supported `math` calls are
 `math.sqrt`, `math.sin`, `math.cos`, and `math.floor`. Empty list literals must
-use a supported local annotation such as `out: list[int] = []`.
+use a supported local annotation such as `out: list[int] = []`. `enumerate` and
+`zip` are supported only as batch loop iterables over list variables.
 
 ## Configuration Sources
 
@@ -130,7 +132,8 @@ such as `RXT070`, `RXT072`, and `RXT030`.
 
 Fallback Python may call native functions. If it does so inside a Python loop,
 Rextio emits `RXT073` with the suggestion to move the loop into a native batch
-function.
+function. Supported batch loop shapes include `for x in xs`,
+`for i, x in enumerate(xs)`, and `for x, y in zip(xs, ys)`.
 
 Generated wrappers also keep a per-function runtime crossing count. After a
 function's Python-to-native wrapper calls exceed

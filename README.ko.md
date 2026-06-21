@@ -55,15 +55,16 @@ Public 1은 모듈 레벨 함수를 위한 작은 타입 지정 Python subset을
 [Public 1에서 지원하지 않는 기능](docs/unsupported-features.md)을 참고하세요.
 
 현재 native 후보는 scalar와 `list[...]` 타입, 산술, 비교, `if`, `while`,
-`for x in xs`, `range(...)` 루프, `break`, `continue`, augmented assignment,
-타입이 붙은 로컬 annotation, 단순 indexing, list literal, 지원 list item 타입의
+`for x in xs`, `range(...)` 루프, `for i, x in enumerate(xs)`,
+`for x, y in zip(xs, ys)`, `break`, `continue`, augmented assignment, 타입이 붙은
+로컬 annotation, 단순 indexing, list literal, 지원 list item 타입의
 `list.append(...)`를 지원합니다. builtin 지원은 의도적으로 `len`, `abs`, 2개 인자
 `min`/`max`, `sum(list[int|float])`로 제한됩니다. 지원하는 `math` subset은
 `math.sqrt`, `math.sin`, `math.cos`, `math.floor`입니다.
 
 확장된 형태도 보수적으로 유지됩니다. 빈 list literal은 지원되는 `list[...]` 로컬
 annotation이 필요하며, `range(start, stop, step)`은 현재 `step`이 양수 int literal이어야
-합니다.
+합니다. `enumerate`와 `zip`은 list 변수에 대한 batch loop iterable로만 지원됩니다.
 
 ## 빌드 전제 조건
 

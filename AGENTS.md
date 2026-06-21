@@ -627,6 +627,8 @@ Support inside native candidate functions:
 * `for i in range(n)`
 * `for i in range(start, stop)`
 * `for i in range(start, stop, step)` when `step` is a positive int literal
+* `for i, x in enumerate(xs)`
+* `for x, y in zip(xs, ys)`
 * `while`
 * `break`
 * `continue`
@@ -656,6 +658,8 @@ Reject inside native candidate functions:
 * nested functions
 * comprehensions in Public 1
 * tuple, dict, and set literals in Public 1
+* `enumerate` outside a `for i, x in enumerate(xs)` loop
+* `zip` outside a `for x, y in zip(xs, ys)` loop
 * dynamic import
 * `getattr`
 * `setattr`
@@ -851,7 +855,8 @@ RXT071 Possible excessive Python/Rust boundary crossing.
 Suggestion:
 
 ```text
-Move the loop into a native batch function.
+Move the loop into a native batch function. Supported batch loops include
+for x in xs, for i, x in enumerate(xs), and for x, y in zip(xs, ys).
 ```
 
 Do not reject native compilation at analysis time for this case. A native
