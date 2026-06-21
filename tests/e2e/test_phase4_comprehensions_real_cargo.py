@@ -70,6 +70,18 @@ def unique(xs: list[int]) -> set[int]:
     return {x for x in xs if x > 0}
 
 @rextio.native
+def unique_float(xs: list[float]) -> set[float]:
+    return {x for x in xs if x > 0.0}
+
+@rextio.native
+def by_index(xs: list[int]) -> dict[int, float]:
+    return {i: 1.5 for i, x in enumerate(xs) if x > 0}
+
+@rextio.native
+def flags(xs: list[int]) -> dict[bool, str]:
+    return {x > 0: "seen" for x in xs}
+
+@rextio.native
 def last_positive(xs: list[int]) -> int:
     out = [y for x in xs if (y := x) > 0]
     return y
@@ -86,7 +98,7 @@ def last_positive(xs: list[int]) -> int:
 
     assert exit_code == 0
     assert report["native_build"]["status"] == "built"
-    assert report["accepted_native_count"] == 11
+    assert report["accepted_native_count"] == 14
 
     monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "build" / "python"))
     importlib.invalidate_caches()
@@ -101,4 +113,7 @@ def last_positive(xs: list[int]) -> int:
     assert module.labels(["a", "b"]) == {"a": "a", "b": "b"}
     assert module.lookup({"a": 1, "b": 2}, ["b", "a"]) == [2, 1]
     assert module.unique([-1, 1, 1, 2]) == {1, 2}
+    assert module.unique_float([-1.0, 1.5, 1.5, 2.5]) == {1.5, 2.5}
+    assert module.by_index([-1, 3, 4]) == {1: 1.5, 2: 1.5}
+    assert module.flags([-1, 2]) == {False: "seen", True: "seen"}
     assert module.last_positive([-1, 0, 5]) == 5

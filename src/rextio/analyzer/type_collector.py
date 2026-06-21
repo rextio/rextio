@@ -4,8 +4,8 @@ import ast
 
 SUPPORTED_SCALARS = {"int", "float", "bool", "str"}
 SUPPORTED_LIST_ITEMS = {"int", "float", "bool", "str"}
-SUPPORTED_DICT_VALUES = {"int", "float", "str"}
-SUPPORTED_SET_ITEMS = {"int", "bool", "str"}
+SUPPORTED_DICT_KEYS = {"int", "bool", "str"}
+SUPPORTED_SET_ITEMS = {"int", "float", "bool", "str"}
 
 
 def annotation_name(node: ast.AST | None) -> str:
@@ -50,12 +50,10 @@ def _display_type(node: ast.AST | None) -> str | None:
             dict_items = _tuple_slice_items(node.slice)
             if (
                 len(dict_items) == 2
-                and isinstance(dict_items[0], ast.Name)
-                and dict_items[0].id == "str"
-                and isinstance(dict_items[1], ast.Name)
-                and dict_items[1].id in SUPPORTED_DICT_VALUES
+                and _is_supported_dict_key(dict_items[0])
+                and _is_supported_dict_value(dict_items[1])
             ):
-                return f"dict[str, {dict_items[1].id}]"
+                return f"dict[{_display_type(dict_items[0])}, {_display_type(dict_items[1])}]"
     return None
 
 
@@ -69,6 +67,15 @@ def _is_supported_list_item(node: ast.AST) -> bool:
 
 def _is_supported_set_item(node: ast.AST) -> bool:
     return isinstance(node, ast.Name) and node.id in SUPPORTED_SET_ITEMS
+
+
+def _is_supported_dict_key(node: ast.AST) -> bool:
+    return isinstance(node, ast.Name) and node.id in SUPPORTED_DICT_KEYS
+
+
+def _is_supported_dict_value(node: ast.AST) -> bool:
+    display = _display_type(node)
+    return display is not None and display != "None" and not display.startswith("set[")
 
 
 def _is_supported_tuple_item(node: ast.AST) -> bool:

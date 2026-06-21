@@ -55,7 +55,7 @@ Public 1은 모듈 레벨 함수를 위한 작은 타입 지정 Python subset을
 [Public 1에서 지원하지 않는 기능](docs/unsupported-features.md)을 참고하세요.
 
 현재 native 후보는 scalar, `list[...]`와 `list[list[T]]`, fixed `tuple[...]`, 제한적
-`dict[str, int|float|str]`, 제한적 `set[int|bool|str]`, `Optional[T]` / `T | None`
+고정 `dict[K, V]`, 제한적 `set[int|float|bool|str]`, `Optional[T]` / `T | None`
 타입을 지원합니다. 지원 문법은
 산술, 비교, `if`, `while`, `for x in xs`, `range(...)` 루프,
 `for i, x in enumerate(xs)`, `for x, y in zip(xs, ys)`, `break`, `continue`,
@@ -69,10 +69,12 @@ builtin 지원은 의도적으로 `len`, `abs`, 2개 인자 `min`/`max`,
 확장된 형태도 보수적으로 유지됩니다. 빈 list literal은 지원되는 `list[...]` 로컬
 annotation이 필요하며, `range(start, stop, step)`은 현재 `step`이 양수 int literal이어야
 합니다. `enumerate`와 `zip`은 list 변수에 대한 batch loop 또는 comprehension
-iterable로만 지원됩니다. dict 지원은 `dict[str, int]`, `dict[str, float]`,
-`dict[str, str]`로 제한되고, nested list comprehension은 `list[list[T]]`까지
-지원됩니다. set 지원은 `set[int]`, `set[bool]`, `set[str]` comprehension으로
-제한되며, dataclass는 아직 Public 1 native 컴파일 범위 밖입니다.
+iterable로만 지원됩니다. dict 지원은 key가 `int`, `bool`, `str`이고 value가 지원되는
+고정 타입인 `dict[K, V]` 형태로 제한되고, nested list comprehension은
+`list[list[T]]`까지 지원됩니다. set 지원은 `set[int]`, `set[float]`, `set[bool]`,
+`set[str]` comprehension으로 제한됩니다. class/object, exception, context manager,
+async, generator, dynamic attribute semantics는 Python fallback 영역으로 남으며,
+dataclass도 아직 Public 1 native 컴파일 범위 밖입니다.
 
 ## 빌드 전제 조건
 

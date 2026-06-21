@@ -52,7 +52,7 @@ fallback。
 [Public 1 不支援的功能](docs/unsupported-features.md)。
 
 目前 native 候選支援 scalar、`list[...]` 與 `list[list[T]]`、fixed `tuple[...]`、有限的
-`dict[str, int|float|str]`、有限的 `set[int|bool|str]`，以及 `Optional[T]` / `T | None` 型別。支援的語法包括算術、
+固定 `dict[K, V]`、有限的 `set[int|float|bool|str]`，以及 `Optional[T]` / `T | None` 型別。支援的語法包括算術、
 比較、`if`、`while`、`for x in xs`、`range(...)` 迴圈、
 `for i, x in enumerate(xs)`、`for x, y in zip(xs, ys)`、`break`、`continue`、
 augmented assignment、帶型別的區域 annotation、簡單索引、list literal、fixed tuple
@@ -66,8 +66,9 @@ Builtin 支援刻意限制為 `len`、`abs`、兩個參數的 `min`/`max`，以�
 且 `range(start, stop, step)` 目前要求 `step` 是正的 int literal。`enumerate` 和
 `zip` 僅支援作為 list 變數上的 batch loop 或 comprehension iterable。Native subset
 現在支援有限的 list/dict/set comprehension、comprehension 內的 assignment expression、
-`list[list[T]]`、`dict[str, int|float|str]`，以及 `set[int|bool|str]` comprehension；
-dataclass 仍不在 Public 1 native 編譯範圍內。
+`list[list[T]]`、固定 `dict[K, V]`，以及 `set[int|float|bool|str]` comprehension。
+class/object、exception、context manager、async、generator 與 dynamic attribute 語義仍保留在
+Python fallback；dataclass 也仍不在 Public 1 native 編譯範圍內。
 
 ## 建置前提
 

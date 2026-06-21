@@ -42,3 +42,25 @@ def helper(x: int) -> int:
     assert "return _fallback_add(a, b)" in wrapper
     assert "return _native_add(a, b)" in wrapper
     assert "_rextio_fallback_module.add = add" in wrapper
+
+
+def test_wrapper_converts_float_sets_for_native_boundary(tmp_path: Path) -> None:
+    source = tmp_path / "app.py"
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def unique(values: set[float]) -> set[float]:
+    return {value for value in values}
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    module = analysis.modules[0]
+
+    wrapper = render_wrapper_module(module)
+
+    assert "def unique(values: set[float]) -> set[float]:" in wrapper
+    assert "return _fallback_unique(values)" in wrapper
+    assert "return set(_native_unique(list(values)))" in wrapper

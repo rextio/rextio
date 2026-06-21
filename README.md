@@ -55,8 +55,8 @@ See [Unsupported Features in Public 1](docs/unsupported-features.md) for the
 supported subset, boundary limits, diagnostics, and non-goals.
 
 Current native candidates support scalar, `list[...]` including
-`list[list[T]]`, fixed `tuple[...]`, limited `dict[str, int|float|str]`,
-limited `set[int|bool|str]`, and `Optional[T]` / `T | None` types. Supported
+`list[list[T]]`, fixed `tuple[...]`, limited fixed `dict[K, V]`,
+limited `set[int|float|bool|str]`, and `Optional[T]` / `T | None` types. Supported
 syntax includes arithmetic, comparisons, `if`, `while`, `for x in xs`,
 `range(...)` loops, `for i, x in enumerate(xs)`, `for x, y in zip(xs, ys)`,
 `break`, `continue`, augmented assignment, typed local annotations, simple
@@ -70,10 +70,13 @@ intentionally limited to `len`, `abs`, two-argument `min`/`max`, and
 The expanded forms remain conservative: empty list literals need a supported
 `list[...]` local annotation, and `range(start, stop, step)` currently requires
 `step` to be a positive int literal. `enumerate` and `zip` are supported only as
-batch loop or comprehension iterables over list variables. Dict support is
-limited to `dict[str, int]`, `dict[str, float]`, and `dict[str, str]`; set
-support is limited to `set[int]`, `set[bool]`, and `set[str]` comprehensions.
-Dataclasses are still outside Public 1 native compilation.
+batch loop or comprehension iterables over list variables. Dict support covers
+fixed `dict[K, V]` forms where `K` is `int`, `bool`, or `str` and `V` is a
+supported fixed value type. Set support is limited to `set[int]`, `set[float]`,
+`set[bool]`, and `set[str]` comprehensions. Class/object, exception,
+context-manager, async, generator, and dynamic attribute semantics remain
+Python fallback territory. Dataclasses are still outside Public 1 native
+compilation.
 
 ## Build Prerequisites
 

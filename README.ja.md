@@ -55,7 +55,7 @@ Public 1 は、モジュールレベル関数向けの小さな型付き Python 
 [Public 1 で未対応の機能](docs/unsupported-features.md)を参照してください。
 
 現在の native 候補は、scalar、`list[...]` と `list[list[T]]`、fixed `tuple[...]`、限定的な
-`dict[str, int|float|str]`、限定的な `set[int|bool|str]`、`Optional[T]` / `T | None` 型をサポートします。対応構文は
+固定 `dict[K, V]`、限定的な `set[int|float|bool|str]`、`Optional[T]` / `T | None` 型をサポートします。対応構文は
 算術、比較、`if`、`while`、`for x in xs`、`range(...)` ループ、
 `for i, x in enumerate(xs)`、`for x, y in zip(xs, ys)`、`break`、`continue`、
 augmented assignment、型付きローカル annotation、単純な indexing、list literal、
@@ -70,8 +70,9 @@ comprehension 内の assignment expression、対応 list item 型への
 正の int literal である必要があります。`enumerate` と `zip` は list 変数に対する
 batch loop または comprehension iterable としてのみサポートされます。Native subset
 は限定的な list/dict/set comprehension、comprehension 内の assignment expression、
-`list[list[T]]`、`dict[str, int|float|str]`、`set[int|bool|str]` comprehension に対応します。
-dataclass はまだ Public 1 native コンパイル範囲外です。
+`list[list[T]]`、固定 `dict[K, V]`、`set[int|float|bool|str]` comprehension に対応します。
+class/object、exception、context manager、async、generator、dynamic attribute の semantics は
+Python fallback に残ります。dataclass もまだ Public 1 native コンパイル範囲外です。
 
 ## ビルド前提条件
 

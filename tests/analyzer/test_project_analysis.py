@@ -265,6 +265,59 @@ def bad(x: float) -> float:
     assert [function.qualname for function in analysis.rejected_native_functions] == ["app.bad"]
 
 
+def test_rejects_object_async_generator_and_dynamic_attribute_native_features(
+    tmp_path: Path,
+) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+class Scoring:
+    @rextio.native
+    def score(self, x: int) -> int:
+        return x + 1
+
+@rextio.native
+async def async_bad(x: int) -> int:
+    return x
+
+@rextio.native
+def try_bad(x: int) -> int:
+    try:
+        return x
+    except Exception:
+        return 0
+
+@rextio.native
+def with_bad(x: int) -> int:
+    with x:
+        return x
+
+@rextio.native
+def generator_bad(x: int) -> int:
+    yield x
+
+@rextio.native
+def dynamic_attr_bad(x: int) -> int:
+    return x.value
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.Scoring.score",
+        "app.async_bad",
+        "app.dynamic_attr_bad",
+        "app.generator_bad",
+        "app.try_bad",
+        "app.with_bad",
+    }
+
+
 def test_accepts_low_risk_control_flow_and_range_forms(tmp_path: Path) -> None:
     write_module(
         tmp_path,
@@ -462,6 +515,18 @@ def unique(xs: list[int]) -> set[int]:
     return {x for x in xs if x > 0}
 
 @rextio.native
+def unique_float(xs: list[float]) -> set[float]:
+    return {x for x in xs if x > 0.0}
+
+@rextio.native
+def by_index(xs: list[int]) -> dict[int, float]:
+    return {i: 1.5 for i, x in enumerate(xs) if x > 0}
+
+@rextio.native
+def flags(xs: list[int]) -> dict[bool, str]:
+    return {x > 0: "seen" for x in xs}
+
+@rextio.native
 def last_positive(xs: list[int]) -> int:
     out = [y for x in xs if (y := x) > 0]
     return y
@@ -471,6 +536,8 @@ def last_positive(xs: list[int]) -> int:
     analysis = analyze_project(tmp_path)
 
     assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.by_index",
+        "app.flags",
         "app.flatten",
         "app.inc",
         "app.labels",
@@ -478,6 +545,7 @@ def last_positive(xs: list[int]) -> int:
         "app.nested",
         "app.squares",
         "app.unique",
+        "app.unique_float",
     ]
     assert analysis.rejected_native_functions == []
 
@@ -500,10 +568,6 @@ def walrus_rebind(xs: list[int]) -> list[int]:
     return [(x := x + 1) for x in xs]
 
 @rextio.native
-def set_float(xs: list[float]) -> set[float]:
-    return {x for x in xs}
-
-@rextio.native
 def dict_bad(xs: list[str]) -> dict[str, int]:
     return {x: x for x in xs}
 """,
@@ -511,10 +575,9 @@ def dict_bad(xs: list[str]) -> dict[str, int]:
 
     analysis = analyze_project(tmp_path)
 
-    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT003", "RXT010"}
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
     assert {function.qualname for function in analysis.rejected_native_functions} == {
         "app.dict_bad",
-        "app.set_float",
         "app.walrus_outside",
         "app.walrus_rebind",
     }
@@ -528,8 +591,8 @@ def test_rejects_unsupported_dict_and_optional_operations(tmp_path: Path) -> Non
 import rextio
 
 @rextio.native
-def non_str_key() -> dict[int, int]:
-    return {1: 2}
+def float_key() -> dict[float, int]:
+    return {1.5: 2}
 
 @rextio.native
 def dict_wrong_value(scores: dict[str, int]) -> dict[str, int]:
@@ -547,7 +610,7 @@ def optional_arithmetic(value: int | None) -> int:
     assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT003", "RXT010"}
     assert {function.qualname for function in analysis.rejected_native_functions} == {
         "app.dict_wrong_value",
-        "app.non_str_key",
+        "app.float_key",
         "app.optional_arithmetic",
     }
 

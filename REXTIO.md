@@ -45,7 +45,7 @@ build artifact compilation steps.
 
 Public 1 native candidates support module-level typed functions with scalar
 types, `list[int|float|bool|str]`, `list[list[T]]`, fixed tuples, limited
-`dict[str, int|float|str]`, limited `set[int|bool|str]`, and `Optional[T]` /
+fixed `dict[K, V]`, limited `set[int|float|bool|str]`, and `Optional[T]` /
 `T | None`. The current Rust backend
 handles assignment, typed local annotations with initializers, augmented
 assignment, `if`, `while`, `for x in xs`, `range(n)`, `range(start, stop)`,
@@ -60,11 +60,12 @@ and `sum` over `list[int]` or `list[float]`. Supported `math` calls are
 `math.sqrt`, `math.sin`, `math.cos`, and `math.floor`. Empty list literals must
 use a supported local annotation such as `out: list[int] = []`. `enumerate` and
 `zip` are supported only as batch loop or comprehension iterables over list
-variables. Empty dict literals require a supported `dict[str, int|float|str]`
+variables. Empty dict literals require a supported fixed `dict[K, V]`
 annotation. Nested list comprehensions may produce `list[list[T]]`, dict
-comprehensions may produce `dict[str, int|float|str]`, and set comprehensions
-may produce `set[int|bool|str]`. Dataclasses are not part of the Public 1
-native subset.
+comprehensions may produce supported fixed `dict[K, V]`, and set
+comprehensions may produce `set[int|float|bool|str]`. Class/object, exception,
+context-manager, async, generator, and dynamic attribute semantics stay on
+Python fallback. Dataclasses are not part of the Public 1 native subset.
 
 ## Configuration Sources
 

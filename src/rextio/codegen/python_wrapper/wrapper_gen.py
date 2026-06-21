@@ -82,6 +82,10 @@ def _render_wrapper_function(
 ) -> list[str]:
     signature = _signature(node)
     call_args = _call_args(node)
+    native_call_args = _native_call_args(node)
+    native_return = f"_native_{function.name}({native_call_args})"
+    if _is_set_annotation(node.returns):
+        native_return = f"set({native_return})"
     return [
         f"def {function.name}({signature}){_return_annotation(node)}:",
         "    if native_disabled():",
@@ -97,7 +101,7 @@ def _render_wrapper_function(
             f"{boundary_fallback_threshold}):"
         ),
         f"        return _fallback_{function.name}({call_args})",
-        f"    return _native_{function.name}({call_args})",
+        f"    return {native_return}",
     ]
 
 
@@ -133,6 +137,37 @@ def _call_args(node: ast.FunctionDef) -> str:
     args = [arg.arg for arg in [*node.args.posonlyargs, *node.args.args]]
     args.extend(f"{arg.arg}={arg.arg}" for arg in node.args.kwonlyargs)
     return ", ".join(args)
+
+
+def _native_call_args(node: ast.FunctionDef) -> str:
+    args = [
+        _native_arg(arg.arg, arg.annotation)
+        for arg in [*node.args.posonlyargs, *node.args.args]
+    ]
+    args.extend(
+        f"{arg.arg}={_native_arg(arg.arg, arg.annotation)}" for arg in node.args.kwonlyargs
+    )
+    return ", ".join(args)
+
+
+def _native_arg(name: str, annotation: ast.AST | None) -> str:
+    if _annotation_name(annotation) == "set[float]":
+        return f"list({name})"
+    return name
+
+
+def _is_set_annotation(node: ast.AST | None) -> bool:
+    annotation = _annotation_name(node)
+    return annotation is not None and annotation.startswith("set[") and annotation.endswith("]")
+
+
+def _annotation_name(node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
+    try:
+        return ast.unparse(node).replace(" ", "")
+    except Exception:
+        return None
 
 
 def _function_nodes(path: Path) -> dict[str, ast.FunctionDef]:
