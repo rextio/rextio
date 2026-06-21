@@ -2,13 +2,14 @@
 
 [English](README.md) | [한국어](README.ko.md) | [简体中文](README.zh-hans.md) | [繁體中文](README.zh-hant.md)
 
-Rextio は、条件を満たす型付き Python 関数を Rust ネイティブモジュールへコンパイルし、
+Rextio は、条件を満たし型を静的に解決できる Python 関数を Rust ネイティブモジュールへコンパイルし、
 それ以外を安全な Python fallback としてパッケージします。
 
-Public 1 は意図的に狭い範囲に絞っています。型付き Python の hot path を使う
-プロジェクト向けのローカル CLI およびビルドツール MVP です。Rextio は条件を満たす
-型付き関数をデフォルトで自動検出します。プロジェクト側では自動検出を無効にし、
-`@rextio.native` マーカーを必須にすることもできます。Rextio は Python の完全互換、
+Public 1 は意図的に狭い範囲に絞っています。型を静的に解決できる Python の hot path を使う
+プロジェクト向けのローカル CLI およびビルドツール MVP です。Rextio は annotation、
+同名の `.pyi` stub、または保守的なローカル文脈推論から型を解決できる条件を満たす関数を
+デフォルトで自動検出します。プロジェクト側では自動検出を無効にし、`@rextio.native`
+マーカーを必須にすることもできます。Rextio は Python の完全互換、
 NumPy の完全対応、フレームワーク移行、JIT 動作、または完全なランタイム境界コスト
 最適化器を提供すると主張しません。
 
@@ -46,10 +47,12 @@ rextio clean path/to/project
 
 ## Public 1 の範囲
 
-Public 1 は、モジュールレベル関数向けの小さな型付き Python subset をサポートします。
-条件を満たす型付き関数はデフォルトで native 候補になります。未対応の構文、動的機能、
-安全でない native-to-fallback 呼び出し、解決できない外部呼び出しは native コンパイル
-から拒否され、可能な場合は Python fallback として維持されます。
+Public 1 は、モジュールレベル関数向けの小さな静的型 subset をサポートします。
+Rextio が source annotation、同名 `.pyi` stub、または保守的なローカル文脈推論から
+すべての引数と戻り値の型を解決できる場合、条件を満たす関数はデフォルトで native 候補に
+なります。未対応の構文、未解決の型、動的機能、安全でない native-to-fallback 呼び出し、
+解決できない外部呼び出しは native コンパイルから拒否され、可能な場合は Python fallback
+として維持されます。
 
 対応 subset、境界の制限、診断、非目標については
 [Public 1 で未対応の機能](docs/unsupported-features.md)を参照してください。
@@ -73,6 +76,11 @@ batch loop または comprehension iterable としてのみサポートされま
 `list[list[T]]`、固定 `dict[K, V]`、`set[int|float|bool|str]` comprehension に対応します。
 class/object、exception、context manager、async、generator、dynamic attribute の semantics は
 Python fallback に残ります。dataclass もまだ Public 1 native コンパイル範囲外です。
+
+型推論は意図的に狭い範囲です。Rextio は定数、算術、比較、`if` test、loop、indexing、
+comprehension、対応 builtin から単純な scalar と collection signature を推論できます。
+source annotation がない場合は同名 `.pyi` ファイルの signature を優先して参照します。
+型が曖昧なままなら、その関数は Python fallback に残ります。
 
 ## ビルド前提条件
 

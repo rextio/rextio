@@ -13,10 +13,11 @@ Python source
 Native compilation is an optimization. Fallback Python behavior must remain
 available, including when `REXTIO_DISABLE_NATIVE=1` is set.
 
-By default, Rextio discovers eligible module-level typed functions
-automatically. Projects can set `[policy] native_marker = "decorator"` when
-they want only explicitly marked `@rextio.native` functions to become native
-candidates.
+By default, Rextio discovers eligible module-level functions automatically when
+their static types can be resolved from annotations, sibling `.pyi` stubs, or
+conservative local context inference. Projects can set
+`[policy] native_marker = "decorator"` when they want only explicitly marked
+`@rextio.native` functions to become native candidates.
 
 Use `@rextio.exempt` on functions that must stay on Python fallback. Exemptions
 override automatic discovery and explicit native markers.
@@ -43,7 +44,8 @@ build artifact compilation steps.
 
 ## Native Subset
 
-Public 1 native candidates support module-level typed functions with scalar
+Public 1 native candidates support module-level functions with statically
+resolved scalar
 types, `list[int|float|bool|str]`, `list[list[T]]`, fixed tuples, limited
 fixed `dict[K, V]`, limited `set[int|float|bool|str]`, and `Optional[T]` /
 `T | None`. The current Rust backend
@@ -66,6 +68,12 @@ comprehensions may produce supported fixed `dict[K, V]`, and set
 comprehensions may produce `set[int|float|bool|str]`. Class/object, exception,
 context-manager, async, generator, and dynamic attribute semantics stay on
 Python fallback. Dataclasses are not part of the Public 1 native subset.
+
+Source annotations are not the only type source. Rextio also reads sibling
+`.pyi` files and performs conservative local context inference for simple
+constants, arithmetic, comparisons, `if` tests, loops, indexing, comprehensions,
+and supported builtins. Ambiguous or unresolved function signatures are routed
+to Python fallback.
 
 ## Configuration Sources
 

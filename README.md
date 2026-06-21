@@ -2,12 +2,14 @@
 
 [한국어](README.ko.md) | [简体中文](README.zh-hans.md) | [繁體中文](README.zh-hant.md) | [日本語](README.ja.md)
 
-Rextio compiles eligible typed Python functions to Rust native modules and
-packages the rest as safe Python fallback.
+Rextio compiles eligible statically typed Python functions to Rust native
+modules and packages the rest as safe Python fallback.
 
 Public 1 is intentionally narrow. It is a local CLI and build-tool MVP for
-projects that use typed Python hot paths. Rextio discovers eligible typed
-functions by default; projects can opt out and require `@rextio.native` markers.
+projects that use statically typed Python hot paths. Rextio discovers eligible
+functions by default when their types come from annotations, sibling `.pyi`
+stubs, or conservative local context inference; projects can opt out and
+require `@rextio.native` markers.
 It does not claim full Python compatibility, full NumPy support, framework
 migration, JIT behavior, or a full runtime boundary-cost optimizer.
 
@@ -46,10 +48,13 @@ rextio clean path/to/project
 
 ## Public 1 Scope
 
-Public 1 supports a small typed Python subset for module-level functions.
-Eligible typed functions are native candidates by default. Unsupported syntax,
-dynamic features, unsafe native-to-fallback calls, and unresolved external calls
-are rejected from native compilation and kept on Python fallback where possible.
+Public 1 supports a small statically typed Python subset for module-level
+functions. Eligible functions are native candidates by default when Rextio can
+resolve every argument and return type from source annotations, sibling `.pyi`
+stubs, or conservative local context inference. Unsupported syntax, unresolved
+types, dynamic features, unsafe native-to-fallback calls, and unresolved
+external calls are rejected from native compilation and kept on Python fallback
+where possible.
 
 See [Unsupported Features in Public 1](docs/unsupported-features.md) for the
 supported subset, boundary limits, diagnostics, and non-goals.
@@ -77,6 +82,12 @@ supported fixed value type. Set support is limited to `set[int]`, `set[float]`,
 context-manager, async, generator, and dynamic attribute semantics remain
 Python fallback territory. Dataclasses are still outside Public 1 native
 compilation.
+
+Type inference is deliberately narrow. Rextio can infer simple scalar and
+collection signatures from constants, arithmetic, comparisons, `if` tests,
+loops, indexing, comprehensions, and supported builtins. A sibling `.pyi` file
+with supported function signatures is preferred when source annotations are
+missing. If a type remains ambiguous, the function stays on Python fallback.
 
 ## Build Prerequisites
 

@@ -26,13 +26,13 @@ Python source
 
 Public 1 must demonstrate all of the following:
 
-1. A Python project can let Rextio discover eligible typed functions automatically, and can optionally mark functions with `@rextio.native`.
+1. A Python project can let Rextio discover eligible functions automatically when their types are statically resolved from annotations, `.pyi` stubs, or conservative local context inference, and can optionally mark functions with `@rextio.native`.
 2. A Python project can mark functions with `@rextio.exempt` to keep them on Python fallback.
 3. Rextio can check whether those functions belong to the supported subset.
 4. Rextio can reject unsafe native-to-fallback call boundaries.
 5. Rextio can warn about likely excessive Python-to-Rust boundary crossings.
 6. Rextio can use generated Python fallback after repeated Python-to-Rust wrapper crossings exceed a simple runtime threshold.
-7. Rextio can generate Rust code for supported typed Python functions.
+7. Rextio can generate Rust code for supported Python functions with statically resolved types.
 8. Rextio can generate PyO3 bindings.
 9. Rextio can build the generated Rust module with Cargo/maturin.
 10. Rextio can preserve Python fallback behavior.
@@ -392,10 +392,10 @@ Checks the project and prints diagnostics.
 
 It must detect:
 
-* automatically discoverable typed native candidates
+* automatically discoverable statically typed native candidates
 * `@rextio.native`
 * `@rextio.exempt`
-* missing type annotations
+* missing or unresolved native signature types
 * unsupported argument types
 * unsupported return types
 * unsupported syntax
@@ -749,8 +749,9 @@ When `native_marker = "decorator"`, only functions marked with `@rextio.native`
 are native candidates.
 
 When `native_marker = "auto"` (the default), Rextio may treat unmarked
-module-level functions as native candidates if they have supported type
-annotations and pass the same subset and boundary checks as marked functions.
+module-level functions as native candidates if they have supported static types
+from annotations, sibling `.pyi` stubs, or conservative local context inference
+and pass the same subset and boundary checks as marked functions.
 
 `@rextio.exempt` always opts a function out of native compilation:
 
@@ -767,8 +768,9 @@ An exempt function must never be emitted into generated Rust. If a native
 candidate calls an exempt function, treat that callee as fallback-only and apply
 the normal native-to-fallback boundary rejection.
 
-Do not compile untyped functions or functions outside the supported Public 1
-subset. Automatic discovery must remain conservative and deterministic.
+Do not compile functions whose argument or return types remain unresolved, or
+functions outside the supported Public 1 subset. Automatic discovery must
+remain conservative and deterministic.
 
 ---
 
@@ -1264,7 +1266,7 @@ Public 1 must include tests for:
 ### 18.1 Analyzer
 
 * detects `@rextio.native`
-* rejects missing type annotations
+* rejects missing or unresolved native signature types
 * rejects unsupported syntax
 * rejects dynamic features
 * accepts supported functions
@@ -1480,7 +1482,7 @@ Rextio converts Python projects to Rust.
 Prefer:
 
 ```text
-Rextio compiles eligible typed Python functions to Rust native modules and packages the rest as safe Python fallback. Projects can opt out of automatic discovery and require `@rextio.native`.
+Rextio compiles eligible Python functions with statically resolved types to Rust native modules and packages the rest as safe Python fallback. Projects can opt out of automatic discovery and require `@rextio.native`.
 ```
 
 Also mention:
@@ -1614,7 +1616,7 @@ Keep Public 1 focused.
 
 This project should first prove one thing:
 
-> A normal Python project can be built into a hybrid artifact where selected typed Python functions run as Rust native code and everything else still works through safe Python fallback.
+> A normal Python project can be built into a hybrid artifact where selected statically typed Python functions run as Rust native code and everything else still works through safe Python fallback.
 
 Public 1 must also prove one safety property:
 

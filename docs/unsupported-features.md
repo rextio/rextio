@@ -1,8 +1,8 @@
 # Unsupported Features in Public 1
 
-Rextio Public 1 is a focused hybrid build tool. It compiles eligible typed
-Python functions to Rust native modules and keeps the rest of the project as
-Python fallback.
+Rextio Public 1 is a focused hybrid build tool. It compiles eligible Python
+functions with statically resolved types to Rust native modules and keeps the
+rest of the project as Python fallback.
 
 Unsupported native features are not bugs in the fallback path. When a native
 candidate uses unsupported syntax, unsupported types, or unsafe boundaries,
@@ -11,11 +11,18 @@ fallback Python.
 
 ## Supported Native Surface
 
-Public 1 native candidates must be module-level typed functions. Rextio
-discovers eligible candidates automatically by default. Projects can set
-`[policy] native_marker = "decorator"` to require `@rextio.native`.
+Public 1 native candidates must be module-level functions whose argument and
+return types are resolved from annotations, sibling `.pyi` stubs, or
+conservative local context inference. Rextio discovers eligible candidates
+automatically by default. Projects can set `[policy] native_marker = "decorator"`
+to require `@rextio.native`.
 Use `@rextio.exempt` to keep a function on Python fallback even when it has a
-supported typed signature.
+supported static signature.
+
+If a source function has no annotations and no `.pyi` signature, Rextio only
+compiles it when constants, arithmetic, comparisons, `if` tests, loops,
+indexing, comprehensions, and supported builtins make every argument and return
+type unambiguous. Otherwise it stays on fallback.
 
 Supported types:
 

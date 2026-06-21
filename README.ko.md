@@ -2,13 +2,14 @@
 
 [English](README.md) | [简体中文](README.zh-hans.md) | [繁體中文](README.zh-hant.md) | [日本語](README.ja.md)
 
-Rextio는 적격한 타입 힌트가 있는 Python 함수를 Rust 네이티브 모듈로 컴파일하고,
+Rextio는 타입을 정적으로 해결할 수 있는 적격한 Python 함수를 Rust 네이티브 모듈로 컴파일하고,
 나머지는 안전한 Python fallback으로 패키징합니다.
 
-Public 1은 의도적으로 범위가 좁습니다. 타입 힌트가 있는 Python hot path를 사용하는
-프로젝트를 위한 로컬 CLI 및 빌드 도구 MVP입니다. Rextio는 기본적으로 적격한 타입
-함수를 자동으로 발견하며, 프로젝트는 자동 발견을 끄고 `@rextio.native` 표시를
-요구하도록 설정할 수 있습니다. Rextio는 Python 전체 호환성, 전체 NumPy 지원,
+Public 1은 의도적으로 범위가 좁습니다. 정적으로 타입을 해결할 수 있는 Python hot path를
+사용하는 프로젝트를 위한 로컬 CLI 및 빌드 도구 MVP입니다. Rextio는 annotation,
+같은 이름의 `.pyi` stub, 또는 보수적인 로컬 문맥 추론으로 타입이 해결되는 함수를
+기본적으로 자동 발견하며, 프로젝트는 자동 발견을 끄고 `@rextio.native` 표시를 요구하도록
+설정할 수 있습니다. Rextio는 Python 전체 호환성, 전체 NumPy 지원,
 프레임워크 마이그레이션, JIT 동작, 또는 완전한 런타임 경계 비용 최적화기를
 제공한다고 주장하지 않습니다.
 
@@ -47,9 +48,10 @@ rextio clean path/to/project
 ## Public 1 범위
 
 Public 1은 모듈 레벨 함수를 위한 작은 타입 지정 Python subset을 지원합니다.
-적격한 타입 함수는 기본적으로 native 후보가 됩니다. 지원되지 않는 문법, 동적 기능,
-안전하지 않은 native-to-fallback 호출, 해석되지 않는 외부 호출은 native 컴파일에서
-거부되고 가능한 경우 Python fallback으로 유지됩니다.
+적격한 함수는 source annotation, sibling `.pyi` stub, 또는 보수적인 로컬 문맥 추론으로
+모든 인자와 반환 타입이 해결되면 기본적으로 native 후보가 됩니다. 지원되지 않는 문법,
+해결되지 않은 타입, 동적 기능, 안전하지 않은 native-to-fallback 호출, 해석되지 않는 외부
+호출은 native 컴파일에서 거부되고 가능한 경우 Python fallback으로 유지됩니다.
 
 지원 subset, 경계 제한, 진단, 비목표는
 [Public 1에서 지원하지 않는 기능](docs/unsupported-features.md)을 참고하세요.
@@ -75,6 +77,11 @@ iterable로만 지원됩니다. dict 지원은 key가 `int`, `bool`, `str`이고
 `set[str]` comprehension으로 제한됩니다. class/object, exception, context manager,
 async, generator, dynamic attribute semantics는 Python fallback 영역으로 남으며,
 dataclass도 아직 Public 1 native 컴파일 범위 밖입니다.
+
+타입 추론은 의도적으로 좁습니다. Rextio는 상수, 산술, 비교, `if` test, loop, indexing,
+comprehension, 지원 builtin에서 단순 scalar와 collection signature를 추론할 수 있습니다.
+source annotation이 없을 때는 같은 이름의 `.pyi` 파일 signature를 우선 참조합니다.
+타입이 모호하게 남으면 해당 함수는 Python fallback에 머뭅니다.
 
 ## 빌드 전제 조건
 
