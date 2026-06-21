@@ -243,6 +243,20 @@ native_marker = "decorator"
 In decorator-only mode, only functions marked with `@rextio.native` are native
 candidates.
 
+Explicit markers may also pin a function to a native target language:
+
+```python
+@rextio.native(target="rust")
+def score(x: float) -> float:
+    return x * 2.0
+```
+
+Target names are normalized case-insensitively. A target-specific marker applies
+only when the active `--target-language` / `[build] native_backend` matches it;
+for example, `@rextio.native(target="mojo")` is ignored by a Rust build and the
+function stays on Python fallback. Public 1 accepts `rust`, `mojo`, and `julia`
+as target-planning values, but only Rust source generation is implemented.
+
 Use `@rextio.exempt` to keep a function on Python fallback even when automatic
 native discovery is enabled. Exempt functions are never emitted into generated
 Rust; native candidates that call them are rejected by the normal

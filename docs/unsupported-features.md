@@ -97,8 +97,9 @@ Rextio rejects these inside native candidates with structured diagnostics,
 usually `RXT010`:
 
 - classes and instance methods
-- unsupported decorators on native candidates; `@rextio.exempt` opts a function
-  out of native candidacy instead
+- unsupported decorators on native candidates; `@rextio.native` and matching
+  `@rextio.native(target="...")` markers are supported, while `@rextio.exempt`
+  opts a function out of native candidacy instead
 - async functions and `await`
 - generators and `yield`
 - lambdas and nested functions
@@ -237,3 +238,10 @@ does not generate Mojo or Julia source. Local mapper plugin folders may be
 listed under `[mappers] paths`; each folder must contain `rextio-mapper.toml` or
 `mapper.toml`. Mapper repository download and concrete mapper transformations
 are reserved for later work.
+
+`@rextio.native(target="rust")` can pin an explicit native candidate to a target
+language. Target names are normalized case-insensitively. A target-specific
+marker applies only when the active target language matches it, whether that
+target came from `--target-language` or `[build] native_backend`, so
+`@rextio.native(target="mojo")` remains fallback in a Rust build until a Mojo
+backend exists.

@@ -19,6 +19,13 @@ conservative local context inference. Projects can set
 `[policy] native_marker = "decorator"` when they want only explicitly marked
 `@rextio.native` functions to become native candidates.
 
+Explicit native markers can also name the intended native target:
+`@rextio.native(target="rust")`. Target names are normalized
+case-insensitively, and a target-specific marker applies only when the active
+`--target-language` / `[build] native_backend` matches it. Public 1 can record
+`rust`, `mojo`, and `julia` target selections for planning, but only Rust code
+generation is implemented.
+
 Use `@rextio.exempt` on functions that must stay on Python fallback. Exemptions
 override automatic discovery and explicit native markers.
 

@@ -222,6 +222,11 @@ native_marker = "decorator"
 
 在 decorator-only 模式下，只有用 `@rextio.native` 标记的函数才会成为 native 候选。
 
+显式 marker 也可以固定目标 native 语言。例如
+`@rextio.native(target="rust")` 只会在 active `--target-language` /
+`[build] native_backend` 为 Rust 时生效。`target="mojo"` 和 `target="julia"` 会作为
+未来 backend 的 planning 值保留，但 Public 1 只实现 Rust source generation。
+
 即使启用了自动 native discovery，也可以使用 `@rextio.exempt` 让某个函数保留在
 Python fallback。exempt 函数永远不会被 emit 到生成的 Rust；调用它们的 native 候选
 会按正常的 native-to-fallback 边界规则被拒绝。
