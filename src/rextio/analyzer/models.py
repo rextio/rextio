@@ -34,6 +34,8 @@ class FunctionAnalysis:
     accepted: bool = False
     calls: list[CallSite] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
+    inferred_arg_types: dict[str, str] = field(default_factory=dict)
+    inferred_return_type: str | None = None
 
     @property
     def error_diagnostics(self) -> list[Diagnostic]:
@@ -69,6 +71,8 @@ class FunctionAnalysis:
             "column": self.column,
             "is_native_candidate": self.is_native_candidate,
             "accepted": self.accepted,
+            "inferred_arg_types": dict(sorted(self.inferred_arg_types.items())),
+            "inferred_return_type": self.inferred_return_type,
             "calls": [call.to_dict() for call in self.calls],
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }

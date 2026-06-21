@@ -53,6 +53,7 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
 
 def validate_native_function(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
     _validate_decorators(node, function)
+    _infer_missing_signature_from_context(node, function)
     _validate_signature(node, function)
     _validate_body(node, function)
     function.accepted = not function.error_diagnostics
@@ -84,7 +85,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
 
     args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
     for arg in args:
-        if arg.annotation is None:
+        if arg.annotation is None and arg.arg not in function.inferred_arg_types:
             function.add_diagnostic(
                 Diagnostic(
                     code="RXT001",
@@ -97,7 +98,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                     suggestion="Add a supported Public 1 type annotation.",
                 )
             )
-        elif not is_supported_type(arg.annotation):
+        elif arg.annotation is not None and not is_supported_type(arg.annotation):
             function.add_diagnostic(
                 Diagnostic(
                     code="RXT002",
@@ -111,7 +112,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                 )
             )
 
-    if node.returns is None:
+    if node.returns is None and function.inferred_return_type is None:
         function.add_diagnostic(
             Diagnostic(
                 code="RXT001",
@@ -124,7 +125,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                 suggestion="Add a supported Public 1 return type annotation.",
             )
         )
-    elif not is_supported_type(node.returns):
+    elif node.returns is not None and not is_supported_type(node.returns):
         function.add_diagnostic(
             Diagnostic(
                 code="RXT003",
@@ -140,8 +141,8 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
 
 
 def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
-    type_env = _initial_type_env(node)
-    return_type = annotation_name(node.returns) if node.returns is not None and is_supported_type(node.returns) else None
+    type_env = _initial_type_env(node, function)
+    return_type = _return_type_name(node, function)
     for statement in node.body:
         _validate_statement_types(statement, function, type_env, return_type)
         for child in ast.walk(statement):
@@ -155,12 +156,14 @@ def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
                 _validate_call(function, child)
 
 
-def _initial_type_env(node: ast.FunctionDef) -> dict[str, str]:
+def _initial_type_env(node: ast.FunctionDef, function: FunctionAnalysis) -> dict[str, str]:
     env: dict[str, str] = {}
     args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
     for arg in args:
         if arg.annotation is not None and is_supported_type(arg.annotation):
             env[arg.arg] = annotation_name(arg.annotation)
+        elif arg.arg in function.inferred_arg_types:
+            env[arg.arg] = function.inferred_arg_types[arg.arg]
     return env
 
 
@@ -290,6 +293,351 @@ def _validate_type_match(
         node,
         f"inferred type {actual} does not match expected type {expected}",
     )
+
+
+def _return_type_name(node: ast.FunctionDef, function: FunctionAnalysis) -> str | None:
+    if node.returns is not None and is_supported_type(node.returns):
+        return annotation_name(node.returns)
+    return function.inferred_return_type
+
+
+def _infer_missing_signature_from_context(
+    node: ast.FunctionDef,
+    function: FunctionAnalysis,
+) -> None:
+    inferencer = _SignatureInferencer(node, function)
+    inferencer.infer()
+
+
+class _SignatureInferencer:
+    def __init__(self, node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+        self.node = node
+        self.function = function
+        self.args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+        self.arg_names = {arg.arg for arg in self.args}
+        self.known: dict[str, str] = {}
+        self.return_types: list[str] = []
+        self.changed = False
+        for arg in self.args:
+            if arg.annotation is not None and is_supported_type(arg.annotation):
+                self.known[arg.arg] = annotation_name(arg.annotation)
+            elif arg.arg in function.inferred_arg_types:
+                self.known[arg.arg] = function.inferred_arg_types[arg.arg]
+        if function.inferred_return_type is not None:
+            self.return_types.append(function.inferred_return_type)
+
+    def infer(self) -> None:
+        for _ in range(8):
+            self.changed = False
+            self.visit_statements(self.node.body)
+            if not self.changed:
+                break
+        for arg in self.args:
+            if (
+                arg.annotation is None
+                and arg.arg in self.known
+                and _is_supported_signature_type(self.known[arg.arg])
+            ):
+                self.function.inferred_arg_types[arg.arg] = self.known[arg.arg]
+        if self.node.returns is None and self.return_types:
+            unique = set(self.return_types)
+            if len(unique) == 1:
+                return_type = self.return_types[0]
+                if _is_supported_signature_type(return_type):
+                    self.function.inferred_return_type = return_type
+
+    def visit_statements(self, statements: list[ast.stmt]) -> None:
+        for statement in statements:
+            self.visit_statement(statement)
+
+    def visit_statement(self, node: ast.stmt) -> None:
+        if isinstance(node, ast.Assign):
+            value_type = self.infer_expr(node.value)
+            for target in node.targets:
+                self.bind_target(target, value_type)
+            return
+        if isinstance(node, ast.AnnAssign):
+            annotated = annotation_name(node.annotation) if is_supported_type(node.annotation) else None
+            self.bind_target(node.target, annotated)
+            if node.value is not None:
+                self.infer_expr(node.value, annotated)
+            return
+        if isinstance(node, ast.AugAssign):
+            target_type = self.infer_expr(node.target)
+            value_type = self.infer_expr(node.value, target_type)
+            if target_type is None:
+                target_type = value_type
+            self.bind_target(node.target, target_type)
+            return
+        if isinstance(node, ast.Expr):
+            self.infer_expr(node.value)
+            return
+        if isinstance(node, ast.Return):
+            value_type = "None" if node.value is None else self.infer_expr(node.value)
+            if value_type is not None:
+                self.return_types.append(value_type)
+            return
+        if isinstance(node, ast.If):
+            self.infer_expr(node.test, "bool")
+            self.visit_statements(node.body)
+            self.visit_statements(node.orelse)
+            return
+        if isinstance(node, ast.While):
+            self.infer_expr(node.test, "bool")
+            self.visit_statements(node.body)
+            self.visit_statements(node.orelse)
+            return
+        if isinstance(node, ast.For):
+            iterable_type = self.infer_expr(node.iter)
+            item_types = self.iterable_item_types(node.iter, iterable_type)
+            self.bind_loop_target(node.target, item_types)
+            before = dict(self.known)
+            self.visit_statements(node.body)
+            if isinstance(node.iter, ast.Name) and node.iter.id not in before:
+                inferred_items = self.target_types(node.target)
+                if len(inferred_items) == 1 and inferred_items[0] is not None:
+                    self.add_type(node.iter.id, f"list[{inferred_items[0]}]")
+            self.visit_statements(node.orelse)
+
+    def infer_expr(self, node: ast.AST | None, expected: str | None = None) -> str | None:
+        if node is None:
+            return "None"
+        if isinstance(node, ast.Constant):
+            return self.constant_type(node)
+        if isinstance(node, ast.Name):
+            known = self.known.get(node.id)
+            if known is None and expected is not None:
+                self.add_type(node.id, expected)
+                known = expected
+            return known
+        if isinstance(node, ast.List):
+            item_types = [self.infer_expr(item) for item in node.elts]
+            return self.homogeneous_collection_type("list", item_types, expected)
+        if isinstance(node, ast.Set):
+            item_types = [self.infer_expr(item) for item in node.elts]
+            return self.homogeneous_collection_type("set", item_types, expected)
+        if isinstance(node, ast.Tuple):
+            item_types = [self.infer_expr(item) for item in node.elts]
+            if all(item_type is not None for item_type in item_types):
+                return f"tuple[{', '.join(item_types)}]"
+            return None
+        if isinstance(node, ast.Dict):
+            key_types = [self.infer_expr(key) for key in node.keys if key is not None]
+            value_types = [self.infer_expr(value) for value in node.values]
+            if not key_types and expected is not None and _is_dict_type(expected):
+                return expected
+            if len(set(key_types)) == 1 and len(set(value_types)) == 1:
+                key_type = key_types[0]
+                value_type = value_types[0]
+                if key_type is not None and value_type is not None:
+                    return f"dict[{key_type}, {value_type}]"
+            return None
+        if isinstance(node, ast.ListComp):
+            return self.infer_list_comprehension(node)
+        if isinstance(node, ast.DictComp):
+            return self.infer_dict_comprehension(node)
+        if isinstance(node, ast.SetComp):
+            return self.infer_set_comprehension(node)
+        if isinstance(node, ast.NamedExpr):
+            value_type = self.infer_expr(node.value, expected)
+            self.bind_target(node.target, value_type)
+            return value_type
+        if isinstance(node, ast.BinOp):
+            return self.infer_binop(node, expected)
+        if isinstance(node, ast.BoolOp):
+            for value in node.values:
+                self.infer_expr(value, "bool")
+            return "bool"
+        if isinstance(node, ast.UnaryOp):
+            if isinstance(node.op, ast.Not):
+                self.infer_expr(node.operand, "bool")
+                return "bool"
+            if isinstance(node.op, ast.USub):
+                return self.infer_expr(node.operand, expected if expected in NUMERIC_TYPES else None)
+            return None
+        if isinstance(node, ast.Compare):
+            self.infer_compare(node)
+            return "bool"
+        if isinstance(node, ast.Call):
+            return self.infer_call(node, expected)
+        if isinstance(node, ast.Subscript):
+            return self.infer_subscript(node, expected)
+        return None
+
+    def infer_binop(self, node: ast.BinOp, expected: str | None) -> str | None:
+        expected_numeric = expected if expected in NUMERIC_TYPES else None
+        left = self.infer_expr(node.left, expected_numeric)
+        right = self.infer_expr(node.right, expected_numeric or left)
+        if left is None and right in NUMERIC_TYPES:
+            left = self.infer_expr(node.left, right)
+        if right is None and left in NUMERIC_TYPES:
+            right = self.infer_expr(node.right, left)
+        if left in NUMERIC_TYPES and left == right:
+            return left
+        return left if left in NUMERIC_TYPES and right is None else None
+
+    def infer_compare(self, node: ast.Compare) -> None:
+        left_type = self.infer_expr(node.left)
+        for comparator in node.comparators:
+            right_type = self.infer_expr(comparator, left_type)
+            if left_type is None and right_type is not None:
+                left_type = self.infer_expr(node.left, right_type)
+            left_type = right_type or left_type
+
+    def infer_call(self, node: ast.Call, expected: str | None) -> str | None:
+        target = dotted_name(node.func)
+        if target == "len":
+            for arg in node.args:
+                self.infer_expr(arg)
+            return "int"
+        if target == "range":
+            for arg in node.args:
+                self.infer_expr(arg, "int")
+            return None
+        if target in {"abs", "min", "max"}:
+            seed = expected if expected in NUMERIC_TYPES else None
+            arg_types = [self.infer_expr(arg, seed) for arg in node.args]
+            known = next((arg_type for arg_type in arg_types if arg_type in NUMERIC_TYPES), None)
+            if known is not None:
+                for arg in node.args:
+                    self.infer_expr(arg, known)
+            return known
+        if target == "sum" and node.args:
+            item_type = expected if expected in NUMERIC_TYPES else None
+            arg_type = self.infer_expr(node.args[0], f"list[{item_type}]" if item_type else None)
+            return _list_item_type(arg_type)
+        if target in {"math.sqrt", "math.sin", "math.cos"}:
+            for arg in node.args:
+                self.infer_expr(arg, "float")
+            return "float"
+        if target == "math.floor":
+            for arg in node.args:
+                self.infer_expr(arg, "float")
+            return "int"
+        for arg in node.args:
+            self.infer_expr(arg)
+        return None
+
+    def infer_subscript(self, node: ast.Subscript, expected: str | None) -> str | None:
+        self.infer_expr(node.slice, "int")
+        value_type = self.infer_expr(node.value)
+        if value_type is None and expected is not None and isinstance(node.value, ast.Name):
+            self.add_type(node.value.id, f"list[{expected}]")
+            value_type = f"list[{expected}]"
+        if _is_list_type(value_type):
+            return _list_item_type(value_type)
+        if _is_dict_type(value_type):
+            return _dict_item_types(value_type)[1]
+        return None
+
+    def infer_list_comprehension(self, node: ast.ListComp) -> str | None:
+        item_type = self.with_comprehension_generators(node.generators, lambda: self.infer_expr(node.elt))
+        return f"list[{item_type}]" if item_type is not None else None
+
+    def infer_dict_comprehension(self, node: ast.DictComp) -> str | None:
+        def infer_items() -> tuple[str | None, str | None]:
+            return self.infer_expr(node.key), self.infer_expr(node.value)
+
+        key_type, value_type = self.with_comprehension_generators(node.generators, infer_items) or (None, None)
+        if key_type is not None and value_type is not None:
+            return f"dict[{key_type}, {value_type}]"
+        return None
+
+    def infer_set_comprehension(self, node: ast.SetComp) -> str | None:
+        item_type = self.with_comprehension_generators(node.generators, lambda: self.infer_expr(node.elt))
+        return f"set[{item_type}]" if item_type is not None else None
+
+    def with_comprehension_generators(self, generators: list[ast.comprehension], callback):
+        saved = dict(self.known)
+        for generator in generators:
+            iterable_type = self.infer_expr(generator.iter)
+            item_types = self.iterable_item_types(generator.iter, iterable_type)
+            self.bind_loop_target(generator.target, item_types)
+            for condition in generator.ifs:
+                self.infer_expr(condition, "bool")
+        value = callback()
+        for generator in reversed(generators):
+            if isinstance(generator.iter, ast.Name) and generator.iter.id not in saved:
+                inferred_items = self.target_types(generator.target)
+                if len(inferred_items) == 1 and inferred_items[0] is not None:
+                    self.add_type(generator.iter.id, f"list[{inferred_items[0]}]")
+        return value
+
+    def iterable_item_types(self, node: ast.AST, iterable_type: str | None) -> list[str]:
+        if _is_list_type(iterable_type):
+            item_type = _list_item_type(iterable_type)
+            return [item_type] if item_type is not None else []
+        if _is_set_type(iterable_type):
+            item_type = _set_item_type(iterable_type)
+            return [item_type] if item_type is not None else []
+        if isinstance(node, ast.Call) and dotted_name(node.func) == "range":
+            return ["int"]
+        if isinstance(node, ast.Call) and dotted_name(node.func) == "enumerate" and node.args:
+            item_type = _list_item_type(self.infer_expr(node.args[0]))
+            return ["int", item_type] if item_type is not None else []
+        if isinstance(node, ast.Call) and dotted_name(node.func) == "zip":
+            item_types = [_list_item_type(self.infer_expr(arg)) for arg in node.args]
+            return [item_type for item_type in item_types if item_type is not None]
+        return []
+
+    def target_types(self, target: ast.AST) -> list[str | None]:
+        if isinstance(target, ast.Name):
+            return [self.known.get(target.id)]
+        if isinstance(target, ast.Tuple):
+            return [self.known.get(item.id) if isinstance(item, ast.Name) else None for item in target.elts]
+        return []
+
+    def bind_loop_target(self, target: ast.AST, item_types: list[str]) -> None:
+        if isinstance(target, ast.Name) and len(item_types) == 1:
+            self.add_type(target.id, item_types[0])
+        elif isinstance(target, ast.Tuple) and len(target.elts) == len(item_types):
+            for item, item_type in zip(target.elts, item_types, strict=True):
+                if isinstance(item, ast.Name):
+                    self.add_type(item.id, item_type)
+
+    def bind_target(self, target: ast.AST, value_type: str | None) -> None:
+        if value_type is not None and isinstance(target, ast.Name):
+            self.add_type(target.id, value_type)
+
+    def add_type(self, name: str, value_type: str) -> None:
+        if not _is_supported_signature_type(value_type):
+            return
+        current = self.known.get(name)
+        if current is None:
+            self.known[name] = value_type
+            self.changed = True
+        elif current == value_type:
+            return
+
+    def homogeneous_collection_type(
+        self,
+        kind: str,
+        item_types: list[str | None],
+        expected: str | None,
+    ) -> str | None:
+        if not item_types:
+            if expected is not None and expected.startswith(f"{kind}["):
+                return expected
+            return None
+        unique = set(item_types)
+        if len(unique) == 1:
+            item_type = item_types[0]
+            return f"{kind}[{item_type}]" if item_type is not None else None
+        return None
+
+    @staticmethod
+    def constant_type(node: ast.Constant) -> str | None:
+        if isinstance(node.value, bool):
+            return "bool"
+        if isinstance(node.value, int):
+            return "int"
+        if isinstance(node.value, float):
+            return "float"
+        if isinstance(node.value, str):
+            return "str"
+        if node.value is None:
+            return "None"
+        return None
 
 
 def _infer_expr_type(
@@ -1196,6 +1544,29 @@ def _is_supported_dict_value_type(value: str) -> bool:
     optional_item = _optional_item_type(value)
     if optional_item is not None:
         return _is_supported_dict_value_type(optional_item)
+    return False
+
+
+def _is_supported_signature_type(value: str) -> bool:
+    if value in {"int", "float", "bool", "str", "None"}:
+        return True
+    if _is_list_type(value):
+        item_type = _list_item_type(value)
+        return item_type is not None and _is_supported_list_item_type(item_type)
+    if _is_tuple_type(value):
+        return all(item_type in {"int", "float", "bool", "str"} for item_type in _tuple_item_types(value))
+    if _is_dict_type(value):
+        key_type, value_type = _dict_item_types(value)
+        return (
+            key_type in DICT_KEY_TYPES
+            and value_type is not None
+            and _is_supported_dict_value_type(value_type)
+        )
+    if _is_set_type(value):
+        return _set_item_type(value) in SET_ITEM_TYPES
+    optional_item = _optional_item_type(value)
+    if optional_item is not None:
+        return _is_supported_signature_type(optional_item)
     return False
 
 

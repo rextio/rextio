@@ -64,3 +64,28 @@ def unique(values: set[float]) -> set[float]:
     assert "def unique(values: set[float]) -> set[float]:" in wrapper
     assert "return _fallback_unique(values)" in wrapper
     assert "return set(_native_unique(list(values)))" in wrapper
+
+
+def test_wrapper_uses_pyi_signature_for_float_set_boundary(tmp_path: Path) -> None:
+    source = tmp_path / "app.py"
+    source.write_text(
+        """
+def unique(values):
+    return {value for value in values}
+""",
+        encoding="utf-8",
+    )
+    source.with_suffix(".pyi").write_text(
+        """
+def unique(values: set[float]) -> set[float]: ...
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    module = analysis.modules[0]
+
+    wrapper = render_wrapper_module(module)
+
+    assert "def unique(values):" in wrapper
+    assert "return _fallback_unique(values)" in wrapper
+    assert "return set(_native_unique(list(values)))" in wrapper

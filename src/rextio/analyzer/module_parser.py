@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis
 from rextio.analyzer.native_marker import dotted_name, has_exempt_marker, has_native_marker
-from rextio.analyzer.type_collector import is_supported_type
+from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.analyzer.unsupported_patterns import validate_native_function
 
 
@@ -33,9 +34,16 @@ def parse_module(path: Path, project_root: Path, native_marker: str = "auto") ->
         module_name=module_name,
         is_package_module=path.name == "__init__.py",
     )
-    module.functions = _collect_module_functions(tree, module, native_marker)
+    stub_signatures = _load_stub_signatures(path)
+    module.functions = _collect_module_functions(tree, module, native_marker, stub_signatures)
     module.functions.extend(_collect_native_methods(tree, module))
     return module
+
+
+@dataclass(frozen=True)
+class StubSignature:
+    arg_types: dict[str, str] = field(default_factory=dict)
+    return_type: str | None = None
 
 
 def module_name_for_path(path: Path, project_root: Path) -> str:
@@ -102,6 +110,7 @@ def _collect_module_functions(
     tree: ast.Module,
     module: ModuleAnalysis,
     native_marker: str,
+    stub_signatures: dict[str, StubSignature],
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
     for node in tree.body:
@@ -114,6 +123,7 @@ def _collect_module_functions(
         calls = collect_call_sites(node)
         has_exempt = has_exempt_marker(node)
         has_marker = has_native_marker(node)
+        stub_signature = stub_signatures.get(node.name, StubSignature())
         function = FunctionAnalysis(
             name=node.name,
             qualname=f"{module.module_name}.{node.name}" if module.module_name else node.name,
@@ -123,6 +133,8 @@ def _collect_module_functions(
             column=node.col_offset,
             is_native_candidate=has_marker,
             calls=calls,
+            inferred_arg_types=dict(stub_signature.arg_types),
+            inferred_return_type=stub_signature.return_type,
         )
         if has_exempt:
             function.is_native_candidate = False
@@ -136,7 +148,7 @@ def _collect_module_functions(
 
 
 def _is_auto_native_candidate(node: ast.FunctionDef, function: FunctionAnalysis) -> bool:
-    if node.decorator_list or not _has_supported_signature(node):
+    if node.decorator_list:
         return False
     probe = FunctionAnalysis(
         name=function.name,
@@ -147,9 +159,15 @@ def _is_auto_native_candidate(node: ast.FunctionDef, function: FunctionAnalysis)
         column=function.column,
         is_native_candidate=True,
         calls=list(function.calls),
+        inferred_arg_types=dict(function.inferred_arg_types),
+        inferred_return_type=function.inferred_return_type,
     )
     validate_native_function(node, probe)
-    return probe.accepted
+    if probe.accepted:
+        function.inferred_arg_types = dict(probe.inferred_arg_types)
+        function.inferred_return_type = probe.inferred_return_type
+        return True
+    return False
 
 
 def _has_supported_signature(node: ast.FunctionDef) -> bool:
@@ -159,6 +177,30 @@ def _has_supported_signature(node: ast.FunctionDef) -> bool:
     if any(arg.annotation is None or not is_supported_type(arg.annotation) for arg in args):
         return False
     return node.returns is not None and is_supported_type(node.returns)
+
+
+def _load_stub_signatures(path: Path) -> dict[str, StubSignature]:
+    stub_path = path.with_suffix(".pyi")
+    if not stub_path.exists():
+        return {}
+    try:
+        tree = ast.parse(stub_path.read_text(encoding="utf-8"), filename=str(stub_path))
+    except SyntaxError:
+        return {}
+    signatures: dict[str, StubSignature] = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+        arg_types: dict[str, str] = {}
+        for arg in args:
+            if arg.annotation is not None and is_supported_type(arg.annotation):
+                arg_types[arg.arg] = annotation_name(arg.annotation)
+        return_type = None
+        if node.returns is not None and is_supported_type(node.returns):
+            return_type = annotation_name(node.returns)
+        signatures[node.name] = StubSignature(arg_types=arg_types, return_type=return_type)
+    return signatures
 
 
 def _collect_native_methods(tree: ast.Module, module: ModuleAnalysis) -> list[FunctionAnalysis]:

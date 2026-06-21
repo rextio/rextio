@@ -147,6 +147,11 @@ def type_from_annotation(node: ast.AST | None) -> RxtType:
     raise ValueError(f"unsupported type annotation: {ast.unparse(node)}")
 
 
+def type_from_string(value: str) -> RxtType:
+    node = ast.parse(value, mode="eval").body
+    return type_from_annotation(node)
+
+
 def _optional_inner(node: ast.AST) -> ast.AST | None:
     if isinstance(node, ast.Subscript) and _annotation_dotted_name(node.value) in {"Optional", "typing.Optional"}:
         return node.slice

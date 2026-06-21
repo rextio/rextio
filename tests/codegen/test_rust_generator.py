@@ -99,6 +99,55 @@ def compute(values: list[float]) -> float:
     assert "return Ok(subtotal + values[0 as usize].clone());" in source
 
 
+def test_generates_rust_for_contextually_inferred_signatures(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+def add_one(x):
+    return x + 1
+
+def sum_squares(xs):
+    total = 0
+    for x in xs:
+        total += x * x
+    return total
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "fn app__add_one(x: i64) -> PyResult<i64> {" in source
+    assert "return Ok(x + 1);" in source
+    assert "fn app__sum_squares(xs: Vec<i64>) -> PyResult<i64> {" in source
+    assert "for x in xs.iter().cloned() {" in source
+
+
+def test_generates_rust_using_sibling_pyi_signatures(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "stubbed" / "ops.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+def dot(xs, ys):
+    total = 0.0
+    for x, y in zip(xs, ys):
+        total += x * y
+    return total
+""",
+        encoding="utf-8",
+    )
+    source.with_suffix(".pyi").write_text(
+        """
+def dot(xs: list[float], ys: list[float]) -> float: ...
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "fn stubbed__ops__dot(xs: Vec<f64>, ys: Vec<f64>) -> PyResult<f64> {" in source
+    assert "for (x, y) in xs.iter().cloned().zip(ys.iter().cloned()) {" in source
+
+
 def test_generates_rust_for_if_range_len_indexing_and_while(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """

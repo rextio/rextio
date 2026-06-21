@@ -42,7 +42,7 @@ from rextio.ir.nodes import (
     UnaryOpIR,
     WhileIR,
 )
-from rextio.ir.types import type_from_annotation
+from rextio.ir.types import type_from_annotation, type_from_string
 
 
 class LoweringError(RuntimeError):
@@ -72,15 +72,35 @@ def lower_function(
     resolver: FunctionResolver,
 ) -> FunctionIR:
     args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
-    params = [ParamIR(name=arg.arg, type=type_from_annotation(arg.annotation)) for arg in args]
+    params = [
+        ParamIR(name=arg.arg, type=_argument_type(function, arg))
+        for arg in args
+    ]
     return FunctionIR(
         name=function.name,
         qualname=function.qualname,
         module_name=function.module_name,
         params=params,
-        return_type=type_from_annotation(node.returns),
+        return_type=_return_type(function, node),
         body=lower_block(node.body, module, resolver),
     )
+
+
+def _argument_type(function: FunctionAnalysis, arg: ast.arg):
+    if arg.annotation is not None:
+        return type_from_annotation(arg.annotation)
+    inferred = function.inferred_arg_types.get(arg.arg)
+    if inferred is None:
+        raise LoweringError(f"missing inferred type for argument: {function.qualname}.{arg.arg}")
+    return type_from_string(inferred)
+
+
+def _return_type(function: FunctionAnalysis, node: ast.FunctionDef):
+    if node.returns is not None:
+        return type_from_annotation(node.returns)
+    if function.inferred_return_type is None:
+        raise LoweringError(f"missing inferred return type for function: {function.qualname}")
+    return type_from_string(function.inferred_return_type)
 
 
 def lower_block(
