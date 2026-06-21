@@ -80,12 +80,17 @@ behavior settings can be configured from any of these sources:
 
 | `rextio.toml` key | CLI parameter | Environment variable |
 | --- | --- | --- |
-| `[build] native_backend` | `--native-backend` | `REXTIO_NATIVE_BACKEND` |
+| `[build] native_backend` | `--native-backend` / `--target-language` | `REXTIO_TARGET_LANGUAGE` / `REXTIO_NATIVE_BACKEND` |
 | `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
 | `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
 | `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
 | `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
+| `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
+| `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
+| `[mappers] paths` | `--mapper-path` | `REXTIO_MAPPER_PATHS` |
+| `[mappers] enabled` | `--enable-mapper` | `REXTIO_MAPPERS_ENABLED` |
+| `[mappers] repository` | `--mapper-repository` | `REXTIO_MAPPER_REPOSITORY` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
@@ -95,10 +100,16 @@ behavior settings can be configured from any of these sources:
 | `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 
-Public 1 still validates values conservatively. For example,
-`native_backend = "rust"` and `binding = "pyo3"` are the only supported native
-backend and Rust binding today, but they can still be pinned through all three
-configuration surfaces for reproducible scripts.
+Public 1 still validates values conservatively. Rust is the only implemented
+native target today. `native_backend = "mojo"` and `native_backend = "julia"`
+are accepted as planned target-language selections so versioned mapper and
+build-option metadata can be configured, but source generation fails clearly
+until those backends are implemented.
+
+Mapper plugins are local metadata folders today. Configure them with
+`[mappers] paths` and optional `[mappers] enabled`; each folder must contain
+`rextio-mapper.toml` or `mapper.toml`. Repository download is represented by
+`[mappers] repository` for future work but is not implemented in Public 1.
 
 ## Generated Artifacts
 
@@ -112,7 +123,7 @@ in place.
       rextio/
         runtime/
   generated/
-    rust/
+    <target-language>/
     python/
   reports/
     check.json

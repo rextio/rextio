@@ -84,12 +84,17 @@ CLI parameter > environment variable > rextio.toml > built-in default
 
 | `rextio.toml` key | CLI parameter | Environment variable |
 | --- | --- | --- |
-| `[build] native_backend` | `--native-backend` | `REXTIO_NATIVE_BACKEND` |
+| `[build] native_backend` | `--native-backend` / `--target-language` | `REXTIO_TARGET_LANGUAGE` / `REXTIO_NATIVE_BACKEND` |
 | `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
 | `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
 | `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
 | `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
+| `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
+| `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
+| `[mappers] paths` | `--mapper-path` | `REXTIO_MAPPER_PATHS` |
+| `[mappers] enabled` | `--enable-mapper` | `REXTIO_MAPPERS_ENABLED` |
+| `[mappers] repository` | `--mapper-repository` | `REXTIO_MAPPER_REPOSITORY` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
@@ -99,9 +104,15 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 
-Public 1은 여전히 값을 보수적으로 검증합니다. 예를 들어 현재 지원되는 native backend는
-`rust`, Rust binding은 `pyo3`뿐이지만 재현 가능한 스크립트를 위해 세 설정 표면 모두에서
-고정할 수 있습니다.
+Public 1은 여전히 값을 보수적으로 검증합니다. 현재 구현된 native target은 Rust뿐입니다.
+`native_backend = "mojo"`와 `native_backend = "julia"`는 향후 target-language 선택지로
+받아들여 versioned mapper 및 build-option metadata를 설정할 수 있지만, 해당 backend가
+구현되기 전까지 source generation은 명확히 실패합니다.
+
+Mapper plugin은 현재 local metadata folder입니다. `[mappers] paths`와 선택적
+`[mappers] enabled`로 설정하며, 각 folder에는 `rextio-mapper.toml` 또는 `mapper.toml`이
+있어야 합니다. `[mappers] repository`는 향후 다운로드 기능을 위한 설정 자리이며 Public 1
+에서는 구현되어 있지 않습니다.
 
 ## 생성 산출물
 
@@ -115,7 +126,7 @@ Rextio는 생성 파일을 `.rextio/` 아래에 쓰며, 사용자 소스 파일�
       rextio/
         runtime/
   generated/
-    rust/
+    <target-language>/
     python/
   reports/
     check.json

@@ -55,6 +55,11 @@ flag and environment variable. Common examples:
 ```text
 --fallback / REXTIO_FALLBACK_BACKEND / [build] fallback_backend
 --fallback-threshold / REXTIO_BOUNDARY_FALLBACK_THRESHOLD / [build] fallback_threshold
+--target-language / REXTIO_TARGET_LANGUAGE / [build] native_backend
+--target-version / REXTIO_TARGET_VERSION / [target] version
+--target-build-option / REXTIO_TARGET_BUILD_OPTIONS / [target.build_options]
+--mapper-path / REXTIO_MAPPER_PATHS / [mappers] paths
+--enable-mapper / REXTIO_MAPPERS_ENABLED / [mappers] enabled
 --native-marker / REXTIO_NATIVE_MARKER / [policy] native_marker
 --boundary-warnings / REXTIO_BOUNDARY_WARNINGS / [policy] boundary_warnings
 --entrypoint / REXTIO_EXECUTABLE_ENTRYPOINT / [executable] entrypoint
@@ -62,8 +67,11 @@ flag and environment variable. Common examples:
 --nuitka-mode / REXTIO_NUITKA_MODE / [executable] nuitka_mode
 ```
 
-Public 1 still rejects unsupported values. The supported native backend is
-`rust`, and the supported Rust binding is `pyo3`.
+Rust is the only implemented native target in Public 1. `mojo` and `julia` can
+be selected as target languages so versioned mapper metadata can be modeled, but
+native source generation reports a clear unsupported-backend failure until those
+codegen backends are implemented. Mapper plugin download from a repository is
+reserved for later; Public 1 only loads local mapper manifests.
 
 ## Release Verification
 

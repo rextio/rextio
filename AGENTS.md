@@ -218,6 +218,14 @@ rextio/
 │     │     ├─ __init__.py
 │     │     ├─ wrapper_gen.py
 │     │     └─ import_rewriter.py
+│     ├─ targets/
+│     │  ├─ __init__.py
+│     │  ├─ models.py
+│     │  └─ plan.py
+│     ├─ mappers/
+│     │  ├─ __init__.py
+│     │  ├─ models.py
+│     │  └─ loader.py
 │     ├─ partition/
 │     │  ├─ __init__.py
 │     │  ├─ classifier.py
@@ -354,6 +362,17 @@ build_tool = "maturin"
 [fallback]
 nuitka = "experimental"
 
+[target]
+# version = "stable"
+
+[target.build_options]
+# profile = "release"
+
+[mappers]
+paths = []
+enabled = []
+# repository = "https://example.com/rextio-mappers"
+
 [executable]
 # entrypoint = "myapp.cli:main"
 # name = "myapp"
@@ -420,6 +439,11 @@ Minimum supported options:
 ```text
 rextio build
 rextio build --native-backend=rust
+rextio build --target-language=rust
+rextio build --target-version=stable
+rextio build --target-build-option profile=release
+rextio build --mapper-path=mappers/python-numpy-rust
+rextio build --enable-mapper=python-numpy-rust
 rextio build --fallback=cpython
 rextio build --fallback=nuitka
 rextio build --fallback-threshold=1000
@@ -443,6 +467,12 @@ Supported environment variable mirrors:
 
 ```text
 REXTIO_NATIVE_BACKEND
+REXTIO_TARGET_LANGUAGE
+REXTIO_TARGET_VERSION
+REXTIO_TARGET_BUILD_OPTIONS
+REXTIO_MAPPER_PATHS
+REXTIO_MAPPERS_ENABLED
+REXTIO_MAPPER_REPOSITORY
 REXTIO_FALLBACK_BACKEND
 REXTIO_BOUNDARY_FALLBACK_THRESHOLD
 REXTIO_RUST_BINDING
@@ -461,6 +491,13 @@ REXTIO_BOUNDARY_WARNINGS
 Command routing and output formatting flags such as project roots, bench
 targets, `init --force`, and `check --json` are command-line concerns rather
 than project configuration.
+
+Rust is the only implemented native target in Public 1. `mojo` and `julia` may
+be accepted as configurable target-language values so version-specific mapper
+metadata can be represented, but code generation must fail clearly until those
+backends are implemented. Mapper plugin download from `[mappers] repository` is
+reserved for a future phase; Public 1 loads only local mapper manifests from
+`[mappers] paths`.
 
 Behavior:
 

@@ -84,12 +84,17 @@ CLI parameter > environment variable > rextio.toml > built-in default
 
 | `rextio.toml` key | CLI parameter | Environment variable |
 | --- | --- | --- |
-| `[build] native_backend` | `--native-backend` | `REXTIO_NATIVE_BACKEND` |
+| `[build] native_backend` | `--native-backend` / `--target-language` | `REXTIO_TARGET_LANGUAGE` / `REXTIO_NATIVE_BACKEND` |
 | `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
 | `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
 | `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
 | `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
+| `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
+| `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
+| `[mappers] paths` | `--mapper-path` | `REXTIO_MAPPER_PATHS` |
+| `[mappers] enabled` | `--enable-mapper` | `REXTIO_MAPPERS_ENABLED` |
+| `[mappers] repository` | `--mapper-repository` | `REXTIO_MAPPER_REPOSITORY` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
@@ -99,9 +104,15 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 
-Public 1 は引き続き値を保守的に検証します。たとえば現在サポートされる native backend
-は `rust`、Rust binding は `pyo3` のみですが、再現可能な script のために 3 つの設定
-面すべてで固定できます。
+Public 1 は引き続き値を保守的に検証します。現在実装されている native target は Rust
+のみです。`native_backend = "mojo"` と `native_backend = "julia"` は将来の
+target-language 選択肢として受け付けられ、versioned mapper や build-option metadata
+を設定できますが、backend が実装されるまでは source generation は明確に失敗します。
+
+Mapper plugin は現時点では local metadata folder です。`[mappers] paths` と任意の
+`[mappers] enabled` で設定し、各 folder には `rextio-mapper.toml` または
+`mapper.toml` が必要です。`[mappers] repository` は将来の download 機能のための設定枠
+であり、Public 1 では実装されていません。
 
 ## 生成される成果物
 
@@ -115,7 +126,7 @@ Rextio は生成ファイルを `.rextio/` 以下に書き込み、ユーザー�
       rextio/
         runtime/
   generated/
-    rust/
+    <target-language>/
     python/
   reports/
     check.json

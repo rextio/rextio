@@ -78,12 +78,17 @@ CLI parameter > environment variable > rextio.toml > built-in default
 
 | `rextio.toml` key | CLI parameter | Environment variable |
 | --- | --- | --- |
-| `[build] native_backend` | `--native-backend` | `REXTIO_NATIVE_BACKEND` |
+| `[build] native_backend` | `--native-backend` / `--target-language` | `REXTIO_TARGET_LANGUAGE` / `REXTIO_NATIVE_BACKEND` |
 | `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
 | `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
 | `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
 | `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
+| `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
+| `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
+| `[mappers] paths` | `--mapper-path` | `REXTIO_MAPPER_PATHS` |
+| `[mappers] enabled` | `--enable-mapper` | `REXTIO_MAPPERS_ENABLED` |
+| `[mappers] repository` | `--mapper-repository` | `REXTIO_MAPPER_REPOSITORY` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
@@ -93,8 +98,14 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 
-Public 1 仍会保守地验证取值。例如当前支持的 native backend 只有 `rust`，Rust binding
-只有 `pyo3`，但仍可通过三种配置入口固定它们，以便脚本可复现。
+Public 1 仍会保守地验证取值。当前已实现的 native target 只有 Rust。
+`native_backend = "mojo"` 和 `native_backend = "julia"` 会作为未来的 target-language
+选择被接受，因此可以配置 versioned mapper 和 build-option metadata；但在对应 backend
+实现前，source generation 会明确失败。
+
+Mapper plugin 目前是 local metadata folder。可通过 `[mappers] paths` 和可选的
+`[mappers] enabled` 配置；每个 folder 必须包含 `rextio-mapper.toml` 或 `mapper.toml`。
+`[mappers] repository` 是未来下载功能的配置入口，Public 1 尚未实现。
 
 ## 生成产物
 
@@ -107,7 +118,7 @@ Rextio 会把生成文件写入 `.rextio/` 下，不会原地修改用户源文�
       rextio/
         runtime/
   generated/
-    rust/
+    <target-language>/
     python/
   reports/
     check.json
