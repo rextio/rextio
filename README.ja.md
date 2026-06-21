@@ -236,6 +236,12 @@ native_marker = "decorator"
 
 decorator-only モードでは、`@rextio.native` が付いた関数だけが native 候補になります。
 
+明示的な marker では対象 native 言語も固定できます。たとえば
+`@rextio.native(target="rust")` は、active な `--target-language` /
+`[build] native_backend` が Rust の場合だけ適用されます。`target="mojo"` と
+`target="julia"` は将来の backend 向け planning 値として保持されますが、Public 1 で
+実装済みの source generation は Rust のみです。
+
 自動 native discovery が有効な場合でも、Python fallback に残す必要がある関数には
 `@rextio.exempt` を使ってください。exempt 関数は生成された Rust に emit されません。
 それを呼び出す native 候補は、通常の native-to-fallback 境界ルールによって拒否されます。

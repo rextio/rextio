@@ -65,7 +65,7 @@ def run(args: Namespace) -> int:
                 ("policy", "boundary_warnings"): args.boundary_warnings,
             },
         )
-        create_target_plan(project_root, config)
+        target_plan = create_target_plan(project_root, config)
     except (ConfigError, TargetPlanError) as exc:
         print("Rextio check")
         print(f"RXT060 Configuration error: {exc}")
@@ -74,6 +74,7 @@ def run(args: Namespace) -> int:
         project_root,
         boundary_warnings=config.policy.boundary_warnings,
         native_marker=config.policy.native_marker,
+        target_language=target_plan.spec.language,
     )
     write_check_report(project_root, analysis)
     if args.json:

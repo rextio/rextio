@@ -45,6 +45,35 @@ def add(a: int, b: int) -> int:
     assert report["accepted_native"] == ["app.add"]
 
 
+def test_check_json_respects_native_marker_target_language(tmp_path: Path, capsys) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native(target="mojo")
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "check",
+            str(tmp_path),
+            "--json",
+            "--native-marker=decorator",
+            "--target-language=rust",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert data["accepted_native"] == []
+
+
 def test_check_json_auto_discovers_unmarked_typed_functions(tmp_path: Path, capsys) -> None:
     (tmp_path / "app.py").write_text(
         """

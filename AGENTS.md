@@ -26,7 +26,7 @@ Python source
 
 Public 1 must demonstrate all of the following:
 
-1. A Python project can let Rextio discover eligible functions automatically when their types are statically resolved from annotations, `.pyi` stubs, or conservative local context inference, and can optionally mark functions with `@rextio.native`.
+1. A Python project can let Rextio discover eligible functions automatically when their types are statically resolved from annotations, `.pyi` stubs, or conservative local context inference, and can optionally mark functions with `@rextio.native` or target-specific `@rextio.native(target="rust")`.
 2. A Python project can mark functions with `@rextio.exempt` to keep them on Python fallback.
 3. Rextio can check whether those functions belong to the supported subset.
 4. Rextio can reject unsafe native-to-fallback call boundaries.
@@ -680,7 +680,7 @@ Reject inside native candidate functions:
 
 * class definitions
 * instance methods
-* decorators other than `@rextio.native`
+* decorators other than `@rextio.native` or `@rextio.native(target="...")`
 * async functions
 * await
 * generators
@@ -738,6 +738,27 @@ def sum_squares(xs: list[float]) -> float:
     return total
 ```
 
+When multiple native target languages are configured in future releases, an
+explicit marker can force a function to a specific target:
+
+```python
+import rextio
+
+@rextio.native(target="rust")
+def sum_squares(xs: list[float]) -> float:
+    total = 0.0
+    for x in xs:
+        total += x * x
+    return total
+```
+
+The target name is normalized case-insensitively. Public 1 accepts `rust`,
+`mojo`, and `julia` as target-planning values, but only Rust code generation is
+implemented. A target-specific marker applies only when the active
+`[build] native_backend` / `--target-language` matches that marker. For example,
+`@rextio.native(target="mojo")` is not a Rust native candidate when the active
+target is Rust; it remains Python fallback for that build.
+
 Projects that want decorator-only behavior can opt out of automatic discovery:
 
 ```toml
@@ -745,8 +766,9 @@ Projects that want decorator-only behavior can opt out of automatic discovery:
 native_marker = "decorator"
 ```
 
-When `native_marker = "decorator"`, only functions marked with `@rextio.native`
-are native candidates.
+When `native_marker = "decorator"`, only functions marked with
+`@rextio.native` or a matching `@rextio.native(target="...")` are native
+candidates.
 
 When `native_marker = "auto"` (the default), Rextio may treat unmarked
 module-level functions as native candidates if they have supported static types

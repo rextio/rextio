@@ -46,6 +46,108 @@ def sum_squares(xs: list[float]) -> float:
     assert analysis.rejected_native_functions == []
 
 
+def test_accepts_targeted_native_marker_for_active_target(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native(target="Rust")
+def add(x: int, y: int) -> int:
+    return x + y
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator", target_language="rust")
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.add"]
+    assert analysis.accepted_native_functions[0].native_target_language == "rust"
+    assert analysis.rejected_native_functions == []
+
+
+def test_ignores_targeted_native_marker_for_inactive_target(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native(target="mojo")
+def add(x: int, y: int) -> int:
+    return x + y
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator", target_language="rust")
+
+    assert analysis.native_candidates == []
+    function = analysis.modules[0].functions_by_name["add"]
+    assert function.native_target_language == "mojo"
+    assert function.diagnostics == []
+
+
+def test_accepts_targeted_native_marker_when_target_is_active(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native(target="mojo")
+def add(x: int, y: int) -> int:
+    return x + y
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator", target_language="mojo")
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.add"]
+    assert analysis.accepted_native_functions[0].native_target_language == "mojo"
+
+
+def test_rejects_invalid_native_marker_target(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native(target="cpp")
+def add(x: int, y: int) -> int:
+    return x + y
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.add"]
+    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
+    assert diagnostic.code == "RXT010"
+    assert "unsupported @rextio.native target" in diagnostic.message
+
+
+def test_rejects_invalid_native_marker_arguments(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native(language="rust")
+def add(x: int, y: int) -> int:
+    return x + y
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.add"]
+    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
+    assert diagnostic.code == "RXT010"
+    assert "unsupported @rextio.native keyword" in diagnostic.message
+
+
 def test_accepts_cross_module_native_to_native_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,

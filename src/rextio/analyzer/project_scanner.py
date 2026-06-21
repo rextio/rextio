@@ -6,6 +6,7 @@ from pathlib import Path
 from rextio.analyzer.boundary import apply_boundary_checks
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.module_parser import parse_module
+from rextio.targets.models import normalize_target_language
 
 IGNORED_PARTS = {
     ".git",
@@ -73,11 +74,19 @@ def analyze_project(
     project_root: Path | str,
     boundary_warnings: bool = True,
     native_marker: str = "auto",
+    target_language: str = "rust",
 ) -> ProjectAnalysis:
     root = Path(project_root).resolve()
+    target_language = normalize_target_language(target_language)
     analysis = ProjectAnalysis(project_root=root)
     analysis.modules = [
-        parse_module(path, root, native_marker=native_marker) for path in scan_python_files(root)
+        parse_module(
+            path,
+            root,
+            native_marker=native_marker,
+            target_language=target_language,
+        )
+        for path in scan_python_files(root)
     ]
     apply_boundary_checks(analysis, boundary_warnings=boundary_warnings)
     return analysis

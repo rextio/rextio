@@ -1,16 +1,30 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TypeVar
+from typing import overload, TypeVar
 
 __version__ = "0.1.0"
 
 F = TypeVar("F", bound=Callable[..., object])
 
 
-def native(func: F) -> F:
+@overload
+def native(func: F) -> F: ...
+
+
+@overload
+def native(*, target: str | None = None) -> Callable[[F], F]: ...
+
+
+def native(func: F | None = None, *, target: str | None = None) -> F | Callable[[F], F]:
     """Mark a function as a Rextio native compilation candidate."""
+    if func is None:
+        return lambda wrapped: native(wrapped, target=target)
+    if not callable(func):
+        raise TypeError("@rextio.native can only decorate callables")
     setattr(func, "__rextio_native__", True)
+    if target is not None:
+        setattr(func, "__rextio_native_target__", target.strip().lower())
     return func
 
 
