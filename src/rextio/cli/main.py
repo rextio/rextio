@@ -21,6 +21,18 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser = subparsers.add_parser("check", help="Analyze native candidates.")
     check_parser.add_argument("project_root", nargs="?", default=".", help="Project root to check.")
     check_parser.add_argument("--json", action="store_true", help="Print structured JSON.")
+    check_parser.add_argument(
+        "--native-backend",
+        "--target-language",
+        dest="native_backend",
+        choices=("rust", "mojo", "julia"),
+        default=None,
+        help=(
+            "Native target language. Overrides REXTIO_TARGET_LANGUAGE, "
+            "REXTIO_NATIVE_BACKEND, and [build] native_backend."
+        ),
+    )
+    _add_target_options(check_parser)
     _add_policy_options(check_parser)
     check_parser.set_defaults(handler=check_cmd.run)
 
@@ -28,10 +40,16 @@ def build_parser() -> argparse.ArgumentParser:
     build_parser_.add_argument("project_root", nargs="?", default=".", help="Project root to build.")
     build_parser_.add_argument(
         "--native-backend",
-        choices=("rust",),
+        "--target-language",
+        dest="native_backend",
+        choices=("rust", "mojo", "julia"),
         default=None,
-        help="Native backend. Overrides REXTIO_NATIVE_BACKEND and [build] native_backend.",
+        help=(
+            "Native target language. Overrides REXTIO_TARGET_LANGUAGE, "
+            "REXTIO_NATIVE_BACKEND, and [build] native_backend."
+        ),
     )
+    _add_target_options(build_parser_)
     build_parser_.add_argument(
         "--fallback",
         choices=("cpython", "nuitka"),
@@ -112,10 +130,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generate_parser.add_argument(
         "--native-backend",
-        choices=("rust",),
+        "--target-language",
+        dest="native_backend",
+        choices=("rust", "mojo", "julia"),
         default=None,
-        help="Native backend. Overrides REXTIO_NATIVE_BACKEND and [build] native_backend.",
+        help=(
+            "Native target language. Overrides REXTIO_TARGET_LANGUAGE, "
+            "REXTIO_NATIVE_BACKEND, and [build] native_backend."
+        ),
     )
+    _add_target_options(generate_parser)
     generate_parser.add_argument(
         "--fallback",
         choices=("cpython", "nuitka"),
@@ -173,6 +197,55 @@ def _non_negative_int(value: str) -> int:
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be a non-negative integer")
     return parsed
+
+
+def _key_value(value: str) -> tuple[str, str]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("must use KEY=VALUE")
+    key, option_value = value.split("=", 1)
+    if not key:
+        raise argparse.ArgumentTypeError("must not use an empty key")
+    return key, option_value
+
+
+def _add_target_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--target-version",
+        default=None,
+        help="Target language version. Overrides REXTIO_TARGET_VERSION and [target] version.",
+    )
+    parser.add_argument(
+        "--target-build-option",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        type=_key_value,
+        help=(
+            "Target build/codegen option. May be passed more than once. Overrides "
+            "REXTIO_TARGET_BUILD_OPTIONS and [target.build_options]."
+        ),
+    )
+    parser.add_argument(
+        "--mapper-path",
+        action="append",
+        default=None,
+        help="Local mapper plugin folder. Overrides REXTIO_MAPPER_PATHS and [mappers] paths.",
+    )
+    parser.add_argument(
+        "--enable-mapper",
+        action="append",
+        default=None,
+        dest="mapper_enabled",
+        help="Mapper plugin id to enable. Overrides REXTIO_MAPPERS_ENABLED and [mappers] enabled.",
+    )
+    parser.add_argument(
+        "--mapper-repository",
+        default=None,
+        help=(
+            "Mapper repository URL for future downloads. Overrides REXTIO_MAPPER_REPOSITORY "
+            "and [mappers] repository."
+        ),
+    )
 
 
 def _add_policy_options(parser: argparse.ArgumentParser) -> None:

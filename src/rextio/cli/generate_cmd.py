@@ -7,7 +7,9 @@ from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import generate_source_artifact
+from rextio.cli.config_overrides import key_value_overrides, tuple_overrides
 from rextio.config.loader import ConfigError, load_config, override_config
+from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
 def run(args: Namespace) -> int:
@@ -21,13 +23,19 @@ def run(args: Namespace) -> int:
                 ("build", "fallback_threshold"): args.fallback_threshold,
                 ("rust", "binding"): args.rust_binding,
                 ("fallback", "nuitka"): args.nuitka_fallback,
+                ("target", "version"): args.target_version,
+                ("target", "build_options"): key_value_overrides(args.target_build_option),
+                ("mappers", "paths"): tuple_overrides(args.mapper_path),
+                ("mappers", "enabled"): tuple_overrides(args.mapper_enabled),
+                ("mappers", "repository"): args.mapper_repository,
                 ("policy", "native_marker"): args.native_marker,
                 ("policy", "require_type_hints"): args.require_type_hints,
                 ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
                 ("policy", "boundary_warnings"): args.boundary_warnings,
             },
         )
-    except ConfigError as exc:
+        target_plan = create_target_plan(project_root, config)
+    except (ConfigError, TargetPlanError) as exc:
         print("RXT060 Generate failed while loading configuration.")
         print(f"Cause: {exc}")
         print(f"Suggestion: fix {project_root / 'rextio.toml'} and rerun rextio generate.")
@@ -66,18 +74,26 @@ def run(args: Namespace) -> int:
         analysis,
         fallback,
         boundary_fallback_threshold=config.build.fallback_threshold,
+        target_plan=target_plan,
     )
     print("Rextio generate")
+    print(f"  target language: {target_plan.spec.language}")
+    if target_plan.spec.version:
+        print(f"  target version: {target_plan.spec.version}")
+    print(f"  active mappers: {len(target_plan.mappers.active)}")
     print(f"  fallback: {fallback}")
     print(f"  boundary fallback threshold: {config.build.fallback_threshold}")
     print(f"  accepted native functions: {result.accepted_native_count}")
     print(f"  rejected native functions: {result.rejected_native_count}")
-    print(f"  generated Rust project: {result.layout.rust_dir}")
+    if target_plan.spec.language == "rust":
+        print(f"  generated Rust project: {result.layout.rust_dir}")
+    else:
+        print(f"  generated native project: {result.layout.target_dir(target_plan.spec.language)}")
     print(f"  generated Python package tree: {result.layout.python_dir}")
     print(f"  native source: {result.native_source.status}")
     print(f"  wrote {result.layout.reports_dir / 'generate.json'}")
     if result.native_source.status == "failed":
-        print("RXT050 Codegen failure while generating Rust for accepted native functions.")
+        print("RXT050 Codegen failure while generating native target code.")
         print(f"Cause: {result.native_source.message}")
         return 1
     return 0

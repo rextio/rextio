@@ -15,6 +15,17 @@ build_tool = "maturin"
 [fallback]
 nuitka = "experimental"
 
+[target]
+# version = "stable"
+
+[target.build_options]
+# profile = "release"
+
+[mappers]
+paths = []
+enabled = []
+# repository = "https://example.com/rextio-mappers"
+
 [executable]
 # entrypoint = "myapp.cli:main"
 # name = "myapp"

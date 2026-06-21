@@ -34,6 +34,10 @@ def create_target_plan(project_root: Path, config: RextioConfig) -> TargetPlan:
     return TargetPlan(spec=target, mappers=mappers)
 
 
+def default_target_plan() -> TargetPlan:
+    return TargetPlan(spec=TargetSpec(), mappers=MapperRegistry())
+
+
 def create_target_spec(config: RextioConfig) -> TargetSpec:
     language = normalize_target_language(config.build.native_backend)
     if language not in SUPPORTED_TARGET_LANGUAGES:
@@ -44,4 +48,3 @@ def create_target_spec(config: RextioConfig) -> TargetSpec:
         version=config.target.version,
         build_options=dict(config.target.build_options),
     )
-

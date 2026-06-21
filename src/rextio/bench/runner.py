@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
 from rextio.config.loader import ConfigError, load_config
 from rextio.fallback.module_copy import fallback_module_name
+from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
 @dataclass(frozen=True)
@@ -38,8 +40,9 @@ class BenchResult:
 
 def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> BenchResult:
     try:
-        config = load_config(project_root)
-    except ConfigError as exc:
+        config = load_config(project_root, environ=os.environ)
+        target_plan = create_target_plan(project_root, config)
+    except (ConfigError, TargetPlanError) as exc:
         raise BenchError(f"configuration error: {exc}") from exc
     analysis = analyze_project(
         project_root,
@@ -57,6 +60,7 @@ def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> Be
         analysis,
         fallback="cpython",
         build_tool=config.rust.build_tool,
+        target_plan=target_plan,
     )
     if build_result.native_build.status != "built":
         raise BenchError(build_result.native_build.message)
