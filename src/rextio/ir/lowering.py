@@ -8,16 +8,20 @@ from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, ProjectAnal
 from rextio.analyzer.native_marker import dotted_name
 from rextio.ir.module import module_from_functions
 from rextio.ir.nodes import (
+    AppendIR,
     AssignIR,
     BinaryOpIR,
     BlockIR,
+    BreakIR,
     CallIR,
     CompareIR,
+    ContinueIR,
     ExprIR,
     ForIR,
     FunctionIR,
     IfIR,
     IndexIR,
+    ListIR,
     LiteralIR,
     ModuleIR,
     NameIR,
@@ -105,6 +109,20 @@ def lower_statement(
                 right=lower_expr(node.value, module, resolver),
             ),
         )
+    if isinstance(node, ast.Expr):
+        if isinstance(node.value, ast.Call) and _is_append_call(node.value):
+            call = node.value
+            if not isinstance(call.func, ast.Attribute):
+                raise LoweringError("append call target cannot be lowered")
+            return AppendIR(
+                target=lower_name_target(call.func.value),
+                value=lower_expr(call.args[0], module, resolver),
+            )
+        raise LoweringError(f"unsupported expression statement during IR lowering: {type(node.value).__name__}")
+    if isinstance(node, ast.Break):
+        return BreakIR()
+    if isinstance(node, ast.Continue):
+        return ContinueIR()
     if isinstance(node, ast.Return):
         return ReturnIR(
             value=lower_expr(node.value, module, resolver) if node.value is not None else None
@@ -142,6 +160,8 @@ def lower_expr(
         return LiteralIR(node.value)
     if isinstance(node, ast.Name):
         return NameIR(node.id)
+    if isinstance(node, ast.List):
+        return ListIR(items=[lower_expr(item, module, resolver) for item in node.elts])
     if isinstance(node, ast.BinOp):
         return BinaryOpIR(
             left=lower_expr(node.left, module, resolver),
@@ -226,12 +246,33 @@ def _lower_call_target(
     module: ModuleAnalysis,
     resolver: FunctionResolver,
 ) -> str:
-    if target in {"len", "range"}:
+    if target in {
+        "abs",
+        "len",
+        "max",
+        "min",
+        "range",
+        "sum",
+        "math.floor",
+        "math.cos",
+        "math.sin",
+        "math.sqrt",
+    }:
         return target
     resolved = resolver.resolve(module, target)
     if resolved.function is None:
         return resolved.resolved_target
     return resolved.function.qualname
+
+
+def _is_append_call(node: ast.Call) -> bool:
+    return (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "append"
+        and isinstance(node.func.value, ast.Name)
+        and len(node.args) == 1
+        and not node.keywords
+    )
 
 
 def _lower_bool_op(

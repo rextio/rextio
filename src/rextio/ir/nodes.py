@@ -74,6 +74,27 @@ class AssignIR(StatementIR):
 
 
 @dataclass(frozen=True)
+class AppendIR(StatementIR):
+    target: "NameIR"
+    value: ExprIR
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "append", "target": self.target.to_dict(), "value": self.value.to_dict()}
+
+
+@dataclass(frozen=True)
+class BreakIR(StatementIR):
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "break"}
+
+
+@dataclass(frozen=True)
+class ContinueIR(StatementIR):
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "continue"}
+
+
+@dataclass(frozen=True)
 class ReturnIR(StatementIR):
     value: ExprIR | None
 
@@ -197,6 +218,14 @@ class LiteralIR(ExprIR):
 
     def to_dict(self) -> dict[str, object]:
         return {"kind": "literal", "value": self.value}
+
+
+@dataclass(frozen=True)
+class ListIR(ExprIR):
+    items: list[ExprIR]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "list", "items": [item.to_dict() for item in self.items]}
 
 
 @dataclass(frozen=True)

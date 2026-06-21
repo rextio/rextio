@@ -18,15 +18,12 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.DictComp,
     ast.SetComp,
     ast.GeneratorExp,
-    ast.List,
     ast.Tuple,
     ast.Dict,
     ast.Set,
     ast.Await,
     ast.Yield,
     ast.YieldFrom,
-    ast.Break,
-    ast.Continue,
     ast.Pass,
     ast.Assert,
     ast.Raise,
@@ -187,12 +184,26 @@ def _validate_statement_types(
                 env[target.id] = value_type
         return
     if isinstance(node, ast.AnnAssign):
-        value_type = _infer_expr_type(node.value, function, env) if node.value is not None else None
         annotated_type = (
             annotation_name(node.annotation)
             if node.annotation is not None and is_supported_type(node.annotation)
-            else value_type
+            else None
         )
+        if annotated_type is None:
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"unsupported local annotation type: {annotation_name(node.annotation)}",
+            )
+            return
+        if node.value is None:
+            _add_unsupported_syntax(
+                function,
+                node,
+                "annotated local variables must include an initializer",
+            )
+            return
+        value_type = _infer_expr_type(node.value, function, env, expected_type=annotated_type)
         if value_type is not None and annotated_type is not None:
             _validate_type_match(value_type, annotated_type, function, node)
         if isinstance(node.target, ast.Name) and annotated_type is not None:
@@ -204,6 +215,17 @@ def _validate_statement_types(
         result_type = _infer_binop_type(node.op, target_type, value_type, function, node)
         if isinstance(node.target, ast.Name) and result_type is not None:
             env[node.target.id] = result_type
+        return
+    if isinstance(node, ast.Expr):
+        _infer_expr_type(node.value, function, env)
+        if not _is_append_call(node.value):
+            _add_unsupported_syntax(
+                function,
+                node,
+                "expression statements are supported only for list.append in native functions",
+            )
+        return
+    if isinstance(node, (ast.Break, ast.Continue)):
         return
     if isinstance(node, ast.Return):
         value_type = "None"
@@ -262,6 +284,7 @@ def _infer_expr_type(
     node: ast.AST | None,
     function: FunctionAnalysis,
     env: dict[str, str],
+    expected_type: str | None = None,
 ) -> str | None:
     if node is None:
         return "None"
@@ -279,6 +302,8 @@ def _infer_expr_type(
         return None
     if isinstance(node, ast.Name):
         return env.get(node.id)
+    if isinstance(node, ast.List):
+        return _infer_list_type(node, function, env, expected_type)
     if isinstance(node, ast.BinOp):
         left = _infer_expr_type(node.left, function, env)
         right = _infer_expr_type(node.right, function, env)
@@ -300,11 +325,7 @@ def _infer_expr_type(
         _validate_compare_types(node, function, env)
         return "bool"
     if isinstance(node, ast.Call):
-        for arg in node.args:
-            _infer_expr_type(arg, function, env)
-        if dotted_name(node.func) == "len" and len(node.args) == 1:
-            return "int"
-        return None
+        return _infer_call_type(node, function, env)
     if isinstance(node, ast.Subscript):
         value_type = _infer_expr_type(node.value, function, env)
         _infer_expr_type(node.slice, function, env)
@@ -312,6 +333,132 @@ def _infer_expr_type(
             return value_type[5:-1]
         return None
     return None
+
+
+def _infer_list_type(
+    node: ast.List,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+    expected_type: str | None,
+) -> str | None:
+    if not node.elts:
+        if expected_type is not None and _is_list_type(expected_type):
+            return expected_type
+        _add_unsupported_syntax(
+            function,
+            node,
+            "empty list literals require a supported list[...] annotation",
+        )
+        return None
+
+    item_types = [_infer_expr_type(item, function, env) for item in node.elts]
+    if any(item_type is None for item_type in item_types):
+        return None
+    unique_item_types = set(item_types)
+    if len(unique_item_types) != 1:
+        _add_unsupported_syntax(
+            function,
+            node,
+            "list literals must contain a single supported item type",
+        )
+        return None
+    item_type = item_types[0]
+    if item_type not in {"int", "float", "bool", "str"}:
+        _add_unsupported_syntax(
+            function,
+            node,
+            f"list literal item type is not supported: {item_type}",
+        )
+        return None
+    return f"list[{item_type}]"
+
+
+def _infer_call_type(
+    node: ast.Call,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> str | None:
+    for arg in node.args:
+        _infer_expr_type(arg, function, env)
+
+    target = dotted_name(node.func)
+    if target == "len":
+        if not _require_arg_count("len", node, function, {1}):
+            return None
+        return "int"
+    if target == "range":
+        _validate_range_call(node, function, env)
+        return None
+    if target == "abs":
+        if not _require_arg_count("abs", node, function, {1}):
+            return None
+        arg_type = _infer_expr_type(node.args[0], function, env)
+        if arg_type in NUMERIC_TYPES:
+            return arg_type
+        _add_unsupported_syntax(function, node, f"abs requires int or float, got {arg_type}")
+        return None
+    if target in {"min", "max"}:
+        if not _require_arg_count(target, node, function, {2}):
+            return None
+        arg_types = [_infer_expr_type(arg, function, env) for arg in node.args]
+        if arg_types[0] in NUMERIC_TYPES and arg_types[0] == arg_types[1]:
+            return arg_types[0]
+        _add_unsupported_syntax(
+            function,
+            node,
+            f"{target} requires two operands with the same numeric type",
+        )
+        return None
+    if target == "sum":
+        if not _require_arg_count("sum", node, function, {1}):
+            return None
+        arg_type = _infer_expr_type(node.args[0], function, env)
+        item_type = _list_item_type(arg_type)
+        if item_type in NUMERIC_TYPES:
+            return item_type
+        _add_unsupported_syntax(function, node, f"sum requires list[int] or list[float], got {arg_type}")
+        return None
+    if target in {"math.sqrt", "math.sin", "math.cos"}:
+        if not _require_arg_count(target, node, function, {1}):
+            return None
+        arg_type = _infer_expr_type(node.args[0], function, env)
+        if arg_type == "float":
+            return "float"
+        _add_unsupported_syntax(function, node, f"{target} requires a float argument")
+        return None
+    if target == "math.floor":
+        if not _require_arg_count("math.floor", node, function, {1}):
+            return None
+        arg_type = _infer_expr_type(node.args[0], function, env)
+        if arg_type == "float":
+            return "int"
+        _add_unsupported_syntax(function, node, "math.floor requires a float argument")
+        return None
+    if _is_append_call(node):
+        return _infer_append_call_type(node, function, env)
+    return None
+
+
+def _infer_append_call_type(
+    node: ast.Call,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> str | None:
+    assert isinstance(node.func, ast.Attribute)
+    receiver_type = _infer_expr_type(node.func.value, function, env)
+    item_type = _list_item_type(receiver_type)
+    value_type = _infer_expr_type(node.args[0], function, env)
+    if item_type is None:
+        _add_unsupported_syntax(function, node, f"append receiver must be list[...], got {receiver_type}")
+        return None
+    if value_type is not None and value_type != item_type:
+        _add_unsupported_syntax(
+            function,
+            node,
+            f"append value type {value_type} does not match list item type {item_type}",
+        )
+        return None
+    return "None"
 
 
 def _infer_binop_type(
@@ -400,6 +547,69 @@ def _iter_item_type(node: ast.AST, iterable_type: str | None) -> str | None:
     return None
 
 
+def _validate_range_call(
+    node: ast.Call,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> None:
+    if not _require_arg_count("range", node, function, {1, 2, 3}):
+        return
+    for arg in node.args:
+        arg_type = _infer_expr_type(arg, function, env)
+        if arg_type is not None and arg_type != "int":
+            _add_unsupported_syntax(function, arg, f"range arguments must be int, got {arg_type}")
+    if len(node.args) == 3:
+        step = node.args[2]
+        if not (
+            isinstance(step, ast.Constant)
+            and isinstance(step.value, int)
+            and not isinstance(step.value, bool)
+            and step.value > 0
+        ):
+            _add_unsupported_syntax(
+                function,
+                step,
+                "range step must be a positive int literal in Public 1 native functions",
+            )
+
+
+def _require_arg_count(
+    target: str,
+    node: ast.Call,
+    function: FunctionAnalysis,
+    expected_counts: set[int],
+) -> bool:
+    if len(node.args) in expected_counts:
+        return True
+    expected = ", ".join(str(count) for count in sorted(expected_counts))
+    _add_unsupported_syntax(
+        function,
+        node,
+        f"{target} expects {expected} positional argument(s), got {len(node.args)}",
+    )
+    return False
+
+
+def _is_list_type(value: str | None) -> bool:
+    return value is not None and value.startswith("list[") and value.endswith("]")
+
+
+def _list_item_type(value: str | None) -> str | None:
+    if _is_list_type(value):
+        return value[5:-1]
+    return None
+
+
+def _is_append_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "append"
+        and len(node.args) == 1
+        and not node.keywords
+    )
+
+
 def _validate_call(function: FunctionAnalysis, node: ast.Call) -> None:
     if node.keywords:
         _add_unsupported_syntax(function, node, "keyword call arguments are not supported")
@@ -423,7 +633,7 @@ def _validate_call(function: FunctionAnalysis, node: ast.Call) -> None:
 def _unsupported_message(node: ast.AST) -> str:
     if isinstance(node, (ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp)):
         return "comprehensions are not supported in Public 1 native functions"
-    if isinstance(node, (ast.List, ast.Tuple, ast.Dict, ast.Set)):
+    if isinstance(node, (ast.Tuple, ast.Dict, ast.Set)):
         return "container literals are not supported in Public 1 native functions"
     if isinstance(node, (ast.Import, ast.ImportFrom)):
         return "imports inside native functions are not supported"
@@ -431,8 +641,6 @@ def _unsupported_message(node: ast.AST) -> str:
         return "context managers are not supported in native functions"
     if isinstance(node, ast.Try):
         return "exception handling is not supported in native functions"
-    if isinstance(node, (ast.Break, ast.Continue)):
-        return "break and continue are not supported in Public 1 native functions"
     if isinstance(node, ast.Pass):
         return "pass statements are not supported in native functions"
     if isinstance(node, (ast.Assert, ast.Raise)):

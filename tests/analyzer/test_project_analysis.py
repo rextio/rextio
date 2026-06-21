@@ -265,7 +265,7 @@ def bad(x: float) -> float:
     assert [function.qualname for function in analysis.rejected_native_functions] == ["app.bad"]
 
 
-def test_rejects_unsupported_control_flow_syntax(tmp_path: Path) -> None:
+def test_accepts_low_risk_control_flow_and_range_forms(tmp_path: Path) -> None:
     write_module(
         tmp_path,
         "app.py",
@@ -273,20 +273,32 @@ def test_rejects_unsupported_control_flow_syntax(tmp_path: Path) -> None:
 import rextio
 
 @rextio.native
-def bad(xs: list[int]) -> int:
+def total_until_negative(xs: list[int]) -> int:
     total = 0
     for x in xs:
         if x < 0:
             break
+        if x == 0:
+            continue
         total = total + x
+    return total
+
+@rextio.native
+def stepped_total(n: int) -> int:
+    total = 0
+    for i in range(1, n, 2):
+        total += i
     return total
 """,
     )
 
     analysis = analyze_project(tmp_path)
 
-    assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}
-    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.bad"]
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.stepped_total",
+        "app.total_until_negative",
+    ]
+    assert analysis.rejected_native_functions == []
 
 
 def test_rejects_unsupported_expression_syntax(tmp_path: Path) -> None:
@@ -325,7 +337,7 @@ def test_rejects_unsupported_literal_syntax(tmp_path: Path) -> None:
 import rextio
 
 @rextio.native
-def list_bad() -> list[int]:
+def list_ok() -> list[int]:
     return [1, 2]
 
 @rextio.native
@@ -348,11 +360,74 @@ def set_bad(x: int) -> int:
     analysis = analyze_project(tmp_path)
 
     assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.list_ok"
+    ]
     assert {function.qualname for function in analysis.rejected_native_functions} == {
         "app.dict_bad",
-        "app.list_bad",
         "app.set_bad",
         "app.tuple_bad",
+    }
+
+
+def test_accepts_list_literals_and_append_for_supported_item_types(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def odds(n: int) -> list[int]:
+    out: list[int] = []
+    for i in range(n):
+        if i == 0:
+            continue
+        out.append(i)
+    return out
+
+@rextio.native
+def labels() -> list[str]:
+    return ["ready", "set", "go"]
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.labels",
+        "app.odds",
+    ]
+    assert analysis.rejected_native_functions == []
+
+
+def test_rejects_ambiguous_empty_list_and_non_literal_range_step(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def ambiguous() -> list[int]:
+    out = []
+    return out
+
+@rextio.native
+def dynamic_step(n: int, step: int) -> int:
+    total = 0
+    for i in range(0, n, step):
+        total += i
+    return total
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.ambiguous",
+        "app.dynamic_step",
     }
 
 
@@ -507,7 +582,7 @@ def compute(x: float) -> float:
     assert [function.qualname for function in analysis.rejected_native_functions] == ["app.compute"]
 
 
-def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
+def test_accepts_limited_builtins_and_math_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,
         "app.py",
@@ -516,8 +591,36 @@ import math
 import rextio
 
 @rextio.native
-def compute(x: float) -> float:
-    return math.sqrt(x)
+def compute(values: list[float], x: float) -> float:
+    total: float = sum(values)
+    return math.sqrt(x) + math.sin(x) + math.cos(x) + max(total, abs(x))
+
+@rextio.native
+def lower(x: float, y: float) -> int:
+    return min(math.floor(x), math.floor(y))
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.compute",
+        "app.lower",
+    ]
+    assert analysis.rejected_native_functions == []
+
+
+def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import statistics
+import rextio
+
+@rextio.native
+def compute(xs: list[float]) -> float:
+    return statistics.mean(xs)
 """,
     )
 
