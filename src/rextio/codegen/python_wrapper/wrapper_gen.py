@@ -27,6 +27,7 @@ def render_wrapper_module(module: ModuleAnalysis) -> str:
     lines = [
         GENERATED_PYTHON_HEADER,
         "",
+        "from rextio.runtime.boundary_fallback import boundary_fallback_required",
         "from rextio.runtime.flags import native_disabled, native_required",
         "from rextio.runtime.native_loader import load_native_function",
         "",
@@ -82,6 +83,8 @@ def _render_wrapper_function(function: FunctionAnalysis, node: ast.FunctionDef) 
         "            raise RuntimeError(",
         f'                "native mode requires generated native function: {function.qualname}"',
         "            )",
+        f"        return _fallback_{function.name}({call_args})",
+        f'    if not native_required() and boundary_fallback_required("{function.qualname}"):',
         f"        return _fallback_{function.name}({call_args})",
         f"    return _native_{function.name}({call_args})",
     ]

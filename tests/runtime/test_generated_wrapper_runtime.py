@@ -6,6 +6,7 @@ from pathlib import Path
 from types import ModuleType
 
 from rextio.cli.main import main
+from rextio.runtime.boundary_fallback import reset_boundary_fallback_state
 
 REPO_SRC = Path(__file__).resolve().parents[2] / "src"
 
@@ -126,6 +127,7 @@ def add(a: int, b: int) -> int:
     assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
     build_python = tmp_path / ".rextio" / "build" / "python"
     assert (build_python / "rextio" / "__init__.py").exists()
+    assert (build_python / "rextio" / "runtime" / "boundary_fallback.py").exists()
     assert (build_python / "rextio" / "runtime" / "flags.py").exists()
     assert (build_python / "rextio" / "runtime" / "native_loader.py").exists()
 
@@ -306,6 +308,77 @@ def process_all(xs: list[int]) -> list[int]:
     module = importlib.import_module("demo_bridge.scoring")
 
     assert module.process_all([1, 2, 3]) == [101, 102, 103]
+
+
+def test_fallback_loop_uses_python_after_boundary_threshold(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+) -> None:
+    reset_boundary_fallback_state()
+    source = tmp_path / "src" / "demo_boundary_threshold" / "scoring.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def score_one(x: int) -> int:
+    return x + 1
+
+def process_all(xs: list[int]) -> list[int]:
+    out = []
+    for x in xs:
+        out.append(score_one(x))
+    return out
+""",
+        encoding="utf-8",
+    )
+    native_module = ModuleType("_rextio_native")
+    native_module.demo_boundary_threshold__scoring__score_one = lambda x: x + 100
+    monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
+    monkeypatch.setenv("REXTIO_BOUNDARY_FALLBACK_THRESHOLD", "2")
+
+    assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
+    monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "generated" / "python"))
+    importlib.invalidate_caches()
+
+    module = importlib.import_module("demo_boundary_threshold.scoring")
+
+    assert module.process_all([1, 2, 3, 4]) == [101, 102, 4, 5]
+
+
+def test_native_mode_bypasses_boundary_threshold(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+) -> None:
+    reset_boundary_fallback_state()
+    source = tmp_path / "src" / "demo_boundary_native_mode" / "scoring.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def score_one(x: int) -> int:
+    return x + 1
+""",
+        encoding="utf-8",
+    )
+    native_module = ModuleType("_rextio_native")
+    native_module.demo_boundary_native_mode__scoring__score_one = lambda x: x + 100
+    monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
+    monkeypatch.setenv("REXTIO_BOUNDARY_FALLBACK_THRESHOLD", "1")
+    monkeypatch.setenv("REXTIO_NATIVE_MODE", "native")
+
+    assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
+    monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "generated" / "python"))
+    importlib.invalidate_caches()
+
+    module = importlib.import_module("demo_boundary_native_mode.scoring")
+
+    assert [module.score_one(1), module.score_one(2)] == [101, 102]
 
 
 def test_cross_module_fallback_calls_imported_native_wrapper(
