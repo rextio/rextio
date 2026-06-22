@@ -3,8 +3,23 @@ from __future__ import annotations
 import ast
 
 from rextio.analyzer.common_calls import (
+    BASE64_TARGETS,
+    BYTES_METHOD_TARGETS,
     DATETIME_ISOFORMAT_TARGETS,
+    DATETIME_TIMESTAMP_TARGETS,
+    HASHLIB_CHAIN_TARGETS,
+    JSON_TARGETS,
+    LIST_METHOD_TARGETS,
     LOGGING_CANONICAL_TARGETS,
+    MATH_CONSTANT_TARGETS,
+    MATH_FLOAT_BINARY_TARGETS,
+    MATH_FLOAT_TO_BOOL_TARGETS,
+    MATH_FLOAT_TO_INT_TARGETS,
+    MATH_FLOAT_UNARY_TARGETS,
+    STATISTICS_TARGETS,
+    STR_METHOD_TARGETS,
+    TIME_TARGETS,
+    canonical_attribute_target,
     canonical_call_target,
     is_supported_effect_call,
 )
@@ -15,6 +30,7 @@ from rextio.analyzer.type_collector import annotation_name, is_supported_type
 
 DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
 NUMERIC_TYPES = {"int", "float"}
+JSON_VALUE_TYPES = {"int", "float", "bool", "str", "bytes"}
 DICT_KEY_TYPES = {"int", "bool", "str"}
 SET_ITEM_TYPES = {"int", "float", "bool", "str"}
 
@@ -248,7 +264,7 @@ def _validate_statement_types(
     if isinstance(node, ast.Return):
         value_type = "None"
         if node.value is not None:
-            value_type = _infer_expr_type(node.value, function, env)
+            value_type = _infer_expr_type(node.value, function, env, expected_type=return_type)
         if value_type is not None and return_type is not None:
             _validate_type_match(value_type, return_type, function, node)
         return
@@ -504,10 +520,21 @@ class _SignatureInferencer:
             return "None"
         if target in DATETIME_ISOFORMAT_TARGETS:
             return "str"
+        if target in DATETIME_TIMESTAMP_TARGETS or target in TIME_TARGETS:
+            return "float"
         if target == "len":
             for arg in node.args:
                 self.infer_expr(arg)
             return "int"
+        if target in {"all", "any"} and node.args:
+            self.infer_expr(node.args[0], "list[bool]")
+            return "bool"
+        if target == "sorted" and node.args:
+            arg_type = self.infer_expr(node.args[0])
+            return arg_type if _is_list_type(arg_type) else None
+        if target == "reversed" and node.args:
+            arg_type = self.infer_expr(node.args[0])
+            return arg_type if _is_list_type(arg_type) else None
         if target == "range":
             for arg in node.args:
                 self.infer_expr(arg, "int")
@@ -528,12 +555,90 @@ class _SignatureInferencer:
             for arg in node.args:
                 self.infer_expr(arg, "float")
             return "float"
-        if target == "math.floor":
+        if target in MATH_FLOAT_UNARY_TARGETS:
+            for arg in node.args:
+                self.infer_expr(arg, "float")
+            return "float"
+        if target in MATH_FLOAT_BINARY_TARGETS:
+            for arg in node.args:
+                self.infer_expr(arg, "float")
+            return "float"
+        if target in MATH_FLOAT_TO_INT_TARGETS:
             for arg in node.args:
                 self.infer_expr(arg, "float")
             return "int"
+        if target in MATH_FLOAT_TO_BOOL_TARGETS:
+            for arg in node.args:
+                self.infer_expr(arg, "float")
+            return "bool"
+        if target in MATH_CONSTANT_TARGETS:
+            return "float"
+        if target in STR_METHOD_TARGETS:
+            return self.infer_string_method(node, expected, target)
+        if target in BYTES_METHOD_TARGETS:
+            return self.infer_bytes_method(node, expected, target)
+        if target in LIST_METHOD_TARGETS:
+            return self.infer_list_method(node, expected, target)
+        if target in STATISTICS_TARGETS and node.args:
+            self.infer_expr(node.args[0])
+            return "float"
+        if target in HASHLIB_CHAIN_TARGETS:
+            for arg in _chained_call_args(node):
+                self.infer_expr(arg, "bytes")
+            return "str"
+        if target in BASE64_TARGETS and node.args:
+            self.infer_expr(node.args[0], "bytes" if target.endswith("b64encode") else None)
+            return "bytes"
+        if target == "json.dumps" and node.args:
+            self.infer_expr(node.args[0])
+            return "str"
+        if target == "json.loads" and node.args:
+            self.infer_expr(node.args[0], "str")
+            return expected if expected is not None and _is_json_supported_type(expected) else None
         for arg in node.args:
             self.infer_expr(arg)
+        return None
+
+    def infer_string_method(self, node: ast.Call, expected: str | None, target: str) -> str | None:
+        receiver = _call_receiver(node)
+        if receiver is not None:
+            self.infer_expr(receiver, "str")
+        if target in {"str.lower", "str.upper", "str.strip"}:
+            return "str"
+        if target == "str.encode":
+            return "bytes"
+        if target in {"str.startswith", "str.endswith"}:
+            for arg in node.args:
+                self.infer_expr(arg, "str")
+            return "bool"
+        if target == "str.replace":
+            for arg in node.args:
+                self.infer_expr(arg, "str")
+            return "str"
+        return None
+
+    def infer_bytes_method(self, node: ast.Call, expected: str | None, target: str) -> str | None:
+        receiver = _call_receiver(node)
+        if receiver is not None:
+            self.infer_expr(receiver, "bytes")
+        if target == "bytes.decode":
+            return "str"
+        return None
+
+    def infer_list_method(self, node: ast.Call, expected: str | None, target: str) -> str | None:
+        receiver = _call_receiver(node)
+        receiver_type = self.infer_expr(receiver) if receiver is not None else None
+        item_type = _list_item_type(receiver_type)
+        if target == "list.copy":
+            return receiver_type
+        if item_type is None:
+            return None
+        for arg in node.args:
+            self.infer_expr(arg, item_type)
+        if target == "list.count":
+            return "int"
+        if target == "list.index":
+            return "int"
         return None
 
     def infer_subscript(self, node: ast.Subscript, expected: str | None) -> str | None:
@@ -653,6 +758,8 @@ class _SignatureInferencer:
             return "float"
         if isinstance(node.value, str):
             return "str"
+        if isinstance(node.value, bytes):
+            return "bytes"
         if node.value is None:
             return "None"
         return None
@@ -697,12 +804,17 @@ def _infer_expr_type(
             return "float"
         if isinstance(node.value, str):
             return "str"
+        if isinstance(node.value, bytes):
+            return "bytes"
         if node.value is None:
             return "None"
         return None
     if isinstance(node, ast.Name):
         return env.get(node.id)
     if isinstance(node, ast.Attribute):
+        target = canonical_attribute_target(node, function.imports)
+        if target in MATH_CONSTANT_TARGETS:
+            return "float"
         _add_unsupported_syntax(
             function,
             node,
@@ -780,6 +892,7 @@ def _infer_expr_type(
             node,
             function,
             env,
+            expected_type=expected_type,
             allow_named_expr=allow_named_expr,
             named_expr_binding_env=binding_env,
             active_comprehension_targets=active_targets,
@@ -1122,6 +1235,7 @@ def _infer_call_type(
     function: FunctionAnalysis,
     env: dict[str, str],
     *,
+    expected_type: str | None = None,
     allow_named_expr: bool = False,
     named_expr_binding_env: dict[str, str] | None = None,
     active_comprehension_targets: set[str] | None = None,
@@ -1153,10 +1267,43 @@ def _infer_call_type(
         if not _require_arg_count(target, node, function, {0}):
             return None
         return "str"
+    if target in DATETIME_TIMESTAMP_TARGETS:
+        if not _require_arg_count(target, node, function, {0}):
+            return None
+        return "float"
+    if target in TIME_TARGETS:
+        if not _require_arg_count(target, node, function, {0}):
+            return None
+        return "float"
     if target == "len":
         if not _require_arg_count("len", node, function, {1}):
             return None
         return "int"
+    if target in {"all", "any"}:
+        if not _require_arg_count(target, node, function, {1}):
+            return None
+        arg_type = infer_arg(node.args[0])
+        if arg_type == "list[bool]":
+            return "bool"
+        _add_unsupported_syntax(function, node, f"{target} requires list[bool], got {arg_type}")
+        return None
+    if target == "sorted":
+        if not _require_arg_count("sorted", node, function, {1}):
+            return None
+        arg_type = infer_arg(node.args[0])
+        item_type = _list_item_type(arg_type)
+        if item_type in {"int", "float", "bool", "str"}:
+            return arg_type
+        _add_unsupported_syntax(function, node, f"sorted requires list[int|float|bool|str], got {arg_type}")
+        return None
+    if target == "reversed":
+        if not _require_arg_count("reversed", node, function, {1}):
+            return None
+        arg_type = infer_arg(node.args[0])
+        if _list_item_type(arg_type) is not None:
+            return arg_type
+        _add_unsupported_syntax(function, node, f"reversed requires a supported list, got {arg_type}")
+        return None
     if target == "range":
         _validate_range_call(node, function, env)
         return None
@@ -1199,7 +1346,15 @@ def _infer_call_type(
             return item_type
         _add_unsupported_syntax(function, node, f"sum requires list[int] or list[float], got {arg_type}")
         return None
-    if target in {"math.sqrt", "math.sin", "math.cos"}:
+    if target == "math.log":
+        if not _require_arg_count(target, node, function, {1, 2}):
+            return None
+        arg_types = [infer_arg(arg) for arg in node.args]
+        if all(arg_type == "float" for arg_type in arg_types):
+            return "float"
+        _add_unsupported_syntax(function, node, "math.log requires float argument(s)")
+        return None
+    if target in MATH_FLOAT_UNARY_TARGETS:
         if not _require_arg_count(target, node, function, {1}):
             return None
         arg_type = infer_arg(node.args[0])
@@ -1207,13 +1362,83 @@ def _infer_call_type(
             return "float"
         _add_unsupported_syntax(function, node, f"{target} requires a float argument")
         return None
-    if target == "math.floor":
-        if not _require_arg_count("math.floor", node, function, {1}):
+    if target in MATH_FLOAT_BINARY_TARGETS:
+        if not _require_arg_count(target, node, function, {2}):
+            return None
+        arg_types = [infer_arg(arg) for arg in node.args]
+        if arg_types == ["float", "float"]:
+            return "float"
+        _add_unsupported_syntax(function, node, f"{target} requires two float arguments")
+        return None
+    if target in MATH_FLOAT_TO_INT_TARGETS:
+        if not _require_arg_count(target, node, function, {1}):
             return None
         arg_type = infer_arg(node.args[0])
         if arg_type == "float":
             return "int"
-        _add_unsupported_syntax(function, node, "math.floor requires a float argument")
+        _add_unsupported_syntax(function, node, f"{target} requires a float argument")
+        return None
+    if target in MATH_FLOAT_TO_BOOL_TARGETS:
+        if not _require_arg_count(target, node, function, {1}):
+            return None
+        arg_type = infer_arg(node.args[0])
+        if arg_type == "float":
+            return "bool"
+        _add_unsupported_syntax(function, node, f"{target} requires a float argument")
+        return None
+    if target in MATH_CONSTANT_TARGETS:
+        return "float"
+    if target in STR_METHOD_TARGETS:
+        return _infer_str_method_type(target, node, function, env)
+    if target in BYTES_METHOD_TARGETS:
+        return _infer_bytes_method_type(target, node, function, env)
+    if target in LIST_METHOD_TARGETS:
+        return _infer_list_method_type(target, node, function, env)
+    if target in STATISTICS_TARGETS:
+        if not _require_arg_count(target, node, function, {1}):
+            return None
+        arg_type = infer_arg(node.args[0])
+        item_type = _list_item_type(arg_type)
+        if item_type in NUMERIC_TYPES:
+            return "float"
+        _add_unsupported_syntax(function, node, f"{target} requires list[int] or list[float], got {arg_type}")
+        return None
+    if target in HASHLIB_CHAIN_TARGETS:
+        inner_args = _chained_call_args(node)
+        if len(inner_args) != 1:
+            _add_unsupported_syntax(function, node, f"{target} requires exactly one bytes argument")
+            return None
+        arg_type = _infer_expr_type(inner_args[0], function, env)
+        if arg_type == "bytes":
+            return "str"
+        _add_unsupported_syntax(function, node, f"{target} requires bytes, got {arg_type}")
+        return None
+    if target in BASE64_TARGETS:
+        if not _require_arg_count(target, node, function, {1}):
+            return None
+        arg_type = infer_arg(node.args[0])
+        if target == "base64.b64encode" and arg_type == "bytes":
+            return "bytes"
+        if target == "base64.b64decode" and arg_type in {"bytes", "str"}:
+            return "bytes"
+        _add_unsupported_syntax(function, node, f"{target} requires bytes input" if target.endswith("b64encode") else f"{target} requires bytes or str input")
+        return None
+    if target in JSON_TARGETS:
+        if not _require_arg_count(target, node, function, {1}):
+            return None
+        if target == "json.dumps":
+            arg_type = infer_arg(node.args[0])
+            if _is_json_supported_type(arg_type):
+                return "str"
+            _add_unsupported_syntax(function, node, f"json.dumps argument type is not supported: {arg_type}")
+            return None
+        arg_type = infer_arg(node.args[0])
+        if arg_type != "str":
+            _add_unsupported_syntax(function, node, f"json.loads requires str input, got {arg_type}")
+            return None
+        if expected_type is not None and _is_json_supported_type(expected_type):
+            return expected_type
+        _add_unsupported_syntax(function, node, "json.loads requires an expected supported target type")
         return None
     if _is_append_call(node):
         return _infer_append_call_type(node, function, env)
@@ -1256,6 +1481,84 @@ def _infer_append_call_type(
         )
         return None
     return "None"
+
+
+def _infer_str_method_type(
+    target: str,
+    node: ast.Call,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> str | None:
+    receiver = _call_receiver(node)
+    receiver_type = _infer_expr_type(receiver, function, env) if receiver is not None else None
+    if receiver_type != "str":
+        _add_unsupported_syntax(function, node, f"{target} receiver must be str, got {receiver_type}")
+        return None
+    if target in {"str.lower", "str.upper", "str.strip", "str.encode"}:
+        if not _require_arg_count(target, node, function, {0}):
+            return None
+        return "bytes" if target == "str.encode" else "str"
+    if target in {"str.startswith", "str.endswith"}:
+        if not _require_arg_count(target, node, function, {1}):
+            return None
+        arg_type = _infer_expr_type(node.args[0], function, env)
+        if arg_type == "str":
+            return "bool"
+        _add_unsupported_syntax(function, node.args[0], f"{target} requires a str prefix/suffix")
+        return None
+    if target == "str.replace":
+        if not _require_arg_count(target, node, function, {2}):
+            return None
+        arg_types = [_infer_expr_type(arg, function, env) for arg in node.args]
+        if arg_types == ["str", "str"]:
+            return "str"
+        _add_unsupported_syntax(function, node, "str.replace requires two str arguments")
+    return None
+
+
+def _infer_bytes_method_type(
+    target: str,
+    node: ast.Call,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> str | None:
+    receiver = _call_receiver(node)
+    receiver_type = _infer_expr_type(receiver, function, env) if receiver is not None else None
+    if receiver_type != "bytes":
+        _add_unsupported_syntax(function, node, f"{target} receiver must be bytes, got {receiver_type}")
+        return None
+    if target == "bytes.decode":
+        if not _require_arg_count(target, node, function, {0}):
+            return None
+        return "str"
+    return None
+
+
+def _infer_list_method_type(
+    target: str,
+    node: ast.Call,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> str | None:
+    receiver = _call_receiver(node)
+    receiver_type = _infer_expr_type(receiver, function, env) if receiver is not None else None
+    item_type = _list_item_type(receiver_type)
+    if item_type is None:
+        _add_unsupported_syntax(function, node, f"{target} receiver must be a supported list, got {receiver_type}")
+        return None
+    if target == "list.copy":
+        if not _require_arg_count(target, node, function, {0}):
+            return None
+        return receiver_type
+    if target in {"list.count", "list.index"}:
+        if not _require_arg_count(target, node, function, {1}):
+            return None
+        arg_type = _infer_expr_type(node.args[0], function, env)
+        if arg_type == item_type:
+            return "int"
+        _add_unsupported_syntax(function, node.args[0], f"{target} argument must be {item_type}, got {arg_type}")
+        return None
+    return None
 
 
 def _infer_binop_type(
@@ -1564,20 +1867,20 @@ def _list_item_type(value: str | None) -> str | None:
 
 
 def _is_supported_list_item_type(value: str) -> bool:
-    if value in {"int", "float", "bool", "str"}:
+    if value in {"int", "float", "bool", "str", "bytes"}:
         return True
     item_type = _list_item_type(value)
     return item_type is not None and _is_supported_list_item_type(item_type)
 
 
 def _is_supported_dict_value_type(value: str) -> bool:
-    if value in {"int", "float", "bool", "str"}:
+    if value in {"int", "float", "bool", "str", "bytes"}:
         return True
     if _is_list_type(value):
         item_type = _list_item_type(value)
         return item_type is not None and _is_supported_list_item_type(item_type)
     if _is_tuple_type(value):
-        return all(item_type in {"int", "float", "bool", "str"} for item_type in _tuple_item_types(value))
+        return all(item_type in {"int", "float", "bool", "str", "bytes"} for item_type in _tuple_item_types(value))
     if _is_dict_type(value):
         key_type, value_type = _dict_item_types(value)
         return (
@@ -1592,13 +1895,13 @@ def _is_supported_dict_value_type(value: str) -> bool:
 
 
 def _is_supported_signature_type(value: str) -> bool:
-    if value in {"int", "float", "bool", "str", "None"}:
+    if value in {"int", "float", "bool", "str", "bytes", "None"}:
         return True
     if _is_list_type(value):
         item_type = _list_item_type(value)
         return item_type is not None and _is_supported_list_item_type(item_type)
     if _is_tuple_type(value):
-        return all(item_type in {"int", "float", "bool", "str"} for item_type in _tuple_item_types(value))
+        return all(item_type in {"int", "float", "bool", "str", "bytes"} for item_type in _tuple_item_types(value))
     if _is_dict_type(value):
         key_type, value_type = _dict_item_types(value)
         return (
@@ -1716,6 +2019,35 @@ def _is_enumerate_call(node: ast.AST) -> bool:
 
 def _is_zip_call(node: ast.AST) -> bool:
     return isinstance(node, ast.Call) and dotted_name(node.func) == "zip"
+
+
+def _call_receiver(node: ast.Call) -> ast.AST | None:
+    if isinstance(node.func, ast.Attribute):
+        return node.func.value
+    return None
+
+
+def _chained_call_args(node: ast.Call) -> list[ast.AST]:
+    if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call):
+        return list(node.func.value.args)
+    return []
+
+
+def _is_json_supported_type(value: str | None) -> bool:
+    if value in JSON_VALUE_TYPES:
+        return True
+    if _is_list_type(value):
+        item_type = _list_item_type(value)
+        return item_type is not None and _is_json_supported_type(item_type)
+    if _is_tuple_type(value):
+        return all(_is_json_supported_type(item_type) for item_type in _tuple_item_types(value))
+    if _is_dict_type(value):
+        key_type, value_type = _dict_item_types(value)
+        return key_type == "str" and _is_json_supported_type(value_type)
+    optional_item = _optional_item_type(value)
+    if optional_item is not None:
+        return _is_json_supported_type(optional_item)
+    return False
 
 
 def _validate_call(function: FunctionAnalysis, node: ast.Call) -> None:

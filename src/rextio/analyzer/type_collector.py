@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 
-SUPPORTED_SCALARS = {"int", "float", "bool", "str"}
+SUPPORTED_SCALARS = {"int", "float", "bool", "str", "bytes"}
 SUPPORTED_LIST_ITEMS = {"int", "float", "bool", "str"}
 SUPPORTED_DICT_KEYS = {"int", "bool", "str"}
 SUPPORTED_SET_ITEMS = {"int", "float", "bool", "str"}

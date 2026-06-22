@@ -1213,6 +1213,86 @@ def observe(value: int) -> str:
     assert analysis.rejected_native_functions == []
 
 
+def test_accepts_expanded_stdlib_lowering_calls(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import base64
+import hashlib
+import json
+import math
+import statistics
+import time
+from datetime import datetime
+
+def numeric(xs: list[float], flags: list[bool]) -> float:
+    return (
+        math.tan(xs[0])
+        + math.asin(xs[1])
+        + math.acos(xs[2])
+        + math.atan(xs[3])
+        + math.atan2(xs[0], xs[1])
+        + math.exp(xs[0])
+        + math.log(xs[1])
+        + math.log(xs[1], math.e)
+        + math.log2(xs[1])
+        + math.log10(xs[1])
+        + math.pi
+        + statistics.mean(xs)
+        + statistics.fmean(xs)
+        + time.time()
+        + datetime.utcnow().timestamp()
+    )
+
+def predicates(x: float, flags: list[bool]) -> bool:
+    return math.isfinite(x) and not math.isnan(x) and not math.isinf(x) and any(flags) and all(flags)
+
+def text(value: str) -> str:
+    return value.strip().lower().replace("a", "b").upper()
+
+def prefix_suffix(value: str) -> bool:
+    return value.startswith("a") or value.endswith("z")
+
+def list_ops(xs: list[int]) -> int:
+    copied = xs.copy()
+    total = copied.count(2) + copied.index(2)
+    for value in reversed(sorted(copied)):
+        total += value
+    return total
+
+def digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+def b64_roundtrip(value: str) -> str:
+    encoded = base64.b64encode(value.encode())
+    return base64.b64decode(encoded).decode()
+
+def json_roundtrip(value: str) -> dict[str, int]:
+    parsed: dict[str, int] = json.loads(value)
+    return parsed
+
+def json_dump(value: dict[str, int]) -> str:
+    return json.dumps(value)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.name for function in analysis.accepted_native_functions] == [
+        "b64_roundtrip",
+        "digest",
+        "json_dump",
+        "json_roundtrip",
+        "list_ops",
+        "numeric",
+        "predicates",
+        "prefix_suffix",
+        "text",
+    ]
+    assert analysis.rejected_native_functions == []
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,
