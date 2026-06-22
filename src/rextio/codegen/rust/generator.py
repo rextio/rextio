@@ -250,7 +250,7 @@ class _FunctionRenderer:
             target_type = statement.target_type or self.infer_expr_type(statement.value)
             value = strip_expr_if_safe(
                 statement.value,
-                self.render_expr_with_expected(statement.value, target_type),
+                self.render_assignment_value(statement.value, target_type),
             )
             if target_type is not None:
                 self.variable_types[target] = target_type
@@ -378,13 +378,13 @@ class _FunctionRenderer:
                 return self.render_maybe_bound_name(expr.id)
             return expr.id
         if isinstance(expr, ListIR):
-            return f"vec![{', '.join(self.render_expr(item) for item in expr.items)}]"
+            return f"vec![{', '.join(self.render_owned_expr(item) for item in expr.items)}]"
         if isinstance(expr, ListComprehensionIR):
             return self.render_list_comprehension(expr)
         if isinstance(expr, TupleIR):
             if len(expr.items) == 1:
-                return f"({self.render_expr(expr.items[0])},)"
-            return f"({', '.join(self.render_expr(item) for item in expr.items)})"
+                return f"({self.render_owned_expr(expr.items[0])},)"
+            return f"({', '.join(self.render_owned_expr(item) for item in expr.items)})"
         if isinstance(expr, DictIR):
             if not expr.items:
                 return "HashMap::new()"
@@ -393,7 +393,7 @@ class _FunctionRenderer:
             for key, value in expr.items:
                 lines.append(
                     f"    map.insert({strip_wrapping_parens(self.render_call_arg(key))}, "
-                    f"{strip_wrapping_parens(self.render_expr(value))});"
+                    f"{strip_wrapping_parens(self.render_owned_expr(value))});"
                 )
             lines.append("    map")
             lines.append("}")
@@ -1052,6 +1052,19 @@ class _FunctionRenderer:
             return f"{expr.id}.clone()"
         return self.render_expr(expr)
 
+    def render_owned_expr(self, expr: ExprIR) -> str:
+        if isinstance(expr, NameIR) and not self.is_copy_expr(expr):
+            return self.render_call_arg(expr)
+        return self.render_expr(expr)
+
+    def render_assignment_value(self, expr: ExprIR, expected_type: RxtType | None) -> str:
+        if isinstance(expr, NameIR) and not self.is_copy_expr(expr):
+            return self.render_call_arg(expr)
+        return self.render_expr_with_expected(expr, expected_type)
+
+    def is_copy_expr(self, expr: ExprIR) -> bool:
+        return is_copy_rust_type(self.infer_expr_type(expr))
+
     def render_expr_with_expected(self, expr: ExprIR, expected_type: RxtType | None) -> str:
         if (
             isinstance(expr, CallIR)
@@ -1529,6 +1542,16 @@ def same_type(left: RxtType | None, right: RxtType | None) -> bool:
     if left is None or right is None:
         return False
     return left.to_dict() == right.to_dict()
+
+
+def is_copy_rust_type(value_type: RxtType | None) -> bool:
+    if isinstance(value_type, (RxtBool, RxtFloat, RxtInt, RxtNone)):
+        return True
+    if isinstance(value_type, RxtOptional):
+        return is_copy_rust_type(value_type.item_type)
+    if isinstance(value_type, RxtTuple):
+        return all(is_copy_rust_type(item_type) for item_type in value_type.item_types)
+    return False
 
 
 def _needs_local_type_annotation(expr: ExprIR, target_type: RxtType) -> bool:

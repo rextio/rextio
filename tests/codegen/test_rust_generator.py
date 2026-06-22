@@ -304,6 +304,34 @@ def labels() -> list[str]:
     assert 'return Ok(vec![String::from("ready"), String::from("set")]);' in source
 
 
+def test_clones_owned_values_in_container_literals_and_alias_assignments(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+def alias_read(xs: list[int]) -> int:
+    ys = xs
+    return ys[0] + xs[0]
+
+def group_lengths(xs: list[int], ys: list[int]) -> int:
+    groups: list[list[int]] = [xs, ys]
+    return len(groups[0]) + xs[0] + ys[0]
+
+def label_lengths(label: str) -> int:
+    labels: dict[str, str] = {"primary": label}
+    return len(labels["primary"]) + len(label)
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "let mut ys = xs.clone();" in source
+    assert "let mut groups = vec![xs.clone(), ys.clone()];" in source
+    assert 'map.insert(String::from("primary"), label.clone());' in source
+    assert "return Ok((labels.get(&String::from(\"primary\")).cloned()" in source
+
+
 def test_generates_rust_for_fixed_tuples_limited_dicts_and_optional_types(
     tmp_path: Path,
 ) -> None:
