@@ -60,8 +60,8 @@ build artifact compilation steps.
 ## Native Subset
 
 0.1.0 alpha native candidates support module-level functions with statically
-resolved scalar
-types, `list[int|float|bool|str]`, `list[list[T]]`, fixed tuples, limited
+resolved scalar types including `bytes`, `list[int|float|bool|str]`,
+`list[list[T]]`, fixed tuples, limited
 fixed `dict[K, V]`, limited `set[int|float|bool|str]`, and `Optional[T]` /
 `T | None`. The current Rust backend
 handles assignment, typed local annotations with initializers, augmented
@@ -73,13 +73,16 @@ limited list/dict/set comprehensions, assignment expressions inside
 comprehensions, and `list.append(...)` for supported list item types.
 
 Supported builtin calls are limited to `len`, `abs`, two-argument `min`/`max`,
-and `sum` over `list[int]` or `list[float]`. Supported `math` calls are
-`math.sqrt`, `math.sin`, `math.cos`, and `math.floor`. Common side-effect and
-standard-library lowering is limited to `print(...)`,
-`logging.debug/info/warning/error(...)`, module logger variables assigned from
-`logging.getLogger(...)`, and `datetime.datetime.now/utcnow().isoformat()`;
-these lower to Rust `println!`, `log` macros, and `chrono` timestamp
-formatting. Empty list literals must
+`sum` over `list[int]` or `list[float]`, `all`/`any` over `list[bool]`, and
+`sorted`/`reversed` over supported fixed list item types. Supported `math` calls
+include trigonometric, logarithmic, rounding, finite/NaN checks, and
+`math.pi`/`math.e`. Common side-effect and standard-library lowering is limited
+to `print(...)`, `logging.debug/info/warning/error(...)`, module logger
+variables assigned from `logging.getLogger(...)`, `datetime`/`time` timestamp
+calls, `statistics.mean/fmean`, selected `str`/`bytes`/`list` methods, and
+constrained `hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`,
+and `json.dumps/json.loads` patterns. `json.loads` requires an expected
+supported target type. Empty list literals must
 use a supported local annotation such as `out: list[int] = []`. `enumerate` and
 `zip` are supported only as batch loop or comprehension iterables over list
 variables. Empty dict literals require a supported fixed `dict[K, V]`

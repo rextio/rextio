@@ -61,7 +61,7 @@ possible.
 See [Unsupported Features in 0.1.0 alpha](docs/unsupported-features.md) for the
 supported subset, boundary limits, diagnostics, and non-goals.
 
-Current native candidates support scalar, `list[...]` including
+Current native candidates support scalar types including `bytes`, `list[...]` including
 `list[list[T]]`, fixed `tuple[...]`, limited fixed `dict[K, V]`,
 limited `set[int|float|bool|str]`, and `Optional[T]` / `T | None` types. Supported
 syntax includes arithmetic, comparisons, `if`, `while`, `for x in xs`,
@@ -70,13 +70,16 @@ syntax includes arithmetic, comparisons, `if`, `while`, `for x in xs`,
 indexing, list literals, fixed tuple literals, limited dict read/write,
 limited list/dict/set comprehensions, assignment expressions inside
 comprehensions, and `list.append(...)` for supported list item types. Builtin support is
-intentionally limited to `len`, `abs`, two-argument `min`/`max`, and
-`sum(list[int|float])`. The supported `math` subset is `math.sqrt`, `math.sin`,
-`math.cos`, and `math.floor`. Common side-effect and standard-library lowering
-is limited to `print(...)`, `logging.debug/info/warning/error(...)`, logger
-variables assigned from `logging.getLogger(...)`, and
-`datetime.datetime.now/utcnow().isoformat()`. These lower to Rust `println!`,
-`log` macros, and `chrono` timestamp formatting.
+intentionally limited to `len`, `abs`, two-argument `min`/`max`,
+`sum(list[int|float])`, `all(list[bool])`, `any(list[bool])`, `sorted(list[T])`,
+and `reversed(list[T])` for supported list item types. The supported `math`
+subset includes trigonometric, logarithmic, rounding, finite/NaN checks, and
+`math.pi`/`math.e`. Common side-effect and standard-library lowering covers
+limited `print(...)`, `logging.debug/info/warning/error(...)`, logger variables
+assigned from `logging.getLogger(...)`, `datetime`/`time` timestamp calls,
+`statistics.mean/fmean`, selected `str`/`bytes`/`list` methods, and constrained
+`hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`, and
+`json.dumps/json.loads` patterns.
 
 The expanded forms remain conservative: empty list literals need a supported
 `list[...]` local annotation, and `range(start, stop, step)` currently requires
@@ -85,7 +88,8 @@ batch loop or comprehension iterables over list variables. Dict support covers
 fixed `dict[K, V]` forms where `K` is `int`, `bool`, or `str` and `V` is a
 supported fixed value type. Set support is limited to `set[int]`, `set[float]`,
 `set[bool]`, and `set[str]` comprehensions. Dataclasses are still outside direct
-Rust lowering.
+Rust lowering. `json.loads` requires an expected supported target type from a
+return annotation or local variable annotation.
 
 For Python semantics that cannot be safely lowered into the typed Rust subset,
 Rextio can generate a Python runtime semantics native shim. This shim is a Rust
