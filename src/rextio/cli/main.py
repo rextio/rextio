@@ -276,6 +276,15 @@ def _add_policy_options(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Emit boundary warnings. Overrides REXTIO_BOUNDARY_WARNINGS and [policy] boundary_warnings.",
     )
+    parser.add_argument(
+        "--native-top-level",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Try native conversion for supported module top-level logic. Overrides "
+            "REXTIO_NATIVE_TOP_LEVEL and [policy] native_top_level."
+        ),
+    )
 
 
 if __name__ == "__main__":

@@ -3,10 +3,13 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis
+from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, TopLevelAnalysis
 from rextio.codegen.native_names import native_function_name
 from rextio.fallback.fallback_marker import GENERATED_PYTHON_HEADER
-from rextio.fallback.module_copy import fallback_module_name
+from rextio.fallback.module_copy import (
+    fallback_module_name,
+    native_top_level_fallback_module_name,
+)
 from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
 
 
@@ -22,7 +25,14 @@ def render_wrapper_module(
         ],
         key=lambda function: function.name,
     )
-    if not accepted:
+    top_level = (
+        module.top_level
+        if module.top_level is not None
+        and module.top_level.is_native_candidate
+        and module.top_level.accepted
+        else None
+    )
+    if not accepted and top_level is None:
         raise ValueError(f"module has no accepted native functions: {module.module_name}")
 
     function_nodes = _function_nodes(Path(module.file_path))
@@ -35,13 +45,31 @@ def render_wrapper_module(
         "from rextio.runtime.flags import native_disabled, native_required",
         "from rextio.runtime.native_loader import load_native_function",
         "",
-        *_fallback_module_import_lines(import_prefix, fallback_name),
-        f"from {import_prefix}{fallback_name} import *  # noqa: F401,F403",
     ]
-    for function in accepted:
-        lines.append(
-            f"from {import_prefix}{fallback_name} import {function.name} as _fallback_{function.name}"
+    if top_level is not None:
+        lines.append("import importlib as _rextio_importlib")
+        lines.append("")
+        lines.extend(_render_native_top_level_binding(top_level))
+        lines.append("")
+        lines.extend(
+            _render_dynamic_fallback_selection(
+                module,
+                fallback_name,
+                native_top_level_fallback_module_name(module),
+                top_level,
+            )
         )
+    else:
+        lines.extend(_fallback_module_import_lines(import_prefix, fallback_name))
+        lines.append(f"from {import_prefix}{fallback_name} import *  # noqa: F401,F403")
+    lines.append("")
+    for function in accepted:
+        if top_level is None:
+            lines.append(
+                f"from {import_prefix}{fallback_name} import {function.name} as _fallback_{function.name}"
+            )
+        else:
+            lines.append(f"_fallback_{function.name} = _rextio_fallback_module.{function.name}")
     lines.append("")
 
     for function in accepted:
@@ -72,6 +100,59 @@ def _render_native_binding(function: FunctionAnalysis) -> list[str]:
         '    module_name="_rextio_native",',
         f'    function_name="{native_function_name(function.qualname)}",',
         ")",
+    ]
+
+
+def _render_native_top_level_binding(top_level: TopLevelAnalysis) -> list[str]:
+    return [
+        "_native___rextio_top_level__ = load_native_function(",
+        '    module_name="_rextio_native",',
+        f'    function_name="{native_function_name(top_level.qualname)}",',
+        ")",
+    ]
+
+
+def _render_dynamic_fallback_selection(
+    module: ModuleAnalysis,
+    fallback_name: str,
+    native_fallback_name: str,
+    top_level: TopLevelAnalysis,
+) -> list[str]:
+    return [
+        f'_REXTIO_FALLBACK_MODULE_NAME = "{fallback_name}"',
+        f'_REXTIO_NATIVE_TOP_LEVEL_FALLBACK_MODULE_NAME = "{native_fallback_name}"',
+        "",
+        "def _rextio_import_fallback_module(name):",
+        "    if __package__:",
+        '        return _rextio_importlib.import_module(f".{name}", __package__)',
+        "    return _rextio_importlib.import_module(name)",
+        "",
+        "def _rextio_public_names(module):",
+        '    explicit = getattr(module, "__all__", None)',
+        "    if explicit is not None:",
+        "        return list(explicit)",
+        "    return [name for name in module.__dict__ if not name.startswith('_')]",
+        "",
+        "def _rextio_apply_public_names(module):",
+        "    globals().update({name: getattr(module, name) for name in _rextio_public_names(module)})",
+        "",
+        "def _rextio_select_fallback_module():",
+        "    if native_disabled():",
+        "        return _rextio_import_fallback_module(_REXTIO_FALLBACK_MODULE_NAME)",
+        "    if _native___rextio_top_level__ is None:",
+        "        if native_required():",
+        "            raise RuntimeError(",
+        f'                "native mode requires generated native top-level initializer: {top_level.qualname}"',
+        "            )",
+        "        return _rextio_import_fallback_module(_REXTIO_FALLBACK_MODULE_NAME)",
+        "    module = _rextio_import_fallback_module(_REXTIO_NATIVE_TOP_LEVEL_FALLBACK_MODULE_NAME)",
+        "    updates = _native___rextio_top_level__()",
+        "    module.__dict__.update(updates)",
+        "    globals().update(updates)",
+        "    return module",
+        "",
+        "_rextio_fallback_module = _rextio_select_fallback_module()",
+        "_rextio_apply_public_names(_rextio_fallback_module)",
     ]
 
 

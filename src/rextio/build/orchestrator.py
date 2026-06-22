@@ -35,6 +35,7 @@ from rextio.fallback.build_result import FallbackBuildResult, cpython_fallback_b
 from rextio.fallback.cpython import (
     generated_path_for_module,
     write_cpython_fallback,
+    write_cpython_native_top_level_fallback,
     write_plain_cpython_module,
 )
 from rextio.fallback.nuitka import build_nuitka_fallback
@@ -247,6 +248,8 @@ def _write_python_fallback_tree(
             write_plain_cpython_module(module_plan.module, python_root)
             continue
         write_cpython_fallback(module_plan.module, python_root)
+        if module_plan.accepted_native_top_level is not None:
+            write_cpython_native_top_level_fallback(module_plan.module, python_root)
         wrapper_path = generated_path_for_module(module_plan.module, python_root)
         wrapper_path.parent.mkdir(parents=True, exist_ok=True)
         wrapper_path.write_text(
@@ -288,7 +291,7 @@ def _generate_and_build_native(
     build_tool: str,
     target_plan: TargetPlan,
 ) -> NativeBuildResult:
-    if not plan.native.accepted_functions:
+    if not plan.native.has_native_artifacts:
         return skipped_native_build("No accepted native functions were found.")
     native_source = _generate_native_source(plan, layout, target_plan)
     if native_source.status == "failed":
@@ -318,7 +321,7 @@ def _generate_native_source(
     layout: ArtifactLayout,
     target_plan: TargetPlan,
 ) -> NativeSourceResult:
-    if not plan.native.accepted_functions:
+    if not plan.native.has_native_artifacts:
         return NativeSourceResult(
             status="skipped",
             message="No accepted native functions were found.",

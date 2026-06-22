@@ -42,6 +42,9 @@ Public 1 must demonstrate all of the following:
 14. Rextio can optionally invoke Nuitka for standalone or onefile executable packaging.
 15. Rextio can run simple benchmarks comparing Python fallback and Rust native execution.
 16. Rextio can provide a clear demo project showing a normal Python app with a Rust-compiled hot path.
+17. Rextio can optionally convert a narrow, supported subset of module top-level
+    initialization logic to a Rust native initializer while preserving Python
+    fallback import behavior.
 
 The first public release must feel like a usable hybrid compiler/build tool, not merely a static analyzer.
 
@@ -384,6 +387,7 @@ native_marker = "auto"
 require_type_hints = true
 allow_dynamic_features = false
 boundary_warnings = true
+native_top_level = false
 ```
 
 ### 6.2 `rextio check`
@@ -450,6 +454,7 @@ rextio build --fallback-threshold=1000
 rextio build --rust-binding=pyo3
 rextio build --rust-build-tool=maturin
 rextio build --native-marker=auto
+rextio build --native-top-level
 rextio build --no-boundary-warnings
 rextio build --entrypoint=myapp.cli:main
 rextio build --entrypoint=myapp.cli:main --executable-name=myapp
@@ -486,6 +491,7 @@ REXTIO_NATIVE_MARKER
 REXTIO_REQUIRE_TYPE_HINTS
 REXTIO_ALLOW_DYNAMIC_FEATURES
 REXTIO_BOUNDARY_WARNINGS
+REXTIO_NATIVE_TOP_LEVEL
 ```
 
 Command routing and output formatting flags such as project roots, bench
@@ -504,6 +510,9 @@ Behavior:
 * Generate Rust code for accepted native functions.
 * Reject unsafe native-to-fallback call boundaries.
 * Emit warnings for likely excessive Python-to-native call patterns.
+* Optionally generate a Rust native module initializer for supported module
+  top-level logic when `[policy] native_top_level = true` or
+  `--native-top-level` is set.
 * Generate PyO3 bindings.
 * Generate Cargo project.
 * Invoke maturin or Cargo as needed.
@@ -674,6 +683,16 @@ Support inside native candidate functions:
 * limited `math.sqrt`, `math.sin`, `math.cos`, and `math.floor`
 * simple indexing such as `xs[i]`
 
+When `[policy] native_top_level = true` or `--native-top-level` is set, Rextio
+may also convert a narrower subset of module top-level executable statements.
+Supported top-level native initialization is limited to assignment, annotated
+assignment, augmented assignment, expressions supported by the native subset,
+`if` and `while` blocks that update variables assigned before the block, and
+homogeneous assigned module variables that can be returned as `dict[str, T]`
+from the generated initializer. Imports, function definitions, class
+definitions, and module docstrings remain in Python fallback. Rextio must keep a
+full original fallback module and use it when native is disabled or unavailable.
+
 ### 7.3 Unsupported Syntax
 
 Reject inside native candidate functions:
@@ -713,6 +732,12 @@ Reject inside native candidate functions:
 * network I/O
 * database calls
 * ORM calls
+
+Reject top-level native initialization when module-level executable statements
+use unsupported syntax, user/external function calls, top-level `for` loops
+whose iteration variables would leak into module scope, or assigned module
+variables with heterogeneous export value types. Route the module top level to
+Python fallback instead of silently changing import-time semantics.
 
 When unsupported syntax is found, emit a diagnostic and route the function to fallback.
 

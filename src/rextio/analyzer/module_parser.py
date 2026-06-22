@@ -13,6 +13,7 @@ from rextio.analyzer.native_marker import (
     native_marker_for_function,
 )
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
+from rextio.analyzer.top_level import analyze_native_top_level
 from rextio.analyzer.unsupported_patterns import validate_native_function
 from rextio.targets.models import normalize_target_language
 
@@ -22,6 +23,7 @@ def parse_module(
     project_root: Path,
     native_marker: str = "auto",
     target_language: str = "rust",
+    native_top_level: bool = False,
 ) -> ModuleAnalysis:
     target_language = normalize_target_language(target_language)
     module_name = module_name_for_path(path, project_root)
@@ -55,6 +57,8 @@ def parse_module(
         target_language,
     )
     module.functions.extend(_collect_native_methods(tree, module, target_language))
+    if native_top_level:
+        module.top_level = analyze_native_top_level(tree, module)
     return module
 
 

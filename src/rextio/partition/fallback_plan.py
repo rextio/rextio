@@ -2,17 +2,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, ProjectAnalysis
+from rextio.analyzer.models import (
+    FunctionAnalysis,
+    ModuleAnalysis,
+    ProjectAnalysis,
+    TopLevelAnalysis,
+)
 
 
 @dataclass(frozen=True)
 class FallbackModulePlan:
     module: ModuleAnalysis
     accepted_native_functions: tuple[FunctionAnalysis, ...]
+    accepted_native_top_level: TopLevelAnalysis | None = None
 
     @property
     def needs_wrapper(self) -> bool:
-        return bool(self.accepted_native_functions)
+        return bool(self.accepted_native_functions or self.accepted_native_top_level is not None)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -21,6 +27,11 @@ class FallbackModulePlan:
             "accepted_native": [
                 function.qualname for function in self.accepted_native_functions
             ],
+            "accepted_native_top_level": (
+                self.accepted_native_top_level.qualname
+                if self.accepted_native_top_level is not None
+                else None
+            ),
         }
 
 
@@ -49,6 +60,18 @@ def create_fallback_plan(analysis: ProjectAnalysis, backend: str) -> FallbackPla
                 key=lambda function: function.qualname,
             )
         )
-        modules.append(FallbackModulePlan(module=module, accepted_native_functions=accepted))
+        accepted_top_level = (
+            module.top_level
+            if module.top_level is not None
+            and module.top_level.is_native_candidate
+            and module.top_level.accepted
+            else None
+        )
+        modules.append(
+            FallbackModulePlan(
+                module=module,
+                accepted_native_functions=accepted,
+                accepted_native_top_level=accepted_top_level,
+            )
+        )
     return FallbackPlan(backend=backend, modules=tuple(modules))
-

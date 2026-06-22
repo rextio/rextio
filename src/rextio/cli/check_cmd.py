@@ -17,20 +17,30 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
 
     accepted = analysis.accepted_native_functions
     rejected = analysis.rejected_native_functions
+    accepted_top_levels = analysis.accepted_native_top_levels
+    rejected_top_levels = analysis.rejected_native_top_levels
     warnings = analysis.boundary_warnings
 
     lines.append("Native candidates:")
-    if not analysis.native_candidates:
+    if not analysis.native_candidates and not analysis.native_top_levels:
         lines.append("  none")
     else:
         for function in accepted:
             lines.append(f"  [ok] {function.qualname}")
+        for top_level in accepted_top_levels:
+            lines.append(f"  [ok] {top_level.qualname}")
 
-    if rejected:
+    if rejected or rejected_top_levels:
         lines.extend(["", "Rejected:"])
         for function in rejected:
             lines.append(f"  [rejected] {function.qualname}")
             for diagnostic in function.error_diagnostics:
+                lines.append(f"    {diagnostic.code}: {diagnostic.message}")
+                if diagnostic.suggestion:
+                    lines.append(f"    suggestion: {diagnostic.suggestion}")
+        for top_level in rejected_top_levels:
+            lines.append(f"  [rejected] {top_level.qualname}")
+            for diagnostic in top_level.error_diagnostics:
                 lines.append(f"    {diagnostic.code}: {diagnostic.message}")
                 if diagnostic.suggestion:
                     lines.append(f"    suggestion: {diagnostic.suggestion}")
@@ -63,6 +73,7 @@ def run(args: Namespace) -> int:
                 ("policy", "require_type_hints"): args.require_type_hints,
                 ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
                 ("policy", "boundary_warnings"): args.boundary_warnings,
+                ("policy", "native_top_level"): args.native_top_level,
             },
         )
         target_plan = create_target_plan(project_root, config)
@@ -75,6 +86,7 @@ def run(args: Namespace) -> int:
         boundary_warnings=config.policy.boundary_warnings,
         native_marker=config.policy.native_marker,
         target_language=target_plan.spec.language,
+        native_top_level=config.policy.native_top_level,
     )
     write_check_report(project_root, analysis)
     if args.json:

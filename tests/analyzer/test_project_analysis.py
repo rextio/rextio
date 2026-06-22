@@ -212,6 +212,80 @@ def fallback_only(xs):
     assert analysis.diagnostics == []
 
 
+def test_native_top_level_is_disabled_by_default(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+total: int = 41
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert analysis.native_top_levels == []
+
+
+def test_accepts_supported_native_top_level_when_enabled(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+total: int = 0
+i: int = 0
+while i < 5:
+    total += i
+    i += 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_top_level=True)
+
+    assert [top_level.qualname for top_level in analysis.accepted_native_top_levels] == [
+        "app.__rextio_top_level__"
+    ]
+    top_level = analysis.accepted_native_top_levels[0]
+    assert top_level.assigned_types == {"i": "int", "total": "int"}
+    assert top_level.export_value_type == "int"
+
+
+def test_rejects_mixed_type_native_top_level_exports(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+answer: int = 42
+label: str = "ok"
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_top_level=True)
+
+    assert [top_level.qualname for top_level in analysis.rejected_native_top_levels] == [
+        "app.__rextio_top_level__"
+    ]
+    assert "share one supported value type" in analysis.rejected_native_top_levels[0].error_diagnostics[0].message
+
+
+def test_rejects_top_level_for_loop_to_preserve_module_scope(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+total: int = 0
+for i in range(5):
+    total += i
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_top_level=True)
+
+    assert [top_level.qualname for top_level in analysis.rejected_native_top_levels] == [
+        "app.__rextio_top_level__"
+    ]
+    assert "top-level for loops" in analysis.rejected_native_top_levels[0].error_diagnostics[0].message
+
+
 def test_auto_discovers_contextually_inferred_unannotated_functions(tmp_path: Path) -> None:
     write_module(
         tmp_path,

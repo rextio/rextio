@@ -19,6 +19,15 @@ to require `@rextio.native`.
 Use `@rextio.exempt` to keep a function on Python fallback even when it has a
 supported static signature.
 
+Module top-level logic is fallback by default. When `[policy]
+native_top_level = true` or `--native-top-level` is set, Rextio may convert a
+narrow import-time subset to a native initializer: assignments, annotated
+assignments, augmented assignments, supported expressions, and `if`/`while`
+blocks that update variables assigned before the block. Assigned module
+variables must share one supported value type so the initializer can return
+`dict[str, T]`. Rextio still keeps a full original fallback module for
+`REXTIO_DISABLE_NATIVE=1` and native import failures.
+
 If a source function has no annotations and no `.pyi` signature, Rextio only
 compiles it when constants, arithmetic, comparisons, `if` tests, loops,
 indexing, comprehensions, and supported builtins make every argument and return
@@ -128,6 +137,12 @@ usually `RXT010`:
 - assignment expressions outside comprehensions
 - starred expressions
 - arbitrary `*args` and `**kwargs`
+
+Top-level native initialization is even narrower than native functions. Rextio
+rejects native top-level conversion for top-level `for` loops, user/external
+function calls, unsupported executable statements, and heterogeneous module
+variable export types. These modules keep their top-level behavior on Python
+fallback.
 - keyword call arguments
 - unsupported operators such as `**`, `//`, matrix multiply, bitwise operators,
   shifts, unary plus, and bitwise invert

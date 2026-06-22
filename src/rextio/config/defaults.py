@@ -36,5 +36,6 @@ DEFAULT_CONFIG = {
         "require_type_hints": True,
         "allow_dynamic_features": False,
         "boundary_warnings": True,
+        "native_top_level": False,
     },
 }

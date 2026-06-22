@@ -37,6 +37,7 @@ native_marker = "auto"
 require_type_hints = true
 allow_dynamic_features = false
 boundary_warnings = true
+native_top_level = false
 """
 
 DEFAULT_REXTIO_MD = """# Rextio Project

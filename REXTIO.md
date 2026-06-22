@@ -29,6 +29,14 @@ generation is implemented.
 Use `@rextio.exempt` on functions that must stay on Python fallback. Exemptions
 override automatic discovery and explicit native markers.
 
+Module top-level logic remains Python fallback unless explicitly enabled with
+`[policy] native_top_level = true` or `--native-top-level`. The supported
+top-level subset is narrower than native functions: assignments, annotated
+assignments, augmented assignments, supported expressions, and `if`/`while`
+blocks that update already assigned module variables. Assigned module variables
+must share one supported value type. Rextio keeps an original fallback module
+and uses it whenever native is disabled or unavailable.
+
 ## Smoke Flow
 
 ```text
@@ -103,6 +111,7 @@ flag and environment variable. Common examples:
 --enable-mapper / REXTIO_MAPPERS_ENABLED / [mappers] enabled
 --native-marker / REXTIO_NATIVE_MARKER / [policy] native_marker
 --boundary-warnings / REXTIO_BOUNDARY_WARNINGS / [policy] boundary_warnings
+--native-top-level / REXTIO_NATIVE_TOP_LEVEL / [policy] native_top_level
 --entrypoint / REXTIO_EXECUTABLE_ENTRYPOINT / [executable] entrypoint
 --executable-backend / REXTIO_EXECUTABLE_BACKEND / [executable] backend
 --nuitka-mode / REXTIO_NUITKA_MODE / [executable] nuitka_mode

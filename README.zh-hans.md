@@ -77,6 +77,12 @@ comprehension 和受支持 builtin 推断简单 scalar 与 collection signature�
 annotation 时，会优先参考同名 `.pyi` 文件的 signature。类型仍然模糊时，该函数保留在
 Python fallback。
 
+模块顶层逻辑默认保留在 Python fallback。设置 `[policy] native_top_level = true` 或
+`--native-top-level` 后，Rextio 会尝试生成受限的 native initializer。支持范围包括
+assignment、annotated assignment、augmented assignment、受支持 expression，以及只更新已
+提前赋值模块变量的 `if`/`while` block。导出的模块变量必须共享一个受支持 value 类型；
+native 被禁用或不可用时会使用原始 fallback 模块。
+
 ## 构建前提
 
 Native 构建需要 Rust 和 Cargo。配置 `[rust] build_tool = "maturin"` 时，Rextio 也可以
@@ -123,6 +129,7 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[policy] require_type_hints` | `--require-type-hints` / `--no-require-type-hints` | `REXTIO_REQUIRE_TYPE_HINTS` |
 | `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
+| `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
 Public 1 仍会保守地验证取值。当前已实现的 native target 只有 Rust。
 `native_backend = "mojo"` 和 `native_backend = "julia"` 会作为未来的 target-language

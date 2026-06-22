@@ -75,6 +75,7 @@ def analyze_project(
     boundary_warnings: bool = True,
     native_marker: str = "auto",
     target_language: str = "rust",
+    native_top_level: bool = False,
 ) -> ProjectAnalysis:
     root = Path(project_root).resolve()
     target_language = normalize_target_language(target_language)
@@ -85,6 +86,7 @@ def analyze_project(
             root,
             native_marker=native_marker,
             target_language=target_language,
+            native_top_level=native_top_level,
         )
         for path in scan_python_files(root)
     ]
