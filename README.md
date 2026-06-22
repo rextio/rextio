@@ -89,6 +89,15 @@ loops, indexing, comprehensions, and supported builtins. A sibling `.pyi` file
 with supported function signatures is preferred when source annotations are
 missing. If a type remains ambiguous, the function stays on Python fallback.
 
+Module top-level logic is Python fallback by default. Projects can opt into a
+limited native initializer with `[policy] native_top_level = true` or
+`--native-top-level`. This supports only a narrow import-time subset:
+assignments, annotated assignments, augmented assignments, supported
+expressions, and `if`/`while` blocks that update variables assigned before the
+block. Assigned module variables must share one supported value type so the
+Rust initializer can return `dict[str, T]`. Rextio keeps the original fallback
+module and uses it when native is disabled or unavailable.
+
 ## Build Prerequisites
 
 Native builds require Rust and Cargo. Rextio can also use `maturin` when
@@ -134,6 +143,7 @@ behavior settings can be configured from any of these sources:
 | `[policy] require_type_hints` | `--require-type-hints` / `--no-require-type-hints` | `REXTIO_REQUIRE_TYPE_HINTS` |
 | `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
+| `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
 Public 1 still validates values conservatively. Rust is the only implemented
 native target today. `native_backend = "mojo"` and `native_backend = "julia"`
@@ -261,6 +271,19 @@ Use `@rextio.exempt` to keep a function on Python fallback even when automatic
 native discovery is enabled. Exempt functions are never emitted into generated
 Rust; native candidates that call them are rejected by the normal
 native-to-fallback boundary rule.
+
+Top-level native initialization is separate from function discovery. Enable it
+explicitly with:
+
+```toml
+[policy]
+native_top_level = true
+```
+
+Unsupported top-level statements remain fallback-only. Public 1 rejects
+top-level native conversion for `for` loops, user/external function calls, and
+heterogeneous module variable exports to avoid changing Python import
+semantics.
 
 ## Fallback Safety
 

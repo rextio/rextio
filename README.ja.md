@@ -82,6 +82,13 @@ comprehension、対応 builtin から単純な scalar と collection signature �
 source annotation がない場合は同名 `.pyi` ファイルの signature を優先して参照します。
 型が曖昧なままなら、その関数は Python fallback に残ります。
 
+モジュール top-level ロジックはデフォルトで Python fallback に残ります。
+`[policy] native_top_level = true` または `--native-top-level` を設定すると、限定的な
+native initializer の生成を試みます。対応範囲は assignment、annotated assignment、
+augmented assignment、対応 expression、そして事前に代入済みのモジュール変数だけを更新する
+`if`/`while` block です。export されるモジュール変数は 1 つの対応 value 型を共有する
+必要があります。native が無効または利用不可の場合は元の fallback モジュールを使います。
+
 ## ビルド前提条件
 
 Native ビルドには Rust と Cargo が必要です。`[rust] build_tool = "maturin"` が設定
@@ -131,6 +138,7 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[policy] require_type_hints` | `--require-type-hints` / `--no-require-type-hints` | `REXTIO_REQUIRE_TYPE_HINTS` |
 | `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
+| `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
 Public 1 は引き続き値を保守的に検証します。現在実装されている native target は Rust
 のみです。`native_backend = "mojo"` と `native_backend = "julia"` は将来の

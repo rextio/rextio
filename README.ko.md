@@ -83,6 +83,13 @@ comprehension, 지원 builtin에서 단순 scalar와 collection signature를 추
 source annotation이 없을 때는 같은 이름의 `.pyi` 파일 signature를 우선 참조합니다.
 타입이 모호하게 남으면 해당 함수는 Python fallback에 머뭅니다.
 
+모듈 최상단 로직은 기본적으로 Python fallback입니다. `[policy] native_top_level = true` 또는
+`--native-top-level`을 설정하면 제한적인 native initializer를 시도합니다. 지원 범위는
+assignment, annotated assignment, augmented assignment, 지원 expression, 그리고 이미
+할당된 모듈 변수를 갱신하는 `if`/`while` block입니다. export되는 모듈 변수들은 하나의
+지원 value 타입을 공유해야 하며, native가 비활성화되거나 없으면 원본 fallback 모듈을
+사용합니다.
+
 ## 빌드 전제 조건
 
 Native 빌드에는 Rust와 Cargo가 필요합니다. `[rust] build_tool = "maturin"`으로
@@ -132,6 +139,7 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[policy] require_type_hints` | `--require-type-hints` / `--no-require-type-hints` | `REXTIO_REQUIRE_TYPE_HINTS` |
 | `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
+| `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
 Public 1은 여전히 값을 보수적으로 검증합니다. 현재 구현된 native target은 Rust뿐입니다.
 `native_backend = "mojo"`와 `native_backend = "julia"`는 향후 target-language 선택지로
