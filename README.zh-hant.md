@@ -2,128 +2,246 @@
 
 [English](README.md) | [한국어](README.ko.md) | [简体中文](README.zh-hans.md) | [日本語](README.ja.md)
 
-Rextio 0.1.0 是 alpha 階段的混合建置工具。它會把符合條件、可靜態解析型別的 Python
-函式編譯為 Rust 原生模組，並把其餘程式碼封裝為安全的 Python fallback。
+Rextio 0.1.0 是 alpha 階段的本機 Python 建置工具。
 
-0.1.0 alpha 的範圍刻意保持很窄。它是面向可靜態解析型別的 Python 熱路徑專案的本機 CLI 和
-建置工具 MVP。Rextio 預設會自動發現型別來自 annotation、同名 `.pyi` stub 或保守本機
-上下文推斷的符合條件函式；專案也可以選擇停用自動發現，並要求使用 `@rextio.native`
-標記。Rextio 不宣稱提供完整 Python 相容性、內建第三方套件涵蓋、框架遷移、JIT 行為，
-或完整的執行階段邊界成本最佳化器。
-
-0.1.0 alpha 包含保守的靜態邊界檢查。它會拒絕呼叫 fallback-only 程式碼的 native 函式，
-當 Python 迴圈反覆呼叫 native 函式時發出警告，並且在重複的 Python/Rust 邊界
-crossing 超過簡單執行階段閾值後，讓產生的 wrapper 將該 native 函式切換到 fallback。
-
-## 目前命令
+它會找出可以安全 lowering 到 Rust 的 Python 函式，提前編譯這些函式，並讓其餘程式碼
+繼續透過 Python fallback 執行。
 
 ```text
-rextio init
-rextio check
-rextio generate
-rextio build
-rextio bench
-rextio clean
+typed Python project
+  -> 分析 native 候選
+  -> 拒絕不支援或不安全的函式
+  -> 為 accepted 函式產生 Rust + PyO3
+  -> 為其餘程式碼產生 Python fallback wrapper
+  -> 建置可 import 的 hybrid artifact
 ```
 
-初始實作著重於專案初始化、native 候選發現、subset 診斷、靜態邊界診斷、執行階段
-停用旗標，以及確定性的 check report。
+Rextio 不是 Python 替代品，也不是 whole-project Rust migration 工具。Native 編譯只是
+最佳化；Python fallback 行為是正確性基準。
 
-典型本機流程：
+## 提供什麼
+
+| 產物 | 用途 |
+| --- | --- |
+| `.rextio/generated/rust/` | accepted native 函式的 Rust/PyO3 原始碼 |
+| `.rextio/generated/python/` | Python wrapper 與 fallback module |
+| `.rextio/build/python/` | 可 import 的 hybrid package tree |
+| `dist/*.whl` | 包含 fallback 程式碼和 native extension 的 wheel |
+| `dist/<name>.pyz` | Python entrypoint 的 zipapp 可執行 artifact |
+| `dist/<name>.dist/` 或 `dist/<name>` | Nuitka standalone/onefile 可執行 artifact |
+| `dist/<crate>-rust-crate/` | Rust 專案可作為 path dependency 使用的 crate |
+
+產生的 Python wrapper 會優先嘗試 native；當 native 被停用、無法載入、分析拒絕，或超過
+boundary threshold 時會使用 Python fallback。
+
+```text
+REXTIO_DISABLE_NATIVE=1
+```
+
+## 快速範例
+
+```python
+# src/myapp/math_ops.py
+def sum_squares(xs: list[int]) -> int:
+    total = 0
+    for x in xs:
+        total += x * x
+    return total
+
+def format_result(value: int) -> str:
+    return f"score={value}"  # 不屬於 direct Rust subset
+```
 
 ```text
 python -m pip install -e .
+rextio check .
+rextio build . --fallback=cpython
+```
+
+Rextio 可以把 `sum_squares` 編譯為 Rust，並讓 `format_result` 保持 Python fallback。
+Python import 路徑保持不變。
+
+```python
+from myapp.math_ops import sum_squares, format_result
+
+assert sum_squares([1, 2, 3]) == 14
+assert format_result(14) == "score=14"
+```
+
+## 常用流程
+
+```text
 rextio init --project-root path/to/project
 rextio check path/to/project
 rextio generate path/to/project --fallback=cpython
 rextio build path/to/project --fallback=cpython
-rextio build path/to/project --fallback=cpython --rust-importable --rust-crate-name=my_native
-rextio build path/to/project --fallback=cpython --entrypoint=myapp.cli:main
-rextio bench myapp.scoring.compute_score --project-root path/to/project
+rextio bench myapp.math_ops.sum_squares --project-root path/to/project
 rextio clean path/to/project
 ```
 
-## 0.1.0 alpha 範圍
+`rextio generate` 只寫出產生的原始碼，不執行 Cargo、maturin、Nuitka、wheel 建置或
+executable 封裝。`rextio build` 會執行產生、編譯和封裝。
 
-0.1.0 alpha 支援一個面向模組層級函式的小型靜態型別 subset。當 Rextio 能從 source
-annotation、同名 `.pyi` stub 或保守本機上下文推斷解析所有參數和返回型別時，符合條件的
-函式預設會成為 native 候選。不支援的語法、未解析的型別、動態特性、不安全的
-native-to-fallback 呼叫，以及無法解析的外部呼叫，都會從 native 編譯中被拒絕，並在可能時
-保留為 Python fallback。
+## 指令
 
-關於支援的 subset、邊界限制、診斷和非目標，請參閱
-[0.1.0 alpha 不支援的功能](docs/unsupported-features.md)。
+| 指令 | 作用 |
+| --- | --- |
+| `rextio init` | 建立 `rextio.toml`、`REXTIO.md`、`.rextioignore` |
+| `rextio check` | 分析 native 候選並輸出 diagnostics |
+| `rextio generate` | 不編譯，只產生 Rust/Python 原始碼 |
+| `rextio build` | 產生、編譯、封裝，並寫出 build report |
+| `rextio bench` | 對一個函式比較 Python fallback 與 Rust native 時間 |
+| `rextio clean` | 刪除 `.rextio/build`、`.rextio/generated`、`.rextio/reports` |
 
-目前 native 候選支援包含 `bytes` 的 scalar、`list[...]` 與 `list[list[T]]`、fixed `tuple[...]`、有限的
-固定 `dict[K, V]`、有限的 `set[int|float|bool|str]`，以及 `Optional[T]` / `T | None` 型別。支援的語法包括算術、
-比較、`if`、`while`、`for x in xs`、`range(...)` 迴圈、
-`for i, x in enumerate(xs)`、`for x, y in zip(xs, ys)`、`break`、`continue`、
-augmented assignment、帶型別的區域 annotation、簡單索引、list literal、fixed tuple
-literal、有限的 dict read/write、有限的 list/dict/set comprehension、comprehension 內的
-assignment expression，以及支援的 list item 型別上的 `list.append(...)`。
-Builtin 支援刻意限制為 `len`、`abs`、兩個參數的 `min`/`max`、
-`sum(list[int|float])`、`all`/`any`，以及有限的 `sorted`/`reversed`。
-支援的 `math` subset 包含三角函式、對數、rounding、finite/NaN 檢查，以及
-`math.pi`/`math.e`。常見 side-effect 和標準函式庫 lowering 包含 `print(...)`、
-`logging.debug/info/warning/error(...)`、由 `logging.getLogger(...)` 指派的
-logger 變數、`datetime`/`time`、`statistics`、選定的 `str`/`bytes`/`list`
-method，以及有限的 `hashlib.sha256`、`base64`、`json` pattern。
+常用 build 形式：
 
-這些擴充形式仍保持保守：空 list literal 需要受支援的 `list[...]` 區域 annotation，
-且 `range(start, stop, step)` 目前要求 `step` 是正的 int literal。`enumerate` 和
-`zip` 僅支援作為 list 變數上的 batch loop 或 comprehension iterable。Native subset
-現在支援有限的 list/dict/set comprehension、comprehension 內的 assignment expression、
-`list[list[T]]`、固定 `dict[K, V]`，以及 `set[int|float|bool|str]` comprehension。
-dataclass 仍不在 direct Rust lowering 範圍內。
+```text
+rextio build . --fallback=cpython
+rextio build . --fallback=nuitka
+rextio build . --fallback-threshold=1000
+rextio build . --entrypoint=myapp.cli:main
+rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
+rextio build . --rust-importable --rust-crate-name=my_native
+```
 
-Rextio 會保守處理 Python/Rust ownership 差異。對於 `str`、`bytes`、`list`、`dict`、
-`set` 等 Rust owned value 的唯讀重用，Rextio 會在需要的位置產生明確 clone。相反，
-`ys = xs` 這類 mutable collection alias 後再 mutate 任一 alias 的 Python pattern 會保留在
-Python fallback，因為 Rust ownership 與 Python reference aliasing 的語意並不相同。
+## Native 選擇
 
-對於無法安全 lowering 為 direct Rust 的 Python semantics，Rextio 可以產生 Python runtime
-semantics native shim。該 shim 是呼叫產生的 Python fallback 實作的 Rust/PyO3 函式，因此可以
-保留 class/object 行為、標記為 `@rextio.native` 的一般 instance method、exception handling、
-context manager、`async`/`await`、generator/`yield`，以及 `getattr` 或 `obj.attr` 等 dynamic
-attribute access。該路徑會報告 `RXT080`，它是 compatibility 路徑，不是 Rust speedup 路徑。
-該路徑的 automatic discovery 保持保守；較寬的 object-runtime 程式碼應明確標記
-`@rextio.native`。
+預設使用自動 native discovery：
 
-型別推斷刻意保持窄範圍。Rextio 可以從常數、算術、比較、`if` test、loop、indexing、
-comprehension 和受支援 builtin 推斷簡單 scalar 與 collection signature。缺少 source
-annotation 時，會優先參考同名 `.pyi` 檔案的 signature。型別仍然模糊時，該函式保留在
-Python fallback。
+```toml
+[policy]
+native_marker = "auto"
+```
 
-模組頂層邏輯預設保留在 Python fallback。設定 `[policy] native_top_level = true` 或
-`--native-top-level` 後，Rextio 會嘗試產生受限的 native initializer。支援範圍包括
-assignment、annotated assignment、augmented assignment、受支援 expression，以及只更新已
-提前賦值模組變數的 `if`/`while` block。匯出的模組變數必須共享一個受支援 value 型別；
-native 被停用或不可用時會使用原始 fallback 模組。
+當函式型別可解析並符合 direct Rust subset 時，Rextio 可以自動把 module-level 函式作為
+native 候選。也可以切換為只接受明確 marker：
 
-## 建置前提
+```toml
+[policy]
+native_marker = "decorator"
+```
 
-Native 建置需要 Rust 和 Cargo。設定 `[rust] build_tool = "maturin"` 時，Rextio 也可以
-使用 `maturin`；如果 maturin 不可用，Rextio 會在可能時 fallback 到 Cargo。
+```python
+import rextio
 
-Nuitka fallback 封裝是實驗性的。如果在未安裝 Nuitka 的情況下要求
-`--fallback=nuitka`，Rextio 會回報明確的 `RXT060` 錯誤並建議使用
-`--fallback=cpython`。安裝 Nuitka 後，Rextio 會對產生的 Python fallback 模組執行
-Nuitka，同時仍在建置產物中保留 CPython fallback 檔案。
+@rextio.native
+def score(x: float) -> float:
+    return x * 2.0
+```
 
-省略 `--fallback` 時，`rextio build` 會使用 `rextio.toml` 中的
-`[build] fallback_backend`。傳入 `--fallback=cpython` 或 `--fallback=nuitka` 會覆寫
-本次執行的專案設定。
+未來多 target 場景可以指定 target：
 
-## 設定來源
+```python
+@rextio.native(target="rust")
+def score(x: float) -> float:
+    return x * 2.0
+```
 
-建置和分析設定按以下優先順序解析：
+必須留在 Python fallback 的函式使用 `@rextio.exempt`：
+
+```python
+@rextio.exempt
+def keep_python(x: int) -> int:
+    return x + 1
+```
+
+exempt 函式永遠不會產生到 Rust 中。native 候選如果呼叫 exempt 或 fallback-only 函式，也會
+轉為 fallback。
+
+## 安全模型
+
+- direct Rust native 函式只能呼叫 accepted native 函式、支援的 builtin 和支援的標準函式庫函式。
+- 呼叫 fallback-only 程式碼的 native 函式會被拒絕。
+- Python fallback 程式碼可以呼叫 native 函式。
+- Python loop 重複呼叫 native 函式時會產生 boundary warning。
+- wrapper crossing 超過閾值後，產生的 wrapper 可以把該函式切回 fallback。
+- Python/Rust ownership 差異會明確處理：唯讀重用會在需要時 clone；mutable collection alias
+  mutation 保留在 Python fallback。
+
+相關執行階段設定：
+
+```text
+REXTIO_BOUNDARY_FALLBACK_THRESHOLD=1000
+REXTIO_DISABLE_BOUNDARY_FALLBACK=1
+REXTIO_NATIVE_MODE=auto|fallback|native
+```
+
+## direct Rust subset
+
+0.1.0 alpha 只支援一個小 subset。這是能獲得實際 Rust speedup 的路徑。
+
+支援型別包括 `int`、`float`、`bool`、`str`、`bytes`、`None`、`list[T]`、
+`list[list[T]]`、fixed `tuple[...]`、fixed `dict[K, V]`、有限 `set[...]`、
+`Optional[T]` 和 `T | None`。
+
+支援語法包括 local assignment、typed local annotation、算術、比較、`if`、`while`、
+`for x in xs`、支援形式的 `range`/`enumerate`/`zip`、`break`、`continue`、`return`、
+有限 list/dict/set comprehension、有限 `list.append`、dict read/write、indexing，以及
+accepted native helper 呼叫。
+
+有限 lowering 的 builtin/標準函式庫包括 `len`、`abs`、`min`、`max`、`sum`、`all`、
+`any`、`sorted`、`reversed`、部分 `math`、部分 `str`/`bytes`/`list` method、`print`、
+`logging`、`datetime`、`time`、`statistics`、`hashlib.sha256`、`base64`、`json`。
+
+不支援或語意不明確的程式碼會留在 fallback，或在支援時透過 Python runtime semantics shim
+保留行為。詳細邊界見 [0.1.0 alpha 不支援的功能](docs/unsupported-features.md)。
+
+## Python runtime semantics shim
+
+有些 Python 功能無法安全變成 typed Rust statement。對明確標記的 native 程式碼，Rextio 可以
+產生一個呼叫 Python fallback 實作的 PyO3 shim。
+
+這個 compatibility 路徑可用於保留 class/object、instance method、exception、context
+manager、`async`/`await`、generator、dynamic attribute access 等行為，並報告 `RXT080`。
+它是行為保留路徑，不是 Rust speedup 路徑。
+
+## Rust-importable crate
+
+如果 direct Rust 函式也要給 Rust 應用使用，可以額外產生 Cargo library crate：
+
+```text
+rextio build . --rust-importable --rust-crate-name=my_native
+```
+
+```toml
+[dependencies]
+my_native = { path = "../dist/my_native-rust-crate" }
+```
+
+```rust
+fn main() -> Result<(), my_native::RextioError> {
+    let value = my_native::myapp__math_ops__sum_squares(vec![1, 2, 3])?;
+    assert_eq!(value, 14);
+    Ok(())
+}
+```
+
+該 crate 只 export 直接 lowering 到 typed Rust 的函式。fallback-only 函式和 runtime
+semantics shim 仍是 Python-facing 路徑。
+
+## 可執行 artifact
+
+```text
+rextio build . --entrypoint=myapp.cli:main --executable-name=myapp
+```
+
+這會寫出 `dist/myapp.pyz`。目標機器仍需要相容的 Python interpreter。Native extension 不會
+直接從 zipapp 內 import，因此 `_rextio_native` 不可用時 wrapper 會保持 fallback 行為。
+
+Nuitka executable 封裝是實驗性的，並要求安裝 Nuitka：
+
+```text
+rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=standalone
+rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
+```
+
+## 設定
 
 ```text
 CLI parameter > environment variable > rextio.toml > built-in default
 ```
 
-`project_root`、bench target、`init --force`、`check --json` 等決定命令執行方式或輸出
-形式的參數仍然只屬於 command line。專案行為設定可以從以下任一來源設定：
+主要設定：
 
 | `rextio.toml` key | CLI parameter | Environment variable |
 | --- | --- | --- |
@@ -136,212 +254,29 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[rust] crate_name` | `--rust-crate-name` | `REXTIO_RUST_CRATE_NAME` |
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
-| `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
 | `[mappers] paths` | `--mapper-path` | `REXTIO_MAPPER_PATHS` |
-| `[mappers] enabled` | `--enable-mapper` | `REXTIO_MAPPERS_ENABLED` |
 | `[mappers] repository` | `--mapper-repository` | `REXTIO_MAPPER_REPOSITORY` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
-| `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
-| `[executable] nuitka_mode` | `--nuitka-mode` | `REXTIO_NUITKA_MODE` |
 | `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
-| `[policy] require_type_hints` | `--require-type-hints` / `--no-require-type-hints` | `REXTIO_REQUIRE_TYPE_HINTS` |
-| `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
-| `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.0 alpha 仍會保守地驗證取值。目前已實作的 native target 只有 Rust。
-`native_backend = "mojo"` 和 `native_backend = "julia"` 會作為未來的 target-language
-選擇被接受，因此可以設定 versioned mapper 和 build-option metadata；但在對應 backend
-實作前，source generation 會明確失敗。
-
-Mapper plugin 可從 local metadata folder 或 public Git repository 載入。Local folder
-透過 `[mappers] paths` 和選用的 `[mappers] enabled` 設定；每個 folder 必須包含
-`rextio-mapper.toml` 或 `mapper.toml`。`[mappers] repository`、`--mapper-repository`
-或 `REXTIO_MAPPER_REPOSITORY` 可設定為 public Git URL；Rextio 會將其 clone 到
-`.rextio/mappers/repositories/` 並遞迴發現 mapper manifest。
-
-## 產生的產物
-
-Rextio 會把產生的檔案寫入 `.rextio/` 下，不會就地修改使用者原始檔。
-
-```text
-.rextio/
-  build/
-    python/
-      rextio/
-        runtime/
-  generated/
-    <target-language>/
-    rust_crate/
-    python/
-  reports/
-    check.json
-    build.json
-    bench.json
-dist/
-  <project>-0.1.0-<tag>.whl
-  <rust-crate-name>-rust-crate/
-  <executable-name>.pyz
-  <executable-name>
-  <executable-name>.dist/
-```
-
-`rextio check` 會寫入 `.rextio/reports/check.json`。`rextio build` 會同時寫入 check 和
-build report。`rextio bench` 會寫入 `.rextio/reports/bench.json`，其中包含結構化的
-fallback/native 計時比較。
-
-`rextio generate` 會執行分析，並在 `.rextio/generated/` 下寫入產生的 Rust/PyO3 和
-Python wrapper/fallback 原始碼；它不會呼叫 Cargo、maturin 或 Nuitka，也不會建立
-`.rextio/build/` 或 `dist/`。使用 `--rust-importable` 時，它還會在
-`.rextio/generated/rust_crate/` 下寫入 Rust library crate 原始碼，但仍不會編譯該 crate。
-
-`rextio build` 成功後，還會在 `dist/` 下寫入產生的 hybrid artifact wheel。純
-fallback wheel 使用 `py3-none-any`；包含產生 native extension 的 wheel 使用本機
-CPython/platform tag。測試套件會把該 wheel 安裝到全新環境中，並用
-`REXTIO_DISABLE_NATIVE=1` 驗證封裝後的 fallback import 仍能運作。
-
-`rextio build --rust-importable --rust-crate-name=my_native` 還會產生可從 Rust 直接使用的
-library crate，並用 Cargo 編譯。Source artifact 會複製到 `dist/my_native-rust-crate/`，
-Rust 專案可以透過 path dependency 使用它。
-
-```toml
-[dependencies]
-my_native = { path = "../dist/my_native-rust-crate" }
-```
-
-產生的 crate 函式使用 Rextio deterministic native 名稱，並返回
-`Result<T, RextioError>`。
-
-```rust
-fn main() -> Result<(), my_native::RextioError> {
-    let value = my_native::myapp__math_ops__sum_squares(vec![1, 2, 3])?;
-    assert_eq!(value, 14);
-    Ok(())
-}
-```
-
-Rust-importable crate 只包含直接 lowering 到 typed Rust 的函式。Python runtime semantics
-shim 和 fallback-only 函式仍保留為 Python-facing compatibility 路徑，不會 export 到該 crate。
-
-`rextio build --entrypoint=module:function` 還會在 `dist/` 下產生 zipapp 可執行
-artifact。可以使用 `--executable-name=name` 控制輸出檔名；否則 Rextio 會從
-entrypoint 模組推導名稱。結果是 Python zipapp（`.pyz`），因此目標機器仍需要相容的
-Python 直譯器。Native extension 模組不能直接從 zipapp 內部 import，所以產生的
-wrapper 會保留 fallback 安全性，並在 native 模組不可用時使用 Python fallback。
-
-安裝 Nuitka 後，也可以產生 Nuitka executable artifact：
-
-```text
-rextio build path/to/project \
-  --entrypoint=myapp.cli:main \
-  --executable-backend=nuitka \
-  --nuitka-mode=standalone
-
-rextio build path/to/project \
-  --entrypoint=myapp.cli:main \
-  --executable-backend=nuitka \
-  --nuitka-mode=onefile
-```
-
-standalone 模式會在 `dist/` 下寫入 Nuitka `.dist` 應用程式目錄。onefile 模式會在
-`dist/` 下寫入單一 Nuitka 可執行檔。Nuitka executable 封裝仍依賴本機 toolchain。
-如果 Nuitka 不可用，Rextio 會回報明確的 `RXT060` 錯誤並建議使用 zipapp backend。
-
-## 策略設定
-
-0.1.0 alpha 會保守地驗證 `rextio.toml`，並拒絕未知 section、未知 key、不支援的 backend，
-以及超出 0.1.0 alpha 範圍的策略值。
-
-邊界警告預設啟用。希望只保留嚴格安全錯誤、不要 Python-loop 邊界警告的專案可以設定：
-
-```toml
-[policy]
-boundary_warnings = false
-```
-
-自動 native discovery 預設啟用：
-
-```toml
-[policy]
-native_marker = "auto"
-```
-
-只希望使用明確 native 候選的專案可以停用 auto discovery：
-
-```toml
-[policy]
-native_marker = "decorator"
-```
-
-在 decorator-only 模式下，只有用 `@rextio.native` 標記的函式才會成為 native 候選。
-
-顯式 marker 也可以固定目標 native 語言。例如
-`@rextio.native(target="rust")` 只會在 active `--target-language` /
-`[build] native_backend` 為 Rust 時生效。`target="mojo"` 和 `target="julia"` 會作為
-未來 backend 的 planning 值保留，但 0.1.0 alpha 只實作 Rust source generation。
-
-即使啟用了自動 native discovery，也可以使用 `@rextio.exempt` 讓某個函式保留在
-Python fallback。exempt 函式永遠不會被 emit 到產生的 Rust；呼叫它們的 native 候選
-會依正常的 native-to-fallback 邊界規則被拒絕。
-
-## Fallback 安全性
-
-產生的 wrapper 會在可用且安全時使用 native 函式。當 native import 失敗，或 native
-執行被停用時，它們會 fallback 到 Python。
-
-```text
-REXTIO_DISABLE_NATIVE=1
-```
-
-當專案需要明確的執行階段行為時，可以設定 `REXTIO_NATIVE_MODE`：
-
-```text
-REXTIO_NATIVE_MODE=auto      # 預設：可用時使用 native，否則 fallback
-REXTIO_NATIVE_MODE=fallback  # 強制 Python fallback
-REXTIO_NATIVE_MODE=native    # 要求產生的 native 函式可用
-```
-
-重複的 Python-to-native wrapper 呼叫一開始是允許的。如果某個函式的 wrapper crossing
-次數超過 `REXTIO_BOUNDARY_FALLBACK_THRESHOLD`，後續呼叫會使用該函式產生的 Python
-fallback。預設閾值為 `1000`。`rextio generate --fallback-threshold=N` 和
-`rextio build --fallback-threshold=N`、`REXTIO_BOUNDARY_FALLBACK_THRESHOLD`、
-`[build] fallback_threshold = N` 都可以為該 artifact 設定產生程式碼預設值。執行階段
-`REXTIO_BOUNDARY_FALLBACK_THRESHOLD` 會覆寫這個 embed 的預設值。將閾值設為 `0`，或設定
-`REXTIO_DISABLE_BOUNDARY_FALLBACK=1`，可以停用此自動 fallback。`REXTIO_NATIVE_MODE=native`
-會繞過該閾值。
-
-使用 `.rextioignore` 可以讓 Rextio 分析忽略產生檔案或無關的 Python 檔案。
-
-## 邊界診斷
-
-0.1.0 alpha 的邊界檢查是靜態且保守的：
-
-- `RXT070`：native 函式呼叫了 fallback-only Python 程式碼。
-- `RXT072`：native 函式依賴被拒絕的 native 函式。
-- `RXT073`：fallback Python 在迴圈中呼叫 native 函式。
-- `RXT080`：native 函式使用 Python runtime semantics shim。
-
-`RXT070` 和 `RXT072` 會拒絕 native 候選。`RXT073` 是警告；該函式仍然符合條件，並且
-一開始可以使用 native，但當重複的執行階段 crossing 超過設定閾值後，產生的 wrapper
-會 fallback 到 CPython/Nuitka fallback 路徑。`RXT080` 是 warning；產生的 Rust 函式會呼叫
-Python fallback 函式以保留 Python semantics。
+目前實作的 native target 只有 Rust。`mojo` 和 `julia` 只是未來 backend 的 planning 值。
+Mapper plugin 可以從本機 metadata folder 或 public Git repository 載入，但 0.1.0 alpha
+不內建具體第三方 mapper 轉換。
 
 ## 範例
 
-0.1.0 alpha 包含聚焦的本機範例：
-
-- `examples/pure_math`：編譯為 native hot path 的簡單 typed 數學函式。
-- `examples/fallback_demo`：當 native 缺失或設定 `REXTIO_DISABLE_NATIVE=1` 時，產生的 wrapper 使用 Python fallback。
-- `examples/boundary_demo`：透過 `@rextio.exempt` 展示保守邊界拒絕，以及 Python-loop 邊界警告。
-
-試一試：
-
 ```text
 rextio check examples/pure_math
-rextio generate examples/pure_math --fallback=cpython
 rextio build examples/pure_math --fallback=cpython
-rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 rextio bench pure_math.math_ops.sum_squares --project-root examples/pure_math
+
 rextio check examples/boundary_demo
+rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 ```
+
+- `examples/pure_math`: typed math hot path 的 direct Rust lowering
+- `examples/fallback_demo`: native 停用或缺失時的 fallback 行為
+- `examples/boundary_demo`: native-to-fallback boundary rejection 和 warning
+- `examples/fastapi_scoring`: application shell 保持 Python，scoring hot path 可 native
