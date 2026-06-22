@@ -147,6 +147,10 @@ fallback.
   `int / int`
 - identity and membership comparisons such as `is`, `is not`, `in`, and
   `not in`
+- mutable collection alias mutation, such as assigning `ys = xs` and then
+  mutating either alias with supported `append` or dict assignment. Direct Rust
+  lowering may clone read-only owned values, but it must not silently replace
+  Python reference aliasing semantics with Rust ownership semantics.
 
 ## Runtime Semantics Shim
 

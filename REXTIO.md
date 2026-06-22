@@ -93,6 +93,14 @@ comprehensions may produce supported fixed `dict[K, V]`, and set
 comprehensions may produce `set[int|float|bool|str]`. Dataclasses are not part
 of the direct Rust lowering subset.
 
+Python/Rust ownership differences are handled conservatively. Codegen clones
+owned Rust values when a read-only Python value is reused after assignment or
+inside a container literal. Mutable aliasing of Python collections is not
+directly lowered: if `ys = xs` or a container literal captures `xs`, and either
+alias is later mutated through supported `append` or dict assignment, the
+function is routed to Python fallback instead of silently changing alias
+semantics.
+
 When direct Rust lowering cannot safely preserve Python object semantics, Rextio
 may generate a Python runtime semantics native shim. The shim is a Rust/PyO3
 function that calls the generated Python fallback implementation. It supports

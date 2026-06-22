@@ -92,6 +92,13 @@ supported fixed value type. Set support is limited to `set[int]`, `set[float]`,
 Rust lowering. `json.loads` requires an expected supported target type from a
 return annotation or local variable annotation.
 
+Rextio treats Python/Rust ownership differences conservatively. Read-only reuse
+of owned values such as `str`, `bytes`, `list`, `dict`, and `set` is lowered with
+explicit Rust clones when needed. Python mutable alias patterns, such as
+assigning `ys = xs` and then mutating either alias, are kept on Python fallback
+because Rust ownership and Python reference aliasing do not have the same
+semantics.
+
 For Python semantics that cannot be safely lowered into the typed Rust subset,
 Rextio can generate a Python runtime semantics native shim. This shim is a Rust
 PyO3 function that calls the generated Python fallback implementation, so it can

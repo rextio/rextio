@@ -76,6 +76,11 @@ method，以及有限的 `hashlib.sha256`、`base64`、`json` pattern。
 `list[list[T]]`、固定 `dict[K, V]`，以及 `set[int|float|bool|str]` comprehension。
 dataclass 仍不在 direct Rust lowering 范围内。
 
+Rextio 会保守处理 Python/Rust ownership 差异。对于 `str`、`bytes`、`list`、`dict`、
+`set` 等 Rust owned value 的只读复用，Rextio 会在需要的位置生成显式 clone。相反，
+`ys = xs` 这类 mutable collection alias 后再 mutate 任一 alias 的 Python pattern 会保留在
+Python fallback，因为 Rust ownership 与 Python reference aliasing 的语义并不相同。
+
 对于无法安全 lowering 为 direct Rust 的 Python semantics，Rextio 可以生成 Python runtime
 semantics native shim。该 shim 是调用生成的 Python fallback 实现的 Rust/PyO3 函数，因此可以
 保留 class/object 行为、标记为 `@rextio.native` 的普通 instance method、exception handling、
