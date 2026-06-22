@@ -9,7 +9,7 @@ from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, generate_cmd,
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rextio",
-        description="Rextio Public 1 hybrid build tool.",
+        description="Rextio 0.1.0 alpha hybrid build tool.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -242,7 +242,7 @@ def _add_target_options(parser: argparse.ArgumentParser) -> None:
         "--mapper-repository",
         default=None,
         help=(
-            "Mapper repository URL for future downloads. Overrides REXTIO_MAPPER_REPOSITORY "
+            "Public Git mapper repository URL. Overrides REXTIO_MAPPER_REPOSITORY "
             "and [mappers] repository."
         ),
     )

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -31,7 +33,6 @@ binding = "pyo3"
         MapperConfig(
             paths=("mappers/numpy-rust",),
             enabled=("numpy-rust",),
-            repository="https://example.invalid/rextio-mappers",
         ),
         TargetSpec(
             language="rust",
@@ -42,7 +43,53 @@ binding = "pyo3"
 
     assert [mapper.id for mapper in registry.discovered] == ["numpy-rust"]
     assert [mapper.id for mapper in registry.active] == ["numpy-rust"]
-    assert registry.repository == "https://example.invalid/rextio-mappers"
+    assert registry.repository is None
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is required for mapper repository tests")
+def test_load_mapper_registry_downloads_public_git_repository(tmp_path: Path) -> None:
+    repository = tmp_path / "mapper-repository"
+    project = tmp_path / "project"
+    project.mkdir()
+    _write_mapper(
+        repository / "mappers" / "rust-basic",
+        """
+[mapper]
+id = "rust-basic"
+name = "Rust basic mapper"
+source_language = "python"
+target_language = "rust"
+rules = ["python.basic"]
+""",
+    )
+    _git(repository, "init")
+    _git(repository, "add", ".")
+    _git(
+        repository,
+        "-c",
+        "user.email=rextio@example.invalid",
+        "-c",
+        "user.name=Rextio Test",
+        "commit",
+        "-m",
+        "add mapper",
+    )
+
+    registry = load_mapper_registry(
+        project,
+        MapperConfig(
+            repository=str(repository),
+            enabled=("rust-basic",),
+        ),
+        TargetSpec(language="rust"),
+    )
+
+    assert registry.repository == str(repository)
+    assert registry.repository_path is not None
+    assert registry.repository_path.exists()
+    assert [mapper.id for mapper in registry.discovered] == ["rust-basic"]
+    assert [mapper.id for mapper in registry.active] == ["rust-basic"]
+    assert registry.active[0].path.is_relative_to(registry.repository_path)
 
 
 def test_load_mapper_registry_filters_by_target_version(tmp_path: Path) -> None:
@@ -99,3 +146,12 @@ def _write_mapper(path: Path, manifest: str) -> None:
     path.mkdir(parents=True)
     (path / "rextio-mapper.toml").write_text(manifest, encoding="utf-8")
 
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )

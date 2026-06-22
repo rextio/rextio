@@ -72,7 +72,7 @@ def _validate_decorators(node: ast.FunctionDef, function: FunctionAnalysis) -> N
                 line=getattr(decorator, "lineno", node.lineno),
                 column=getattr(decorator, "col_offset", node.col_offset),
                 function_name=function.qualname,
-                suggestion="Use only @rextio.native on Public 1 native candidates.",
+                suggestion="Use only @rextio.native on 0.1.0 alpha native candidates.",
             )
         )
 
@@ -95,7 +95,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                     line=arg.lineno,
                     column=arg.col_offset,
                     function_name=function.qualname,
-                    suggestion="Add a supported Public 1 type annotation.",
+                    suggestion="Add a supported 0.1.0 alpha type annotation.",
                 )
             )
         elif arg.annotation is not None and not is_supported_type(arg.annotation):
@@ -108,7 +108,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                     line=arg.lineno,
                     column=arg.col_offset,
                     function_name=function.qualname,
-                    suggestion="Use a supported Public 1 scalar or collection type.",
+                    suggestion="Use a supported 0.1.0 alpha scalar or collection type.",
                 )
             )
 
@@ -122,7 +122,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                 line=node.lineno,
                 column=node.col_offset,
                 function_name=function.qualname,
-                suggestion="Add a supported Public 1 return type annotation.",
+                suggestion="Add a supported 0.1.0 alpha return type annotation.",
             )
         )
     elif node.returns is not None and not is_supported_type(node.returns):
@@ -135,7 +135,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                 line=node.lineno,
                 column=node.col_offset,
                 function_name=function.qualname,
-                suggestion="Use a supported Public 1 scalar or collection type.",
+                suggestion="Use a supported 0.1.0 alpha scalar or collection type.",
             )
         )
 
@@ -744,7 +744,7 @@ def _infer_expr_type(
                 _add_unsupported_syntax(
                     function,
                     value,
-                    f"boolean operations require bool operands in Public 1, got {value_type}",
+                    f"boolean operations require bool operands in 0.1.0 alpha, got {value_type}",
                 )
         return "bool"
     if isinstance(node, ast.Compare):
@@ -1234,7 +1234,7 @@ def _infer_binop_type(
         _add_unsupported_syntax(
             function,
             node,
-            "int division is not supported in Public 1 native functions",
+            "int division is not supported in 0.1.0 alpha native functions",
         )
         return None
     if left not in NUMERIC_TYPES or right not in NUMERIC_TYPES:
@@ -1265,7 +1265,7 @@ def _infer_unary_type(
             _add_unsupported_syntax(
                 function,
                 node,
-                f"not operator requires bool in Public 1 native functions, got {value_type}",
+                f"not operator requires bool in 0.1.0 alpha native functions, got {value_type}",
             )
         return "bool"
     if isinstance(op, ast.USub):
@@ -1488,7 +1488,7 @@ def _validate_range_call(
             _add_unsupported_syntax(
                 function,
                 step,
-                "range step must be a positive int literal in Public 1 native functions",
+                "range step must be a positive int literal in 0.1.0 alpha native functions",
             )
 
 
@@ -1696,9 +1696,9 @@ def _validate_call(function: FunctionAnalysis, node: ast.Call) -> None:
 
 def _unsupported_message(node: ast.AST) -> str:
     if isinstance(node, (ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp)):
-        return "comprehensions are not supported in Public 1 native functions"
+        return "comprehensions are not supported in 0.1.0 alpha native functions"
     if isinstance(node, ast.Set):
-        return "set literals are not supported in Public 1 native functions"
+        return "set literals are not supported in 0.1.0 alpha native functions"
     if isinstance(node, (ast.Import, ast.ImportFrom)):
         return "imports inside native functions are not supported"
     if isinstance(node, (ast.With, ast.AsyncWith)):
@@ -1755,6 +1755,6 @@ def _add_unsupported_syntax(function: FunctionAnalysis, node: ast.AST, message: 
             line=getattr(node, "lineno", function.line),
             column=getattr(node, "col_offset", function.column),
             function_name=function.qualname,
-            suggestion="Keep native candidates inside the supported Public 1 subset.",
+            suggestion="Keep native candidates inside the supported 0.1.0 alpha subset.",
         )
     )

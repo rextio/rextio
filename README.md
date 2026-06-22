@@ -2,18 +2,20 @@
 
 [한국어](README.ko.md) | [简体中文](README.zh-hans.md) | [繁體中文](README.zh-hant.md) | [日本語](README.ja.md)
 
-Rextio compiles eligible statically typed Python functions to Rust native
-modules and packages the rest as safe Python fallback.
+Rextio 0.1.0 is an alpha-stage hybrid build tool. It compiles eligible
+statically typed Python functions to Rust native modules and packages the rest
+as safe Python fallback.
 
-Public 1 is intentionally narrow. It is a local CLI and build-tool MVP for
+0.1.0 alpha is intentionally narrow. It is a local CLI and build-tool MVP for
 projects that use statically typed Python hot paths. Rextio discovers eligible
 functions by default when their types come from annotations, sibling `.pyi`
 stubs, or conservative local context inference; projects can opt out and
 require `@rextio.native` markers.
-It does not claim full Python compatibility, full NumPy support, framework
-migration, JIT behavior, or a full runtime boundary-cost optimizer.
+It does not claim full Python compatibility, bundled third-party package
+coverage, framework migration, JIT behavior, or a full runtime boundary-cost
+optimizer.
 
-Public 1 includes conservative static boundary checks. It rejects native
+0.1.0 alpha includes conservative static boundary checks. It rejects native
 functions that call fallback-only code, warns when Python loops repeatedly call
 native functions, and generated wrappers switch that native function to fallback
 after repeated Python/Rust crossings exceed a simple runtime threshold.
@@ -46,9 +48,9 @@ rextio bench myapp.scoring.compute_score --project-root path/to/project
 rextio clean path/to/project
 ```
 
-## Public 1 Scope
+## 0.1.0 alpha Scope
 
-Public 1 supports a small statically typed Python subset for module-level
+0.1.0 alpha supports a small statically typed Python subset for module-level
 functions. Eligible functions are native candidates by default when Rextio can
 resolve every argument and return type from source annotations, sibling `.pyi`
 stubs, or conservative local context inference. Unsupported syntax, unresolved
@@ -56,7 +58,7 @@ types, dynamic features, unsafe native-to-fallback calls, and unresolved
 external calls are rejected from native compilation and kept on Python fallback
 where possible.
 
-See [Unsupported Features in Public 1](docs/unsupported-features.md) for the
+See [Unsupported Features in 0.1.0 alpha](docs/unsupported-features.md) for the
 supported subset, boundary limits, diagnostics, and non-goals.
 
 Current native candidates support scalar, `list[...]` including
@@ -80,7 +82,7 @@ fixed `dict[K, V]` forms where `K` is `int`, `bool`, or `str` and `V` is a
 supported fixed value type. Set support is limited to `set[int]`, `set[float]`,
 `set[bool]`, and `set[str]` comprehensions. Class/object, exception,
 context-manager, async, generator, and dynamic attribute semantics remain
-Python fallback territory. Dataclasses are still outside Public 1 native
+Python fallback territory. Dataclasses are still outside 0.1.0 alpha native
 compilation.
 
 Type inference is deliberately narrow. Rextio can infer simple scalar and
@@ -145,16 +147,18 @@ behavior settings can be configured from any of these sources:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Public 1 still validates values conservatively. Rust is the only implemented
+0.1.0 alpha still validates values conservatively. Rust is the only implemented
 native target today. `native_backend = "mojo"` and `native_backend = "julia"`
 are accepted as planned target-language selections so versioned mapper and
 build-option metadata can be configured, but source generation fails clearly
 until those backends are implemented.
 
-Mapper plugins are local metadata folders today. Configure them with
-`[mappers] paths` and optional `[mappers] enabled`; each folder must contain
-`rextio-mapper.toml` or `mapper.toml`. Repository download is represented by
-`[mappers] repository` for future work but is not implemented in Public 1.
+Mapper plugins can be loaded from local metadata folders or from a public Git
+repository. Configure local folders with `[mappers] paths` and optional
+`[mappers] enabled`; each folder must contain `rextio-mapper.toml` or
+`mapper.toml`. Configure `[mappers] repository`, `--mapper-repository`, or
+`REXTIO_MAPPER_REPOSITORY` with a public Git URL to clone mapper manifests into
+`.rextio/mappers/repositories/` and discover mapper manifests recursively.
 
 ## Generated Artifacts
 
@@ -224,8 +228,8 @@ a clear `RXT060` error and suggests the zipapp backend.
 
 ## Policy Configuration
 
-Public 1 validates `rextio.toml` conservatively and rejects unknown sections,
-unknown keys, unsupported backends, and policy values outside the Public 1
+0.1.0 alpha validates `rextio.toml` conservatively and rejects unknown sections,
+unknown keys, unsupported backends, and policy values outside the 0.1.0 alpha
 scope.
 
 Boundary warnings are enabled by default. Projects that want strict safety
@@ -264,7 +268,7 @@ def score(x: float) -> float:
 Target names are normalized case-insensitively. A target-specific marker applies
 only when the active `--target-language` / `[build] native_backend` matches it;
 for example, `@rextio.native(target="mojo")` is ignored by a Rust build and the
-function stays on Python fallback. Public 1 accepts `rust`, `mojo`, and `julia`
+function stays on Python fallback. 0.1.0 alpha accepts `rust`, `mojo`, and `julia`
 as target-planning values, but only Rust source generation is implemented.
 
 Use `@rextio.exempt` to keep a function on Python fallback even when automatic
@@ -280,7 +284,7 @@ explicitly with:
 native_top_level = true
 ```
 
-Unsupported top-level statements remain fallback-only. Public 1 rejects
+Unsupported top-level statements remain fallback-only. 0.1.0 alpha rejects
 top-level native conversion for `for` loops, user/external function calls, and
 heterogeneous module variable exports to avoid changing Python import
 semantics.
@@ -318,7 +322,7 @@ analysis.
 
 ## Boundary Diagnostics
 
-Public 1 boundary checks are static and conservative:
+0.1.0 alpha boundary checks are static and conservative:
 
 - `RXT070`: a native function calls fallback-only Python code.
 - `RXT072`: a native function depends on a rejected native function.
@@ -331,10 +335,9 @@ exceed the configured threshold.
 
 ## Examples
 
-Public 1 includes focused local examples:
+0.1.0 alpha includes focused local examples:
 
 - `examples/pure_math`: simple typed math functions compiled as native hot paths.
-- `examples/fastapi_scoring`: FastAPI stays Python. `compute_score` becomes Rust native.
 - `examples/fallback_demo`: generated wrappers use Python fallback when native is missing or `REXTIO_DISABLE_NATIVE=1`.
 - `examples/boundary_demo`: conservative boundary rejection through `@rextio.exempt` and Python-loop boundary warnings.
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 - Public 1
+## 0.1.0 alpha
 
 Initial public MVP for Rextio as a local hybrid build tool.
 
@@ -10,7 +10,7 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Source-only generation command: `rextio generate`.
 - Automatic native discovery for eligible typed module-level Python functions, with `@rextio.native` still supported and decorator-only mode available.
 - `@rextio.exempt` decorator for functions that must remain Python fallback.
-- Conservative Public 1 subset checks for supported scalar/list types, simple control flow, indexing, and native-to-native calls.
+- Conservative 0.1.0 alpha subset checks for supported scalar/list types, simple control flow, indexing, and native-to-native calls.
 - Deterministic diagnostics for unsupported syntax, dynamic Python features, external calls, and unsafe boundaries.
 - Static boundary policy:
   - reject native functions that call fallback-only functions;
@@ -28,11 +28,11 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Nuitka standalone/onefile executable artifact generation with `--executable-backend=nuitka`.
 - Mirrored build and analysis settings across CLI parameters, environment variables, and `rextio.toml`.
 - Target planning metadata for future Rust/Mojo/Julia backends and local mapper plugin manifests.
-- Example projects for pure math, FastAPI scoring, fallback safety, and boundary diagnostics.
+- Example projects for pure math, application-shell scoring, fallback safety, and boundary diagnostics.
 - Focused end-to-end tests for build/import/runtime behavior, real Cargo builds, generated wheels, and Nuitka when installed.
 
 ### Notes
 
-Public 1 is intentionally narrow. It does not provide full Python compatibility,
-NumPy/pandas support, framework migration, JIT behavior, or full runtime
-boundary-cost optimization.
+0.1.0 alpha is intentionally narrow. It does not provide full Python
+compatibility, bundled third-party package support, framework migration, JIT
+behavior, or full runtime boundary-cost optimization.

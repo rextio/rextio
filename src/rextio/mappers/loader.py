@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import re
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -21,7 +25,11 @@ def load_mapper_registry(
     config: MapperConfig,
     target: TargetSpec,
 ) -> MapperRegistry:
-    discovered = tuple(_load_mapper_path(project_root, path) for path in config.paths)
+    repository_path = _sync_mapper_repository(project_root, config.repository)
+    discovered = (
+        *tuple(_load_mapper_path(project_root, path) for path in config.paths),
+        *tuple(_load_mapper_path(project_root, str(path)) for path in _repository_mapper_paths(repository_path)),
+    )
     _validate_enabled_mappers(discovered, config.enabled)
     active = tuple(
         mapper
@@ -32,6 +40,7 @@ def load_mapper_registry(
         discovered=discovered,
         active=active,
         repository=config.repository,
+        repository_path=repository_path,
     )
 
 
@@ -61,6 +70,52 @@ def _find_manifest(mapper_path: Path) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def _sync_mapper_repository(project_root: Path, repository: str | None) -> Path | None:
+    if repository is None:
+        return None
+    repository = repository.strip()
+    if not repository:
+        return None
+    git = shutil.which("git")
+    if git is None:
+        raise MapperError("mapper repository download requires git to be installed")
+    cache_path = _repository_cache_path(project_root, repository)
+    if cache_path.exists():
+        if not (cache_path / ".git").exists():
+            raise MapperError(f"mapper repository cache is not a git checkout: {cache_path}")
+        _run_git([git, "-C", str(cache_path), "pull", "--ff-only"])
+        return cache_path
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    _run_git([git, "clone", "--depth=1", repository, str(cache_path)])
+    return cache_path
+
+
+def _repository_cache_path(project_root: Path, repository: str) -> Path:
+    slug = re.sub(r"[^0-9A-Za-z_.-]+", "-", repository).strip("-_.").lower()
+    if not slug:
+        slug = "repository"
+    digest = hashlib.sha256(repository.encode("utf-8")).hexdigest()[:12]
+    return project_root / ".rextio" / "mappers" / "repositories" / f"{slug[:48]}-{digest}"
+
+
+def _run_git(command: list[str]) -> None:
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise MapperError(f"failed to download mapper repository: {detail}")
+
+
+def _repository_mapper_paths(repository_path: Path | None) -> tuple[Path, ...]:
+    if repository_path is None:
+        return ()
+    manifests = [
+        path
+        for path in repository_path.rglob("*")
+        if path.name in MAPPER_MANIFEST_NAMES and ".git" not in path.parts
+    ]
+    return tuple(sorted({manifest.parent for manifest in manifests}))
 
 
 def _parse_mapper_manifest(mapper_path: Path, mapper: dict[str, Any]) -> MapperPlugin:
@@ -136,4 +191,3 @@ def _optional_string_map(data: dict[str, Any], key: str) -> dict[str, str]:
         if not isinstance(option_key, str) or not isinstance(option_value, str):
             raise MapperError(f"mapper.{key} must contain string keys and string values")
     return dict(value)
-

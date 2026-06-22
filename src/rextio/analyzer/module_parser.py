@@ -321,7 +321,7 @@ def _collect_native_methods(
                 Diagnostic(
                     code="RXT010",
                     severity="error",
-                    message="instance methods are not supported as Public 1 native functions",
+                    message="instance methods are not supported as 0.1.0 alpha native functions",
                     file_path=module.file_path,
                     line=child.lineno,
                     column=child.col_offset,

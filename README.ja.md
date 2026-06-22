@@ -2,18 +2,19 @@
 
 [English](README.md) | [한국어](README.ko.md) | [简体中文](README.zh-hans.md) | [繁體中文](README.zh-hant.md)
 
-Rextio は、条件を満たし型を静的に解決できる Python 関数を Rust ネイティブモジュールへコンパイルし、
-それ以外を安全な Python fallback としてパッケージします。
+Rextio 0.1.0 は alpha 段階のハイブリッドビルドツールです。条件を満たし型を静的に
+解決できる Python 関数を Rust ネイティブモジュールへコンパイルし、それ以外を安全な
+Python fallback としてパッケージします。
 
-Public 1 は意図的に狭い範囲に絞っています。型を静的に解決できる Python の hot path を使う
+0.1.0 alpha は意図的に狭い範囲に絞っています。型を静的に解決できる Python の hot path を使う
 プロジェクト向けのローカル CLI およびビルドツール MVP です。Rextio は annotation、
 同名の `.pyi` stub、または保守的なローカル文脈推論から型を解決できる条件を満たす関数を
 デフォルトで自動検出します。プロジェクト側では自動検出を無効にし、`@rextio.native`
-マーカーを必須にすることもできます。Rextio は Python の完全互換、
-NumPy の完全対応、フレームワーク移行、JIT 動作、または完全なランタイム境界コスト
-最適化器を提供すると主張しません。
+マーカーを必須にすることもできます。Rextio は Python の完全互換、組み込みの
+サードパーティパッケージ対応、フレームワーク移行、JIT 動作、または完全なランタイム
+境界コスト最適化器を提供すると主張しません。
 
-Public 1 には保守的な静的境界チェックが含まれます。fallback-only コードを呼び出す
+0.1.0 alpha には保守的な静的境界チェックが含まれます。fallback-only コードを呼び出す
 native 関数は拒否され、Python ループが native 関数を繰り返し呼び出す場合は警告し、
 繰り返しの Python/Rust 境界 crossing が単純なランタイムしきい値を超えると、生成された
 wrapper がその native 関数を fallback に切り替えます。
@@ -45,9 +46,9 @@ rextio bench myapp.scoring.compute_score --project-root path/to/project
 rextio clean path/to/project
 ```
 
-## Public 1 の範囲
+## 0.1.0 alpha の範囲
 
-Public 1 は、モジュールレベル関数向けの小さな静的型 subset をサポートします。
+0.1.0 alpha は、モジュールレベル関数向けの小さな静的型 subset をサポートします。
 Rextio が source annotation、同名 `.pyi` stub、または保守的なローカル文脈推論から
 すべての引数と戻り値の型を解決できる場合、条件を満たす関数はデフォルトで native 候補に
 なります。未対応の構文、未解決の型、動的機能、安全でない native-to-fallback 呼び出し、
@@ -55,7 +56,7 @@ Rextio が source annotation、同名 `.pyi` stub、または保守的なロー�
 として維持されます。
 
 対応 subset、境界の制限、診断、非目標については
-[Public 1 で未対応の機能](docs/unsupported-features.md)を参照してください。
+[0.1.0 alpha で未対応の機能](docs/unsupported-features.md)を参照してください。
 
 現在の native 候補は、scalar、`list[...]` と `list[list[T]]`、fixed `tuple[...]`、限定的な
 固定 `dict[K, V]`、限定的な `set[int|float|bool|str]`、`Optional[T]` / `T | None` 型をサポートします。対応構文は
@@ -75,7 +76,7 @@ batch loop または comprehension iterable としてのみサポートされま
 は限定的な list/dict/set comprehension、comprehension 内の assignment expression、
 `list[list[T]]`、固定 `dict[K, V]`、`set[int|float|bool|str]` comprehension に対応します。
 class/object、exception、context manager、async、generator、dynamic attribute の semantics は
-Python fallback に残ります。dataclass もまだ Public 1 native コンパイル範囲外です。
+Python fallback に残ります。dataclass もまだ 0.1.0 alpha native コンパイル範囲外です。
 
 型推論は意図的に狭い範囲です。Rextio は定数、算術、比較、`if` test、loop、indexing、
 comprehension、対応 builtin から単純な scalar と collection signature を推論できます。
@@ -140,15 +141,17 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Public 1 は引き続き値を保守的に検証します。現在実装されている native target は Rust
+0.1.0 alpha は引き続き値を保守的に検証します。現在実装されている native target は Rust
 のみです。`native_backend = "mojo"` と `native_backend = "julia"` は将来の
 target-language 選択肢として受け付けられ、versioned mapper や build-option metadata
 を設定できますが、backend が実装されるまでは source generation は明確に失敗します。
 
-Mapper plugin は現時点では local metadata folder です。`[mappers] paths` と任意の
-`[mappers] enabled` で設定し、各 folder には `rextio-mapper.toml` または
-`mapper.toml` が必要です。`[mappers] repository` は将来の download 機能のための設定枠
-であり、Public 1 では実装されていません。
+Mapper plugin は local metadata folder または public Git repository から読み込めます。
+Local folder は `[mappers] paths` と任意の `[mappers] enabled` で設定し、各 folder には
+`rextio-mapper.toml` または `mapper.toml` が必要です。`[mappers] repository`、
+`--mapper-repository`、または `REXTIO_MAPPER_REPOSITORY` には public Git URL を設定でき、
+Rextio はそれを `.rextio/mappers/repositories/` へ clone して mapper manifest を
+再帰的に検出します。
 
 ## 生成される成果物
 
@@ -217,8 +220,8 @@ Nuitka executable パッケージングは、引き続きローカル toolchain 
 
 ## ポリシー設定
 
-Public 1 は `rextio.toml` を保守的に検証し、不明な section、不明な key、未対応の
-backend、Public 1 の範囲外のポリシー値を拒否します。
+0.1.0 alpha は `rextio.toml` を保守的に検証し、不明な section、不明な key、未対応の
+backend、0.1.0 alpha の範囲外のポリシー値を拒否します。
 
 境界警告はデフォルトで有効です。Python-loop 境界警告なしで厳格な安全エラーだけを
 必要とするプロジェクトは、次のように設定できます。
@@ -247,7 +250,7 @@ decorator-only モードでは、`@rextio.native` が付いた関数だけが na
 明示的な marker では対象 native 言語も固定できます。たとえば
 `@rextio.native(target="rust")` は、active な `--target-language` /
 `[build] native_backend` が Rust の場合だけ適用されます。`target="mojo"` と
-`target="julia"` は将来の backend 向け planning 値として保持されますが、Public 1 で
+`target="julia"` は将来の backend 向け planning 値として保持されますが、0.1.0 alpha で
 実装済みの source generation は Rust のみです。
 
 自動 native discovery が有効な場合でも、Python fallback に残す必要がある関数には
@@ -286,7 +289,7 @@ fallback は無効になります。`REXTIO_NATIVE_MODE=native` はこのしき�
 
 ## 境界診断
 
-Public 1 の境界チェックは静的で保守的です。
+0.1.0 alpha の境界チェックは静的で保守的です。
 
 - `RXT070`: native 関数が fallback-only Python コードを呼び出しています。
 - `RXT072`: native 関数が拒否された native 関数に依存しています。
@@ -299,10 +302,9 @@ fallback します。
 
 ## 例
 
-Public 1 には焦点を絞ったローカル例が含まれています。
+0.1.0 alpha には焦点を絞ったローカル例が含まれています。
 
 - `examples/pure_math`: native hot path としてコンパイルされる単純な型付き数学関数。
-- `examples/fastapi_scoring`: FastAPI は Python のままで、`compute_score` が Rust native になります。
 - `examples/fallback_demo`: native がない場合、または `REXTIO_DISABLE_NATIVE=1` の場合に、生成された wrapper が Python fallback を使用します。
 - `examples/boundary_demo`: `@rextio.exempt` による保守的な境界拒否と Python-loop 境界警告。
 

@@ -1,6 +1,6 @@
-# Rextio Public 1 Notes
+# Rextio 0.1.0 alpha Notes
 
-Rextio Public 1 proves a focused hybrid build workflow:
+Rextio 0.1.0 alpha proves a focused hybrid build workflow:
 
 ```text
 Python source
@@ -22,7 +22,7 @@ conservative local context inference. Projects can set
 Explicit native markers can also name the intended native target:
 `@rextio.native(target="rust")`. Target names are normalized
 case-insensitively, and a target-specific marker applies only when the active
-`--target-language` / `[build] native_backend` matches it. Public 1 can record
+`--target-language` / `[build] native_backend` matches it. 0.1.0 alpha can record
 `rust`, `mojo`, and `julia` target selections for planning, but only Rust code
 generation is implemented.
 
@@ -59,7 +59,7 @@ build artifact compilation steps.
 
 ## Native Subset
 
-Public 1 native candidates support module-level functions with statically
+0.1.0 alpha native candidates support module-level functions with statically
 resolved scalar
 types, `list[int|float|bool|str]`, `list[list[T]]`, fixed tuples, limited
 fixed `dict[K, V]`, limited `set[int|float|bool|str]`, and `Optional[T]` /
@@ -82,7 +82,7 @@ annotation. Nested list comprehensions may produce `list[list[T]]`, dict
 comprehensions may produce supported fixed `dict[K, V]`, and set
 comprehensions may produce `set[int|float|bool|str]`. Class/object, exception,
 context-manager, async, generator, and dynamic attribute semantics stay on
-Python fallback. Dataclasses are not part of the Public 1 native subset.
+Python fallback. Dataclasses are not part of the 0.1.0 alpha native subset.
 
 Source annotations are not the only type source. Rextio also reads sibling
 `.pyi` files and performs conservative local context inference for simple
@@ -117,11 +117,11 @@ flag and environment variable. Common examples:
 --nuitka-mode / REXTIO_NUITKA_MODE / [executable] nuitka_mode
 ```
 
-Rust is the only implemented native target in Public 1. `mojo` and `julia` can
+Rust is the only implemented native target in 0.1.0 alpha. `mojo` and `julia` can
 be selected as target languages so versioned mapper metadata can be modeled, but
 native source generation reports a clear unsupported-backend failure until those
-codegen backends are implemented. Mapper plugin download from a repository is
-reserved for later; Public 1 only loads local mapper manifests.
+codegen backends are implemented. Mapper plugins can also be loaded from local
+folders or downloaded from a configured public Git repository.
 
 ## Release Verification
 
