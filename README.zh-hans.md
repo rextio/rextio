@@ -69,8 +69,13 @@ Builtin 支持有意限制为 `len`、`abs`、两个参数的 `min`/`max`，以�
 `zip` 仅支持作为 list 变量上的 batch loop 或 comprehension iterable。Native subset
 现在支持有限的 list/dict/set comprehension、comprehension 内的 assignment expression、
 `list[list[T]]`、固定 `dict[K, V]`，以及 `set[int|float|bool|str]` comprehension。
-class/object、exception、context manager、async、generator 和 dynamic attribute 语义仍保留在
-Python fallback；dataclass 也仍不在 0.1.0 alpha native 编译范围内。
+dataclass 仍不在 direct Rust lowering 范围内。
+
+对于无法安全 lowering 为 direct Rust 的 Python semantics，Rextio 可以生成 Python runtime
+semantics native shim。该 shim 是调用生成的 Python fallback 实现的 Rust/PyO3 函数，因此可以
+保留 class/object 行为、标记为 `@rextio.native` 的普通 instance method、exception handling、
+context manager、`async`/`await`、generator/`yield`，以及 `getattr` 或 `obj.attr` 等 dynamic
+attribute access。该路径会报告 `RXT080`，它是 compatibility 路径，不是 Rust speedup 路径。
 
 类型推断刻意保持窄范围。Rextio 可以从常量、算术、比较、`if` test、loop、indexing、
 comprehension 和受支持 builtin 推断简单 scalar 与 collection signature。缺少 source
@@ -275,10 +280,12 @@ fallback。默认阈值为 `1000`。`rextio generate --fallback-threshold=N` 和
 - `RXT070`：native 函数调用了 fallback-only Python 代码。
 - `RXT072`：native 函数依赖被拒绝的 native 函数。
 - `RXT073`：fallback Python 在循环中调用 native 函数。
+- `RXT080`：native 函数使用 Python runtime semantics shim。
 
 `RXT070` 和 `RXT072` 会拒绝 native 候选。`RXT073` 是警告；该函数仍然符合条件，并且
 一开始可以使用 native，但当重复的运行时 crossing 超过配置阈值后，生成的 wrapper 会
-fallback 到 CPython/Nuitka fallback 路径。
+fallback 到 CPython/Nuitka fallback 路径。`RXT080` 是 warning；生成的 Rust 函数会调用
+Python fallback 函数以保留 Python semantics。
 
 ## 示例
 
