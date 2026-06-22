@@ -711,6 +711,8 @@ Runtime-backed native functions may cover:
 If a direct-Rust native function calls a runtime-backed native function, promote
 the caller to the runtime shim path and emit `RXT080`. Do not generate direct
 Rust code that treats Python object values as statically typed Rust values.
+Automatic discovery for this path must remain conservative. Broad object-runtime
+functions should require an explicit `@rextio.native` marker.
 
 ### 7.4 Unsupported Direct-Rust Syntax
 

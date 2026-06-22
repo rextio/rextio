@@ -83,6 +83,8 @@ Rust/PyO3 関数なので、class/object の動作、`@rextio.native` が付い�
 exception handling、context manager、`async`/`await`、generator/`yield`、`getattr` や
 `obj.attr` のような dynamic attribute access を保持できます。この経路では `RXT080` が報告され、
 Rust speedup ではなく compatibility 経路として扱います。
+この経路の automatic discovery は保守的であり、広い object-runtime コードは明示的に
+`@rextio.native` を付けることを推奨します。
 
 型推論は意図的に狭い範囲です。Rextio は定数、算術、比較、`if` test、loop、indexing、
 comprehension、対応 builtin から単純な scalar と collection signature を推論できます。

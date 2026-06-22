@@ -82,7 +82,8 @@ semantics native shim을 생성할 수 있습니다. 이 shim은 Rust/PyO3 함�
 fallback 구현을 호출하는 방식이므로 class/object 동작, `@rextio.native`가 붙은 일반 instance
 method, exception handling, context manager, `async`/`await`, generator/`yield`, `getattr` 또는
 `obj.attr` 같은 dynamic attribute access를 보존합니다. 이 경로는 `RXT080`으로 보고되며,
-Rust speedup 경로가 아니라 compatibility 경로입니다.
+Rust speedup 경로가 아니라 compatibility 경로입니다. 이 경로의 자동 discovery는 보수적이며,
+넓은 object-runtime 코드는 명시적으로 `@rextio.native`를 붙이는 것이 좋습니다.
 
 타입 추론은 의도적으로 좁습니다. Rextio는 상수, 산술, 비교, `if` test, loop, indexing,
 comprehension, 지원 builtin에서 단순 scalar와 collection signature를 추론할 수 있습니다.

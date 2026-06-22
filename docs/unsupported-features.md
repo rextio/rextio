@@ -171,7 +171,9 @@ promotes the caller to the runtime shim path and reports `RXT080`. This avoids
 generating Rust code that would treat Python object values as typed Rust values.
 
 This path is a compatibility mechanism. It is not expected to provide the same
-speedup as direct Rust lowering.
+speedup as direct Rust lowering. Automatic discovery for runtime-backed native
+functions is conservative; broad object-runtime functions should be explicitly
+marked with `@rextio.native`.
 
 ## Unsupported Dynamic Python Features
 

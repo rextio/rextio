@@ -213,7 +213,11 @@ def _is_auto_native_candidate(
         function.inferred_return_type = probe.inferred_return_type
         function.native_target_language = target_language
         return True
-    if _has_resolved_runtime_signature(node, probe) and _requires_runtime_semantics(node):
+    if (
+        _has_resolved_runtime_signature(node, probe)
+        and _requires_runtime_semantics(node)
+        and _is_auto_runtime_semantics_safe(node)
+    ):
         function.inferred_arg_types = dict(probe.inferred_arg_types)
         function.inferred_return_type = probe.inferred_return_type
         function.native_target_language = target_language
@@ -290,6 +294,17 @@ def _requires_runtime_semantics(node: ast.FunctionDef | ast.AsyncFunctionDef) ->
             if target in {"getattr", "setattr", "hasattr"}:
                 return True
     return False
+
+
+def _is_auto_runtime_semantics_safe(node: ast.FunctionDef) -> bool:
+    allowed_calls = {"getattr", "setattr", "hasattr"}
+    for child in (item for statement in node.body for item in ast.walk(statement)):
+        if not isinstance(child, ast.Call):
+            continue
+        target = dotted_name(child.func)
+        if target not in allowed_calls:
+            return False
+    return True
 
 
 def _is_known_static_attribute(node: ast.Attribute) -> bool:

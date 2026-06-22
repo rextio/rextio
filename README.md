@@ -90,7 +90,8 @@ preserve class/object behavior, regular instance methods marked with
 `@rextio.native`, exception handling, context managers, `async`/`await`,
 generators/`yield`, and dynamic attribute access such as `getattr` or
 `obj.attr`. Rextio reports `RXT080` for this path. It is a compatibility path,
-not a Rust speedup path.
+not a Rust speedup path. Automatic discovery for this path is conservative;
+broad object-runtime code should be marked explicitly with `@rextio.native`.
 
 Type inference is deliberately narrow. Rextio can infer simple scalar and
 collection signatures from constants, arithmetic, comparisons, `if` tests,

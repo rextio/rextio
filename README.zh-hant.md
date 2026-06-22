@@ -76,6 +76,8 @@ semantics native shim。該 shim 是呼叫產生的 Python fallback 實作的 Ru
 保留 class/object 行為、標記為 `@rextio.native` 的一般 instance method、exception handling、
 context manager、`async`/`await`、generator/`yield`，以及 `getattr` 或 `obj.attr` 等 dynamic
 attribute access。該路徑會報告 `RXT080`，它是 compatibility 路徑，不是 Rust speedup 路徑。
+該路徑的 automatic discovery 保持保守；較寬的 object-runtime 程式碼應明確標記
+`@rextio.native`。
 
 型別推斷刻意保持窄範圍。Rextio 可以從常數、算術、比較、`if` test、loop、indexing、
 comprehension 和受支援 builtin 推斷簡單 scalar 與 collection signature。缺少 source
