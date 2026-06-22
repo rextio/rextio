@@ -31,6 +31,8 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Python runtime semantics native shim (`RXT080`) for compatibility coverage of
   object behavior, marked instance methods, exceptions, context managers,
   async functions, generators, and dynamic attribute access.
+- Limited direct Rust lowering for common `print`, `logging`, and
+  `datetime.datetime.now/utcnow().isoformat()` calls.
 - Example projects for pure math, application-shell scoring, fallback safety, and boundary diagnostics.
 - Focused end-to-end tests for build/import/runtime behavior, real Cargo builds, generated wheels, and Nuitka when installed.
 

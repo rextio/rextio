@@ -74,7 +74,12 @@ comprehensions, and `list.append(...)` for supported list item types.
 
 Supported builtin calls are limited to `len`, `abs`, two-argument `min`/`max`,
 and `sum` over `list[int]` or `list[float]`. Supported `math` calls are
-`math.sqrt`, `math.sin`, `math.cos`, and `math.floor`. Empty list literals must
+`math.sqrt`, `math.sin`, `math.cos`, and `math.floor`. Common side-effect and
+standard-library lowering is limited to `print(...)`,
+`logging.debug/info/warning/error(...)`, module logger variables assigned from
+`logging.getLogger(...)`, and `datetime.datetime.now/utcnow().isoformat()`;
+these lower to Rust `println!`, `log` macros, and `chrono` timestamp
+formatting. Empty list literals must
 use a supported local annotation such as `out: list[int] = []`. `enumerate` and
 `zip` are supported only as batch loop or comprehension iterables over list
 variables. Empty dict literals require a supported fixed `dict[K, V]`

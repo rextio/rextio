@@ -67,7 +67,11 @@ fixed tuple literal, 제한적 dict read/write, 제한적 list/dict/set comprehe
 comprehension 안의 assignment expression, 지원 list item 타입의 `list.append(...)`입니다.
 builtin 지원은 의도적으로 `len`, `abs`, 2개 인자 `min`/`max`,
 `sum(list[int|float])`로 제한됩니다. 지원하는 `math` subset은 `math.sqrt`,
-`math.sin`, `math.cos`, `math.floor`입니다.
+`math.sin`, `math.cos`, `math.floor`입니다. 자주 쓰이는 side-effect/표준 라이브러리
+lowering은 `print(...)`, `logging.debug/info/warning/error(...)`,
+`logging.getLogger(...)`에서 할당된 logger 변수, 그리고
+`datetime.datetime.now/utcnow().isoformat()`으로 제한되며, Rust의 `println!`,
+`log` macro, `chrono` timestamp formatting으로 변환됩니다.
 
 확장된 형태도 보수적으로 유지됩니다. 빈 list literal은 지원되는 `list[...]` 로컬
 annotation이 필요하며, `range(start, stop, step)`은 현재 `step`이 양수 int literal이어야

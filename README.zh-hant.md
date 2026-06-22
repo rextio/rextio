@@ -62,7 +62,11 @@ literal、有限的 dict read/write、有限的 list/dict/set comprehension、co
 assignment expression，以及支援的 list item 型別上的 `list.append(...)`。
 Builtin 支援刻意限制為 `len`、`abs`、兩個參數的 `min`/`max`，以及
 `sum(list[int|float])`。支援的 `math` subset 是 `math.sqrt`、`math.sin`、`math.cos`
-和 `math.floor`。
+和 `math.floor`。常見 side-effect 和標準函式庫 lowering 僅限
+`print(...)`、`logging.debug/info/warning/error(...)`、由
+`logging.getLogger(...)` 指派的 logger 變數，以及
+`datetime.datetime.now/utcnow().isoformat()`；它們會轉換為 Rust 的 `println!`、
+`log` macro 和 `chrono` timestamp formatting。
 
 這些擴充形式仍保持保守：空 list literal 需要受支援的 `list[...]` 區域 annotation，
 且 `range(start, stop, step)` 目前要求 `step` 是正的 int literal。`enumerate` 和

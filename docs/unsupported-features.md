@@ -198,6 +198,9 @@ Native functions may call:
 - supported builtins such as `len`, `range`, `abs`, `min`, `max`, and `sum`
 - the supported `math` subset: `math.sqrt`, `math.sin`, `math.cos`, and
   `math.floor`
+- limited side-effect and standard-library calls: `print(...)`,
+  `logging.debug/info/warning/error(...)`, logger variables assigned from
+  `logging.getLogger(...)`, and `datetime.datetime.now/utcnow().isoformat()`
 
 When a direct-Rust native function calls a runtime-backed native function,
 Rextio promotes the caller to the runtime shim path and emits `RXT080`.
