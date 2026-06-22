@@ -176,6 +176,7 @@ def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
                 continue
             if isinstance(child, ast.Call):
                 _validate_call(function, child)
+    _validate_mutable_ownership_patterns(node, function)
 
 
 def _initial_type_env(node: ast.FunctionDef, function: FunctionAnalysis) -> dict[str, str]:
@@ -304,6 +305,146 @@ def _validate_statement_list_types(
 ) -> None:
     for statement in statements:
         _validate_statement_types(statement, function, env, return_type)
+
+
+def _validate_mutable_ownership_patterns(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+    mutation_names = _mutated_collection_names(node)
+    if not mutation_names:
+        return
+    env = _initial_type_env(node, function)
+    _validate_mutable_ownership_in_statements(node.body, function, env, mutation_names)
+
+
+def _validate_mutable_ownership_in_statements(
+    statements: list[ast.stmt],
+    function: FunctionAnalysis,
+    env: dict[str, str],
+    mutation_names: set[str],
+) -> None:
+    for statement in statements:
+        if isinstance(statement, ast.Assign):
+            value_type = _infer_expr_type(statement.value, function, env)
+            _validate_mutated_container_captures(statement.value, function, env, mutation_names)
+            for target in statement.targets:
+                if isinstance(target, ast.Name):
+                    _validate_mutable_alias_assignment(target, statement.value, function, env, mutation_names)
+                    if value_type is not None:
+                        env[target.id] = value_type
+            continue
+        if isinstance(statement, ast.AnnAssign):
+            annotated_type = (
+                annotation_name(statement.annotation)
+                if statement.annotation is not None and is_supported_type(statement.annotation)
+                else None
+            )
+            if statement.value is not None:
+                _infer_expr_type(statement.value, function, env, expected_type=annotated_type)
+                _validate_mutated_container_captures(statement.value, function, env, mutation_names)
+                if isinstance(statement.target, ast.Name):
+                    _validate_mutable_alias_assignment(
+                        statement.target,
+                        statement.value,
+                        function,
+                        env,
+                        mutation_names,
+                    )
+            if annotated_type is not None and isinstance(statement.target, ast.Name):
+                env[statement.target.id] = annotated_type
+            continue
+        if isinstance(statement, ast.AugAssign):
+            _infer_expr_type(statement.target, function, env)
+            _infer_expr_type(statement.value, function, env)
+            _validate_mutated_container_captures(statement.value, function, env, mutation_names)
+            continue
+        if isinstance(statement, ast.Expr):
+            _infer_expr_type(statement.value, function, env)
+            _validate_mutated_container_captures(statement.value, function, env, mutation_names)
+            continue
+        if isinstance(statement, ast.Return):
+            if statement.value is not None:
+                _infer_expr_type(statement.value, function, env)
+                _validate_mutated_container_captures(statement.value, function, env, mutation_names)
+            continue
+        if isinstance(statement, ast.If):
+            _infer_expr_type(statement.test, function, env)
+            _validate_mutable_ownership_in_statements(statement.body, function, dict(env), mutation_names)
+            _validate_mutable_ownership_in_statements(statement.orelse, function, dict(env), mutation_names)
+            continue
+        if isinstance(statement, ast.For):
+            body_env = dict(env)
+            if _is_enumerate_call(statement.iter) or _is_zip_call(statement.iter):
+                item_types = _iter_unpack_types(statement.iter, function, env)
+                _bind_loop_target_types(statement.target, item_types, function, body_env)
+            else:
+                iterable_type = _infer_expr_type(statement.iter, function, env)
+                item_type = _iter_item_type(statement.iter, iterable_type)
+                _bind_loop_target_types(
+                    statement.target,
+                    [item_type] if item_type is not None else [],
+                    function,
+                    body_env,
+                )
+            _validate_mutated_container_captures(statement.iter, function, env, mutation_names)
+            _validate_mutable_ownership_in_statements(statement.body, function, body_env, mutation_names)
+            _validate_mutable_ownership_in_statements(statement.orelse, function, dict(env), mutation_names)
+            continue
+        if isinstance(statement, ast.While):
+            _infer_expr_type(statement.test, function, env)
+            _validate_mutated_container_captures(statement.test, function, env, mutation_names)
+            _validate_mutable_ownership_in_statements(statement.body, function, dict(env), mutation_names)
+            _validate_mutable_ownership_in_statements(statement.orelse, function, dict(env), mutation_names)
+
+
+def _validate_mutable_alias_assignment(
+    target: ast.Name,
+    value: ast.AST,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+    mutation_names: set[str],
+) -> None:
+    if not isinstance(value, ast.Name) or target.id == value.id:
+        return
+    value_type = env.get(value.id)
+    if not _is_mutable_collection_type(value_type):
+        return
+    if target.id not in mutation_names and value.id not in mutation_names:
+        return
+    _add_unsupported_syntax(
+        function,
+        value,
+        (
+            "mutable collection aliases are not supported in direct Rust native functions "
+            "when either alias is mutated"
+        ),
+        suggestion=(
+            "Use an explicit .copy() before mutation, move the mutation into one owned "
+            "variable, or keep this function on Python fallback."
+        ),
+    )
+
+
+def _validate_mutated_container_captures(
+    value: ast.AST,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+    mutation_names: set[str],
+) -> None:
+    captured = _mutable_collection_names_captured_by_container(value, env)
+    unsafe = sorted(name for name in captured if name in mutation_names)
+    if not unsafe:
+        return
+    _add_unsupported_syntax(
+        function,
+        value,
+        (
+            "mutable collection values captured inside a container literal cannot be "
+            "directly lowered when those values are later mutated"
+        ),
+        suggestion=(
+            "Use .copy() explicitly for container items, avoid mutating the captured "
+            "collection, or keep this function on Python fallback."
+        ),
+    )
 
 
 def _validate_type_match(
@@ -1950,6 +2091,10 @@ def _set_item_type(value: str | None) -> str | None:
     return None
 
 
+def _is_mutable_collection_type(value: str | None) -> bool:
+    return _is_list_type(value) or _is_dict_type(value) or _is_set_type(value)
+
+
 def _is_optional_type(value: str | None) -> bool:
     return value is not None and value.startswith("Optional[") and value.endswith("]")
 
@@ -2001,6 +2146,61 @@ def _constant_int(node: ast.AST) -> int | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
         return node.value
     return None
+
+
+def _mutated_collection_names(node: ast.FunctionDef) -> set[str]:
+    names: set[str] = set()
+    for child in ast.walk(node):
+        if _is_append_call(child) and isinstance(child.func, ast.Attribute):
+            receiver = child.func.value
+            if isinstance(receiver, ast.Name):
+                names.add(receiver.id)
+        if isinstance(child, ast.Assign):
+            for target in child.targets:
+                if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                    names.add(target.value.id)
+        if isinstance(child, ast.AnnAssign):
+            target = child.target
+            if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                names.add(target.value.id)
+    return names
+
+
+def _mutable_collection_names_captured_by_container(
+    node: ast.AST,
+    env: dict[str, str],
+) -> set[str]:
+    names: set[str] = set()
+
+    def visit(value: ast.AST, inside_container: bool) -> None:
+        if isinstance(value, ast.Name):
+            if inside_container and _is_mutable_collection_type(env.get(value.id)):
+                names.add(value.id)
+            return
+        if isinstance(value, ast.List):
+            for item in value.elts:
+                visit(item, True)
+            return
+        if isinstance(value, ast.Tuple):
+            for item in value.elts:
+                visit(item, True)
+            return
+        if isinstance(value, ast.Dict):
+            for key in value.keys:
+                if key is not None:
+                    visit(key, True)
+            for item in value.values:
+                visit(item, True)
+            return
+        if isinstance(value, ast.Set):
+            for item in value.elts:
+                visit(item, True)
+            return
+        for child in ast.iter_child_nodes(value):
+            visit(child, inside_container)
+
+    visit(node, False)
+    return names
 
 
 def _is_append_call(node: ast.AST) -> bool:
@@ -2123,7 +2323,12 @@ def _unsupported_message(node: ast.AST) -> str:
     return f"unsupported syntax in native function: {type(node).__name__}"
 
 
-def _add_unsupported_syntax(function: FunctionAnalysis, node: ast.AST, message: str) -> None:
+def _add_unsupported_syntax(
+    function: FunctionAnalysis,
+    node: ast.AST,
+    message: str,
+    suggestion: str = "Keep native candidates inside the supported 0.1.0 alpha subset.",
+) -> None:
     function.add_diagnostic(
         Diagnostic(
             code="RXT010",
@@ -2133,6 +2338,6 @@ def _add_unsupported_syntax(function: FunctionAnalysis, node: ast.AST, message: 
             line=getattr(node, "lineno", function.line),
             column=getattr(node, "col_offset", function.column),
             function_name=function.qualname,
-            suggestion="Keep native candidates inside the supported 0.1.0 alpha subset.",
+            suggestion=suggestion,
         )
     )

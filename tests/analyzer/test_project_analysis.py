@@ -737,6 +737,43 @@ def echo(value: int | None) -> int | None:
     assert analysis.rejected_native_functions == []
 
 
+def test_rejects_mutated_mutable_collection_aliases_for_direct_rust(
+    tmp_path: Path,
+) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def alias_mutates(xs: list[int]) -> list[int]:
+    ys = xs
+    ys.append(1)
+    return xs
+
+@rextio.native
+def container_capture_mutates(xs: list[int]) -> list[list[int]]:
+    groups: list[list[int]] = [xs]
+    xs.append(1)
+    return groups
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+    rejected = {function.qualname: function for function in analysis.rejected_native_functions}
+
+    assert set(rejected) == {"app.alias_mutates", "app.container_capture_mutates"}
+    assert any(
+        diagnostic.code == "RXT010" and "mutable collection aliases" in diagnostic.message
+        for diagnostic in rejected["app.alias_mutates"].diagnostics
+    )
+    assert any(
+        diagnostic.code == "RXT010" and "captured inside a container literal" in diagnostic.message
+        for diagnostic in rejected["app.container_capture_mutates"].diagnostics
+    )
+
+
 def test_accepts_comprehensions_nested_lists_sets_dict_str_values_and_walrus(
     tmp_path: Path,
 ) -> None:
