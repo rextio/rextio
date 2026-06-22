@@ -519,3 +519,25 @@ def size_plus_first(xs: list[int]) -> int:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert "return Ok((xs.len() as i64) + xs[0 as usize].clone());" in source
+
+
+def test_generates_rust_for_supported_native_top_level(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+total: int = 0
+i: int = 0
+while i < 4:
+    total += i
+    i += 1
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path, native_top_level=True)))
+
+    assert "fn app____rextio_top_level() -> PyResult<HashMap<String, i64>> {" in source
+    assert "let mut total = 0;" in source
+    assert "while i < 4 {" in source
+    assert 'map.insert(String::from("i"), i);' in source
+    assert 'map.insert(String::from("total"), total);' in source
+    assert "m.add_function(wrap_pyfunction!(app____rextio_top_level, m)?)?;" in source

@@ -35,6 +35,7 @@ CONFIG_KEYS = {
         "require_type_hints",
         "allow_dynamic_features",
         "boundary_warnings",
+        "native_top_level",
     },
 }
 
@@ -59,6 +60,7 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_REQUIRE_TYPE_HINTS": ("policy", "require_type_hints", "boolean"),
     "REXTIO_ALLOW_DYNAMIC_FEATURES": ("policy", "allow_dynamic_features", "boolean"),
     "REXTIO_BOUNDARY_WARNINGS": ("policy", "boundary_warnings", "boolean"),
+    "REXTIO_NATIVE_TOP_LEVEL": ("policy", "native_top_level", "boolean"),
 }
 
 
@@ -184,6 +186,7 @@ def _validate_config_values(
     _require_bool("policy", "require_type_hints", policy["require_type_hints"])
     _require_bool("policy", "allow_dynamic_features", policy["allow_dynamic_features"])
     _require_bool("policy", "boundary_warnings", policy["boundary_warnings"])
+    _require_bool("policy", "native_top_level", policy["native_top_level"])
 
     _require_value("build", "native_backend", build["native_backend"], {"julia", "mojo", "rust"})
     _require_value("build", "fallback_backend", build["fallback_backend"], {"cpython", "nuitka"})

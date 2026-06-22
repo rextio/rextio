@@ -11,6 +11,7 @@ def test_load_config_defaults_to_auto_native_discovery(tmp_path: Path) -> None:
     config = load_config(tmp_path)
 
     assert config.policy.native_marker == "auto"
+    assert config.policy.native_top_level is False
 
 
 def test_load_config_allows_decorator_only_native_discovery(tmp_path: Path) -> None:
@@ -120,6 +121,7 @@ boundary_warnings = true
             "REXTIO_NUITKA_MODE": "onefile",
             "REXTIO_NATIVE_MARKER": "auto",
             "REXTIO_BOUNDARY_WARNINGS": "false",
+            "REXTIO_NATIVE_TOP_LEVEL": "true",
         },
     )
 
@@ -138,6 +140,7 @@ boundary_warnings = true
     assert config.executable.nuitka_mode == "onefile"
     assert config.policy.native_marker == "auto"
     assert not config.policy.boundary_warnings
+    assert config.policy.native_top_level is True
 
 
 def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
@@ -157,6 +160,7 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
             ("target", "build_options"): {"profile": "debug"},
             ("mappers", "paths"): ("mappers/numpy-mojo",),
             ("policy", "native_marker"): "decorator",
+            ("policy", "native_top_level"): True,
         },
     )
 
@@ -167,6 +171,7 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
     assert config.target.build_options == {"profile": "debug"}
     assert config.mappers.paths == ("mappers/numpy-mojo",)
     assert config.policy.native_marker == "decorator"
+    assert config.policy.native_top_level is True
 
 
 def test_load_config_rejects_unknown_top_level_section(tmp_path: Path) -> None:

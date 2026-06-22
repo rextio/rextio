@@ -38,6 +38,7 @@ def run(args: Namespace) -> int:
                 ("policy", "require_type_hints"): args.require_type_hints,
                 ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
                 ("policy", "boundary_warnings"): args.boundary_warnings,
+                ("policy", "native_top_level"): args.native_top_level,
             },
         )
         target_plan = create_target_plan(project_root, config)
@@ -63,6 +64,7 @@ def run(args: Namespace) -> int:
         boundary_warnings=config.policy.boundary_warnings,
         native_marker=config.policy.native_marker,
         target_language=target_plan.spec.language,
+        native_top_level=config.policy.native_top_level,
     )
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:

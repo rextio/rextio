@@ -4,8 +4,14 @@ import ast
 from pathlib import Path
 
 from rextio.analyzer.call_resolution import FunctionResolver
-from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, ProjectAnalysis
+from rextio.analyzer.models import (
+    FunctionAnalysis,
+    ModuleAnalysis,
+    ProjectAnalysis,
+    TopLevelAnalysis,
+)
 from rextio.analyzer.native_marker import dotted_name
+from rextio.analyzer.top_level import collect_native_top_level_statements
 from rextio.ir.module import module_from_functions
 from rextio.ir.nodes import (
     AppendIR,
@@ -43,6 +49,7 @@ from rextio.ir.nodes import (
     WhileIR,
 )
 from rextio.ir.types import type_from_annotation, type_from_string
+from rextio.ir.types import RxtDict, RxtStr
 
 
 class LoweringError(RuntimeError):
@@ -52,6 +59,7 @@ class LoweringError(RuntimeError):
 def lower_project(analysis: ProjectAnalysis) -> ModuleIR:
     functions: list[FunctionIR] = []
     nodes_by_file: dict[str, dict[str, ast.FunctionDef]] = {}
+    module_trees_by_file: dict[str, ast.Module] = {}
     resolver = FunctionResolver(analysis)
     for function in analysis.accepted_native_functions:
         nodes = nodes_by_file.setdefault(function.file_path, _function_nodes(Path(function.file_path)))
@@ -62,6 +70,15 @@ def lower_project(analysis: ProjectAnalysis) -> ModuleIR:
         if module is None:
             raise LoweringError(f"module was not found for accepted function: {function.qualname}")
         functions.append(lower_function(function, node, module, resolver))
+    for top_level in analysis.accepted_native_top_levels:
+        tree = module_trees_by_file.setdefault(
+            top_level.file_path,
+            _module_tree(Path(top_level.file_path)),
+        )
+        module = _module_for_top_level(analysis, top_level)
+        if module is None:
+            raise LoweringError(f"module was not found for accepted top level: {top_level.qualname}")
+        functions.append(lower_top_level(top_level, tree, module, resolver))
     return module_from_functions(functions)
 
 
@@ -83,6 +100,35 @@ def lower_function(
         params=params,
         return_type=_return_type(function, node),
         body=lower_block(node.body, module, resolver),
+    )
+
+
+def lower_top_level(
+    top_level: TopLevelAnalysis,
+    tree: ast.Module,
+    module: ModuleAnalysis,
+    resolver: FunctionResolver,
+) -> FunctionIR:
+    if top_level.export_value_type is None:
+        raise LoweringError(f"missing export value type for top-level native init: {top_level.qualname}")
+    statements = lower_block(collect_native_top_level_statements(tree), module, resolver).statements
+    statements.append(
+        ReturnIR(
+            DictIR(
+                items=[
+                    (LiteralIR(name), NameIR(name))
+                    for name in sorted(top_level.assigned_types)
+                ]
+            )
+        )
+    )
+    return FunctionIR(
+        name=top_level.name,
+        qualname=top_level.qualname,
+        module_name=top_level.module_name,
+        params=[],
+        return_type=RxtDict(RxtStr(), type_from_string(top_level.export_value_type)),
+        body=BlockIR(statements=statements),
     )
 
 
@@ -400,3 +446,17 @@ def _lower_bool_op(
 def _function_nodes(path: Path) -> dict[str, ast.FunctionDef]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     return {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+
+
+def _module_tree(path: Path) -> ast.Module:
+    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+
+def _module_for_top_level(
+    analysis: ProjectAnalysis,
+    top_level: TopLevelAnalysis,
+) -> ModuleAnalysis | None:
+    for module in analysis.modules:
+        if module.module_name == top_level.module_name:
+            return module
+    return None

@@ -49,6 +49,7 @@ def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> Be
         boundary_warnings=config.policy.boundary_warnings,
         native_marker=config.policy.native_marker,
         target_language=target_plan.spec.language,
+        native_top_level=config.policy.native_top_level,
     )
     function = _find_target(analysis, target)
     if function is None:

@@ -81,12 +81,63 @@ class FunctionAnalysis:
 
 
 @dataclass
+class TopLevelAnalysis:
+    name: str
+    qualname: str
+    module_name: str
+    file_path: str
+    line: int | None = None
+    column: int | None = None
+    is_native_candidate: bool = False
+    accepted: bool = False
+    assigned_types: dict[str, str] = field(default_factory=dict)
+    export_value_type: str | None = None
+    diagnostics: list[Diagnostic] = field(default_factory=list)
+
+    @property
+    def error_diagnostics(self) -> list[Diagnostic]:
+        return [diagnostic for diagnostic in self.diagnostics if diagnostic.severity == "error"]
+
+    def has_diagnostic(self, code: str, line: int | None = None, column: int | None = None) -> bool:
+        for diagnostic in self.diagnostics:
+            if diagnostic.code != code:
+                continue
+            if line is not None and diagnostic.line != line:
+                continue
+            if column is not None and diagnostic.column != column:
+                continue
+            return True
+        return False
+
+    def add_diagnostic(self, diagnostic: Diagnostic) -> None:
+        if self.has_diagnostic(diagnostic.code, diagnostic.line, diagnostic.column):
+            return
+        self.diagnostics.append(diagnostic)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "qualname": self.qualname,
+            "module_name": self.module_name,
+            "file_path": self.file_path,
+            "line": self.line,
+            "column": self.column,
+            "is_native_candidate": self.is_native_candidate,
+            "accepted": self.accepted,
+            "assigned_types": dict(sorted(self.assigned_types.items())),
+            "export_value_type": self.export_value_type,
+            "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
+        }
+
+
+@dataclass
 class ModuleAnalysis:
     module_name: str
     file_path: str
     functions: list[FunctionAnalysis] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
     imports: dict[str, str] = field(default_factory=dict)
+    top_level: TopLevelAnalysis | None = None
 
     @property
     def functions_by_name(self) -> dict[str, FunctionAnalysis]:
@@ -98,6 +149,7 @@ class ModuleAnalysis:
             "file_path": self.file_path,
             "imports": dict(sorted(self.imports.items())),
             "functions": [function.to_dict() for function in self.functions],
+            "top_level": self.top_level.to_dict() if self.top_level is not None else None,
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
 
@@ -129,12 +181,39 @@ class ProjectAnalysis:
         )
 
     @property
+    def native_top_levels(self) -> list[TopLevelAnalysis]:
+        return sorted(
+            [
+                module.top_level
+                for module in self.modules
+                if module.top_level is not None and module.top_level.is_native_candidate
+            ],
+            key=lambda top_level: top_level.qualname,
+        )
+
+    @property
+    def accepted_native_top_levels(self) -> list[TopLevelAnalysis]:
+        return sorted(
+            [top_level for top_level in self.native_top_levels if top_level.accepted],
+            key=lambda top_level: top_level.qualname,
+        )
+
+    @property
+    def rejected_native_top_levels(self) -> list[TopLevelAnalysis]:
+        return sorted(
+            [top_level for top_level in self.native_top_levels if not top_level.accepted],
+            key=lambda top_level: top_level.qualname,
+        )
+
+    @property
     def diagnostics(self) -> list[Diagnostic]:
         diagnostics: list[Diagnostic] = []
         for module in self.modules:
             diagnostics.extend(module.diagnostics)
             for function in module.functions:
                 diagnostics.extend(function.diagnostics)
+            if module.top_level is not None:
+                diagnostics.extend(module.top_level.diagnostics)
         return sorted(
             diagnostics,
             key=lambda diagnostic: (
@@ -170,5 +249,12 @@ class ProjectAnalysis:
             "native_candidates": [function.qualname for function in self.native_candidates],
             "accepted_native": [function.qualname for function in self.accepted_native_functions],
             "rejected_native": [function.qualname for function in self.rejected_native_functions],
+            "native_top_levels": [top_level.qualname for top_level in self.native_top_levels],
+            "accepted_native_top_levels": [
+                top_level.qualname for top_level in self.accepted_native_top_levels
+            ],
+            "rejected_native_top_levels": [
+                top_level.qualname for top_level in self.rejected_native_top_levels
+            ],
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }

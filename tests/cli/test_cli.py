@@ -92,6 +92,23 @@ def add(a: int, b: int) -> int:
     assert data["accepted_native"] == ["app.add"]
 
 
+def test_check_json_reports_native_top_level_when_enabled(tmp_path: Path, capsys) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+total: int = 41
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["check", str(tmp_path), "--json", "--native-top-level"])
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert data["accepted_native_top_levels"] == ["app.__rextio_top_level__"]
+
+
 def test_check_json_respects_decorator_only_native_discovery(tmp_path: Path, capsys) -> None:
     (tmp_path / "rextio.toml").write_text(
         """

@@ -8,6 +8,7 @@ from rextio.fallback.module_copy import (
     copy_plain_module,
     fallback_module_path,
     generated_module_path,
+    write_native_top_level_fallback_module,
 )
 
 
@@ -15,6 +16,10 @@ def write_cpython_fallback(module: ModuleAnalysis, python_root: Path) -> Path:
     path = fallback_module_path(python_root, module)
     copy_module_to_fallback(module, path)
     return path
+
+
+def write_cpython_native_top_level_fallback(module: ModuleAnalysis, python_root: Path) -> Path:
+    return write_native_top_level_fallback_module(module, python_root)
 
 
 def write_plain_cpython_module(module: ModuleAnalysis, python_root: Path) -> Path:

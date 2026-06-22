@@ -48,6 +48,7 @@ class PolicyConfig:
     require_type_hints: bool = True
     allow_dynamic_features: bool = False
     boundary_warnings: bool = True
+    native_top_level: bool = False
 
 
 @dataclass(frozen=True)

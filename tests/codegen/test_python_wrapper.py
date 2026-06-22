@@ -89,3 +89,24 @@ def unique(values: set[float]) -> set[float]: ...
     assert "def unique(values):" in wrapper
     assert "return _fallback_unique(values)" in wrapper
     assert "return set(_native_unique(list(values)))" in wrapper
+
+
+def test_wrapper_selects_native_top_level_fallback_module(tmp_path: Path) -> None:
+    source = tmp_path / "app.py"
+    source.write_text(
+        """
+total: int = 41
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_top_level=True)
+    module = analysis.modules[0]
+
+    wrapper = render_wrapper_module(module)
+
+    assert 'function_name="app____rextio_top_level"' in wrapper
+    assert '_REXTIO_FALLBACK_MODULE_NAME = "_fallback_app"' in wrapper
+    assert '_REXTIO_NATIVE_TOP_LEVEL_FALLBACK_MODULE_NAME = "_native_top_level_fallback_app"' in wrapper
+    assert "return _rextio_import_fallback_module(_REXTIO_FALLBACK_MODULE_NAME)" in wrapper
+    assert "module.__dict__.update(updates)" in wrapper
+    assert "globals().update(updates)" in wrapper
