@@ -9,6 +9,16 @@ candidate uses unsupported syntax, unsupported types, or unsafe boundaries,
 Rextio rejects that function from native compilation and routes it through
 fallback Python.
 
+Read this document as the detailed boundary behind the main README. The happy
+path is the direct Rust subset; the compatibility path is the Python runtime
+semantics shim; everything else remains ordinary Python fallback.
+
+| Path | Result |
+| --- | --- |
+| Direct Rust subset | Generated Rust/PyO3 code, expected speedup path. |
+| Runtime semantics shim | Generated native wrapper that calls Python fallback to preserve behavior. |
+| Python fallback | Original behavior stays in generated fallback modules and wrappers. |
+
 ## Supported Native Surface
 
 0.1.0 alpha native candidates must be module-level functions whose argument and
