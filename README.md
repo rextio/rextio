@@ -53,10 +53,10 @@ rextio clean path/to/project
 0.1.0 alpha supports a small statically typed Python subset for module-level
 functions. Eligible functions are native candidates by default when Rextio can
 resolve every argument and return type from source annotations, sibling `.pyi`
-stubs, or conservative local context inference. Unsupported syntax, unresolved
-types, dynamic features, unsafe native-to-fallback calls, and unresolved
-external calls are rejected from native compilation and kept on Python fallback
-where possible.
+stubs, or conservative local context inference. Unsupported direct-Rust syntax,
+unresolved types, unsafe native-to-fallback calls, and unresolved external calls
+are rejected from direct Rust lowering and kept on Python fallback where
+possible.
 
 See [Unsupported Features in 0.1.0 alpha](docs/unsupported-features.md) for the
 supported subset, boundary limits, diagnostics, and non-goals.
@@ -80,10 +80,18 @@ The expanded forms remain conservative: empty list literals need a supported
 batch loop or comprehension iterables over list variables. Dict support covers
 fixed `dict[K, V]` forms where `K` is `int`, `bool`, or `str` and `V` is a
 supported fixed value type. Set support is limited to `set[int]`, `set[float]`,
-`set[bool]`, and `set[str]` comprehensions. Class/object, exception,
-context-manager, async, generator, and dynamic attribute semantics remain
-Python fallback territory. Dataclasses are still outside 0.1.0 alpha native
-compilation.
+`set[bool]`, and `set[str]` comprehensions. Dataclasses are still outside direct
+Rust lowering.
+
+For Python semantics that cannot be safely lowered into the typed Rust subset,
+Rextio can generate a Python runtime semantics native shim. This shim is a Rust
+PyO3 function that calls the generated Python fallback implementation, so it can
+preserve class/object behavior, regular instance methods marked with
+`@rextio.native`, exception handling, context managers, `async`/`await`,
+generators/`yield`, and dynamic attribute access such as `getattr` or
+`obj.attr`. Rextio reports `RXT080` for this path. It is a compatibility path,
+not a Rust speedup path. Automatic discovery for this path is conservative;
+broad object-runtime code should be marked explicitly with `@rextio.native`.
 
 Type inference is deliberately narrow. Rextio can infer simple scalar and
 collection signatures from constants, arithmetic, comparisons, `if` tests,
@@ -327,11 +335,13 @@ analysis.
 - `RXT070`: a native function calls fallback-only Python code.
 - `RXT072`: a native function depends on a rejected native function.
 - `RXT073`: fallback Python calls a native function inside a loop.
+- `RXT080`: a native function uses the Python runtime semantics shim.
 
 `RXT070` and `RXT072` reject the native candidate. `RXT073` is a warning; the
 function remains eligible and may use native initially, but generated wrappers
 fall back to the CPython/Nuitka fallback path after repeated runtime crossings
-exceed the configured threshold.
+exceed the configured threshold. `RXT080` is a warning; the generated Rust
+function preserves Python semantics by calling the generated fallback function.
 
 ## Examples
 

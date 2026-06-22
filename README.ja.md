@@ -75,8 +75,16 @@ comprehension 内の assignment expression、対応 list item 型への
 batch loop または comprehension iterable としてのみサポートされます。Native subset
 は限定的な list/dict/set comprehension、comprehension 内の assignment expression、
 `list[list[T]]`、固定 `dict[K, V]`、`set[int|float|bool|str]` comprehension に対応します。
-class/object、exception、context manager、async、generator、dynamic attribute の semantics は
-Python fallback に残ります。dataclass もまだ 0.1.0 alpha native コンパイル範囲外です。
+dataclass はまだ direct Rust lowering の範囲外です。
+
+Direct Rust に安全に lowering できない Python semantics については、Rextio は Python runtime
+semantics native shim を生成できます。この shim は生成された Python fallback 実装を呼び出す
+Rust/PyO3 関数なので、class/object の動作、`@rextio.native` が付いた通常の instance method、
+exception handling、context manager、`async`/`await`、generator/`yield`、`getattr` や
+`obj.attr` のような dynamic attribute access を保持できます。この経路では `RXT080` が報告され、
+Rust speedup ではなく compatibility 経路として扱います。
+この経路の automatic discovery は保守的であり、広い object-runtime コードは明示的に
+`@rextio.native` を付けることを推奨します。
 
 型推論は意図的に狭い範囲です。Rextio は定数、算術、比較、`if` test、loop、indexing、
 comprehension、対応 builtin から単純な scalar と collection signature を推論できます。
@@ -294,11 +302,13 @@ fallback は無効になります。`REXTIO_NATIVE_MODE=native` はこのしき�
 - `RXT070`: native 関数が fallback-only Python コードを呼び出しています。
 - `RXT072`: native 関数が拒否された native 関数に依存しています。
 - `RXT073`: fallback Python がループ内で native 関数を呼び出しています。
+- `RXT080`: native 関数が Python runtime semantics shim を使用しています。
 
 `RXT070` と `RXT072` は native 候補を拒否します。`RXT073` は警告です。その関数は
 引き続き条件を満たし、最初は native を使用できますが、繰り返しのランタイム crossing が
 設定されたしきい値を超えると、生成された wrapper は CPython/Nuitka fallback パスへ
-fallback します。
+fallback します。`RXT080` は warning であり、生成された Rust 関数が Python fallback 関数を
+呼び出して Python semantics を保持します。
 
 ## 例
 

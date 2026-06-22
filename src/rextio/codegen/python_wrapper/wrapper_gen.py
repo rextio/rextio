@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 
 from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, TopLevelAnalysis
-from rextio.codegen.native_names import native_function_name
+from rextio.codegen.native_names import native_function_name, runtime_original_name
 from rextio.fallback.fallback_marker import GENERATED_PYTHON_HEADER
 from rextio.fallback.module_copy import (
     fallback_module_name,
@@ -23,7 +23,7 @@ def render_wrapper_module(
             for function in module.functions
             if function.is_native_candidate and function.accepted
         ],
-        key=lambda function: function.name,
+        key=lambda function: function.qualname,
     )
     top_level = (
         module.top_level
@@ -64,12 +64,7 @@ def render_wrapper_module(
         lines.append(f"from {import_prefix}{fallback_name} import *  # noqa: F401,F403")
     lines.append("")
     for function in accepted:
-        if top_level is None:
-            lines.append(
-                f"from {import_prefix}{fallback_name} import {function.name} as _fallback_{function.name}"
-            )
-        else:
-            lines.append(f"_fallback_{function.name} = _rextio_fallback_module.{function.name}")
+        lines.extend(_render_fallback_binding(function, import_prefix, fallback_name, top_level is not None))
     lines.append("")
 
     for function in accepted:
@@ -77,12 +72,12 @@ def render_wrapper_module(
         lines.append("")
 
     for function in accepted:
-        node = function_nodes[function.name]
+        node = function_nodes[_function_node_key(function)]
         lines.extend(_render_wrapper_function(function, node, boundary_fallback_threshold))
         lines.append("")
 
     for function in accepted:
-        lines.append(f"_rextio_fallback_module.{function.name} = {function.name}")
+        lines.extend(_render_fallback_replacement(function))
     lines.append("")
 
     return "\n".join(lines)
@@ -96,7 +91,7 @@ def _fallback_module_import_lines(import_prefix: str, fallback_name: str) -> lis
 
 def _render_native_binding(function: FunctionAnalysis) -> list[str]:
     return [
-        f"_native_{function.name} = load_native_function(",
+        f"{_native_binding_name(function)} = load_native_function(",
         '    module_name="_rextio_native",',
         f'    function_name="{native_function_name(function.qualname)}",',
         ")",
@@ -158,44 +153,56 @@ def _render_dynamic_fallback_selection(
 
 def _render_wrapper_function(
     function: FunctionAnalysis,
-    node: ast.FunctionDef,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
     boundary_fallback_threshold: int,
 ) -> list[str]:
     signature = _signature(node)
     call_args = _call_args(node)
     native_call_args = _native_call_args(function, node)
-    native_return = f"_native_{function.name}({native_call_args})"
-    if _is_set_type(_return_type_name(function, node)):
+    native_call = f"{_native_binding_name(function)}({native_call_args})"
+    fallback_call = f"{_fallback_binding_name(function)}({call_args})"
+    if isinstance(node, ast.AsyncFunctionDef):
+        native_call = f"await {native_call}"
+        fallback_call = f"await {fallback_call}"
+    native_return = native_call
+    if not function.native_runtime_semantics and _is_set_type(_return_type_name(function, node)):
         native_return = f"set({native_return})"
+    prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+    wrapper_name = function.name if not _is_method(function) else _wrapper_method_name(function)
     return [
-        f"def {function.name}({signature}){_return_annotation(node)}:",
+        f"{prefix} {wrapper_name}({signature}){_return_annotation(node)}:",
         "    if native_disabled():",
-        f"        return _fallback_{function.name}({call_args})",
-        f"    if _native_{function.name} is None:",
+        f"        return {fallback_call}",
+        f"    if {_native_binding_name(function)} is None:",
         "        if native_required():",
         "            raise RuntimeError(",
         f'                "native mode requires generated native function: {function.qualname}"',
         "            )",
-        f"        return _fallback_{function.name}({call_args})",
+        f"        return {fallback_call}",
         (
             f'    if not native_required() and boundary_fallback_required("{function.qualname}", '
             f"{boundary_fallback_threshold}):"
         ),
-        f"        return _fallback_{function.name}({call_args})",
+        f"        return {fallback_call}",
         f"    return {native_return}",
     ]
 
 
-def _signature(node: ast.FunctionDef) -> str:
+def _signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     parts: list[str] = []
     positional = [*node.args.posonlyargs, *node.args.args]
     defaults = [None] * (len(positional) - len(node.args.defaults)) + list(node.args.defaults)
     for arg, default in zip(positional, defaults, strict=True):
         parts.append(_render_arg(arg, default))
+    if node.args.vararg is not None:
+        parts.append(f"*{_render_arg(node.args.vararg, None)}")
     if node.args.kwonlyargs:
-        parts.append("*")
+        if node.args.vararg is None:
+            parts.append("*")
         for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults, strict=True):
             parts.append(_render_arg(arg, default))
+    if node.args.kwarg is not None:
+        parts.append(f"**{_render_arg(node.args.kwarg, None)}")
     return ", ".join(parts)
 
 
@@ -208,26 +215,34 @@ def _render_arg(arg: ast.arg, default: ast.expr | None) -> str:
     return rendered
 
 
-def _return_annotation(node: ast.FunctionDef) -> str:
+def _return_annotation(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     if node.returns is None:
         return ""
     return f" -> {ast.unparse(node.returns)}"
 
 
-def _call_args(node: ast.FunctionDef) -> str:
+def _call_args(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     args = [arg.arg for arg in [*node.args.posonlyargs, *node.args.args]]
+    if node.args.vararg is not None:
+        args.append(f"*{node.args.vararg.arg}")
     args.extend(f"{arg.arg}={arg.arg}" for arg in node.args.kwonlyargs)
+    if node.args.kwarg is not None:
+        args.append(f"**{node.args.kwarg.arg}")
     return ", ".join(args)
 
 
-def _native_call_args(function: FunctionAnalysis, node: ast.FunctionDef) -> str:
+def _native_call_args(function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     args = [
         _native_arg(arg.arg, _arg_type_name(function, arg))
         for arg in [*node.args.posonlyargs, *node.args.args]
     ]
+    if node.args.vararg is not None:
+        args.append(f"*{node.args.vararg.arg}")
     args.extend(
         f"{arg.arg}={_native_arg(arg.arg, _arg_type_name(function, arg))}" for arg in node.args.kwonlyargs
     )
+    if node.args.kwarg is not None:
+        args.append(f"**{node.args.kwarg.arg}")
     return ", ".join(args)
 
 
@@ -245,7 +260,7 @@ def _arg_type_name(function: FunctionAnalysis, arg: ast.arg) -> str | None:
     return _annotation_name(arg.annotation) or function.inferred_arg_types.get(arg.arg)
 
 
-def _return_type_name(function: FunctionAnalysis, node: ast.FunctionDef) -> str | None:
+def _return_type_name(function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
     return _annotation_name(node.returns) or function.inferred_return_type
 
 
@@ -258,6 +273,78 @@ def _annotation_name(node: ast.AST | None) -> str | None:
         return None
 
 
-def _function_nodes(path: Path) -> dict[str, ast.FunctionDef]:
+def _function_nodes(path: Path) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    return {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    nodes: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            nodes[node.name] = node
+        elif isinstance(node, ast.ClassDef):
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    nodes[f"{node.name}.{child.name}"] = child
+    return nodes
+
+
+def _render_fallback_binding(
+    function: FunctionAnalysis,
+    import_prefix: str,
+    fallback_name: str,
+    dynamic_fallback: bool,
+) -> list[str]:
+    binding = _fallback_binding_name(function)
+    lines: list[str]
+    if _is_method(function):
+        lines = [f"{binding} = {_fallback_lookup(function)}"]
+    elif dynamic_fallback:
+        lines = [f"{binding} = _rextio_fallback_module.{function.name}"]
+    else:
+        lines = [f"from {import_prefix}{fallback_name} import {function.name} as {binding}"]
+    if function.native_runtime_semantics:
+        lines.append(
+            f'setattr(_rextio_fallback_module, "{runtime_original_name(function.qualname)}", {binding})'
+        )
+    return lines
+
+
+def _render_fallback_replacement(function: FunctionAnalysis) -> list[str]:
+    if _is_method(function):
+        return [f"{_fallback_lookup(function)} = {_wrapper_method_name(function)}"]
+    return [f"_rextio_fallback_module.{function.name} = {function.name}"]
+
+
+def _function_node_key(function: FunctionAnalysis) -> str:
+    return _local_qualname(function)
+
+
+def _fallback_binding_name(function: FunctionAnalysis) -> str:
+    if not _is_method(function):
+        return f"_fallback_{function.name}"
+    return f"_fallback_{_local_qualname(function).replace('.', '_')}"
+
+
+def _native_binding_name(function: FunctionAnalysis) -> str:
+    if not _is_method(function):
+        return f"_native_{function.name}"
+    return f"_native_{_local_qualname(function).replace('.', '_')}"
+
+
+def _wrapper_method_name(function: FunctionAnalysis) -> str:
+    return f"_rextio_wrapper_{_local_qualname(function).replace('.', '_')}"
+
+
+def _fallback_lookup(function: FunctionAnalysis) -> str:
+    target = "_rextio_fallback_module"
+    for item in _local_qualname(function).split("."):
+        target = f"{target}.{item}"
+    return target
+
+
+def _is_method(function: FunctionAnalysis) -> bool:
+    return "." in _local_qualname(function)
+
+
+def _local_qualname(function: FunctionAnalysis) -> str:
+    if function.module_name and function.qualname.startswith(f"{function.module_name}."):
+        return function.qualname[len(function.module_name) + 1:]
+    return function.qualname

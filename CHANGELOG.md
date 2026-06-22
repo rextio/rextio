@@ -28,6 +28,9 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Nuitka standalone/onefile executable artifact generation with `--executable-backend=nuitka`.
 - Mirrored build and analysis settings across CLI parameters, environment variables, and `rextio.toml`.
 - Target planning metadata for future Rust/Mojo/Julia backends and local mapper plugin manifests.
+- Python runtime semantics native shim (`RXT080`) for compatibility coverage of
+  object behavior, marked instance methods, exceptions, context managers,
+  async functions, generators, and dynamic attribute access.
 - Example projects for pure math, application-shell scoring, fallback safety, and boundary diagnostics.
 - Focused end-to-end tests for build/import/runtime behavior, real Cargo builds, generated wheels, and Nuitka when installed.
 

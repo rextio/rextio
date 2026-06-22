@@ -80,9 +80,17 @@ use a supported local annotation such as `out: list[int] = []`. `enumerate` and
 variables. Empty dict literals require a supported fixed `dict[K, V]`
 annotation. Nested list comprehensions may produce `list[list[T]]`, dict
 comprehensions may produce supported fixed `dict[K, V]`, and set
-comprehensions may produce `set[int|float|bool|str]`. Class/object, exception,
-context-manager, async, generator, and dynamic attribute semantics stay on
-Python fallback. Dataclasses are not part of the 0.1.0 alpha native subset.
+comprehensions may produce `set[int|float|bool|str]`. Dataclasses are not part
+of the direct Rust lowering subset.
+
+When direct Rust lowering cannot safely preserve Python object semantics, Rextio
+may generate a Python runtime semantics native shim. The shim is a Rust/PyO3
+function that calls the generated Python fallback implementation. It supports
+compatibility for class/object behavior, regular `@rextio.native` instance
+methods, exception handling, context managers, `async`/`await`,
+generators/`yield`, and dynamic attribute access. Rextio reports `RXT080` for
+this path because it preserves semantics but should not be treated as a Rust
+speedup path.
 
 Source annotations are not the only type source. Rextio also reads sibling
 `.pyi` files and performs conservative local context inference for simple
@@ -162,6 +170,10 @@ Native functions may call accepted native functions and supported builtins.
 They may not call fallback-only functions, rejected native candidates, or
 unresolved external package calls. Those cases produce deterministic diagnostics
 such as `RXT070`, `RXT072`, and `RXT030`.
+
+If a direct-Rust native function calls a runtime-semantics native function,
+Rextio promotes the caller to the same runtime shim path and reports `RXT080`.
+This avoids generating Rust code with incompatible Python object return values.
 
 Fallback Python may call native functions. If it does so inside a Python loop,
 Rextio emits `RXT073` with the suggestion to move the loop into a native batch

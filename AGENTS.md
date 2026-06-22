@@ -689,17 +689,37 @@ from the generated initializer. Imports, function definitions, class
 definitions, and module docstrings remain in Python fallback. Rextio must keep a
 full original fallback module and use it when native is disabled or unavailable.
 
-### 7.3 Unsupported Syntax
+### 7.3 Runtime Semantics Shim
 
-Reject inside native candidate functions:
+Some Python semantics are not directly lowered into typed Rust statements, but
+may be exposed through a generated Rust/PyO3 native shim that calls the
+generated Python fallback implementation. This path must preserve Python
+semantics and must emit `RXT080` so users understand it is a compatibility path,
+not a Rust speedup path.
 
-* class definitions
-* instance methods
+Runtime-backed native functions may cover:
+
+* class/object behavior inside a marked native function
+* regular instance methods marked with `@rextio.native`
+* exception handling
+* context managers
+* `async` / `await`
+* generators / `yield`
+* dynamic attribute access such as `obj.attr`
+* `getattr`, `setattr`, and `hasattr`
+
+If a direct-Rust native function calls a runtime-backed native function, promote
+the caller to the runtime shim path and emit `RXT080`. Do not generate direct
+Rust code that treats Python object values as statically typed Rust values.
+Automatic discovery for this path must remain conservative. Broad object-runtime
+functions should require an explicit `@rextio.native` marker.
+
+### 7.4 Unsupported Direct-Rust Syntax
+
+Reject inside direct-Rust native candidate functions unless the runtime
+semantics shim explicitly covers the construct:
+
 * decorators other than `@rextio.native` or `@rextio.native(target="...")`
-* async functions
-* await
-* generators
-* yield
 * lambdas
 * closures
 * nested functions
@@ -712,9 +732,6 @@ Reject inside native candidate functions:
 * `enumerate` outside a supported loop or comprehension iterable
 * `zip` outside a supported loop or comprehension iterable
 * dynamic import
-* `getattr`
-* `setattr`
-* `hasattr`
 * `globals`
 * `locals`
 * `eval`
@@ -722,8 +739,6 @@ Reject inside native candidate functions:
 * monkey patching
 * arbitrary `*args`
 * arbitrary `**kwargs`
-* exception handling in native functions
-* context managers
 * file I/O
 * network I/O
 * database calls
@@ -900,7 +915,7 @@ import rextio
 
 @rextio.native
 def helper(x: float) -> float:
-    return getattr(x, "value")
+    return eval("x")
 
 @rextio.native
 def compute(x: float) -> float:
@@ -913,6 +928,14 @@ Diagnostic:
 
 ```text
 RXT072 Native dependency rejected, so caller must fall back.
+```
+
+If `helper` is accepted through the Python runtime semantics shim instead,
+`compute` must not be directly lowered to Rust. Promote `compute` to the same
+runtime shim path and emit:
+
+```text
+RXT080 Native function uses Python runtime semantics shim.
 ```
 
 ### 9.5 Python Loop Calling Native Function
@@ -1018,6 +1041,7 @@ RXT070 Native function calls fallback-only function
 RXT071 Possible excessive Python/Rust boundary crossing
 RXT072 Native dependency rejected, so caller must fall back
 RXT073 Native function call inside Python loop may erase speedup
+RXT080 Native function uses Python runtime semantics shim
 ```
 
 Diagnostics must be deterministic and testable.
@@ -1533,6 +1557,10 @@ Also mention:
 ```text
 0.1.0 alpha includes conservative static boundary checks. It rejects native functions that call fallback-only code, warns when Python loops repeatedly call native functions, and uses generated fallback after repeated wrapper crossings exceed a simple runtime threshold.
 ```
+
+Also mention that functions requiring Python object/runtime semantics may use a
+Rust/PyO3 runtime shim with `RXT080`, and that this preserves compatibility
+rather than promising Rust speedup.
 
 Do not claim full Python compatibility.
 

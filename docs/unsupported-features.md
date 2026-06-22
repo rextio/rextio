@@ -102,15 +102,13 @@ Supported syntax is intentionally small:
 
 ## Unsupported Native Syntax
 
-Rextio rejects these inside native candidates with structured diagnostics,
-usually `RXT010`:
+Rextio rejects these inside direct-Rust native candidates with structured
+diagnostics, usually `RXT010`, unless the construct is listed in the runtime
+semantics shim section below:
 
-- classes and instance methods
 - unsupported decorators on native candidates; `@rextio.native` and matching
   `@rextio.native(target="...")` markers are supported, while `@rextio.exempt`
   opts a function out of native candidacy instead
-- async functions and `await`
-- generators and `yield`
 - lambdas and nested functions
 - generator expressions
 - assignment expressions outside comprehensions
@@ -128,9 +126,6 @@ usually `RXT010`:
 - slices such as `xs[1:]`
 - f-strings
 - `pass`
-- `try` / `except` / `finally`
-- `raise` and `assert`
-- context managers
 - imports inside native functions
 - `global` and `nonlocal`
 - `match`
@@ -152,14 +147,39 @@ fallback.
 - identity and membership comparisons such as `is`, `is not`, `in`, and
   `not in`
 
+## Runtime Semantics Shim
+
+Some Python features are not lowered into typed Rust statements, but can still
+be exposed through a generated Rust/PyO3 native shim. The shim calls the
+generated Python fallback implementation and therefore preserves Python runtime
+semantics. Rextio reports `RXT080` for these functions.
+
+Runtime-backed native functions currently cover:
+
+- class/object behavior inside a marked native function
+- regular instance methods marked with `@rextio.native`
+- `try` / `except` / `finally`
+- `raise` and `assert`
+- context managers
+- `async` functions and `await`
+- generators and `yield`
+- dynamic attribute access such as `obj.attr`
+- `getattr`, `setattr`, and `hasattr`
+
+If a direct-Rust native function calls a runtime-backed native function, Rextio
+promotes the caller to the runtime shim path and reports `RXT080`. This avoids
+generating Rust code that would treat Python object values as typed Rust values.
+
+This path is a compatibility mechanism. It is not expected to provide the same
+speedup as direct Rust lowering. Automatic discovery for runtime-backed native
+functions is conservative; broad object-runtime functions should be explicitly
+marked with `@rextio.native`.
+
 ## Unsupported Dynamic Python Features
 
 Dynamic Python features are rejected in native candidates, usually with
 `RXT020`:
 
-- `getattr`
-- `setattr`
-- `hasattr`
 - `globals`
 - `locals`
 - `eval`
@@ -178,6 +198,9 @@ Native functions may call:
 - supported builtins such as `len`, `range`, `abs`, `min`, `max`, and `sum`
 - the supported `math` subset: `math.sqrt`, `math.sin`, `math.cos`, and
   `math.floor`
+
+When a direct-Rust native function calls a runtime-backed native function,
+Rextio promotes the caller to the runtime shim path and emits `RXT080`.
 
 Native functions must not call:
 
@@ -212,8 +235,7 @@ this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 - bundled third-party package mapper rules
 - framework conversion
 - ORM conversion
-- async Python compilation
-- generator compilation
+- direct Rust compilation for the full Python async/generator object model
 - monkey patching support
 - runtime profiling-based optimization
 - full runtime boundary-cost modeling

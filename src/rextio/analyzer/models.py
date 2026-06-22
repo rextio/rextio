@@ -37,6 +37,7 @@ class FunctionAnalysis:
     inferred_arg_types: dict[str, str] = field(default_factory=dict)
     inferred_return_type: str | None = None
     native_target_language: str | None = None
+    native_runtime_semantics: bool = False
 
     @property
     def error_diagnostics(self) -> list[Diagnostic]:
@@ -73,6 +74,7 @@ class FunctionAnalysis:
             "is_native_candidate": self.is_native_candidate,
             "accepted": self.accepted,
             "native_target_language": self.native_target_language,
+            "native_runtime_semantics": self.native_runtime_semantics,
             "inferred_arg_types": dict(sorted(self.inferred_arg_types.items())),
             "inferred_return_type": self.inferred_return_type,
             "calls": [call.to_dict() for call in self.calls],

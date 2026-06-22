@@ -43,6 +43,12 @@ class RxtNone(RxtType):
 
 
 @dataclass(frozen=True)
+class RxtPyObject(RxtType):
+    def display_name(self) -> str:
+        return "object"
+
+
+@dataclass(frozen=True)
 class RxtList(RxtType):
     item_type: RxtType
 

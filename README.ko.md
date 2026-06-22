@@ -75,9 +75,15 @@ annotation이 필요하며, `range(start, stop, step)`은 현재 `step`이 양�
 iterable로만 지원됩니다. dict 지원은 key가 `int`, `bool`, `str`이고 value가 지원되는
 고정 타입인 `dict[K, V]` 형태로 제한되고, nested list comprehension은
 `list[list[T]]`까지 지원됩니다. set 지원은 `set[int]`, `set[float]`, `set[bool]`,
-`set[str]` comprehension으로 제한됩니다. class/object, exception, context manager,
-async, generator, dynamic attribute semantics는 Python fallback 영역으로 남으며,
-dataclass도 아직 0.1.0 alpha native 컴파일 범위 밖입니다.
+`set[str]` comprehension으로 제한됩니다. dataclass는 아직 direct Rust lowering 범위 밖입니다.
+
+Direct Rust lowering으로 안전하게 표현할 수 없는 Python semantics에 대해서는 Python runtime
+semantics native shim을 생성할 수 있습니다. 이 shim은 Rust/PyO3 함수가 생성된 Python
+fallback 구현을 호출하는 방식이므로 class/object 동작, `@rextio.native`가 붙은 일반 instance
+method, exception handling, context manager, `async`/`await`, generator/`yield`, `getattr` 또는
+`obj.attr` 같은 dynamic attribute access를 보존합니다. 이 경로는 `RXT080`으로 보고되며,
+Rust speedup 경로가 아니라 compatibility 경로입니다. 이 경로의 자동 discovery는 보수적이며,
+넓은 object-runtime 코드는 명시적으로 `@rextio.native`를 붙이는 것이 좋습니다.
 
 타입 추론은 의도적으로 좁습니다. Rextio는 상수, 산술, 비교, `if` test, loop, indexing,
 comprehension, 지원 builtin에서 단순 scalar와 collection signature를 추론할 수 있습니다.
@@ -296,10 +302,12 @@ Rextio 분석에서 생성 파일 또는 관련 없는 Python 파일을 제외�
 - `RXT070`: native 함수가 fallback-only Python 코드를 호출합니다.
 - `RXT072`: native 함수가 거부된 native 함수에 의존합니다.
 - `RXT073`: fallback Python이 loop 안에서 native 함수를 호출합니다.
+- `RXT080`: native 함수가 Python runtime semantics shim을 사용합니다.
 
 `RXT070`과 `RXT072`는 native 후보를 거부합니다. `RXT073`은 경고입니다. 해당 함수는
 여전히 적격하며 처음에는 native를 사용할 수 있지만, 반복된 런타임 crossing이 설정된
-임계값을 넘으면 생성된 wrapper가 CPython/Nuitka fallback 경로로 fallback합니다.
+임계값을 넘으면 생성된 wrapper가 CPython/Nuitka fallback 경로로 fallback합니다. `RXT080`은
+warning이며, 생성된 Rust 함수가 Python fallback 함수를 호출해 Python semantics를 보존합니다.
 
 ## 예제
 

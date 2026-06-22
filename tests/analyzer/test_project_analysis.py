@@ -501,7 +501,7 @@ def bad(x):
     assert "RXT001" in diagnostic_codes(tmp_path)
 
 
-def test_rejects_dynamic_features(tmp_path: Path) -> None:
+def test_uses_runtime_semantics_for_dynamic_features(tmp_path: Path) -> None:
     write_module(
         tmp_path,
         "app.py",
@@ -516,11 +516,12 @@ def bad(x: float) -> float:
 
     analysis = analyze_project(tmp_path, native_marker="decorator")
 
-    assert "RXT020" in {diagnostic.code for diagnostic in analysis.diagnostics}
-    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.bad"]
+    assert "RXT080" in {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.bad"]
+    assert analysis.accepted_native_functions[0].native_runtime_semantics is True
 
 
-def test_rejects_object_async_generator_and_dynamic_attribute_native_features(
+def test_uses_runtime_semantics_for_object_async_generator_and_dynamic_attribute_native_features(
     tmp_path: Path,
 ) -> None:
     write_module(
@@ -562,8 +563,8 @@ def dynamic_attr_bad(x: int) -> int:
 
     analysis = analyze_project(tmp_path)
 
-    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
-    assert {function.qualname for function in analysis.rejected_native_functions} == {
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT080"}
+    assert {function.qualname for function in analysis.accepted_native_functions} == {
         "app.Scoring.score",
         "app.async_bad",
         "app.dynamic_attr_bad",
@@ -1224,8 +1225,12 @@ def compute(x: float) -> float:
         diagnostic.function_name: diagnostic.code for diagnostic in analysis.diagnostics
     }
 
-    assert diagnostics_by_function["app.helper"] == "RXT020"
-    assert diagnostics_by_function["app.compute"] == "RXT072"
+    assert diagnostics_by_function["app.helper"] == "RXT080"
+    assert diagnostics_by_function["app.compute"] == "RXT080"
+    assert {function.qualname for function in analysis.accepted_native_functions} == {
+        "app.compute",
+        "app.helper",
+    }
 
 
 def test_warns_for_python_loop_calling_native_function(tmp_path: Path) -> None:

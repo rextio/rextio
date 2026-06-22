@@ -541,3 +541,24 @@ while i < 4:
     assert 'map.insert(String::from("i"), i);' in source
     assert 'map.insert(String::from("total"), total);' in source
     assert "m.add_function(wrap_pyfunction!(app____rextio_top_level, m)?)?;" in source
+
+
+def test_generates_runtime_semantics_shim_for_dynamic_python(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def read_value(x: object) -> object:
+    return getattr(x, "value")
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "#[pyfunction(signature = (*args, **kwargs))]" in source
+    assert "fn app__read_value(" in source
+    assert "rextio_call_python_runtime(" in source
+    assert '"_fallback_app"' in source
+    assert '"_rextio_original_app__read_value"' in source

@@ -145,7 +145,7 @@ def _collect_module_functions(
                         _rejected_native_marker_function(node, module, marker, target_language)
                     )
                 elif _native_marker_applies(marker, target_language):
-                    functions.append(_rejected_async_function(node, module, target_language))
+                    functions.append(_runtime_semantics_function(node, module, marker, target_language))
             continue
         if not isinstance(node, ast.FunctionDef):
             continue
@@ -175,7 +175,7 @@ def _collect_module_functions(
         elif marker is not None and not _native_marker_applies(marker, target_language):
             function.is_native_candidate = False
         elif has_marker:
-            validate_native_function(node, function)
+            _classify_native_function(node, function)
         elif native_marker == "auto" and _is_auto_native_candidate(
             node,
             function,
@@ -213,7 +213,153 @@ def _is_auto_native_candidate(
         function.inferred_return_type = probe.inferred_return_type
         function.native_target_language = target_language
         return True
+    if (
+        _has_resolved_runtime_signature(node, probe)
+        and _requires_runtime_semantics(node)
+        and _is_auto_runtime_semantics_safe(node)
+    ):
+        function.inferred_arg_types = dict(probe.inferred_arg_types)
+        function.inferred_return_type = probe.inferred_return_type
+        function.native_target_language = target_language
+        function.native_runtime_semantics = True
+        _add_runtime_semantics_warning(function, node)
+        return True
     return False
+
+
+def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+    probe = FunctionAnalysis(
+        name=function.name,
+        qualname=function.qualname,
+        module_name=function.module_name,
+        file_path=function.file_path,
+        line=function.line,
+        column=function.column,
+        is_native_candidate=True,
+        calls=list(function.calls),
+        inferred_arg_types=dict(function.inferred_arg_types),
+        inferred_return_type=function.inferred_return_type,
+        native_target_language=function.native_target_language,
+    )
+    validate_native_function(node, probe)
+    function.inferred_arg_types = dict(probe.inferred_arg_types)
+    function.inferred_return_type = probe.inferred_return_type
+    if probe.accepted:
+        function.accepted = True
+        return
+    if not _requires_runtime_semantics(node):
+        for diagnostic in probe.diagnostics:
+            function.add_diagnostic(diagnostic)
+        function.accepted = False
+        return
+    function.native_runtime_semantics = True
+    function.accepted = True
+    _add_runtime_semantics_warning(function, node)
+
+
+def _has_resolved_runtime_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> bool:
+    if node.args.vararg is not None or node.args.kwarg is not None:
+        return False
+    args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    for arg in args:
+        if arg.annotation is None and arg.arg not in function.inferred_arg_types:
+            return False
+    return node.returns is not None or function.inferred_return_type is not None
+
+
+def _requires_runtime_semantics(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    if isinstance(node, ast.AsyncFunctionDef):
+        return True
+    body_nodes = (child for statement in node.body for child in ast.walk(statement))
+    for child in body_nodes:
+        if isinstance(
+            child,
+            (
+                ast.ClassDef,
+                ast.Try,
+                ast.With,
+                ast.AsyncWith,
+                ast.Await,
+                ast.Yield,
+                ast.YieldFrom,
+                ast.Raise,
+                ast.Assert,
+            ),
+        ):
+            return True
+        if isinstance(child, ast.Attribute) and not _is_known_static_attribute(child):
+            return True
+        if isinstance(child, ast.Call):
+            target = dotted_name(child.func)
+            if target in {"getattr", "setattr", "hasattr"}:
+                return True
+    return False
+
+
+def _is_auto_runtime_semantics_safe(node: ast.FunctionDef) -> bool:
+    allowed_calls = {"getattr", "setattr", "hasattr"}
+    for child in (item for statement in node.body for item in ast.walk(statement)):
+        if not isinstance(child, ast.Call):
+            continue
+        target = dotted_name(child.func)
+        if target not in allowed_calls:
+            return False
+    return True
+
+
+def _is_known_static_attribute(node: ast.Attribute) -> bool:
+    if node.attr == "append":
+        return True
+    return dotted_name(node) in {
+        "math.sqrt",
+        "math.sin",
+        "math.cos",
+        "math.floor",
+    }
+
+
+def _runtime_semantics_function(
+    node: ast.AsyncFunctionDef,
+    module: ModuleAnalysis,
+    marker: NativeMarker,
+    target_language: str,
+) -> FunctionAnalysis:
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=f"{module.module_name}.{node.name}" if module.module_name else node.name,
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        is_native_candidate=True,
+        accepted=True,
+        calls=[],
+        native_target_language=_marker_target_language(marker, target_language),
+        native_runtime_semantics=True,
+    )
+    _add_runtime_semantics_warning(function, node)
+    return function
+
+
+def _add_runtime_semantics_warning(
+    function: FunctionAnalysis,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> None:
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT080",
+            severity="warning",
+            message="native function uses Python runtime semantics shim",
+            file_path=function.file_path,
+            line=node.lineno,
+            column=node.col_offset,
+            function_name=function.qualname,
+            suggestion=(
+                "Rextio will generate a Rust/PyO3 native wrapper that calls the "
+                "Python fallback implementation to preserve dynamic Python semantics."
+            ),
+        )
+    )
 
 
 def _native_marker_applies(marker: NativeMarker, target_language: str) -> bool:
@@ -313,22 +459,12 @@ def _collect_native_methods(
                 line=child.lineno,
                 column=child.col_offset,
                 is_native_candidate=True,
-                accepted=False,
+                accepted=True,
                 calls=collect_call_sites(child),
                 native_target_language=_marker_target_language(marker, target_language),
+                native_runtime_semantics=True,
             )
-            function.add_diagnostic(
-                Diagnostic(
-                    code="RXT010",
-                    severity="error",
-                    message="instance methods are not supported as 0.1.0 alpha native functions",
-                    file_path=module.file_path,
-                    line=child.lineno,
-                    column=child.col_offset,
-                    function_name=qualname,
-                    suggestion="Move the hot path into a module-level typed function.",
-                )
-            )
+            _add_runtime_semantics_warning(function, child)
             functions.append(function)
     return functions
 
