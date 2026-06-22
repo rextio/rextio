@@ -83,6 +83,12 @@ iterable로만 지원됩니다. dict 지원은 key가 `int`, `bool`, `str`이고
 `list[list[T]]`까지 지원됩니다. set 지원은 `set[int]`, `set[float]`, `set[bool]`,
 `set[str]` comprehension으로 제한됩니다. dataclass는 아직 direct Rust lowering 범위 밖입니다.
 
+Rextio는 Python/Rust ownership 차이를 보수적으로 다룹니다. `str`, `bytes`, `list`,
+`dict`, `set`처럼 Rust에서 owned value가 되는 값을 read-only로 재사용하는 경우 필요한
+위치에 명시적 clone을 생성합니다. 반면 `ys = xs`처럼 mutable collection alias를 만든 뒤
+어느 alias든 mutate하는 Python 패턴은 Rust ownership과 Python reference aliasing 의미가
+같지 않으므로 Python fallback으로 유지됩니다.
+
 Direct Rust lowering으로 안전하게 표현할 수 없는 Python semantics에 대해서는 Python runtime
 semantics native shim을 생성할 수 있습니다. 이 shim은 Rust/PyO3 함수가 생성된 Python
 fallback 구현을 호출하는 방식이므로 class/object 동작, `@rextio.native`가 붙은 일반 instance

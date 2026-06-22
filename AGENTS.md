@@ -705,6 +705,15 @@ Support inside native candidate functions:
   supported target type
 * simple indexing such as `xs[i]`
 
+Direct Rust lowering must treat Python/Rust ownership differences
+conservatively. Generated Rust may clone owned values such as `String`,
+`Vec<T>`, `HashMap<K, V>`, and `HashSet<T>` when a Python value is reused after
+assignment or captured in a container literal. Do not silently change mutable
+alias semantics: if a native candidate creates a mutable collection alias, such
+as `ys = xs`, or captures a mutable collection inside a container literal and
+then mutates either alias through supported `append`/dict assignment, reject
+that candidate from direct Rust lowering and keep it on Python fallback.
+
 When `[policy] native_top_level = true` or `--native-top-level` is set, Rextio
 may also convert a narrower subset of module top-level executable statements.
 Supported top-level native initialization is limited to assignment, annotated

@@ -38,6 +38,9 @@ Initial public MVP for Rextio as a local hybrid build tool.
   patterns including `math`, `all`/`any`, `sorted`/`reversed`, selected
   `str`/`bytes`/`list` methods, `statistics`, `time`/`datetime`,
   `hashlib.sha256`, `base64`, and `json`.
+- Conservative Python/Rust ownership handling for direct Rust lowering:
+  generated clones for reused owned values and fallback diagnostics for mutable
+  collection alias mutation.
 - Example projects for pure math, application-shell scoring, fallback safety, and boundary diagnostics.
 - Focused end-to-end tests for build/import/runtime behavior, real Cargo builds, generated wheels, and Nuitka when installed.
 

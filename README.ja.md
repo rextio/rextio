@@ -84,6 +84,12 @@ batch loop または comprehension iterable としてのみサポートされま
 `list[list[T]]`、固定 `dict[K, V]`、`set[int|float|bool|str]` comprehension に対応します。
 dataclass はまだ direct Rust lowering の範囲外です。
 
+Rextio は Python/Rust の ownership 差を保守的に扱います。`str`、`bytes`、`list`、
+`dict`、`set` のような Rust の owned value を read-only で再利用する場合は、必要な位置に
+明示的な clone を生成します。一方、`ys = xs` のように mutable collection alias を作成し、
+いずれかの alias を mutate する Python pattern は、Rust ownership と Python reference
+aliasing の意味が同じではないため Python fallback に残します。
+
 Direct Rust に安全に lowering できない Python semantics については、Rextio は Python runtime
 semantics native shim を生成できます。この shim は生成された Python fallback 実装を呼び出す
 Rust/PyO3 関数なので、class/object の動作、`@rextio.native` が付いた通常の instance method、
