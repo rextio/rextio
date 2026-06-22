@@ -1,10 +1,10 @@
 # AGENTS.md
 
-# Rextio Public 1 Development Guide
+# Rextio 0.1.0 alpha Development Guide
 
-This repository implements **Rextio Public 1**, the first public MVP of Rextio.
+This repository implements **Rextio 0.1.0 alpha**, the first alpha release of Rextio.
 
-Rextio Public 1 is a hybrid build tool for Python projects:
+Rextio 0.1.0 alpha is a hybrid build tool for Python projects:
 
 > Write typed Python. Compile eligible functions to Rust AOT native modules. Package the rest as safe CPython/Nuitka fallback.
 
@@ -22,9 +22,9 @@ Python source
 
 ---
 
-## 1. Product Scope for Public 1
+## 1. Product Scope for 0.1.0 alpha
 
-Public 1 must demonstrate all of the following:
+0.1.0 alpha must demonstrate all of the following:
 
 1. A Python project can let Rextio discover eligible functions automatically when their types are statically resolved from annotations, `.pyi` stubs, or conservative local context inference, and can optionally mark functions with `@rextio.native` or target-specific `@rextio.native(target="rust")`.
 2. A Python project can mark functions with `@rextio.exempt` to keep them on Python fallback.
@@ -46,13 +46,13 @@ Public 1 must demonstrate all of the following:
     initialization logic to a Rust native initializer while preserving Python
     fallback import behavior.
 
-The first public release must feel like a usable hybrid compiler/build tool, not merely a static analyzer.
+The 0.1.0 alpha release must feel like a usable hybrid compiler/build tool, not merely a static analyzer.
 
 ---
 
-## 2. Non-Goals for Public 1
+## 2. Non-Goals for 0.1.0 alpha
 
-Do not implement these in Public 1 unless explicitly requested:
+Do not implement these in 0.1.0 alpha unless explicitly requested:
 
 * SaaS dashboard
 * GitHub App
@@ -64,13 +64,10 @@ Do not implement these in Public 1 unless explicitly requested:
 * Cranelift
 * LLVM integration
 * MLIR
-* FastAPI-to-Axum conversion
 * General-purpose executable packaging beyond zipapp and Nuitka
-* Django conversion
-* Flask conversion
-* SQLAlchemy/Django ORM conversion
-* Full NumPy support
-* Full pandas support
+* Third-party framework conversion
+* ORM conversion
+* Bundled third-party package mapper rules
 * Async Python compilation
 * Generator compilation
 * Arbitrary Python object model support
@@ -82,7 +79,7 @@ Do not implement these in Public 1 unless explicitly requested:
 * Managed LLM service
 * Background optimization agent
 
-Rextio Public 1 is a local CLI and build tool only.
+Rextio 0.1.0 alpha is a local CLI and build tool only.
 
 ---
 
@@ -120,7 +117,7 @@ When this variable is set, the package must use fallback implementations.
 
 Crossing between Python fallback code and Rust native code can be expensive.
 
-Public 1 must not implement a full cost model, but it must enforce conservative static safety rules and a simple runtime crossing threshold:
+0.1.0 alpha must not implement a full cost model, but it must enforce conservative static safety rules and a simple runtime crossing threshold:
 
 * Native functions must not call fallback-only functions.
 * Native functions must not call unsupported external package functions.
@@ -162,7 +159,7 @@ or for Rust:
 
 The user-facing source language is Python.
 
-Avoid exposing Rust concepts such as ownership, borrowing, lifetimes, unsafe, Send, Sync, or trait bounds to normal Rextio users in Public 1.
+Avoid exposing Rust concepts such as ownership, borrowing, lifetimes, unsafe, Send, Sync, or trait bounds to normal Rextio users in 0.1.0 alpha.
 
 ---
 
@@ -274,7 +271,7 @@ rextio/
 │        └─ conversions.rs
 ├─ examples/
 │  ├─ pure_math/
-│  ├─ fastapi_scoring/
+│  ├─ app_shell/
 │  └─ fallback_demo/
 ├─ tests/
 │  ├─ analyzer/
@@ -292,7 +289,7 @@ rextio/
 
 ## 5. Language Allocation
 
-Use Python for most of Public 1 implementation.
+Use Python for most of 0.1.0 alpha implementation.
 
 Use Rust only where Rust is directly required.
 
@@ -322,13 +319,13 @@ Use Rust for:
 * small PyO3 helper runtime
 * common conversion helpers if needed
 
-Do not prematurely move the analyzer, boundary checker, or code generator into Rust for Public 1.
+Do not prematurely move the analyzer, boundary checker, or code generator into Rust for 0.1.0 alpha.
 
-Public 1 should prioritize fast iteration and end-to-end behavior.
+0.1.0 alpha should prioritize fast iteration and end-to-end behavior.
 
 ---
 
-## 6. Public 1 CLI Commands
+## 6. 0.1.0 alpha CLI Commands
 
 Implement these commands first:
 
@@ -420,7 +417,7 @@ Native candidates:
 
 Rejected:
   ✗ myapp.users.get_user_score
-    reason: external package call: django.orm
+    reason: external package call: external.package
 
   ✗ myapp.parser.parse_record
     reason: unsupported dynamic getattr
@@ -446,8 +443,8 @@ rextio build --native-backend=rust
 rextio build --target-language=rust
 rextio build --target-version=stable
 rextio build --target-build-option profile=release
-rextio build --mapper-path=mappers/python-numpy-rust
-rextio build --enable-mapper=python-numpy-rust
+rextio build --mapper-path=mappers/python-basic-rust
+rextio build --enable-mapper=python-basic-rust
 rextio build --fallback=cpython
 rextio build --fallback=nuitka
 rextio build --fallback-threshold=1000
@@ -498,12 +495,11 @@ Command routing and output formatting flags such as project roots, bench
 targets, `init --force`, and `check --json` are command-line concerns rather
 than project configuration.
 
-Rust is the only implemented native target in Public 1. `mojo` and `julia` may
+Rust is the only implemented native target in 0.1.0 alpha. `mojo` and `julia` may
 be accepted as configurable target-language values so version-specific mapper
 metadata can be represented, but code generation must fail clearly until those
-backends are implemented. Mapper plugin download from `[mappers] repository` is
-reserved for a future phase; Public 1 loads only local mapper manifests from
-`[mappers] paths`.
+backends are implemented. Mapper plugins can be loaded from `[mappers] paths` or
+downloaded from a configured public Git repository in `[mappers] repository`.
 
 Behavior:
 
@@ -524,7 +520,7 @@ Behavior:
 * Optionally produce a zipapp executable artifact under `dist/` when `--entrypoint=module:function` is provided.
 * Optionally invoke Nuitka to produce standalone or onefile executable artifacts.
 
-Nuitka fallback is experimental in Public 1.
+Nuitka fallback is experimental in 0.1.0 alpha.
 
 CPython fallback is stable and required.
 
@@ -536,7 +532,7 @@ the zipapp, so generated wrappers must preserve fallback behavior when
 Nuitka executable artifacts require Nuitka to be installed. `--nuitka-mode=standalone`
 should produce a `.dist` application directory, and `--nuitka-mode=onefile`
 should produce a single executable. Do not claim cross-platform packaging of
-arbitrary third-party dependencies in Public 1.
+arbitrary third-party dependencies in 0.1.0 alpha.
 
 ### 6.4 `rextio bench`
 
@@ -564,7 +560,7 @@ Rust native:      6.1 ms
 Speedup:          7.3x
 ```
 
-`rextio bench` should not implement a full boundary-cost optimizer in Public 1. It may benchmark a specific function but should not automatically decide project-wide fallback policy based on runtime measurements.
+`rextio bench` should not implement a full boundary-cost optimizer in 0.1.0 alpha. It may benchmark a specific function but should not automatically decide project-wide fallback policy based on runtime measurements.
 
 ### 6.5 `rextio clean`
 
@@ -582,7 +578,7 @@ Do not delete user source files.
 
 ---
 
-## 7. Public 1 Python Subset
+## 7. 0.1.0 alpha Python Subset
 
 Only support a narrow typed subset.
 
@@ -709,10 +705,10 @@ Reject inside native candidate functions:
 * nested functions
 * generator expressions
 * assignment expressions outside comprehensions
-* set literals in Public 1
+* set literals in 0.1.0 alpha
 * general tuple, dict, or set semantics beyond the fixed tuple, limited fixed
   `dict[K, V]`, and limited `set[int|float|bool|str]` subsets
-* dataclasses in Public 1
+* dataclasses in 0.1.0 alpha
 * `enumerate` outside a supported loop or comprehension iterable
 * `zip` outside a supported loop or comprehension iterable
 * dynamic import
@@ -747,7 +743,7 @@ Do not silently generate incorrect Rust.
 
 ## 8. Native Discovery, Marker, and Exemptions
 
-Public 1 defaults to automatic native candidate discovery for module-level typed
+0.1.0 alpha defaults to automatic native candidate discovery for module-level typed
 functions that fit the supported subset and pass boundary checks.
 
 `@rextio.native` remains supported as an explicit marker:
@@ -777,7 +773,7 @@ def sum_squares(xs: list[float]) -> float:
     return total
 ```
 
-The target name is normalized case-insensitively. Public 1 accepts `rust`,
+The target name is normalized case-insensitively. 0.1.0 alpha accepts `rust`,
 `mojo`, and `julia` as target-planning values, but only Rust code generation is
 implemented. A target-specific marker applies only when the active
 `[build] native_backend` / `--target-language` matches that marker. For example,
@@ -816,14 +812,14 @@ candidate calls an exempt function, treat that callee as fallback-only and apply
 the normal native-to-fallback boundary rejection.
 
 Do not compile functions whose argument or return types remain unresolved, or
-functions outside the supported Public 1 subset. Automatic discovery must
+functions outside the supported 0.1.0 alpha subset. Automatic discovery must
 remain conservative and deterministic.
 
 ---
 
-## 9. Boundary Crossing Policy for Public 1
+## 9. Boundary Crossing Policy for 0.1.0 alpha
 
-Rextio Public 1 must include a conservative static boundary policy.
+Rextio 0.1.0 alpha must include a conservative static boundary policy.
 
 The goal is to prevent obviously unsafe native/fallback interactions while avoiding premature runtime cost modeling.
 
@@ -950,7 +946,7 @@ wrappers should use native initially, then switch that function to the generated
 CPython/Nuitka fallback path after runtime wrapper crossings exceed
 `REXTIO_BOUNDARY_FALLBACK_THRESHOLD`.
 
-### 9.6 Do Not Implement a Full Runtime Boundary Cost Model in Public 1
+### 9.6 Do Not Implement a Full Runtime Boundary Cost Model in 0.1.0 alpha
 
 Do not implement:
 
@@ -959,12 +955,12 @@ Do not implement:
 * boundary overhead measurement
 * automatic native region fusion
 
-These belong to Phase 2.5 or later. Public 1 may include a simple per-function
+These belong to Phase 2.5 or later. 0.1.0 alpha may include a simple per-function
 wrapper crossing threshold that falls back after repeated Python-to-native calls.
 
 ### 9.7 Boundary Diagnostics
 
-Public 1 should define at least:
+0.1.0 alpha should define at least:
 
 ```text
 RXT070 Native function calls fallback-only function.
@@ -1076,7 +1072,7 @@ The boundary checker may use function dependency metadata before or after IR low
 
 Generated Rust must be readable enough for debugging.
 
-Do not over-optimize generated Rust in Public 1.
+Do not over-optimize generated Rust in 0.1.0 alpha.
 
 Generated Rust should follow this shape:
 
@@ -1175,7 +1171,7 @@ Wrapper behavior:
 4. Preserve the public function name.
 5. Keep type annotations where feasible.
 
-Wrappers should not attempt full runtime boundary-cost optimization in Public 1.
+Wrappers should not attempt full runtime boundary-cost optimization in 0.1.0 alpha.
 They may apply the simple per-function boundary crossing threshold described in
 the boundary policy.
 
@@ -1185,17 +1181,17 @@ the boundary policy.
 
 ### 15.1 CPython Fallback
 
-CPython fallback is required and stable in Public 1.
+CPython fallback is required and stable in 0.1.0 alpha.
 
 Fallback behavior should copy or preserve original Python code for non-native execution.
 
 ### 15.2 Nuitka Fallback
 
-Nuitka fallback is experimental in Public 1.
+Nuitka fallback is experimental in 0.1.0 alpha.
 
 If Nuitka is unavailable, Rextio must report a clear error and suggest CPython fallback.
 
-Do not make Nuitka mandatory for Public 1.
+Do not make Nuitka mandatory for 0.1.0 alpha.
 
 Example message:
 
@@ -1254,7 +1250,7 @@ Runtime flags must not override compile-time safety. A function rejected by subs
 
 ---
 
-## 17. Example Projects Required for Public 1
+## 17. Example Projects Required for 0.1.0 alpha
 
 Create and maintain these examples.
 
@@ -1268,18 +1264,18 @@ Must include:
 * `dot_simple`
 * `count_positive`
 
-### 17.2 `examples/fastapi_scoring`
+### 17.2 `examples/app_shell`
 
-Shows a realistic Python web app shell with Rust-native hot path.
+Shows a realistic Python application shell with a Rust-native hot path.
 
-FastAPI itself remains Python fallback.
+The application shell remains Python fallback.
 
 Only the scoring function is native.
 
 Message:
 
 ```text
-FastAPI stays Python. compute_score becomes Rust native.
+Application shell stays Python. compute_score becomes Rust native.
 ```
 
 ### 17.3 `examples/fallback_demo`
@@ -1308,7 +1304,7 @@ Must include:
 
 ## 18. Testing Requirements
 
-Public 1 must include tests for:
+0.1.0 alpha must include tests for:
 
 ### 18.1 Analyzer
 
@@ -1429,7 +1425,7 @@ Use stable Rust.
 
 Generated Rust should be simple and readable.
 
-Avoid in Public 1:
+Avoid in 0.1.0 alpha:
 
 * unsafe
 * custom macros
@@ -1479,22 +1475,22 @@ Acceptable Python dependencies:
 * pydantic only if useful for config/schema
 * pytest for tests
 
-Avoid unnecessary heavy dependencies in Public 1.
+Avoid unnecessary heavy dependencies in 0.1.0 alpha.
 
-Do not require FastAPI as a dependency of Rextio itself. FastAPI may be used only in examples.
+Do not require third-party application framework dependencies in Rextio itself.
 
 Rust dependencies should be minimal:
 
 * pyo3
 * optionally serde for helper structures later
 
-Do not add Cranelift, LLVM, Tokio, Axum, or framework dependencies in Public 1.
+Do not add Cranelift, LLVM, Tokio, Axum, or framework dependencies in 0.1.0 alpha.
 
 ---
 
-## 22. Public 1 Completion Criteria
+## 22. 0.1.0 alpha Completion Criteria
 
-Public 1 is complete only when all of these are true:
+0.1.0 alpha is complete only when all of these are true:
 
 1. `pip install -e .` works.
 2. `rextio init` creates config files.
@@ -1511,7 +1507,7 @@ Public 1 is complete only when all of these are true:
 13. At least one example project demonstrates safe fallback.
 14. At least one example project demonstrates boundary rejection/warning behavior.
 15. E2E tests cover build/import/runtime behavior.
-16. README explains Public 1 scope honestly.
+16. README explains 0.1.0 alpha scope honestly.
 17. Unsupported features are clearly documented.
 
 ---
@@ -1535,12 +1531,12 @@ Rextio compiles eligible Python functions with statically resolved types to Rust
 Also mention:
 
 ```text
-Public 1 includes conservative static boundary checks. It rejects native functions that call fallback-only code, warns when Python loops repeatedly call native functions, and uses generated fallback after repeated wrapper crossings exceed a simple runtime threshold.
+0.1.0 alpha includes conservative static boundary checks. It rejects native functions that call fallback-only code, warns when Python loops repeatedly call native functions, and uses generated fallback after repeated wrapper crossings exceed a simple runtime threshold.
 ```
 
 Do not claim full Python compatibility.
 
-Do not claim full NumPy support.
+Do not claim bundled third-party package support.
 
 Do not claim framework migration.
 
@@ -1552,7 +1548,7 @@ Do not claim production-ready JIT.
 
 ## 24. Architecture Summary
 
-Public 1 architecture:
+0.1.0 alpha architecture:
 
 ```text
 User Python project
@@ -1636,12 +1632,12 @@ When there is a trade-off:
 
 ---
 
-## 27. Future Phases, Not Public 1
+## 27. Future Phases, Not 0.1.0 alpha
 
 The architecture may leave extension points for these, but do not implement them yet:
 
 * package adapter registry
-* NumPy subset
+* third-party package mapper subsets
 * profiling and optimization intelligence
 * full runtime boundary-cost model
 * runtime-weighted native coverage
@@ -1649,13 +1645,13 @@ The architecture may leave extension points for these, but do not implement them
 * GitHub PR integration
 * SaaS dashboard
 * cloud build
-* FastAPI-to-Axum plugin
+* framework conversion plugin
 * framework-aware profiling
 * JIT metadata
 * Cranelift JIT
 * enterprise/on-prem platform
 
-Keep Public 1 focused.
+Keep 0.1.0 alpha focused.
 
 ---
 
@@ -1665,8 +1661,8 @@ This project should first prove one thing:
 
 > A normal Python project can be built into a hybrid artifact where selected statically typed Python functions run as Rust native code and everything else still works through safe Python fallback.
 
-Public 1 must also prove one safety property:
+0.1.0 alpha must also prove one safety property:
 
 > Native functions never depend on fallback-only Python functions, and suspicious Python/Rust boundary patterns are reported clearly.
 
-Every implementation decision in Public 1 should support those two demonstrations.
+Every implementation decision in 0.1.0 alpha should support those two demonstrations.

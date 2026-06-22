@@ -42,7 +42,7 @@ native_top_level = false
 
 DEFAULT_REXTIO_MD = """# Rextio Project
 
-This project is configured for Rextio Public 1.
+This project is configured for the Rextio 0.1.0 alpha-stage workflow.
 
 Rextio discovers eligible typed Python functions automatically. To require
 explicit markers, set `[policy] native_marker = "decorator"` and mark functions

@@ -2,16 +2,16 @@
 
 [English](README.md) | [한국어](README.ko.md) | [简体中文](README.zh-hans.md) | [日本語](README.ja.md)
 
-Rextio 會把符合條件、可靜態解析型別的 Python 函式編譯為 Rust 原生模組，並把其餘程式碼
-封裝為安全的 Python fallback。
+Rextio 0.1.0 是 alpha 階段的混合建置工具。它會把符合條件、可靜態解析型別的 Python
+函式編譯為 Rust 原生模組，並把其餘程式碼封裝為安全的 Python fallback。
 
-Public 1 的範圍刻意保持很窄。它是面向可靜態解析型別的 Python 熱路徑專案的本機 CLI 和
+0.1.0 alpha 的範圍刻意保持很窄。它是面向可靜態解析型別的 Python 熱路徑專案的本機 CLI 和
 建置工具 MVP。Rextio 預設會自動發現型別來自 annotation、同名 `.pyi` stub 或保守本機
 上下文推斷的符合條件函式；專案也可以選擇停用自動發現，並要求使用 `@rextio.native`
-標記。Rextio 不宣稱提供完整 Python 相容性、
-完整 NumPy 支援、框架遷移、JIT 行為，或完整的執行階段邊界成本最佳化器。
+標記。Rextio 不宣稱提供完整 Python 相容性、內建第三方套件涵蓋、框架遷移、JIT 行為，
+或完整的執行階段邊界成本最佳化器。
 
-Public 1 包含保守的靜態邊界檢查。它會拒絕呼叫 fallback-only 程式碼的 native 函式，
+0.1.0 alpha 包含保守的靜態邊界檢查。它會拒絕呼叫 fallback-only 程式碼的 native 函式，
 當 Python 迴圈反覆呼叫 native 函式時發出警告，並且在重複的 Python/Rust 邊界
 crossing 超過簡單執行階段閾值後，讓產生的 wrapper 將該 native 函式切換到 fallback。
 
@@ -42,16 +42,16 @@ rextio bench myapp.scoring.compute_score --project-root path/to/project
 rextio clean path/to/project
 ```
 
-## Public 1 範圍
+## 0.1.0 alpha 範圍
 
-Public 1 支援一個面向模組層級函式的小型靜態型別 subset。當 Rextio 能從 source
+0.1.0 alpha 支援一個面向模組層級函式的小型靜態型別 subset。當 Rextio 能從 source
 annotation、同名 `.pyi` stub 或保守本機上下文推斷解析所有參數和返回型別時，符合條件的
 函式預設會成為 native 候選。不支援的語法、未解析的型別、動態特性、不安全的
 native-to-fallback 呼叫，以及無法解析的外部呼叫，都會從 native 編譯中被拒絕，並在可能時
 保留為 Python fallback。
 
 關於支援的 subset、邊界限制、診斷和非目標，請參閱
-[Public 1 不支援的功能](docs/unsupported-features.md)。
+[0.1.0 alpha 不支援的功能](docs/unsupported-features.md)。
 
 目前 native 候選支援 scalar、`list[...]` 與 `list[list[T]]`、fixed `tuple[...]`、有限的
 固定 `dict[K, V]`、有限的 `set[int|float|bool|str]`，以及 `Optional[T]` / `T | None` 型別。支援的語法包括算術、
@@ -70,7 +70,7 @@ Builtin 支援刻意限制為 `len`、`abs`、兩個參數的 `min`/`max`，以�
 現在支援有限的 list/dict/set comprehension、comprehension 內的 assignment expression、
 `list[list[T]]`、固定 `dict[K, V]`，以及 `set[int|float|bool|str]` comprehension。
 class/object、exception、context manager、async、generator 與 dynamic attribute 語義仍保留在
-Python fallback；dataclass 也仍不在 Public 1 native 編譯範圍內。
+Python fallback；dataclass 也仍不在 0.1.0 alpha native 編譯範圍內。
 
 型別推斷刻意保持窄範圍。Rextio 可以從常數、算術、比較、`if` test、loop、indexing、
 comprehension 和受支援 builtin 推斷簡單 scalar 與 collection signature。缺少 source
@@ -131,14 +131,16 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Public 1 仍會保守地驗證取值。目前已實作的 native target 只有 Rust。
+0.1.0 alpha 仍會保守地驗證取值。目前已實作的 native target 只有 Rust。
 `native_backend = "mojo"` 和 `native_backend = "julia"` 會作為未來的 target-language
 選擇被接受，因此可以設定 versioned mapper 和 build-option metadata；但在對應 backend
 實作前，source generation 會明確失敗。
 
-Mapper plugin 目前是 local metadata folder。可透過 `[mappers] paths` 和選用的
-`[mappers] enabled` 設定；每個 folder 必須包含 `rextio-mapper.toml` 或 `mapper.toml`。
-`[mappers] repository` 是未來下載功能的設定入口，Public 1 尚未實作。
+Mapper plugin 可從 local metadata folder 或 public Git repository 載入。Local folder
+透過 `[mappers] paths` 和選用的 `[mappers] enabled` 設定；每個 folder 必須包含
+`rextio-mapper.toml` 或 `mapper.toml`。`[mappers] repository`、`--mapper-repository`
+或 `REXTIO_MAPPER_REPOSITORY` 可設定為 public Git URL；Rextio 會將其 clone 到
+`.rextio/mappers/repositories/` 並遞迴發現 mapper manifest。
 
 ## 產生的產物
 
@@ -203,8 +205,8 @@ standalone 模式會在 `dist/` 下寫入 Nuitka `.dist` 應用程式目錄。on
 
 ## 策略設定
 
-Public 1 會保守地驗證 `rextio.toml`，並拒絕未知 section、未知 key、不支援的 backend，
-以及超出 Public 1 範圍的策略值。
+0.1.0 alpha 會保守地驗證 `rextio.toml`，並拒絕未知 section、未知 key、不支援的 backend，
+以及超出 0.1.0 alpha 範圍的策略值。
 
 邊界警告預設啟用。希望只保留嚴格安全錯誤、不要 Python-loop 邊界警告的專案可以設定：
 
@@ -232,7 +234,7 @@ native_marker = "decorator"
 顯式 marker 也可以固定目標 native 語言。例如
 `@rextio.native(target="rust")` 只會在 active `--target-language` /
 `[build] native_backend` 為 Rust 時生效。`target="mojo"` 和 `target="julia"` 會作為
-未來 backend 的 planning 值保留，但 Public 1 只實作 Rust source generation。
+未來 backend 的 planning 值保留，但 0.1.0 alpha 只實作 Rust source generation。
 
 即使啟用了自動 native discovery，也可以使用 `@rextio.exempt` 讓某個函式保留在
 Python fallback。exempt 函式永遠不會被 emit 到產生的 Rust；呼叫它們的 native 候選
@@ -268,7 +270,7 @@ fallback。預設閾值為 `1000`。`rextio generate --fallback-threshold=N` 和
 
 ## 邊界診斷
 
-Public 1 的邊界檢查是靜態且保守的：
+0.1.0 alpha 的邊界檢查是靜態且保守的：
 
 - `RXT070`：native 函式呼叫了 fallback-only Python 程式碼。
 - `RXT072`：native 函式依賴被拒絕的 native 函式。
@@ -280,10 +282,9 @@ Public 1 的邊界檢查是靜態且保守的：
 
 ## 範例
 
-Public 1 包含聚焦的本機範例：
+0.1.0 alpha 包含聚焦的本機範例：
 
 - `examples/pure_math`：編譯為 native hot path 的簡單 typed 數學函式。
-- `examples/fastapi_scoring`：FastAPI 保持 Python，`compute_score` 變為 Rust native。
 - `examples/fallback_demo`：當 native 缺失或設定 `REXTIO_DISABLE_NATIVE=1` 時，產生的 wrapper 使用 Python fallback。
 - `examples/boundary_demo`：透過 `@rextio.exempt` 展示保守邊界拒絕，以及 Python-loop 邊界警告。
 

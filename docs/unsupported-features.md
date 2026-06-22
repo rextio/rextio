@@ -1,6 +1,6 @@
-# Unsupported Features in Public 1
+# Unsupported Features in 0.1.0 alpha
 
-Rextio Public 1 is a focused hybrid build tool. It compiles eligible Python
+Rextio 0.1.0 alpha is a focused hybrid build tool. It compiles eligible Python
 functions with statically resolved types to Rust native modules and keeps the
 rest of the project as Python fallback.
 
@@ -11,7 +11,7 @@ fallback Python.
 
 ## Supported Native Surface
 
-Public 1 native candidates must be module-level functions whose argument and
+0.1.0 alpha native candidates must be module-level functions whose argument and
 return types are resolved from annotations, sibling `.pyi` stubs, or
 conservative local context inference. Rextio discovers eligible candidates
 automatically by default. Projects can set `[policy] native_marker = "decorator"`
@@ -190,7 +190,7 @@ Native functions must not call:
 Fallback Python code may call native functions. If fallback Python code calls a
 native function inside a Python loop, Rextio emits `RXT073` because repeated
 Python/Rust boundary crossings may erase speedup. The suggestion points users
-toward native batch loops that Public 1 can compile, including `for x in xs`,
+toward native batch loops that 0.1.0 alpha can compile, including `for x in xs`,
 `for i, x in enumerate(xs)`, and `for x, y in zip(xs, ys)`.
 
 Generated wrappers count Python-to-native wrapper crossings per function. If the
@@ -203,15 +203,14 @@ default. The runtime environment variable overrides that embedded default. Set
 the threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable
 this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 
-## Out of Scope for Public 1
+## Out of Scope for 0.1.0 alpha
 
-Public 1 does not include:
+0.1.0 alpha does not include:
 
 - whole-project Python-to-Rust migration
 - full Python compatibility
-- full NumPy or pandas support
-- framework conversion such as FastAPI-to-Axum, Django conversion, or Flask
-  conversion
+- bundled third-party package mapper rules
+- framework conversion
 - ORM conversion
 - async Python compilation
 - generator compilation
@@ -222,10 +221,9 @@ Public 1 does not include:
 - JIT, Cranelift, LLVM, or MLIR integration
 - cloud build, SaaS dashboards, or GitHub app workflows
 - Mojo or Julia native code generation
-- downloading mapper plugins from a mapper repository
-- concrete third-party mapper rules such as NumPy-to-rust-numpy
+- concrete third-party mapper transformations
 
-Nuitka fallback packaging is experimental in Public 1. If requested and not
+Nuitka fallback packaging is experimental in 0.1.0 alpha. If requested and not
 available, Rextio reports a clear `RXT060` error and suggests CPython fallback.
 If Nuitka is available, Rextio invokes it for generated fallback modules and
 records the result in `.rextio/reports/build.json`.
@@ -235,7 +233,7 @@ Zipapp executable artifacts are supported through
 Python interpreter on the target machine. Native extension modules are not
 loaded directly from inside the zipapp, so generated wrappers use Python fallback
 when `_rextio_native` is unavailable. Python-free standalone binaries without
-Nuitka remain out of scope for Public 1.
+Nuitka remain out of scope for 0.1.0 alpha.
 
 Nuitka executable artifacts are supported with
 `--executable-backend=nuitka --nuitka-mode=standalone` or
@@ -244,15 +242,17 @@ with `[executable] backend`, `[executable] nuitka_mode`, or matching
 `REXTIO_EXECUTABLE_*` environment variables. This backend is available only when
 Nuitka is installed and remains dependent on the local Nuitka toolchain. Rextio
 does not guarantee cross-platform packaging of arbitrary third-party
-dependencies in Public 1.
+dependencies in 0.1.0 alpha.
 
 `native_backend = "mojo"` and `native_backend = "julia"` are accepted only as
 target-planning values. They allow Rextio to record target version,
-target-specific build options, and matching local mapper metadata, but Public 1
+target-specific build options, and matching mapper metadata, but 0.1.0 alpha
 does not generate Mojo or Julia source. Local mapper plugin folders may be
 listed under `[mappers] paths`; each folder must contain `rextio-mapper.toml` or
-`mapper.toml`. Mapper repository download and concrete mapper transformations
-are reserved for later work.
+`mapper.toml`. A public Git mapper repository can be configured through
+`[mappers] repository`, `--mapper-repository`, or
+`REXTIO_MAPPER_REPOSITORY`; concrete mapper transformations remain separate
+plugin work.
 
 `@rextio.native(target="rust")` can pin an explicit native candidate to a target
 language. Target names are normalized case-insensitively. A target-specific
