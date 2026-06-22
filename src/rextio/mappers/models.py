@@ -48,11 +48,12 @@ class MapperRegistry:
     discovered: tuple[MapperPlugin, ...] = ()
     active: tuple[MapperPlugin, ...] = ()
     repository: str | None = None
+    repository_path: Path | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "repository": self.repository,
+            "repository_path": str(self.repository_path) if self.repository_path is not None else None,
             "discovered": [mapper.to_dict() for mapper in self.discovered],
             "active": [mapper.to_dict() for mapper in self.active],
         }
-

@@ -242,7 +242,7 @@ def _add_target_options(parser: argparse.ArgumentParser) -> None:
         "--mapper-repository",
         default=None,
         help=(
-            "Mapper repository URL for future downloads. Overrides REXTIO_MAPPER_REPOSITORY "
+            "Public Git mapper repository URL. Overrides REXTIO_MAPPER_REPOSITORY "
             "and [mappers] repository."
         ),
     )
