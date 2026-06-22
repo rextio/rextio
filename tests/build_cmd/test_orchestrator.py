@@ -98,6 +98,58 @@ def rejected(x: int) -> int:
     assert any(name.endswith(".dist-info/RECORD") for name in names)
 
 
+def test_build_generates_rust_importable_crate_artifact(
+    tmp_path: Path,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+def add(a: int, b: int) -> int:
+    return a + b
+
+def add_twice(a: int, b: int) -> int:
+    return add(a, b) * 2
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--rust-build-tool=cargo",
+            "--rust-importable",
+            "--rust-crate-name=demo_rust",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    generated_crate = tmp_path / ".rextio" / "generated" / "rust_crate"
+    dist_crate = tmp_path / "dist" / "demo_rust-rust-crate"
+    lib_rs = dist_crate / "src" / "lib.rs"
+    lib_source = lib_rs.read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "rust importable crate: built" in captured.out
+    assert "rust crate source artifact:" in captured.out
+    assert "rust crate build artifact:" in captured.out
+    assert report["status"] == "built"
+    assert report["rust_crate_build"]["status"] == "built"
+    assert report["rust_crate_build"]["crate_path"] == str(dist_crate)
+    assert Path(report["rust_crate_build"]["artifact_path"]).exists()
+    assert (generated_crate / "Cargo.toml").exists()
+    assert 'name = "demo_rust"' in (dist_crate / "Cargo.toml").read_text(encoding="utf-8")
+    assert "pub fn app__add(a: i64, b: i64) -> Result<i64, RextioError>" in lib_source
+    assert "pub fn app__add_twice(a: i64, b: i64) -> Result<i64, RextioError>" in lib_source
+    assert "return Ok(app__add(a.clone(), b.clone())? * 2);" in lib_source
+    assert "pyo3" not in lib_source
+
+
 def test_build_embeds_fallback_threshold(
     tmp_path: Path,
     capsys,

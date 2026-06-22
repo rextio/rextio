@@ -106,6 +106,47 @@ def rejected(x: int) -> int:
     assert not list(tmp_path.rglob("*.so"))
 
 
+def test_generate_writes_rust_importable_crate_source_without_building(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("PATH", "")
+    (tmp_path / "app.py").write_text(
+        """
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "generate",
+            str(tmp_path),
+            "--rust-importable",
+            "--rust-crate-name=demo_rust",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "generate.json").read_text(encoding="utf-8")
+    )
+    rust_crate = tmp_path / ".rextio" / "generated" / "rust_crate"
+    lib_source = (rust_crate / "src" / "lib.rs").read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "rust crate source: generated" in captured.out
+    assert report["status"] == "generated"
+    assert report["rust_crate_source"]["status"] == "generated"
+    assert report["rust_crate_source"]["path"] == str(rust_crate / "src" / "lib.rs")
+    assert 'name = "demo_rust"' in (rust_crate / "Cargo.toml").read_text(encoding="utf-8")
+    assert "pub fn app__add(a: i64, b: i64) -> Result<i64, RextioError>" in lib_source
+    assert not (tmp_path / ".rextio" / "build").exists()
+    assert not (tmp_path / "dist").exists()
+
+
 def test_generate_embeds_fallback_threshold(
     tmp_path: Path,
     capsys,
