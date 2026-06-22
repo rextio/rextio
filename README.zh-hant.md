@@ -53,20 +53,20 @@ native-to-fallback 呼叫，以及無法解析的外部呼叫，都會從 native
 關於支援的 subset、邊界限制、診斷和非目標，請參閱
 [0.1.0 alpha 不支援的功能](docs/unsupported-features.md)。
 
-目前 native 候選支援 scalar、`list[...]` 與 `list[list[T]]`、fixed `tuple[...]`、有限的
+目前 native 候選支援包含 `bytes` 的 scalar、`list[...]` 與 `list[list[T]]`、fixed `tuple[...]`、有限的
 固定 `dict[K, V]`、有限的 `set[int|float|bool|str]`，以及 `Optional[T]` / `T | None` 型別。支援的語法包括算術、
 比較、`if`、`while`、`for x in xs`、`range(...)` 迴圈、
 `for i, x in enumerate(xs)`、`for x, y in zip(xs, ys)`、`break`、`continue`、
 augmented assignment、帶型別的區域 annotation、簡單索引、list literal、fixed tuple
 literal、有限的 dict read/write、有限的 list/dict/set comprehension、comprehension 內的
 assignment expression，以及支援的 list item 型別上的 `list.append(...)`。
-Builtin 支援刻意限制為 `len`、`abs`、兩個參數的 `min`/`max`，以及
-`sum(list[int|float])`。支援的 `math` subset 是 `math.sqrt`、`math.sin`、`math.cos`
-和 `math.floor`。常見 side-effect 和標準函式庫 lowering 僅限
-`print(...)`、`logging.debug/info/warning/error(...)`、由
-`logging.getLogger(...)` 指派的 logger 變數，以及
-`datetime.datetime.now/utcnow().isoformat()`；它們會轉換為 Rust 的 `println!`、
-`log` macro 和 `chrono` timestamp formatting。
+Builtin 支援刻意限制為 `len`、`abs`、兩個參數的 `min`/`max`、
+`sum(list[int|float])`、`all`/`any`，以及有限的 `sorted`/`reversed`。
+支援的 `math` subset 包含三角函式、對數、rounding、finite/NaN 檢查，以及
+`math.pi`/`math.e`。常見 side-effect 和標準函式庫 lowering 包含 `print(...)`、
+`logging.debug/info/warning/error(...)`、由 `logging.getLogger(...)` 指派的
+logger 變數、`datetime`/`time`、`statistics`、選定的 `str`/`bytes`/`list`
+method，以及有限的 `hashlib.sha256`、`base64`、`json` pattern。
 
 這些擴充形式仍保持保守：空 list literal 需要受支援的 `list[...]` 區域 annotation，
 且 `range(start, stop, step)` 目前要求 `step` 是正的 int literal。`enumerate` 和

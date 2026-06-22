@@ -535,6 +535,62 @@ def observe(value: int) -> str:
     assert "return Ok(chrono::Utc::now().to_rfc3339());" in source
 
 
+def test_generates_rust_for_expanded_stdlib_lowering_calls(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import base64
+import hashlib
+import json
+import math
+import statistics
+from datetime import datetime
+
+def text(value: str) -> str:
+    return value.strip().lower().replace("a", "b").upper()
+
+def list_ops(xs: list[int]) -> int:
+    copied = sorted(xs)
+    return copied.count(2) + copied.index(2)
+
+def digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+def b64_roundtrip(value: str) -> str:
+    encoded = base64.b64encode(value.encode())
+    return base64.b64decode(encoded).decode()
+
+def json_roundtrip(value: str) -> dict[str, int]:
+    return json.loads(value)
+
+def mathy(x: float) -> float:
+    return math.atan2(x, 1.0) + math.pi + statistics.mean([x]) + datetime.utcnow().timestamp()
+
+def rounding(x: float) -> int:
+    return math.ceil(x) + math.trunc(x)
+
+def truth(flags: list[bool]) -> bool:
+    return all(flags) or any(flags)
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert ".trim().to_string().to_lowercase().replace(&String::from(\"a\"), &String::from(\"b\")).to_uppercase()" in source
+    assert "values.sort();" in source
+    assert ".iter().filter(|item| *item == &2).count() as i64" in source
+    assert ".position(|item| item == &2)" in source
+    assert "format!(\"{:x}\", sha2::Sha256::digest(&" in source
+    assert "base64::engine::general_purpose::STANDARD.encode" in source
+    assert "base64::engine::general_purpose::STANDARD.decode" in source
+    assert "serde_json::from_str::<HashMap<String, i64>>" in source
+    assert "std::f64::consts::PI" in source
+    assert ".atan2(1.0)" in source
+    assert "chrono::Utc::now()" in source
+    assert ".iter().copied().all(|value| value)" in source
+    assert ".iter().copied().any(|value| value)" in source
+
+
 def test_len_lowers_to_public_1_int(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """

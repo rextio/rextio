@@ -14,9 +14,12 @@ name = "_rextio_native"
 crate-type = ["cdylib"]
 
 [dependencies]
+base64 = "0.22"
 chrono = "0.4"
 log = "0.4"
 pyo3 = {{ version = "0.22", features = ["extension-module"] }}
+serde_json = "1"
+sha2 = "0.10"
 """
 
 

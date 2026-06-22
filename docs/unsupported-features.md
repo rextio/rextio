@@ -39,6 +39,7 @@ Supported types:
 - `float`
 - `bool`
 - `str`
+- `bytes`
 - `None`
 - `list[int]`
 - `list[float]`
@@ -196,11 +197,15 @@ Native functions may call:
 
 - accepted native functions
 - supported builtins such as `len`, `range`, `abs`, `min`, `max`, and `sum`
-- the supported `math` subset: `math.sqrt`, `math.sin`, `math.cos`, and
-  `math.floor`
+- the supported builtin expansion: `all`, `any`, `sorted`, and `reversed`
+- the supported `math` subset: trigonometric, logarithmic, rounding,
+  finite/NaN checks, `math.pi`, and `math.e`
 - limited side-effect and standard-library calls: `print(...)`,
   `logging.debug/info/warning/error(...)`, logger variables assigned from
-  `logging.getLogger(...)`, and `datetime.datetime.now/utcnow().isoformat()`
+  `logging.getLogger(...)`, `datetime`/`time` timestamp calls,
+  `statistics.mean/fmean`, selected `str`/`bytes`/`list` methods,
+  `hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`, and
+  `json.dumps/json.loads` patterns
 
 When a direct-Rust native function calls a runtime-backed native function,
 Rextio promotes the caller to the runtime shim path and emits `RXT080`.

@@ -591,6 +591,7 @@ int
 float
 bool
 str
+bytes
 None
 list[int]
 list[float]
@@ -614,6 +615,7 @@ Python int         -> i64
 Python float       -> f64
 Python bool        -> bool
 Python str         -> String
+Python bytes       -> Vec<u8>
 Python None        -> ()
 Python list[int]   -> Vec<i64>
 Python list[float] -> Vec<f64>
@@ -676,13 +678,21 @@ Support inside native candidate functions:
 * calls to other accepted native functions
 * `len(x)`
 * limited `abs`, `min`, `max`, and `sum` builtins
-* limited `math.sqrt`, `math.sin`, `math.cos`, and `math.floor`
+* limited `all`, `any`, `sorted`, and `reversed` builtins
+* limited `math` subset including trigonometric, logarithmic, rounding,
+  finite/NaN checks, `math.pi`, and `math.e`
 * limited `print(...)` lowering to Rust `println!`
 * limited `logging.debug/info/warning/error(...)` lowering to Rust `log` macros
 * limited module logger method calls when the logger variable is assigned from
   `logging.getLogger(...)`
-* limited `datetime.datetime.now/utcnow().isoformat()` lowering to Rust
-  `chrono` timestamp formatting
+* limited `datetime.datetime.now/utcnow().isoformat()` and timestamp lowering
+  to Rust `chrono` formatting/time values
+* limited `time.time()` lowering
+* limited `statistics.mean` and `statistics.fmean`
+* limited `str`/`bytes`/`list` method lowering
+* limited `hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`, and
+  `json.dumps/json.loads` lowering, with `json.loads` requiring an expected
+  supported target type
 * simple indexing such as `xs[i]`
 
 When `[policy] native_top_level = true` or `--native-top-level` is set, Rextio
@@ -1512,8 +1522,11 @@ Do not require third-party application framework dependencies in Rextio itself.
 Rust dependencies should be minimal:
 
 * pyo3
+* base64 for limited Python `base64` lowering
 * chrono for limited `datetime` lowering
 * log for limited Python `logging` lowering
+* serde_json for limited `json` lowering
+* sha2 for limited `hashlib.sha256` lowering
 * optionally serde for helper structures later
 
 Do not add Cranelift, LLVM, Tokio, Axum, or framework dependencies in 0.1.0 alpha.

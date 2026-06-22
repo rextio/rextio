@@ -37,6 +37,12 @@ class RxtStr(RxtType):
 
 
 @dataclass(frozen=True)
+class RxtBytes(RxtType):
+    def display_name(self) -> str:
+        return "bytes"
+
+
+@dataclass(frozen=True)
 class RxtNone(RxtType):
     def display_name(self) -> str:
         return "None"
@@ -132,6 +138,8 @@ def type_from_annotation(node: ast.AST | None) -> RxtType:
             return RxtBool()
         if node.id == "str":
             return RxtStr()
+        if node.id == "bytes":
+            return RxtBytes()
         if node.id == "None":
             return RxtNone()
     if isinstance(node, ast.Constant) and node.value is None:

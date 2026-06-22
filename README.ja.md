@@ -58,7 +58,7 @@ Rextio が source annotation、同名 `.pyi` stub、または保守的なロー�
 対応 subset、境界の制限、診断、非目標については
 [0.1.0 alpha で未対応の機能](docs/unsupported-features.md)を参照してください。
 
-現在の native 候補は、scalar、`list[...]` と `list[list[T]]`、fixed `tuple[...]`、限定的な
+現在の native 候補は、`bytes` を含む scalar、`list[...]` と `list[list[T]]`、fixed `tuple[...]`、限定的な
 固定 `dict[K, V]`、限定的な `set[int|float|bool|str]`、`Optional[T]` / `T | None` 型をサポートします。対応構文は
 算術、比較、`if`、`while`、`for x in xs`、`range(...)` ループ、
 `for i, x in enumerate(xs)`、`for x, y in zip(xs, ys)`、`break`、`continue`、
@@ -66,12 +66,14 @@ augmented assignment、型付きローカル annotation、単純な indexing、l
 fixed tuple literal、限定的な dict read/write、限定的な list/dict/set comprehension、
 comprehension 内の assignment expression、対応 list item 型への
 `list.append(...)` です。Builtin の対応は意図的に `len`、`abs`、2 引数の
-`min`/`max`、`sum(list[int|float])` に限定されています。対応する `math` subset は
-`math.sqrt`、`math.sin`、`math.cos`、`math.floor` です。よく使われる
-side-effect と標準ライブラリの lowering は `print(...)`、
-`logging.debug/info/warning/error(...)`、`logging.getLogger(...)` から代入された
-logger 変数、`datetime.datetime.now/utcnow().isoformat()` に限定され、Rust の
-`println!`、`log` macro、`chrono` timestamp formatting に変換されます。
+`min`/`max`、`sum(list[int|float])`、`all`/`any`、限定的な `sorted`/`reversed`
+に限定されています。
+対応する `math` subset は三角関数、対数、rounding、finite/NaN チェック、
+`math.pi`/`math.e` を含みます。よく使われる side-effect と標準ライブラリの
+lowering は `print(...)`、`logging.debug/info/warning/error(...)`、
+`logging.getLogger(...)` から代入された logger 変数、`datetime`/`time`、
+`statistics`、選択された `str`/`bytes`/`list` method、限定的な `hashlib.sha256`、
+`base64`、`json` pattern を含みます。
 
 これらの拡張形式も保守的に扱われます。空の list literal には対応する `list[...]`
 ローカル annotation が必要で、`range(start, stop, step)` は現時点では `step` が

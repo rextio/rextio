@@ -6,6 +6,12 @@ from pathlib import Path
 from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.common_calls import (
     COMMON_DIRECT_RUST_CALLS,
+    HASHLIB_CHAIN_TARGETS,
+    LIST_METHOD_TARGETS,
+    MATH_CONSTANT_TARGETS,
+    STR_METHOD_TARGETS,
+    BYTES_METHOD_TARGETS,
+    canonical_attribute_target,
     canonical_call_target,
     is_supported_effect_call,
 )
@@ -288,6 +294,11 @@ def lower_expr(
         return LiteralIR(node.value)
     if isinstance(node, ast.Name):
         return NameIR(node.id)
+    if isinstance(node, ast.Attribute):
+        target = canonical_attribute_target(node, module.imports)
+        if target in MATH_CONSTANT_TARGETS:
+            return CallIR(function=target, args=[])
+        raise LoweringError(f"unsupported attribute during IR lowering: {ast.unparse(node)}")
     if isinstance(node, ast.List):
         return ListIR(items=[lower_expr(item, module, resolver) for item in node.elts])
     if isinstance(node, ast.ListComp):
@@ -345,9 +356,10 @@ def lower_expr(
             target = dotted_name(node.func)
         if target is None:
             raise LoweringError("dynamic calls cannot be lowered to Rextio IR")
+        args = _lower_call_args(node, target, module, resolver)
         return CallIR(
             function=_lower_call_target(target, module, resolver),
-            args=[lower_expr(arg, module, resolver) for arg in node.args],
+            args=args,
         )
     if isinstance(node, ast.Subscript):
         return IndexIR(
@@ -463,6 +475,26 @@ def _lower_call_target(
     if resolved.function is None:
         return resolved.resolved_target
     return resolved.function.qualname
+
+
+def _lower_call_args(
+    node: ast.Call,
+    target: str,
+    module: ModuleAnalysis,
+    resolver: FunctionResolver,
+) -> list[ExprIR]:
+    if target in STR_METHOD_TARGETS or target in LIST_METHOD_TARGETS or target in BYTES_METHOD_TARGETS:
+        if not isinstance(node.func, ast.Attribute):
+            raise LoweringError(f"{target} receiver cannot be lowered")
+        return [
+            lower_expr(node.func.value, module, resolver),
+            *[lower_expr(arg, module, resolver) for arg in node.args],
+        ]
+    if target in HASHLIB_CHAIN_TARGETS:
+        if not isinstance(node.func, ast.Attribute) or not isinstance(node.func.value, ast.Call):
+            raise LoweringError(f"{target} inner call cannot be lowered")
+        return [lower_expr(arg, module, resolver) for arg in node.func.value.args]
+    return [lower_expr(arg, module, resolver) for arg in node.args]
 
 
 def _is_append_call(node: ast.Call) -> bool:
