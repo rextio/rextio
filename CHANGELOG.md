@@ -41,6 +41,9 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Conservative Python/Rust ownership handling for direct Rust lowering:
   generated clones for reused owned values and fallback diagnostics for mutable
   collection alias mutation.
+- Feature-oriented README and example documentation that explains generated
+  artifacts, native/fallback behavior, executable outputs, and Rust-importable
+  crate usage.
 - Example projects for pure math, application-shell scoring, fallback safety, and boundary diagnostics.
 - Focused end-to-end tests for build/import/runtime behavior, real Cargo builds, generated wheels, and Nuitka when installed.
 

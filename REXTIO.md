@@ -13,6 +13,19 @@ Python source
 Native compilation is an optimization. Fallback Python behavior must remain
 available, including when `REXTIO_DISABLE_NATIVE=1` is set.
 
+At a product level, Rextio gives a Python project four practical outputs:
+
+| Output | What it is for |
+| --- | --- |
+| Hybrid Python package | Keep normal Python imports while using Rust for accepted hot-path functions. |
+| Source-only generation | Inspect generated Rust/PyO3 and Python wrapper code without compiling it. |
+| Executable artifact | Package a configured Python entrypoint as zipapp, or through Nuitka when available. |
+| Rust-importable crate | Expose accepted direct-Rust functions to Rust applications as a Cargo path dependency. |
+
+The central rule is simple: if Rextio cannot prove that a function is safe for
+direct Rust lowering, it must keep that behavior on the Python fallback path or
+use an explicit Python runtime semantics shim.
+
 By default, Rextio discovers eligible module-level functions automatically when
 their static types can be resolved from annotations, sibling `.pyi` stubs, or
 conservative local context inference. Projects can set
@@ -53,6 +66,10 @@ rextio clean demo
 
 Generated artifacts live under `.rextio/` and user source files are not
 rewritten during build.
+
+Use `rextio check` first when deciding what will become Rust. It reports
+accepted native functions, rejected functions, fallback-only functions, runtime
+shim functions, and boundary warnings before any compiler is invoked.
 
 Use `rextio generate` when you want only generated source files. It writes Rust
 and Python source under `.rextio/generated/` and skips Rust, Nuitka, wheel, and

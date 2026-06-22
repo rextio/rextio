@@ -2,151 +2,299 @@
 
 [한국어](README.ko.md) | [简体中文](README.zh-hans.md) | [繁體中文](README.zh-hant.md) | [日本語](README.ja.md)
 
-Rextio 0.1.0 is an alpha-stage hybrid build tool. It compiles eligible
-statically typed Python functions to Rust native modules and packages the rest
-as safe Python fallback.
+Rextio 0.1.0 is an alpha-stage local build tool for Python projects.
 
-0.1.0 alpha is intentionally narrow. It is a local CLI and build-tool MVP for
-projects that use statically typed Python hot paths. Rextio discovers eligible
-functions by default when their types come from annotations, sibling `.pyi`
-stubs, or conservative local context inference; projects can opt out and
-require `@rextio.native` markers.
-It does not claim full Python compatibility, bundled third-party package
-coverage, framework migration, JIT behavior, or a full runtime boundary-cost
-optimizer.
-
-0.1.0 alpha includes conservative static boundary checks. It rejects native
-functions that call fallback-only code, warns when Python loops repeatedly call
-native functions, and generated wrappers switch that native function to fallback
-after repeated Python/Rust crossings exceed a simple runtime threshold.
-
-## Current commands
+It finds Python functions that can be safely lowered to Rust, compiles those
+functions ahead-of-time, and keeps everything else running through Python
+fallback code.
 
 ```text
-rextio init
-rextio check
-rextio generate
-rextio build
-rextio bench
-rextio clean
+typed Python project
+  -> analyze supported native candidates
+  -> reject unsafe or unsupported functions
+  -> generate Rust + PyO3 for accepted functions
+  -> generate Python fallback wrappers for the rest
+  -> build import-compatible artifacts
 ```
 
-The initial implementation focuses on project initialization, native candidate
-discovery, subset diagnostics, static boundary diagnostics, runtime disable
-flags, and deterministic check reports.
+Rextio is not a Python replacement and not a whole-project Rust migration tool.
+Native compilation is an optimization. Python fallback behavior remains the
+correctness baseline.
 
-Typical local flow:
+## What You Get
+
+Rextio can produce several artifacts from the same Python project:
+
+| Output | Purpose |
+| --- | --- |
+| `.rextio/generated/rust/` | Generated Rust/PyO3 source for accepted native functions. |
+| `.rextio/generated/python/` | Generated Python wrappers and fallback modules. |
+| `.rextio/build/python/` | Import-compatible hybrid package tree. |
+| `dist/*.whl` | Wheel containing fallback code and, when built, the native extension. |
+| `dist/<name>.pyz` | Optional zipapp executable for a configured Python entrypoint. |
+| `dist/<name>.dist/` or `dist/<name>` | Optional Nuitka standalone or onefile executable. |
+| `dist/<crate>-rust-crate/` | Optional Rust library crate for Rust projects to import. |
+
+The generated Python wrappers try native code first and fall back to Python when
+native is disabled, unavailable, rejected by analysis, or past the configured
+boundary threshold.
+
+```text
+REXTIO_DISABLE_NATIVE=1
+```
+
+## Quick Example
+
+Start with normal Python:
+
+```python
+# src/myapp/math_ops.py
+def sum_squares(xs: list[int]) -> int:
+    total = 0
+    for x in xs:
+        total += x * x
+    return total
+
+def format_result(value: int) -> str:
+    return f"score={value}"  # not in the direct Rust subset
+```
+
+Build it:
 
 ```text
 python -m pip install -e .
+rextio check .
+rextio build . --fallback=cpython
+```
+
+Rextio can compile `sum_squares` to Rust and keep `format_result` on Python
+fallback. Import paths stay Python-facing:
+
+```python
+from myapp.math_ops import sum_squares, format_result
+
+assert sum_squares([1, 2, 3]) == 14
+assert format_result(14) == "score=14"
+```
+
+## Typical Workflow
+
+```text
 rextio init --project-root path/to/project
 rextio check path/to/project
 rextio generate path/to/project --fallback=cpython
 rextio build path/to/project --fallback=cpython
-rextio build path/to/project --fallback=cpython --rust-importable --rust-crate-name=my_native
-rextio build path/to/project --fallback=cpython --entrypoint=myapp.cli:main
-rextio bench myapp.scoring.compute_score --project-root path/to/project
+rextio bench myapp.math_ops.sum_squares --project-root path/to/project
 rextio clean path/to/project
 ```
 
-## 0.1.0 alpha Scope
+Use `rextio generate` when you want generated source only. It does not run
+Cargo, maturin, Nuitka, wheel building, or executable packaging.
 
-0.1.0 alpha supports a small statically typed Python subset for module-level
-functions. Eligible functions are native candidates by default when Rextio can
-resolve every argument and return type from source annotations, sibling `.pyi`
-stubs, or conservative local context inference. Unsupported direct-Rust syntax,
-unresolved types, unsafe native-to-fallback calls, and unresolved external calls
-are rejected from direct Rust lowering and kept on Python fallback where
-possible.
+Use `rextio build` when you want the generated source plus compiled/packageable
+artifacts.
 
-See [Unsupported Features in 0.1.0 alpha](docs/unsupported-features.md) for the
-supported subset, boundary limits, diagnostics, and non-goals.
+## Commands
 
-Current native candidates support scalar types including `bytes`, `list[...]` including
-`list[list[T]]`, fixed `tuple[...]`, limited fixed `dict[K, V]`,
-limited `set[int|float|bool|str]`, and `Optional[T]` / `T | None` types. Supported
-syntax includes arithmetic, comparisons, `if`, `while`, `for x in xs`,
-`range(...)` loops, `for i, x in enumerate(xs)`, `for x, y in zip(xs, ys)`,
-`break`, `continue`, augmented assignment, typed local annotations, simple
-indexing, list literals, fixed tuple literals, limited dict read/write,
-limited list/dict/set comprehensions, assignment expressions inside
-comprehensions, and `list.append(...)` for supported list item types. Builtin support is
-intentionally limited to `len`, `abs`, two-argument `min`/`max`,
-`sum(list[int|float])`, `all(list[bool])`, `any(list[bool])`, `sorted(list[T])`,
-and `reversed(list[T])` for supported list item types. The supported `math`
-subset includes trigonometric, logarithmic, rounding, finite/NaN checks, and
-`math.pi`/`math.e`. Common side-effect and standard-library lowering covers
-limited `print(...)`, `logging.debug/info/warning/error(...)`, logger variables
-assigned from `logging.getLogger(...)`, `datetime`/`time` timestamp calls,
-`statistics.mean/fmean`, selected `str`/`bytes`/`list` methods, and constrained
-`hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`, and
-`json.dumps/json.loads` patterns.
+| Command | What it does |
+| --- | --- |
+| `rextio init` | Creates `rextio.toml`, `REXTIO.md`, and `.rextioignore`. |
+| `rextio check` | Analyzes native candidates and prints diagnostics. |
+| `rextio generate` | Writes generated Rust and Python source without compiling. |
+| `rextio build` | Generates, compiles, packages, and writes build reports. |
+| `rextio bench` | Compares Python fallback and Rust native timing for one function. |
+| `rextio clean` | Removes `.rextio/build`, `.rextio/generated`, and `.rextio/reports`. |
 
-The expanded forms remain conservative: empty list literals need a supported
-`list[...]` local annotation, and `range(start, stop, step)` currently requires
-`step` to be a positive int literal. `enumerate` and `zip` are supported only as
-batch loop or comprehension iterables over list variables. Dict support covers
-fixed `dict[K, V]` forms where `K` is `int`, `bool`, or `str` and `V` is a
-supported fixed value type. Set support is limited to `set[int]`, `set[float]`,
-`set[bool]`, and `set[str]` comprehensions. Dataclasses are still outside direct
-Rust lowering. `json.loads` requires an expected supported target type from a
-return annotation or local variable annotation.
+Common build variants:
 
-Rextio treats Python/Rust ownership differences conservatively. Read-only reuse
-of owned values such as `str`, `bytes`, `list`, `dict`, and `set` is lowered with
-explicit Rust clones when needed. Python mutable alias patterns, such as
-assigning `ys = xs` and then mutating either alias, are kept on Python fallback
-because Rust ownership and Python reference aliasing do not have the same
-semantics.
+```text
+rextio build . --fallback=cpython
+rextio build . --fallback=nuitka
+rextio build . --fallback-threshold=1000
+rextio build . --entrypoint=myapp.cli:main
+rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
+rextio build . --rust-importable --rust-crate-name=my_native
+```
 
-For Python semantics that cannot be safely lowered into the typed Rust subset,
-Rextio can generate a Python runtime semantics native shim. This shim is a Rust
-PyO3 function that calls the generated Python fallback implementation, so it can
-preserve class/object behavior, regular instance methods marked with
-`@rextio.native`, exception handling, context managers, `async`/`await`,
-generators/`yield`, and dynamic attribute access such as `getattr` or
-`obj.attr`. Rextio reports `RXT080` for this path. It is a compatibility path,
-not a Rust speedup path. Automatic discovery for this path is conservative;
-broad object-runtime code should be marked explicitly with `@rextio.native`.
+## Native Selection
 
-Type inference is deliberately narrow. Rextio can infer simple scalar and
-collection signatures from constants, arithmetic, comparisons, `if` tests,
-loops, indexing, comprehensions, and supported builtins. A sibling `.pyi` file
-with supported function signatures is preferred when source annotations are
-missing. If a type remains ambiguous, the function stays on Python fallback.
+By default, Rextio uses automatic native discovery:
 
-Module top-level logic is Python fallback by default. Projects can opt into a
-limited native initializer with `[policy] native_top_level = true` or
-`--native-top-level`. This supports only a narrow import-time subset:
-assignments, annotated assignments, augmented assignments, supported
-expressions, and `if`/`while` blocks that update variables assigned before the
-block. Assigned module variables must share one supported value type so the
-Rust initializer can return `dict[str, T]`. Rextio keeps the original fallback
-module and uses it when native is disabled or unavailable.
+```toml
+[policy]
+native_marker = "auto"
+```
 
-## Build Prerequisites
+In this mode, Rextio may treat module-level functions as native candidates when
+their types can be resolved and the function fits the supported direct Rust
+subset.
 
-Native builds require Rust and Cargo. Rextio can also use `maturin` when
-configured with `[rust] build_tool = "maturin"`; if maturin is unavailable,
-Rextio falls back to Cargo when possible.
+You can require explicit markers instead:
 
-Nuitka fallback packaging is experimental. If `--fallback=nuitka` is requested
-without Nuitka installed, Rextio reports a clear `RXT060` error and suggests
-`--fallback=cpython`. When Nuitka is installed, Rextio invokes it on generated
-Python fallback modules while still keeping the CPython fallback files in the
-build artifact.
+```toml
+[policy]
+native_marker = "decorator"
+```
 
-## Configuration Sources
+```python
+import rextio
 
-Build and analysis settings use this precedence:
+@rextio.native
+def score(x: float) -> float:
+    return x * 2.0
+```
+
+For future multi-target support, a marker can pin the intended target:
+
+```python
+@rextio.native(target="rust")
+def score(x: float) -> float:
+    return x * 2.0
+```
+
+Use `@rextio.exempt` when a function must stay on Python fallback:
+
+```python
+@rextio.exempt
+def keep_python(x: int) -> int:
+    return x + 1
+```
+
+Exempt functions are never emitted into generated Rust. If a native candidate
+calls an exempt or fallback-only function, that candidate falls back too.
+
+## Safety Model
+
+Rextio keeps native compilation conservative:
+
+- A direct Rust native function may call only accepted native functions,
+  supported builtins, and supported standard-library functions.
+- Native functions that call fallback-only code are rejected from native
+  compilation.
+- Python fallback code may call native functions.
+- Python loops that repeatedly call native functions produce boundary warnings.
+- Generated wrappers can switch a function back to fallback after repeated
+  Python-to-native wrapper crossings.
+- Python/Rust ownership differences are handled explicitly. Read-only reuse of
+  owned values is lowered with Rust clones when needed, while mutable collection
+  alias mutation stays on Python fallback.
+
+Boundary fallback is controlled by:
+
+```text
+REXTIO_BOUNDARY_FALLBACK_THRESHOLD=1000
+REXTIO_DISABLE_BOUNDARY_FALLBACK=1
+REXTIO_NATIVE_MODE=auto|fallback|native
+```
+
+## Supported Direct Rust Subset
+
+Rextio 0.1.0 alpha supports a deliberately small subset. This is the path that
+can provide real Rust speedups.
+
+Supported types include:
+
+- `int`, `float`, `bool`, `str`, `bytes`, `None`
+- `list[T]` for supported item types, including `list[list[T]]`
+- fixed `tuple[...]`
+- fixed `dict[K, V]` where keys are supported scalar key types
+- limited `set[int]`, `set[float]`, `set[bool]`, and `set[str]`
+- `Optional[T]` and `T | None`
+
+Supported syntax includes:
+
+- local assignment and typed local annotations
+- arithmetic, boolean operations, comparisons, `if`, `while`
+- `for x in xs`
+- `range(...)`, `enumerate(xs)`, and `zip(xs, ys)` in supported loop or
+  comprehension forms
+- `break`, `continue`, `return`
+- list/dict/set comprehensions in supported forms
+- limited `list.append`, dict reads/writes, and indexing
+- calls to accepted native helper functions
+
+Supported builtin and standard-library lowering includes limited forms of:
+
+- `len`, `abs`, `min`, `max`, `sum`, `all`, `any`, `sorted`, `reversed`
+- selected `math` functions and constants
+- selected `str`, `bytes`, and `list` methods
+- `print`, `logging.debug/info/warning/error`
+- `datetime`, `time`, `statistics`, `hashlib.sha256`, `base64`, and `json`
+
+Unsupported or ambiguous code stays on fallback or is exposed through a Python
+runtime semantics shim where supported. See
+[Unsupported Features in 0.1.0 alpha](docs/unsupported-features.md) for the
+detailed boundary.
+
+## Python Runtime Semantics Shim
+
+Some Python features cannot be safely translated into typed Rust statements.
+For explicitly marked native code, Rextio may generate a PyO3 shim that calls
+the generated Python fallback implementation instead.
+
+This compatibility path can preserve features such as class/object behavior,
+instance methods, exceptions, context managers, `async`/`await`, generators, and
+dynamic attribute access. It reports `RXT080`.
+
+This path preserves behavior. It should not be treated as a Rust speedup path.
+
+## Rust-Importable Crate
+
+When direct Rust functions are useful from a Rust application, build an
+additional Cargo library crate:
+
+```text
+rextio build . --rust-importable --rust-crate-name=my_native
+```
+
+Use the generated crate from Rust:
+
+```toml
+[dependencies]
+my_native = { path = "../dist/my_native-rust-crate" }
+```
+
+```rust
+fn main() -> Result<(), my_native::RextioError> {
+    let value = my_native::myapp__math_ops__sum_squares(vec![1, 2, 3])?;
+    assert_eq!(value, 14);
+    Ok(())
+}
+```
+
+Only functions directly lowered to typed Rust are exported through this crate.
+Fallback-only functions and runtime semantics shims remain Python-facing paths.
+
+## Executable Artifacts
+
+Zipapp:
+
+```text
+rextio build . --entrypoint=myapp.cli:main --executable-name=myapp
+```
+
+This writes `dist/myapp.pyz`. The target machine still needs a compatible
+Python interpreter. Native extensions are not imported from inside the zipapp,
+so wrappers preserve fallback behavior when `_rextio_native` is unavailable.
+
+Nuitka:
+
+```text
+rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=standalone
+rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
+```
+
+Nuitka executable packaging is experimental and requires Nuitka to be installed.
+
+## Configuration
+
+Build and analysis settings resolve in this order:
 
 ```text
 CLI parameter > environment variable > rextio.toml > built-in default
 ```
 
-Command routing and output-shape arguments such as `project_root`, `bench`
-targets, `init --force`, and `check --json` remain command-line only. Project
-behavior settings can be configured from any of these sources:
+Common settings:
 
 | `rextio.toml` key | CLI parameter | Environment variable |
 | --- | --- | --- |
@@ -168,243 +316,43 @@ behavior settings can be configured from any of these sources:
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
 | `[executable] nuitka_mode` | `--nuitka-mode` | `REXTIO_NUITKA_MODE` |
 | `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
-| `[policy] require_type_hints` | `--require-type-hints` / `--no-require-type-hints` | `REXTIO_REQUIRE_TYPE_HINTS` |
-| `[policy] allow_dynamic_features` | `--allow-dynamic-features` / `--no-allow-dynamic-features` | `REXTIO_ALLOW_DYNAMIC_FEATURES` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.0 alpha still validates values conservatively. Rust is the only implemented
-native target today. `native_backend = "mojo"` and `native_backend = "julia"`
-are accepted as planned target-language selections so versioned mapper and
-build-option metadata can be configured, but source generation fails clearly
-until those backends are implemented.
+Rust is the only implemented native target in 0.1.0 alpha. `mojo` and `julia`
+are accepted as planning values for future backends, but code generation fails
+clearly until those backends exist.
 
-Mapper plugins can be loaded from local metadata folders or from a public Git
-repository. Configure local folders with `[mappers] paths` and optional
-`[mappers] enabled`; each folder must contain `rextio-mapper.toml` or
-`mapper.toml`. Configure `[mappers] repository`, `--mapper-repository`, or
-`REXTIO_MAPPER_REPOSITORY` with a public Git URL to clone mapper manifests into
-`.rextio/mappers/repositories/` and discover mapper manifests recursively.
-
-## Generated Artifacts
-
-Rextio writes generated files under `.rextio/` and does not modify source files
-in place.
-
-```text
-.rextio/
-  build/
-    python/
-      rextio/
-        runtime/
-  generated/
-    <target-language>/
-    rust_crate/
-    python/
-  reports/
-    check.json
-    build.json
-    bench.json
-dist/
-  <project>-0.1.0-<tag>.whl
-  <rust-crate-name>-rust-crate/
-  <executable-name>.pyz
-  <executable-name>
-  <executable-name>.dist/
-```
-
-`rextio check` writes `.rextio/reports/check.json`. `rextio build` writes both
-check and build reports. `rextio bench` writes `.rextio/reports/bench.json`
-with a structured fallback/native timing comparison.
-
-`rextio generate` runs analysis and writes generated Rust/PyO3 and Python
-wrapper/fallback source under `.rextio/generated/` without invoking Cargo,
-maturin, or Nuitka and without creating `.rextio/build/` or `dist/`. With
-`--rust-importable`, it also writes a Rust library crate source tree under
-`.rextio/generated/rust_crate/` but still does not compile it.
-
-When `rextio build` succeeds, it also writes a generated hybrid artifact wheel
-under `dist/`. Pure fallback wheels use `py3-none-any`; wheels that include the
-generated native extension use the local CPython/platform tag. The test suite
-installs this wheel into a fresh environment and verifies that packaged fallback
-imports still work with `REXTIO_DISABLE_NATIVE=1`.
-
-`rextio build --rust-importable --rust-crate-name=my_native` also generates and
-compiles a Rust library crate for direct Rust consumption. The source artifact
-is copied to `dist/my_native-rust-crate/`, and a Rust project can import it with
-a path dependency:
-
-```toml
-[dependencies]
-my_native = { path = "../dist/my_native-rust-crate" }
-```
-
-Generated crate functions use Rextio's deterministic native names and return
-`Result<T, RextioError>`:
-
-```rust
-fn main() -> Result<(), my_native::RextioError> {
-    let value = my_native::myapp__math_ops__sum_squares(vec![1, 2, 3])?;
-    assert_eq!(value, 14);
-    Ok(())
-}
-```
-
-The Rust-importable crate includes only functions that were directly lowered to
-typed Rust. Python runtime semantics shims and fallback-only functions remain
-Python-facing compatibility paths and are not exported through this crate.
-
-`rextio build --entrypoint=module:function` also generates a zipapp executable
-artifact under `dist/`. Use `--executable-name=name` to control the output file
-name; otherwise Rextio derives it from the entrypoint module. The result is a
-Python zipapp (`.pyz`), so the target machine still needs a compatible Python
-interpreter. Native extension modules cannot be imported directly from inside a
-zipapp, so generated wrappers keep fallback safety and use Python fallback when
-the native module is unavailable.
-
-Nuitka executable artifacts are also available when Nuitka is installed:
-
-```text
-rextio build path/to/project \
-  --entrypoint=myapp.cli:main \
-  --executable-backend=nuitka \
-  --nuitka-mode=standalone
-
-rextio build path/to/project \
-  --entrypoint=myapp.cli:main \
-  --executable-backend=nuitka \
-  --nuitka-mode=onefile
-```
-
-Standalone mode writes a Nuitka `.dist` application directory under `dist/`.
-Onefile mode writes a single Nuitka executable under `dist/`. Nuitka executable
-packaging is still toolchain-dependent; if Nuitka is unavailable, Rextio reports
-a clear `RXT060` error and suggests the zipapp backend.
-
-## Policy Configuration
-
-0.1.0 alpha validates `rextio.toml` conservatively and rejects unknown sections,
-unknown keys, unsupported backends, and policy values outside the 0.1.0 alpha
-scope.
-
-Boundary warnings are enabled by default. Projects that want strict safety
-errors without Python-loop boundary warnings can set:
-
-```toml
-[policy]
-boundary_warnings = false
-```
-
-Automatic native discovery is enabled by default:
-
-```toml
-[policy]
-native_marker = "auto"
-```
-
-Projects that want only explicit native candidates can disable auto discovery:
-
-```toml
-[policy]
-native_marker = "decorator"
-```
-
-In decorator-only mode, only functions marked with `@rextio.native` are native
-candidates.
-
-Explicit markers may also pin a function to a native target language:
-
-```python
-@rextio.native(target="rust")
-def score(x: float) -> float:
-    return x * 2.0
-```
-
-Target names are normalized case-insensitively. A target-specific marker applies
-only when the active `--target-language` / `[build] native_backend` matches it;
-for example, `@rextio.native(target="mojo")` is ignored by a Rust build and the
-function stays on Python fallback. 0.1.0 alpha accepts `rust`, `mojo`, and `julia`
-as target-planning values, but only Rust source generation is implemented.
-
-Use `@rextio.exempt` to keep a function on Python fallback even when automatic
-native discovery is enabled. Exempt functions are never emitted into generated
-Rust; native candidates that call them are rejected by the normal
-native-to-fallback boundary rule.
-
-Top-level native initialization is separate from function discovery. Enable it
-explicitly with:
-
-```toml
-[policy]
-native_top_level = true
-```
-
-Unsupported top-level statements remain fallback-only. 0.1.0 alpha rejects
-top-level native conversion for `for` loops, user/external function calls, and
-heterogeneous module variable exports to avoid changing Python import
-semantics.
-
-## Fallback Safety
-
-Generated wrappers use native functions when available and safe. They fall back
-to Python when native import fails or when native execution is disabled:
-
-```text
-REXTIO_DISABLE_NATIVE=1
-```
-
-`REXTIO_NATIVE_MODE` can be set when a project needs explicit runtime behavior:
-
-```text
-REXTIO_NATIVE_MODE=auto      # default: use native when available, otherwise fallback
-REXTIO_NATIVE_MODE=fallback  # force Python fallback
-REXTIO_NATIVE_MODE=native    # require generated native functions to be available
-```
-
-Repeated Python-to-native wrapper calls are allowed at first. If a function's
-wrapper is crossed more than `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` times, later
-calls use the generated Python fallback for that function. The default threshold
-is `1000`. `rextio generate --fallback-threshold=N`,
-`rextio build --fallback-threshold=N`, `REXTIO_BOUNDARY_FALLBACK_THRESHOLD`, and
-`[build] fallback_threshold = N` can set the generated-code default for that
-artifact. At runtime, `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` overrides the embedded
-default. Set the threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to
-disable this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses this
-threshold.
-
-Use `.rextioignore` to keep generated or irrelevant Python files out of Rextio
-analysis.
-
-## Boundary Diagnostics
-
-0.1.0 alpha boundary checks are static and conservative:
-
-- `RXT070`: a native function calls fallback-only Python code.
-- `RXT072`: a native function depends on a rejected native function.
-- `RXT073`: fallback Python calls a native function inside a loop.
-- `RXT080`: a native function uses the Python runtime semantics shim.
-
-`RXT070` and `RXT072` reject the native candidate. `RXT073` is a warning; the
-function remains eligible and may use native initially, but generated wrappers
-fall back to the CPython/Nuitka fallback path after repeated runtime crossings
-exceed the configured threshold. `RXT080` is a warning; the generated Rust
-function preserves Python semantics by calling the generated fallback function.
+Mapper plugins can be loaded from local metadata folders or downloaded from a
+configured public Git repository. Concrete third-party mapper transformations
+are not bundled in 0.1.0 alpha.
 
 ## Examples
 
-0.1.0 alpha includes focused local examples:
-
-- `examples/pure_math`: simple typed math functions compiled as native hot paths.
-- `examples/fallback_demo`: generated wrappers use Python fallback when native is missing or `REXTIO_DISABLE_NATIVE=1`.
-- `examples/boundary_demo`: conservative boundary rejection through `@rextio.exempt` and Python-loop boundary warnings.
-
-Try:
-
 ```text
 rextio check examples/pure_math
-rextio generate examples/pure_math --fallback=cpython
 rextio build examples/pure_math --fallback=cpython
-rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 rextio bench pure_math.math_ops.sum_squares --project-root examples/pure_math
+
 rextio check examples/boundary_demo
+rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 ```
+
+Example projects:
+
+- `examples/pure_math`: direct Rust lowering for typed math hot paths.
+- `examples/fallback_demo`: fallback behavior when native is disabled or missing.
+- `examples/boundary_demo`: native-to-fallback boundary rejection and warnings.
+- `examples/fastapi_scoring`: application shell stays Python while a scoring hot
+  path can be native.
+
+## Development And Verification
+
+Run the test suite:
+
+```text
+python -m pytest
+```
+
+Real Cargo, Nuitka, and executable tests are skipped when the corresponding
+toolchain is unavailable.
