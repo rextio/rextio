@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from rextio.ir.types import (
     RxtBool,
+    RxtBytes,
     RxtDict,
     RxtFloat,
     RxtInt,
@@ -25,6 +26,8 @@ def rust_type(rxt_type: RxtType) -> str:
         return "bool"
     if isinstance(rxt_type, RxtStr):
         return "String"
+    if isinstance(rxt_type, RxtBytes):
+        return "Vec<u8>"
     if isinstance(rxt_type, RxtNone):
         return "()"
     if isinstance(rxt_type, RxtPyObject):

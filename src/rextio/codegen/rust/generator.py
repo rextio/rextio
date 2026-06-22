@@ -43,6 +43,7 @@ from rextio.ir.nodes import (
 )
 from rextio.ir.types import (
     RxtBool,
+    RxtBytes,
     RxtDict,
     RxtFloat,
     RxtInt,
@@ -265,6 +266,8 @@ class _FunctionRenderer:
                 f"{self.render_expr(expr.args[0])}.iter().cloned()"
                 f".zip({self.render_expr(expr.args[1])}.iter().cloned())"
             )
+        if isinstance(expr, CallIR) and expr.function == "reversed" and len(expr.args) == 1:
+            return f"{self.render_expr(expr.args[0])}.iter().rev().cloned()"
         if (
             isinstance(expr, CallIR)
             and expr.function == "range"
@@ -730,14 +733,57 @@ class _FunctionRenderer:
             return f"({self.render_expr(expr.args[0])}).max({self.render_expr(expr.args[1])})"
         if expr.function == "sum" and len(expr.args) == 1:
             return f"({self.render_expr(expr.args[0])}).iter().cloned().sum()"
-        if expr.function == "math.sqrt" and len(expr.args) == 1:
-            return f"({self.render_expr(expr.args[0])}).sqrt()"
-        if expr.function == "math.sin" and len(expr.args) == 1:
-            return f"({self.render_expr(expr.args[0])}).sin()"
-        if expr.function == "math.cos" and len(expr.args) == 1:
-            return f"({self.render_expr(expr.args[0])}).cos()"
-        if expr.function == "math.floor" and len(expr.args) == 1:
-            return f"(({self.render_expr(expr.args[0])}).floor() as i64)"
+        if expr.function == "all" and len(expr.args) == 1:
+            return f"({self.render_expr(expr.args[0])}).iter().copied().all(|value| value)"
+        if expr.function == "any" and len(expr.args) == 1:
+            return f"({self.render_expr(expr.args[0])}).iter().copied().any(|value| value)"
+        if expr.function == "sorted" and len(expr.args) == 1:
+            return self.render_sorted(expr.args[0])
+        if expr.function == "reversed" and len(expr.args) == 1:
+            return self.render_reversed(expr.args[0])
+        if expr.function == "math.pi" and not expr.args:
+            return "std::f64::consts::PI"
+        if expr.function == "math.e" and not expr.args:
+            return "std::f64::consts::E"
+        if expr.function in {
+            "math.acos",
+            "math.asin",
+            "math.atan",
+            "math.cos",
+            "math.exp",
+            "math.log10",
+            "math.log2",
+            "math.sin",
+            "math.sqrt",
+            "math.tan",
+        } and len(expr.args) == 1:
+            method = expr.function.rsplit(".", 1)[1]
+            if method == "log":
+                method = "ln"
+            return f"({self.render_expr(expr.args[0])}).{method}()"
+        if expr.function == "math.log":
+            if len(expr.args) == 1:
+                return f"({self.render_expr(expr.args[0])}).ln()"
+            if len(expr.args) == 2:
+                return f"({self.render_expr(expr.args[0])}).log({self.render_expr(expr.args[1])})"
+        if expr.function == "math.atan2" and len(expr.args) == 2:
+            return f"({self.render_expr(expr.args[0])}).atan2({self.render_expr(expr.args[1])})"
+        if expr.function in {"math.ceil", "math.floor", "math.trunc"} and len(expr.args) == 1:
+            method = expr.function.rsplit(".", 1)[1]
+            return f"(({self.render_expr(expr.args[0])}).{method}() as i64)"
+        if expr.function in {"math.isfinite", "math.isinf", "math.isnan"} and len(expr.args) == 1:
+            method = {
+                "math.isfinite": "is_finite",
+                "math.isinf": "is_infinite",
+                "math.isnan": "is_nan",
+            }[expr.function]
+            return f"({self.render_expr(expr.args[0])}).{method}()"
+        if expr.function.startswith("str.") or expr.function.startswith("bytes."):
+            return self.render_string_or_bytes_method(expr)
+        if expr.function.startswith("list."):
+            return self.render_list_method(expr)
+        if expr.function in {"statistics.mean", "statistics.fmean"} and len(expr.args) == 1:
+            return self.render_statistics_mean(expr.args[0])
         if expr.function == "print":
             return self.render_format_macro("println!", expr.args, allow_empty=True)
         if expr.function in {"logging.debug", "logging.info", "logging.warning", "logging.error"}:
@@ -752,6 +798,38 @@ class _FunctionRenderer:
             return "chrono::Local::now().to_rfc3339()"
         if expr.function == "datetime.datetime.utcnow.isoformat" and not expr.args:
             return "chrono::Utc::now().to_rfc3339()"
+        if expr.function == "datetime.datetime.now.timestamp" and not expr.args:
+            return self.render_chrono_timestamp("chrono::Local::now()")
+        if expr.function == "datetime.datetime.utcnow.timestamp" and not expr.args:
+            return self.render_chrono_timestamp("chrono::Utc::now()")
+        if expr.function == "time.time" and not expr.args:
+            return (
+                "std::time::SystemTime::now()"
+                ".duration_since(std::time::UNIX_EPOCH)"
+                ".map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?"
+                ".as_secs_f64()"
+            )
+        if expr.function == "hashlib.sha256.hexdigest" and len(expr.args) == 1:
+            return f"format!(\"{{:x}}\", sha2::Sha256::digest(&{strip_wrapping_parens(self.render_call_arg(expr.args[0]))}))"
+        if expr.function == "base64.b64encode" and len(expr.args) == 1:
+            return (
+                "base64::engine::general_purpose::STANDARD"
+                f".encode({strip_wrapping_parens(self.render_call_arg(expr.args[0]))}).into_bytes()"
+            )
+        if expr.function == "base64.b64decode" and len(expr.args) == 1:
+            source = strip_wrapping_parens(self.render_call_arg(expr.args[0]))
+            if isinstance(self.infer_expr_type(expr.args[0]), RxtStr):
+                source = f"{source}.as_bytes()"
+            return (
+                "base64::engine::general_purpose::STANDARD"
+                f".decode({source})"
+                ".map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?"
+            )
+        if expr.function == "json.dumps" and len(expr.args) == 1:
+            return (
+                f"serde_json::to_string(&{strip_wrapping_parens(self.render_call_arg(expr.args[0]))})"
+                ".map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?"
+            )
         rust_name = self.native_names_by_qualname.get(expr.function)
         if rust_name is None:
             rust_name = self.native_names.get((self.function.module_name, expr.function))
@@ -759,6 +837,114 @@ class _FunctionRenderer:
             args = ", ".join(self.render_call_arg(arg) for arg in expr.args)
             return f"{rust_name}({args})?"
         raise RustCodegenError(f"unsupported call during Rust codegen: {expr.function}")
+
+    def render_sorted(self, expr: ExprIR) -> str:
+        source = strip_wrapping_parens(self.render_call_arg(expr))
+        expr_type = self.infer_expr_type(expr)
+        if isinstance(expr_type, RxtList) and isinstance(expr_type.item_type, RxtFloat):
+            return "\n".join(
+                [
+                    "{",
+                    f"    let mut values = {source};",
+                    "    if values.iter().any(|value| value.is_nan()) {",
+                    "        return Err(pyo3::exceptions::PyValueError::new_err(\"sorted() does not support NaN float values in native functions\"));",
+                    "    }",
+                    "    values.sort_by(|left, right| left.partial_cmp(right).expect(\"NaN was checked before sorting\"));",
+                    "    values",
+                    "}",
+                ]
+            )
+        return "\n".join(
+            [
+                "{",
+                f"    let mut values = {source};",
+                "    values.sort();",
+                "    values",
+                "}",
+            ]
+        )
+
+    def render_reversed(self, expr: ExprIR) -> str:
+        source = strip_wrapping_parens(self.render_call_arg(expr))
+        return "\n".join(
+            [
+                "{",
+                f"    let mut values = {source};",
+                "    values.reverse();",
+                "    values",
+                "}",
+            ]
+        )
+
+    def render_string_or_bytes_method(self, expr: CallIR) -> str:
+        receiver = strip_wrapping_parens(self.render_call_arg(expr.args[0]))
+        if expr.function == "str.lower" and len(expr.args) == 1:
+            return f"{receiver}.to_lowercase()"
+        if expr.function == "str.upper" and len(expr.args) == 1:
+            return f"{receiver}.to_uppercase()"
+        if expr.function == "str.strip" and len(expr.args) == 1:
+            return f"{receiver}.trim().to_string()"
+        if expr.function == "str.encode" and len(expr.args) == 1:
+            return f"{receiver}.as_bytes().to_vec()"
+        if expr.function == "bytes.decode" and len(expr.args) == 1:
+            return (
+                f"String::from_utf8({receiver})"
+                ".map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?"
+            )
+        if expr.function in {"str.startswith", "str.endswith"} and len(expr.args) == 2:
+            method = "starts_with" if expr.function == "str.startswith" else "ends_with"
+            value = strip_wrapping_parens(self.render_call_arg(expr.args[1]))
+            return f"{receiver}.{method}(&{value})"
+        if expr.function == "str.replace" and len(expr.args) == 3:
+            old = strip_wrapping_parens(self.render_call_arg(expr.args[1]))
+            new = strip_wrapping_parens(self.render_call_arg(expr.args[2]))
+            return f"{receiver}.replace(&{old}, &{new})"
+        raise RustCodegenError(f"unsupported string/bytes method during Rust codegen: {expr.function}")
+
+    def render_list_method(self, expr: CallIR) -> str:
+        receiver = strip_wrapping_parens(self.render_call_arg(expr.args[0]))
+        if expr.function == "list.copy" and len(expr.args) == 1:
+            return receiver
+        if expr.function == "list.count" and len(expr.args) == 2:
+            needle = strip_wrapping_parens(self.render_call_arg(expr.args[1]))
+            return f"({receiver}).iter().filter(|item| *item == &{needle}).count() as i64"
+        if expr.function == "list.index" and len(expr.args) == 2:
+            needle = strip_wrapping_parens(self.render_call_arg(expr.args[1]))
+            return (
+                f"({receiver}).iter().position(|item| item == &{needle})"
+                ".map(|index| index as i64)"
+                ".ok_or_else(|| pyo3::exceptions::PyValueError::new_err(\"list.index(x): x not in list\"))?"
+            )
+        raise RustCodegenError(f"unsupported list method during Rust codegen: {expr.function}")
+
+    def render_statistics_mean(self, expr: ExprIR) -> str:
+        source = strip_wrapping_parens(self.render_call_arg(expr))
+        item_type = None
+        expr_type = self.infer_expr_type(expr)
+        if isinstance(expr_type, RxtList):
+            item_type = expr_type.item_type
+        value_expr = "value" if isinstance(item_type, RxtFloat) else "value as f64"
+        return "\n".join(
+            [
+                "{",
+                f"    let values = {source};",
+                "    if values.is_empty() {",
+                "        return Err(pyo3::exceptions::PyValueError::new_err(\"statistics.mean requires at least one data point\"));",
+                "    }",
+                f"    values.iter().copied().map(|value| {value_expr}).sum::<f64>() / values.len() as f64",
+                "}",
+            ]
+        )
+
+    def render_chrono_timestamp(self, now_expr: str) -> str:
+        return "\n".join(
+            [
+                "{",
+                f"    let value = {now_expr};",
+                "    value.timestamp() as f64 + value.timestamp_subsec_nanos() as f64 / 1_000_000_000.0",
+                "}",
+            ]
+        )
 
     def render_call_arg(self, expr: ExprIR) -> str:
         if isinstance(expr, NameIR):
@@ -768,6 +954,17 @@ class _FunctionRenderer:
         return self.render_expr(expr)
 
     def render_expr_with_expected(self, expr: ExprIR, expected_type: RxtType | None) -> str:
+        if (
+            isinstance(expr, CallIR)
+            and expr.function == "json.loads"
+            and len(expr.args) == 1
+            and expected_type is not None
+        ):
+            source = strip_wrapping_parens(self.render_call_arg(expr.args[0]))
+            return (
+                f"serde_json::from_str::<{rust_type(expected_type)}>(&{source})"
+                ".map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?"
+            )
         if isinstance(expected_type, RxtOptional):
             if isinstance(expr, LiteralIR) and expr.value is None:
                 return "None"
@@ -792,6 +989,8 @@ class _FunctionRenderer:
                 return RxtFloat()
             if isinstance(expr.value, str):
                 return RxtStr()
+            if isinstance(expr.value, bytes):
+                return RxtBytes()
             if expr.value is None:
                 return RxtNone()
             return None
@@ -892,6 +1091,10 @@ class _FunctionRenderer:
     def call_return_type(self, expr: CallIR) -> RxtType | None:
         if expr.function == "len":
             return RxtInt()
+        if expr.function in {"all", "any"}:
+            return RxtBool()
+        if expr.function in {"sorted", "reversed"} and expr.args:
+            return self.infer_expr_type(expr.args[0])
         if expr.function in {"abs", "min", "max"} and expr.args:
             return self.infer_expr_type(expr.args[0])
         if expr.function == "sum" and expr.args:
@@ -899,16 +1102,59 @@ class _FunctionRenderer:
             if isinstance(arg_type, RxtList):
                 return arg_type.item_type
             return None
-        if expr.function in {"math.sqrt", "math.sin", "math.cos"}:
+        if expr.function in {
+            "math.acos",
+            "math.asin",
+            "math.atan",
+            "math.atan2",
+            "math.cos",
+            "math.exp",
+            "math.log",
+            "math.log10",
+            "math.log2",
+            "math.sin",
+            "math.sqrt",
+            "math.tan",
+            "math.e",
+            "math.pi",
+        }:
             return RxtFloat()
-        if expr.function == "math.floor":
+        if expr.function in {"math.ceil", "math.floor", "math.trunc"}:
             return RxtInt()
+        if expr.function in {"math.isfinite", "math.isinf", "math.isnan"}:
+            return RxtBool()
+        if expr.function in {"str.lower", "str.upper", "str.strip", "str.replace"}:
+            return RxtStr()
+        if expr.function in {"str.startswith", "str.endswith"}:
+            return RxtBool()
+        if expr.function == "str.encode":
+            return RxtBytes()
+        if expr.function == "bytes.decode":
+            return RxtStr()
+        if expr.function in {"list.copy"} and expr.args:
+            return self.infer_expr_type(expr.args[0])
+        if expr.function in {"list.count", "list.index"}:
+            return RxtInt()
+        if expr.function in {"statistics.mean", "statistics.fmean"}:
+            return RxtFloat()
         if expr.function == "print" or expr.function.startswith("logging."):
             return RxtNone()
         if expr.function in {
             "datetime.datetime.now.isoformat",
             "datetime.datetime.utcnow.isoformat",
         }:
+            return RxtStr()
+        if expr.function in {
+            "datetime.datetime.now.timestamp",
+            "datetime.datetime.utcnow.timestamp",
+            "time.time",
+        }:
+            return RxtFloat()
+        if expr.function == "hashlib.sha256.hexdigest":
+            return RxtStr()
+        if expr.function in {"base64.b64encode", "base64.b64decode"}:
+            return RxtBytes()
+        if expr.function == "json.dumps":
             return RxtStr()
         return self.native_return_types.get(expr.function)
 
@@ -975,6 +1221,8 @@ def render_literal(value: object) -> str:
         return "true" if value else "false"
     if isinstance(value, str):
         return f"String::from({json.dumps(value)})"
+    if isinstance(value, bytes):
+        return f"vec![{', '.join(str(item) for item in value)}]"
     return repr(value)
 
 

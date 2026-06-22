@@ -9,6 +9,8 @@ def render_pyo3_module(functions: list[tuple[str, str]], module_name: str = "_re
         "",
         "use pyo3::prelude::*;",
         "use pyo3::types::{PyDict, PyTuple};",
+        "use base64::Engine;",
+        "use sha2::Digest;",
         "use std::collections::HashMap;",
         "use std::collections::HashSet;",
         "",
