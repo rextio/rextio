@@ -1303,7 +1303,7 @@ import rextio
 
 @rextio.native
 def compute(xs: list[float]) -> float:
-    return statistics.mean(xs)
+    return statistics.median(xs)
 """,
     )
 
