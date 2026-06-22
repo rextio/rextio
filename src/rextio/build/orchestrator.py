@@ -21,14 +21,20 @@ from rextio.build.maturin_builder import build_native_extension_with_maturin
 from rextio.codegen.rust.cargo import (
     render_cargo_config_toml,
     render_cargo_toml,
+    render_importable_cargo_toml,
     render_pyproject_toml,
+)
+from rextio.build.rust_crate_builder import (
+    RustCrateBuildResult,
+    build_importable_rust_crate,
+    skipped_rust_crate_build,
 )
 from rextio.build.wheel_builder import (
     WheelBuildResult,
     build_artifact_wheel,
     skipped_wheel,
 )
-from rextio.codegen.rust.generator import generate_rust_module
+from rextio.codegen.rust.generator import generate_rust_crate_module, generate_rust_module
 from rextio.codegen.rust.generator import RustCodegenError
 from rextio.codegen.python_wrapper.wrapper_gen import render_wrapper_module
 from rextio.fallback.build_result import FallbackBuildResult, cpython_fallback_build_result
@@ -71,6 +77,7 @@ class GenerateResult:
     accepted_native_count: int
     rejected_native_count: int
     native_source: NativeSourceResult
+    rust_crate_source: NativeSourceResult
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -84,6 +91,7 @@ class GenerateResult:
             "accepted_native_count": self.accepted_native_count,
             "rejected_native_count": self.rejected_native_count,
             "native_source": self.native_source.to_dict(),
+            "rust_crate_source": self.rust_crate_source.to_dict(),
         }
 
 
@@ -100,6 +108,7 @@ class BuildResult:
     fallback_build: FallbackBuildResult
     wheel_build: WheelBuildResult
     executable_build: ExecutableBuildResult
+    rust_crate_build: RustCrateBuildResult
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -117,6 +126,7 @@ class BuildResult:
             "fallback_build": self.fallback_build.to_dict(),
             "wheel_build": self.wheel_build.to_dict(),
             "executable_build": self.executable_build.to_dict(),
+            "rust_crate_build": self.rust_crate_build.to_dict(),
         }
 
 
@@ -131,6 +141,8 @@ def build_hybrid_artifact(
     executable_backend: str = "zipapp",
     nuitka_mode: str = "standalone",
     target_plan: TargetPlan | None = None,
+    rust_importable: bool = False,
+    rust_crate_name: str = "rextio_generated_rust",
 ) -> BuildResult:
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
@@ -141,6 +153,13 @@ def build_hybrid_artifact(
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
     native_build = _generate_and_build_native(plan, layout, build_tool, target_plan)
+    rust_crate_build = _generate_and_build_rust_crate(
+        plan,
+        layout,
+        target_plan,
+        enabled=rust_importable,
+        crate_name=rust_crate_name,
+    )
     _write_build_artifact(layout)
     fallback_build = _build_fallback_backend(fallback, layout)
     wheel_build = _build_wheel_artifact(project_root, layout, native_build, fallback_build)
@@ -166,11 +185,17 @@ def build_hybrid_artifact(
         fallback_build=fallback_build,
         wheel_build=wheel_build,
         executable_build=executable_build,
+        rust_crate_build=rust_crate_build,
     )
     (layout.reports_dir / "build.json").write_text(
         json.dumps(
             {
-                "status": _build_status(native_build, fallback_build, executable_build),
+                "status": _build_status(
+                    native_build,
+                    fallback_build,
+                    executable_build,
+                    rust_crate_build,
+                ),
                 **result.to_dict(),
             },
             indent=2,
@@ -188,6 +213,8 @@ def generate_source_artifact(
     fallback: str,
     boundary_fallback_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
     target_plan: TargetPlan | None = None,
+    rust_importable: bool = False,
+    rust_crate_name: str = "rextio_generated_rust",
 ) -> GenerateResult:
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
@@ -197,6 +224,13 @@ def generate_source_artifact(
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
     native_source = _generate_native_source(plan, layout, target_plan)
+    rust_crate_source = _generate_rust_crate_source(
+        plan,
+        layout,
+        target_plan,
+        enabled=rust_importable,
+        crate_name=rust_crate_name,
+    )
 
     result = GenerateResult(
         fallback=fallback,
@@ -207,10 +241,11 @@ def generate_source_artifact(
         accepted_native_count=plan.native.accepted_count,
         rejected_native_count=plan.native.rejected_count,
         native_source=native_source,
+        rust_crate_source=rust_crate_source,
     )
     (layout.reports_dir / "generate.json").write_text(
         json.dumps(
-            {"status": _generate_status(native_source), **result.to_dict()},
+            {"status": _generate_status(native_source, rust_crate_source), **result.to_dict()},
             indent=2,
             sort_keys=True,
         )
@@ -222,6 +257,7 @@ def generate_source_artifact(
 
 def _prepare_generated_sources(layout: ArtifactLayout, target_plan: TargetPlan) -> None:
     _reset_generated_dir(layout.target_dir(target_plan.spec.language))
+    _reset_generated_dir(layout.rust_crate_dir)
     _reset_generated_dir(layout.python_dir)
     if target_plan.spec.language == "rust":
         layout.rust_src_dir.mkdir(parents=True, exist_ok=True)
@@ -316,6 +352,36 @@ def _generate_and_build_native(
     )
 
 
+def _generate_and_build_rust_crate(
+    plan: BuildPlan,
+    layout: ArtifactLayout,
+    target_plan: TargetPlan,
+    *,
+    enabled: bool,
+    crate_name: str,
+) -> RustCrateBuildResult:
+    if not enabled:
+        return skipped_rust_crate_build("Rust-importable crate was not requested.")
+    source = _generate_rust_crate_source(
+        plan,
+        layout,
+        target_plan,
+        enabled=True,
+        crate_name=crate_name,
+    )
+    if source.status != "generated":
+        if source.status == "skipped":
+            return skipped_rust_crate_build(source.message)
+        return RustCrateBuildResult(
+            status="failed",
+            message=(
+                "RXT050 Codegen failure while generating Rust-importable crate. "
+                f"Cause: {source.message}."
+            ),
+        )
+    return build_importable_rust_crate(layout.rust_crate_dir, layout.dist_dir, crate_name)
+
+
 def _generate_native_source(
     plan: BuildPlan,
     layout: ArtifactLayout,
@@ -348,6 +414,49 @@ def _generate_native_source(
         status="generated",
         message="Generated Rust source for accepted native functions.",
         path=str(layout.rust_src_dir / "lib.rs"),
+    )
+
+
+def _generate_rust_crate_source(
+    plan: BuildPlan,
+    layout: ArtifactLayout,
+    target_plan: TargetPlan,
+    *,
+    enabled: bool,
+    crate_name: str,
+) -> NativeSourceResult:
+    if not enabled:
+        return NativeSourceResult(
+            status="skipped",
+            message="Rust-importable crate was not requested.",
+        )
+    if not plan.native.has_native_artifacts:
+        return NativeSourceResult(
+            status="skipped",
+            message="No accepted native functions were found.",
+        )
+    if target_plan.spec.language != "rust":
+        return NativeSourceResult(
+            status="failed",
+            message=(
+                f"target language {target_plan.spec.language!r} is configurable, but a "
+                "Rust-importable crate can only be generated for target language 'rust'"
+            ),
+        )
+    try:
+        module_ir = lower_project(plan.analysis)
+        rust_source = generate_rust_crate_module(module_ir)
+    except (LoweringError, RustCodegenError) as exc:
+        return NativeSourceResult(
+            status="failed",
+            message=str(exc),
+        )
+
+    _write_rust_crate_project(layout, rust_source, crate_name)
+    return NativeSourceResult(
+        status="generated",
+        message="Generated Rust-importable crate source for direct native functions.",
+        path=str(layout.rust_crate_src_dir / "lib.rs"),
     )
 
 
@@ -481,10 +590,20 @@ def _write_rust_project(layout: ArtifactLayout, rust_source: str) -> None:
     (layout.rust_src_dir / "lib.rs").write_text(rust_source, encoding="utf-8")
 
 
+def _write_rust_crate_project(layout: ArtifactLayout, rust_source: str, crate_name: str) -> None:
+    layout.rust_crate_src_dir.mkdir(parents=True, exist_ok=True)
+    (layout.rust_crate_dir / "Cargo.toml").write_text(
+        render_importable_cargo_toml(crate_name),
+        encoding="utf-8",
+    )
+    (layout.rust_crate_src_dir / "lib.rs").write_text(rust_source, encoding="utf-8")
+
+
 def _build_status(
     native_build: NativeBuildResult,
     fallback_build: FallbackBuildResult,
     executable_build: ExecutableBuildResult | None = None,
+    rust_crate_build: RustCrateBuildResult | None = None,
 ) -> str:
     if fallback_build.status == "failed":
         return "fallback-build-failed"
@@ -494,10 +613,17 @@ def _build_status(
         return "native-build-failed"
     if executable_build is not None and executable_build.status == "failed":
         return "executable-build-failed"
+    if rust_crate_build is not None and rust_crate_build.status == "failed":
+        return "rust-crate-build-failed"
     return "built"
 
 
-def _generate_status(native_source: NativeSourceResult) -> str:
+def _generate_status(
+    native_source: NativeSourceResult,
+    rust_crate_source: NativeSourceResult | None = None,
+) -> str:
     if native_source.status == "failed":
         return "codegen-failed"
+    if rust_crate_source is not None and rust_crate_source.status == "failed":
+        return "rust-crate-codegen-failed"
     return "generated"

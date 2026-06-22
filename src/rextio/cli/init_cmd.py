@@ -11,6 +11,8 @@ fallback_threshold = 1000
 [rust]
 binding = "pyo3"
 build_tool = "maturin"
+importable = false
+crate_name = "rextio_generated_rust"
 
 [fallback]
 nuitka = "experimental"

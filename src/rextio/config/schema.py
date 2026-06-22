@@ -14,6 +14,8 @@ class BuildConfig:
 class RustConfig:
     binding: str = "pyo3"
     build_tool: str = "maturin"
+    importable: bool = False
+    crate_name: str = "rextio_generated_rust"
 
 
 @dataclass(frozen=True)
