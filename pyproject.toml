@@ -1,18 +1,35 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "rextio"
 version = "0.1.0"
 description = "Alpha hybrid build tooling for typed Python functions."
-readme = "README.md"
+readme = "PYPI.md"
 requires-python = ">=3.11"
-license = {file = "LICENSE"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-  {name = "Rextio"}
+  {name = "Steve Si-young Song"}
+]
+keywords = ["python", "rust", "compiler", "build-tool", "pyo3"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: Software Development :: Code Generators",
 ]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/rextio/rextio"
 
 [project.optional-dependencies]
 test = [
