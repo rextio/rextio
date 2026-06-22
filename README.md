@@ -72,7 +72,11 @@ limited list/dict/set comprehensions, assignment expressions inside
 comprehensions, and `list.append(...)` for supported list item types. Builtin support is
 intentionally limited to `len`, `abs`, two-argument `min`/`max`, and
 `sum(list[int|float])`. The supported `math` subset is `math.sqrt`, `math.sin`,
-`math.cos`, and `math.floor`.
+`math.cos`, and `math.floor`. Common side-effect and standard-library lowering
+is limited to `print(...)`, `logging.debug/info/warning/error(...)`, logger
+variables assigned from `logging.getLogger(...)`, and
+`datetime.datetime.now/utcnow().isoformat()`. These lower to Rust `println!`,
+`log` macros, and `chrono` timestamp formatting.
 
 The expanded forms remain conservative: empty list literals need a supported
 `list[...]` local annotation, and `range(start, stop, step)` currently requires

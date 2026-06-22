@@ -293,6 +293,13 @@ def test_build_generates_nuitka_standalone_executable(
     capsys,
     fake_cargo: Path,
 ) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
     package = tmp_path / "src" / "demo_nuitka_cli"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")

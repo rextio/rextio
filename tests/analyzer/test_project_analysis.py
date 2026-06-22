@@ -1183,6 +1183,36 @@ def lower(x: float, y: float) -> int:
     assert analysis.rejected_native_functions == []
 
 
+def test_accepts_common_builtin_logging_and_datetime_calls(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import datetime as dt
+import logging as log
+import rextio
+
+from logging import info
+
+logger = log.getLogger(__name__)
+
+@rextio.native
+def observe(value: int) -> str:
+    print("value", value)
+    log.info("module %s", value)
+    logger.warning("logger %s", value)
+    info("imported %s", value)
+    return dt.datetime.utcnow().isoformat()
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.observe"]
+    assert analysis.modules[0].logger_names == ("logger",)
+    assert analysis.rejected_native_functions == []
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,

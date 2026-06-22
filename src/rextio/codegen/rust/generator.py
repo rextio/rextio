@@ -19,6 +19,7 @@ from rextio.ir.nodes import (
     DictComprehensionIR,
     DictIR,
     DictSetIR,
+    EffectCallIR,
     ExprIR,
     ForIR,
     FunctionIR,
@@ -204,6 +205,9 @@ class _FunctionRenderer:
                 f"{prefix}{statement.target.id}.push("
                 f"{strip_wrapping_parens(self.render_call_arg(statement.value))});"
             ]
+        if isinstance(statement, EffectCallIR):
+            lines = self.named_expr_prelude(statement.call, indent)
+            return [*lines, f"{prefix}{self.render_call(statement.call)};"]
         if isinstance(statement, BreakIR):
             return [f"{prefix}break;"]
         if isinstance(statement, ContinueIR):
@@ -734,6 +738,20 @@ class _FunctionRenderer:
             return f"({self.render_expr(expr.args[0])}).cos()"
         if expr.function == "math.floor" and len(expr.args) == 1:
             return f"(({self.render_expr(expr.args[0])}).floor() as i64)"
+        if expr.function == "print":
+            return self.render_format_macro("println!", expr.args, allow_empty=True)
+        if expr.function in {"logging.debug", "logging.info", "logging.warning", "logging.error"}:
+            macro = {
+                "logging.debug": "log::debug!",
+                "logging.info": "log::info!",
+                "logging.warning": "log::warn!",
+                "logging.error": "log::error!",
+            }[expr.function]
+            return self.render_logging_macro(macro, expr.args)
+        if expr.function == "datetime.datetime.now.isoformat" and not expr.args:
+            return "chrono::Local::now().to_rfc3339()"
+        if expr.function == "datetime.datetime.utcnow.isoformat" and not expr.args:
+            return "chrono::Utc::now().to_rfc3339()"
         rust_name = self.native_names_by_qualname.get(expr.function)
         if rust_name is None:
             rust_name = self.native_names.get((self.function.module_name, expr.function))
@@ -885,7 +903,55 @@ class _FunctionRenderer:
             return RxtFloat()
         if expr.function == "math.floor":
             return RxtInt()
+        if expr.function == "print" or expr.function.startswith("logging."):
+            return RxtNone()
+        if expr.function in {
+            "datetime.datetime.now.isoformat",
+            "datetime.datetime.utcnow.isoformat",
+        }:
+            return RxtStr()
         return self.native_return_types.get(expr.function)
+
+    def render_format_macro(
+        self,
+        macro: str,
+        args: list[ExprIR],
+        *,
+        allow_empty: bool,
+    ) -> str:
+        if not args:
+            if allow_empty:
+                return f"{macro}()"
+            return f"{macro}(\"\")"
+        placeholders = " ".join(self.format_placeholder(arg) for arg in args)
+        rendered_args = ", ".join(
+            strip_wrapping_parens(self.render_call_arg(arg))
+            for arg in args
+        )
+        return f"{macro}({json.dumps(placeholders)}, {rendered_args})"
+
+    def render_logging_macro(self, macro: str, args: list[ExprIR]) -> str:
+        if (
+            len(args) > 1
+            and isinstance(args[0], LiteralIR)
+            and isinstance(args[0].value, str)
+        ):
+            converted = python_logging_format_to_rust(args[0].value)
+            if converted is not None:
+                format_string, placeholder_count = converted
+                if placeholder_count == len(args) - 1:
+                    rendered_args = ", ".join(
+                        strip_wrapping_parens(self.render_call_arg(arg))
+                        for arg in args[1:]
+                    )
+                    return f"{macro}({json.dumps(format_string)}, {rendered_args})"
+        return self.render_format_macro(macro, args, allow_empty=False)
+
+    def format_placeholder(self, expr: ExprIR) -> str:
+        expr_type = self.infer_expr_type(expr)
+        if isinstance(expr_type, (RxtInt, RxtFloat, RxtBool, RxtStr)):
+            return "{}"
+        return "{:?}"
 
 
 def _render_function(
@@ -910,6 +976,41 @@ def render_literal(value: object) -> str:
     if isinstance(value, str):
         return f"String::from({json.dumps(value)})"
     return repr(value)
+
+
+def python_logging_format_to_rust(value: str) -> tuple[str, int] | None:
+    output: list[str] = []
+    placeholders = 0
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "%":
+            if index + 1 >= len(value):
+                return None
+            specifier = value[index + 1]
+            if specifier == "%":
+                output.append("%")
+                index += 2
+                continue
+            if specifier in {"s", "d", "i", "f"}:
+                output.append("{}")
+                placeholders += 1
+                index += 2
+                continue
+            if specifier == "r":
+                output.append("{:?}")
+                placeholders += 1
+                index += 2
+                continue
+            return None
+        if char == "{":
+            output.append("{{")
+        elif char == "}":
+            output.append("}}")
+        else:
+            output.append(char)
+        index += 1
+    return "".join(output), placeholders
 
 
 def strip_wrapping_parens(value: str) -> str:
@@ -977,6 +1078,8 @@ def _assigned_names(block: BlockIR) -> set[str]:
         elif isinstance(statement, AppendIR):
             names.add(statement.target.id)
             names.update(_expr_assigned_names(statement.value))
+        elif isinstance(statement, EffectCallIR):
+            names.update(_expr_assigned_names(statement.call))
         elif isinstance(statement, ReturnIR):
             if statement.value is not None:
                 names.update(_expr_assigned_names(statement.value))

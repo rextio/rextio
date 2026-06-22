@@ -677,6 +677,12 @@ Support inside native candidate functions:
 * `len(x)`
 * limited `abs`, `min`, `max`, and `sum` builtins
 * limited `math.sqrt`, `math.sin`, `math.cos`, and `math.floor`
+* limited `print(...)` lowering to Rust `println!`
+* limited `logging.debug/info/warning/error(...)` lowering to Rust `log` macros
+* limited module logger method calls when the logger variable is assigned from
+  `logging.getLogger(...)`
+* limited `datetime.datetime.now/utcnow().isoformat()` lowering to Rust
+  `chrono` timestamp formatting
 * simple indexing such as `xs[i]`
 
 When `[policy] native_top_level = true` or `--native-top-level` is set, Rextio
@@ -1506,6 +1512,8 @@ Do not require third-party application framework dependencies in Rextio itself.
 Rust dependencies should be minimal:
 
 * pyo3
+* chrono for limited `datetime` lowering
+* log for limited Python `logging` lowering
 * optionally serde for helper structures later
 
 Do not add Cranelift, LLVM, Tokio, Axum, or framework dependencies in 0.1.0 alpha.

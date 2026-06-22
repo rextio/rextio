@@ -4,6 +4,7 @@ import importlib
 import json
 import math
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -28,8 +29,12 @@ build_tool = "cargo"
     source.parent.mkdir(parents=True)
     source.write_text(
         """
+import datetime
+import logging
 import math
 import rextio
+
+logger = logging.getLogger(__name__)
 
 @rextio.native
 def collect_odds(n: int) -> list[int]:
@@ -58,6 +63,13 @@ def numeric(values: list[float], x: float) -> float:
 @rextio.native
 def lower(x: float, y: float) -> int:
     return min(math.floor(x), math.floor(y))
+
+@rextio.native
+def stamp(value: int) -> str:
+    print("value", value)
+    logging.info("value %s", value)
+    logger.warning("value %s", value)
+    return datetime.datetime.now().isoformat()
 """,
         encoding="utf-8",
     )
@@ -79,6 +91,9 @@ def lower(x: float, y: float) -> int:
     assert module.collect_odds(10) == [1, 3, 7]
     assert module.labels() == ["ready", "set"]
     assert module.lower(3.8, 4.2) == 3
+    stamp = module.stamp(7)
+    assert isinstance(stamp, str)
+    datetime.fromisoformat(stamp)
     assert module.numeric([1.0, 2.0], 4.0) == pytest.approx(
         3.0 + math.sqrt(4.0) + math.sin(4.0) + math.cos(4.0) + max(abs(4.0), 1.0)
     )

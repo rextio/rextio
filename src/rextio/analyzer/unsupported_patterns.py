@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import ast
 
+from rextio.analyzer.common_calls import (
+    DATETIME_ISOFORMAT_TARGETS,
+    LOGGING_CANONICAL_TARGETS,
+    canonical_call_target,
+    is_supported_effect_call,
+)
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import FunctionAnalysis
 from rextio.analyzer.native_marker import dotted_name, is_native_decorator
@@ -226,11 +232,15 @@ def _validate_statement_types(
         return
     if isinstance(node, ast.Expr):
         _infer_expr_type(node.value, function, env)
-        if not _is_append_call(node.value):
+        if not _is_append_call(node.value) and not is_supported_effect_call(
+            node.value,
+            function.imports,
+            function.logger_names,
+        ):
             _add_unsupported_syntax(
                 function,
                 node,
-                "expression statements are supported only for list.append in native functions",
+                "expression statements are supported only for list.append, print, and logging calls in native functions",
             )
         return
     if isinstance(node, (ast.Break, ast.Continue)):
@@ -485,7 +495,15 @@ class _SignatureInferencer:
             left_type = right_type or left_type
 
     def infer_call(self, node: ast.Call, expected: str | None) -> str | None:
-        target = dotted_name(node.func)
+        target = canonical_call_target(node, self.function.imports, self.function.logger_names)
+        if target is None:
+            target = dotted_name(node.func)
+        if target == "print" or target in LOGGING_CANONICAL_TARGETS.values():
+            for arg in node.args:
+                self.infer_expr(arg)
+            return "None"
+        if target in DATETIME_ISOFORMAT_TARGETS:
+            return "str"
         if target == "len":
             for arg in node.args:
                 self.infer_expr(arg)
@@ -1124,7 +1142,17 @@ def _infer_call_type(
     for arg in node.args:
         infer_arg(arg)
 
-    target = dotted_name(node.func)
+    target = canonical_call_target(node, function.imports, function.logger_names)
+    if target is None:
+        target = dotted_name(node.func)
+    if target == "print":
+        return _infer_effect_call_type("print", node, function, env)
+    if target in LOGGING_CANONICAL_TARGETS.values():
+        return _infer_effect_call_type(target, node, function, env)
+    if target in DATETIME_ISOFORMAT_TARGETS:
+        if not _require_arg_count(target, node, function, {0}):
+            return None
+        return "str"
     if target == "len":
         if not _require_arg_count("len", node, function, {1}):
             return None
@@ -1190,6 +1218,22 @@ def _infer_call_type(
     if _is_append_call(node):
         return _infer_append_call_type(node, function, env)
     return None
+
+
+def _infer_effect_call_type(
+    target: str,
+    node: ast.Call,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> str | None:
+    if node.keywords:
+        return None
+    if target != "print" and len(node.args) < 1:
+        _add_unsupported_syntax(function, node, f"{target} requires at least one positional argument")
+        return None
+    for arg in node.args:
+        _infer_expr_type(arg, function, env)
+    return "None"
 
 
 def _infer_append_call_type(
@@ -1678,7 +1722,9 @@ def _validate_call(function: FunctionAnalysis, node: ast.Call) -> None:
     if node.keywords:
         _add_unsupported_syntax(function, node, "keyword call arguments are not supported")
 
-    target = dotted_name(node.func)
+    target = canonical_call_target(node, function.imports, function.logger_names)
+    if target is None:
+        target = dotted_name(node.func)
     if target in DYNAMIC_FEATURES:
         function.add_diagnostic(
             Diagnostic(

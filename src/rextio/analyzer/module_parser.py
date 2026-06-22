@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from rextio.analyzer.diagnostics import Diagnostic
+from rextio.analyzer.common_calls import canonical_call_target, is_logging_get_logger_call
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis
 from rextio.analyzer.native_marker import (
     NativeMarker,
@@ -48,6 +49,7 @@ def parse_module(
         module_name=module_name,
         is_package_module=path.name == "__init__.py",
     )
+    module.logger_names = _collect_logger_names(tree, module.imports)
     stub_signatures = _load_stub_signatures(path)
     module.functions = _collect_module_functions(
         tree,
@@ -104,6 +106,17 @@ def _collect_imports(
     return imports
 
 
+def _collect_logger_names(tree: ast.Module, imports: dict[str, str]) -> tuple[str, ...]:
+    names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and is_logging_get_logger_call(node.value, imports):
+            names.add(target.id)
+    return tuple(sorted(names))
+
+
 def _resolve_import_from_base(
     module_name: str,
     imported_module: str | None,
@@ -149,7 +162,7 @@ def _collect_module_functions(
             continue
         if not isinstance(node, ast.FunctionDef):
             continue
-        calls = collect_call_sites(node)
+        calls = collect_call_sites(node, module.imports, module.logger_names)
         has_exempt = has_exempt_marker(node)
         marker = native_marker_for_function(node)
         has_marker = marker is not None
@@ -166,6 +179,8 @@ def _collect_module_functions(
             inferred_arg_types=dict(stub_signature.arg_types),
             inferred_return_type=stub_signature.return_type,
             native_target_language=_marker_target_language(marker, target_language),
+            imports=dict(module.imports),
+            logger_names=module.logger_names,
         )
         if has_exempt:
             function.is_native_candidate = False
@@ -206,6 +221,8 @@ def _is_auto_native_candidate(
         inferred_arg_types=dict(function.inferred_arg_types),
         inferred_return_type=function.inferred_return_type,
         native_target_language=target_language,
+        imports=dict(function.imports),
+        logger_names=function.logger_names,
     )
     validate_native_function(node, probe)
     if probe.accepted:
@@ -240,6 +257,8 @@ def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis)
         inferred_arg_types=dict(function.inferred_arg_types),
         inferred_return_type=function.inferred_return_type,
         native_target_language=function.native_target_language,
+        imports=dict(function.imports),
+        logger_names=function.logger_names,
     )
     validate_native_function(node, probe)
     function.inferred_arg_types = dict(probe.inferred_arg_types)
@@ -336,6 +355,8 @@ def _runtime_semantics_function(
         calls=[],
         native_target_language=_marker_target_language(marker, target_language),
         native_runtime_semantics=True,
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
     )
     _add_runtime_semantics_warning(function, node)
     return function
@@ -460,9 +481,11 @@ def _collect_native_methods(
                 column=child.col_offset,
                 is_native_candidate=True,
                 accepted=True,
-                calls=collect_call_sites(child),
+                calls=collect_call_sites(child, module.imports, module.logger_names),
                 native_target_language=_marker_target_language(marker, target_language),
                 native_runtime_semantics=True,
+                imports=dict(module.imports),
+                logger_names=module.logger_names,
             )
             _add_runtime_semantics_warning(function, child)
             functions.append(function)
@@ -485,6 +508,8 @@ def _rejected_async_function(
         accepted=False,
         calls=[],
         native_target_language=target_language,
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
     )
     function.add_diagnostic(
         Diagnostic(
@@ -518,6 +543,8 @@ def _rejected_native_marker_function(
         accepted=False,
         calls=[],
         native_target_language=_marker_target_language(marker, target_language),
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
     )
     _add_native_marker_diagnostic(function, node, marker)
     return function
@@ -544,15 +571,19 @@ def _rejected_native_marker_method(
         column=node.col_offset,
         is_native_candidate=True,
         accepted=False,
-        calls=collect_call_sites(node),
+        calls=collect_call_sites(node, module.imports, module.logger_names),
         native_target_language=_marker_target_language(marker, target_language),
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
     )
     _add_native_marker_diagnostic(function, node, marker)
     return function
 
 
 class _CallCollector(ast.NodeVisitor):
-    def __init__(self) -> None:
+    def __init__(self, imports: dict[str, str], logger_names: tuple[str, ...]) -> None:
+        self.imports = imports
+        self.logger_names = logger_names
         self.calls: list[CallSite] = []
         self.loop_depth = 0
 
@@ -583,7 +614,9 @@ class _CallCollector(ast.NodeVisitor):
         self.loop_depth -= 1
 
     def visit_Call(self, node: ast.Call) -> None:
-        target = dotted_name(node.func) or "<dynamic>"
+        target = canonical_call_target(node, self.imports, self.logger_names)
+        if target is None:
+            target = dotted_name(node.func) or "<dynamic>"
         self.calls.append(
             CallSite(
                 target=target,
@@ -595,7 +628,11 @@ class _CallCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def collect_call_sites(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[CallSite]:
-    collector = _CallCollector()
+def collect_call_sites(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    imports: dict[str, str] | None = None,
+    logger_names: tuple[str, ...] = (),
+) -> list[CallSite]:
+    collector = _CallCollector(imports or {}, logger_names)
     collector.visit(node)
     return collector.calls

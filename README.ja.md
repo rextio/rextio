@@ -67,7 +67,11 @@ fixed tuple literal、限定的な dict read/write、限定的な list/dict/set 
 comprehension 内の assignment expression、対応 list item 型への
 `list.append(...)` です。Builtin の対応は意図的に `len`、`abs`、2 引数の
 `min`/`max`、`sum(list[int|float])` に限定されています。対応する `math` subset は
-`math.sqrt`、`math.sin`、`math.cos`、`math.floor` です。
+`math.sqrt`、`math.sin`、`math.cos`、`math.floor` です。よく使われる
+side-effect と標準ライブラリの lowering は `print(...)`、
+`logging.debug/info/warning/error(...)`、`logging.getLogger(...)` から代入された
+logger 変数、`datetime.datetime.now/utcnow().isoformat()` に限定され、Rust の
+`println!`、`log` macro、`chrono` timestamp formatting に変換されます。
 
 これらの拡張形式も保守的に扱われます。空の list literal には対応する `list[...]`
 ローカル annotation が必要で、`range(start, stop, step)` は現時点では `step` が
