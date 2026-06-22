@@ -8,6 +8,7 @@ from rextio.ir.types import (
     RxtList,
     RxtNone,
     RxtOptional,
+    RxtPyObject,
     RxtSet,
     RxtStr,
     RxtTuple,
@@ -26,6 +27,8 @@ def rust_type(rxt_type: RxtType) -> str:
         return "String"
     if isinstance(rxt_type, RxtNone):
         return "()"
+    if isinstance(rxt_type, RxtPyObject):
+        return "PyObject"
     if isinstance(rxt_type, RxtList):
         return f"Vec<{rust_type(rxt_type.item_type)}>"
     if isinstance(rxt_type, RxtSet):

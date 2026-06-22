@@ -39,9 +39,12 @@ class FunctionIR(IRNode):
     params: list["ParamIR"]
     return_type: RxtType
     body: "BlockIR"
+    native_runtime_semantics: bool = False
+    runtime_fallback_module: str | None = None
+    runtime_attr_path: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        data = {
             "name": self.name,
             "qualname": self.qualname,
             "module_name": self.module_name,
@@ -49,6 +52,11 @@ class FunctionIR(IRNode):
             "return_type": self.return_type.to_dict(),
             "body": self.body.to_dict(),
         }
+        if self.native_runtime_semantics:
+            data["native_runtime_semantics"] = True
+            data["runtime_fallback_module"] = self.runtime_fallback_module
+            data["runtime_attr_path"] = list(self.runtime_attr_path)
+        return data
 
 
 @dataclass(frozen=True)

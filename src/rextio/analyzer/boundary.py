@@ -39,6 +39,12 @@ def apply_boundary_checks(analysis: ProjectAnalysis, boundary_warnings: bool = T
             for function in sorted(module.functions, key=lambda item: item.qualname):
                 if not function.is_native_candidate or not function.accepted:
                     continue
+                runtime_diagnostic = _first_runtime_dependency(module, function, resolver)
+                if runtime_diagnostic is not None:
+                    function.native_runtime_semantics = True
+                    function.add_diagnostic(runtime_diagnostic)
+                    changed = True
+                    continue
                 diagnostic = _first_boundary_error(module, function, resolver)
                 if diagnostic is not None:
                     function.add_diagnostic(diagnostic)
@@ -55,6 +61,8 @@ def _first_boundary_error(
     resolver: FunctionResolver,
 ) -> Diagnostic | None:
     for call in function.calls:
+        if function.native_runtime_semantics:
+            return None
         target = call.target
         resolved = resolver.resolve(module, target)
         if target in SUPPORTED_INTERNAL_CALLS or target.endswith(".append"):
@@ -100,6 +108,36 @@ def _first_boundary_error(
             column=call.column,
             function_name=function.qualname,
             suggestion="Native functions may call only accepted native functions and supported builtins.",
+        )
+    return None
+
+
+def _first_runtime_dependency(
+    module: ModuleAnalysis,
+    function: FunctionAnalysis,
+    resolver: FunctionResolver,
+) -> Diagnostic | None:
+    if function.native_runtime_semantics:
+        return None
+    for call in function.calls:
+        dependency = resolver.resolve(module, call.target).function
+        if dependency is None or not dependency.accepted or not dependency.native_runtime_semantics:
+            continue
+        return Diagnostic(
+            code="RXT080",
+            severity="warning",
+            message=(
+                "native function uses Python runtime semantics shim because it calls "
+                f"runtime-backed native function: {dependency.qualname}"
+            ),
+            file_path=function.file_path,
+            line=call.line,
+            column=call.column,
+            function_name=function.qualname,
+            suggestion=(
+                "Rextio will route this function through the Python runtime semantics "
+                "shim so the native dependency can preserve Python object behavior."
+            ),
         )
     return None
 

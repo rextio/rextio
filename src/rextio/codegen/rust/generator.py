@@ -74,11 +74,15 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
     rendered = [
         (
             names_by_qualname[function.qualname],
-            _render_function(
-                function,
-                names_by_qualname,
-                names_by_module_and_name,
-                return_types_by_qualname,
+            (
+                _render_runtime_semantics_function(function)
+                if function.native_runtime_semantics
+                else _render_function(
+                    function,
+                    names_by_qualname,
+                    names_by_module_and_name,
+                    return_types_by_qualname,
+                )
             ),
         )
         for function in module_ir.functions
@@ -93,6 +97,31 @@ def rust_identifier(value: str) -> str:
     if identifier[0].isdigit():
         identifier = f"_{identifier}"
     return identifier
+
+
+def _render_runtime_semantics_function(function: FunctionIR) -> str:
+    if function.runtime_fallback_module is None or not function.runtime_attr_path:
+        raise RustCodegenError(f"missing runtime fallback metadata for {function.qualname}")
+    rust_name = rust_identifier(native_function_name(function.qualname))
+    attr_path = ", ".join(json.dumps(item) for item in function.runtime_attr_path)
+    return "\n".join(
+        [
+            "#[pyfunction(signature = (*args, **kwargs))]",
+            f"fn {rust_name}(",
+            "    py: Python<'_>,",
+            "    args: &Bound<'_, PyTuple>,",
+            "    kwargs: Option<&Bound<'_, PyDict>>,",
+            ") -> PyResult<PyObject> {",
+            "    rextio_call_python_runtime(",
+            "        py,",
+            f"        {json.dumps(function.runtime_fallback_module)},",
+            f"        &[{attr_path}],",
+            "        args,",
+            "        kwargs,",
+            "    )",
+            "}",
+        ]
+    )
 
 
 class _FunctionRenderer:

@@ -10,3 +10,7 @@ def native_function_name(qualname: str) -> str:
     if name[0].isdigit():
         return f"_{name}"
     return name
+
+
+def runtime_original_name(qualname: str) -> str:
+    return f"_rextio_original_{native_function_name(qualname)}"

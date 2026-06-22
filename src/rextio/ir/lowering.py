@@ -12,6 +12,8 @@ from rextio.analyzer.models import (
 )
 from rextio.analyzer.native_marker import dotted_name
 from rextio.analyzer.top_level import collect_native_top_level_statements
+from rextio.codegen.native_names import runtime_original_name
+from rextio.fallback.module_copy import fallback_module_name
 from rextio.ir.module import module_from_functions
 from rextio.ir.nodes import (
     AppendIR,
@@ -49,7 +51,7 @@ from rextio.ir.nodes import (
     WhileIR,
 )
 from rextio.ir.types import type_from_annotation, type_from_string
-from rextio.ir.types import RxtDict, RxtStr
+from rextio.ir.types import RxtDict, RxtPyObject, RxtStr
 
 
 class LoweringError(RuntimeError):
@@ -58,12 +60,12 @@ class LoweringError(RuntimeError):
 
 def lower_project(analysis: ProjectAnalysis) -> ModuleIR:
     functions: list[FunctionIR] = []
-    nodes_by_file: dict[str, dict[str, ast.FunctionDef]] = {}
+    nodes_by_file: dict[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]] = {}
     module_trees_by_file: dict[str, ast.Module] = {}
     resolver = FunctionResolver(analysis)
     for function in analysis.accepted_native_functions:
         nodes = nodes_by_file.setdefault(function.file_path, _function_nodes(Path(function.file_path)))
-        node = nodes.get(function.name)
+        node = nodes.get(_function_node_key(function))
         if node is None:
             raise LoweringError(f"accepted native function was not found: {function.qualname}")
         module = analysis.module_for_function(function)
@@ -84,10 +86,22 @@ def lower_project(analysis: ProjectAnalysis) -> ModuleIR:
 
 def lower_function(
     function: FunctionAnalysis,
-    node: ast.FunctionDef,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
     module: ModuleAnalysis,
     resolver: FunctionResolver,
 ) -> FunctionIR:
+    if function.native_runtime_semantics:
+        return FunctionIR(
+            name=function.name,
+            qualname=function.qualname,
+            module_name=function.module_name,
+            params=[],
+            return_type=RxtPyObject(),
+            body=BlockIR(statements=[]),
+            native_runtime_semantics=True,
+            runtime_fallback_module=_runtime_fallback_module(module),
+            runtime_attr_path=(runtime_original_name(function.qualname),),
+        )
     args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
     params = [
         ParamIR(name=arg.arg, type=_argument_type(function, arg))
@@ -147,6 +161,24 @@ def _return_type(function: FunctionAnalysis, node: ast.FunctionDef):
     if function.inferred_return_type is None:
         raise LoweringError(f"missing inferred return type for function: {function.qualname}")
     return type_from_string(function.inferred_return_type)
+
+
+def _runtime_fallback_module(module: ModuleAnalysis) -> str:
+    name = fallback_module_name(module)
+    if not module.module_name:
+        return name
+    if Path(module.file_path).name == "__init__.py":
+        return f"{module.module_name}.{name}"
+    parent, separator, _leaf = module.module_name.rpartition(".")
+    if separator:
+        return f"{parent}.{name}"
+    return name
+
+
+def _function_node_key(function: FunctionAnalysis) -> str:
+    if function.module_name and function.qualname.startswith(f"{function.module_name}."):
+        return function.qualname[len(function.module_name) + 1:]
+    return function.qualname
 
 
 def lower_block(
@@ -443,9 +475,17 @@ def _lower_bool_op(
     return current
 
 
-def _function_nodes(path: Path) -> dict[str, ast.FunctionDef]:
+def _function_nodes(path: Path) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    return {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    nodes: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            nodes[node.name] = node
+        elif isinstance(node, ast.ClassDef):
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    nodes[f"{node.name}.{child.name}"] = child
+    return nodes
 
 
 def _module_tree(path: Path) -> ast.Module:
