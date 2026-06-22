@@ -38,6 +38,8 @@ class FunctionAnalysis:
     inferred_return_type: str | None = None
     native_target_language: str | None = None
     native_runtime_semantics: bool = False
+    imports: dict[str, str] = field(default_factory=dict)
+    logger_names: tuple[str, ...] = ()
 
     @property
     def error_diagnostics(self) -> list[Diagnostic]:
@@ -139,6 +141,7 @@ class ModuleAnalysis:
     functions: list[FunctionAnalysis] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
     imports: dict[str, str] = field(default_factory=dict)
+    logger_names: tuple[str, ...] = ()
     top_level: TopLevelAnalysis | None = None
 
     @property
@@ -150,6 +153,7 @@ class ModuleAnalysis:
             "module_name": self.module_name,
             "file_path": self.file_path,
             "imports": dict(sorted(self.imports.items())),
+            "logger_names": list(self.logger_names),
             "functions": [function.to_dict() for function in self.functions],
             "top_level": self.top_level.to_dict() if self.top_level is not None else None,
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],

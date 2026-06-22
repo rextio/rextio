@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rextio.analyzer.common_calls import COMMON_DIRECT_RUST_CALLS
 from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, ProjectAnalysis
@@ -17,6 +18,7 @@ SUPPORTED_INTERNAL_CALLS = {
     "math.floor",
     "math.sin",
     "math.sqrt",
+    *COMMON_DIRECT_RUST_CALLS,
 }
 
 BOUNDARY_DIAGNOSTIC_MESSAGES = {

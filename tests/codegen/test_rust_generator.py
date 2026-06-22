@@ -504,6 +504,37 @@ def lower(x: float, y: float) -> int:
     assert "return Ok((((x).floor() as i64)).min(((y).floor() as i64)));" in source
 
 
+def test_generates_rust_for_common_builtin_logging_and_datetime_calls(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import datetime as dt
+import logging as log
+import rextio
+
+from logging import info
+
+logger = log.getLogger(__name__)
+
+@rextio.native
+def observe(value: int) -> str:
+    print("value", value)
+    log.info("module %s", value)
+    logger.warning("logger %s", value)
+    info("imported %s", value)
+    return dt.datetime.utcnow().isoformat()
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert 'println!("{} {}", String::from("value"), value.clone());' in source
+    assert 'log::info!("module {}", value.clone());' in source
+    assert 'log::warn!("logger {}", value.clone());' in source
+    assert 'log::info!("imported {}", value.clone());' in source
+    assert "return Ok(chrono::Utc::now().to_rfc3339());" in source
+
+
 def test_len_lowers_to_public_1_int(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """

@@ -4,6 +4,11 @@ import ast
 from pathlib import Path
 
 from rextio.analyzer.call_resolution import FunctionResolver
+from rextio.analyzer.common_calls import (
+    COMMON_DIRECT_RUST_CALLS,
+    canonical_call_target,
+    is_supported_effect_call,
+)
 from rextio.analyzer.models import (
     FunctionAnalysis,
     ModuleAnalysis,
@@ -28,6 +33,7 @@ from rextio.ir.nodes import (
     DictComprehensionIR,
     DictIR,
     DictSetIR,
+    EffectCallIR,
     ExprIR,
     ForIR,
     FunctionIR,
@@ -235,6 +241,11 @@ def lower_statement(
                 target=lower_name_target(call.func.value),
                 value=lower_expr(call.args[0], module, resolver),
             )
+        if is_supported_effect_call(node.value, module.imports, module.logger_names):
+            call = lower_expr(node.value, module, resolver)
+            if not isinstance(call, CallIR):
+                raise LoweringError("effect call did not lower to a call expression")
+            return EffectCallIR(call=call)
         raise LoweringError(f"unsupported expression statement during IR lowering: {type(node.value).__name__}")
     if isinstance(node, ast.Break):
         return BreakIR()
@@ -329,7 +340,9 @@ def lower_expr(
             comparators=[lower_expr(comparator, module, resolver) for comparator in node.comparators],
         )
     if isinstance(node, ast.Call):
-        target = dotted_name(node.func)
+        target = canonical_call_target(node, module.imports, module.logger_names)
+        if target is None:
+            target = dotted_name(node.func)
         if target is None:
             raise LoweringError("dynamic calls cannot be lowered to Rextio IR")
         return CallIR(
@@ -443,6 +456,7 @@ def _lower_call_target(
         "math.cos",
         "math.sin",
         "math.sqrt",
+        *COMMON_DIRECT_RUST_CALLS,
     }:
         return target
     resolved = resolver.resolve(module, target)

@@ -114,6 +114,14 @@ class AppendIR(StatementIR):
 
 
 @dataclass(frozen=True)
+class EffectCallIR(StatementIR):
+    call: "CallIR"
+
+    def to_dict(self) -> dict[str, object]:
+        return {"kind": "effect_call", "call": self.call.to_dict()}
+
+
+@dataclass(frozen=True)
 class BreakIR(StatementIR):
     def to_dict(self) -> dict[str, object]:
         return {"kind": "break"}

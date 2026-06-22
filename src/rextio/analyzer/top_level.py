@@ -68,6 +68,8 @@ def analyze_native_top_level(tree: ast.Module, module: ModuleAnalysis) -> TopLev
         line=top_level.line or 1,
         column=top_level.column or 0,
         is_native_candidate=True,
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
     )
     env: dict[str, str] = {}
     assigned_names: set[str] = set()
