@@ -37,6 +37,7 @@ rextio init --project-root path/to/project
 rextio check path/to/project
 rextio generate path/to/project --fallback=cpython
 rextio build path/to/project --fallback=cpython
+rextio build path/to/project --fallback=cpython --rust-importable --rust-crate-name=my_native
 rextio build path/to/project --fallback=cpython --entrypoint=myapp.cli:main
 rextio bench myapp.scoring.compute_score --project-root path/to/project
 rextio clean path/to/project
@@ -126,6 +127,8 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
 | `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
 | `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
+| `[rust] importable` | `--rust-importable` / `--no-rust-importable` | `REXTIO_RUST_IMPORTABLE` |
+| `[rust] crate_name` | `--rust-crate-name` | `REXTIO_RUST_CRATE_NAME` |
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
 | `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
@@ -165,6 +168,7 @@ Rextio 會把產生的檔案寫入 `.rextio/` 下，不會就地修改使用者�
         runtime/
   generated/
     <target-language>/
+    rust_crate/
     python/
   reports/
     check.json
@@ -172,6 +176,7 @@ Rextio 會把產生的檔案寫入 `.rextio/` 下，不會就地修改使用者�
     bench.json
 dist/
   <project>-0.1.0-<tag>.whl
+  <rust-crate-name>-rust-crate/
   <executable-name>.pyz
   <executable-name>
   <executable-name>.dist/
@@ -183,12 +188,36 @@ fallback/native 計時比較。
 
 `rextio generate` 會執行分析，並在 `.rextio/generated/` 下寫入產生的 Rust/PyO3 和
 Python wrapper/fallback 原始碼；它不會呼叫 Cargo、maturin 或 Nuitka，也不會建立
-`.rextio/build/` 或 `dist/`。
+`.rextio/build/` 或 `dist/`。使用 `--rust-importable` 時，它還會在
+`.rextio/generated/rust_crate/` 下寫入 Rust library crate 原始碼，但仍不會編譯該 crate。
 
 `rextio build` 成功後，還會在 `dist/` 下寫入產生的 hybrid artifact wheel。純
 fallback wheel 使用 `py3-none-any`；包含產生 native extension 的 wheel 使用本機
 CPython/platform tag。測試套件會把該 wheel 安裝到全新環境中，並用
 `REXTIO_DISABLE_NATIVE=1` 驗證封裝後的 fallback import 仍能運作。
+
+`rextio build --rust-importable --rust-crate-name=my_native` 還會產生可從 Rust 直接使用的
+library crate，並用 Cargo 編譯。Source artifact 會複製到 `dist/my_native-rust-crate/`，
+Rust 專案可以透過 path dependency 使用它。
+
+```toml
+[dependencies]
+my_native = { path = "../dist/my_native-rust-crate" }
+```
+
+產生的 crate 函式使用 Rextio deterministic native 名稱，並返回
+`Result<T, RextioError>`。
+
+```rust
+fn main() -> Result<(), my_native::RextioError> {
+    let value = my_native::myapp__math_ops__sum_squares(vec![1, 2, 3])?;
+    assert_eq!(value, 14);
+    Ok(())
+}
+```
+
+Rust-importable crate 只包含直接 lowering 到 typed Rust 的函式。Python runtime semantics
+shim 和 fallback-only 函式仍保留為 Python-facing compatibility 路徑，不會 export 到該 crate。
 
 `rextio build --entrypoint=module:function` 還會在 `dist/` 下產生 zipapp 可執行
 artifact。可以使用 `--executable-name=name` 控制輸出檔名；否則 Rextio 會從

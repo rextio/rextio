@@ -41,6 +41,7 @@ rextio init --project-root path/to/project
 rextio check path/to/project
 rextio generate path/to/project --fallback=cpython
 rextio build path/to/project --fallback=cpython
+rextio build path/to/project --fallback=cpython --rust-importable --rust-crate-name=my_native
 rextio build path/to/project --fallback=cpython --entrypoint=myapp.cli:main
 rextio bench myapp.scoring.compute_score --project-root path/to/project
 rextio clean path/to/project
@@ -137,6 +138,8 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
 | `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
 | `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
+| `[rust] importable` | `--rust-importable` / `--no-rust-importable` | `REXTIO_RUST_IMPORTABLE` |
+| `[rust] crate_name` | `--rust-crate-name` | `REXTIO_RUST_CRATE_NAME` |
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
 | `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
@@ -178,6 +181,7 @@ Rextio는 생성 파일을 `.rextio/` 아래에 쓰며, 사용자 소스 파일�
         runtime/
   generated/
     <target-language>/
+    rust_crate/
     python/
   reports/
     check.json
@@ -185,6 +189,7 @@ Rextio는 생성 파일을 `.rextio/` 아래에 쓰며, 사용자 소스 파일�
     bench.json
 dist/
   <project>-0.1.0-<tag>.whl
+  <rust-crate-name>-rust-crate/
   <executable-name>.pyz
   <executable-name>
   <executable-name>.dist/
@@ -196,13 +201,40 @@ build report를 모두 씁니다. `rextio bench`는 구조화된 fallback/native
 
 `rextio generate`는 분석을 실행하고 Cargo, maturin, Nuitka를 호출하지 않으며
 `.rextio/build/` 또는 `dist/`를 만들지 않고 `.rextio/generated/` 아래에 생성된
-Rust/PyO3 및 Python wrapper/fallback 소스를 씁니다.
+Rust/PyO3 및 Python wrapper/fallback 소스를 씁니다. `--rust-importable`을 함께
+사용하면 `.rextio/generated/rust_crate/` 아래에 Rust library crate source도 쓰지만,
+여전히 crate를 컴파일하지는 않습니다.
 
 `rextio build`가 성공하면 `dist/` 아래에 생성된 hybrid artifact wheel도 씁니다. 순수
 fallback wheel은 `py3-none-any`를 사용하고, 생성된 native extension이 포함된 wheel은
 로컬 CPython/platform tag를 사용합니다. 테스트 스위트는 이 wheel을 새 환경에
 설치하고 `REXTIO_DISABLE_NATIVE=1`로 패키징된 fallback import가 계속 동작하는지
 검증합니다.
+
+`rextio build --rust-importable --rust-crate-name=my_native`는 Rust에서 직접 사용할 수
+있는 library crate도 생성하고 Cargo로 컴파일합니다. Source artifact는
+`dist/my_native-rust-crate/`에 복사되며, Rust 프로젝트에서는 path dependency로
+가져올 수 있습니다.
+
+```toml
+[dependencies]
+my_native = { path = "../dist/my_native-rust-crate" }
+```
+
+생성된 crate 함수는 Rextio의 deterministic native 이름을 사용하고
+`Result<T, RextioError>`를 반환합니다.
+
+```rust
+fn main() -> Result<(), my_native::RextioError> {
+    let value = my_native::myapp__math_ops__sum_squares(vec![1, 2, 3])?;
+    assert_eq!(value, 14);
+    Ok(())
+}
+```
+
+Rust-importable crate에는 typed Rust로 직접 lowering된 함수만 포함됩니다. Python runtime
+semantics shim과 fallback-only 함수는 Python-facing compatibility 경로로 남으며 이 crate에
+export되지 않습니다.
 
 `rextio build --entrypoint=module:function`은 `dist/` 아래에 zipapp 실행 artifact도
 생성합니다. 출력 파일 이름은 `--executable-name=name`으로 지정할 수 있으며, 생략하면

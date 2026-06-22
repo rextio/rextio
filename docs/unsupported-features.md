@@ -176,6 +176,11 @@ speedup as direct Rust lowering. Automatic discovery for runtime-backed native
 functions is conservative; broad object-runtime functions should be explicitly
 marked with `@rextio.native`.
 
+Runtime-backed native functions are not exported through the optional
+Rust-importable crate artifact. `rextio build --rust-importable` includes only
+functions that were directly lowered to typed Rust and leaves runtime shims as
+Python-facing compatibility wrappers.
+
 ## Unsupported Dynamic Python Features
 
 Dynamic Python features are rejected in native candidates, usually with
@@ -264,6 +269,12 @@ Python interpreter on the target machine. Native extension modules are not
 loaded directly from inside the zipapp, so generated wrappers use Python fallback
 when `_rextio_native` is unavailable. Python-free standalone binaries without
 Nuitka remain out of scope for 0.1.0 alpha.
+
+Rust-importable crate artifacts are supported with
+`rextio build --rust-importable --rust-crate-name=name`. They are normal Cargo
+library crates copied to `dist/name-rust-crate/` for path-dependency use from
+Rust projects. This is not a whole-project Python-to-Rust migration; only
+accepted direct-Rust functions are exported.
 
 Nuitka executable artifacts are supported with
 `--executable-backend=nuitka --nuitka-mode=standalone` or

@@ -35,14 +35,16 @@ Python source
 7. Rextio can generate Rust code for supported Python functions with statically resolved types.
 8. Rextio can generate PyO3 bindings.
 9. Rextio can build the generated Rust module with Cargo/maturin.
-10. Rextio can preserve Python fallback behavior.
-11. Rextio can package a hybrid output where native functions are used when available and fallback functions are used otherwise.
-12. Rextio can optionally invoke Nuitka for fallback packaging.
-13. Rextio can optionally generate a zipapp executable artifact for a configured Python entrypoint.
-14. Rextio can optionally invoke Nuitka for standalone or onefile executable packaging.
-15. Rextio can run simple benchmarks comparing Python fallback and Rust native execution.
-16. Rextio can provide a clear demo project showing a normal Python app with a Rust-compiled hot path.
-17. Rextio can optionally convert a narrow, supported subset of module top-level
+10. Rextio can optionally build accepted direct-Rust functions into a Rust
+    library crate that Rust projects can import as a path dependency.
+11. Rextio can preserve Python fallback behavior.
+12. Rextio can package a hybrid output where native functions are used when available and fallback functions are used otherwise.
+13. Rextio can optionally invoke Nuitka for fallback packaging.
+14. Rextio can optionally generate a zipapp executable artifact for a configured Python entrypoint.
+15. Rextio can optionally invoke Nuitka for standalone or onefile executable packaging.
+16. Rextio can run simple benchmarks comparing Python fallback and Rust native execution.
+17. Rextio can provide a clear demo project showing a normal Python app with a Rust-compiled hot path.
+18. Rextio can optionally convert a narrow, supported subset of module top-level
     initialization logic to a Rust native initializer while preserving Python
     fallback import behavior.
 
@@ -358,6 +360,8 @@ fallback_threshold = 1000
 [rust]
 binding = "pyo3"
 build_tool = "maturin"
+importable = false
+crate_name = "rextio_generated_rust"
 
 [fallback]
 nuitka = "experimental"
@@ -450,6 +454,8 @@ rextio build --fallback=nuitka
 rextio build --fallback-threshold=1000
 rextio build --rust-binding=pyo3
 rextio build --rust-build-tool=maturin
+rextio build --rust-importable
+rextio build --rust-importable --rust-crate-name=my_native
 rextio build --native-marker=auto
 rextio build --native-top-level
 rextio build --no-boundary-warnings
@@ -479,6 +485,8 @@ REXTIO_FALLBACK_BACKEND
 REXTIO_BOUNDARY_FALLBACK_THRESHOLD
 REXTIO_RUST_BINDING
 REXTIO_RUST_BUILD_TOOL
+REXTIO_RUST_IMPORTABLE
+REXTIO_RUST_CRATE_NAME
 REXTIO_NUITKA_FALLBACK
 REXTIO_EXECUTABLE_ENTRYPOINT
 REXTIO_EXECUTABLE_NAME
@@ -512,6 +520,8 @@ Behavior:
 * Generate PyO3 bindings.
 * Generate Cargo project.
 * Invoke maturin or Cargo as needed.
+* Optionally generate and compile a Rust-importable library crate for accepted
+  direct Rust functions.
 * Copy fallback Python modules.
 * Generate import-compatible wrappers.
 * Embed the default runtime boundary fallback threshold in generated wrappers.
@@ -1151,6 +1161,10 @@ Preferred generated layout:
       pyproject.toml
       src/
         lib.rs
+    rust_crate/
+      Cargo.toml
+      src/
+        lib.rs
     python/
       myapp/
         scoring.py
@@ -1162,6 +1176,7 @@ Preferred generated layout:
     build.json
 dist/
   <project>-0.1.0-<tag>.whl
+  <rust-crate-name>-rust-crate/
   <executable-name>.pyz
   <executable-name>
   <executable-name>.dist/
@@ -1546,10 +1561,12 @@ Do not add Cranelift, LLVM, Tokio, Axum, or framework dependencies in 0.1.0 alph
 7. `rextio build --fallback=nuitka` either works or reports a clear experimental/installation error.
 8. Generated Rust compiles through Cargo/maturin.
 9. Generated native functions can be imported from Python.
-10. Fallback works when native is disabled.
-11. Functions rejected by boundary checks execute through fallback.
-12. At least one example project demonstrates native speedup.
-13. At least one example project demonstrates safe fallback.
+10. When requested, generated direct-Rust functions can also be compiled into a
+    Rust library crate and imported from a Rust project.
+11. Fallback works when native is disabled.
+12. Functions rejected by boundary checks execute through fallback.
+13. At least one example project demonstrates native speedup.
+14. At least one example project demonstrates safe fallback.
 14. At least one example project demonstrates boundary rejection/warning behavior.
 15. E2E tests cover build/import/runtime behavior.
 16. README explains 0.1.0 alpha scope honestly.
