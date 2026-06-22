@@ -12,6 +12,8 @@ DEFAULT_CONFIG = {
     "rust": {
         "binding": "pyo3",
         "build_tool": "maturin",
+        "importable": False,
+        "crate_name": "rextio_generated_rust",
     },
     "fallback": {
         "nuitka": "experimental",

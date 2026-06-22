@@ -18,6 +18,9 @@ Initial public MVP for Rextio as a local hybrid build tool.
   - warn when fallback Python loops call native functions repeatedly.
 - Rextio IR lowering and deterministic Rust/PyO3 code generation for accepted native functions.
 - Cargo and maturin build orchestration with Cargo fallback when maturin is unavailable.
+- Optional Rust-importable crate artifact generation with `--rust-importable`
+  and `--rust-crate-name`, allowing Rust projects to consume accepted
+  direct-Rust functions as a path dependency.
 - CPython fallback packaging and generated wrappers that preserve fallback behavior.
 - Experimental Nuitka fallback packaging with clear unavailable-tool reporting.
 - Runtime controls: `REXTIO_DISABLE_NATIVE=1` and `REXTIO_NATIVE_MODE`.

@@ -43,6 +43,7 @@ rextio init --project-root path/to/project
 rextio check path/to/project
 rextio generate path/to/project --fallback=cpython
 rextio build path/to/project --fallback=cpython
+rextio build path/to/project --fallback=cpython --rust-importable --rust-crate-name=my_native
 rextio build path/to/project --fallback=cpython --entrypoint=myapp.cli:main
 rextio bench myapp.scoring.compute_score --project-root path/to/project
 rextio clean path/to/project
@@ -147,6 +148,8 @@ behavior settings can be configured from any of these sources:
 | `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
 | `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
 | `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
+| `[rust] importable` | `--rust-importable` / `--no-rust-importable` | `REXTIO_RUST_IMPORTABLE` |
+| `[rust] crate_name` | `--rust-crate-name` | `REXTIO_RUST_CRATE_NAME` |
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
 | `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
@@ -189,6 +192,7 @@ in place.
         runtime/
   generated/
     <target-language>/
+    rust_crate/
     python/
   reports/
     check.json
@@ -196,6 +200,7 @@ in place.
     bench.json
 dist/
   <project>-0.1.0-<tag>.whl
+  <rust-crate-name>-rust-crate/
   <executable-name>.pyz
   <executable-name>
   <executable-name>.dist/
@@ -207,13 +212,40 @@ with a structured fallback/native timing comparison.
 
 `rextio generate` runs analysis and writes generated Rust/PyO3 and Python
 wrapper/fallback source under `.rextio/generated/` without invoking Cargo,
-maturin, or Nuitka and without creating `.rextio/build/` or `dist/`.
+maturin, or Nuitka and without creating `.rextio/build/` or `dist/`. With
+`--rust-importable`, it also writes a Rust library crate source tree under
+`.rextio/generated/rust_crate/` but still does not compile it.
 
 When `rextio build` succeeds, it also writes a generated hybrid artifact wheel
 under `dist/`. Pure fallback wheels use `py3-none-any`; wheels that include the
 generated native extension use the local CPython/platform tag. The test suite
 installs this wheel into a fresh environment and verifies that packaged fallback
 imports still work with `REXTIO_DISABLE_NATIVE=1`.
+
+`rextio build --rust-importable --rust-crate-name=my_native` also generates and
+compiles a Rust library crate for direct Rust consumption. The source artifact
+is copied to `dist/my_native-rust-crate/`, and a Rust project can import it with
+a path dependency:
+
+```toml
+[dependencies]
+my_native = { path = "../dist/my_native-rust-crate" }
+```
+
+Generated crate functions use Rextio's deterministic native names and return
+`Result<T, RextioError>`:
+
+```rust
+fn main() -> Result<(), my_native::RextioError> {
+    let value = my_native::myapp__math_ops__sum_squares(vec![1, 2, 3])?;
+    assert_eq!(value, 14);
+    Ok(())
+}
+```
+
+The Rust-importable crate includes only functions that were directly lowered to
+typed Rust. Python runtime semantics shims and fallback-only functions remain
+Python-facing compatibility paths and are not exported through this crate.
 
 `rextio build --entrypoint=module:function` also generates a zipapp executable
 artifact under `dist/`. Use `--executable-name=name` to control the output file

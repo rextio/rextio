@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import asdict
 from pathlib import Path
@@ -25,7 +26,7 @@ class ConfigError(RuntimeError):
 
 CONFIG_KEYS = {
     "build": {"native_backend", "fallback_backend", "fallback_threshold"},
-    "rust": {"binding", "build_tool"},
+    "rust": {"binding", "build_tool", "importable", "crate_name"},
     "fallback": {"nuitka"},
     "target": {"version", "build_options"},
     "mappers": {"paths", "enabled", "repository"},
@@ -46,6 +47,8 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_BOUNDARY_FALLBACK_THRESHOLD": ("build", "fallback_threshold", "integer"),
     "REXTIO_RUST_BINDING": ("rust", "binding", "string"),
     "REXTIO_RUST_BUILD_TOOL": ("rust", "build_tool", "string"),
+    "REXTIO_RUST_IMPORTABLE": ("rust", "importable", "boolean"),
+    "REXTIO_RUST_CRATE_NAME": ("rust", "crate_name", "string"),
     "REXTIO_NUITKA_FALLBACK": ("fallback", "nuitka", "string"),
     "REXTIO_TARGET_VERSION": ("target", "version", "optional_string"),
     "REXTIO_TARGET_BUILD_OPTIONS": ("target", "build_options", "string_map"),
@@ -172,6 +175,8 @@ def _validate_config_values(
     _require_non_negative_int("build", "fallback_threshold", build["fallback_threshold"])
     _require_string("rust", "binding", rust["binding"])
     _require_string("rust", "build_tool", rust["build_tool"])
+    _require_bool("rust", "importable", rust["importable"])
+    _require_crate_name("rust", "crate_name", rust["crate_name"])
     _require_string("fallback", "nuitka", fallback["nuitka"])
     _require_optional_string("target", "version", target["version"])
     _require_string_map("target", "build_options", target["build_options"])
@@ -215,6 +220,15 @@ def _require_optional_string(section: str, key: str, value: Any) -> None:
 def _require_bool(section: str, key: str, value: Any) -> None:
     if not isinstance(value, bool):
         raise ConfigError(f"[{section}].{key} must be a boolean")
+
+
+def _require_crate_name(section: str, key: str, value: Any) -> None:
+    _require_string(section, key, value)
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", value):
+        raise ConfigError(
+            f"[{section}].{key} must be a valid Cargo crate name using letters, digits, "
+            "underscores, or hyphens, and it must not start with a digit"
+        )
 
 
 def _require_non_negative_int(section: str, key: str, value: Any) -> None:

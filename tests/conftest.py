@@ -13,6 +13,8 @@ def fake_cargo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     cargo = bin_dir / "cargo"
     cargo.write_text(
         """#!/usr/bin/env python3
+import sys
+import tomllib
 from pathlib import Path
 
 release = Path.cwd() / "target" / "release"
@@ -24,6 +26,12 @@ for name in (
     "_rextio_native.pyd",
 ):
     (release / name).write_bytes(b"fake native library")
+if "--manifest-path" in sys.argv:
+    manifest = Path(sys.argv[sys.argv.index("--manifest-path") + 1])
+    if manifest.exists():
+        package = tomllib.loads(manifest.read_text(encoding="utf-8")).get("package", {})
+        crate_name = str(package.get("name", "rextio_generated_rust")).replace("-", "_")
+        (release / f"lib{crate_name}.rlib").write_bytes(b"fake rust library")
 """,
         encoding="utf-8",
     )

@@ -22,6 +22,8 @@ def run(args: Namespace) -> int:
                 ("build", "fallback_backend"): args.fallback,
                 ("build", "fallback_threshold"): args.fallback_threshold,
                 ("rust", "binding"): args.rust_binding,
+                ("rust", "importable"): args.rust_importable,
+                ("rust", "crate_name"): args.rust_crate_name,
                 ("fallback", "nuitka"): args.nuitka_fallback,
                 ("target", "version"): args.target_version,
                 ("target", "build_options"): key_value_overrides(args.target_build_option),
@@ -78,6 +80,8 @@ def run(args: Namespace) -> int:
         fallback,
         boundary_fallback_threshold=config.build.fallback_threshold,
         target_plan=target_plan,
+        rust_importable=config.rust.importable,
+        rust_crate_name=config.rust.crate_name,
     )
     print("Rextio generate")
     print(f"  target language: {target_plan.spec.language}")
@@ -94,9 +98,14 @@ def run(args: Namespace) -> int:
         print(f"  generated native project: {result.layout.target_dir(target_plan.spec.language)}")
     print(f"  generated Python package tree: {result.layout.python_dir}")
     print(f"  native source: {result.native_source.status}")
+    print(f"  rust crate source: {result.rust_crate_source.status}")
     print(f"  wrote {result.layout.reports_dir / 'generate.json'}")
     if result.native_source.status == "failed":
         print("RXT050 Codegen failure while generating native target code.")
         print(f"Cause: {result.native_source.message}")
+        return 1
+    if result.rust_crate_source.status == "failed":
+        print("RXT050 Codegen failure while generating Rust-importable crate source.")
+        print(f"Cause: {result.rust_crate_source.message}")
         return 1
     return 0

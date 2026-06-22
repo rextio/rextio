@@ -78,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Rust build tool. Overrides REXTIO_RUST_BUILD_TOOL and [rust] build_tool.",
     )
+    _add_rust_crate_options(build_parser_)
     build_parser_.add_argument(
         "--nuitka-fallback",
         choices=("experimental",),
@@ -162,6 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Rust binding backend. Overrides REXTIO_RUST_BINDING and [rust] binding.",
     )
+    _add_rust_crate_options(generate_parser)
     generate_parser.add_argument(
         "--nuitka-fallback",
         choices=("experimental",),
@@ -283,6 +285,26 @@ def _add_policy_options(parser: argparse.ArgumentParser) -> None:
         help=(
             "Try native conversion for supported module top-level logic. Overrides "
             "REXTIO_NATIVE_TOP_LEVEL and [policy] native_top_level."
+        ),
+    )
+
+
+def _add_rust_crate_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--rust-importable",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Generate a Rust library crate that Rust projects can import as a path dependency. "
+            "Overrides REXTIO_RUST_IMPORTABLE and [rust] importable."
+        ),
+    )
+    parser.add_argument(
+        "--rust-crate-name",
+        default=None,
+        help=(
+            "Cargo package name for the Rust-importable crate. Overrides "
+            "REXTIO_RUST_CRATE_NAME and [rust] crate_name."
         ),
     )
 

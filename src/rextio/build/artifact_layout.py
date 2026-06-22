@@ -36,6 +36,14 @@ class ArtifactLayout:
     def rust_src_dir(self) -> Path:
         return self.rust_dir / "src"
 
+    @property
+    def rust_crate_dir(self) -> Path:
+        return self.generated_dir / "rust_crate"
+
+    @property
+    def rust_crate_src_dir(self) -> Path:
+        return self.rust_crate_dir / "src"
+
     def target_dir(self, language: str) -> Path:
         return self.generated_dir / language
 

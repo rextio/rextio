@@ -24,6 +24,8 @@ def run(args: Namespace) -> int:
                 ("build", "fallback_threshold"): args.fallback_threshold,
                 ("rust", "binding"): args.rust_binding,
                 ("rust", "build_tool"): args.rust_build_tool,
+                ("rust", "importable"): args.rust_importable,
+                ("rust", "crate_name"): args.rust_crate_name,
                 ("fallback", "nuitka"): args.nuitka_fallback,
                 ("target", "version"): args.target_version,
                 ("target", "build_options"): key_value_overrides(args.target_build_option),
@@ -99,6 +101,8 @@ def run(args: Namespace) -> int:
         executable_backend=config.executable.backend,
         nuitka_mode=config.executable.nuitka_mode,
         target_plan=target_plan,
+        rust_importable=config.rust.importable,
+        rust_crate_name=config.rust.crate_name,
     )
     print("Rextio build")
     print(f"  target language: {target_plan.spec.language}")
@@ -117,6 +121,7 @@ def run(args: Namespace) -> int:
     print(f"  generated Python package tree: {result.layout.python_dir}")
     print(f"  build artifact: {result.layout.build_python_dir}")
     print(f"  native build: {result.native_build.status}")
+    print(f"  rust importable crate: {result.rust_crate_build.status}")
     print(f"  fallback packaging: {result.fallback_build.status}")
     print(f"  executable artifact: {result.executable_build.status}")
     if config.executable.entrypoint:
@@ -127,6 +132,10 @@ def run(args: Namespace) -> int:
         print(f"  wheel artifact: {result.wheel_build.path}")
     if result.executable_build.path:
         print(f"  executable: {result.executable_build.path}")
+    if result.rust_crate_build.crate_path:
+        print(f"  rust crate source artifact: {result.rust_crate_build.crate_path}")
+    if result.rust_crate_build.artifact_path:
+        print(f"  rust crate build artifact: {result.rust_crate_build.artifact_path}")
     print(f"  wrote {result.layout.reports_dir / 'build.json'}")
     if result.fallback_build.status == "failed":
         print(result.fallback_build.message)
@@ -137,6 +146,11 @@ def run(args: Namespace) -> int:
         print(result.native_build.message)
         if result.native_build.stderr:
             print(result.native_build.stderr)
+        return 1
+    if result.rust_crate_build.status == "failed":
+        print(result.rust_crate_build.message)
+        if result.rust_crate_build.stderr:
+            print(result.rust_crate_build.stderr)
         return 1
     if result.executable_build.status == "failed":
         print(result.executable_build.message)

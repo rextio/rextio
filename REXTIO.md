@@ -45,6 +45,7 @@ rextio init --project-root demo
 rextio check demo
 rextio generate demo --fallback=cpython
 rextio build demo --fallback=cpython
+rextio build demo --fallback=cpython --rust-importable --rust-crate-name=demo_native
 rextio build demo --fallback=cpython --entrypoint=demo_app.cli:main
 rextio bench demo_app.compute --project-root demo
 rextio clean demo
@@ -55,7 +56,8 @@ rewritten during build.
 
 Use `rextio generate` when you want only generated source files. It writes Rust
 and Python source under `.rextio/generated/` and skips Rust, Nuitka, wheel, and
-build artifact compilation steps.
+build artifact compilation steps. With `--rust-importable`, it also writes
+`.rextio/generated/rust_crate/` for Rust consumers without compiling that crate.
 
 ## Native Subset
 
@@ -125,6 +127,8 @@ flag and environment variable. Common examples:
 --target-build-option / REXTIO_TARGET_BUILD_OPTIONS / [target.build_options]
 --mapper-path / REXTIO_MAPPER_PATHS / [mappers] paths
 --enable-mapper / REXTIO_MAPPERS_ENABLED / [mappers] enabled
+--rust-importable / REXTIO_RUST_IMPORTABLE / [rust] importable
+--rust-crate-name / REXTIO_RUST_CRATE_NAME / [rust] crate_name
 --native-marker / REXTIO_NATIVE_MARKER / [policy] native_marker
 --boundary-warnings / REXTIO_BOUNDARY_WARNINGS / [policy] boundary_warnings
 --native-top-level / REXTIO_NATIVE_TOP_LEVEL / [policy] native_top_level
@@ -166,6 +170,14 @@ well as the build directory path.
 `dist/`. The artifact still needs a compatible Python interpreter. Native
 extension modules are not loaded directly from inside the zipapp, so generated
 wrappers preserve fallback behavior when `_rextio_native` is unavailable.
+
+`rextio build --rust-importable --rust-crate-name=name` generates a separate
+Rust library crate, builds it with Cargo, and copies the source artifact to
+`dist/name-rust-crate/`. Rust projects can consume that directory as a path
+dependency. Exported functions use generated Rextio names such as
+`package__module__function` and return `Result<T, RextioError>`. This artifact
+contains only functions directly lowered to typed Rust; Python runtime semantics
+shims remain Python-facing compatibility wrappers.
 
 `rextio build --entrypoint=module:function --executable-backend=nuitka` invokes
 Nuitka for executable packaging. Use `--nuitka-mode=standalone` for a `.dist`
