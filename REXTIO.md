@@ -150,8 +150,7 @@ flag and environment variable. Common examples:
 --target-language / REXTIO_TARGET_LANGUAGE / [build] native_backend
 --target-version / REXTIO_TARGET_VERSION / [target] version
 --target-build-option / REXTIO_TARGET_BUILD_OPTIONS / [target.build_options]
---mapper-path / REXTIO_MAPPER_PATHS / [mappers] paths
---enable-mapper / REXTIO_MAPPERS_ENABLED / [mappers] enabled
+--enable-plugin / REXTIO_PLUGINS_ENABLED / [plugins] enabled
 --rust-importable / REXTIO_RUST_IMPORTABLE / [rust] importable
 --rust-crate-name / REXTIO_RUST_CRATE_NAME / [rust] crate_name
 --native-marker / REXTIO_NATIVE_MARKER / [policy] native_marker
@@ -163,10 +162,12 @@ flag and environment variable. Common examples:
 ```
 
 Rust is the only implemented native target in 0.1.0 alpha. `mojo` and `julia` can
-be selected as target languages so versioned mapper metadata can be modeled, but
+be selected as target languages so versioned plugin metadata can be modeled, but
 native source generation reports a clear unsupported-backend failure until those
-codegen backends are implemented. Mapper plugins can also be loaded from local
-folders or downloaded from a configured public Git repository.
+codegen backends are implemented. Rextio plugins are installed as ordinary
+Python packages and expose metadata through the `rextio.plugins` entry point
+group. Projects enable specific plugin ids with `[plugins] enabled` or
+`--enable-plugin`.
 
 ## Release Verification
 

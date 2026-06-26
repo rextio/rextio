@@ -69,7 +69,7 @@ Do not implement these in 0.1.0 alpha unless explicitly requested:
 * General-purpose executable packaging beyond zipapp and Nuitka
 * Third-party framework conversion
 * ORM conversion
-* Bundled third-party package mapper rules
+* Bundled third-party package plugin rules
 * Async Python compilation
 * Generator compilation
 * Arbitrary Python object model support
@@ -224,7 +224,7 @@ rextio/
 │     │  ├─ __init__.py
 │     │  ├─ models.py
 │     │  └─ plan.py
-│     ├─ mappers/
+│     ├─ plugins/
 │     │  ├─ __init__.py
 │     │  ├─ models.py
 │     │  └─ loader.py
@@ -372,10 +372,8 @@ nuitka = "experimental"
 [target.build_options]
 # profile = "release"
 
-[mappers]
-paths = []
+[plugins]
 enabled = []
-# repository = "https://example.com/rextio-mappers"
 
 [executable]
 # entrypoint = "myapp.cli:main"
@@ -447,8 +445,7 @@ rextio build --native-backend=rust
 rextio build --target-language=rust
 rextio build --target-version=stable
 rextio build --target-build-option profile=release
-rextio build --mapper-path=mappers/python-basic-rust
-rextio build --enable-mapper=python-basic-rust
+rextio build --enable-plugin=python-basic-rust
 rextio build --fallback=cpython
 rextio build --fallback=nuitka
 rextio build --fallback-threshold=1000
@@ -478,9 +475,7 @@ REXTIO_NATIVE_BACKEND
 REXTIO_TARGET_LANGUAGE
 REXTIO_TARGET_VERSION
 REXTIO_TARGET_BUILD_OPTIONS
-REXTIO_MAPPER_PATHS
-REXTIO_MAPPERS_ENABLED
-REXTIO_MAPPER_REPOSITORY
+REXTIO_PLUGINS_ENABLED
 REXTIO_FALLBACK_BACKEND
 REXTIO_BOUNDARY_FALLBACK_THRESHOLD
 REXTIO_RUST_BINDING
@@ -504,10 +499,12 @@ targets, `init --force`, and `check --json` are command-line concerns rather
 than project configuration.
 
 Rust is the only implemented native target in 0.1.0 alpha. `mojo` and `julia` may
-be accepted as configurable target-language values so version-specific mapper
+be accepted as configurable target-language values so version-specific plugin
 metadata can be represented, but code generation must fail clearly until those
-backends are implemented. Mapper plugins can be loaded from `[mappers] paths` or
-downloaded from a configured public Git repository in `[mappers] repository`.
+backends are implemented. Rextio plugins must be ordinary Python packages
+installed with tools such as `pip` or `uv`. Each plugin package exposes metadata
+through the `rextio.plugins` entry point group, and projects opt into plugin ids
+with `[plugins] enabled` or `--enable-plugin`.
 
 Behavior:
 
@@ -1712,7 +1709,7 @@ When there is a trade-off:
 The architecture may leave extension points for these, but do not implement them yet:
 
 * package adapter registry
-* third-party package mapper subsets
+* third-party package plugin subsets
 * profiling and optimization intelligence
 * full runtime boundary-cost model
 * runtime-weighted native coverage

@@ -62,7 +62,7 @@ nuitka_mode = "onefile"
     assert config.executable.nuitka_mode == "onefile"
 
 
-def test_load_config_reads_target_and_mapper_options(tmp_path: Path) -> None:
+def test_load_config_reads_target_and_plugin_options(tmp_path: Path) -> None:
     (tmp_path / "rextio.toml").write_text(
         """
 [build]
@@ -75,10 +75,8 @@ version = "25.1"
 optimization = "speed"
 abi = "cpython"
 
-[mappers]
-paths = ["mappers/numpy-mojo"]
+[plugins]
 enabled = ["numpy-mojo"]
-repository = "https://example.invalid/rextio-mappers"
 """,
         encoding="utf-8",
     )
@@ -88,9 +86,7 @@ repository = "https://example.invalid/rextio-mappers"
     assert config.build.native_backend == "mojo"
     assert config.target.version == "25.1"
     assert config.target.build_options == {"optimization": "speed", "abi": "cpython"}
-    assert config.mappers.paths == ("mappers/numpy-mojo",)
-    assert config.mappers.enabled == ("numpy-mojo",)
-    assert config.mappers.repository == "https://example.invalid/rextio-mappers"
+    assert config.plugins.enabled == ("numpy-mojo",)
 
 
 def test_load_config_applies_environment_overrides(tmp_path: Path) -> None:
@@ -118,9 +114,7 @@ boundary_warnings = true
             "REXTIO_TARGET_LANGUAGE": "julia",
             "REXTIO_TARGET_VERSION": "1.11",
             "REXTIO_TARGET_BUILD_OPTIONS": "profile=release,threads=auto",
-            "REXTIO_MAPPER_PATHS": "mappers/numpy-julia",
-            "REXTIO_MAPPERS_ENABLED": "numpy-julia",
-            "REXTIO_MAPPER_REPOSITORY": "https://example.invalid/rextio-mappers",
+            "REXTIO_PLUGINS_ENABLED": "numpy-julia",
             "REXTIO_EXECUTABLE_ENTRYPOINT": "demo.cli:main",
             "REXTIO_EXECUTABLE_NAME": "demo-env",
             "REXTIO_EXECUTABLE_BACKEND": "nuitka",
@@ -139,9 +133,7 @@ boundary_warnings = true
     assert config.build.native_backend == "julia"
     assert config.target.version == "1.11"
     assert config.target.build_options == {"profile": "release", "threads": "auto"}
-    assert config.mappers.paths == ("mappers/numpy-julia",)
-    assert config.mappers.enabled == ("numpy-julia",)
-    assert config.mappers.repository == "https://example.invalid/rextio-mappers"
+    assert config.plugins.enabled == ("numpy-julia",)
     assert config.executable.entrypoint == "demo.cli:main"
     assert config.executable.name == "demo-env"
     assert config.executable.backend == "nuitka"
@@ -168,7 +160,7 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
             ("rust", "crate_name"): "demo_cli_rust",
             ("target", "version"): "25.1",
             ("target", "build_options"): {"profile": "debug"},
-            ("mappers", "paths"): ("mappers/numpy-mojo",),
+            ("plugins", "enabled"): ("numpy-mojo",),
             ("policy", "native_marker"): "decorator",
             ("policy", "native_top_level"): True,
         },
@@ -181,7 +173,7 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
     assert config.rust.crate_name == "demo_cli_rust"
     assert config.target.version == "25.1"
     assert config.target.build_options == {"profile": "debug"}
-    assert config.mappers.paths == ("mappers/numpy-mojo",)
+    assert config.plugins.enabled == ("numpy-mojo",)
     assert config.policy.native_marker == "decorator"
     assert config.policy.native_top_level is True
 

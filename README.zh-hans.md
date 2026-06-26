@@ -254,16 +254,16 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[rust] crate_name` | `--rust-crate-name` | `REXTIO_RUST_CRATE_NAME` |
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
-| `[mappers] paths` | `--mapper-path` | `REXTIO_MAPPER_PATHS` |
-| `[mappers] repository` | `--mapper-repository` | `REXTIO_MAPPER_REPOSITORY` |
+| `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
 | `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 
 当前实现的 native target 只有 Rust。`mojo` 和 `julia` 只是未来 backend 的 planning 值。
-Mapper plugin 可以从本地 metadata folder 或 public Git repository 加载，但 0.1.0 alpha
-不内置具体第三方 mapper 变换。
+Rextio plugin 是通过 `pip` 或 `uv` 安装的普通 Python package，并通过 `rextio.plugins`
+entry point group 暴露 metadata。项目通过 `[plugins] enabled` 或 `--enable-plugin`
+声明要使用的 plugin id。0.1.0 alpha 不内置具体第三方 plugin 变换。
 
 ## 示例
 
