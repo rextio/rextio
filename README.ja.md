@@ -258,16 +258,17 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[rust] crate_name` | `--rust-crate-name` | `REXTIO_RUST_CRATE_NAME` |
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
-| `[mappers] paths` | `--mapper-path` | `REXTIO_MAPPER_PATHS` |
-| `[mappers] repository` | `--mapper-repository` | `REXTIO_MAPPER_REPOSITORY` |
+| `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
 | `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 
 現在実装されている native target は Rust だけです。`mojo` と `julia` は将来 backend のための
-planning value です。Mapper plugin は local metadata folder または public Git repository から
-読み込めますが、0.1.0 alpha は具体的な third-party mapper 変換を内蔵しません。
+planning value です。Rextio plugin は `pip` や `uv` でインストールする通常の Python
+package で、`rextio.plugins` entry point group から metadata を公開します。プロジェクトは
+`[plugins] enabled` または `--enable-plugin` で使う plugin id を指定します。0.1.0 alpha は
+具体的な third-party plugin 変換を内蔵しません。
 
 ## 例
 

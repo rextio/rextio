@@ -308,9 +308,7 @@ Common settings:
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
 | `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
-| `[mappers] paths` | `--mapper-path` | `REXTIO_MAPPER_PATHS` |
-| `[mappers] enabled` | `--enable-mapper` | `REXTIO_MAPPERS_ENABLED` |
-| `[mappers] repository` | `--mapper-repository` | `REXTIO_MAPPER_REPOSITORY` |
+| `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
@@ -323,9 +321,11 @@ Rust is the only implemented native target in 0.1.0 alpha. `mojo` and `julia`
 are accepted as planning values for future backends, but code generation fails
 clearly until those backends exist.
 
-Mapper plugins can be loaded from local metadata folders or downloaded from a
-configured public Git repository. Concrete third-party mapper transformations
-are not bundled in 0.1.0 alpha.
+Rextio plugins are ordinary Python packages installed with tools such as `pip`
+or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry
+point group, and a project enables specific plugin ids with `[plugins] enabled`
+or `--enable-plugin`. Concrete third-party plugin transformations are not
+bundled in 0.1.0 alpha.
 
 ## Examples
 

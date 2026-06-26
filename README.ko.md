@@ -300,9 +300,7 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
 | `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
-| `[mappers] paths` | `--mapper-path` | `REXTIO_MAPPER_PATHS` |
-| `[mappers] enabled` | `--enable-mapper` | `REXTIO_MAPPERS_ENABLED` |
-| `[mappers] repository` | `--mapper-repository` | `REXTIO_MAPPER_REPOSITORY` |
+| `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
@@ -314,8 +312,10 @@ CLI parameter > environment variable > rextio.toml > built-in default
 0.1.0 alpha에서 구현된 native target은 Rust뿐입니다. `mojo`와 `julia`는 향후 backend를 위한
 planning 값으로 받을 수 있지만, 해당 codegen backend가 생기기 전까지는 명확히 실패합니다.
 
-Mapper plugin은 local metadata folder 또는 public Git repository에서 로드할 수 있습니다.
-구체적인 외부 패키지 mapper 변환은 0.1.0 alpha에 번들되어 있지 않습니다.
+Rextio plugin은 `pip`나 `uv`로 설치하는 일반 Python package이며, `rextio.plugins`
+entry point group으로 metadata를 노출합니다. 프로젝트는 `[plugins] enabled` 또는
+`--enable-plugin`으로 사용할 plugin id를 명시합니다. 구체적인 외부 패키지 plugin 변환은
+0.1.0 alpha에 번들되어 있지 않습니다.
 
 ## 예제
 

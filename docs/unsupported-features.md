@@ -259,7 +259,7 @@ this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 
 - whole-project Python-to-Rust migration
 - full Python compatibility
-- bundled third-party package mapper rules
+- bundled third-party package plugin rules
 - framework conversion
 - ORM conversion
 - direct Rust compilation for the full Python async/generator object model
@@ -270,7 +270,7 @@ this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 - JIT, Cranelift, LLVM, or MLIR integration
 - cloud build, SaaS dashboards, or GitHub app workflows
 - Mojo or Julia native code generation
-- concrete third-party mapper transformations
+- concrete third-party plugin transformations
 
 Nuitka fallback packaging is experimental in 0.1.0 alpha. If requested and not
 available, Rextio reports a clear `RXT060` error and suggests CPython fallback.
@@ -301,12 +301,12 @@ dependencies in 0.1.0 alpha.
 
 `native_backend = "mojo"` and `native_backend = "julia"` are accepted only as
 target-planning values. They allow Rextio to record target version,
-target-specific build options, and matching mapper metadata, but 0.1.0 alpha
-does not generate Mojo or Julia source. Local mapper plugin folders may be
-listed under `[mappers] paths`; each folder must contain `rextio-mapper.toml` or
-`mapper.toml`. A public Git mapper repository can be configured through
-`[mappers] repository`, `--mapper-repository`, or
-`REXTIO_MAPPER_REPOSITORY`; concrete mapper transformations remain separate
+target-specific build options, and matching plugin metadata, but 0.1.0 alpha
+does not generate Mojo or Julia source. Rextio plugins are ordinary Python
+packages installed with tools such as `pip` or `uv`; they expose metadata
+through the `rextio.plugins` entry point group. Projects opt into specific
+plugin ids with `[plugins] enabled`, `--enable-plugin`, or
+`REXTIO_PLUGINS_ENABLED`. Concrete plugin transformations remain separate
 plugin work.
 
 `@rextio.native(target="rust")` can pin an explicit native candidate to a target
