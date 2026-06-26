@@ -22,10 +22,8 @@ DEFAULT_CONFIG = {
         "version": None,
         "build_options": {},
     },
-    "mappers": {
-        "paths": (),
+    "plugins": {
         "enabled": (),
-        "repository": None,
     },
     "executable": {
         "entrypoint": None,

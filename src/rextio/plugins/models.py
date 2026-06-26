@@ -1,21 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass, field, replace
 
 from rextio.targets.models import TargetSpec
 
 
 @dataclass(frozen=True)
-class MapperPlugin:
+class RextioPlugin:
     id: str
     name: str
-    path: Path
     source_language: str = "python"
     target_language: str = "rust"
     target_versions: tuple[str, ...] = ()
     target_build_options: dict[str, str] = field(default_factory=dict)
     rules: tuple[str, ...] = ()
+    source: str = "entry-point"
+    package: str | None = None
+    entry_point: str | None = None
 
     def matches(self, target: TargetSpec) -> bool:
         if self.source_language != "python":
@@ -30,30 +31,44 @@ class MapperPlugin:
                 return False
         return True
 
+    def with_source_metadata(
+        self,
+        *,
+        source: str,
+        package: str | None = None,
+        entry_point: str | None = None,
+    ) -> RextioPlugin:
+        return replace(
+            self,
+            source=source,
+            package=package,
+            entry_point=entry_point,
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "id": self.id,
             "name": self.name,
-            "path": str(self.path),
             "source_language": self.source_language,
             "target_language": self.target_language,
             "target_versions": list(self.target_versions),
             "target_build_options": dict(sorted(self.target_build_options.items())),
             "rules": list(self.rules),
+            "source": self.source,
+            "package": self.package,
+            "entry_point": self.entry_point,
         }
 
 
 @dataclass(frozen=True)
-class MapperRegistry:
-    discovered: tuple[MapperPlugin, ...] = ()
-    active: tuple[MapperPlugin, ...] = ()
-    repository: str | None = None
-    repository_path: Path | None = None
+class PluginRegistry:
+    enabled: tuple[str, ...] = ()
+    discovered: tuple[RextioPlugin, ...] = ()
+    active: tuple[RextioPlugin, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "repository": self.repository,
-            "repository_path": str(self.repository_path) if self.repository_path is not None else None,
-            "discovered": [mapper.to_dict() for mapper in self.discovered],
-            "active": [mapper.to_dict() for mapper in self.active],
+            "enabled": list(self.enabled),
+            "discovered": [plugin.to_dict() for plugin in self.discovered],
+            "active": [plugin.to_dict() for plugin in self.active],
         }

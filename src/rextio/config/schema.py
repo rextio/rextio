@@ -30,10 +30,8 @@ class TargetConfig:
 
 
 @dataclass(frozen=True)
-class MapperConfig:
-    paths: tuple[str, ...] = ()
+class PluginConfig:
     enabled: tuple[str, ...] = ()
-    repository: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +57,6 @@ class RextioConfig:
     rust: RustConfig = RustConfig()
     fallback: FallbackConfig = FallbackConfig()
     target: TargetConfig = TargetConfig()
-    mappers: MapperConfig = MapperConfig()
+    plugins: PluginConfig = PluginConfig()
     executable: ExecutableConfig = ExecutableConfig()
     policy: PolicyConfig = PolicyConfig()

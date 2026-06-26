@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rextio.config.schema import RextioConfig
-from rextio.mappers.loader import MapperError, load_mapper_registry
-from rextio.mappers.models import MapperRegistry
+from rextio.plugins.loader import PluginError, load_plugin_registry
+from rextio.plugins.models import PluginRegistry
 from rextio.targets.models import SUPPORTED_TARGET_LANGUAGES, TargetSpec, normalize_target_language
 
 
@@ -16,26 +16,26 @@ class TargetPlanError(RuntimeError):
 @dataclass(frozen=True)
 class TargetPlan:
     spec: TargetSpec
-    mappers: MapperRegistry
+    plugins: PluginRegistry
 
     def to_dict(self) -> dict[str, object]:
         return {
             "spec": self.spec.to_dict(),
-            "mappers": self.mappers.to_dict(),
+            "plugins": self.plugins.to_dict(),
         }
 
 
 def create_target_plan(project_root: Path, config: RextioConfig) -> TargetPlan:
     target = create_target_spec(config)
     try:
-        mappers = load_mapper_registry(project_root, config.mappers, target)
-    except MapperError as exc:
+        plugins = load_plugin_registry(config.plugins, target)
+    except PluginError as exc:
         raise TargetPlanError(str(exc)) from exc
-    return TargetPlan(spec=target, mappers=mappers)
+    return TargetPlan(spec=target, plugins=plugins)
 
 
 def default_target_plan() -> TargetPlan:
-    return TargetPlan(spec=TargetSpec(), mappers=MapperRegistry())
+    return TargetPlan(spec=TargetSpec(), plugins=PluginRegistry())
 
 
 def create_target_spec(config: RextioConfig) -> TargetSpec:

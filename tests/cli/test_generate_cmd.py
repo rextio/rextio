@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from rextio.cli.main import main
 
@@ -210,21 +211,38 @@ def add(a: int, b: int) -> int:
     assert 'boundary_fallback_required("app.add", 9)' in wrapper_source
 
 
-def test_generate_reports_target_and_active_mapper(tmp_path: Path, capsys) -> None:
-    mapper_dir = tmp_path / "mappers" / "numpy-rust"
-    mapper_dir.mkdir(parents=True)
-    (mapper_dir / "rextio-mapper.toml").write_text(
-        """
-[mapper]
-id = "numpy-rust"
-target_language = "rust"
-target_versions = ["stable"]
-rules = ["numpy.ndarray"]
+class FakeEntryPoint:
+    def __init__(self, name: str, payload: Any) -> None:
+        self.name = name
+        self._payload = payload
 
-[mapper.target_build_options]
-binding = "pyo3"
-""",
-        encoding="utf-8",
+    def load(self) -> Any:
+        return self._payload
+
+
+class FakeEntryPoints(tuple):
+    def select(self, *, group: str) -> tuple[FakeEntryPoint, ...]:
+        if group == "rextio.plugins":
+            return tuple(self)
+        return ()
+
+
+def test_generate_reports_target_and_active_plugin(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "rextio.plugins.loader.metadata.entry_points",
+        lambda: FakeEntryPoints(
+            (
+                FakeEntryPoint(
+                    "numpy-rust",
+                    {
+                        "target_language": "rust",
+                        "target_versions": ["stable"],
+                        "rules": ["numpy.ndarray"],
+                        "target_build_options": {"binding": "pyo3"},
+                    },
+                ),
+            )
+        ),
     )
     (tmp_path / "rextio.toml").write_text(
         """
@@ -234,8 +252,7 @@ version = "stable"
 [target.build_options]
 binding = "pyo3"
 
-[mappers]
-paths = ["mappers/numpy-rust"]
+[plugins]
 enabled = ["numpy-rust"]
 """,
         encoding="utf-8",
@@ -258,10 +275,10 @@ def add(a: int, b: int) -> int:
     assert exit_code == 0
     assert "target language: rust" in captured.out
     assert "target version: stable" in captured.out
-    assert "active mappers: 1" in captured.out
+    assert "active plugins: 1" in captured.out
     assert report["target"]["spec"]["language"] == "rust"
     assert report["target"]["spec"]["version"] == "stable"
-    assert report["target"]["mappers"]["active"][0]["id"] == "numpy-rust"
+    assert report["target"]["plugins"]["active"][0]["id"] == "numpy-rust"
 
 
 def test_generate_reports_unimplemented_target_language(tmp_path: Path, capsys) -> None:

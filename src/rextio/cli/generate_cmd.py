@@ -27,9 +27,7 @@ def run(args: Namespace) -> int:
                 ("fallback", "nuitka"): args.nuitka_fallback,
                 ("target", "version"): args.target_version,
                 ("target", "build_options"): key_value_overrides(args.target_build_option),
-                ("mappers", "paths"): tuple_overrides(args.mapper_path),
-                ("mappers", "enabled"): tuple_overrides(args.mapper_enabled),
-                ("mappers", "repository"): args.mapper_repository,
+                ("plugins", "enabled"): tuple_overrides(args.plugin_enabled),
                 ("policy", "native_marker"): args.native_marker,
                 ("policy", "require_type_hints"): args.require_type_hints,
                 ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
@@ -87,7 +85,7 @@ def run(args: Namespace) -> int:
     print(f"  target language: {target_plan.spec.language}")
     if target_plan.spec.version:
         print(f"  target version: {target_plan.spec.version}")
-    print(f"  active mappers: {len(target_plan.mappers.active)}")
+    print(f"  active plugins: {len(target_plan.plugins.active)}")
     print(f"  fallback: {fallback}")
     print(f"  boundary fallback threshold: {config.build.fallback_threshold}")
     print(f"  accepted native functions: {result.accepted_native_count}")

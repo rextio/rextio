@@ -228,25 +228,11 @@ def _add_target_options(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--mapper-path",
+        "--enable-plugin",
         action="append",
         default=None,
-        help="Local mapper plugin folder. Overrides REXTIO_MAPPER_PATHS and [mappers] paths.",
-    )
-    parser.add_argument(
-        "--enable-mapper",
-        action="append",
-        default=None,
-        dest="mapper_enabled",
-        help="Mapper plugin id to enable. Overrides REXTIO_MAPPERS_ENABLED and [mappers] enabled.",
-    )
-    parser.add_argument(
-        "--mapper-repository",
-        default=None,
-        help=(
-            "Public Git mapper repository URL. Overrides REXTIO_MAPPER_REPOSITORY "
-            "and [mappers] repository."
-        ),
+        dest="plugin_enabled",
+        help="Installed Rextio plugin id to enable. Overrides REXTIO_PLUGINS_ENABLED and [plugins] enabled.",
     )
 
 

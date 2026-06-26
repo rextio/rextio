@@ -23,10 +23,8 @@ nuitka = "experimental"
 [target.build_options]
 # profile = "release"
 
-[mappers]
-paths = []
+[plugins]
 enabled = []
-# repository = "https://example.com/rextio-mappers"
 
 [executable]
 # entrypoint = "myapp.cli:main"
