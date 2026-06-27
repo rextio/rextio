@@ -263,6 +263,8 @@ def compute(x: float) -> float:
 
     assert exit_code == 1
     assert "experimental dependency lowering" in captured.out
+    assert "Import policies:" in captured.out
+    assert "[try-native] safe_pkg (external)" in captured.out
 
 
 def test_check_reports_config_error(tmp_path: Path, capsys) -> None:

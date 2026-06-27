@@ -20,6 +20,7 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
     accepted_top_levels = analysis.accepted_native_top_levels
     rejected_top_levels = analysis.rejected_native_top_levels
     warnings = analysis.boundary_warnings
+    external_imports = _external_import_policies(analysis)
 
     lines.append("Native candidates:")
     if not analysis.native_candidates and not analysis.native_top_levels:
@@ -54,7 +55,28 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
             if diagnostic.suggestion:
                 lines.append(f"    suggestion: {diagnostic.suggestion}")
 
+    if external_imports:
+        lines.extend(["", "Import policies:"])
+        for package, policy, origin, reason in external_imports:
+            lines.append(f"  [{policy}] {package} ({origin})")
+            lines.append(f"    reason: {reason}")
+
     return "\n".join(lines)
+
+
+def _external_import_policies(analysis: ProjectAnalysis) -> list[tuple[str, str, str, str]]:
+    seen: set[tuple[str, str, str]] = set()
+    rows: list[tuple[str, str, str, str]] = []
+    for module in analysis.modules:
+        for decision in module.import_policies:
+            if not decision.origin.startswith("external"):
+                continue
+            key = (decision.package, decision.policy, decision.origin)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append((decision.package, decision.policy, decision.origin, decision.reason))
+    return sorted(rows)
 
 
 def run(args: Namespace) -> int:
