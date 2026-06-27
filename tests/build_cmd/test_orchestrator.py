@@ -60,6 +60,7 @@ def rejected(x: int) -> int:
     assert "generated Python package tree" in captured.out
     assert "build artifact" in captured.out
     assert (rust_dir / "Cargo.toml").exists()
+    assert "cranelift-jit" not in (rust_dir / "Cargo.toml").read_text(encoding="utf-8")
     assert (rust_dir / ".cargo" / "config.toml").exists()
     assert (rust_dir / "pyproject.toml").exists()
     assert lib_rs.exists()
@@ -96,6 +97,116 @@ def rejected(x: int) -> int:
     assert "rextio/runtime/flags.py" in names
     assert any(name.endswith(".dist-info/WHEEL") for name in names)
     assert any(name.endswith(".dist-info/RECORD") for name in names)
+
+
+def test_build_enables_experimental_jit_only_when_requested(
+    tmp_path: Path,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+def helper(x: int) -> int:
+    return x * 2
+
+@rextio.native
+def compute(x: int) -> int:
+    return helper(x) + 1
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--jit",
+            "--jit-hot-threshold=2",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    rust_dir = tmp_path / ".rextio" / "generated" / "rust"
+    cargo_toml = (rust_dir / "Cargo.toml").read_text(encoding="utf-8")
+    lib_rs = (rust_dir / "src" / "lib.rs").read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "experimental JIT: enabled" in captured.out
+    assert "JIT backend: cranelift" in captured.out
+    assert "JIT hot threshold: 2" in captured.out
+    assert "experimental JIT candidates: 1" in captured.out
+    assert report["accepted_native_count"] == 1
+    assert report["rejected_native_count"] == 0
+    assert report["jit_candidate_count"] == 1
+    assert "cranelift-jit" in cargo_toml
+    assert "static app__helper_COMPILED" in lib_rs
+    assert "if calls >= 2" in lib_rs
+    assert "wrap_pyfunction!(app__compute" in lib_rs
+    assert "wrap_pyfunction!(app__helper" not in lib_rs
+
+
+def test_build_no_jit_cli_option_overrides_environment(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    monkeypatch.setenv("REXTIO_JIT", "true")
+    monkeypatch.setenv("REXTIO_JIT_HOT_THRESHOLD", "2")
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+
+def helper(x: int) -> int:
+    return x * 2
+
+@rextio.native
+def compute(x: int) -> int:
+    return helper(x) + 1
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython", "--no-jit"])
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    cargo_toml = (
+        tmp_path / ".rextio" / "generated" / "rust" / "Cargo.toml"
+    ).read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "experimental JIT: disabled" in captured.out
+    assert report["accepted_native_count"] == 1
+    assert report["rejected_native_count"] == 1
+    assert report["jit_candidate_count"] == 0
+    assert "cranelift-jit" not in cargo_toml
 
 
 def test_build_generates_rust_importable_crate_artifact(

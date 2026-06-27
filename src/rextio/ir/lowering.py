@@ -70,20 +70,24 @@ class LoweringError(RuntimeError):
     pass
 
 
-def lower_project(analysis: ProjectAnalysis) -> ModuleIR:
+def lower_project(analysis: ProjectAnalysis, include_jit: bool = False) -> ModuleIR:
     functions: list[FunctionIR] = []
     nodes_by_file: dict[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]] = {}
     module_trees_by_file: dict[str, ast.Module] = {}
     resolver = FunctionResolver(analysis)
     for function in analysis.accepted_native_functions:
-        nodes = nodes_by_file.setdefault(function.file_path, _function_nodes(Path(function.file_path)))
-        node = nodes.get(_function_node_key(function))
-        if node is None:
-            raise LoweringError(f"accepted native function was not found: {function.qualname}")
-        module = analysis.module_for_function(function)
-        if module is None:
-            raise LoweringError(f"module was not found for accepted function: {function.qualname}")
-        functions.append(lower_function(function, node, module, resolver))
+        functions.append(_lower_analysis_function(function, analysis, nodes_by_file, resolver))
+    if include_jit:
+        for function in analysis.jit_candidates:
+            functions.append(
+                _lower_analysis_function(
+                    function,
+                    analysis,
+                    nodes_by_file,
+                    resolver,
+                    native_jit=True,
+                )
+            )
     for top_level in analysis.accepted_native_top_levels:
         tree = module_trees_by_file.setdefault(
             top_level.file_path,
@@ -96,11 +100,32 @@ def lower_project(analysis: ProjectAnalysis) -> ModuleIR:
     return module_from_functions(functions)
 
 
+def _lower_analysis_function(
+    function: FunctionAnalysis,
+    analysis: ProjectAnalysis,
+    nodes_by_file: dict[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]],
+    resolver: FunctionResolver,
+    *,
+    native_jit: bool = False,
+) -> FunctionIR:
+    nodes = nodes_by_file.setdefault(function.file_path, _function_nodes(Path(function.file_path)))
+    node = nodes.get(_function_node_key(function))
+    if node is None:
+        kind = "JIT candidate" if native_jit else "accepted native function"
+        raise LoweringError(f"{kind} was not found: {function.qualname}")
+    module = analysis.module_for_function(function)
+    if module is None:
+        raise LoweringError(f"module was not found for function: {function.qualname}")
+    return lower_function(function, node, module, resolver, native_jit=native_jit)
+
+
 def lower_function(
     function: FunctionAnalysis,
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     module: ModuleAnalysis,
     resolver: FunctionResolver,
+    *,
+    native_jit: bool = False,
 ) -> FunctionIR:
     if function.native_runtime_semantics:
         return FunctionIR(
@@ -111,6 +136,8 @@ def lower_function(
             return_type=RxtPyObject(),
             body=BlockIR(statements=[]),
             native_runtime_semantics=True,
+            native_jit=native_jit,
+            jit_hot_threshold=function.jit_hot_threshold,
             runtime_fallback_module=_runtime_fallback_module(module),
             runtime_attr_path=(runtime_original_name(function.qualname),),
         )
@@ -126,6 +153,8 @@ def lower_function(
         params=params,
         return_type=_return_type(function, node),
         body=lower_block(node.body, module, resolver),
+        native_jit=native_jit,
+        jit_hot_threshold=function.jit_hot_threshold,
     )
 
 

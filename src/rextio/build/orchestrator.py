@@ -90,6 +90,7 @@ class GenerateResult:
             "plan": self.plan.to_dict(),
             "accepted_native_count": self.accepted_native_count,
             "rejected_native_count": self.rejected_native_count,
+            "jit_candidate_count": len(self.plan.native.jit_functions),
             "native_source": self.native_source.to_dict(),
             "rust_crate_source": self.rust_crate_source.to_dict(),
         }
@@ -122,6 +123,7 @@ class BuildResult:
             "plan": self.plan.to_dict(),
             "accepted_native_count": self.accepted_native_count,
             "rejected_native_count": self.rejected_native_count,
+            "jit_candidate_count": len(self.plan.native.jit_functions),
             "native_build": self.native_build.to_dict(),
             "fallback_build": self.fallback_build.to_dict(),
             "wheel_build": self.wheel_build.to_dict(),
@@ -143,6 +145,8 @@ def build_hybrid_artifact(
     target_plan: TargetPlan | None = None,
     rust_importable: bool = False,
     rust_crate_name: str = "rextio_generated_rust",
+    native_jit_enabled: bool = False,
+    jit_hot_threshold: int = 25,
 ) -> BuildResult:
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
@@ -152,7 +156,13 @@ def build_hybrid_artifact(
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
-    native_build = _generate_and_build_native(plan, layout, build_tool, target_plan)
+    native_build = _generate_and_build_native(
+        plan,
+        layout,
+        build_tool,
+        target_plan,
+        native_jit_enabled=native_jit_enabled,
+    )
     rust_crate_build = _generate_and_build_rust_crate(
         plan,
         layout,
@@ -215,6 +225,8 @@ def generate_source_artifact(
     target_plan: TargetPlan | None = None,
     rust_importable: bool = False,
     rust_crate_name: str = "rextio_generated_rust",
+    native_jit_enabled: bool = False,
+    jit_hot_threshold: int = 25,
 ) -> GenerateResult:
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
@@ -223,7 +235,12 @@ def generate_source_artifact(
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
-    native_source = _generate_native_source(plan, layout, target_plan)
+    native_source = _generate_native_source(
+        plan,
+        layout,
+        target_plan,
+        native_jit_enabled=native_jit_enabled,
+    )
     rust_crate_source = _generate_rust_crate_source(
         plan,
         layout,
@@ -326,10 +343,17 @@ def _generate_and_build_native(
     layout: ArtifactLayout,
     build_tool: str,
     target_plan: TargetPlan,
+    *,
+    native_jit_enabled: bool,
 ) -> NativeBuildResult:
     if not plan.native.has_native_artifacts:
         return skipped_native_build("No accepted native functions were found.")
-    native_source = _generate_native_source(plan, layout, target_plan)
+    native_source = _generate_native_source(
+        plan,
+        layout,
+        target_plan,
+        native_jit_enabled=native_jit_enabled,
+    )
     if native_source.status == "failed":
         return NativeBuildResult(
             status="failed",
@@ -386,6 +410,8 @@ def _generate_native_source(
     plan: BuildPlan,
     layout: ArtifactLayout,
     target_plan: TargetPlan,
+    *,
+    native_jit_enabled: bool = False,
 ) -> NativeSourceResult:
     if not plan.native.has_native_artifacts:
         return NativeSourceResult(
@@ -401,7 +427,7 @@ def _generate_native_source(
             ),
         )
     try:
-        module_ir = lower_project(plan.analysis)
+        module_ir = lower_project(plan.analysis, include_jit=native_jit_enabled)
         rust_source = generate_rust_module(module_ir)
     except (LoweringError, RustCodegenError) as exc:
         return NativeSourceResult(
@@ -409,7 +435,7 @@ def _generate_native_source(
             message=str(exc),
         )
 
-    _write_rust_project(layout, rust_source)
+    _write_rust_project(layout, rust_source, include_jit=bool(plan.native.jit_functions and native_jit_enabled))
     return NativeSourceResult(
         status="generated",
         message="Generated Rust source for accepted native functions.",
@@ -578,9 +604,12 @@ def _build_native_with_selected_tool(layout: ArtifactLayout, build_tool: str) ->
     )
 
 
-def _write_rust_project(layout: ArtifactLayout, rust_source: str) -> None:
+def _write_rust_project(layout: ArtifactLayout, rust_source: str, *, include_jit: bool = False) -> None:
     layout.rust_src_dir.mkdir(parents=True, exist_ok=True)
-    (layout.rust_dir / "Cargo.toml").write_text(render_cargo_toml(), encoding="utf-8")
+    (layout.rust_dir / "Cargo.toml").write_text(
+        render_cargo_toml(include_jit=include_jit),
+        encoding="utf-8",
+    )
     (layout.rust_dir / "pyproject.toml").write_text(render_pyproject_toml(), encoding="utf-8")
     (layout.rust_dir / ".cargo").mkdir(parents=True, exist_ok=True)
     (layout.rust_dir / ".cargo" / "config.toml").write_text(

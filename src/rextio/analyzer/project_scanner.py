@@ -81,6 +81,8 @@ def analyze_project(
     native_top_level: bool = False,
     imports_config: ImportsConfig | None = None,
     active_plugins: Iterable[RextioPlugin] = (),
+    native_jit_enabled: bool = False,
+    jit_hot_threshold: int = 25,
 ) -> ProjectAnalysis:
     root = Path(project_root).resolve()
     target_language = normalize_target_language(target_language)
@@ -97,10 +99,16 @@ def analyze_project(
             project_modules=project_modules,
             imports_config=imports_config,
             active_plugins=active_plugins,
+            native_jit_enabled=native_jit_enabled,
+            jit_hot_threshold=jit_hot_threshold,
         )
         for path in files
     ]
-    apply_boundary_checks(analysis, boundary_warnings=boundary_warnings)
+    apply_boundary_checks(
+        analysis,
+        boundary_warnings=boundary_warnings,
+        native_jit_enabled=native_jit_enabled,
+    )
     return analysis
 
 

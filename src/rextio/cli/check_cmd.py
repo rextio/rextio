@@ -21,6 +21,7 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
     rejected_top_levels = analysis.rejected_native_top_levels
     warnings = analysis.boundary_warnings
     external_imports = _external_import_policies(analysis)
+    jit_candidates = analysis.jit_candidates
 
     lines.append("Native candidates:")
     if not analysis.native_candidates and not analysis.native_top_levels:
@@ -54,6 +55,15 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
             lines.append(f"    {diagnostic.code}: {diagnostic.message}")
             if diagnostic.suggestion:
                 lines.append(f"    suggestion: {diagnostic.suggestion}")
+
+    if jit_candidates:
+        lines.extend(["", "Experimental JIT candidates:"])
+        for function in jit_candidates:
+            lines.append(f"  [jit] {function.qualname}")
+            if function.jit_reason:
+                lines.append(f"    reason: {function.jit_reason}")
+            if function.jit_hot_threshold is not None:
+                lines.append(f"    hot threshold: {function.jit_hot_threshold}")
 
     if external_imports:
         lines.extend(["", "Import policies:"])

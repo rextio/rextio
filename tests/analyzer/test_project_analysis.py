@@ -1562,6 +1562,58 @@ def process_all(xs: list[float]) -> list[float]:
     assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT073"]
 
 
+def test_jit_disabled_keeps_unmarked_helper_as_fallback_boundary(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def helper(x: int) -> int:
+    return x * 2
+
+@rextio.native
+def compute(x: int) -> int:
+    return helper(x) + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert analysis.jit_candidates == []
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.compute"]
+    assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT070"
+
+
+def test_jit_enabled_promotes_typed_scalar_helper_for_native_caller(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def helper(x: int) -> int:
+    return x * 2
+
+@rextio.native
+def compute(x: int) -> int:
+    return helper(x) + 1
+""",
+    )
+
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        native_jit_enabled=True,
+        jit_hot_threshold=2,
+    )
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.compute"]
+    assert [function.qualname for function in analysis.jit_candidates] == ["app.helper"]
+    assert analysis.jit_candidates[0].jit_hot_threshold == 2
+    assert "Cranelift JIT" in (analysis.jit_candidates[0].jit_reason or "")
+
+
 def test_project_scanner_respects_rextioignore(tmp_path: Path) -> None:
     (tmp_path / ".rextioignore").write_text(
         """

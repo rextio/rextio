@@ -8,6 +8,7 @@ from pathlib import Path
 from rextio.analyzer.common_calls import canonical_call_target, is_logging_get_logger_call
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.import_policy import classify_import_policies
+from rextio.analyzer.jit import is_cranelift_jit_candidate
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis
 from rextio.analyzer.native_marker import (
     NativeMarker,
@@ -32,6 +33,8 @@ def parse_module(
     project_modules: set[str] | None = None,
     imports_config: ImportsConfig | None = None,
     active_plugins: Iterable[RextioPlugin] = (),
+    native_jit_enabled: bool = False,
+    jit_hot_threshold: int = 25,
 ) -> ModuleAnalysis:
     target_language = normalize_target_language(target_language)
     module_name = module_name_for_path(path, project_root)
@@ -71,6 +74,8 @@ def parse_module(
         native_marker,
         stub_signatures,
         target_language,
+        native_jit_enabled,
+        jit_hot_threshold,
     )
     module.functions.extend(_collect_native_methods(tree, module, target_language))
     if native_top_level:
@@ -161,6 +166,8 @@ def _collect_module_functions(
     native_marker: str,
     stub_signatures: dict[str, StubSignature],
     target_language: str,
+    native_jit_enabled: bool,
+    jit_hot_threshold: int,
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
     for node in tree.body:
@@ -212,8 +219,51 @@ def _collect_module_functions(
         ):
             function.is_native_candidate = True
             function.accepted = True
+        elif native_jit_enabled and _mark_jit_candidate(
+            node,
+            function,
+            target_language,
+            jit_hot_threshold,
+        ):
+            pass
         functions.append(function)
     return functions
+
+
+def _mark_jit_candidate(
+    node: ast.FunctionDef,
+    function: FunctionAnalysis,
+    target_language: str,
+    jit_hot_threshold: int,
+) -> bool:
+    if node.decorator_list:
+        return False
+    probe = FunctionAnalysis(
+        name=function.name,
+        qualname=function.qualname,
+        module_name=function.module_name,
+        file_path=function.file_path,
+        line=function.line,
+        column=function.column,
+        is_native_candidate=True,
+        calls=list(function.calls),
+        inferred_arg_types=dict(function.inferred_arg_types),
+        inferred_return_type=function.inferred_return_type,
+        native_target_language=target_language,
+        imports=dict(function.imports),
+        logger_names=function.logger_names,
+    )
+    validate_native_function(node, probe)
+    accepted, reason = is_cranelift_jit_candidate(node, probe)
+    if not accepted:
+        return False
+    function.inferred_arg_types = dict(probe.inferred_arg_types)
+    function.inferred_return_type = probe.inferred_return_type
+    function.native_target_language = target_language
+    function.is_jit_candidate = True
+    function.jit_hot_threshold = jit_hot_threshold
+    function.jit_reason = reason
+    return True
 
 
 def _is_auto_native_candidate(

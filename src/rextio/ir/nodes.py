@@ -40,6 +40,8 @@ class FunctionIR(IRNode):
     return_type: RxtType
     body: "BlockIR"
     native_runtime_semantics: bool = False
+    native_jit: bool = False
+    jit_hot_threshold: int | None = None
     runtime_fallback_module: str | None = None
     runtime_attr_path: tuple[str, ...] = ()
 
@@ -56,6 +58,9 @@ class FunctionIR(IRNode):
             data["native_runtime_semantics"] = True
             data["runtime_fallback_module"] = self.runtime_fallback_module
             data["runtime_attr_path"] = list(self.runtime_attr_path)
+        if self.native_jit:
+            data["native_jit"] = True
+            data["jit_hot_threshold"] = self.jit_hot_threshold
         return data
 
 

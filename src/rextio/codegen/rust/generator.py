@@ -77,6 +77,15 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
         (
             names_by_qualname[function.qualname],
             (
+                _render_jit_function(
+                    function,
+                    names_by_qualname[function.qualname],
+                    names_by_qualname,
+                    names_by_module_and_name,
+                    return_types_by_qualname,
+                )
+                if function.native_jit
+                else
                 _render_runtime_semantics_function(function)
                 if function.native_runtime_semantics
                 else _render_function(
@@ -90,11 +99,24 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
         )
         for function in module_ir.functions
     ]
-    return render_pyo3_module(rendered)
+    exported = [
+        names_by_qualname[function.qualname]
+        for function in module_ir.functions
+        if not function.native_jit
+    ]
+    return render_pyo3_module(
+        rendered,
+        exported_functions=exported,
+        extra_prelude=_jit_prelude() if any(function.native_jit for function in module_ir.functions) else None,
+    )
 
 
 def generate_rust_crate_module(module_ir: ModuleIR) -> str:
-    direct_functions = [function for function in module_ir.functions if not function.native_runtime_semantics]
+    direct_functions = [
+        function
+        for function in module_ir.functions
+        if not function.native_runtime_semantics and not function.native_jit
+    ]
     if not direct_functions:
         raise RustCodegenError("no direct Rust native functions are available for a Rust-importable crate")
     names_by_qualname = {
@@ -153,6 +175,170 @@ def _render_runtime_semantics_function(function: FunctionIR) -> str:
             "}",
         ]
     )
+
+
+def _render_jit_function(
+    function: FunctionIR,
+    rust_name: str,
+    native_names_by_qualname: dict[str, str],
+    native_names_by_module_and_name: dict[tuple[str, str], str],
+    native_return_types: dict[str, RxtType],
+) -> str:
+    if len(function.body.statements) != 1 or not isinstance(function.body.statements[0], ReturnIR):
+        raise RustCodegenError(f"JIT function must contain a single return statement: {function.qualname}")
+    return_statement = function.body.statements[0]
+    if return_statement.value is None:
+        raise RustCodegenError(f"JIT function must return a value: {function.qualname}")
+    return_type = rust_type(function.return_type)
+    if return_type not in {"i64", "f64"}:
+        raise RustCodegenError(f"JIT function return type is not supported: {function.qualname}")
+    param_types = [rust_type(param.type) for param in function.params]
+    if any(param_type != return_type for param_type in param_types):
+        raise RustCodegenError(
+            f"JIT function parameters must match the return type in 0.1.0 alpha: {function.qualname}"
+        )
+    threshold = function.jit_hot_threshold if function.jit_hot_threshold is not None else 25
+    pointer_type = _jit_pointer_type(return_type, len(function.params))
+    interpreter = _FunctionRenderer(
+        function,
+        native_names_by_qualname,
+        native_names_by_module_and_name,
+        native_return_types,
+        mode="pyo3",
+    )
+    interpreter_expr = strip_expr_if_safe(
+        return_statement.value,
+        interpreter.render_expr_with_expected(return_statement.value, function.return_type),
+    )
+    compile_name = f"compile_{rust_name}"
+    args = ", ".join(param.name for param in function.params)
+    signature_params = ", ".join(f"{param.name}: {rust_type(param.type)}" for param in function.params)
+    pointer_args = ", ".join(param.name for param in function.params)
+    cranelift_type = "types::I64" if return_type == "i64" else "types::F64"
+    jit_lines, jit_value = _render_cranelift_expr(
+        return_statement.value,
+        {param.name: index for index, param in enumerate(function.params)},
+        return_type,
+    )
+    name_literal = json.dumps(rust_name)
+    return "\n".join(
+        [
+            f"type {rust_name}_JitFn = {pointer_type};",
+            "",
+            f"static {rust_name}_HOT_COUNT: AtomicUsize = AtomicUsize::new(0);",
+            f"static {rust_name}_COMPILED: OnceLock<Result<{rust_name}_JitFn, String>> = OnceLock::new();",
+            "",
+            f"fn {rust_name}({signature_params}) -> PyResult<{return_type}> {{",
+            f"    let calls = {rust_name}_HOT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;",
+            f"    if calls >= {threshold} {{",
+            f"        if let Ok(compiled) = {rust_name}_COMPILED.get_or_init({compile_name}) {{",
+            f"            return Ok(unsafe {{ compiled({pointer_args}) }});",
+            "        }",
+            "    }",
+            f"    Ok({interpreter_expr})",
+            "}",
+            "",
+            f"fn {compile_name}() -> Result<{rust_name}_JitFn, String> {{",
+            "    let jit_builder = JITBuilder::new(cranelift_module::default_libcall_names())",
+            "        .map_err(|err| err.to_string())?;",
+            "    let mut module = JITModule::new(jit_builder);",
+            "    let mut ctx = module.make_context();",
+            *[
+                f"    ctx.func.signature.params.push(AbiParam::new({cranelift_type}));"
+                for _param in function.params
+            ],
+            f"    ctx.func.signature.returns.push(AbiParam::new({cranelift_type}));",
+            "    let mut builder_context = FunctionBuilderContext::new();",
+            "    let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);",
+            "    let block = builder.create_block();",
+            "    builder.append_block_params_for_function_params(block);",
+            "    builder.switch_to_block(block);",
+            "    builder.seal_block(block);",
+            *[f"    {line}" for line in jit_lines],
+            f"    builder.ins().return_(&[{jit_value}]);",
+            "    builder.finalize();",
+            f"    let id = module.declare_function({name_literal}, Linkage::Export, &ctx.func.signature)",
+            "        .map_err(|err| err.to_string())?;",
+            "    module.define_function(id, &mut ctx).map_err(|err| err.to_string())?;",
+            "    module.clear_context(&mut ctx);",
+            "    module.finalize_definitions().map_err(|err| err.to_string())?;",
+            "    let module = Box::leak(Box::new(module));",
+            "    let code = module.get_finalized_function(id);",
+            f"    Ok(unsafe {{ std::mem::transmute::<*const u8, {rust_name}_JitFn>(code) }})",
+            "}",
+        ]
+    )
+
+
+def _jit_prelude() -> list[str]:
+    return [
+        "use cranelift_codegen::ir::{types, AbiParam};",
+        "use cranelift_codegen::ir::InstBuilder;",
+        "use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};",
+        "use cranelift_jit::{JITBuilder, JITModule};",
+        "use cranelift_module::{Linkage, Module};",
+        "use std::sync::atomic::{AtomicUsize, Ordering};",
+        "use std::sync::OnceLock;",
+    ]
+
+
+def _jit_pointer_type(return_type: str, param_count: int) -> str:
+    args = ", ".join(return_type for _index in range(param_count))
+    return f"unsafe extern \"C\" fn({args}) -> {return_type}"
+
+
+def _render_cranelift_expr(
+    expr: ExprIR,
+    params: dict[str, int],
+    return_type: str,
+) -> tuple[list[str], str]:
+    lines: list[str] = []
+    temp_index = 0
+
+    def next_temp() -> str:
+        nonlocal temp_index
+        temp_index += 1
+        return f"jit_value_{temp_index}"
+
+    def lower(item: ExprIR) -> str:
+        if isinstance(item, NameIR):
+            if item.id not in params:
+                raise RustCodegenError(f"JIT expression references unsupported local: {item.id}")
+            temp = next_temp()
+            lines.append(f"let {temp} = builder.block_params(block)[{params[item.id]}];")
+            return temp
+        if isinstance(item, LiteralIR):
+            temp = next_temp()
+            if return_type == "i64" and isinstance(item.value, int) and not isinstance(item.value, bool):
+                lines.append(f"let {temp} = builder.ins().iconst(types::I64, {item.value});")
+                return temp
+            if return_type == "f64" and isinstance(item.value, (int, float)) and not isinstance(item.value, bool):
+                lines.append(f"let {temp} = builder.ins().f64const({float(item.value)!r});")
+                return temp
+            raise RustCodegenError("JIT expression literal is not supported")
+        if isinstance(item, UnaryOpIR) and item.op == "-":
+            value = lower(item.value)
+            temp = next_temp()
+            if return_type == "i64":
+                lines.append(f"let {temp} = builder.ins().ineg({value});")
+            else:
+                lines.append(f"let {temp} = builder.ins().fneg({value});")
+            return temp
+        if isinstance(item, BinaryOpIR):
+            left = lower(item.left)
+            right = lower(item.right)
+            if return_type == "i64":
+                op = {"+": "iadd", "-": "isub", "*": "imul"}.get(item.op)
+            else:
+                op = {"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv"}.get(item.op)
+            if op is None:
+                raise RustCodegenError(f"JIT binary operator is not supported: {item.op}")
+            temp = next_temp()
+            lines.append(f"let {temp} = builder.ins().{op}({left}, {right});")
+            return temp
+        raise RustCodegenError(f"unsupported JIT expression IR: {type(item).__name__}")
+
+    return lines, lower(expr)
 
 
 def _render_importable_crate_module(function_sources: list[str]) -> str:

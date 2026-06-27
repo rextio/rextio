@@ -105,6 +105,7 @@ def run(args: Namespace) -> int:
         print(f"  JIT hot threshold: {config.jit.hot_threshold}")
     print(f"  accepted native functions: {result.accepted_native_count}")
     print(f"  rejected native functions: {result.rejected_native_count}")
+    print(f"  experimental JIT candidates: {len(result.plan.native.jit_functions)}")
     if target_plan.spec.language == "rust":
         print(f"  generated Rust project: {result.layout.rust_dir}")
     else:
