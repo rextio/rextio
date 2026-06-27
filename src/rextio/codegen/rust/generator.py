@@ -211,7 +211,6 @@ def _render_jit_function(
         interpreter.render_expr_with_expected(return_statement.value, function.return_type),
     )
     compile_name = f"compile_{rust_name}"
-    args = ", ".join(param.name for param in function.params)
     signature_params = ", ".join(f"{param.name}: {rust_type(param.type)}" for param in function.params)
     pointer_args = ", ".join(param.name for param in function.params)
     cranelift_type = "types::I64" if return_type == "i64" else "types::F64"
