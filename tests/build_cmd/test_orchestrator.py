@@ -575,7 +575,7 @@ def main() -> int:
     assert report["executable_build"]["status"] == "failed"
 
 
-def test_build_reports_native_build_failure_when_cargo_is_missing(
+def test_build_fails_fast_when_rust_toolchain_is_missing(
     tmp_path: Path,
     monkeypatch,
     capsys,
@@ -596,14 +596,13 @@ def add(a: int, b: int) -> int:
 
     captured = capsys.readouterr()
     build_report = tmp_path / ".rextio" / "reports" / "build.json"
-    data = json.loads(build_report.read_text(encoding="utf-8"))
 
+    # With no toolchain on PATH the build fails fast at the preflight check,
+    # before any analysis or codegen, with actionable install guidance.
     assert exit_code == 1
-    assert "RXT060 Build failed while compiling generated Rust module" in captured.out
-    assert data["status"] == "native-build-failed"
-    assert data["native_build"]["status"] == "failed"
-    assert data["wheel_build"]["status"] == "skipped"
-    assert data["wheel_build"]["path"] is None
+    assert "RXT060 Build prerequisites are missing" in captured.out
+    assert "Rust toolchain" in captured.out
+    assert not build_report.exists()
 
 
 def test_build_uses_maturin_when_available(

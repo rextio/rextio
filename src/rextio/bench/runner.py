@@ -52,6 +52,8 @@ def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> Be
         native_top_level=config.policy.native_top_level,
         imports_config=config.imports,
         active_plugins=target_plan.plugins.active,
+        native_jit_enabled=config.jit.enabled,
+        jit_hot_threshold=config.jit.hot_threshold,
     )
     function = _find_target(analysis, target)
     if function is None:
@@ -59,12 +61,18 @@ def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> Be
     if not function.accepted:
         raise BenchError(f"target function is not accepted for native compilation: {target}")
 
+    # Build with the same JIT / fallback / threshold settings the project uses for
+    # `rextio build`, so the benchmark measures the real artifact rather than a
+    # fixed configuration.
     build_result = build_hybrid_artifact(
         project_root,
         analysis,
-        fallback="cpython",
+        fallback=config.build.fallback_backend,
         build_tool=config.rust.build_tool,
+        boundary_fallback_threshold=config.build.fallback_threshold,
         target_plan=target_plan,
+        native_jit_enabled=config.jit.enabled,
+        jit_hot_threshold=config.jit.hot_threshold,
     )
     if build_result.native_build.status != "built":
         raise BenchError(build_result.native_build.message)

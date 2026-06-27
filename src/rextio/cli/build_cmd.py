@@ -7,6 +7,7 @@ from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import build_hybrid_artifact
+from rextio.build.preflight import format_missing_tools, missing_build_tools
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.fallback.nuitka import nuitka_available, nuitka_unavailable_message
@@ -62,6 +63,18 @@ def run(args: Namespace) -> int:
     if fallback == "nuitka" and not nuitka_available():
         print("RXT060 Build failed while preparing Nuitka fallback.")
         print(nuitka_unavailable_message())
+        return 1
+
+    # Preflight only the core toolchain. The Nuitka *executable* artifact is
+    # optional and reported separately by the executable builder, so it is not
+    # gated here; only a Nuitka *fallback* (which is part of the core build) is.
+    missing_tools = missing_build_tools(
+        native_backend=target_plan.spec.language,
+        build_tool=config.rust.build_tool,
+        nuitka=(fallback == "nuitka"),
+    )
+    if missing_tools:
+        print(format_missing_tools(missing_tools))
         return 1
 
     analysis = analyze_project(
