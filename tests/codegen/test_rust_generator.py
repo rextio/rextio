@@ -39,6 +39,39 @@ def sum_squares(xs: list[float]) -> float:
     assert "m.add_function(wrap_pyfunction!(app__sum_squares, m)?)?;" in source
 
 
+def test_generates_internal_cranelift_jit_helper_only_when_enabled(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+def helper(x: int) -> int:
+    return x * 2
+
+@rextio.native
+def compute(x: int) -> int:
+    return helper(x) + 1
+""",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        native_jit_enabled=True,
+        jit_hot_threshold=2,
+    )
+    source = generate_rust_module(lower_project(analysis, include_jit=True))
+
+    assert "use cranelift_jit::{JITBuilder, JITModule};" in source
+    assert "fn app__helper(x: i64) -> PyResult<i64> {" in source
+    assert "static app__helper_COMPILED" in source
+    assert "if calls >= 2" in source
+    assert "return Ok(unsafe { compiled(x) });" in source
+    assert "return Ok(app__helper(x.clone())? + 1);" in source
+    assert "m.add_function(wrap_pyfunction!(app__compute, m)?)?;" in source
+    assert "m.add_function(wrap_pyfunction!(app__helper, m)?)?;" not in source
+
+
 def test_generates_rust_importable_crate_module_for_native_functions(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """

@@ -13,6 +13,7 @@ from rextio.config.schema import (
     FallbackConfig,
     ImportPackagePolicy,
     ImportsConfig,
+    JitConfig,
     PolicyConfig,
     PluginConfig,
     RextioConfig,
@@ -32,6 +33,7 @@ CONFIG_KEYS = {
     "target": {"version", "build_options"},
     "plugins": {"enabled"},
     "imports": {"default_external_policy", "packages"},
+    "jit": {"enabled", "backend", "hot_threshold"},
     "executable": {"entrypoint", "name", "backend", "nuitka_mode"},
     "policy": {
         "native_marker",
@@ -57,6 +59,9 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_PLUGINS_ENABLED": ("plugins", "enabled", "string_list"),
     "REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY": ("imports", "default_external_policy", "string"),
     "REXTIO_IMPORTS_PACKAGES": ("imports", "packages", "package_policy_map"),
+    "REXTIO_JIT": ("jit", "enabled", "boolean"),
+    "REXTIO_JIT_BACKEND": ("jit", "backend", "string"),
+    "REXTIO_JIT_HOT_THRESHOLD": ("jit", "hot_threshold", "integer"),
     "REXTIO_EXECUTABLE_ENTRYPOINT": ("executable", "entrypoint", "optional_string"),
     "REXTIO_EXECUTABLE_NAME": ("executable", "name", "optional_string"),
     "REXTIO_EXECUTABLE_BACKEND": ("executable", "backend", "string"),
@@ -103,11 +108,23 @@ def load_config(
     target = {**DEFAULT_CONFIG["target"], **_section(raw, "target")}
     plugins = {**DEFAULT_CONFIG["plugins"], **_section(raw, "plugins")}
     imports = {**DEFAULT_CONFIG["imports"], **_section(raw, "imports")}
+    jit = {**DEFAULT_CONFIG["jit"], **_section(raw, "jit")}
     executable = {**DEFAULT_CONFIG["executable"], **_section(raw, "executable")}
     policy = {**DEFAULT_CONFIG["policy"], **_section(raw, "policy")}
     if environ is not None:
-        _apply_environment_overrides(build, rust, fallback, target, plugins, imports, executable, policy, environ)
-    return _build_config(build, rust, fallback, target, plugins, imports, executable, policy)
+        _apply_environment_overrides(
+            build,
+            rust,
+            fallback,
+            target,
+            plugins,
+            imports,
+            jit,
+            executable,
+            policy,
+            environ,
+        )
+    return _build_config(build, rust, fallback, target, plugins, imports, jit, executable, policy)
 
 
 def override_config(
@@ -120,6 +137,7 @@ def override_config(
     target = asdict(config.target)
     plugins = asdict(config.plugins)
     imports = _imports_asdict(config.imports)
+    jit = asdict(config.jit)
     executable = asdict(config.executable)
     policy = asdict(config.policy)
     sections = {
@@ -129,6 +147,7 @@ def override_config(
         "target": target,
         "plugins": plugins,
         "imports": imports,
+        "jit": jit,
         "executable": executable,
         "policy": policy,
     }
@@ -138,7 +157,7 @@ def override_config(
         if section not in sections or key not in CONFIG_KEYS[section]:
             raise ConfigError(f"unsupported config override: [{section}].{key}")
         sections[section][key] = value
-    return _build_config(build, rust, fallback, target, plugins, imports, executable, policy)
+    return _build_config(build, rust, fallback, target, plugins, imports, jit, executable, policy)
 
 
 def _build_config(
@@ -148,10 +167,11 @@ def _build_config(
     target: dict[str, Any],
     plugins: dict[str, Any],
     imports: dict[str, Any],
+    jit: dict[str, Any],
     executable: dict[str, Any],
     policy: dict[str, Any],
 ) -> RextioConfig:
-    _validate_config_values(build, rust, fallback, target, plugins, imports, executable, policy)
+    _validate_config_values(build, rust, fallback, target, plugins, imports, jit, executable, policy)
     return RextioConfig(
         build=BuildConfig(**build),
         rust=RustConfig(**rust),
@@ -159,6 +179,7 @@ def _build_config(
         target=TargetConfig(**target),
         plugins=PluginConfig(enabled=tuple(plugins["enabled"])),
         imports=_build_imports_config(imports),
+        jit=JitConfig(**jit),
         executable=ExecutableConfig(**executable),
         policy=PolicyConfig(**policy),
     )
@@ -171,6 +192,7 @@ def _validate_config_values(
     target: dict[str, Any],
     plugins: dict[str, Any],
     imports: dict[str, Any],
+    jit: dict[str, Any],
     executable: dict[str, Any],
     policy: dict[str, Any],
 ) -> None:
@@ -187,6 +209,9 @@ def _validate_config_values(
     _require_string_list("plugins", "enabled", plugins["enabled"])
     _require_string("imports", "default_external_policy", imports["default_external_policy"])
     _require_package_policy_map("imports", "packages", imports["packages"])
+    _require_bool("jit", "enabled", jit["enabled"])
+    _require_string("jit", "backend", jit["backend"])
+    _require_non_negative_int("jit", "hot_threshold", jit["hot_threshold"])
     _require_optional_string("executable", "entrypoint", executable["entrypoint"])
     _require_optional_string("executable", "name", executable["name"])
     _require_string("executable", "backend", executable["backend"])
@@ -208,6 +233,7 @@ def _validate_config_values(
         imports["default_external_policy"],
         {"analyze", "fallback", "try-native"},
     )
+    _require_value("jit", "backend", jit["backend"], {"cranelift"})
     _require_value("executable", "backend", executable["backend"], {"zipapp", "nuitka"})
     _require_value("executable", "nuitka_mode", executable["nuitka_mode"], {"standalone", "onefile"})
     _require_value("policy", "native_marker", policy["native_marker"], {"auto", "decorator"})
@@ -305,6 +331,7 @@ def _apply_environment_overrides(
     target: dict[str, Any],
     plugins: dict[str, Any],
     imports: dict[str, Any],
+    jit: dict[str, Any],
     executable: dict[str, Any],
     policy: dict[str, Any],
     environ: Mapping[str, str],
@@ -316,6 +343,7 @@ def _apply_environment_overrides(
         "target": target,
         "plugins": plugins,
         "imports": imports,
+        "jit": jit,
         "executable": executable,
         "policy": policy,
     }

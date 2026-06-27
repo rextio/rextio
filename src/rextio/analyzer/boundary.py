@@ -30,7 +30,11 @@ BOUNDARY_DIAGNOSTIC_MESSAGES = {
 }
 
 
-def apply_boundary_checks(analysis: ProjectAnalysis, boundary_warnings: bool = True) -> None:
+def apply_boundary_checks(
+    analysis: ProjectAnalysis,
+    boundary_warnings: bool = True,
+    native_jit_enabled: bool = False,
+) -> None:
     resolver = FunctionResolver(analysis)
     for function in analysis.native_candidates:
         function.accepted = not function.error_diagnostics
@@ -48,7 +52,12 @@ def apply_boundary_checks(analysis: ProjectAnalysis, boundary_warnings: bool = T
                     function.add_diagnostic(runtime_diagnostic)
                     changed = True
                     continue
-                diagnostic = _first_boundary_error(module, function, resolver)
+                diagnostic = _first_boundary_error(
+                    module,
+                    function,
+                    resolver,
+                    native_jit_enabled=native_jit_enabled,
+                )
                 if diagnostic is not None:
                     function.add_diagnostic(diagnostic)
                     function.accepted = False
@@ -62,6 +71,7 @@ def _first_boundary_error(
     module: ModuleAnalysis,
     function: FunctionAnalysis,
     resolver: FunctionResolver,
+    native_jit_enabled: bool = False,
 ) -> Diagnostic | None:
     for call in function.calls:
         if function.native_runtime_semantics:
@@ -71,6 +81,8 @@ def _first_boundary_error(
         if target in SUPPORTED_INTERNAL_CALLS or target.endswith(".append"):
             continue
         dependency = resolved.function
+        if native_jit_enabled and dependency is not None and dependency.is_jit_candidate:
+            continue
         if dependency is not None and not dependency.is_native_candidate:
             return Diagnostic(
                 code="RXT070",

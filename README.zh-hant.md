@@ -99,6 +99,7 @@ executable 封裝。`rextio build` 會執行產生、編譯和封裝。
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
+rextio build . --jit --jit-hot-threshold=25
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -219,6 +220,22 @@ fn main() -> Result<(), my_native::RextioError> {
 該 crate 只 export 直接 lowering 到 typed Rust 的函式。fallback-only 函式和 runtime
 semantics shim 仍是 Python-facing 路徑。
 
+## 實驗性 native JIT
+
+Rextio 可以為非常窄的 scalar helper region 啟用實驗性的 native-side JIT。預設關閉。
+
+```toml
+[jit]
+enabled = true
+backend = "cranelift"
+hot_threshold = 25
+```
+
+同樣的設定也可以透過 `rextio build . --jit --jit-hot-threshold=25`、
+`REXTIO_JIT=true`、`REXTIO_JIT_BACKEND`、`REXTIO_JIT_HOT_THRESHOLD` 指定。JIT 只在
+產生的 native module 內部執行，Python 不會直接呼叫單獨的 JIT API。只有在 JIT 開啟且產生
+JIT 候選時，Cranelift dependency 才會加入 generated Cargo project。
+
 ## 可執行 artifact
 
 ```text
@@ -257,6 +274,9 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
+| `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
+| `[jit] backend` | `--jit-backend` | `REXTIO_JIT_BACKEND` |
+| `[jit] hot_threshold` | `--jit-hot-threshold` | `REXTIO_JIT_HOT_THRESHOLD` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
 | `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |

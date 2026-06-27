@@ -30,6 +30,9 @@ def run(args: Namespace) -> int:
                 ("plugins", "enabled"): tuple_overrides(args.plugin_enabled),
                 ("imports", "default_external_policy"): args.default_external_policy,
                 ("imports", "packages"): package_policy_overrides(args.package_import_policy),
+                ("jit", "enabled"): args.jit,
+                ("jit", "backend"): args.jit_backend,
+                ("jit", "hot_threshold"): args.jit_hot_threshold,
                 ("policy", "native_marker"): args.native_marker,
                 ("policy", "require_type_hints"): args.require_type_hints,
                 ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
@@ -53,6 +56,8 @@ def run(args: Namespace) -> int:
         native_top_level=config.policy.native_top_level,
         imports_config=config.imports,
         active_plugins=target_plan.plugins.active,
+        native_jit_enabled=config.jit.enabled,
+        jit_hot_threshold=config.jit.hot_threshold,
     )
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:
@@ -84,6 +89,8 @@ def run(args: Namespace) -> int:
         target_plan=target_plan,
         rust_importable=config.rust.importable,
         rust_crate_name=config.rust.crate_name,
+        native_jit_enabled=config.jit.enabled,
+        jit_hot_threshold=config.jit.hot_threshold,
     )
     print("Rextio generate")
     print(f"  target language: {target_plan.spec.language}")
@@ -92,8 +99,13 @@ def run(args: Namespace) -> int:
     print(f"  active plugins: {len(target_plan.plugins.active)}")
     print(f"  fallback: {fallback}")
     print(f"  boundary fallback threshold: {config.build.fallback_threshold}")
+    print(f"  experimental JIT: {'enabled' if config.jit.enabled else 'disabled'}")
+    if config.jit.enabled:
+        print(f"  JIT backend: {config.jit.backend}")
+        print(f"  JIT hot threshold: {config.jit.hot_threshold}")
     print(f"  accepted native functions: {result.accepted_native_count}")
     print(f"  rejected native functions: {result.rejected_native_count}")
+    print(f"  experimental JIT candidates: {len(result.plan.native.jit_functions)}")
     if target_plan.spec.language == "rust":
         print(f"  generated Rust project: {result.layout.rust_dir}")
     else:

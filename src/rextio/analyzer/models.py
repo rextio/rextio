@@ -62,6 +62,9 @@ class FunctionAnalysis:
     inferred_return_type: str | None = None
     native_target_language: str | None = None
     native_runtime_semantics: bool = False
+    is_jit_candidate: bool = False
+    jit_hot_threshold: int | None = None
+    jit_reason: str | None = None
     imports: dict[str, str] = field(default_factory=dict)
     logger_names: tuple[str, ...] = ()
 
@@ -101,6 +104,9 @@ class FunctionAnalysis:
             "accepted": self.accepted,
             "native_target_language": self.native_target_language,
             "native_runtime_semantics": self.native_runtime_semantics,
+            "is_jit_candidate": self.is_jit_candidate,
+            "jit_hot_threshold": self.jit_hot_threshold,
+            "jit_reason": self.jit_reason,
             "inferred_arg_types": dict(sorted(self.inferred_arg_types.items())),
             "inferred_return_type": self.inferred_return_type,
             "calls": [call.to_dict() for call in self.calls],
@@ -213,6 +219,18 @@ class ProjectAnalysis:
         )
 
     @property
+    def jit_candidates(self) -> list[FunctionAnalysis]:
+        return sorted(
+            [
+                function
+                for module in self.modules
+                for function in module.functions
+                if function.is_jit_candidate
+            ],
+            key=lambda function: function.qualname,
+        )
+
+    @property
     def native_top_levels(self) -> list[TopLevelAnalysis]:
         return sorted(
             [
@@ -281,6 +299,7 @@ class ProjectAnalysis:
             "native_candidates": [function.qualname for function in self.native_candidates],
             "accepted_native": [function.qualname for function in self.accepted_native_functions],
             "rejected_native": [function.qualname for function in self.rejected_native_functions],
+            "jit_candidates": [function.qualname for function in self.jit_candidates],
             "native_top_levels": [top_level.qualname for top_level in self.native_top_levels],
             "accepted_native_top_levels": [
                 top_level.qualname for top_level in self.accepted_native_top_levels

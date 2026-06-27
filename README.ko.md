@@ -108,6 +108,7 @@ rextio clean path/to/project
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
+rextio build . --jit --jit-hot-threshold=25
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -230,6 +231,24 @@ Rextio 0.1.0 alpha는 의도적으로 작은 subset만 지원합니다. 실제 R
 
 이 경로는 동작 보존용입니다. Rust speedup 경로로 보면 안 됩니다.
 
+## 실험적 native JIT
+
+Rextio는 아주 좁은 scalar helper region에 대해 native-side JIT를 실험적으로 켤 수 있습니다.
+기본값은 꺼짐입니다.
+
+```toml
+[jit]
+enabled = true
+backend = "cranelift"
+hot_threshold = 25
+```
+
+동일한 설정은 `rextio build . --jit --jit-hot-threshold=25`,
+`REXTIO_JIT=true`, `REXTIO_JIT_BACKEND`, `REXTIO_JIT_HOT_THRESHOLD`로도 지정할 수
+있습니다. JIT는 생성된 native module 내부에서만 동작하며, Python이 별도 JIT API를 직접
+호출하지 않습니다. Cranelift dependency는 JIT가 켜지고 JIT 후보가 생성될 때만 generated
+Cargo project에 추가됩니다.
+
 ## Rust에서 import 가능한 crate
 
 direct Rust 함수가 Rust 애플리케이션에서도 필요하면 Cargo library crate를 추가로 만들 수
@@ -303,6 +322,9 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
+| `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
+| `[jit] backend` | `--jit-backend` | `REXTIO_JIT_BACKEND` |
+| `[jit] hot_threshold` | `--jit-hot-threshold` | `REXTIO_JIT_HOT_THRESHOLD` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |

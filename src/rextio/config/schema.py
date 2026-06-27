@@ -48,6 +48,13 @@ class ImportsConfig:
 
 
 @dataclass(frozen=True)
+class JitConfig:
+    enabled: bool = False
+    backend: str = "cranelift"
+    hot_threshold: int = 25
+
+
+@dataclass(frozen=True)
 class ExecutableConfig:
     entrypoint: str | None = None
     name: str | None = None
@@ -72,5 +79,6 @@ class RextioConfig:
     target: TargetConfig = TargetConfig()
     plugins: PluginConfig = PluginConfig()
     imports: ImportsConfig = ImportsConfig()
+    jit: JitConfig = JitConfig()
     executable: ExecutableConfig = ExecutableConfig()
     policy: PolicyConfig = PolicyConfig()
