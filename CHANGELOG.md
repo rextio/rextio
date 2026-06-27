@@ -31,6 +31,9 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Nuitka standalone/onefile executable artifact generation with `--executable-backend=nuitka`.
 - Mirrored build and analysis settings across CLI parameters, environment variables, and `rextio.toml`.
 - Target planning metadata for future Rust/Mojo/Julia backends and installed package plugins.
+- Experimental opt-in native-side Cranelift JIT for narrow scalar helper
+  regions represented in Rextio IR, with `--jit`, `REXTIO_JIT`, and `[jit]`
+  configuration controls.
 - Python runtime semantics native shim (`RXT080`) for compatibility coverage of
   object behavior, marked instance methods, exceptions, context managers,
   async functions, generators, and dynamic attribute access.
@@ -50,5 +53,7 @@ Initial public MVP for Rextio as a local hybrid build tool.
 ### Notes
 
 0.1.0 alpha is intentionally narrow. It does not provide full Python
-compatibility, bundled third-party package support, framework migration, JIT
-behavior, or full runtime boundary-cost optimization.
+compatibility, bundled third-party package support, framework migration,
+general-purpose Python JIT behavior, or full runtime boundary-cost optimization.
+The Cranelift path is experimental, opt-in, native-side only, and limited to
+small scalar helper regions.
