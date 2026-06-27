@@ -10,8 +10,8 @@ logic in Python, and compile narrow typed hot paths when the analyzer can prove
 they fit the direct Rust subset.
 
 ```text
-rextio check examples/fastapi_scoring
-rextio build examples/fastapi_scoring --fallback=cpython
+rextio check examples/app_shell
+rextio build examples/app_shell --fallback=cpython
 ```
 
 The generated wrappers preserve the original import path for Python callers.

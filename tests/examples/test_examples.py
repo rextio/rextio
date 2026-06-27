@@ -34,11 +34,11 @@ def test_pure_math_readme_documents_benchmark_flow() -> None:
     assert "fixed benchmark claim" in readme
 
 
-def test_fastapi_scoring_keeps_framework_shell_in_fallback() -> None:
-    analysis = _analyze_configured_example("fastapi_scoring")
+def test_app_shell_keeps_application_shell_in_fallback() -> None:
+    analysis = _analyze_configured_example("app_shell")
 
     assert [function.qualname for function in analysis.accepted_native_functions] == [
-        "fastapi_scoring.scoring.compute_score"
+        "app_shell.scoring.compute_score"
     ]
     assert analysis.rejected_native_functions == []
 
@@ -76,7 +76,7 @@ def test_examples_build_and_import_from_hybrid_artifacts(
 ) -> None:
     checks = {
         "pure_math": _check_pure_math_artifact,
-        "fastapi_scoring": _check_fastapi_scoring_artifact,
+        "app_shell": _check_app_shell_artifact,
         "fallback_demo": _check_fallback_demo_artifact,
         "boundary_demo": _check_boundary_demo_artifact,
     }
@@ -151,11 +151,11 @@ def _check_pure_math_artifact() -> None:
     assert module.count_positive([-2, 0, 3, 4]) == 2
 
 
-def _check_fastapi_scoring_artifact() -> None:
-    module = importlib.import_module("fastapi_scoring.app")
+def _check_app_shell_artifact() -> None:
+    module = importlib.import_module("app_shell.app")
 
-    assert module.score_without_server([2.0, 3.0]) == {
-        "message": "FastAPI stays Python. compute_score becomes Rust native.",
+    assert module.score_from_shell([2.0, 3.0]) == {
+        "message": "Application shell stays Python. compute_score becomes Rust native.",
         "score": 13.0,
     }
 

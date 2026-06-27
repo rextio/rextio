@@ -397,7 +397,7 @@ Example projects:
 - `examples/pure_math`: direct Rust lowering for typed math hot paths.
 - `examples/fallback_demo`: fallback behavior when native is disabled or missing.
 - `examples/boundary_demo`: native-to-fallback boundary rejection and warnings.
-- `examples/fastapi_scoring`: application shell stays Python while a scoring hot
+- `examples/app_shell`: application shell stays Python while a scoring hot
   path can be native.
 
 ## Development And Verification

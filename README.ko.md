@@ -360,7 +360,7 @@ rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 - `examples/pure_math`: typed math hot path의 direct Rust lowering
 - `examples/fallback_demo`: native 비활성화 또는 누락 시 fallback 동작
 - `examples/boundary_demo`: native-to-fallback boundary rejection과 warning
-- `examples/fastapi_scoring`: application shell은 Python에 두고 scoring hot path만 native 가능
+- `examples/app_shell`: application shell은 Python에 두고 scoring hot path만 native 가능
 
 ## 개발 및 검증
 
