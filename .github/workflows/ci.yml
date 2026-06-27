@@ -55,3 +55,28 @@ jobs:
         # The e2e suite requires a real Rust/Cargo toolchain and is run
         # separately; see mod-proposal P1-10 (e2e isolation).
         run: python -m pytest tests --ignore=tests/e2e -q
+
+  package:
+    name: Package (build + metadata + install smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install build tooling
+        run: python -m pip install build twine
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+      - name: Install the built wheel into a clean environment
+        run: |
+          python -m venv /tmp/rextio-install
+          /tmp/rextio-install/bin/python -m pip install dist/*.whl
+      - name: Smoke-test the installed console script
+        run: |
+          /tmp/rextio-install/bin/rextio --help
+          /tmp/rextio-install/bin/python -c "import rextio; print(rextio.__version__)"
