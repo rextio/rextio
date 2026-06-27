@@ -56,6 +56,10 @@ class FunctionAnalysis:
     column: int
     is_native_candidate: bool = False
     accepted: bool = False
+    # True only when the function carries an explicit `@rextio.native` marker.
+    # Auto-discovered (undecorated) functions are False. Used to keep the
+    # Python runtime-semantics shim (RXT080) opt-in (see boundary checks).
+    explicitly_marked: bool = False
     calls: list[CallSite] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
     inferred_arg_types: dict[str, str] = field(default_factory=dict)
@@ -102,6 +106,7 @@ class FunctionAnalysis:
             "column": self.column,
             "is_native_candidate": self.is_native_candidate,
             "accepted": self.accepted,
+            "explicitly_marked": self.explicitly_marked,
             "native_target_language": self.native_target_language,
             "native_runtime_semantics": self.native_runtime_semantics,
             "is_jit_candidate": self.is_jit_candidate,

@@ -6,6 +6,14 @@ from rextio.analyzer.project_scanner import analyze_project
 from rextio.codegen.rust.generator import generate_rust_crate_module, generate_rust_module
 from rextio.ir.lowering import lower_project
 
+# Stable suffix of a bounds-checked sequence access (pyo3 mode). The leading
+# `{ let __rextio_seq_N = ...; ... }` block uses generated temp names, so tests
+# match on this temp-independent suffix instead of the full expression.
+PYO3_INDEX_ERROR_SUFFIX = (
+    ", _ => None })"
+    '.ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("list index out of range"))? }'
+)
+
 
 def test_generates_deterministic_pyo3_rust_for_native_functions(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
@@ -153,7 +161,8 @@ def compute(values: list[float]) -> float:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert "let mut subtotal = app__total(values.clone())?;" in source
-    assert "return Ok(subtotal + values[0 as usize].clone());" in source
+    assert "return Ok(subtotal + { let __rextio_seq" in source
+    assert PYO3_INDEX_ERROR_SUFFIX in source
 
 
 def test_generates_rust_for_contextually_inferred_signatures(tmp_path: Path) -> None:
@@ -231,7 +240,8 @@ def decrement_to_zero(n: int) -> int:
 
     assert "fn app__count_positive(xs: Vec<i64>) -> PyResult<i64> {" in source
     assert "for i in 0..(xs.len() as i64) {" in source
-    assert "if xs[i as usize].clone() > 0 {" in source
+    assert "if { let __rextio_seq" in source
+    assert PYO3_INDEX_ERROR_SUFFIX in source
     assert "count = count + 1;" in source
     assert "fn app__decrement_to_zero(mut n: i64) -> PyResult<i64> {" in source
     assert "while n > 0 {" in source
@@ -257,7 +267,8 @@ def first_label(values: list[str]) -> str:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert 'return Ok(String::from("ready"));' in source
-    assert "return Ok(values[0 as usize].clone());" in source
+    assert "return Ok({ let __rextio_seq" in source
+    assert PYO3_INDEX_ERROR_SUFFIX in source
 
 
 def test_range_len_index_can_be_used_as_public_1_int(tmp_path: Path) -> None:
@@ -280,7 +291,8 @@ def sum_indices(xs: list[int]) -> int:
 
     assert "for i in 0..(xs.len() as i64) {" in source
     assert "total = total + i;" in source
-    assert "total = total + xs[i as usize].clone();" in source
+    assert "total = total + { let __rextio_seq" in source
+    assert PYO3_INDEX_ERROR_SUFFIX in source
 
 
 def test_generates_rust_for_range_variants_break_and_continue(tmp_path: Path) -> None:
@@ -362,7 +374,8 @@ def label_lengths(label: str) -> int:
     assert "let mut ys = xs.clone();" in source
     assert "let mut groups = vec![xs.clone(), ys.clone()];" in source
     assert 'map.insert(String::from("primary"), label.clone());' in source
-    assert "return Ok((labels.get(&String::from(\"primary\")).cloned()" in source
+    assert "= &labels;" in source
+    assert "PyKeyError::new_err(__rextio_key" in source
 
 
 def test_generates_rust_for_fixed_tuples_limited_dicts_and_optional_types(
@@ -414,9 +427,13 @@ def echo(value: int | None) -> int | None:
     assert "fn app__make_pair(x: i64, y: f64) -> PyResult<(i64, f64)> {" in source
     assert "return Ok((x, y));" in source
     assert "fn app__read_score(scores: HashMap<String, i64>, key: String) -> PyResult<i64> {" in source
-    assert "scores.get(&key).cloned().ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(key.clone()))?" in source
+    assert "= &scores;" in source
+    assert "PyKeyError::new_err(__rextio_key" in source
     assert "let mut weights: HashMap<String, f64> = HashMap::new();" in source
-    assert 'weights.insert(String::from("a"), 1.5);' in source
+    # The RHS value is bound before the key (Python evaluates the RHS first).
+    assert "let __rextio_value" in source
+    assert "= 1.5;" in source
+    assert 'weights.insert(String::from("a"), __rextio_value' in source
     assert "fn app__maybe(flag: bool, x: i64) -> PyResult<Option<i64>> {" in source
     assert "return Ok(Some(x));" in source
     assert "return Ok(None);" in source
@@ -529,7 +546,7 @@ def last_positive(xs: list[int]) -> int:
     assert "__rextio_dict_1.insert(x.clone(), x.clone());" in source
     assert "fn app__by_index(xs: Vec<i64>) -> PyResult<HashMap<i64, f64>> {" in source
     assert "fn app__flags(xs: Vec<i64>) -> PyResult<HashMap<bool, String>> {" in source
-    assert "scores.get(&x).cloned().ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(x.clone()))?" in source
+    assert "PyKeyError::new_err(__rextio_key" in source
     assert "fn app__unique(xs: Vec<i64>) -> PyResult<HashSet<i64>> {" in source
     assert "fn app__unique_float(xs: Vec<f64>) -> PyResult<Vec<f64>> {" in source
     assert "let mut __rextio_set_1 = Vec::new();" in source
@@ -663,8 +680,9 @@ def truth(flags: list[bool]) -> bool:
 
     assert ".trim().to_string().to_lowercase().replace(&String::from(\"a\"), &String::from(\"b\")).to_uppercase()" in source
     assert "values.sort();" in source
-    assert ".iter().filter(|item| *item == &2).count() as i64" in source
-    assert ".position(|item| item == &2)" in source
+    assert ".iter().filter(|item| *item == &__rextio_needle" in source
+    assert ".count() as i64 }" in source
+    assert ".position(|item| item == &__rextio_needle" in source
     assert "format!(\"{:x}\", sha2::Sha256::digest(&" in source
     assert "base64::engine::general_purpose::STANDARD.encode" in source
     assert "base64::engine::general_purpose::STANDARD.decode" in source
@@ -690,7 +708,8 @@ def size_plus_first(xs: list[int]) -> int:
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
-    assert "return Ok((xs.len() as i64) + xs[0 as usize].clone());" in source
+    assert "return Ok((xs.len() as i64) + { let __rextio_seq" in source
+    assert PYO3_INDEX_ERROR_SUFFIX in source
 
 
 def test_generates_rust_for_supported_native_top_level(tmp_path: Path) -> None:
@@ -734,3 +753,58 @@ def read_value(x: object) -> object:
     assert "rextio_call_python_runtime(" in source
     assert '"_fallback_app"' in source
     assert '"_rextio_original_app__read_value"' in source
+
+
+def test_sequence_indexing_is_bounds_checked_and_normalizes_negatives(tmp_path: Path) -> None:
+    # Generated list indexing must preserve Python semantics: a negative index
+    # counts from the end, and an out-of-range index raises IndexError instead
+    # of panicking via an unchecked `[]`.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def at(xs: list[int], i: int) -> int:
+    return xs[i]
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    # Sequence and index are bound to temporaries (no double evaluation).
+    assert "{ let __rextio_seq" in source
+    assert ".len() as i64" in source
+    # The index is cast to i64 so any integer operand type is absorbed.
+    assert ") as i64;" in source
+    # Negative indexes are normalized Python-style before an explicit bounds check.
+    assert "< 0 {" in source
+    assert ">= 0 &&" in source
+    assert PYO3_INDEX_ERROR_SUFFIX in source
+    # No unchecked sequence indexing remains.
+    assert "xs[i as usize]" not in source
+    assert "xs[__rextio_index" not in source
+
+
+def test_crate_mode_sequence_indexing_uses_rexterror_bounds_check(tmp_path: Path) -> None:
+    # The rust-importable crate (non-pyo3) path must also generate a
+    # bounds-checked access, raising RextioError instead of panicking.
+    (tmp_path / "app.py").write_text(
+        """
+def at(xs: list[int], i: int) -> int:
+    return xs[i]
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
+
+    assert "{ let __rextio_seq" in source
+    assert "< 0 {" in source
+    assert ">= 0 &&" in source
+    assert "checked_add(" in source
+    assert (
+        ", _ => None })"
+        '.ok_or_else(|| RextioError::new("list index out of range"))? }'
+    ) in source
+    assert "pyo3" not in source

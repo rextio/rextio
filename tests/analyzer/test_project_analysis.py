@@ -523,6 +523,179 @@ def bad(x: float) -> float:
     assert analysis.accepted_native_functions[0].native_runtime_semantics is True
 
 
+def test_auto_discovery_does_not_promote_dynamic_functions_to_runtime_shim(
+    tmp_path: Path,
+) -> None:
+    # An undecorated function that relies on dynamic Python semantics must NOT be
+    # auto-promoted to the RXT080 runtime-semantics shim. The shim is reserved
+    # for functions a developer explicitly opts into with @rextio.native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+def read_attr(x: float) -> float:
+    return getattr(x, "value")
+""",
+    )
+
+    analysis = analyze_project(tmp_path)  # default auto-discovery mode
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == []
+    assert "RXT080" not in {diagnostic.code for diagnostic in analysis.diagnostics}
+
+
+def test_undecorated_caller_of_runtime_shim_is_not_promoted_via_boundary(
+    tmp_path: Path,
+) -> None:
+    # An undecorated function that calls an explicitly-marked runtime-semantics
+    # shim must not be silently promoted to the shim through the call graph; it
+    # is rejected (stays on Python fallback) with an actionable RXT074 hint.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def shim(x: float) -> float:
+    return getattr(x, "value")
+
+def caller(x: float) -> float:
+    return shim(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    accepted = {function.qualname for function in analysis.accepted_native_functions}
+    assert accepted == {"app.shim"}
+    assert "app.caller" in {function.qualname for function in analysis.rejected_native_functions}
+    rxt074 = {diag.function_name for diag in analysis.diagnostics if diag.code == "RXT074"}
+    assert "app.caller" in rxt074
+
+
+def test_marked_caller_of_runtime_shim_is_still_promoted(tmp_path: Path) -> None:
+    # The explicit-opt-in path is unchanged: a @rextio.native caller of a
+    # runtime shim inherits runtime semantics (RXT080).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def shim(x: float) -> float:
+    return getattr(x, "value")
+
+@rextio.native
+def caller(x: float) -> float:
+    return shim(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    accepted = {
+        function.qualname: function.native_runtime_semantics
+        for function in analysis.accepted_native_functions
+    }
+    assert accepted == {"app.shim": True, "app.caller": True}
+
+
+def test_non_integer_list_index_is_rejected(tmp_path: Path) -> None:
+    # Python requires int list indices; a float index is a TypeError, so Rextio
+    # must reject it rather than silently truncate it to an int in native code.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def at_literal(xs: list[int]) -> int:
+    return xs[1.9]
+
+@rextio.native
+def at_var(xs: list[int], j: float) -> int:
+    return xs[j]
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert analysis.accepted_native_functions == []
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert {"app.at_literal", "app.at_var"} <= rejected
+
+
+def test_undecorated_caller_of_imported_runtime_shim_is_rejected(tmp_path: Path) -> None:
+    # The RXT074 boundary rule also applies across module boundaries.
+    write_module(tmp_path, "src/pkg/__init__.py", "")
+    write_module(
+        tmp_path,
+        "src/pkg/shim_mod.py",
+        """
+import rextio
+
+@rextio.native
+def shim(x: float) -> float:
+    return getattr(x, "value")
+""",
+    )
+    write_module(
+        tmp_path,
+        "src/pkg/caller_mod.py",
+        """
+from pkg.shim_mod import shim
+
+def caller(x: float) -> float:
+    return shim(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert "pkg.shim_mod.shim" in {f.qualname for f in analysis.accepted_native_functions}
+    assert "pkg.caller_mod.caller" in {f.qualname for f in analysis.rejected_native_functions}
+    assert "pkg.caller_mod.caller" in {
+        diag.function_name for diag in analysis.diagnostics if diag.code == "RXT074"
+    }
+
+
+def test_transitive_undecorated_callers_of_runtime_shim_cascade_to_fallback(
+    tmp_path: Path,
+) -> None:
+    # top -> mid -> shim. The project-wide boundary fixed point rejects mid
+    # (RXT074), then rejects top because it depends on the now-rejected mid
+    # (RXT072) — no undecorated function is silently promoted to the shim.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def shim(x: float) -> float:
+    return getattr(x, "value")
+
+def mid(x: float) -> float:
+    return shim(x)
+
+def top(x: float) -> float:
+    return mid(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {f.qualname for f in analysis.accepted_native_functions} == {"app.shim"}
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert {"app.mid", "app.top"} <= rejected
+    codes = {(diag.function_name, diag.code) for diag in analysis.diagnostics}
+    assert ("app.mid", "RXT074") in codes
+    assert ("app.top", "RXT072") in codes
+
+
 def test_uses_runtime_semantics_for_object_async_generator_and_dynamic_attribute_native_features(
     tmp_path: Path,
 ) -> None:

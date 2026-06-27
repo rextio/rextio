@@ -196,6 +196,7 @@ def _collect_module_functions(
             line=node.lineno,
             column=node.col_offset,
             is_native_candidate=has_marker,
+            explicitly_marked=has_marker,
             calls=calls,
             inferred_arg_types=dict(stub_signature.arg_types),
             inferred_return_type=stub_signature.return_type,
@@ -294,17 +295,12 @@ def _is_auto_native_candidate(
         function.inferred_return_type = probe.inferred_return_type
         function.native_target_language = target_language
         return True
-    if (
-        _has_resolved_runtime_signature(node, probe)
-        and _requires_runtime_semantics(node)
-        and _is_auto_runtime_semantics_safe(node)
-    ):
-        function.inferred_arg_types = dict(probe.inferred_arg_types)
-        function.inferred_return_type = probe.inferred_return_type
-        function.native_target_language = target_language
-        function.native_runtime_semantics = True
-        _add_runtime_semantics_warning(function, node)
-        return True
+    # Auto-discovered (undecorated) functions are accepted only when they fall
+    # within the direct-Rust subset. The Python runtime-semantics shim (RXT080)
+    # is reserved for functions a developer explicitly opts into with
+    # `@rextio.native`; auto-promoting dynamic functions (e.g. dynamic attribute
+    # access) to the shim is too broad. Marked functions are still handled by
+    # `_classify_native_function`.
     return False
 
 
@@ -340,17 +336,10 @@ def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis)
     _add_runtime_semantics_warning(function, node)
 
 
-def _has_resolved_runtime_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> bool:
-    if node.args.vararg is not None or node.args.kwarg is not None:
-        return False
-    args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
-    for arg in args:
-        if arg.annotation is None and arg.arg not in function.inferred_arg_types:
-            return False
-    return node.returns is not None or function.inferred_return_type is not None
-
-
 def _requires_runtime_semantics(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    # Used only on the explicit `@rextio.native` path (`_classify_native_function`).
+    # Auto-discovered functions are never promoted to the runtime shim on the
+    # strength of this check alone (see `_is_auto_native_candidate`).
     if isinstance(node, ast.AsyncFunctionDef):
         return True
     body_nodes = (child for statement in node.body for child in ast.walk(statement))
@@ -379,17 +368,6 @@ def _requires_runtime_semantics(node: ast.FunctionDef | ast.AsyncFunctionDef) ->
     return False
 
 
-def _is_auto_runtime_semantics_safe(node: ast.FunctionDef) -> bool:
-    allowed_calls = {"getattr", "setattr", "hasattr"}
-    for child in (item for statement in node.body for item in ast.walk(statement)):
-        if not isinstance(child, ast.Call):
-            continue
-        target = dotted_name(child.func)
-        if target not in allowed_calls:
-            return False
-    return True
-
-
 def _is_known_static_attribute(node: ast.Attribute) -> bool:
     if node.attr == "append":
         return True
@@ -416,6 +394,7 @@ def _runtime_semantics_function(
         column=node.col_offset,
         is_native_candidate=True,
         accepted=True,
+        explicitly_marked=True,
         calls=[],
         native_target_language=_marker_target_language(marker, target_language),
         native_runtime_semantics=True,
@@ -545,6 +524,7 @@ def _collect_native_methods(
                 column=child.col_offset,
                 is_native_candidate=True,
                 accepted=True,
+                explicitly_marked=True,
                 calls=collect_call_sites(child, module.imports, module.logger_names),
                 native_target_language=_marker_target_language(marker, target_language),
                 native_runtime_semantics=True,

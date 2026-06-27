@@ -1040,8 +1040,21 @@ def _infer_expr_type(
         )
     if isinstance(node, ast.Subscript):
         value_type = infer_child(node.value)
-        infer_child(node.slice)
+        slice_type = infer_child(node.slice)
         if _is_list_type(value_type):
+            # Python requires integer list indices; a float/str index is a
+            # TypeError, not a silently truncated lookup.
+            if (
+                not isinstance(node.slice, ast.Slice)
+                and slice_type is not None
+                and slice_type not in {"int", "bool"}
+            ):
+                _add_unsupported_syntax(
+                    function,
+                    node,
+                    f"list indexes must be int, got {slice_type}",
+                )
+                return None
             return _list_item_type(value_type)
         if _is_tuple_type(value_type):
             item_types = _tuple_item_types(value_type)
