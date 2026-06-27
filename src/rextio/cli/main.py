@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_target_options(check_parser)
     _add_import_options(check_parser)
+    _add_jit_options(check_parser)
     _add_policy_options(check_parser)
     check_parser.set_defaults(handler=check_cmd.run)
 
@@ -52,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_target_options(build_parser_)
     _add_import_options(build_parser_)
+    _add_jit_options(build_parser_)
     build_parser_.add_argument(
         "--fallback",
         choices=("cpython", "nuitka"),
@@ -144,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_target_options(generate_parser)
     _add_import_options(generate_parser)
+    _add_jit_options(generate_parser)
     generate_parser.add_argument(
         "--fallback",
         choices=("cpython", "nuitka"),
@@ -258,6 +261,30 @@ def _add_import_options(parser: argparse.ArgumentParser) -> None:
         help=(
             "Per-package import policy, where POLICY is fallback, analyze, plugin, or try-native. "
             "May be passed more than once. Overrides REXTIO_IMPORTS_PACKAGES and [imports.packages]."
+        ),
+    )
+
+
+def _add_jit_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--jit",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable experimental native-side JIT. Overrides REXTIO_JIT and [jit] enabled.",
+    )
+    parser.add_argument(
+        "--jit-backend",
+        choices=("cranelift",),
+        default=None,
+        help="Experimental JIT backend. Overrides REXTIO_JIT_BACKEND and [jit] backend.",
+    )
+    parser.add_argument(
+        "--jit-hot-threshold",
+        type=_non_negative_int,
+        default=None,
+        help=(
+            "Calls before an experimental JIT candidate is compiled. "
+            "Overrides REXTIO_JIT_HOT_THRESHOLD and [jit] hot_threshold."
         ),
     )
 

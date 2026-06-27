@@ -29,6 +29,11 @@ DEFAULT_CONFIG = {
         "default_external_policy": "fallback",
         "packages": {},
     },
+    "jit": {
+        "enabled": False,
+        "backend": "cranelift",
+        "hot_threshold": 25,
+    },
     "executable": {
         "entrypoint": None,
         "name": None,

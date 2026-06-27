@@ -91,6 +91,9 @@ def run(args: Namespace) -> int:
                 ("plugins", "enabled"): tuple_overrides(args.plugin_enabled),
                 ("imports", "default_external_policy"): args.default_external_policy,
                 ("imports", "packages"): package_policy_overrides(args.package_import_policy),
+                ("jit", "enabled"): args.jit,
+                ("jit", "backend"): args.jit_backend,
+                ("jit", "hot_threshold"): args.jit_hot_threshold,
                 ("policy", "native_marker"): args.native_marker,
                 ("policy", "require_type_hints"): args.require_type_hints,
                 ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
@@ -111,6 +114,8 @@ def run(args: Namespace) -> int:
         native_top_level=config.policy.native_top_level,
         imports_config=config.imports,
         active_plugins=target_plan.plugins.active,
+        native_jit_enabled=config.jit.enabled,
+        jit_hot_threshold=config.jit.hot_threshold,
     )
     write_check_report(project_root, analysis)
     if args.json:

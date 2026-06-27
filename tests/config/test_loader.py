@@ -113,6 +113,24 @@ default_external_policy = "analyze"
     assert config.imports.packages["known_pkg"].plugin == "known-rust"
 
 
+def test_load_config_reads_jit_options(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[jit]
+enabled = true
+backend = "cranelift"
+hot_threshold = 3
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.jit.enabled is True
+    assert config.jit.backend == "cranelift"
+    assert config.jit.hot_threshold == 3
+
+
 def test_load_config_applies_environment_overrides(tmp_path: Path) -> None:
     (tmp_path / "rextio.toml").write_text(
         """
@@ -141,6 +159,9 @@ boundary_warnings = true
             "REXTIO_PLUGINS_ENABLED": "numpy-julia",
             "REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY": "try-native",
             "REXTIO_IMPORTS_PACKAGES": "safe_pkg=try-native,legacy_pkg=fallback",
+            "REXTIO_JIT": "true",
+            "REXTIO_JIT_BACKEND": "cranelift",
+            "REXTIO_JIT_HOT_THRESHOLD": "2",
             "REXTIO_EXECUTABLE_ENTRYPOINT": "demo.cli:main",
             "REXTIO_EXECUTABLE_NAME": "demo-env",
             "REXTIO_EXECUTABLE_BACKEND": "nuitka",
@@ -163,6 +184,9 @@ boundary_warnings = true
     assert config.imports.default_external_policy == "try-native"
     assert config.imports.packages["safe_pkg"].policy == "try-native"
     assert config.imports.packages["legacy_pkg"].policy == "fallback"
+    assert config.jit.enabled is True
+    assert config.jit.backend == "cranelift"
+    assert config.jit.hot_threshold == 2
     assert config.executable.entrypoint == "demo.cli:main"
     assert config.executable.name == "demo-env"
     assert config.executable.backend == "nuitka"
@@ -192,6 +216,8 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
             ("plugins", "enabled"): ("numpy-mojo",),
             ("imports", "default_external_policy"): "analyze",
             ("imports", "packages"): {"safe_pkg": {"policy": "try-native", "max_depth": 1}},
+            ("jit", "enabled"): True,
+            ("jit", "hot_threshold"): 4,
             ("policy", "native_marker"): "decorator",
             ("policy", "native_top_level"): True,
         },
@@ -208,6 +234,8 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
     assert config.imports.default_external_policy == "analyze"
     assert config.imports.packages["safe_pkg"].policy == "try-native"
     assert config.imports.packages["safe_pkg"].max_depth == 1
+    assert config.jit.enabled is True
+    assert config.jit.hot_threshold == 4
     assert config.policy.native_marker == "decorator"
     assert config.policy.native_top_level is True
 
@@ -258,6 +286,19 @@ def test_load_config_rejects_import_plugin_policy_without_plugin(tmp_path: Path)
     )
 
     with pytest.raises(ConfigError, match=r"plugin is required"):
+        load_config(tmp_path)
+
+
+def test_load_config_rejects_unknown_jit_backend(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[jit]
+backend = "llvm"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"jit.*backend"):
         load_config(tmp_path)
 
 
