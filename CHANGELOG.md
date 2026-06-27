@@ -50,6 +50,20 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Example projects for pure math, application-shell scoring, fallback safety, and boundary diagnostics.
 - Focused end-to-end tests for build/import/runtime behavior, real Cargo builds, generated wheels, and Nuitka when installed.
 
+### Changed
+
+- Generated sequence indexing now preserves Python semantics: a negative index
+  counts from the end (`xs[-1]`), and an out-of-range index raises `IndexError`
+  instead of triggering an unchecked Rust panic.
+- The Python runtime-semantics shim (`RXT080`) is now strictly opt-in. Only
+  functions explicitly marked `@rextio.native` are promoted to the shim.
+  Auto-discovered (undecorated) functions are accepted only within the
+  direct-Rust subset, and an undecorated function that depends on a runtime-shim
+  native is now reported with `RXT074` and left on the Python fallback path.
+  - Migration: if a previously auto-accepted dynamic function (or a caller of a
+    runtime-shim native) regressed to Python fallback, add `@rextio.native` to
+    opt back into the runtime-semantics shim.
+
 ### Notes
 
 0.1.0 alpha is intentionally narrow. It does not provide full Python

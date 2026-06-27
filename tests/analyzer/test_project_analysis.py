@@ -544,6 +544,64 @@ def read_attr(x: float) -> float:
     assert "RXT080" not in {diagnostic.code for diagnostic in analysis.diagnostics}
 
 
+def test_undecorated_caller_of_runtime_shim_is_not_promoted_via_boundary(
+    tmp_path: Path,
+) -> None:
+    # An undecorated function that calls an explicitly-marked runtime-semantics
+    # shim must not be silently promoted to the shim through the call graph; it
+    # is rejected (stays on Python fallback) with an actionable RXT074 hint.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def shim(x: float) -> float:
+    return getattr(x, "value")
+
+def caller(x: float) -> float:
+    return shim(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    accepted = {function.qualname for function in analysis.accepted_native_functions}
+    assert accepted == {"app.shim"}
+    assert "app.caller" in {function.qualname for function in analysis.rejected_native_functions}
+    rxt074 = {diag.function_name for diag in analysis.diagnostics if diag.code == "RXT074"}
+    assert "app.caller" in rxt074
+
+
+def test_marked_caller_of_runtime_shim_is_still_promoted(tmp_path: Path) -> None:
+    # The explicit-opt-in path is unchanged: a @rextio.native caller of a
+    # runtime shim inherits runtime semantics (RXT080).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def shim(x: float) -> float:
+    return getattr(x, "value")
+
+@rextio.native
+def caller(x: float) -> float:
+    return shim(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    accepted = {
+        function.qualname: function.native_runtime_semantics
+        for function in analysis.accepted_native_functions
+    }
+    assert accepted == {"app.shim": True, "app.caller": True}
+
+
 def test_uses_runtime_semantics_for_object_async_generator_and_dynamic_attribute_native_features(
     tmp_path: Path,
 ) -> None:

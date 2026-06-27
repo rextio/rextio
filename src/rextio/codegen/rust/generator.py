@@ -976,9 +976,17 @@ class _FunctionRenderer:
             for item, item_type in zip(target.items, item_types, strict=True):
                 scope[item.id] = item_type
 
-    def render_index(self, expr: ExprIR) -> str:
-        rendered = strip_wrapping_parens(self.render_expr(expr))
-        return f"{rendered} as usize"
+    def _index_error_expr(self) -> str:
+        """Mode-aware constructor expression for a Python ``IndexError``."""
+        if self.mode == "pyo3":
+            return 'pyo3::exceptions::PyIndexError::new_err("list index out of range")'
+        return 'RextioError::new("list index out of range")'
+
+    def _key_error_expr(self, key: str) -> str:
+        """Mode-aware constructor expression for a Python ``KeyError``."""
+        if self.mode == "pyo3":
+            return f"pyo3::exceptions::PyKeyError::new_err({key}.clone())"
+        return f'RextioError::new(format!("key not found: {{:?}}", {key}))'
 
     def render_index_expr(self, expr: IndexIR) -> str:
         value_type = self.infer_expr_type(expr.value)
@@ -989,22 +997,27 @@ class _FunctionRenderer:
             return f"{self.render_expr(expr.value)}.{index}.clone()"
         if isinstance(value_type, RxtDict):
             key = strip_wrapping_parens(self.render_expr(expr.index))
-            if self.mode == "pyo3":
-                error = f"pyo3::exceptions::PyKeyError::new_err({key}.clone())"
-            else:
-                error = f"RextioError::new(format!(\"key not found: {{:?}}\", {key}))"
-            return f"{self.render_expr(expr.value)}.get(&{key}).cloned().ok_or_else(|| {error})?"
-        # Sequence indexing must preserve Python semantics: an out-of-range or
-        # negative index raises IndexError rather than panicking. A negative
-        # i64 cast to usize wraps to a large value, so `.get()` returns None and
-        # the error path is taken safely (no unchecked `[]` panic).
-        if self.mode == "pyo3":
-            error = 'pyo3::exceptions::PyIndexError::new_err("list index out of range")'
-        else:
-            error = 'RextioError::new("list index out of range")'
+            return (
+                f"{self.render_expr(expr.value)}.get(&{key}).cloned()"
+                f".ok_or_else(|| {self._key_error_expr(key)})?"
+            )
+        # Sequence indexing preserves Python semantics:
+        #   * a negative index counts from the end (`xs[-1]` is the last item),
+        #   * an out-of-range index (after normalization) raises IndexError
+        #     instead of panicking via an unchecked `[]`.
+        # The sequence and index are bound to temporaries so neither sub-expression
+        # is evaluated twice. A still-negative normalized index casts to a large
+        # usize and `.get()` returns None, taking the error path safely.
+        seq = self.next_temp("__rextio_seq")
+        index = self.next_temp("__rextio_index")
+        length = self.next_temp("__rextio_len")
         return (
-            f"{self.render_expr(expr.value)}.get({self.render_index(expr.index)})"
-            f".cloned().ok_or_else(|| {error})?"
+            f"{{ let {seq} = &{self.render_expr(expr.value)}; "
+            f"let {length} = {seq}.len() as i64; "
+            f"let {index} = {strip_wrapping_parens(self.render_expr(expr.index))}; "
+            f"let {index} = if {index} < 0 {{ {index} + {length} }} else {{ {index} }}; "
+            f"{seq}.get({index} as usize).cloned()"
+            f".ok_or_else(|| {self._index_error_expr()})? }}"
         )
 
     def render_compare(self, expr: CompareIR) -> str:

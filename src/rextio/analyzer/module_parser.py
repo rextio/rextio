@@ -196,6 +196,7 @@ def _collect_module_functions(
             line=node.lineno,
             column=node.col_offset,
             is_native_candidate=has_marker,
+            explicitly_marked=has_marker,
             calls=calls,
             inferred_arg_types=dict(stub_signature.arg_types),
             inferred_return_type=stub_signature.return_type,
@@ -336,6 +337,9 @@ def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis)
 
 
 def _requires_runtime_semantics(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    # Used only on the explicit `@rextio.native` path (`_classify_native_function`).
+    # Auto-discovered functions are never promoted to the runtime shim on the
+    # strength of this check alone (see `_is_auto_native_candidate`).
     if isinstance(node, ast.AsyncFunctionDef):
         return True
     body_nodes = (child for statement in node.body for child in ast.walk(statement))
@@ -390,6 +394,7 @@ def _runtime_semantics_function(
         column=node.col_offset,
         is_native_candidate=True,
         accepted=True,
+        explicitly_marked=True,
         calls=[],
         native_target_language=_marker_target_language(marker, target_language),
         native_runtime_semantics=True,
@@ -519,6 +524,7 @@ def _collect_native_methods(
                 column=child.col_offset,
                 is_native_candidate=True,
                 accepted=True,
+                explicitly_marked=True,
                 calls=collect_call_sites(child, module.imports, module.logger_names),
                 native_target_language=_marker_target_language(marker, target_language),
                 native_runtime_semantics=True,

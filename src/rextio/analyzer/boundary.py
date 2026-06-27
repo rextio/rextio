@@ -4,7 +4,7 @@ from rextio.analyzer.common_calls import COMMON_DIRECT_RUST_CALLS
 from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.import_policy import decision_for_target
-from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, ProjectAnalysis
+from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis, ProjectAnalysis
 
 SUPPORTED_INTERNAL_CALLS = {
     "abs",
@@ -27,6 +27,7 @@ BOUNDARY_DIAGNOSTIC_MESSAGES = {
     "RXT071": "Possible excessive Python/Rust boundary crossing.",
     "RXT072": "Native dependency rejected, so caller must fall back.",
     "RXT073": "Native function call inside Python loop may erase speedup.",
+    "RXT074": "Undecorated function depends on a runtime-shim native; mark it @rextio.native to opt in.",
 }
 
 
@@ -46,10 +47,24 @@ def apply_boundary_checks(
             for function in sorted(module.functions, key=lambda item: item.qualname):
                 if not function.is_native_candidate or not function.accepted:
                     continue
-                runtime_diagnostic = _first_runtime_dependency(module, function, resolver)
-                if runtime_diagnostic is not None:
-                    function.native_runtime_semantics = True
-                    function.add_diagnostic(runtime_diagnostic)
+                runtime_dependency = _first_runtime_dependency(module, function, resolver)
+                if runtime_dependency is not None:
+                    call, dependency = runtime_dependency
+                    if function.explicitly_marked:
+                        # An explicitly opted-in function inherits the runtime
+                        # semantics shim required by its native dependency.
+                        function.native_runtime_semantics = True
+                        function.add_diagnostic(
+                            _runtime_shim_propagation_diagnostic(function, dependency, call)
+                        )
+                    else:
+                        # Auto-discovered functions are not silently promoted to
+                        # the RXT080 shim through the call graph (P0-4); they fall
+                        # back to Python unless explicitly marked @rextio.native.
+                        function.accepted = False
+                        function.add_diagnostic(
+                            _runtime_shim_requires_marker_diagnostic(function, dependency, call)
+                        )
                     changed = True
                     continue
                 diagnostic = _first_boundary_error(
@@ -179,30 +194,62 @@ def _first_runtime_dependency(
     module: ModuleAnalysis,
     function: FunctionAnalysis,
     resolver: FunctionResolver,
-) -> Diagnostic | None:
+) -> tuple[CallSite, FunctionAnalysis] | None:
     if function.native_runtime_semantics:
         return None
     for call in function.calls:
         dependency = resolver.resolve(module, call.target).function
         if dependency is None or not dependency.accepted or not dependency.native_runtime_semantics:
             continue
-        return Diagnostic(
-            code="RXT080",
-            severity="warning",
-            message=(
-                "native function uses Python runtime semantics shim because it calls "
-                f"runtime-backed native function: {dependency.qualname}"
-            ),
-            file_path=function.file_path,
-            line=call.line,
-            column=call.column,
-            function_name=function.qualname,
-            suggestion=(
-                "Rextio will route this function through the Python runtime semantics "
-                "shim so the native dependency can preserve Python object behavior."
-            ),
-        )
+        return call, dependency
     return None
+
+
+def _runtime_shim_propagation_diagnostic(
+    function: FunctionAnalysis,
+    dependency: FunctionAnalysis,
+    call: CallSite,
+) -> Diagnostic:
+    return Diagnostic(
+        code="RXT080",
+        severity="warning",
+        message=(
+            "native function uses Python runtime semantics shim because it calls "
+            f"runtime-backed native function: {dependency.qualname}"
+        ),
+        file_path=function.file_path,
+        line=call.line,
+        column=call.column,
+        function_name=function.qualname,
+        suggestion=(
+            "Rextio will route this function through the Python runtime semantics "
+            "shim so the native dependency can preserve Python object behavior."
+        ),
+    )
+
+
+def _runtime_shim_requires_marker_diagnostic(
+    function: FunctionAnalysis,
+    dependency: FunctionAnalysis,
+    call: CallSite,
+) -> Diagnostic:
+    return Diagnostic(
+        code="RXT074",
+        severity="error",
+        message=(
+            "auto-discovered function calls runtime-backed native function "
+            f"{dependency.qualname}; it would require the Python runtime semantics "
+            "shim, which is only applied to explicitly marked functions"
+        ),
+        file_path=function.file_path,
+        line=call.line,
+        column=call.column,
+        function_name=function.qualname,
+        suggestion=(
+            "Add @rextio.native to this function to opt into the runtime semantics "
+            "shim, or leave it on the Python fallback path."
+        ),
+    )
 
 
 def _add_python_loop_boundary_warnings(
