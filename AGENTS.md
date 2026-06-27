@@ -337,6 +337,7 @@ Implement these commands first:
 ```text
 rextio init
 rextio check
+rextio generate
 rextio build
 rextio bench
 rextio clean
@@ -1631,20 +1632,21 @@ Rust projects when experimental native-side JIT is explicitly enabled.
 3. `rextio check` detects native candidates and unsupported patterns.
 4. `rextio check` rejects native-to-fallback calls.
 5. `rextio check` warns about Python loops repeatedly calling native functions.
-6. `rextio build --fallback=cpython` builds a hybrid artifact.
-7. `rextio build --fallback=nuitka` either works or reports a clear experimental/installation error.
-8. Generated Rust compiles through Cargo/maturin.
-9. Generated native functions can be imported from Python.
-10. When requested, generated direct-Rust functions can also be compiled into a
+6. `rextio generate --fallback=cpython` writes source artifacts without compiling Rust, Nuitka, wheels, or executables.
+7. `rextio build --fallback=cpython` builds a hybrid artifact.
+8. `rextio build --fallback=nuitka` either works or reports a clear experimental/installation error.
+9. Generated Rust compiles through Cargo/maturin.
+10. Generated native functions can be imported from Python.
+11. When requested, generated direct-Rust functions can also be compiled into a
     Rust library crate and imported from a Rust project.
-11. Fallback works when native is disabled.
-12. Functions rejected by boundary checks execute through fallback.
-13. At least one example project demonstrates native speedup.
-14. At least one example project demonstrates safe fallback.
-14. At least one example project demonstrates boundary rejection/warning behavior.
-15. E2E tests cover build/import/runtime behavior.
-16. README explains 0.1.0 alpha scope honestly.
-17. Unsupported features are clearly documented.
+12. Fallback works when native is disabled.
+13. Functions rejected by boundary checks execute through fallback.
+14. At least one example project demonstrates native speedup.
+15. At least one example project demonstrates safe fallback.
+16. At least one example project demonstrates boundary rejection/warning behavior.
+17. E2E tests cover build/import/runtime behavior.
+18. README explains 0.1.0 alpha scope honestly.
+19. Unsupported features are clearly documented.
 
 ---
 
