@@ -35,6 +35,11 @@ Homepage = "https://github.com/rextio/rextio"
 test = [
   "pytest>=8.0",
 ]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.15",
+  "mypy>=1.11",
+]
 
 [project.scripts]
 rextio = "rextio.cli.main:main"
@@ -45,3 +50,46 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Conservative bootstrap set (see mod-proposal P0-2): E/W = pycodestyle,
+# F = pyflakes. Ratchet up to I (isort), UP (pyupgrade), B (bugbear) once the
+# one-time autofix churn can be reviewed on its own.
+select = ["E", "W", "F"]
+# E501 (line length) is deferred to the formatter; not enforced during bootstrap.
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+ignore_missing_imports = true
+# Bootstrap posture: keep the gate green today, tighten incrementally.
+# Do NOT add new modules to the ignore list below — fix types instead.
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+# ---------------------------------------------------------------------------
+# Type-debt ratchet (mod-proposal P0-2): these modules have pre-existing mypy
+# errors recorded at gate-bootstrap time. Remove entries as they are cleaned
+# up; the CI gate enforces type-cleanliness on every other module.
+# ---------------------------------------------------------------------------
+[[tool.mypy.overrides]]
+module = [
+  "rextio.analyzer.unsupported_patterns",
+  "rextio.analyzer.jit",
+  "rextio.config.loader",
+  "rextio.codegen.rust.generator",
+  "rextio.ir.nodes",
+  "rextio.ir.lowering",
+  "rextio.ir.module",
+  "rextio.runtime.boundary_fallback",
+  "rextio.plugins.loader",
+  "rextio",
+]
+ignore_errors = true
