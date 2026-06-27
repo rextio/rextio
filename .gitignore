@@ -29,3 +29,7 @@ env/
 /target/
 target/
 crates/*/Cargo.lock
+
+Agentic Coding generated artifacts
+.claude/
+.claude-octopus/
