@@ -994,7 +994,18 @@ class _FunctionRenderer:
             else:
                 error = f"RextioError::new(format!(\"key not found: {{:?}}\", {key}))"
             return f"{self.render_expr(expr.value)}.get(&{key}).cloned().ok_or_else(|| {error})?"
-        return f"{self.render_expr(expr.value)}[{self.render_index(expr.index)}].clone()"
+        # Sequence indexing must preserve Python semantics: an out-of-range or
+        # negative index raises IndexError rather than panicking. A negative
+        # i64 cast to usize wraps to a large value, so `.get()` returns None and
+        # the error path is taken safely (no unchecked `[]` panic).
+        if self.mode == "pyo3":
+            error = 'pyo3::exceptions::PyIndexError::new_err("list index out of range")'
+        else:
+            error = 'RextioError::new("list index out of range")'
+        return (
+            f"{self.render_expr(expr.value)}.get({self.render_index(expr.index)})"
+            f".cloned().ok_or_else(|| {error})?"
+        )
 
     def render_compare(self, expr: CompareIR) -> str:
         if len(expr.ops) != len(expr.comparators):

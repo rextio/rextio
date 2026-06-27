@@ -153,7 +153,10 @@ def compute(values: list[float]) -> float:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert "let mut subtotal = app__total(values.clone())?;" in source
-    assert "return Ok(subtotal + values[0 as usize].clone());" in source
+    assert (
+        "return Ok(subtotal + values.get(0 as usize).cloned()"
+        '.ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("list index out of range"))?);'
+    ) in source
 
 
 def test_generates_rust_for_contextually_inferred_signatures(tmp_path: Path) -> None:
@@ -231,7 +234,10 @@ def decrement_to_zero(n: int) -> int:
 
     assert "fn app__count_positive(xs: Vec<i64>) -> PyResult<i64> {" in source
     assert "for i in 0..(xs.len() as i64) {" in source
-    assert "if xs[i as usize].clone() > 0 {" in source
+    assert (
+        "if xs.get(i as usize).cloned()"
+        '.ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("list index out of range"))? > 0 {'
+    ) in source
     assert "count = count + 1;" in source
     assert "fn app__decrement_to_zero(mut n: i64) -> PyResult<i64> {" in source
     assert "while n > 0 {" in source
@@ -257,7 +263,10 @@ def first_label(values: list[str]) -> str:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert 'return Ok(String::from("ready"));' in source
-    assert "return Ok(values[0 as usize].clone());" in source
+    assert (
+        "return Ok(values.get(0 as usize).cloned()"
+        '.ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("list index out of range"))?);'
+    ) in source
 
 
 def test_range_len_index_can_be_used_as_public_1_int(tmp_path: Path) -> None:
@@ -280,7 +289,10 @@ def sum_indices(xs: list[int]) -> int:
 
     assert "for i in 0..(xs.len() as i64) {" in source
     assert "total = total + i;" in source
-    assert "total = total + xs[i as usize].clone();" in source
+    assert (
+        "total = total + xs.get(i as usize).cloned()"
+        '.ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("list index out of range"))?;'
+    ) in source
 
 
 def test_generates_rust_for_range_variants_break_and_continue(tmp_path: Path) -> None:
@@ -690,7 +702,10 @@ def size_plus_first(xs: list[int]) -> int:
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
-    assert "return Ok((xs.len() as i64) + xs[0 as usize].clone());" in source
+    assert (
+        "return Ok((xs.len() as i64) + xs.get(0 as usize).cloned()"
+        '.ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("list index out of range"))?);'
+    ) in source
 
 
 def test_generates_rust_for_supported_native_top_level(tmp_path: Path) -> None:
@@ -734,3 +749,27 @@ def read_value(x: object) -> object:
     assert "rextio_call_python_runtime(" in source
     assert '"_fallback_app"' in source
     assert '"_rextio_original_app__read_value"' in source
+
+
+def test_sequence_indexing_is_bounds_checked(tmp_path: Path) -> None:
+    # Generated list indexing must preserve Python semantics: out-of-range or
+    # negative indexes raise IndexError instead of panicking via unchecked `[]`.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def first(xs: list[int]) -> int:
+    return xs[0]
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert (
+        "xs.get(0 as usize).cloned()"
+        '.ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("list index out of range"))?'
+    ) in source
+    # No unchecked indexing should remain on the sequence access path.
+    assert "xs[0 as usize]" not in source

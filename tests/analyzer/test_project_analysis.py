@@ -523,6 +523,27 @@ def bad(x: float) -> float:
     assert analysis.accepted_native_functions[0].native_runtime_semantics is True
 
 
+def test_auto_discovery_does_not_promote_dynamic_functions_to_runtime_shim(
+    tmp_path: Path,
+) -> None:
+    # An undecorated function that relies on dynamic Python semantics must NOT be
+    # auto-promoted to the RXT080 runtime-semantics shim. The shim is reserved
+    # for functions a developer explicitly opts into with @rextio.native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+def read_attr(x: float) -> float:
+    return getattr(x, "value")
+""",
+    )
+
+    analysis = analyze_project(tmp_path)  # default auto-discovery mode
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == []
+    assert "RXT080" not in {diagnostic.code for diagnostic in analysis.diagnostics}
+
+
 def test_uses_runtime_semantics_for_object_async_generator_and_dynamic_attribute_native_features(
     tmp_path: Path,
 ) -> None:
