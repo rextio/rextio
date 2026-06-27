@@ -311,4 +311,4 @@ rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 - `examples/pure_math`: typed math hot path の direct Rust lowering
 - `examples/fallback_demo`: native disabled/missing 時の fallback behavior
 - `examples/boundary_demo`: native-to-fallback boundary rejection と warning
-- `examples/fastapi_scoring`: application shell は Python のまま、scoring hot path は native 化可能
+- `examples/app_shell`: application shell は Python のまま、scoring hot path は native 化可能
