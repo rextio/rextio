@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from fnmatch import fnmatch
 from pathlib import Path
 
 from rextio.analyzer.boundary import apply_boundary_checks
 from rextio.analyzer.models import ProjectAnalysis
-from rextio.analyzer.module_parser import parse_module
+from rextio.analyzer.module_parser import module_name_for_path, parse_module
+from rextio.config.schema import ImportsConfig
+from rextio.plugins.models import RextioPlugin
 from rextio.targets.models import normalize_target_language
 
 IGNORED_PARTS = {
@@ -76,10 +79,14 @@ def analyze_project(
     native_marker: str = "auto",
     target_language: str = "rust",
     native_top_level: bool = False,
+    imports_config: ImportsConfig | None = None,
+    active_plugins: Iterable[RextioPlugin] = (),
 ) -> ProjectAnalysis:
     root = Path(project_root).resolve()
     target_language = normalize_target_language(target_language)
     analysis = ProjectAnalysis(project_root=root)
+    files = scan_python_files(root)
+    project_modules = _project_module_names(files, root)
     analysis.modules = [
         parse_module(
             path,
@@ -87,8 +94,23 @@ def analyze_project(
             native_marker=native_marker,
             target_language=target_language,
             native_top_level=native_top_level,
+            project_modules=project_modules,
+            imports_config=imports_config,
+            active_plugins=active_plugins,
         )
-        for path in scan_python_files(root)
+        for path in files
     ]
     apply_boundary_checks(analysis, boundary_warnings=boundary_warnings)
     return analysis
+
+
+def _project_module_names(files: list[Path], project_root: Path) -> set[str]:
+    names: set[str] = set()
+    for path in files:
+        module_name = module_name_for_path(path, project_root)
+        if not module_name:
+            continue
+        parts = module_name.split(".")
+        for index in range(1, len(parts) + 1):
+            names.add(".".join(parts[:index]))
+    return names

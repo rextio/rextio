@@ -7,7 +7,7 @@ from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.cli.config_overrides import key_value_overrides, tuple_overrides
+from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
@@ -67,6 +67,8 @@ def run(args: Namespace) -> int:
                 ("target", "version"): args.target_version,
                 ("target", "build_options"): key_value_overrides(args.target_build_option),
                 ("plugins", "enabled"): tuple_overrides(args.plugin_enabled),
+                ("imports", "default_external_policy"): args.default_external_policy,
+                ("imports", "packages"): package_policy_overrides(args.package_import_policy),
                 ("policy", "native_marker"): args.native_marker,
                 ("policy", "require_type_hints"): args.require_type_hints,
                 ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
@@ -85,6 +87,8 @@ def run(args: Namespace) -> int:
         native_marker=config.policy.native_marker,
         target_language=target_plan.spec.language,
         native_top_level=config.policy.native_top_level,
+        imports_config=config.imports,
+        active_plugins=target_plan.plugins.active,
     )
     write_check_report(project_root, analysis)
     if args.json:

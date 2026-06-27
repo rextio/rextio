@@ -22,6 +22,30 @@ class CallSite:
         }
 
 
+@dataclass(frozen=True)
+class ImportPolicyDecision:
+    visible_name: str
+    target: str
+    package: str
+    origin: str
+    policy: str
+    plugin: str | None = None
+    max_depth: int = 0
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "visible_name": self.visible_name,
+            "target": self.target,
+            "package": self.package,
+            "origin": self.origin,
+            "policy": self.policy,
+            "plugin": self.plugin,
+            "max_depth": self.max_depth,
+            "reason": self.reason,
+        }
+
+
 @dataclass
 class FunctionAnalysis:
     name: str
@@ -142,6 +166,7 @@ class ModuleAnalysis:
     diagnostics: list[Diagnostic] = field(default_factory=list)
     imports: dict[str, str] = field(default_factory=dict)
     logger_names: tuple[str, ...] = ()
+    import_policies: tuple[ImportPolicyDecision, ...] = ()
     top_level: TopLevelAnalysis | None = None
 
     @property
@@ -153,6 +178,7 @@ class ModuleAnalysis:
             "module_name": self.module_name,
             "file_path": self.file_path,
             "imports": dict(sorted(self.imports.items())),
+            "import_policies": [decision.to_dict() for decision in self.import_policies],
             "logger_names": list(self.logger_names),
             "functions": [function.to_dict() for function in self.functions],
             "top_level": self.top_level.to_dict() if self.top_level is not None else None,

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.common_calls import canonical_call_target, is_logging_get_logger_call
+from rextio.analyzer.diagnostics import Diagnostic
+from rextio.analyzer.import_policy import classify_import_policies
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis
 from rextio.analyzer.native_marker import (
     NativeMarker,
@@ -16,6 +18,8 @@ from rextio.analyzer.native_marker import (
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.analyzer.top_level import analyze_native_top_level
 from rextio.analyzer.unsupported_patterns import validate_native_function
+from rextio.config.schema import ImportsConfig
+from rextio.plugins.models import RextioPlugin
 from rextio.targets.models import normalize_target_language
 
 
@@ -25,6 +29,9 @@ def parse_module(
     native_marker: str = "auto",
     target_language: str = "rust",
     native_top_level: bool = False,
+    project_modules: set[str] | None = None,
+    imports_config: ImportsConfig | None = None,
+    active_plugins: Iterable[RextioPlugin] = (),
 ) -> ModuleAnalysis:
     target_language = normalize_target_language(target_language)
     module_name = module_name_for_path(path, project_root)
@@ -48,6 +55,13 @@ def parse_module(
         tree,
         module_name=module_name,
         is_package_module=path.name == "__init__.py",
+    )
+    module.import_policies = classify_import_policies(
+        module.imports,
+        module_name=module_name,
+        project_modules=project_modules or set(),
+        imports_config=imports_config,
+        active_plugins=active_plugins,
     )
     module.logger_names = _collect_logger_names(tree, module.imports)
     stub_signatures = _load_stub_signatures(path)

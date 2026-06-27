@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
+from rextio.config.schema import ImportPackagePolicy, ImportsConfig
+from rextio.plugins.models import RextioPlugin
 
 
 def write_module(root: Path, name: str, contents: str) -> Path:
@@ -1348,6 +1350,125 @@ def compute(xs: list[float]) -> float:
 
     assert "RXT030" in {diagnostic.code for diagnostic in analysis.diagnostics}
     assert [function.qualname for function in analysis.rejected_native_functions] == ["app.compute"]
+
+
+def test_records_import_origin_and_policy_decisions(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "src/myapp/helper.py",
+        """
+def local(x: float) -> float:
+    return x
+""",
+    )
+    write_module(
+        tmp_path,
+        "src/myapp/app.py",
+        """
+import math
+import unknown_pkg
+from .helper import local
+
+def compute(x: float) -> float:
+    return local(math.sqrt(x))
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    module = next(module for module in analysis.modules if module.module_name == "myapp.app")
+    decisions = {decision.visible_name: decision for decision in module.import_policies}
+    assert decisions["math"].origin == "stdlib"
+    assert decisions["math"].policy == "builtin"
+    assert decisions["unknown_pkg"].origin == "external"
+    assert decisions["unknown_pkg"].policy == "fallback"
+    assert decisions["local"].origin == "project"
+    assert decisions["local"].policy == "try-native"
+
+
+def test_external_package_without_plugin_rejects_native_candidate_with_fallback_guidance(
+    tmp_path: Path,
+) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+from unknown_pkg import normalize
+
+def compute(xs: list[float]) -> list[float]:
+    out: list[float] = []
+    for x in xs:
+        out.append(normalize(x))
+    return out
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.compute"]
+    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
+    assert diagnostic.code == "RXT030"
+    assert "external package call uses fallback import policy" in diagnostic.message
+    assert "inside a loop" in diagnostic.suggestion
+    assert "batch API refactor" in diagnostic.suggestion
+
+
+def test_try_native_external_package_policy_is_explicit_but_still_rejects_unknown_call(
+    tmp_path: Path,
+) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import safe_pkg
+
+def compute(x: float) -> float:
+    return safe_pkg.normalize(x)
+""",
+    )
+
+    analysis = analyze_project(
+        tmp_path,
+        imports_config=ImportsConfig(
+            packages={"safe_pkg": ImportPackagePolicy(policy="try-native", max_depth=1)}
+        ),
+    )
+
+    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
+    assert diagnostic.code == "RXT030"
+    assert "experimental dependency lowering" in diagnostic.message
+    assert "opt-in" in diagnostic.suggestion
+
+
+def test_active_plugin_package_is_recorded_but_call_requires_lowering_rule(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import known_pkg
+
+def compute(x: float) -> float:
+    return known_pkg.normalize(x)
+""",
+    )
+
+    analysis = analyze_project(
+        tmp_path,
+        active_plugins=(
+            RextioPlugin(
+                id="known-rust",
+                name="Known package Rust plugin",
+                target_language="rust",
+                packages=("known_pkg",),
+            ),
+        ),
+    )
+
+    module = analysis.modules[0]
+    assert module.import_policies[0].policy == "plugin"
+    assert module.import_policies[0].plugin == "known-rust"
+    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
+    assert "plugin-managed external package call" in diagnostic.message
 
 
 def test_rejects_callers_of_rejected_native_dependencies(tmp_path: Path) -> None:

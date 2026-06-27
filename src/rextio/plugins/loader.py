@@ -113,6 +113,7 @@ def _parse_plugin_metadata(
         target_versions=_optional_string_tuple(data, "target_versions"),
         target_build_options=_optional_string_map(data, "target_build_options"),
         rules=_optional_string_tuple(data, "rules"),
+        packages=_optional_string_tuple(data, "packages"),
         source=source,
         package=package,
         entry_point=entry_point,

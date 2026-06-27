@@ -89,6 +89,30 @@ enabled = ["numpy-mojo"]
     assert config.plugins.enabled == ("numpy-mojo",)
 
 
+def test_load_config_reads_import_policy_options(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[imports]
+default_external_policy = "analyze"
+
+[imports.packages]
+"some_pkg" = { policy = "try-native", max_depth = 1 }
+"legacy_pkg" = "fallback"
+"known_pkg" = { policy = "plugin", plugin = "known-rust" }
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.imports.default_external_policy == "analyze"
+    assert config.imports.packages["some_pkg"].policy == "try-native"
+    assert config.imports.packages["some_pkg"].max_depth == 1
+    assert config.imports.packages["legacy_pkg"].policy == "fallback"
+    assert config.imports.packages["known_pkg"].policy == "plugin"
+    assert config.imports.packages["known_pkg"].plugin == "known-rust"
+
+
 def test_load_config_applies_environment_overrides(tmp_path: Path) -> None:
     (tmp_path / "rextio.toml").write_text(
         """
@@ -115,6 +139,8 @@ boundary_warnings = true
             "REXTIO_TARGET_VERSION": "1.11",
             "REXTIO_TARGET_BUILD_OPTIONS": "profile=release,threads=auto",
             "REXTIO_PLUGINS_ENABLED": "numpy-julia",
+            "REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY": "try-native",
+            "REXTIO_IMPORTS_PACKAGES": "safe_pkg=try-native,legacy_pkg=fallback",
             "REXTIO_EXECUTABLE_ENTRYPOINT": "demo.cli:main",
             "REXTIO_EXECUTABLE_NAME": "demo-env",
             "REXTIO_EXECUTABLE_BACKEND": "nuitka",
@@ -134,6 +160,9 @@ boundary_warnings = true
     assert config.target.version == "1.11"
     assert config.target.build_options == {"profile": "release", "threads": "auto"}
     assert config.plugins.enabled == ("numpy-julia",)
+    assert config.imports.default_external_policy == "try-native"
+    assert config.imports.packages["safe_pkg"].policy == "try-native"
+    assert config.imports.packages["legacy_pkg"].policy == "fallback"
     assert config.executable.entrypoint == "demo.cli:main"
     assert config.executable.name == "demo-env"
     assert config.executable.backend == "nuitka"
@@ -161,6 +190,8 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
             ("target", "version"): "25.1",
             ("target", "build_options"): {"profile": "debug"},
             ("plugins", "enabled"): ("numpy-mojo",),
+            ("imports", "default_external_policy"): "analyze",
+            ("imports", "packages"): {"safe_pkg": {"policy": "try-native", "max_depth": 1}},
             ("policy", "native_marker"): "decorator",
             ("policy", "native_top_level"): True,
         },
@@ -174,6 +205,9 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
     assert config.target.version == "25.1"
     assert config.target.build_options == {"profile": "debug"}
     assert config.plugins.enabled == ("numpy-mojo",)
+    assert config.imports.default_external_policy == "analyze"
+    assert config.imports.packages["safe_pkg"].policy == "try-native"
+    assert config.imports.packages["safe_pkg"].max_depth == 1
     assert config.policy.native_marker == "decorator"
     assert config.policy.native_top_level is True
 
@@ -212,6 +246,19 @@ def test_load_config_rejects_invalid_environment_integer(tmp_path: Path) -> None
 def test_load_config_rejects_invalid_environment_boolean(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"REXTIO_BOUNDARY_WARNINGS"):
         load_config(tmp_path, environ={"REXTIO_BOUNDARY_WARNINGS": "maybe"})
+
+
+def test_load_config_rejects_import_plugin_policy_without_plugin(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[imports.packages]
+"some_pkg" = { policy = "plugin" }
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r"plugin is required"):
+        load_config(tmp_path)
 
 
 def test_load_config_rejects_invalid_rust_crate_name(tmp_path: Path) -> None:

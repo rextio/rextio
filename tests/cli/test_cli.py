@@ -240,6 +240,31 @@ def test_check_reports_plugin_configuration_error(tmp_path: Path, capsys) -> Non
     assert "enabled plugin was not discovered: numpy-rust" in captured.out
 
 
+def test_check_applies_package_import_policy_override(tmp_path: Path, capsys) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import safe_pkg
+
+def compute(x: float) -> float:
+    return safe_pkg.normalize(x)
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "check",
+            str(tmp_path),
+            "--package-import-policy=safe_pkg=try-native",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "experimental dependency lowering" in captured.out
+
+
 def test_check_reports_config_error(tmp_path: Path, capsys) -> None:
     (tmp_path / "rextio.toml").write_text(
         """

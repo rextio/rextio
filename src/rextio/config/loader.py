@@ -11,6 +11,8 @@ from rextio.config.schema import (
     BuildConfig,
     ExecutableConfig,
     FallbackConfig,
+    ImportPackagePolicy,
+    ImportsConfig,
     PolicyConfig,
     PluginConfig,
     RextioConfig,
@@ -29,6 +31,7 @@ CONFIG_KEYS = {
     "fallback": {"nuitka"},
     "target": {"version", "build_options"},
     "plugins": {"enabled"},
+    "imports": {"default_external_policy", "packages"},
     "executable": {"entrypoint", "name", "backend", "nuitka_mode"},
     "policy": {
         "native_marker",
@@ -52,6 +55,8 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_TARGET_VERSION": ("target", "version", "optional_string"),
     "REXTIO_TARGET_BUILD_OPTIONS": ("target", "build_options", "string_map"),
     "REXTIO_PLUGINS_ENABLED": ("plugins", "enabled", "string_list"),
+    "REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY": ("imports", "default_external_policy", "string"),
+    "REXTIO_IMPORTS_PACKAGES": ("imports", "packages", "package_policy_map"),
     "REXTIO_EXECUTABLE_ENTRYPOINT": ("executable", "entrypoint", "optional_string"),
     "REXTIO_EXECUTABLE_NAME": ("executable", "name", "optional_string"),
     "REXTIO_EXECUTABLE_BACKEND": ("executable", "backend", "string"),
@@ -97,11 +102,12 @@ def load_config(
     fallback = {**DEFAULT_CONFIG["fallback"], **_section(raw, "fallback")}
     target = {**DEFAULT_CONFIG["target"], **_section(raw, "target")}
     plugins = {**DEFAULT_CONFIG["plugins"], **_section(raw, "plugins")}
+    imports = {**DEFAULT_CONFIG["imports"], **_section(raw, "imports")}
     executable = {**DEFAULT_CONFIG["executable"], **_section(raw, "executable")}
     policy = {**DEFAULT_CONFIG["policy"], **_section(raw, "policy")}
     if environ is not None:
-        _apply_environment_overrides(build, rust, fallback, target, plugins, executable, policy, environ)
-    return _build_config(build, rust, fallback, target, plugins, executable, policy)
+        _apply_environment_overrides(build, rust, fallback, target, plugins, imports, executable, policy, environ)
+    return _build_config(build, rust, fallback, target, plugins, imports, executable, policy)
 
 
 def override_config(
@@ -113,6 +119,7 @@ def override_config(
     fallback = asdict(config.fallback)
     target = asdict(config.target)
     plugins = asdict(config.plugins)
+    imports = _imports_asdict(config.imports)
     executable = asdict(config.executable)
     policy = asdict(config.policy)
     sections = {
@@ -121,6 +128,7 @@ def override_config(
         "fallback": fallback,
         "target": target,
         "plugins": plugins,
+        "imports": imports,
         "executable": executable,
         "policy": policy,
     }
@@ -130,7 +138,7 @@ def override_config(
         if section not in sections or key not in CONFIG_KEYS[section]:
             raise ConfigError(f"unsupported config override: [{section}].{key}")
         sections[section][key] = value
-    return _build_config(build, rust, fallback, target, plugins, executable, policy)
+    return _build_config(build, rust, fallback, target, plugins, imports, executable, policy)
 
 
 def _build_config(
@@ -139,16 +147,18 @@ def _build_config(
     fallback: dict[str, Any],
     target: dict[str, Any],
     plugins: dict[str, Any],
+    imports: dict[str, Any],
     executable: dict[str, Any],
     policy: dict[str, Any],
 ) -> RextioConfig:
-    _validate_config_values(build, rust, fallback, target, plugins, executable, policy)
+    _validate_config_values(build, rust, fallback, target, plugins, imports, executable, policy)
     return RextioConfig(
         build=BuildConfig(**build),
         rust=RustConfig(**rust),
         fallback=FallbackConfig(**fallback),
         target=TargetConfig(**target),
         plugins=PluginConfig(enabled=tuple(plugins["enabled"])),
+        imports=_build_imports_config(imports),
         executable=ExecutableConfig(**executable),
         policy=PolicyConfig(**policy),
     )
@@ -160,6 +170,7 @@ def _validate_config_values(
     fallback: dict[str, Any],
     target: dict[str, Any],
     plugins: dict[str, Any],
+    imports: dict[str, Any],
     executable: dict[str, Any],
     policy: dict[str, Any],
 ) -> None:
@@ -174,6 +185,8 @@ def _validate_config_values(
     _require_optional_string("target", "version", target["version"])
     _require_string_map("target", "build_options", target["build_options"])
     _require_string_list("plugins", "enabled", plugins["enabled"])
+    _require_string("imports", "default_external_policy", imports["default_external_policy"])
+    _require_package_policy_map("imports", "packages", imports["packages"])
     _require_optional_string("executable", "entrypoint", executable["entrypoint"])
     _require_optional_string("executable", "name", executable["name"])
     _require_string("executable", "backend", executable["backend"])
@@ -189,6 +202,12 @@ def _validate_config_values(
     _require_value("rust", "binding", rust["binding"], {"pyo3"})
     _require_value("rust", "build_tool", rust["build_tool"], {"cargo", "maturin"})
     _require_value("fallback", "nuitka", fallback["nuitka"], {"experimental"})
+    _require_value(
+        "imports",
+        "default_external_policy",
+        imports["default_external_policy"],
+        {"analyze", "fallback", "try-native"},
+    )
     _require_value("executable", "backend", executable["backend"], {"zipapp", "nuitka"})
     _require_value("executable", "nuitka_mode", executable["nuitka_mode"], {"standalone", "onefile"})
     _require_value("policy", "native_marker", policy["native_marker"], {"auto", "decorator"})
@@ -237,6 +256,34 @@ def _require_string_map(section: str, key: str, value: Any) -> None:
             raise ConfigError(f"[{section}].{key} must contain string keys and string values")
 
 
+def _require_package_policy_map(section: str, key: str, value: Any) -> None:
+    if not isinstance(value, dict):
+        raise ConfigError(f"[{section}].{key} must be a table")
+    for package, raw_policy in value.items():
+        if not isinstance(package, str) or not package:
+            raise ConfigError(f"[{section}].{key} must contain non-empty string package names")
+        if isinstance(raw_policy, str):
+            policy = raw_policy
+            plugin = None
+            max_depth = 0
+        elif isinstance(raw_policy, dict):
+            unknown = set(raw_policy) - {"policy", "plugin", "max_depth"}
+            if unknown:
+                unknown_key = sorted(unknown)[0]
+                raise ConfigError(f"unsupported config key: [{section}.{key}.{package}].{unknown_key}")
+            policy = raw_policy.get("policy", "fallback")
+            plugin = raw_policy.get("plugin")
+            max_depth = raw_policy.get("max_depth", 0)
+        else:
+            raise ConfigError(f"[{section}].{key}.{package} must be a string or table")
+        _require_value(f"{section}.{key}.{package}", "policy", policy, {"analyze", "fallback", "plugin", "try-native"})
+        if plugin is not None:
+            _require_string(f"{section}.{key}.{package}", "plugin", plugin)
+        _require_non_negative_int(f"{section}.{key}.{package}", "max_depth", max_depth)
+        if policy == "plugin" and not plugin:
+            raise ConfigError(f"[{section}].{key}.{package}.plugin is required when policy = \"plugin\"")
+
+
 def _require_string_list(section: str, key: str, value: Any) -> None:
     if not isinstance(value, (list, tuple)):
         raise ConfigError(f"[{section}].{key} must be a list of strings")
@@ -257,6 +304,7 @@ def _apply_environment_overrides(
     fallback: dict[str, Any],
     target: dict[str, Any],
     plugins: dict[str, Any],
+    imports: dict[str, Any],
     executable: dict[str, Any],
     policy: dict[str, Any],
     environ: Mapping[str, str],
@@ -267,6 +315,7 @@ def _apply_environment_overrides(
         "fallback": fallback,
         "target": target,
         "plugins": plugins,
+        "imports": imports,
         "executable": executable,
         "policy": policy,
     }
@@ -287,6 +336,8 @@ def _parse_environment_value(env_name: str, raw_value: str, kind: str) -> object
             raise ConfigError(f"environment variable {env_name} must be a non-negative integer") from exc
     if kind == "string_map":
         return _parse_string_map(env_name, raw_value)
+    if kind == "package_policy_map":
+        return _parse_package_policy_map(raw_value)
     if kind == "string_list":
         return _parse_string_list(raw_value, separator=",")
     if kind == "boolean":
@@ -313,3 +364,46 @@ def _parse_string_map(env_name: str, raw_value: str) -> dict[str, str]:
 
 def _parse_string_list(raw_value: str, separator: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in raw_value.split(separator) if item.strip())
+
+
+def _parse_package_policy_map(raw_value: str) -> dict[str, dict[str, object]]:
+    values: dict[str, dict[str, object]] = {}
+    for item in _parse_string_list(raw_value, separator=","):
+        if "=" not in item:
+            raise ConfigError("environment variable REXTIO_IMPORTS_PACKAGES must use PACKAGE=POLICY entries")
+        package, policy = item.split("=", 1)
+        if not package:
+            raise ConfigError("environment variable REXTIO_IMPORTS_PACKAGES must not contain empty package names")
+        values[package] = {"policy": policy}
+    return values
+
+
+def _build_imports_config(imports: dict[str, Any]) -> ImportsConfig:
+    packages: dict[str, ImportPackagePolicy] = {}
+    for package, raw_policy in imports["packages"].items():
+        if isinstance(raw_policy, str):
+            packages[package] = ImportPackagePolicy(policy=raw_policy)
+            continue
+        packages[package] = ImportPackagePolicy(
+            policy=raw_policy.get("policy", "fallback"),
+            plugin=raw_policy.get("plugin"),
+            max_depth=raw_policy.get("max_depth", 0),
+        )
+    return ImportsConfig(
+        default_external_policy=imports["default_external_policy"],
+        packages=packages,
+    )
+
+
+def _imports_asdict(imports: ImportsConfig) -> dict[str, Any]:
+    return {
+        "default_external_policy": imports.default_external_policy,
+        "packages": {
+            package: {
+                "policy": policy.policy,
+                "plugin": policy.plugin,
+                "max_depth": policy.max_depth,
+            }
+            for package, policy in imports.packages.items()
+        },
+    }

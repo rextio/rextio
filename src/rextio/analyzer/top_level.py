@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import ast
 
-from rextio.analyzer.boundary import SUPPORTED_INTERNAL_CALLS
+from rextio.analyzer.boundary import SUPPORTED_INTERNAL_CALLS, _external_call_diagnostic_text
+from rextio.analyzer.common_calls import canonical_call_target
 from rextio.analyzer.diagnostics import Diagnostic
+from rextio.analyzer.import_policy import decision_for_target
 from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, TopLevelAnalysis
 from rextio.analyzer.native_marker import dotted_name
 from rextio.analyzer.unsupported_patterns import (
@@ -71,10 +73,16 @@ def analyze_native_top_level(tree: ast.Module, module: ModuleAnalysis) -> TopLev
         imports=dict(module.imports),
         logger_names=module.logger_names,
     )
+    validator_module = ModuleAnalysis(
+        module_name=module.module_name,
+        file_path=module.file_path,
+        imports=dict(module.imports),
+        import_policies=module.import_policies,
+    )
     env: dict[str, str] = {}
     assigned_names: set[str] = set()
     for statement in statements:
-        _validate_top_level_statement(statement, validator, env, assigned_names)
+        _validate_top_level_statement(statement, validator, validator_module, env, assigned_names)
 
     for diagnostic in validator.diagnostics:
         top_level.add_diagnostic(diagnostic)
@@ -92,6 +100,7 @@ def analyze_native_top_level(tree: ast.Module, module: ModuleAnalysis) -> TopLev
 def _validate_top_level_statement(
     statement: ast.stmt,
     validator: FunctionAnalysis,
+    module: ModuleAnalysis,
     env: dict[str, str],
     assigned_names: set[str],
 ) -> None:
@@ -122,7 +131,7 @@ def _validate_top_level_statement(
     _validate_statement_types(statement, validator, env, return_type=None)
     assigned_names.update(_assigned_name_targets(statement))
     _validate_top_level_ast(statement, validator)
-    _reject_unsupported_top_level_calls(statement, validator)
+    _reject_unsupported_top_level_calls(statement, validator, module)
     if isinstance(statement, (ast.If, ast.While)):
         env.update({name: before[name] for name in before if name not in env})
 
@@ -142,18 +151,23 @@ def _validate_top_level_ast(statement: ast.stmt, validator: FunctionAnalysis) ->
 def _reject_unsupported_top_level_calls(
     statement: ast.stmt,
     validator: FunctionAnalysis,
+    module: ModuleAnalysis,
 ) -> None:
     for node in ast.walk(statement):
         if not isinstance(node, ast.Call):
             continue
-        target = dotted_name(node.func)
+        target = canonical_call_target(node, validator.imports, validator.logger_names)
+        if target is None:
+            target = dotted_name(node.func)
         if target in SUPPORTED_INTERNAL_CALLS or _is_append_call(node):
             continue
+        decision = decision_for_target(module, target or "")
+        message, suggestion = _external_call_diagnostic_text(target or "<dynamic>", False, decision)
         _add_top_level_error(
             validator,
             node,
-            f"top-level native initialization cannot call user or external function: {target or '<dynamic>'}",
-            "Move the call into a native function or leave top-level conversion disabled.",
+            f"top-level native initialization cannot lower call: {message}",
+            suggestion,
             code="RXT030",
         )
 
