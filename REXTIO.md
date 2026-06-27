@@ -50,6 +50,20 @@ blocks that update already assigned module variables. Assigned module variables
 must share one supported value type. Rextio keeps an original fallback module
 and uses it whenever native is disabled or unavailable.
 
+## Feature Stability
+
+0.1.0 alpha deliberately keeps a narrow, trustworthy core and gates broader
+ambitions behind explicit opt-ins. Treat the surface in these tiers:
+
+| Tier | Features | Notes |
+| --- | --- | --- |
+| **Stable (core)** | Typed-function discovery, supported-subset checks, Rust/PyO3 AOT codegen, Cargo/maturin build, CPython fallback packaging, boundary policy | The path the alpha is meant to be judged on. |
+| **Experimental (opt-in)** | Cranelift JIT (`--jit`/`REXTIO_JIT`/`[jit]`), Nuitka fallback and Nuitka executables, runtime-semantics shim (`RXT080`), Rust-importable crate | Behind flags/markers; behaviour and diagnostics may change before the first non-alpha release. |
+| **Planned (not implemented)** | `mojo`/`julia` native targets, installed-package plugins beyond metadata | Target metadata can be recorded for planning, but only Rust codegen is implemented. |
+
+Stability of diagnostic codes (`RXT…`) is tracked in
+`src/rextio/analyzer/diagnostic_codes.py`.
+
 ## Smoke Flow
 
 ```text

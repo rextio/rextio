@@ -2,7 +2,7 @@
 name = "rextio_runtime"
 version = "0.1.0"
 edition = "2021"
-description = "Small internal helper runtime for generated Rextio Rust code."
+description = "Reserved helper runtime for generated Rextio Rust code (not yet wired; see README)."
 license = "MIT"
 
 [lib]
