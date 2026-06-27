@@ -10,8 +10,8 @@ from rextio.ir.lowering import lower_project
 # `{ let __rextio_seq_N = ...; ... }` block uses generated temp names, so tests
 # match on this temp-independent suffix instead of the full expression.
 PYO3_INDEX_ERROR_SUFFIX = (
-    '.cloned().ok_or_else(|| pyo3::exceptions::PyIndexError::new_err('
-    '"list index out of range"))? }'
+    " } else { None })"
+    '.ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("list index out of range"))? }'
 )
 
 
@@ -374,7 +374,8 @@ def label_lengths(label: str) -> int:
     assert "let mut ys = xs.clone();" in source
     assert "let mut groups = vec![xs.clone(), ys.clone()];" in source
     assert 'map.insert(String::from("primary"), label.clone());' in source
-    assert "return Ok((labels.get(&String::from(\"primary\")).cloned()" in source
+    assert "= &labels;" in source
+    assert "PyKeyError::new_err(__rextio_key" in source
 
 
 def test_generates_rust_for_fixed_tuples_limited_dicts_and_optional_types(
@@ -426,7 +427,8 @@ def echo(value: int | None) -> int | None:
     assert "fn app__make_pair(x: i64, y: f64) -> PyResult<(i64, f64)> {" in source
     assert "return Ok((x, y));" in source
     assert "fn app__read_score(scores: HashMap<String, i64>, key: String) -> PyResult<i64> {" in source
-    assert "scores.get(&key).cloned().ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(key.clone()))?" in source
+    assert "= &scores;" in source
+    assert "PyKeyError::new_err(__rextio_key" in source
     assert "let mut weights: HashMap<String, f64> = HashMap::new();" in source
     assert 'weights.insert(String::from("a"), 1.5);' in source
     assert "fn app__maybe(flag: bool, x: i64) -> PyResult<Option<i64>> {" in source
@@ -541,7 +543,7 @@ def last_positive(xs: list[int]) -> int:
     assert "__rextio_dict_1.insert(x.clone(), x.clone());" in source
     assert "fn app__by_index(xs: Vec<i64>) -> PyResult<HashMap<i64, f64>> {" in source
     assert "fn app__flags(xs: Vec<i64>) -> PyResult<HashMap<bool, String>> {" in source
-    assert "scores.get(&x).cloned().ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(x.clone()))?" in source
+    assert "PyKeyError::new_err(__rextio_key" in source
     assert "fn app__unique(xs: Vec<i64>) -> PyResult<HashSet<i64>> {" in source
     assert "fn app__unique_float(xs: Vec<f64>) -> PyResult<Vec<f64>> {" in source
     assert "let mut __rextio_set_1 = Vec::new();" in source
@@ -675,8 +677,9 @@ def truth(flags: list[bool]) -> bool:
 
     assert ".trim().to_string().to_lowercase().replace(&String::from(\"a\"), &String::from(\"b\")).to_uppercase()" in source
     assert "values.sort();" in source
-    assert ".iter().filter(|item| *item == &2).count() as i64" in source
-    assert ".position(|item| item == &2)" in source
+    assert ".iter().filter(|item| *item == &__rextio_needle" in source
+    assert ".count() as i64 }" in source
+    assert ".position(|item| item == &__rextio_needle" in source
     assert "format!(\"{:x}\", sha2::Sha256::digest(&" in source
     assert "base64::engine::general_purpose::STANDARD.encode" in source
     assert "base64::engine::general_purpose::STANDARD.decode" in source
@@ -769,8 +772,11 @@ def at(xs: list[int], i: int) -> int:
     # Sequence and index are bound to temporaries (no double evaluation).
     assert "{ let __rextio_seq" in source
     assert ".len() as i64" in source
-    # Negative indexes are normalized Python-style before the bounds check.
+    # The index is cast to i64 so any integer operand type is absorbed.
+    assert ") as i64;" in source
+    # Negative indexes are normalized Python-style before an explicit bounds check.
     assert "< 0 {" in source
+    assert ">= 0 &&" in source
     assert PYO3_INDEX_ERROR_SUFFIX in source
     # No unchecked sequence indexing remains.
     assert "xs[i as usize]" not in source
@@ -792,7 +798,9 @@ def at(xs: list[int], i: int) -> int:
 
     assert "{ let __rextio_seq" in source
     assert "< 0 {" in source
+    assert ">= 0 &&" in source
     assert (
-        '.cloned().ok_or_else(|| RextioError::new("list index out of range"))? }'
+        " } else { None })"
+        '.ok_or_else(|| RextioError::new("list index out of range"))? }'
     ) in source
     assert "pyo3" not in source

@@ -602,6 +602,74 @@ def caller(x: float) -> float:
     assert accepted == {"app.shim": True, "app.caller": True}
 
 
+def test_undecorated_caller_of_imported_runtime_shim_is_rejected(tmp_path: Path) -> None:
+    # The RXT074 boundary rule also applies across module boundaries.
+    write_module(tmp_path, "src/pkg/__init__.py", "")
+    write_module(
+        tmp_path,
+        "src/pkg/shim_mod.py",
+        """
+import rextio
+
+@rextio.native
+def shim(x: float) -> float:
+    return getattr(x, "value")
+""",
+    )
+    write_module(
+        tmp_path,
+        "src/pkg/caller_mod.py",
+        """
+from pkg.shim_mod import shim
+
+def caller(x: float) -> float:
+    return shim(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert "pkg.shim_mod.shim" in {f.qualname for f in analysis.accepted_native_functions}
+    assert "pkg.caller_mod.caller" in {f.qualname for f in analysis.rejected_native_functions}
+    assert "pkg.caller_mod.caller" in {
+        diag.function_name for diag in analysis.diagnostics if diag.code == "RXT074"
+    }
+
+
+def test_transitive_undecorated_callers_of_runtime_shim_cascade_to_fallback(
+    tmp_path: Path,
+) -> None:
+    # top -> mid -> shim. The project-wide boundary fixed point rejects mid
+    # (RXT074), then rejects top because it depends on the now-rejected mid
+    # (RXT072) — no undecorated function is silently promoted to the shim.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def shim(x: float) -> float:
+    return getattr(x, "value")
+
+def mid(x: float) -> float:
+    return shim(x)
+
+def top(x: float) -> float:
+    return mid(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {f.qualname for f in analysis.accepted_native_functions} == {"app.shim"}
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert {"app.mid", "app.top"} <= rejected
+    codes = {(diag.function_name, diag.code) for diag in analysis.diagnostics}
+    assert ("app.mid", "RXT074") in codes
+    assert ("app.top", "RXT072") in codes
+
+
 def test_uses_runtime_semantics_for_object_async_generator_and_dynamic_attribute_native_features(
     tmp_path: Path,
 ) -> None:

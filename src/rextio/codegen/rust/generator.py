@@ -996,27 +996,39 @@ class _FunctionRenderer:
                 raise RustCodegenError("tuple index must be an in-range literal")
             return f"{self.render_expr(expr.value)}.{index}.clone()"
         if isinstance(value_type, RxtDict):
+            mapping = self.next_temp("__rextio_map")
+            key_tmp = self.next_temp("__rextio_key")
             key = strip_wrapping_parens(self.render_expr(expr.index))
+            # Bind value and key to temporaries before the error closure. The key
+            # expression may itself contain `?` (e.g. `m[xs[i]]`); evaluating it in
+            # a let-binding keeps the `?` in function scope instead of leaking into
+            # the `ok_or_else` closure body, which would not compile.
             return (
-                f"{self.render_expr(expr.value)}.get(&{key}).cloned()"
-                f".ok_or_else(|| {self._key_error_expr(key)})?"
+                f"{{ let {mapping} = &{self.render_expr(expr.value)}; "
+                f"let {key_tmp} = {key}; "
+                f"{mapping}.get(&{key_tmp}).cloned()"
+                f".ok_or_else(|| {self._key_error_expr(key_tmp)})? }}"
             )
         # Sequence indexing preserves Python semantics:
         #   * a negative index counts from the end (`xs[-1]` is the last item),
         #   * an out-of-range index (after normalization) raises IndexError
         #     instead of panicking via an unchecked `[]`.
         # The sequence and index are bound to temporaries so neither sub-expression
-        # is evaluated twice. A still-negative normalized index casts to a large
-        # usize and `.get()` returns None, taking the error path safely.
+        # is evaluated twice. The index is cast to i64 (absorbing any integer
+        # operand type) and bounds are checked explicitly in the i64 domain, so the
+        # final `as usize` only runs for an in-range index — correct on every target
+        # width (no reliance on usize truncation). `len() as i64` is exact because a
+        # sequence length never exceeds `isize::MAX <= i64::MAX`.
         seq = self.next_temp("__rextio_seq")
         index = self.next_temp("__rextio_index")
         length = self.next_temp("__rextio_len")
         return (
             f"{{ let {seq} = &{self.render_expr(expr.value)}; "
             f"let {length} = {seq}.len() as i64; "
-            f"let {index} = {strip_wrapping_parens(self.render_expr(expr.index))}; "
+            f"let {index} = ({strip_wrapping_parens(self.render_expr(expr.index))}) as i64; "
             f"let {index} = if {index} < 0 {{ {index} + {length} }} else {{ {index} }}; "
-            f"{seq}.get({index} as usize).cloned()"
+            f"(if {index} >= 0 && {index} < {length} "
+            f"{{ {seq}.get({index} as usize).cloned() }} else {{ None }})"
             f".ok_or_else(|| {self._index_error_expr()})? }}"
         )
 
@@ -1215,13 +1227,21 @@ class _FunctionRenderer:
             return receiver
         if expr.function == "list.count" and len(expr.args) == 2:
             needle = strip_wrapping_parens(self.render_call_arg(expr.args[1]))
-            return f"({receiver}).iter().filter(|item| *item == &{needle}).count() as i64"
+            needle_tmp = self.next_temp("__rextio_needle")
+            # Hoist the needle out of the predicate closure: it may contain `?`
+            # (e.g. `xs.count(ys[i])`), which cannot appear inside a closure body.
+            return (
+                f"{{ let {needle_tmp} = {needle}; "
+                f"({receiver}).iter().filter(|item| *item == &{needle_tmp}).count() as i64 }}"
+            )
         if expr.function == "list.index" and len(expr.args) == 2:
             needle = strip_wrapping_parens(self.render_call_arg(expr.args[1]))
+            needle_tmp = self.next_temp("__rextio_needle")
             return (
-                f"({receiver}).iter().position(|item| item == &{needle})"
+                f"{{ let {needle_tmp} = {needle}; "
+                f"({receiver}).iter().position(|item| item == &{needle_tmp})"
                 ".map(|index| index as i64)"
-                f".ok_or_else(|| {self.error_new(json.dumps('list.index(x): x not in list'))})?"
+                f".ok_or_else(|| {self.error_new(json.dumps('list.index(x): x not in list'))})? }}"
             )
         raise RustCodegenError(f"unsupported list method during Rust codegen: {expr.function}")
 
