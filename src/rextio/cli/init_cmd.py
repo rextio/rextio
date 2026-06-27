@@ -26,6 +26,13 @@ nuitka = "experimental"
 [plugins]
 enabled = []
 
+[imports]
+default_external_policy = "fallback"
+
+[imports.packages]
+# "some_pkg" = { policy = "try-native", max_depth = 1 }
+# "known_pkg" = { policy = "plugin", plugin = "known-rust" }
+
 [executable]
 # entrypoint = "myapp.cli:main"
 # name = "myapp"

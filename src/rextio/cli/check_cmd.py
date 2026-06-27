@@ -7,7 +7,7 @@ from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.cli.config_overrides import key_value_overrides, tuple_overrides
+from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
@@ -20,6 +20,7 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
     accepted_top_levels = analysis.accepted_native_top_levels
     rejected_top_levels = analysis.rejected_native_top_levels
     warnings = analysis.boundary_warnings
+    external_imports = _external_import_policies(analysis)
 
     lines.append("Native candidates:")
     if not analysis.native_candidates and not analysis.native_top_levels:
@@ -54,7 +55,28 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
             if diagnostic.suggestion:
                 lines.append(f"    suggestion: {diagnostic.suggestion}")
 
+    if external_imports:
+        lines.extend(["", "Import policies:"])
+        for package, policy, origin, reason in external_imports:
+            lines.append(f"  [{policy}] {package} ({origin})")
+            lines.append(f"    reason: {reason}")
+
     return "\n".join(lines)
+
+
+def _external_import_policies(analysis: ProjectAnalysis) -> list[tuple[str, str, str, str]]:
+    seen: set[tuple[str, str, str]] = set()
+    rows: list[tuple[str, str, str, str]] = []
+    for module in analysis.modules:
+        for decision in module.import_policies:
+            if not decision.origin.startswith("external"):
+                continue
+            key = (decision.package, decision.policy, decision.origin)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append((decision.package, decision.policy, decision.origin, decision.reason))
+    return sorted(rows)
 
 
 def run(args: Namespace) -> int:
@@ -67,6 +89,8 @@ def run(args: Namespace) -> int:
                 ("target", "version"): args.target_version,
                 ("target", "build_options"): key_value_overrides(args.target_build_option),
                 ("plugins", "enabled"): tuple_overrides(args.plugin_enabled),
+                ("imports", "default_external_policy"): args.default_external_policy,
+                ("imports", "packages"): package_policy_overrides(args.package_import_policy),
                 ("policy", "native_marker"): args.native_marker,
                 ("policy", "require_type_hints"): args.require_type_hints,
                 ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
@@ -85,6 +109,8 @@ def run(args: Namespace) -> int:
         native_marker=config.policy.native_marker,
         target_language=target_plan.spec.language,
         native_top_level=config.policy.native_top_level,
+        imports_config=config.imports,
+        active_plugins=target_plan.plugins.active,
     )
     write_check_report(project_root, analysis)
     if args.json:

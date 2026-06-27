@@ -31,6 +31,7 @@ def create_target_plan(project_root: Path, config: RextioConfig) -> TargetPlan:
         plugins = load_plugin_registry(config.plugins, target)
     except PluginError as exc:
         raise TargetPlanError(str(exc)) from exc
+    _validate_import_plugin_policies(config, plugins)
     return TargetPlan(spec=target, plugins=plugins)
 
 
@@ -48,3 +49,15 @@ def create_target_spec(config: RextioConfig) -> TargetSpec:
         version=config.target.version,
         build_options=dict(config.target.build_options),
     )
+
+
+def _validate_import_plugin_policies(config: RextioConfig, plugins: PluginRegistry) -> None:
+    active_plugin_ids = {plugin.id for plugin in plugins.active}
+    for package, import_policy in sorted(config.imports.packages.items()):
+        if import_policy.policy != "plugin":
+            continue
+        if import_policy.plugin not in active_plugin_ids:
+            raise TargetPlanError(
+                f"[imports.packages.{package}] references plugin {import_policy.plugin!r}, "
+                "but that plugin is not active"
+            )

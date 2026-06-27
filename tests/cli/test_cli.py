@@ -16,9 +16,9 @@ def test_init_creates_default_project_files(tmp_path: Path, capsys) -> None:
     assert (tmp_path / "rextio.toml").exists()
     assert (tmp_path / "REXTIO.md").exists()
     assert (tmp_path / ".rextioignore").exists()
-    assert 'native_marker = "auto"' in (tmp_path / "rextio.toml").read_text(
-        encoding="utf-8"
-    )
+    config_text = (tmp_path / "rextio.toml").read_text(encoding="utf-8")
+    assert 'native_marker = "auto"' in config_text
+    assert 'default_external_policy = "fallback"' in config_text
 
 
 def test_check_json_outputs_structured_analysis(tmp_path: Path, capsys) -> None:
@@ -238,6 +238,33 @@ def test_check_reports_plugin_configuration_error(tmp_path: Path, capsys) -> Non
     assert exit_code == 1
     assert "RXT060 Configuration error" in captured.out
     assert "enabled plugin was not discovered: numpy-rust" in captured.out
+
+
+def test_check_applies_package_import_policy_override(tmp_path: Path, capsys) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import safe_pkg
+
+def compute(x: float) -> float:
+    return safe_pkg.normalize(x)
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "check",
+            str(tmp_path),
+            "--package-import-policy=safe_pkg=try-native",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "experimental dependency lowering" in captured.out
+    assert "Import policies:" in captured.out
+    assert "[try-native] safe_pkg (external)" in captured.out
 
 
 def test_check_reports_config_error(tmp_path: Path, capsys) -> None:

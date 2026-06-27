@@ -37,6 +37,7 @@ def test_load_plugin_registry_activates_configured_installed_plugin() -> None:
                     "target_versions": ["stable"],
                     "target_build_options": {"binding": "pyo3"},
                     "rules": ["numpy.ndarray"],
+                    "packages": ["numpy"],
                 },
             ),
         ),
@@ -45,6 +46,7 @@ def test_load_plugin_registry_activates_configured_installed_plugin() -> None:
     assert [plugin.id for plugin in registry.discovered] == ["numpy-rust"]
     assert [plugin.id for plugin in registry.active] == ["numpy-rust"]
     assert registry.active[0].entry_point == "rextio.plugins:numpy-rust"
+    assert registry.active[0].packages == ("numpy",)
 
 
 def test_load_plugin_registry_does_not_activate_unconfigured_installed_plugin() -> None:

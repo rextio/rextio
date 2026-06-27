@@ -237,6 +237,20 @@ Native functions must not call:
 - unsupported external packages or unresolved functions (`RXT030`)
 - I/O, network, database, or ORM functions
 
+External package handling is conservative by default. Project-local imports are
+eligible for normal Rextio analysis, supported standard-library calls use
+built-in lowering rules, and active plugins may claim specific external Python
+packages through plugin metadata. External packages without an active plugin use
+`[imports] default_external_policy = "fallback"` unless a package-specific
+policy says otherwise.
+
+`policy = "try-native"` is an explicit opt-in for future dependency lowering and
+analysis reports. It does not mean Rextio silently translates arbitrary
+third-party package source into Rust. If no safe direct lowering exists, calls to
+that package keep the native candidate on CPython/Nuitka fallback and emit
+`RXT030`. When such a call is inside a loop, the diagnostic suggests
+function-level fallback, adding a plugin, or refactoring to a batch API.
+
 Fallback Python code may call native functions. If fallback Python code calls a
 native function inside a Python loop, Rextio emits `RXT073` because repeated
 Python/Rust boundary crossings may erase speedup. The suggestion points users
@@ -267,6 +281,7 @@ this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 - runtime profiling-based optimization
 - full runtime boundary-cost modeling
 - automatic native region fusion
+- automatic Rust translation of arbitrary third-party Python packages
 - JIT, Cranelift, LLVM, or MLIR integration
 - cloud build, SaaS dashboards, or GitHub app workflows
 - Mojo or Julia native code generation

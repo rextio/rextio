@@ -3,6 +3,7 @@ from __future__ import annotations
 from rextio.analyzer.common_calls import COMMON_DIRECT_RUST_CALLS
 from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.diagnostics import Diagnostic
+from rextio.analyzer.import_policy import decision_for_target
 from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, ProjectAnalysis
 
 SUPPORTED_INTERNAL_CALLS = {
@@ -98,20 +99,68 @@ def _first_boundary_error(
         if dependency is not None:
             continue
 
+        decision = decision_for_target(module, resolved.resolved_target)
+        message, suggestion = _external_call_diagnostic_text(resolved.resolved_target, call.in_loop, decision)
         return Diagnostic(
             code="RXT030",
             severity="error",
-            message=(
-                "unsupported external package or unresolved call in native function: "
-                f"{resolved.resolved_target}"
-            ),
+            message=message,
             file_path=function.file_path,
             line=call.line,
             column=call.column,
             function_name=function.qualname,
-            suggestion="Native functions may call only accepted native functions and supported builtins.",
+            suggestion=suggestion,
         )
     return None
+
+
+def _external_call_diagnostic_text(target: str, in_loop: bool, decision) -> tuple[str, str]:
+    if decision is None:
+        return (
+            f"unsupported unresolved call in native function: {target}",
+            "Native functions may call only accepted native functions and supported builtins.",
+        )
+    if decision.origin == "stdlib":
+        return (
+            f"unsupported standard-library call in native function: {target}",
+            "Use a supported Rextio standard-library subset call or keep this function on fallback.",
+        )
+    if decision.policy == "plugin":
+        plugin = decision.plugin or "<unconfigured>"
+        return (
+            f"plugin-managed external package call is not lowered by this build: {target}",
+            (
+                f"Ensure plugin {plugin!r} is active and provides a direct lowering rule for this call, "
+                "or keep the function on fallback."
+            ),
+        )
+    if decision.policy == "try-native":
+        return (
+            f"external package call requires experimental dependency lowering and remains fallback: {target}",
+            _external_package_suggestion(in_loop, "dependency lowering is opt-in and not available for this call"),
+        )
+    if decision.policy == "analyze":
+        return (
+            f"external package call is analyze-only and remains fallback: {target}",
+            _external_package_suggestion(in_loop, "switch this package to try-native only if it is pure Python and safe"),
+        )
+    return (
+        f"external package call uses fallback import policy: {target}",
+        _external_package_suggestion(in_loop, "add a Rextio plugin or explicit try-native package policy if needed"),
+    )
+
+
+def _external_package_suggestion(in_loop: bool, action: str) -> str:
+    base = (
+        f"{action}; otherwise keep this function on CPython/Nuitka fallback so Rextio does not "
+        "silently transform third-party package code."
+    )
+    if not in_loop:
+        return base
+    return (
+        f"{base} This call is inside a loop, so prefer function-level fallback, a package plugin, "
+        "or a batch API refactor to avoid repeated Python/Rust boundary crossings."
+    )
 
 
 def _first_runtime_dependency(

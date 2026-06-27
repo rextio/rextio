@@ -14,6 +14,7 @@ class RextioPlugin:
     target_versions: tuple[str, ...] = ()
     target_build_options: dict[str, str] = field(default_factory=dict)
     rules: tuple[str, ...] = ()
+    packages: tuple[str, ...] = ()
     source: str = "entry-point"
     package: str | None = None
     entry_point: str | None = None
@@ -54,6 +55,7 @@ class RextioPlugin:
             "target_versions": list(self.target_versions),
             "target_build_options": dict(sorted(self.target_build_options.items())),
             "rules": list(self.rules),
+            "packages": list(self.packages),
             "source": self.source,
             "package": self.package,
             "entry_point": self.entry_point,

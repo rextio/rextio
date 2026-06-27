@@ -25,6 +25,10 @@ DEFAULT_CONFIG = {
     "plugins": {
         "enabled": (),
     },
+    "imports": {
+        "default_external_policy": "fallback",
+        "packages": {},
+    },
     "executable": {
         "entrypoint": None,
         "name": None,

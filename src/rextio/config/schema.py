@@ -35,6 +35,19 @@ class PluginConfig:
 
 
 @dataclass(frozen=True)
+class ImportPackagePolicy:
+    policy: str = "fallback"
+    plugin: str | None = None
+    max_depth: int = 0
+
+
+@dataclass(frozen=True)
+class ImportsConfig:
+    default_external_policy: str = "fallback"
+    packages: dict[str, ImportPackagePolicy] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ExecutableConfig:
     entrypoint: str | None = None
     name: str | None = None
@@ -58,5 +71,6 @@ class RextioConfig:
     fallback: FallbackConfig = FallbackConfig()
     target: TargetConfig = TargetConfig()
     plugins: PluginConfig = PluginConfig()
+    imports: ImportsConfig = ImportsConfig()
     executable: ExecutableConfig = ExecutableConfig()
     policy: PolicyConfig = PolicyConfig()

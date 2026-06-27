@@ -50,6 +50,8 @@ def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> Be
         native_marker=config.policy.native_marker,
         target_language=target_plan.spec.language,
         native_top_level=config.policy.native_top_level,
+        imports_config=config.imports,
+        active_plugins=target_plan.plugins.active,
     )
     function = _find_target(analysis, target)
     if function is None:

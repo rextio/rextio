@@ -309,6 +309,8 @@ Common settings:
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
 | `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
+| `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
+| `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
@@ -323,9 +325,29 @@ clearly until those backends exist.
 
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry
-point group, and a project enables specific plugin ids with `[plugins] enabled`
-or `--enable-plugin`. Concrete third-party plugin transformations are not
-bundled in 0.1.0 alpha.
+point group, including the Python package names it covers. A project enables
+specific plugin ids with `[plugins] enabled` or `--enable-plugin`.
+
+External Python packages without an active Rextio plugin are conservative by
+default: Rextio does not silently translate third-party package source into Rust.
+Calls to those packages keep the surrounding native candidate on fallback unless
+you add a plugin or explicitly opt into experimental dependency analysis for a
+known pure-Python package:
+
+```toml
+[imports]
+default_external_policy = "fallback"
+
+[imports.packages]
+"some_pure_python_pkg" = { policy = "try-native", max_depth = 1 }
+"legacy_dynamic_pkg" = "fallback"
+"known_pkg" = { policy = "plugin", plugin = "known-rust" }
+```
+
+The supported package policies are `fallback`, `analyze`, `try-native`, and
+`plugin`. Concrete third-party plugin transformations and general dependency
+lowering are not bundled in 0.1.0 alpha; `try-native` is an explicit planning
+policy and still falls back when no safe direct lowering exists.
 
 ## Examples
 

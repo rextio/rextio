@@ -375,6 +375,14 @@ nuitka = "experimental"
 [plugins]
 enabled = []
 
+[imports]
+default_external_policy = "fallback"
+
+[imports.packages]
+# "some_pure_python_pkg" = { policy = "try-native", max_depth = 1 }
+# "legacy_dynamic_pkg" = "fallback"
+# "known_pkg" = { policy = "plugin", plugin = "known-rust" }
+
 [executable]
 # entrypoint = "myapp.cli:main"
 # name = "myapp"
@@ -446,6 +454,8 @@ rextio build --target-language=rust
 rextio build --target-version=stable
 rextio build --target-build-option profile=release
 rextio build --enable-plugin=python-basic-rust
+rextio build --default-external-policy=fallback
+rextio build --package-import-policy some_pure_python_pkg=try-native
 rextio build --fallback=cpython
 rextio build --fallback=nuitka
 rextio build --fallback-threshold=1000
@@ -476,6 +486,8 @@ REXTIO_TARGET_LANGUAGE
 REXTIO_TARGET_VERSION
 REXTIO_TARGET_BUILD_OPTIONS
 REXTIO_PLUGINS_ENABLED
+REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY
+REXTIO_IMPORTS_PACKAGES
 REXTIO_FALLBACK_BACKEND
 REXTIO_BOUNDARY_FALLBACK_THRESHOLD
 REXTIO_RUST_BINDING
@@ -505,6 +517,24 @@ backends are implemented. Rextio plugins must be ordinary Python packages
 installed with tools such as `pip` or `uv`. Each plugin package exposes metadata
 through the `rextio.plugins` entry point group, and projects opt into plugin ids
 with `[plugins] enabled` or `--enable-plugin`.
+
+Import handling must stay conservative in 0.1.0 alpha:
+
+* Project-local imports are analyzed as normal Rextio code.
+* Supported standard-library calls use built-in lowering rules.
+* Active plugins may claim external Python packages through plugin metadata.
+* External packages without an active plugin use
+  `[imports] default_external_policy = "fallback"` by default.
+* Package-specific `policy = "try-native"` is an explicit opt-in for future
+  dependency lowering and analysis reporting only; do not silently translate
+  arbitrary third-party package source into Rust.
+* Package-specific `policy = "plugin"` requires the referenced plugin to be
+  active for the build.
+
+If a native candidate calls a fallback-policy external package, reject that
+candidate from direct Rust lowering with `RXT030`. If the call is inside a loop,
+the diagnostic should suggest function-level fallback, adding a plugin, or
+refactoring to a batch API to avoid repeated Python/Rust boundary crossings.
 
 Behavior:
 

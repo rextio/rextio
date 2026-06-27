@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_target_options(check_parser)
+    _add_import_options(check_parser)
     _add_policy_options(check_parser)
     check_parser.set_defaults(handler=check_cmd.run)
 
@@ -50,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_target_options(build_parser_)
+    _add_import_options(build_parser_)
     build_parser_.add_argument(
         "--fallback",
         choices=("cpython", "nuitka"),
@@ -141,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_target_options(generate_parser)
+    _add_import_options(generate_parser)
     generate_parser.add_argument(
         "--fallback",
         choices=("cpython", "nuitka"),
@@ -233,6 +236,29 @@ def _add_target_options(parser: argparse.ArgumentParser) -> None:
         default=None,
         dest="plugin_enabled",
         help="Installed Rextio plugin id to enable. Overrides REXTIO_PLUGINS_ENABLED and [plugins] enabled.",
+    )
+
+
+def _add_import_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--default-external-policy",
+        choices=("fallback", "analyze", "try-native"),
+        default=None,
+        help=(
+            "Default policy for external Python packages without an active Rextio plugin. "
+            "Overrides REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY and [imports] default_external_policy."
+        ),
+    )
+    parser.add_argument(
+        "--package-import-policy",
+        action="append",
+        default=None,
+        metavar="PACKAGE=POLICY",
+        type=_key_value,
+        help=(
+            "Per-package import policy, where POLICY is fallback, analyze, plugin, or try-native. "
+            "May be passed more than once. Overrides REXTIO_IMPORTS_PACKAGES and [imports.packages]."
+        ),
     )
 
 
