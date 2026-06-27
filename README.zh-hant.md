@@ -255,6 +255,8 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
+| `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
+| `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
 | `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
@@ -263,7 +265,10 @@ CLI parameter > environment variable > rextio.toml > built-in default
 目前實作的 native target 只有 Rust。`mojo` 和 `julia` 只是未來 backend 的 planning 值。
 Rextio plugin 是透過 `pip` 或 `uv` 安裝的一般 Python package，並透過 `rextio.plugins`
 entry point group 暴露 metadata。專案透過 `[plugins] enabled` 或 `--enable-plugin`
-宣告要使用的 plugin id。0.1.0 alpha 不內建具體第三方 plugin 轉換。
+宣告要使用的 plugin id。沒有 plugin 的外部 Python package 預設 fallback。可以透過
+`[imports.packages]` 或 `--package-import-policy` 對明確允許的 pure-Python dependency
+設定 `try-native`，但如果沒有安全的 direct lowering，Rextio 仍會使用 fallback。
+0.1.0 alpha 不內建具體第三方 plugin 轉換。
 
 ## 範例
 

@@ -151,6 +151,8 @@ flag and environment variable. Common examples:
 --target-version / REXTIO_TARGET_VERSION / [target] version
 --target-build-option / REXTIO_TARGET_BUILD_OPTIONS / [target.build_options]
 --enable-plugin / REXTIO_PLUGINS_ENABLED / [plugins] enabled
+--default-external-policy / REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY / [imports] default_external_policy
+--package-import-policy / REXTIO_IMPORTS_PACKAGES / [imports.packages]
 --rust-importable / REXTIO_RUST_IMPORTABLE / [rust] importable
 --rust-crate-name / REXTIO_RUST_CRATE_NAME / [rust] crate_name
 --native-marker / REXTIO_NATIVE_MARKER / [policy] native_marker
@@ -168,6 +170,28 @@ codegen backends are implemented. Rextio plugins are installed as ordinary
 Python packages and expose metadata through the `rextio.plugins` entry point
 group. Projects enable specific plugin ids with `[plugins] enabled` or
 `--enable-plugin`.
+
+Import handling is intentionally conservative. Project-local imports are
+analyzed as normal Rextio code, supported standard-library calls use built-in
+lowering, and active plugins may claim external package imports through their
+metadata. External packages without an active plugin use
+`[imports] default_external_policy = "fallback"` by default. A project can
+declare package-specific policies:
+
+```toml
+[imports]
+default_external_policy = "fallback"
+
+[imports.packages]
+"some_pure_python_pkg" = { policy = "try-native", max_depth = 1 }
+"legacy_dynamic_pkg" = "fallback"
+"known_pkg" = { policy = "plugin", plugin = "known-rust" }
+```
+
+`try-native` is an explicit opt-in for future dependency lowering and analysis
+reports. It does not authorize silent conversion of arbitrary third-party source;
+if no safe direct lowering exists, Rextio keeps the native candidate on
+CPython/Nuitka fallback and reports the boundary reason.
 
 ## Release Verification
 

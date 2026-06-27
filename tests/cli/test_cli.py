@@ -16,9 +16,9 @@ def test_init_creates_default_project_files(tmp_path: Path, capsys) -> None:
     assert (tmp_path / "rextio.toml").exists()
     assert (tmp_path / "REXTIO.md").exists()
     assert (tmp_path / ".rextioignore").exists()
-    assert 'native_marker = "auto"' in (tmp_path / "rextio.toml").read_text(
-        encoding="utf-8"
-    )
+    config_text = (tmp_path / "rextio.toml").read_text(encoding="utf-8")
+    assert 'native_marker = "auto"' in config_text
+    assert 'default_external_policy = "fallback"' in config_text
 
 
 def test_check_json_outputs_structured_analysis(tmp_path: Path, capsys) -> None:

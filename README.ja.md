@@ -259,6 +259,8 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
+| `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
+| `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
 | `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
@@ -268,7 +270,10 @@ CLI parameter > environment variable > rextio.toml > built-in default
 planning value です。Rextio plugin は `pip` や `uv` でインストールする通常の Python
 package で、`rextio.plugins` entry point group から metadata を公開します。プロジェクトは
 `[plugins] enabled` または `--enable-plugin` で使う plugin id を指定します。0.1.0 alpha は
-具体的な third-party plugin 変換を内蔵しません。
+具体的な third-party plugin 変換を内蔵しません。plugin がない外部 Python package は
+default で fallback です。明示的に許可する pure-Python dependency は
+`[imports.packages]` または `--package-import-policy` で `try-native` を指定できますが、
+安全な direct lowering がなければ Rextio は fallback を使います。
 
 ## 例
 

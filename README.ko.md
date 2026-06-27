@@ -301,6 +301,8 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
 | `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
+| `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
+| `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
@@ -314,8 +316,11 @@ planning 값으로 받을 수 있지만, 해당 codegen backend가 생기기 전
 
 Rextio plugin은 `pip`나 `uv`로 설치하는 일반 Python package이며, `rextio.plugins`
 entry point group으로 metadata를 노출합니다. 프로젝트는 `[plugins] enabled` 또는
-`--enable-plugin`으로 사용할 plugin id를 명시합니다. 구체적인 외부 패키지 plugin 변환은
-0.1.0 alpha에 번들되어 있지 않습니다.
+`--enable-plugin`으로 사용할 plugin id를 명시합니다. plugin이 없는 외부 Python package는
+기본적으로 fallback입니다. 특정 pure-Python dependency를 명시적으로 허용하려면
+`[imports.packages]` 또는 `--package-import-policy`로 `try-native`를 지정할 수 있지만,
+안전한 direct lowering이 없으면 Rextio는 계속 fallback으로 둡니다. 구체적인 외부 패키지
+plugin 변환은 0.1.0 alpha에 번들되어 있지 않습니다.
 
 ## 예제
 
