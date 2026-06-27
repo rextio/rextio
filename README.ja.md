@@ -100,6 +100,7 @@ executable packaging は実行しません。`rextio build` は生成、コン�
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
+rextio build . --jit --jit-hot-threshold=25
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -222,6 +223,24 @@ fn main() -> Result<(), my_native::RextioError> {
 この crate は typed Rust に直接 lowering された関数だけを export します。fallback-only 関数と
 runtime semantics shim は Python-facing path のままです。
 
+## Experimental native JIT
+
+Rextio はごく狭い scalar helper region に対して experimental native-side JIT を有効化できます。
+デフォルトでは無効です。
+
+```toml
+[jit]
+enabled = true
+backend = "cranelift"
+hot_threshold = 25
+```
+
+同じ設定は `rextio build . --jit --jit-hot-threshold=25`、
+`REXTIO_JIT=true`、`REXTIO_JIT_BACKEND`、`REXTIO_JIT_HOT_THRESHOLD` でも指定できます。
+JIT は生成された native module 内部でのみ動作し、Python が別の JIT API を直接呼ぶことは
+ありません。Cranelift dependency は JIT が有効で JIT 候補が生成される場合だけ generated
+Cargo project に追加されます。
+
 ## executable artifact
 
 ```text
@@ -261,6 +280,9 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
+| `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
+| `[jit] backend` | `--jit-backend` | `REXTIO_JIT_BACKEND` |
+| `[jit] hot_threshold` | `--jit-hot-threshold` | `REXTIO_JIT_HOT_THRESHOLD` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
 | `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |

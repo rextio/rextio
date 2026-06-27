@@ -267,6 +267,21 @@ default. The runtime environment variable overrides that embedded default. Set
 the threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable
 this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 
+## Experimental Native-Side JIT Boundary
+
+Rextio 0.1.0 alpha includes an opt-in native-side JIT for a very narrow scalar
+helper subset. It is disabled by default and must be enabled with `[jit]
+enabled = true`, `--jit`, or `REXTIO_JIT=true`.
+
+The current JIT path is not a general Python JIT. It only covers internal
+Rextio IR regions with scalar `int` or `float` arguments and return values, a
+matching scalar signature, and a single arithmetic return expression. The
+generated Rust module uses Cranelift only after the configured hot threshold.
+Python code does not call a separate JIT API directly.
+
+Code outside this subset remains on the normal direct Rust, Python runtime shim,
+or CPython/Nuitka fallback path.
+
 ## Out of Scope for 0.1.0 alpha
 
 0.1.0 alpha does not include:
@@ -282,7 +297,7 @@ this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 - full runtime boundary-cost modeling
 - automatic native region fusion
 - automatic Rust translation of arbitrary third-party Python packages
-- JIT, Cranelift, LLVM, or MLIR integration
+- general-purpose Python JIT, LLVM JIT, or MLIR integration
 - cloud build, SaaS dashboards, or GitHub app workflows
 - Mojo or Julia native code generation
 - concrete third-party plugin transformations

@@ -33,6 +33,11 @@ default_external_policy = "fallback"
 # "some_pkg" = { policy = "try-native", max_depth = 1 }
 # "known_pkg" = { policy = "plugin", plugin = "known-rust" }
 
+[jit]
+enabled = false
+backend = "cranelift"
+hot_threshold = 25
+
 [executable]
 # entrypoint = "myapp.cli:main"
 # name = "myapp"

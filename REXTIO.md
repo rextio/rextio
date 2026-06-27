@@ -58,6 +58,7 @@ rextio init --project-root demo
 rextio check demo
 rextio generate demo --fallback=cpython
 rextio build demo --fallback=cpython
+rextio build demo --fallback=cpython --jit --jit-hot-threshold=25
 rextio build demo --fallback=cpython --rust-importable --rust-crate-name=demo_native
 rextio build demo --fallback=cpython --entrypoint=demo_app.cli:main
 rextio bench demo_app.compute --project-root demo
@@ -153,6 +154,9 @@ flag and environment variable. Common examples:
 --enable-plugin / REXTIO_PLUGINS_ENABLED / [plugins] enabled
 --default-external-policy / REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY / [imports] default_external_policy
 --package-import-policy / REXTIO_IMPORTS_PACKAGES / [imports.packages]
+--jit / REXTIO_JIT / [jit] enabled
+--jit-backend / REXTIO_JIT_BACKEND / [jit] backend
+--jit-hot-threshold / REXTIO_JIT_HOT_THRESHOLD / [jit] hot_threshold
 --rust-importable / REXTIO_RUST_IMPORTABLE / [rust] importable
 --rust-crate-name / REXTIO_RUST_CRATE_NAME / [rust] crate_name
 --native-marker / REXTIO_NATIVE_MARKER / [policy] native_marker
@@ -192,6 +196,41 @@ default_external_policy = "fallback"
 reports. It does not authorize silent conversion of arbitrary third-party source;
 if no safe direct lowering exists, Rextio keeps the native candidate on
 CPython/Nuitka fallback and reports the boundary reason.
+
+## Experimental Native-Side JIT
+
+JIT is an explicit opt-in in 0.1.0 alpha:
+
+```toml
+[jit]
+enabled = true
+backend = "cranelift"
+hot_threshold = 25
+```
+
+The same controls are available as `--jit` / `--no-jit`,
+`--jit-backend=cranelift`, `--jit-hot-threshold=N`, or through
+`REXTIO_JIT`, `REXTIO_JIT_BACKEND`, and `REXTIO_JIT_HOT_THRESHOLD`.
+
+The implemented model is a native runtime Tier-2 path:
+
+```text
+AOT: Rextio IR -> Rust -> rustc/LLVM
+JIT: Rextio IR -> Cranelift, inside the generated native module
+```
+
+Python code does not call a separate JIT API. Instead, an accepted AOT native
+function may call an internal helper region that Rextio can represent as simple
+typed scalar IR but does not export as a PyO3 function. Generated Rust runs an
+interpreter-equivalent expression until the hot threshold is reached, then
+compiles the helper with Cranelift and caches the native function pointer.
+
+The current JIT subset is deliberately narrow: scalar `int` or `float`
+arguments and return values, matching argument/return scalar type, and a single
+arithmetic return expression. Cranelift dependencies are emitted into generated
+Cargo projects only when JIT is enabled and at least one JIT region is included.
+With JIT disabled, the same native-to-fallback helper call is rejected by the
+normal boundary rules and the caller stays on Python fallback.
 
 ## Release Verification
 

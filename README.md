@@ -111,6 +111,7 @@ Common build variants:
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
+rextio build . --jit --jit-hot-threshold=25
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -238,6 +239,34 @@ dynamic attribute access. It reports `RXT080`.
 
 This path preserves behavior. It should not be treated as a Rust speedup path.
 
+## Experimental Native JIT
+
+Rextio can optionally enable an experimental native-side JIT for a very narrow
+set of scalar helper regions. This is off by default.
+
+When enabled, Rextio may keep an AOT-incompatible but IR-compatible helper as an
+internal JIT region and generate Rust code that compiles that region with
+Cranelift after a hot-call threshold. The JIT runs inside the generated native
+module; Python does not call a separate JIT API directly.
+
+```toml
+[jit]
+enabled = true
+backend = "cranelift"
+hot_threshold = 25
+```
+
+Equivalent command-line and environment controls are:
+
+```text
+rextio build . --jit --jit-hot-threshold=25
+REXTIO_JIT=true REXTIO_JIT_HOT_THRESHOLD=25 rextio build .
+```
+
+Cranelift dependencies are added to generated Cargo projects only when JIT is
+enabled and JIT candidates are emitted. If JIT is disabled, candidates that
+would require native-to-fallback helper calls stay on the normal fallback path.
+
 ## Rust-Importable Crate
 
 When direct Rust functions are useful from a Rust application, build an
@@ -311,6 +340,9 @@ Common settings:
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
+| `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
+| `[jit] backend` | `--jit-backend` | `REXTIO_JIT_BACKEND` |
+| `[jit] hot_threshold` | `--jit-hot-threshold` | `REXTIO_JIT_HOT_THRESHOLD` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
