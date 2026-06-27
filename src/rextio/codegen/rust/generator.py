@@ -448,16 +448,20 @@ class _FunctionRenderer:
                 return [*lines, f"{prefix}let mut {target}: {rust_type(statement.target_type)} = {value};"]
             return [*lines, f"{prefix}let mut {target} = {value};"]
         if isinstance(statement, DictSetIR):
+            # Python evaluates the RHS value before the subscript key for
+            # `d[k] = v`; bind the value first to preserve that order.
+            value_tmp = self.next_temp("__rextio_value")
             lines = [
-                *self.named_expr_prelude(statement.key, indent),
                 *self.named_expr_prelude(statement.value, indent),
+                f"{prefix}let {value_tmp} = "
+                f"{strip_wrapping_parens(self.render_call_arg(statement.value))};",
+                *self.named_expr_prelude(statement.key, indent),
             ]
             self.declared.add(statement.target.id)
             return [
                 *lines,
                 f"{prefix}{statement.target.id}.insert("
-                f"{strip_wrapping_parens(self.render_call_arg(statement.key))}, "
-                f"{strip_wrapping_parens(self.render_call_arg(statement.value))});"
+                f"{strip_wrapping_parens(self.render_call_arg(statement.key))}, {value_tmp});"
             ]
         if isinstance(statement, AppendIR):
             lines = self.named_expr_prelude(statement.value, indent)
@@ -1015,20 +1019,26 @@ class _FunctionRenderer:
         #     instead of panicking via an unchecked `[]`.
         # The sequence and index are bound to temporaries so neither sub-expression
         # is evaluated twice. The index is cast to i64 (absorbing any integer
-        # operand type) and bounds are checked explicitly in the i64 domain, so the
-        # final `as usize` only runs for an in-range index — correct on every target
+        # operand type); negative normalization uses checked_add (cannot overflow
+        # by construction, but this avoids any debug-build overflow panic and makes
+        # it explicit). Bounds are checked in the i64 domain, so the final
+        # `as usize` only runs for an in-range index — correct on every target
         # width (no reliance on usize truncation). `len() as i64` is exact because a
         # sequence length never exceeds `isize::MAX <= i64::MAX`.
         seq = self.next_temp("__rextio_seq")
         index = self.next_temp("__rextio_index")
         length = self.next_temp("__rextio_len")
+        bound = self.next_temp("__rextio_bound")
         return (
             f"{{ let {seq} = &{self.render_expr(expr.value)}; "
             f"let {length} = {seq}.len() as i64; "
             f"let {index} = ({strip_wrapping_parens(self.render_expr(expr.index))}) as i64; "
-            f"let {index} = if {index} < 0 {{ {index} + {length} }} else {{ {index} }}; "
-            f"(if {index} >= 0 && {index} < {length} "
-            f"{{ {seq}.get({index} as usize).cloned() }} else {{ None }})"
+            f"let {index} = if {index} < 0 {{ {index}.checked_add({length}) }} "
+            f"else {{ Some({index}) }}; "
+            f"(match {index} {{ "
+            f"Some({bound}) if {bound} >= 0 && {bound} < {length} => "
+            f"{seq}.get({bound} as usize).cloned(), "
+            f"_ => None }})"
             f".ok_or_else(|| {self._index_error_expr()})? }}"
         )
 
@@ -1226,20 +1236,28 @@ class _FunctionRenderer:
         if expr.function == "list.copy" and len(expr.args) == 1:
             return receiver
         if expr.function == "list.count" and len(expr.args) == 2:
+            recv_tmp = self.next_temp("__rextio_recv")
             needle = strip_wrapping_parens(self.render_call_arg(expr.args[1]))
             needle_tmp = self.next_temp("__rextio_needle")
-            # Hoist the needle out of the predicate closure: it may contain `?`
-            # (e.g. `xs.count(ys[i])`), which cannot appear inside a closure body.
+            # Bind the receiver before the argument to preserve Python's
+            # left-to-right evaluation order, and hoist the needle out of the
+            # predicate closure (it may contain `?`, e.g. `xs.count(ys[i])`).
+            # `filter` passes `&Item`, so `*item` is `&T` and matches `&needle`.
             return (
-                f"{{ let {needle_tmp} = {needle}; "
-                f"({receiver}).iter().filter(|item| *item == &{needle_tmp}).count() as i64 }}"
+                f"{{ let {recv_tmp} = &{receiver}; "
+                f"let {needle_tmp} = {needle}; "
+                f"{recv_tmp}.iter().filter(|item| *item == &{needle_tmp}).count() as i64 }}"
             )
         if expr.function == "list.index" and len(expr.args) == 2:
+            recv_tmp = self.next_temp("__rextio_recv")
             needle = strip_wrapping_parens(self.render_call_arg(expr.args[1]))
             needle_tmp = self.next_temp("__rextio_needle")
+            # `position` passes `Item` (`&T`), so the predicate compares `item`
+            # (not `*item`) against `&needle`.
             return (
-                f"{{ let {needle_tmp} = {needle}; "
-                f"({receiver}).iter().position(|item| item == &{needle_tmp})"
+                f"{{ let {recv_tmp} = &{receiver}; "
+                f"let {needle_tmp} = {needle}; "
+                f"{recv_tmp}.iter().position(|item| item == &{needle_tmp})"
                 ".map(|index| index as i64)"
                 f".ok_or_else(|| {self.error_new(json.dumps('list.index(x): x not in list'))})? }}"
             )

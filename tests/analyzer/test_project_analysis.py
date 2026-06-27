@@ -602,6 +602,32 @@ def caller(x: float) -> float:
     assert accepted == {"app.shim": True, "app.caller": True}
 
 
+def test_non_integer_list_index_is_rejected(tmp_path: Path) -> None:
+    # Python requires int list indices; a float index is a TypeError, so Rextio
+    # must reject it rather than silently truncate it to an int in native code.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def at_literal(xs: list[int]) -> int:
+    return xs[1.9]
+
+@rextio.native
+def at_var(xs: list[int], j: float) -> int:
+    return xs[j]
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert analysis.accepted_native_functions == []
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert {"app.at_literal", "app.at_var"} <= rejected
+
+
 def test_undecorated_caller_of_imported_runtime_shim_is_rejected(tmp_path: Path) -> None:
     # The RXT074 boundary rule also applies across module boundaries.
     write_module(tmp_path, "src/pkg/__init__.py", "")

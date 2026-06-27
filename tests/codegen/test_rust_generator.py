@@ -10,7 +10,7 @@ from rextio.ir.lowering import lower_project
 # `{ let __rextio_seq_N = ...; ... }` block uses generated temp names, so tests
 # match on this temp-independent suffix instead of the full expression.
 PYO3_INDEX_ERROR_SUFFIX = (
-    " } else { None })"
+    ", _ => None })"
     '.ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("list index out of range"))? }'
 )
 
@@ -430,7 +430,10 @@ def echo(value: int | None) -> int | None:
     assert "= &scores;" in source
     assert "PyKeyError::new_err(__rextio_key" in source
     assert "let mut weights: HashMap<String, f64> = HashMap::new();" in source
-    assert 'weights.insert(String::from("a"), 1.5);' in source
+    # The RHS value is bound before the key (Python evaluates the RHS first).
+    assert "let __rextio_value" in source
+    assert "= 1.5;" in source
+    assert 'weights.insert(String::from("a"), __rextio_value' in source
     assert "fn app__maybe(flag: bool, x: i64) -> PyResult<Option<i64>> {" in source
     assert "return Ok(Some(x));" in source
     assert "return Ok(None);" in source
@@ -799,8 +802,9 @@ def at(xs: list[int], i: int) -> int:
     assert "{ let __rextio_seq" in source
     assert "< 0 {" in source
     assert ">= 0 &&" in source
+    assert "checked_add(" in source
     assert (
-        " } else { None })"
+        ", _ => None })"
         '.ok_or_else(|| RextioError::new("list index out of range"))? }'
     ) in source
     assert "pyo3" not in source

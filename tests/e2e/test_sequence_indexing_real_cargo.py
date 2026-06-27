@@ -43,8 +43,20 @@ def count_seq(xs: list[int], ys: list[int], i: int) -> int:
     return xs.count(ys[i])
 
 @rextio.native
+def index_seq(xs: list[int], ys: list[int], i: int) -> int:
+    return xs.index(ys[i])
+
+@rextio.native
 def nested(rows: list[int], idx: list[int], i: int) -> int:
     return rows[idx[i]]
+
+@rextio.native
+def count_str(xs: list[str], y: str) -> int:
+    return xs.count(y)
+
+@rextio.native
+def index_str(xs: list[str], y: str) -> int:
+    return xs.index(y)
 """,
         encoding="utf-8",
     )
@@ -91,7 +103,17 @@ def nested(rows: list[int], idx: list[int], i: int) -> int:
     assert module.lookup({1: 1.5, 2: 2.5}, [2, 1], 0) == 2.5  # scores[keys[0]] = scores[2]
     assert module.lookup({1: 1.5, 2: 2.5}, [2, 1], -1) == 1.5  # scores[keys[-1]] = scores[1]
     assert module.count_seq([1, 2, 2, 3], [2], 0) == 2  # xs.count(ys[0]) = count of 2
+    assert module.index_seq([1, 2, 3], [3], 0) == 2  # xs.index(ys[0]) = index of 3
     assert module.nested([10, 20, 30], [2, 0, -1], 0) == 30  # rows[idx[0]] = rows[2]
     assert module.nested([10, 20, 30], [2, 0, -1], 2) == 30  # rows[idx[-1]] = rows[-1]
     with pytest.raises(IndexError):
         module.nested([10, 20, 30], [5], 0)  # rows[idx[0]] = rows[5] -> IndexError
+
+    # list.count / list.index over String elements (deref-asymmetric predicates).
+    assert module.count_str(["a", "b", "b"], "b") == 2
+    assert module.index_str(["a", "b", "c"], "c") == 2
+
+    # A `?`-bearing needle that goes out of range raises IndexError (not a panic),
+    # confirming the hoisted needle still propagates errors to the function.
+    with pytest.raises(IndexError):
+        module.count_seq([1, 2, 3], [], 0)  # ys[0] on empty list -> IndexError
