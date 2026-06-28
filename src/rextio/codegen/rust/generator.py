@@ -4,7 +4,27 @@ import json
 import re
 
 from rextio.codegen.native_names import native_function_name
+from rextio.codegen.rust.checked_arith import (
+    checked_arith_helpers as _checked_arith_helpers,
+)
+from rextio.codegen.rust.errors import RustCodegenError
+from rextio.codegen.rust.jit_codegen import jit_prelude as _jit_prelude
+from rextio.codegen.rust.jit_codegen import jit_pointer_type as _jit_pointer_type
+from rextio.codegen.rust.jit_codegen import render_cranelift_expr as _render_cranelift_expr
 from rextio.codegen.rust.pyo3 import render_pyo3_module
+from rextio.codegen.rust.rust_format import (
+    block_always_returns as _block_always_returns,
+)
+from rextio.codegen.rust.rust_format import (
+    default_return,
+    python_logging_format_to_rust,
+    render_literal,
+    strip_expr_if_safe,
+    strip_wrapping_parens,
+)
+from rextio.codegen.rust.rust_format import (
+    indent as _indent,
+)
 from rextio.codegen.rust.type_map import rust_type
 from rextio.ir.nodes import (
     AppendIR,
@@ -57,163 +77,11 @@ from rextio.ir.types import (
 )
 
 
-class RustCodegenError(RuntimeError):
-    pass
+# `RustCodegenError` is imported from .errors above and re-exported here for
+# backward compatibility (tests import `rextio.codegen.rust.generator`). No
+# `__all__` is declared so this pure refactor leaves the module's wildcard-export
+# surface exactly as it was before the split.
 
-
-# Order is fixed so emitted helpers are deterministic regardless of use order.
-_CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
-_CHECKED_HELPER_ORDER = (
-    "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i"
-)
-
-
-def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
-    """Emit the ``__rextio_checked_*`` helpers in ``used``.
-
-    ``used`` is the structurally-recorded set of helper names referenced by the
-    rendered functions, so a module gains exactly the helpers it calls and no
-    dead code. The pyo3 variant raises ``OverflowError`` / ``ZeroDivisionError``;
-    the crate variant returns ``RextioError``.
-    """
-
-    def overflow_err_msg(message: str) -> str:
-        if mode == "pyo3":
-            return f'pyo3::exceptions::PyOverflowError::new_err("{message}")'
-        return f'RextioError::new("{message}")'
-
-    def overflow_err() -> str:
-        return overflow_err_msg("integer overflow")
-
-    def zero_div_err(message: str) -> str:
-        if mode == "pyo3":
-            return f'pyo3::exceptions::PyZeroDivisionError::new_err("{message}")'
-        return f'RextioError::new("{message}")'
-
-    def value_err(message: str) -> str:
-        if mode == "pyo3":
-            return f'pyo3::exceptions::PyValueError::new_err("{message}")'
-        return f'RextioError::new("{message}")'
-
-    ret = "PyResult<i64>" if mode == "pyo3" else "Result<i64, RextioError>"
-    fret = "PyResult<f64>" if mode == "pyo3" else "Result<f64, RextioError>"
-    lines: list[str] = []
-    for name in _CHECKED_HELPER_ORDER:
-        if name not in used:
-            continue
-        fn = f"__rextio_checked_{name}"
-        if name in _CHECKED_BINOP_METHOD:
-            method = _CHECKED_BINOP_METHOD[name]
-            lines.extend(
-                [
-                    f"fn {fn}(a: i64, b: i64) -> {ret} {{",
-                    f"    a.{method}(b).ok_or_else(|| {overflow_err()})",
-                    "}",
-                    "",
-                ]
-            )
-        elif name == "rem":
-            # Python `%` is floored (the result takes the divisor's sign), while
-            # Rust's `checked_rem` is truncated (it takes the dividend's sign), so
-            # `-7 % 3` is 2 in Python but -1 in Rust. Correct the sign when the
-            # truncated remainder and the divisor differ in sign. `a % 0` is a
-            # ZeroDivisionError. `checked_rem` returns `None` only for the single
-            # overflowing case `i64::MIN % -1`, whose remainder is 0 in both
-            # Python and Rust, so `unwrap_or(0)` is exact there (not a catch-all).
-            # `|r| < |b|`, so the `r + b` correction cannot overflow.
-            lines.extend(
-                [
-                    f"fn {fn}(a: i64, b: i64) -> {ret} {{",
-                    f'    if b == 0 {{ return Err({zero_div_err("integer modulo by zero")}); }}',
-                    "    let r = a.checked_rem(b).unwrap_or(0);",
-                    "    Ok(if r != 0 && (r ^ b) < 0 { r + b } else { r })",
-                    "}",
-                    "",
-                ]
-            )
-        elif name == "neg":
-            lines.extend(
-                [
-                    f"fn {fn}(a: i64) -> {ret} {{",
-                    f"    a.checked_neg().ok_or_else(|| {overflow_err()})",
-                    "}",
-                    "",
-                ]
-            )
-        elif name == "abs":
-            # `i64::MIN.abs()` overflows (Python `abs(-2**63) == 2**63`).
-            lines.extend(
-                [
-                    f"fn {fn}(a: i64) -> {ret} {{",
-                    f"    a.checked_abs().ok_or_else(|| {overflow_err()})",
-                    "}",
-                    "",
-                ]
-            )
-        elif name == "sum":
-            # Python `sum` is arbitrary precision; fold with checked addition so an
-            # i64 overflow raises instead of panicking in `Iterator::sum`.
-            lines.extend(
-                [
-                    f"fn {fn}(xs: &[i64]) -> {ret} {{",
-                    f"    xs.iter().copied().try_fold(0i64, |acc, x| "
-                    f"acc.checked_add(x).ok_or_else(|| {overflow_err()}))",
-                    "}",
-                    "",
-                ]
-            )
-        elif name == "fdiv":
-            # Python raises ZeroDivisionError for `x / 0.0`; Rust returns inf/NaN.
-            lines.extend(
-                [
-                    f"fn {fn}(a: f64, b: f64) -> {fret} {{",
-                    f'    if b == 0.0 {{ return Err({zero_div_err("float division by zero")}); }}',
-                    "    Ok(a / b)",
-                    "}",
-                    "",
-                ]
-            )
-        elif name == "f2i":
-            # `math.floor`/`ceil`/`trunc` return a Python int (arbitrary
-            # precision). A bare `as i64` cast saturates a value outside i64 range
-            # to i64::MIN/MAX (a silent wrong value), so guard the conversion:
-            # NaN -> ValueError, infinity/out-of-range -> OverflowError (a
-            # catchable error rather than a silent saturation; full arbitrary
-            # precision is a separate future item). The bounds use 2^63 exactly
-            # (representable in f64); i64's valid range is [-2^63, 2^63 - 1].
-            lines.extend(
-                [
-                    f"fn {fn}(x: f64) -> {ret} {{",
-                    f'    if x.is_nan() {{ return Err({value_err("cannot convert float NaN to integer")}); }}',
-                    "    if x >= -9223372036854775808.0 && x < 9223372036854775808.0 {",
-                    "        Ok(x as i64)",
-                    "    } else {",
-                    f'        Err({overflow_err_msg("float out of range for conversion to integer")})',
-                    "    }",
-                    "}",
-                    "",
-                ]
-            )
-        elif name == "frem":
-            # Python raises ZeroDivisionError for `x % 0.0` (message "float
-            # modulo"), and float `%` is floored (the result takes the divisor's
-            # sign) like the integer case, whereas Rust `%` is truncated. Mirror
-            # CPython's `float_rem`: when the remainder is exactly zero, the result
-            # is zero with the *divisor's* sign (`copysign(0.0, b)`), not the
-            # dividend's sign that Rust's `fmod` would keep.
-            lines.extend(
-                [
-                    f"fn {fn}(a: f64, b: f64) -> {fret} {{",
-                    f'    if b == 0.0 {{ return Err({zero_div_err("float modulo")}); }}',
-                    "    let r = a % b;",
-                    "    Ok(if r == 0.0 { (0.0_f64).copysign(b) }",
-                    "       else if (r < 0.0) != (b < 0.0) { r + b }",
-                    "       else { r })",
-                    "}",
-                    "",
-                ]
-            )
-    return lines
 
 
 def generate_rust_module(module_ir: ModuleIR) -> str:
@@ -430,77 +298,6 @@ def _render_jit_function(
             "}",
         ]
     )
-
-
-def _jit_prelude() -> list[str]:
-    return [
-        "use cranelift_codegen::ir::{types, AbiParam};",
-        "use cranelift_codegen::ir::InstBuilder;",
-        "use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};",
-        "use cranelift_jit::{JITBuilder, JITModule};",
-        "use cranelift_module::{Linkage, Module};",
-        "use std::sync::atomic::{AtomicUsize, Ordering};",
-        "use std::sync::OnceLock;",
-    ]
-
-
-def _jit_pointer_type(return_type: str, param_count: int) -> str:
-    args = ", ".join(return_type for _index in range(param_count))
-    return f"unsafe extern \"C\" fn({args}) -> {return_type}"
-
-
-def _render_cranelift_expr(
-    expr: ExprIR,
-    params: dict[str, int],
-    return_type: str,
-) -> tuple[list[str], str]:
-    lines: list[str] = []
-    temp_index = 0
-
-    def next_temp() -> str:
-        nonlocal temp_index
-        temp_index += 1
-        return f"jit_value_{temp_index}"
-
-    def lower(item: ExprIR) -> str:
-        if isinstance(item, NameIR):
-            if item.id not in params:
-                raise RustCodegenError(f"JIT expression references unsupported local: {item.id}")
-            temp = next_temp()
-            lines.append(f"let {temp} = builder.block_params(block)[{params[item.id]}];")
-            return temp
-        if isinstance(item, LiteralIR):
-            temp = next_temp()
-            if return_type == "i64" and isinstance(item.value, int) and not isinstance(item.value, bool):
-                lines.append(f"let {temp} = builder.ins().iconst(types::I64, {item.value});")
-                return temp
-            if return_type == "f64" and isinstance(item.value, (int, float)) and not isinstance(item.value, bool):
-                lines.append(f"let {temp} = builder.ins().f64const({float(item.value)!r});")
-                return temp
-            raise RustCodegenError("JIT expression literal is not supported")
-        if isinstance(item, UnaryOpIR) and item.op == "-":
-            value = lower(item.value)
-            temp = next_temp()
-            if return_type == "i64":
-                lines.append(f"let {temp} = builder.ins().ineg({value});")
-            else:
-                lines.append(f"let {temp} = builder.ins().fneg({value});")
-            return temp
-        if isinstance(item, BinaryOpIR):
-            left = lower(item.left)
-            right = lower(item.right)
-            if return_type == "i64":
-                op = {"+": "iadd", "-": "isub", "*": "imul"}.get(item.op)
-            else:
-                op = {"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv"}.get(item.op)
-            if op is None:
-                raise RustCodegenError(f"JIT binary operator is not supported: {item.op}")
-            temp = next_temp()
-            lines.append(f"let {temp} = builder.ins().{op}({left}, {right});")
-            return temp
-        raise RustCodegenError(f"unsupported JIT expression IR: {type(item).__name__}")
-
-    return lines, lower(expr)
 
 
 def _render_importable_crate_module(function_sources: list[str], used_helpers: set[str]) -> str:
@@ -1828,105 +1625,6 @@ def _render_function(
         mode,
         used_helpers=used_helpers,
     ).render()
-
-
-def render_literal(value: object) -> str:
-    if value is None:
-        return "None"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return f"String::from({json.dumps(value)})"
-    if isinstance(value, bytes):
-        return f"vec![{', '.join(str(item) for item in value)}]"
-    return repr(value)
-
-
-def python_logging_format_to_rust(value: str) -> tuple[str, int] | None:
-    output: list[str] = []
-    placeholders = 0
-    index = 0
-    while index < len(value):
-        char = value[index]
-        if char == "%":
-            if index + 1 >= len(value):
-                return None
-            specifier = value[index + 1]
-            if specifier == "%":
-                output.append("%")
-                index += 2
-                continue
-            if specifier in {"s", "d", "i", "f"}:
-                output.append("{}")
-                placeholders += 1
-                index += 2
-                continue
-            if specifier == "r":
-                output.append("{:?}")
-                placeholders += 1
-                index += 2
-                continue
-            return None
-        if char == "{":
-            output.append("{{")
-        elif char == "}":
-            output.append("}}")
-        else:
-            output.append(char)
-        index += 1
-    return "".join(output), placeholders
-
-
-def strip_wrapping_parens(value: str) -> str:
-    if not value.startswith("(") or not value.endswith(")"):
-        return value
-    depth = 0
-    for index, char in enumerate(value):
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-            if depth == 0 and index != len(value) - 1:
-                return value
-    if depth == 0:
-        return value[1:-1]
-    return value
-
-
-def strip_expr_if_safe(expr: ExprIR, value: str) -> str:
-    if isinstance(expr, TupleIR):
-        return value
-    return strip_wrapping_parens(value)
-
-
-def default_return(return_type: str) -> str:
-    if return_type == "()":
-        return "()"
-    if return_type == "bool":
-        return "false"
-    if return_type == "String":
-        return "String::new()"
-    if return_type.startswith("Vec<"):
-        return "Vec::new()"
-    if return_type.startswith("HashMap<"):
-        return "HashMap::new()"
-    if return_type.startswith("HashSet<"):
-        return "HashSet::new()"
-    if return_type.startswith("Option<"):
-        return "None"
-    if return_type == "i64":
-        return "0"
-    if return_type == "f64":
-        return "0.0"
-    return "Default::default()"
-
-
-def _block_always_returns(block: BlockIR) -> bool:
-    return bool(block.statements) and isinstance(block.statements[-1], ReturnIR)
-
-
-def _indent(level: int) -> str:
-    return "    " * level
 
 
 def _assigned_names(block: BlockIR) -> set[str]:

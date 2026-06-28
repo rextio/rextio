@@ -115,6 +115,9 @@ no_implicit_optional = true
 [[tool.mypy.overrides]]
 module = [
   "rextio.analyzer.unsupported_patterns",
+  # Pure move out of unsupported_patterns (P0-5 decomposition); inherits the same
+  # pre-existing loose AST typing, so it stays in the type-debt ratchet.
+  "rextio.analyzer.type_predicates",
   "rextio.analyzer.jit",
   "rextio.config.loader",
   "rextio.codegen.rust.generator",
