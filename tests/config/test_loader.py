@@ -240,6 +240,26 @@ def test_build_timeout_seconds_rejects_inf_and_nan(tmp_path: Path) -> None:
         load_config(tmp_path)
 
 
+def test_build_timeout_seconds_rejects_absurdly_large_values(tmp_path: Path) -> None:
+    # A finite but absurd timeout effectively disables the bound and overflows the
+    # C-level select timeout; reject anything past the one-year cap.
+    from rextio.build.subprocess_utils import MAX_BUILD_TIMEOUT_SECONDS
+
+    too_big = MAX_BUILD_TIMEOUT_SECONDS + 1
+    with pytest.raises(ConfigError, match=r"REXTIO_BUILD_TIMEOUT"):
+        load_config(tmp_path, environ={"REXTIO_BUILD_TIMEOUT": str(too_big)})
+    (tmp_path / "rextio.toml").write_text(
+        f"[build]\nbuild_timeout_seconds = {too_big}\n", encoding="utf-8"
+    )
+    with pytest.raises(ConfigError, match=r"build_timeout_seconds"):
+        load_config(tmp_path)
+    # The cap itself is accepted.
+    (tmp_path / "rextio.toml").write_text(
+        f"[build]\nbuild_timeout_seconds = {MAX_BUILD_TIMEOUT_SECONDS}\n", encoding="utf-8"
+    )
+    assert load_config(tmp_path).build.build_timeout_seconds == MAX_BUILD_TIMEOUT_SECONDS
+
+
 def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
     config = override_config(
         load_config(

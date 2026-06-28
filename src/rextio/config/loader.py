@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
+from rextio.build.subprocess_utils import MAX_BUILD_TIMEOUT_SECONDS
 from rextio.config.defaults import DEFAULT_CONFIG
 from rextio.config.schema import (
     BuildConfig,
@@ -201,7 +202,12 @@ def _validate_config_values(
     _require_string("build", "native_backend", build["native_backend"])
     _require_string("build", "fallback_backend", build["fallback_backend"])
     _require_non_negative_int("build", "fallback_threshold", build["fallback_threshold"])
-    _require_positive_number("build", "build_timeout_seconds", build["build_timeout_seconds"])
+    _require_positive_number(
+        "build",
+        "build_timeout_seconds",
+        build["build_timeout_seconds"],
+        maximum=MAX_BUILD_TIMEOUT_SECONDS,
+    )
     _require_string("rust", "binding", rust["binding"])
     _require_string("rust", "build_tool", rust["build_tool"])
     _require_bool("rust", "importable", rust["importable"])
@@ -277,13 +283,22 @@ def _require_non_negative_int(section: str, key: str, value: Any) -> None:
         raise ConfigError(f"[{section}].{key} must be a non-negative integer")
 
 
-def _require_positive_number(section: str, key: str, value: Any) -> None:
+def _require_positive_number(
+    section: str,
+    key: str,
+    value: Any,
+    *,
+    maximum: float | None = None,
+) -> None:
     # `math.isfinite` rejects NaN and inf: NaN slips past a bare `value <= 0`
-    # comparison, and inf would disable the timeout entirely.
+    # comparison, and inf would disable the timeout entirely. `not isinstance(...)`
+    # also rejects `None` here (before `math.isfinite` could raise `TypeError`).
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"[{section}].{key} must be a finite positive number")
     if not math.isfinite(value) or value <= 0:
         raise ConfigError(f"[{section}].{key} must be a finite positive number")
+    if maximum is not None and value > maximum:
+        raise ConfigError(f"[{section}].{key} must be at most {maximum:g}")
 
 
 def _require_string_map(section: str, key: str, value: Any) -> None:
@@ -382,6 +397,8 @@ def _parse_environment_value(env_name: str, raw_value: str, kind: str) -> object
         # `float()` accepts "inf"/"nan"; reject them so the timeout stays meaningful.
         if not math.isfinite(number) or number <= 0:
             raise ConfigError(f"environment variable {env_name} must be a finite positive number")
+        if number > MAX_BUILD_TIMEOUT_SECONDS:
+            raise ConfigError(f"environment variable {env_name} must be at most {MAX_BUILD_TIMEOUT_SECONDS:g}")
         return number
     if kind == "string_map":
         return _parse_string_map(env_name, raw_value)

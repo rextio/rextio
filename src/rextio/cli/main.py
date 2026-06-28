@@ -4,6 +4,7 @@ import argparse
 import math
 from collections.abc import Sequence
 
+from rextio.build.subprocess_utils import MAX_BUILD_TIMEOUT_SECONDS
 from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, generate_cmd, init_cmd
 
 
@@ -231,6 +232,8 @@ def _positive_number(value: str) -> float:
     # `float()` accepts "inf"/"nan"; reject them so the timeout stays meaningful.
     if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("must be a finite positive number")
+    if parsed > MAX_BUILD_TIMEOUT_SECONDS:
+        raise argparse.ArgumentTypeError(f"must be at most {MAX_BUILD_TIMEOUT_SECONDS:g} seconds")
     return parsed
 
 
