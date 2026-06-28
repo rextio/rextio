@@ -22,6 +22,7 @@ handling reports it like any other tool failure.
 
 from __future__ import annotations
 
+import math
 import os
 import signal
 import subprocess
@@ -33,10 +34,12 @@ from pathlib import Path
 DEFAULT_BUILD_TIMEOUT_SECONDS = 600
 
 # A finite but absurd timeout (e.g. 1e100) both effectively disables the bound and
-# overflows the C-level `select`/wait timeout (`OverflowError: timestamp too large
-# to convert to C PyTime_t`). Reject anything past one year — beyond that, a build
-# timeout is a configuration mistake, not an intent.
-MAX_BUILD_TIMEOUT_SECONDS = 31_536_000  # 365 days
+# overflows the timeout plumbing: POSIX `select` raises `OverflowError: timestamp
+# too large to convert to C PyTime_t`, and Windows `WaitForSingleObject` takes
+# milliseconds as a `DWORD` (max ~4.29e9 ms ≈ 49.7 days). 7 days is comfortably
+# below the Windows millisecond limit yet far past any sane build, so it is a
+# cross-platform-safe ceiling; beyond it, a build timeout is a config mistake.
+MAX_BUILD_TIMEOUT_SECONDS = 604_800  # 7 days
 
 # Conventional exit code for "terminated by timeout" (matches GNU `timeout(1)`),
 # used for the synthetic CompletedProcess returned on timeout.
@@ -61,6 +64,11 @@ def run_build_tool(
     completed process; on timeout, returns a synthetic process with a non-zero
     return code (:data:`TIMEOUT_EXIT_CODE`) and an explanatory stderr.
     """
+    # Defensive clamp: config/env/CLI already reject values past the cap, but this
+    # is a reusable entry point, so guard direct callers (and tests) from a
+    # non-finite or overflowing timeout reaching the C-level wait/select.
+    if not math.isfinite(timeout) or timeout > MAX_BUILD_TIMEOUT_SECONDS:
+        timeout = float(MAX_BUILD_TIMEOUT_SECONDS)
     with _start_process(command, cwd) as process:
         try:
             stdout, stderr = process.communicate(timeout=timeout)

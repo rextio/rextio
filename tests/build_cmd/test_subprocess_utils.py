@@ -74,6 +74,19 @@ def test_run_build_tool_terminates_the_whole_process_tree(tmp_path) -> None:
     assert not _pid_alive(grandchild_pid), "grandchild survived the timeout kill"
 
 
+def test_run_build_tool_clamps_an_overflowing_timeout(tmp_path) -> None:
+    # A direct caller (test/library) bypassing the config-layer cap must not crash:
+    # an enormous or non-finite timeout would otherwise raise OverflowError in the
+    # C-level wait. The clamp keeps a fast command working normally.
+    result = run_build_tool(
+        [sys.executable, "-c", "print('ok')"],
+        cwd=tmp_path,
+        timeout=1e100,
+    )
+    assert result.returncode == 0
+    assert "ok" in result.stdout
+
+
 @pytest.mark.skipif(os.name != "posix", reason="process-group escape is POSIX-specific")
 def test_run_build_tool_timeout_is_bounded_when_a_grandchild_escapes_the_group(
     tmp_path, monkeypatch
