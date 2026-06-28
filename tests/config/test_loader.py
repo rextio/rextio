@@ -227,6 +227,19 @@ def test_build_timeout_seconds_rejects_non_positive(tmp_path: Path) -> None:
         load_config(tmp_path)
 
 
+def test_build_timeout_seconds_rejects_inf_and_nan(tmp_path: Path) -> None:
+    # `float("inf")`/`float("nan")` parse fine but must be rejected: inf disables
+    # the timeout, and nan slips past a bare `<= 0` check.
+    for raw in ("inf", "nan"):
+        with pytest.raises(ConfigError, match=r"REXTIO_BUILD_TIMEOUT"):
+            load_config(tmp_path, environ={"REXTIO_BUILD_TIMEOUT": raw})
+    (tmp_path / "rextio.toml").write_text(
+        "[build]\nbuild_timeout_seconds = nan\n", encoding="utf-8"
+    )
+    with pytest.raises(ConfigError, match=r"build_timeout_seconds"):
+        load_config(tmp_path)
+
+
 def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
     config = override_config(
         load_config(

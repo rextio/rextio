@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import tomllib
 from dataclasses import asdict
@@ -277,10 +278,12 @@ def _require_non_negative_int(section: str, key: str, value: Any) -> None:
 
 
 def _require_positive_number(section: str, key: str, value: Any) -> None:
+    # `math.isfinite` rejects NaN and inf: NaN slips past a bare `value <= 0`
+    # comparison, and inf would disable the timeout entirely.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ConfigError(f"[{section}].{key} must be a positive number")
-    if value <= 0:
-        raise ConfigError(f"[{section}].{key} must be a positive number")
+        raise ConfigError(f"[{section}].{key} must be a finite positive number")
+    if not math.isfinite(value) or value <= 0:
+        raise ConfigError(f"[{section}].{key} must be a finite positive number")
 
 
 def _require_string_map(section: str, key: str, value: Any) -> None:
@@ -375,9 +378,10 @@ def _parse_environment_value(env_name: str, raw_value: str, kind: str) -> object
         try:
             number = float(raw_value)
         except ValueError as exc:
-            raise ConfigError(f"environment variable {env_name} must be a positive number") from exc
-        if number <= 0:
-            raise ConfigError(f"environment variable {env_name} must be a positive number")
+            raise ConfigError(f"environment variable {env_name} must be a finite positive number") from exc
+        # `float()` accepts "inf"/"nan"; reject them so the timeout stays meaningful.
+        if not math.isfinite(number) or number <= 0:
+            raise ConfigError(f"environment variable {env_name} must be a finite positive number")
         return number
     if kind == "string_map":
         return _parse_string_map(env_name, raw_value)
