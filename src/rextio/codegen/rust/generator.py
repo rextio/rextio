@@ -5,6 +5,19 @@ import re
 
 from rextio.codegen.native_names import native_function_name
 from rextio.codegen.rust.pyo3 import render_pyo3_module
+from rextio.codegen.rust.rust_format import (
+    block_always_returns as _block_always_returns,
+)
+from rextio.codegen.rust.rust_format import (
+    default_return,
+    python_logging_format_to_rust,
+    render_literal,
+    strip_expr_if_safe,
+    strip_wrapping_parens,
+)
+from rextio.codegen.rust.rust_format import (
+    indent as _indent,
+)
 from rextio.codegen.rust.type_map import rust_type
 from rextio.ir.nodes import (
     AppendIR,
@@ -1828,105 +1841,6 @@ def _render_function(
         mode,
         used_helpers=used_helpers,
     ).render()
-
-
-def render_literal(value: object) -> str:
-    if value is None:
-        return "None"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return f"String::from({json.dumps(value)})"
-    if isinstance(value, bytes):
-        return f"vec![{', '.join(str(item) for item in value)}]"
-    return repr(value)
-
-
-def python_logging_format_to_rust(value: str) -> tuple[str, int] | None:
-    output: list[str] = []
-    placeholders = 0
-    index = 0
-    while index < len(value):
-        char = value[index]
-        if char == "%":
-            if index + 1 >= len(value):
-                return None
-            specifier = value[index + 1]
-            if specifier == "%":
-                output.append("%")
-                index += 2
-                continue
-            if specifier in {"s", "d", "i", "f"}:
-                output.append("{}")
-                placeholders += 1
-                index += 2
-                continue
-            if specifier == "r":
-                output.append("{:?}")
-                placeholders += 1
-                index += 2
-                continue
-            return None
-        if char == "{":
-            output.append("{{")
-        elif char == "}":
-            output.append("}}")
-        else:
-            output.append(char)
-        index += 1
-    return "".join(output), placeholders
-
-
-def strip_wrapping_parens(value: str) -> str:
-    if not value.startswith("(") or not value.endswith(")"):
-        return value
-    depth = 0
-    for index, char in enumerate(value):
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-            if depth == 0 and index != len(value) - 1:
-                return value
-    if depth == 0:
-        return value[1:-1]
-    return value
-
-
-def strip_expr_if_safe(expr: ExprIR, value: str) -> str:
-    if isinstance(expr, TupleIR):
-        return value
-    return strip_wrapping_parens(value)
-
-
-def default_return(return_type: str) -> str:
-    if return_type == "()":
-        return "()"
-    if return_type == "bool":
-        return "false"
-    if return_type == "String":
-        return "String::new()"
-    if return_type.startswith("Vec<"):
-        return "Vec::new()"
-    if return_type.startswith("HashMap<"):
-        return "HashMap::new()"
-    if return_type.startswith("HashSet<"):
-        return "HashSet::new()"
-    if return_type.startswith("Option<"):
-        return "None"
-    if return_type == "i64":
-        return "0"
-    if return_type == "f64":
-        return "0.0"
-    return "Default::default()"
-
-
-def _block_always_returns(block: BlockIR) -> bool:
-    return bool(block.statements) and isinstance(block.statements[-1], ReturnIR)
-
-
-def _indent(level: int) -> str:
-    return "    " * level
 
 
 def _assigned_names(block: BlockIR) -> set[str]:
