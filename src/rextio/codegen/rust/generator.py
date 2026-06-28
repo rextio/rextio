@@ -78,8 +78,9 @@ from rextio.ir.types import (
 
 
 # `RustCodegenError` is imported from .errors above and re-exported here for
-# backward compatibility (tests/import `rextio.codegen.rust.generator`).
-__all__ = ["RustCodegenError", "generate_rust_module", "generate_rust_crate_module"]
+# backward compatibility (tests import `rextio.codegen.rust.generator`). No
+# `__all__` is declared so this pure refactor leaves the module's wildcard-export
+# surface exactly as it was before the split.
 
 
 
