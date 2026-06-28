@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from rextio.codegen.rust.errors import RustCodegenError
 from rextio.codegen.rust.rust_format import render_literal, rust_string_literal
 
 
@@ -37,6 +38,15 @@ def test_rust_string_literal_is_valid_and_escaped(value: str, expected: str) -> 
 
 def test_render_literal_wraps_string_in_string_from() -> None:
     assert render_literal("café") == 'String::from("café")'
+
+
+@pytest.mark.parametrize("value", ["\ud83e", "\udc80", "a\ud800b", "\udfff"])
+def test_lone_surrogate_is_rejected_not_emitted(value: str) -> None:
+    # A Python str can hold a lone surrogate (not a Unicode scalar value); Rust
+    # cannot represent it and writing the .rs file as UTF-8 would raise. Fail with
+    # a clear diagnostic instead of emitting uncompilable/garbage output.
+    with pytest.raises(RustCodegenError, match="lone surrogate"):
+        rust_string_literal(value)
 
 
 def test_no_raw_json_unicode_escapes_leak() -> None:

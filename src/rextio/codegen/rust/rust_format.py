@@ -8,6 +8,7 @@ No behavior change — ``generator`` re-imports these names.
 
 from __future__ import annotations
 
+from rextio.codegen.rust.errors import RustCodegenError
 from rextio.ir.nodes import BlockIR, ExprIR, ReturnIR, TupleIR
 
 # Characters that have a short Rust escape; everything else printable is emitted
@@ -34,11 +35,22 @@ def rust_string_literal(value: str) -> str:
     """
     out = ['"']
     for char in value:
+        codepoint = ord(char)
         escape = _RUST_STRING_ESCAPES.get(char)
         if escape is not None:
             out.append(escape)
-        elif ord(char) < 0x20 or ord(char) == 0x7F:
-            out.append(f"\\u{{{ord(char):x}}}")
+        elif codepoint < 0x20 or codepoint == 0x7F:
+            out.append(f"\\u{{{codepoint:x}}}")
+        elif 0xD800 <= codepoint <= 0xDFFF:
+            # Lone surrogates are valid in a Python ``str`` (e.g. ``"\ud83e"``) but
+            # are not Unicode scalar values: Rust rejects both ``\u{d83e}`` and a
+            # raw surrogate, and encoding the .rs file as UTF-8 would itself raise
+            # ``UnicodeEncodeError``. There is no representable Rust string for
+            # them, so fail with a clear diagnostic rather than emitting garbage.
+            raise RustCodegenError(
+                f"cannot encode lone surrogate U+{codepoint:04X} in a Rust string "
+                "literal (not a valid Unicode scalar value)"
+            )
         else:
             out.append(char)
     out.append('"')
