@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import sys
 import time
 
@@ -75,17 +76,35 @@ def test_run_build_tool_terminates_the_whole_process_tree(tmp_path) -> None:
     assert not _pid_alive(grandchild_pid), "grandchild survived the timeout kill"
 
 
-def test_run_build_tool_clamps_an_overflowing_timeout(tmp_path) -> None:
-    # A direct caller (test/library) bypassing the config-layer cap must not crash:
-    # an enormous or non-finite timeout would otherwise raise OverflowError in the
-    # C-level wait. The clamp keeps a fast command working normally.
+@pytest.mark.parametrize("bad", [0, -1.0, float("nan"), None])
+def test_run_build_tool_rejects_invalid_timeout(tmp_path, bad) -> None:
+    # None/NaN/non-positive are caller bugs (config/CLI already reject them for real
+    # callers); the reusable entry point fails fast with a clear ValueError instead
+    # of a TypeError or an instantly-failing build.
+    with pytest.raises(ValueError):
+        run_build_tool([sys.executable, "-c", "pass"], cwd=tmp_path, timeout=bad)
+
+
+def test_run_build_tool_clamps_an_over_cap_timeout_to_the_maximum(tmp_path, monkeypatch) -> None:
+    # Prove the clamp value is actually used on the wait path (not just "no crash"):
+    # cap the maximum to a tiny value and pass a huge timeout to a slow command — it
+    # must time out at the clamped value, promptly. Without the clamp it would wait
+    # ~forever; an over-cap timeout would also raise OverflowError unclamped.
+    monkeypatch.setattr(subprocess_utils, "MAX_BUILD_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(subprocess_utils, "_TERM_GRACE_SECONDS", 0.5)
+    monkeypatch.setattr(subprocess_utils, "_KILL_GRACE_SECONDS", 0.5)
+
+    start = time.monotonic()
     result = run_build_tool(
-        [sys.executable, "-c", "print('ok')"],
+        [sys.executable, "-c", "import time; time.sleep(10)"],
         cwd=tmp_path,
         timeout=1e100,
     )
-    assert result.returncode == 0
-    assert "ok" in result.stdout
+    elapsed = time.monotonic() - start
+
+    assert result.returncode != 0
+    assert "timed out" in result.stderr.lower()
+    assert elapsed < 5, f"clamp not applied (took {elapsed:.1f}s)"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-group escape is POSIX-specific")
@@ -134,26 +153,55 @@ def test_run_build_tool_timeout_is_bounded_when_a_grandchild_escapes_the_group(
         if pid_file.exists():
             try:
                 os.kill(int(pid_file.read_text()), signal.SIGKILL)
-            except (ProcessLookupError, ValueError):
+            except (FileNotFoundError, ProcessLookupError, ValueError):
                 pass
 
 
-def test_run_build_tool_surfaces_giveup_when_cleanup_reports_failure(tmp_path, monkeypatch) -> None:
-    # When _terminate_process_tree gives up (returns False), the synthetic timeout
-    # result must surface the stray-process note (and still be bounded). The fake
-    # still kills the child so the test does not leak it.
-    def fake_terminate(process):
-        process.kill()
-        return False
+def test_run_build_tool_forges_returncode_when_the_child_cannot_be_reaped(
+    tmp_path, monkeypatch
+) -> None:
+    # Exercise the poll()-is-None branch directly. _terminate_process_tree is mocked
+    # to give up WITHOUT killing, so the child is still alive: poll() returns None and
+    # the code must forge process.returncode so Popen.__exit__'s untimed wait()
+    # short-circuits (the call stays bounded) and the stray note is surfaced.
+    created: list[subprocess.Popen] = []
+    real_start = subprocess_utils._start_process
 
-    monkeypatch.setattr(subprocess_utils, "_terminate_process_tree", fake_terminate)
-    result = run_build_tool(
-        [sys.executable, "-c", "import time; time.sleep(30)"],
-        cwd=tmp_path,
-        timeout=0.5,
-    )
-    assert result.returncode != 0
-    assert "could not be fully terminated" in result.stderr.lower()
+    def capturing_start(command, cwd):
+        proc = real_start(command, cwd)
+        created.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess_utils, "_start_process", capturing_start)
+    monkeypatch.setattr(subprocess_utils, "_terminate_process_tree", lambda process: False)
+    monkeypatch.setattr(subprocess_utils, "_drain_after_kill", lambda process: ("", "", True))
+
+    try:
+        start = time.monotonic()
+        result = run_build_tool(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            cwd=tmp_path,
+            timeout=0.5,
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == subprocess_utils.TIMEOUT_EXIT_CODE
+        assert "could not be fully terminated" in result.stderr.lower()
+        # The still-alive child means poll() was None, so the branch forged the code
+        # onto the Popen (which let __exit__'s wait() short-circuit -> bounded).
+        assert created and created[0].returncode == subprocess_utils.TIMEOUT_EXIT_CODE
+        assert elapsed < 5, f"timeout path hung for {elapsed:.1f}s"
+    finally:
+        # Reap directly: Popen.kill()/wait() would no-op on the forged returncode.
+        for proc in created:
+            try:
+                os.kill(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+            try:
+                os.waitpid(proc.pid, 0)
+            except (ChildProcessError, OSError):
+                pass
 
 
 def test_run_build_tool_does_not_use_a_shell(tmp_path) -> None:
