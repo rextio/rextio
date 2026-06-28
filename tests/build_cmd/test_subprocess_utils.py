@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+from rextio.build import subprocess_utils
 from rextio.build.subprocess_utils import run_build_tool
 
 
@@ -71,6 +72,33 @@ def test_run_build_tool_terminates_the_whole_process_tree(tmp_path) -> None:
     while _pid_alive(grandchild_pid) and time.monotonic() < deadline:
         time.sleep(0.05)
     assert not _pid_alive(grandchild_pid), "grandchild survived the timeout kill"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group escape is POSIX-specific")
+def test_run_build_tool_timeout_is_bounded_when_a_grandchild_escapes_the_group(
+    tmp_path, monkeypatch
+) -> None:
+    # A grandchild that detaches into its own session (`setsid`) survives the
+    # process-group kill and keeps the inherited stdout/stderr write-ends open, so
+    # the parent's pipes never see EOF. The cleanup must still return promptly
+    # (strictly bounded by the grace period), not block until the grandchild dies.
+    monkeypatch.setattr(subprocess_utils, "_REAP_GRACE_SECONDS", 1.0)
+    grandchild = "import os, time; os.setsid(); time.sleep(15)"
+    parent = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}]); "
+        "time.sleep(15)"
+    )
+
+    start = time.monotonic()
+    result = run_build_tool([sys.executable, "-c", parent], cwd=tmp_path, timeout=0.5)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode != 0
+    assert "timed out" in result.stderr.lower()
+    # Bounded: timeout (0.5s) + a couple of 1s grace windows, far below the 15s the
+    # escaped grandchild would otherwise hold the pipes open.
+    assert elapsed < 8, f"timeout cleanup hung for {elapsed:.1f}s"
 
 
 def test_run_build_tool_does_not_use_a_shell(tmp_path) -> None:

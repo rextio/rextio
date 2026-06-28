@@ -96,21 +96,23 @@ def _start_process(command: list[str], cwd: Path | str) -> subprocess.Popen[str]
 def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
     """Kill the process and everything it spawned, best-effort and idempotent."""
     if os.name == "posix":
-        try:
-            group = os.getpgid(process.pid)
-        except ProcessLookupError:
-            return  # Already gone.
-        # SIGTERM the group for a chance to clean up, then SIGKILL to guarantee it.
+        # With ``start_new_session=True`` the child is its own process-group
+        # leader, so its PID *is* the group id. Signal the group via ``process.pid``
+        # directly rather than ``os.getpgid()``: if the leader has just exited,
+        # ``getpgid`` would raise and we would skip killing the still-running
+        # grandchildren in the group.
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
-                os.killpg(group, sig)
-            except ProcessLookupError:
-                return
+                os.killpg(process.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                return  # Group already gone (or not ours to signal).
             try:
-                process.wait(timeout=_REAP_GRACE_SECONDS if sig is signal.SIGTERM else None)
+                # Bounded on both passes: never block unboundedly even after
+                # SIGKILL (a process can sit in uninterruptible-sleep `D` state).
+                process.wait(timeout=_REAP_GRACE_SECONDS)
                 return
             except subprocess.TimeoutExpired:
-                continue  # Escalate to SIGKILL.
+                continue  # Escalate SIGTERM -> SIGKILL, then give up.
     else:  # pragma: no cover - exercised on Windows only.
         # `Popen.kill()` only kills the direct child on Windows; taskkill /T walks
         # the tree.
@@ -129,10 +131,22 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
 
 
 def _drain_after_kill(process: subprocess.Popen[str]) -> tuple[str, str]:
-    """Collect any output buffered before the tree was killed."""
+    """Collect any output buffered before the tree was killed, strictly bounded.
+
+    A grandchild that escaped the process group (e.g. it called ``setsid`` or was
+    moved to another group) can keep a copy of the stdout/stderr write-ends open,
+    so the parent's read-ends would never see EOF. We therefore wait only up to
+    the grace period and then abandon the buffered tail by closing the pipes,
+    rather than block forever — the timeout path must itself stay bounded.
+    """
     try:
         stdout, stderr = process.communicate(timeout=_REAP_GRACE_SECONDS)
+        return stdout or "", stderr or ""
     except subprocess.TimeoutExpired:
-        process.kill()
-        stdout, stderr = process.communicate()
-    return stdout or "", stderr or ""
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        return "", ""
