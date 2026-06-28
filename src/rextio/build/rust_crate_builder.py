@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
+from rextio.build.subprocess_utils import run_build_tool
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,13 +48,7 @@ def build_importable_rust_crate(
         )
 
     command = [cargo, "build", "--release", "--manifest-path", str(crate_dir / "Cargo.toml")]
-    completed = subprocess.run(
-        command,
-        cwd=crate_dir,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    completed = run_build_tool(command, cwd=crate_dir)
     if completed.returncode != 0:
         return RustCrateBuildResult(
             status="failed",

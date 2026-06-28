@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 import zipapp
+from rextio.build.subprocess_utils import run_build_tool
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -164,13 +164,7 @@ def build_nuitka_executable(
         f"--output-filename={name}",
         "--remove-output",
     ]
-    completed = subprocess.run(
-        command,
-        cwd=python_dir,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    completed = run_build_tool(command, cwd=python_dir)
     if completed.returncode != 0:
         return ExecutableBuildResult(
             status="failed",

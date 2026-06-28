@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+from rextio.build.subprocess_utils import run_build_tool
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -115,13 +116,7 @@ def _cargo_build_command(cargo: str, rust_dir: Path, *, offline: bool) -> list[s
 
 
 def _run_cargo(command: list[str], rust_dir: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        cwd=rust_dir,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    return run_build_tool(command, cwd=rust_dir)
 
 
 def _should_retry_offline(stderr: str) -> bool:

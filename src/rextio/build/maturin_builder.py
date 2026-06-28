@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import zipfile
 from pathlib import Path
 
 from rextio.build.cargo_builder import NativeBuildResult
+from rextio.build.subprocess_utils import run_build_tool
 
 
 def maturin_available() -> bool:
@@ -35,13 +35,7 @@ def build_native_extension_with_maturin(rust_dir: Path, python_dir: Path) -> Nat
         "--out",
         str(wheels_dir),
     ]
-    completed = subprocess.run(
-        command,
-        cwd=rust_dir,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    completed = run_build_tool(command, cwd=rust_dir)
     if completed.returncode != 0:
         return NativeBuildResult(
             status="failed",
