@@ -9,6 +9,12 @@ Rextio shells out to `cargo`, `maturin`, `nuitka`, etc. All invocations:
 * run under a bounded **timeout**, so a hung or wedged toolchain fails the build
   with a clear message instead of blocking indefinitely.
 
+The tool is started in its own process group (POSIX session / Windows process
+group) so that on timeout the **whole process tree** is terminated, not just the
+direct child: `cargo`/`maturin` spawn `rustc`, linkers, and `python`, and killing
+only the parent would leave those grandchildren holding CPU, memory, and file
+locks.
+
 On timeout the helper returns a synthetic *failed* ``CompletedProcess`` (non-zero
 return code, an explanatory stderr) so existing return-code-based failure
 handling reports it like any other tool failure.
@@ -16,6 +22,8 @@ handling reports it like any other tool failure.
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 from pathlib import Path
 
@@ -23,6 +31,14 @@ from pathlib import Path
 # should never run for ten minutes in CI or a developer loop without something
 # being wrong.
 DEFAULT_BUILD_TIMEOUT_SECONDS = 600
+
+# Conventional exit code for "terminated by timeout" (matches GNU `timeout(1)`),
+# used for the synthetic CompletedProcess returned on timeout.
+TIMEOUT_EXIT_CODE = 124
+
+# Grace period (seconds) for a killed process tree to be reaped before we give up
+# collecting its buffered output.
+_REAP_GRACE_SECONDS = 10
 
 
 def run_build_tool(
@@ -33,28 +49,90 @@ def run_build_tool(
 ) -> subprocess.CompletedProcess[str]:
     """Run an external build tool with no shell, captured output, and a timeout.
 
-    ``command`` must be an argument list (enforces ``shell=False``). Returns the
+    ``command`` must be an argument list (enforces ``shell=False``). The tool runs
+    in its own process group so a timeout terminates the whole tree. Returns the
     completed process; on timeout, returns a synthetic process with a non-zero
-    return code and an explanatory stderr.
+    return code (:data:`TIMEOUT_EXIT_CODE`) and an explanatory stderr.
     """
-    try:
-        return subprocess.run(
+    with _start_process(command, cwd) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            _terminate_process_tree(process)
+            stdout, stderr = _drain_after_kill(process)
+            tool = command[0] if command else "build tool"
+            timeout_note = f"rextio: `{tool}` timed out after {timeout:g}s and was terminated."
+            stderr = (f"{stderr}\n" if stderr else "") + timeout_note
+            return subprocess.CompletedProcess(
+                command, returncode=TIMEOUT_EXIT_CODE, stdout=stdout, stderr=stderr
+            )
+
+
+def _start_process(command: list[str], cwd: Path | str) -> subprocess.Popen[str]:
+    """Start the tool in its own process group so the whole tree can be killed."""
+    if os.name == "nt":  # pragma: no cover - exercised on Windows only.
+        new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        return subprocess.Popen(
             command,
             cwd=cwd,
-            check=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            creationflags=new_group,
         )
-    except subprocess.TimeoutExpired as expired:
-        stdout = expired.stdout or ""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", "replace")
-        stderr = expired.stderr or ""
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode("utf-8", "replace")
-        tool = command[0] if command else "build tool"
-        stderr = (
-            f"{stderr}\n" if stderr else ""
-        ) + f"rextio: `{tool}` timed out after {timeout:g}s and was terminated."
-        return subprocess.CompletedProcess(command, returncode=124, stdout=stdout, stderr=stderr)
+    # POSIX: a new session makes the child a process-group leader, so we can signal
+    # the entire group (the tool and everything it spawns) on timeout.
+    return subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    """Kill the process and everything it spawned, best-effort and idempotent."""
+    if os.name == "posix":
+        try:
+            group = os.getpgid(process.pid)
+        except ProcessLookupError:
+            return  # Already gone.
+        # SIGTERM the group for a chance to clean up, then SIGKILL to guarantee it.
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(group, sig)
+            except ProcessLookupError:
+                return
+            try:
+                process.wait(timeout=_REAP_GRACE_SECONDS if sig is signal.SIGTERM else None)
+                return
+            except subprocess.TimeoutExpired:
+                continue  # Escalate to SIGKILL.
+    else:  # pragma: no cover - exercised on Windows only.
+        # `Popen.kill()` only kills the direct child on Windows; taskkill /T walks
+        # the tree.
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                check=False,
+                capture_output=True,
+            )
+        except OSError:
+            process.kill()
+        try:
+            process.wait(timeout=_REAP_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+def _drain_after_kill(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """Collect any output buffered before the tree was killed."""
+    try:
+        stdout, stderr = process.communicate(timeout=_REAP_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate()
+    return stdout or "", stderr or ""

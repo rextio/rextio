@@ -1,8 +1,22 @@
 from __future__ import annotations
 
+import os
 import sys
+import time
+
+import pytest
 
 from rextio.build.subprocess_utils import run_build_tool
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # pragma: no cover - alive but not ours.
+        return True
+    return True
 
 
 def test_run_build_tool_captures_output(tmp_path) -> None:
@@ -25,6 +39,38 @@ def test_run_build_tool_times_out_into_a_failed_result(tmp_path) -> None:
     )
     assert result.returncode != 0
     assert "timed out" in result.stderr.lower()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group kill path is POSIX-specific")
+def test_run_build_tool_terminates_the_whole_process_tree(tmp_path) -> None:
+    # On timeout the tool AND everything it spawned must die — killing only the
+    # direct child would leave a reparented grandchild (e.g. rustc) running. The
+    # grandchild records its PID; after the timeout it must no longer be alive.
+    pid_file = tmp_path / "grandchild.pid"
+    grandchild = (
+        "import os, time; "
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    parent = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}]); "
+        "time.sleep(60)"
+    )
+
+    result = run_build_tool([sys.executable, "-c", parent], cwd=tmp_path, timeout=1.0)
+    assert result.returncode != 0
+    assert "timed out" in result.stderr.lower()
+
+    deadline = time.monotonic() + 5
+    while not pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert pid_file.exists(), "grandchild never started"
+    grandchild_pid = int(pid_file.read_text())
+
+    while _pid_alive(grandchild_pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _pid_alive(grandchild_pid), "grandchild survived the timeout kill"
 
 
 def test_run_build_tool_does_not_use_a_shell(tmp_path) -> None:
