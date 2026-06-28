@@ -26,6 +26,9 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Runtime controls: `REXTIO_DISABLE_NATIVE=1` and `REXTIO_NATIVE_MODE`.
 - Runtime boundary fallback threshold for repeated Python-to-native wrapper crossings.
 - `--fallback-threshold` for embedding a generated-code default threshold in `rextio build` and `rextio generate`.
+- Configurable external build-tool timeout via `--build-timeout`,
+  `REXTIO_BUILD_TIMEOUT`, and `[build] build_timeout_seconds` (CLI > env > toml >
+  default, default 600s).
 - Generated hybrid artifact wheel under `dist/`.
 - Zipapp executable artifact generation with `rextio build --entrypoint=module:function`.
 - Nuitka standalone/onefile executable artifact generation with `--executable-backend=nuitka`.
@@ -64,7 +67,15 @@ Initial public MVP for Rextio as a local hybrid build tool.
   unencodable output.
 - External build tools (`cargo`/`maturin`/`nuitka`) are invoked through a shared
   no-shell, bounded-timeout helper, so a hung toolchain fails the build with a
-  clear message instead of blocking indefinitely.
+  clear message instead of blocking indefinitely. On timeout the helper now
+  terminates the whole process tree (POSIX process-group / Windows
+  `CREATE_NEW_PROCESS_GROUP`), so child `rustc`/linker/`python` processes spawned
+  by the tool are not left running.
+- A native candidate whose parameters or locals use a Rust keyword (`fn`,
+  `match`, `type`, …) or a non-ASCII name is now rejected with `RXT011` and kept
+  on the Python fallback path, instead of emitting an identifier that produces
+  uncompilable Rust. Rextio does not mangle identifiers, so the conservative
+  fallback keeps generated Rust always valid.
 - Added `SECURITY.md` (threat model + protections) and a `check-wheel-contents`
   packaging gate in CI.
 - Internal refactor (no behavior change): the two largest modules were split into

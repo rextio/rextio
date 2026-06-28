@@ -37,9 +37,12 @@ external toolchain on your machine.
 - **No shell.** Every external tool is invoked with an argument **list**
   (`shell=False`); user-derived paths, identifiers, and string literals are never
   interpolated into a shell command, so there is no shell injection.
-- **Bounded execution.** Tool invocations run under a timeout (default 600s) and
-  surface stdout/stderr as diagnostics; a hung toolchain fails the build instead
-  of blocking indefinitely.
+- **Bounded execution.** Tool invocations run under a configurable timeout
+  (default 600s; `--build-timeout` / `REXTIO_BUILD_TIMEOUT` / `[build]
+  build_timeout_seconds`) and surface stdout/stderr as diagnostics; a hung
+  toolchain fails the build instead of blocking indefinitely. The tool runs in its
+  own process group, so a timeout terminates the whole process tree rather than
+  leaking the child processes it spawned.
 - **Safe code generation.** User-provided string literals are escaped into Rust
   string literals that cannot break out of the string and are always valid Rust
   (including non-ASCII), so a crafted literal cannot inject Rust code. List
