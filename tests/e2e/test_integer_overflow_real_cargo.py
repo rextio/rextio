@@ -47,6 +47,18 @@ def modulo(a: int, b: int) -> int:
 @rextio.native
 def negate(a: int) -> int:
     return -a
+
+@rextio.native
+def magnitude(a: int) -> int:
+    return abs(a)
+
+@rextio.native
+def total(xs: list[int]) -> int:
+    return sum(xs)
+
+@rextio.native
+def scaled_total(xs: list[int]) -> int:
+    return sum([x * x for x in xs])
 """,
         encoding="utf-8",
     )
@@ -71,6 +83,14 @@ def negate(a: int) -> int:
     assert module.accumulate([1, 2, 3]) == 6
     assert module.modulo(7, 3) == 1
     assert module.negate(5) == -5
+    assert module.magnitude(-5) == 5
+    assert module.total([1, 2, 3]) == 6
+    assert module.scaled_total([1, 2, 3]) == 14
+
+    # `%` follows Python's floored semantics (the result takes the divisor's
+    # sign), not Rust's truncated remainder.
+    assert module.modulo(-7, 3) == 2
+    assert module.modulo(7, -3) == -2
 
     # An i64 overflow is a real error (Python ints are arbitrary precision). The
     # generated code uses checked arithmetic and raises `OverflowError` — a normal
@@ -106,3 +126,13 @@ def negate(a: int) -> int:
     # catchable `OverflowError` rather than an uncatchable panic.
     with pytest.raises(OverflowError):
         module.negate(-(2**63))
+
+    # `abs(i64::MIN)` and an overflowing `sum` are also catchable OverflowErrors,
+    # not panics — including a `sum` over an overflowing comprehension, which pins
+    # that `?` propagates out of the comprehension's `push` lowering.
+    with pytest.raises(OverflowError):
+        module.magnitude(-(2**63))
+    with pytest.raises(OverflowError):
+        module.total([2**62, 2**62, 2**62])
+    with pytest.raises(OverflowError):
+        module.scaled_total([2**32, 2**32])

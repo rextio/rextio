@@ -63,7 +63,7 @@ class RustCodegenError(RuntimeError):
 
 # Order is fixed so emitted helpers are deterministic regardless of use order.
 _CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
-_CHECKED_HELPER_ORDER = ("add", "sub", "mul", "rem", "neg")
+_CHECKED_HELPER_ORDER = ("add", "sub", "mul", "rem", "neg", "abs", "sum")
 
 
 def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
@@ -102,13 +102,19 @@ def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
                 ]
             )
         elif name == "rem":
-            # Python `a % 0` is ZeroDivisionError; `i64::MIN % -1` is 0 (it
-            # overflows the truncated-remainder hardware op, but the value is 0).
+            # Python `%` is floored (the result takes the divisor's sign), while
+            # Rust's `checked_rem` is truncated (it takes the dividend's sign), so
+            # `-7 % 3` is 2 in Python but -1 in Rust. Correct the sign when the
+            # truncated remainder and the divisor differ in sign. `a % 0` is a
+            # ZeroDivisionError; `i64::MIN % -1` overflows the hardware op but the
+            # remainder is 0 (so `checked_rem` -> None -> 0 is correct there).
+            # `|r| < |b|`, so the `r + b` correction cannot overflow.
             lines.extend(
                 [
                     f"fn {fn}(a: i64, b: i64) -> {ret} {{",
                     f"    if b == 0 {{ return Err({zero_div_err()}); }}",
-                    "    Ok(a.checked_rem(b).unwrap_or(0))",
+                    "    let r = a.checked_rem(b).unwrap_or(0);",
+                    "    Ok(if r != 0 && (r ^ b) < 0 { r + b } else { r })",
                     "}",
                     "",
                 ]
@@ -118,6 +124,28 @@ def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
                 [
                     f"fn {fn}(a: i64) -> {ret} {{",
                     f"    a.checked_neg().ok_or_else(|| {overflow_err()})",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "abs":
+            # `i64::MIN.abs()` overflows (Python `abs(-2**63) == 2**63`).
+            lines.extend(
+                [
+                    f"fn {fn}(a: i64) -> {ret} {{",
+                    f"    a.checked_abs().ok_or_else(|| {overflow_err()})",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "sum":
+            # Python `sum` is arbitrary precision; fold with checked addition so an
+            # i64 overflow raises instead of panicking in `Iterator::sum`.
+            lines.extend(
+                [
+                    f"fn {fn}(xs: &[i64]) -> {ret} {{",
+                    f"    xs.iter().copied().try_fold(0i64, |acc, x| "
+                    f"acc.checked_add(x).ok_or_else(|| {overflow_err()}))",
                     "}",
                     "",
                 ]
@@ -1188,12 +1216,19 @@ class _FunctionRenderer:
         if expr.function == "len" and len(expr.args) == 1:
             return f"({self.render_expr(expr.args[0])}.len() as i64)"
         if expr.function == "abs" and len(expr.args) == 1:
+            if isinstance(self.infer_expr_type(expr.args[0]), RxtInt):
+                self.used_helpers.add("abs")
+                return f"__rextio_checked_abs({strip_wrapping_parens(self.render_expr(expr.args[0]))})?"
             return f"({self.render_expr(expr.args[0])}).abs()"
         if expr.function == "min" and len(expr.args) == 2:
             return f"({self.render_expr(expr.args[0])}).min({self.render_expr(expr.args[1])})"
         if expr.function == "max" and len(expr.args) == 2:
             return f"({self.render_expr(expr.args[0])}).max({self.render_expr(expr.args[1])})"
         if expr.function == "sum" and len(expr.args) == 1:
+            arg_type = self.infer_expr_type(expr.args[0])
+            if isinstance(arg_type, RxtList) and isinstance(arg_type.item_type, RxtInt):
+                self.used_helpers.add("sum")
+                return f"__rextio_checked_sum(&{self.render_expr(expr.args[0])})?"
             return f"({self.render_expr(expr.args[0])}).iter().cloned().sum()"
         if expr.function == "all" and len(expr.args) == 1:
             return f"({self.render_expr(expr.args[0])}).iter().copied().all(|value| value)"

@@ -19,10 +19,15 @@ real-toolchain test is surfaced rather than silently dropped. A genuinely
 toolchain-free test that does not use the ``fake_cargo`` shim can opt out of the
 warning with ``@pytest.mark.no_toolchain`` (council M4: the previous hard
 collection error was too aggressive for legitimate pure-Python e2e tests).
+
+Locally this is a warning; in CI (where ``REXTIO_E2E_STRICT=1`` is set) it is
+escalated to a hard collection error so a misnamed test cannot slip through a
+green pipeline.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import warnings
 
@@ -84,10 +89,12 @@ def pytest_collection_modifyitems(
 
     if unclassified:
         listing = "\n  ".join(sorted(unclassified))
-        warnings.warn(
+        message = (
             "e2e tests should declare their toolchain so CI cannot silently drop "
             "them. Name a real-cargo test `*_real_cargo` / `*_real_toolchain`, a "
             "Nuitka test with a `nuitka` segment, use the `fake_cargo` fixture, or "
-            f"mark a pure-Python test `@pytest.mark.no_toolchain`. Unclassified:\n  {listing}",
-            stacklevel=2,
+            f"mark a pure-Python test `@pytest.mark.no_toolchain`. Unclassified:\n  {listing}"
         )
+        if os.environ.get("REXTIO_E2E_STRICT"):
+            raise pytest.UsageError(message)
+        warnings.warn(message, stacklevel=2)

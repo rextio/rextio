@@ -102,7 +102,7 @@ class FunctionAnalysis:
         self.diagnostics.append(diagnostic)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        data: dict[str, object] = {
             "name": self.name,
             "qualname": self.qualname,
             "module_name": self.module_name,
@@ -122,6 +122,11 @@ class FunctionAnalysis:
             "calls": [call.to_dict() for call in self.calls],
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
+        # Only present for functions kept off the JIT for overflow safety, so the
+        # common case keeps a stable report shape.
+        if self.jit_skipped_reason is not None:
+            data["jit_skipped_reason"] = self.jit_skipped_reason
+        return data
 
 
 @dataclass

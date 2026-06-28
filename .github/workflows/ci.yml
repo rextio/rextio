@@ -99,6 +99,10 @@ jobs:
         # auto-skips tests whose toolchain is unavailable, while `-m needs_cargo`
         # would silently drop toolchain-free e2e tests (CLI smoke, zipapp) so they
         # ran in no CI lane. See mod-proposal P1-10 / council B2.
+        # REXTIO_E2E_STRICT escalates the toolchain-classification warning to a
+        # hard error so a misnamed test cannot slip through CI (council M4).
+        env:
+          REXTIO_E2E_STRICT: "1"
         run: python -m pytest tests/e2e -q
 
   package:
