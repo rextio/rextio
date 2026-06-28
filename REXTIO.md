@@ -1,5 +1,9 @@
 # Rextio 0.1.0 alpha Notes
 
+> **Security:** Rextio analyzes source, generates Rust, and runs external build
+> tools — treat it like a compiler and only build trusted projects. See
+> [`SECURITY.md`](./SECURITY.md) for the threat model and protections.
+
 Rextio 0.1.0 alpha proves a focused hybrid build workflow:
 
 ```text
