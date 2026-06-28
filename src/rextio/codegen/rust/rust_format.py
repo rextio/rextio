@@ -8,9 +8,41 @@ No behavior change — ``generator`` re-imports these names.
 
 from __future__ import annotations
 
-import json
-
 from rextio.ir.nodes import BlockIR, ExprIR, ReturnIR, TupleIR
+
+# Characters that have a short Rust escape; everything else printable is emitted
+# as-is (Rust source is UTF-8), and remaining control characters use `\u{..}`.
+_RUST_STRING_ESCAPES = {
+    '"': '\\"',
+    "\\": "\\\\",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+    "\0": "\\0",
+}
+
+
+def rust_string_literal(value: str) -> str:
+    """Render a Python ``str`` as a Rust string literal that is always valid.
+
+    Unlike ``json.dumps`` (which emits ``\\uXXXX`` / surrogate-pair escapes that
+    Rust does not accept), this escapes only the characters that must be escaped
+    in a Rust string — ``"``, ``\\``, and control characters (via ``\\u{..}``) —
+    and emits every other character, including non-ASCII, literally. This keeps
+    user string literals from producing uncompilable Rust and leaves no way for a
+    literal to break out of the string (injection-safe).
+    """
+    out = ['"']
+    for char in value:
+        escape = _RUST_STRING_ESCAPES.get(char)
+        if escape is not None:
+            out.append(escape)
+        elif ord(char) < 0x20 or ord(char) == 0x7F:
+            out.append(f"\\u{{{ord(char):x}}}")
+        else:
+            out.append(char)
+    out.append('"')
+    return "".join(out)
 
 
 def render_literal(value: object) -> str:
@@ -19,7 +51,7 @@ def render_literal(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
-        return f"String::from({json.dumps(value)})"
+        return f"String::from({rust_string_literal(value)})"
     if isinstance(value, bytes):
         return f"vec![{', '.join(str(item) for item in value)}]"
     return repr(value)
