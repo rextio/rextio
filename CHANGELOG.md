@@ -52,6 +52,15 @@ Initial public MVP for Rextio as a local hybrid build tool.
 
 ### Changed
 
+- Generated `str` literals are now escaped into always-valid Rust (non-ASCII is
+  emitted literally rather than as `\uXXXX`, which Rust rejects), fixing
+  uncompilable output for string constants containing non-ASCII characters;
+  escaping remains injection-safe.
+- External build tools (`cargo`/`maturin`/`nuitka`) are invoked through a shared
+  no-shell, bounded-timeout helper, so a hung toolchain fails the build with a
+  clear message instead of blocking indefinitely.
+- Added `SECURITY.md` (threat model + protections) and a `check-wheel-contents`
+  packaging gate in CI.
 - Internal refactor (no behavior change): the two largest modules were split into
   cohesive units guarded by the golden-snapshot and contract suites —
   `codegen/rust/generator.py` shed its formatting helpers (`rust_format`),
