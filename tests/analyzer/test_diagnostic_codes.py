@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -10,11 +11,16 @@ _CODE_PATTERN = re.compile(r"RXT\d{3}")
 
 
 def _emitted_codes() -> set[str]:
+    # Collect codes from string *literals* only (via AST), so codes mentioned in
+    # comments don't count as real emissions and produce false positives.
     codes: set[str] = set()
     for path in _SRC_ROOT.rglob("*.py"):
         if path.name == "diagnostic_codes.py":
             continue
-        codes.update(_CODE_PATTERN.findall(path.read_text(encoding="utf-8")))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                codes.update(_CODE_PATTERN.findall(node.value))
     return codes
 
 

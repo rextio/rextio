@@ -605,8 +605,44 @@ def add(a: int, b: int) -> int:
     assert not build_report.exists()
 
 
+def test_build_pure_python_project_succeeds_without_rust_toolchain(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("PATH", "")
+    # decorator-only discovery with no @rextio.native functions -> no native build.
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+def helper(x: int) -> int:
+    return x + 1
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython"])
+
+    capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+
+    # A pure-Python project still builds its CPython fallback artifact even with
+    # no Rust toolchain available; the native build is simply skipped.
+    assert exit_code == 0
+    assert report["native_build"]["status"] == "skipped"
+
+
 def test_build_uses_maturin_when_available(
     tmp_path: Path,
+    fake_cargo: Path,
     fake_maturin: Path,
     capsys,
 ) -> None:

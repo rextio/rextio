@@ -23,34 +23,23 @@ class MissingTool:
         return f"{self.name} was not found ({self.reason}). Install it with: {self.install}"
 
 
-def missing_build_tools(
-    *,
-    native_backend: str = "rust",
-    build_tool: str = "cargo",
-    nuitka: bool = False,
-) -> list[MissingTool]:
-    """Return the tools required by the requested backends that are missing."""
+def missing_build_tools(*, native_backend: str = "rust") -> list[MissingTool]:
+    """Return the tools required to compile a native artifact that are missing.
+
+    Only called when a native artifact is actually needed (see build_cmd). cargo is
+    always required for the rust backend: maturin wraps cargo/rustc, and a missing
+    maturin falls back to cargo in the orchestrator — so cargo is the single real
+    requirement. Other backends (mojo/julia) are not implemented yet and gate
+    nothing here.
+    """
     missing: list[MissingTool] = []
 
-    if native_backend == "rust":
-        # cargo is the ultimate driver: when `build_tool = "maturin"` is selected
-        # but maturin is absent, the build falls back to cargo, so only the
-        # presence of the selected tool *or* cargo is required.
-        if shutil.which(build_tool) is None and shutil.which("cargo") is None:
-            missing.append(
-                MissingTool(
-                    name="Rust toolchain",
-                    reason="cargo is required to compile generated native code",
-                    install="https://rustup.rs (or your platform package manager)",
-                )
-            )
-
-    if nuitka and shutil.which("nuitka") is None:
+    if native_backend == "rust" and shutil.which("cargo") is None:
         missing.append(
             MissingTool(
-                name="Nuitka",
-                reason="selected for fallback/executable packaging",
-                install='pip install "rextio[nuitka]"  # or: pip install nuitka',
+                name="Rust toolchain",
+                reason="cargo is required to compile generated native code",
+                install="https://rustup.rs (or your platform package manager)",
             )
         )
 

@@ -74,9 +74,21 @@ jobs:
         run: python -m twine check dist/*
       - name: Install the built wheel into a clean environment
         run: |
-          python -m venv /tmp/rextio-install
-          /tmp/rextio-install/bin/python -m pip install dist/*.whl
-      - name: Smoke-test the installed console script
+          python -m venv /tmp/rextio-wheel
+          /tmp/rextio-wheel/bin/python -m pip install dist/*.whl
+      - name: Install from the sdist into a clean environment
+        # Rebuilding from the sdist catches files missing from the source
+        # distribution (e.g. crate sources, templates) that a wheel install hides.
         run: |
-          /tmp/rextio-install/bin/rextio --help
-          /tmp/rextio-install/bin/python -c "import rextio; print(rextio.__version__)"
+          python -m venv /tmp/rextio-sdist
+          /tmp/rextio-sdist/bin/python -m pip install dist/*.tar.gz
+      - name: Smoke-test the installed console script (wheel + sdist)
+        run: |
+          for env in /tmp/rextio-wheel /tmp/rextio-sdist; do
+            "$env/bin/rextio" --help
+            "$env/bin/python" -c "import rextio; print(rextio.__version__)"
+          done
+          # Exercise a real command end-to-end on a tiny project.
+          work="$(mktemp -d)"
+          printf 'import rextio\n\n@rextio.native\ndef add(a: int, b: int) -> int:\n    return a + b\n' > "$work/app.py"
+          /tmp/rextio-wheel/bin/rextio check "$work" --no-report

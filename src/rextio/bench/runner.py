@@ -78,8 +78,14 @@ def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> Be
         raise BenchError(build_result.native_build.message)
 
     _prepend_sys_path(build_result.layout.build_python_dir)
+    # Evict any module cached from a previous build so the freshly built artifact
+    # (and its `_rextio_native` extension) is the one actually measured.
+    fallback_name = _fallback_import_name(analysis, function)
+    for module_name in ("_rextio_native", function.module_name, fallback_name):
+        sys.modules.pop(module_name, None)
+    importlib.invalidate_caches()
     wrapper_func = _import_function(function.module_name, function.name)
-    fallback_func = _import_function(_fallback_import_name(analysis, function), function.name)
+    fallback_func = _import_function(fallback_name, function.name)
     args = _sample_args(fallback_func)
     fallback_result = fallback_func(*args)
     native_result = wrapper_func(*args)

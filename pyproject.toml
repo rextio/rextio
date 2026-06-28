@@ -54,7 +54,7 @@ dev = [
 rextio = "rextio.cli.main:main"
 
 [tool.setuptools.dynamic]
-version = {attr = "rextio.__version__"}
+version = {attr = "rextio.__about__.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

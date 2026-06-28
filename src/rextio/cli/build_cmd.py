@@ -65,18 +65,6 @@ def run(args: Namespace) -> int:
         print(nuitka_unavailable_message())
         return 1
 
-    # Preflight only the core toolchain. The Nuitka *executable* artifact is
-    # optional and reported separately by the executable builder, so it is not
-    # gated here; only a Nuitka *fallback* (which is part of the core build) is.
-    missing_tools = missing_build_tools(
-        native_backend=target_plan.spec.language,
-        build_tool=config.rust.build_tool,
-        nuitka=(fallback == "nuitka"),
-    )
-    if missing_tools:
-        print(format_missing_tools(missing_tools))
-        return 1
-
     analysis = analyze_project(
         project_root,
         boundary_warnings=config.policy.boundary_warnings,
@@ -109,6 +97,17 @@ def run(args: Namespace) -> int:
         print(f"Cause: Python parse errors were found under {project_root}.")
         print(f"Suggestion: run rextio check {project_root}")
         return 1
+
+    # Only require the native toolchain when there is actually native code to
+    # compile; a pure-Python project still builds its CPython fallback artifact.
+    needs_native = bool(
+        analysis.accepted_native_functions or analysis.accepted_native_top_levels
+    )
+    if needs_native:
+        missing_tools = missing_build_tools(native_backend=target_plan.spec.language)
+        if missing_tools:
+            print(format_missing_tools(missing_tools))
+            return 1
 
     result = build_hybrid_artifact(
         project_root,

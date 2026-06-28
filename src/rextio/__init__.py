@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import overload, TypeVar
 
-__version__ = "0.1.0"
+from rextio.__about__ import __version__
 
 F = TypeVar("F", bound=Callable[..., object])
 
