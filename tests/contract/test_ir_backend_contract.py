@@ -6,6 +6,11 @@ function the analyzer admits into the native subset must flow all the way throug
 contract over a corpus spanning the supported subset, so a future analyzer change
 that accepts a construct the backend can't emit fails here instead of at a user's
 ``cargo build``.
+
+Scope: this is a code-generation contract — the generated Rust is *inspected*
+(it is produced without raising and contains the expected markers) but it is not
+compiled by Cargo here. Real compilation is covered by the ``needs_cargo`` e2e
+suite; keeping that out of this fast unit-level test is deliberate.
 """
 
 from __future__ import annotations
@@ -212,12 +217,12 @@ def test_runtime_shim_modules_are_excluded_from_importable_crate(
     name: str, tmp_path: Path
 ) -> None:
     analysis = _analyze(tmp_path, _SHIM_CORPUS[name])
-    # Confirm these really are runtime-shim functions, not direct-Rust.
-    assert all(
-        function.native_runtime_semantics
-        for function in analysis.accepted_native_functions
-    ), "shim corpus module unexpectedly lowered to direct Rust"
+    # Confirm these really are runtime-shim functions (RXT080), not direct-Rust.
+    for function in analysis.accepted_native_functions:
+        assert function.native_runtime_semantics, "shim corpus module lowered to direct Rust"
+        assert function.has_diagnostic("RXT080"), "shim function is missing the RXT080 diagnostic"
     # The importable crate is Rust-only and cannot host the shim, so generation
-    # must reject it explicitly rather than emit nothing or miscompile.
-    with pytest.raises(RustCodegenError):
+    # must reject it explicitly (with the specific "no direct Rust" error) rather
+    # than emit nothing or miscompile.
+    with pytest.raises(RustCodegenError, match="no direct Rust"):
         generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
