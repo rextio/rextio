@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 
 from rextio.codegen.native_names import native_function_name
@@ -251,7 +250,7 @@ def _render_jit_function(
         {param.name: index for index, param in enumerate(function.params)},
         return_type,
     )
-    name_literal = json.dumps(rust_name)
+    name_literal = rust_string_literal(rust_name)
     return "\n".join(
         [
             f"type {rust_name}_JitFn = {pointer_type};",
@@ -757,7 +756,7 @@ class _FunctionRenderer:
         return f"{{ {target} = {value}; {target}.clone() }}"
 
     def render_maybe_bound_name(self, name: str) -> str:
-        message = json.dumps(f"local variable '{name}' referenced before assignment")
+        message = rust_string_literal(f"local variable '{name}' referenced before assignment")
         return (
             f"{name}.clone().ok_or_else(|| "
             f"{self.error_new(message, kind='unbound')})?"
@@ -1228,7 +1227,7 @@ class _FunctionRenderer:
                     "{",
                     f"    let mut values = {source};",
                     "    if values.iter().any(|value| value.is_nan()) {",
-                    f"        return Err({self.error_new(json.dumps('sorted() does not support NaN float values in native functions'))});",
+                    f"        return Err({self.error_new(rust_string_literal('sorted() does not support NaN float values in native functions'))});",
                     "    }",
                     "    values.sort_by(|left, right| left.partial_cmp(right).expect(\"NaN was checked before sorting\"));",
                     "    values",
@@ -1310,7 +1309,7 @@ class _FunctionRenderer:
                 f"let {needle_tmp} = {needle}; "
                 f"{recv_tmp}.iter().position(|item| item == &{needle_tmp})"
                 ".map(|index| index as i64)"
-                f".ok_or_else(|| {self.error_new(json.dumps('list.index(x): x not in list'))})? }}"
+                f".ok_or_else(|| {self.error_new(rust_string_literal('list.index(x): x not in list'))})? }}"
             )
         raise RustCodegenError(f"unsupported list method during Rust codegen: {expr.function}")
 
@@ -1326,7 +1325,7 @@ class _FunctionRenderer:
                 "{",
                 f"    let values = {source};",
                 "    if values.is_empty() {",
-                f"        return Err({self.error_new(json.dumps('statistics.mean requires at least one data point'))});",
+                f"        return Err({self.error_new(rust_string_literal('statistics.mean requires at least one data point'))});",
                 "    }",
                 f"    values.iter().copied().map(|value| {value_expr}).sum::<f64>() / values.len() as f64",
                 "}",
@@ -1584,7 +1583,7 @@ class _FunctionRenderer:
             strip_wrapping_parens(self.render_call_arg(arg))
             for arg in args
         )
-        return f"{macro}({json.dumps(placeholders)}, {rendered_args})"
+        return f"{macro}({rust_string_literal(placeholders)}, {rendered_args})"
 
     def render_logging_macro(self, macro: str, args: list[ExprIR]) -> str:
         if (

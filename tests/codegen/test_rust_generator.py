@@ -686,6 +686,29 @@ def read_value(x: object) -> object:
     assert "caf\\u00e9" not in source
 
 
+def test_non_ascii_maybe_bound_name_emits_valid_rust(tmp_path: Path) -> None:
+    # A maybe-bound (walrus) variable name is emitted as a raw Rust identifier and
+    # embedded into the UnboundLocalError message string. A non-ASCII name must go
+    # through rust_string_literal so the message is valid Rust, not a `\uXXXX`
+    # escape (which Rust rejects).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def last_positive(xs: list[int]) -> int:
+    out = [café for x in xs if (café := x) > 0]
+    return café
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "local variable 'café' referenced before assignment" in source
+    assert "caf\\u00e9" not in source
+
+
 def test_generates_rust_for_expanded_stdlib_lowering_calls(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """
