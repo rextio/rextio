@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import ast
 
-SUPPORTED_SCALARS = {"int", "float", "bool", "str", "bytes"}
-SUPPORTED_LIST_ITEMS = {"int", "float", "bool", "str"}
-SUPPORTED_DICT_KEYS = {"int", "bool", "str"}
-SUPPORTED_SET_ITEMS = {"int", "float", "bool", "str"}
+from rextio.capabilities import (
+    DICT_KEY_TYPES,
+    LIST_ITEM_TYPES,
+    SCALAR_TYPES,
+    SET_ITEM_TYPES,
+)
+
+# Aliases onto the shared capability matrix (see rextio.capabilities). Kept under
+# the existing names so call sites are unchanged while the values have one source.
+SUPPORTED_SCALARS = SCALAR_TYPES
+SUPPORTED_LIST_ITEMS = LIST_ITEM_TYPES
+SUPPORTED_DICT_KEYS = DICT_KEY_TYPES
+SUPPORTED_SET_ITEMS = SET_ITEM_TYPES
 
 
 def annotation_name(node: ast.AST | None) -> str:

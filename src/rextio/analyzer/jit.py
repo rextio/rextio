@@ -4,8 +4,10 @@ import ast
 
 from rextio.analyzer.models import FunctionAnalysis
 from rextio.analyzer.type_collector import annotation_name
+from rextio.capabilities import NUMERIC_TYPES
 
-JIT_SCALAR_TYPES = {"int", "float"}
+# The experimental scalar JIT currently supports exactly the numeric scalars.
+JIT_SCALAR_TYPES = NUMERIC_TYPES
 
 
 def is_cranelift_jit_candidate(

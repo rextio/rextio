@@ -28,11 +28,16 @@ from rextio.analyzer.models import FunctionAnalysis
 from rextio.analyzer.native_marker import dotted_name, is_native_decorator
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 
+# Type-capability sets come from the shared registry (see rextio.capabilities)
+# so the analyzer and code generator cannot drift apart.
+from rextio.capabilities import (
+    DICT_KEY_TYPES,
+    JSON_VALUE_TYPES,
+    NUMERIC_TYPES,
+    SET_ITEM_TYPES,
+)
+
 DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
-NUMERIC_TYPES = {"int", "float"}
-JSON_VALUE_TYPES = {"int", "float", "bool", "str", "bytes"}
-DICT_KEY_TYPES = {"int", "bool", "str"}
-SET_ITEM_TYPES = {"int", "float", "bool", "str"}
 
 UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.AsyncFunctionDef,

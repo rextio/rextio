@@ -52,6 +52,11 @@ Initial public MVP for Rextio as a local hybrid build tool.
 
 ### Changed
 
+- The supported-type capability matrix (scalar/list/dict/set item/key types) is
+  now defined once in `rextio.capabilities` and shared by the analyzer and the
+  Rust backend, replacing duplicated constants that could drift apart. No
+  behavior change; a consistency test asserts every registered type has a Rust
+  mapping.
 - Generated sequence indexing now preserves Python semantics: a negative index
   counts from the end (`xs[-1]`), and an out-of-range index raises `IndexError`
   instead of triggering an unchecked Rust panic.

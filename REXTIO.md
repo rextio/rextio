@@ -148,6 +148,38 @@ constants, arithmetic, comparisons, `if` tests, loops, indexing, comprehensions,
 and supported builtins. Ambiguous or unresolved function signatures are routed
 to Python fallback.
 
+## Numeric Semantics
+
+Generated native code preserves Python numeric semantics by raising a
+**catchable** exception (an `Exception` subclass, not the uncatchable PyO3
+`PanicException`) where a fixed-width `i64`/`f64` would otherwise diverge from
+Python:
+
+- Integer `+`, `-`, `*`, unary `-`, and `abs`/`sum` raise `OverflowError` when
+  the mathematically-correct result leaves the `i64` range (Python `int` is
+  arbitrary precision).
+- Integer `%` is **floored** (the result takes the divisor's sign, e.g.
+  `-7 % 3 == 2`) and raises `ZeroDivisionError` on a zero divisor.
+- Float `/` and `%` raise `ZeroDivisionError` on a zero divisor (instead of
+  Rust's silent `inf`/`NaN`); float `%` is floored, including CPython's
+  signed-zero rule. Non-zero IEEE-754 results (including `inf`/`NaN`) pass
+  through unchanged.
+- `math.floor`/`ceil`/`trunc` return a Python `int`; a value outside the `i64`
+  range raises `OverflowError` and `NaN` raises `ValueError`. **Alpha limitation:**
+  these do not return an arbitrary-precision `int` for out-of-`i64` floats — they
+  raise rather than silently saturating; full bignum conversion is a future item.
+
+These guarantees travel with the generated code. In the **PyO3 extension**, the
+errors are Python exceptions (`OverflowError`/`ZeroDivisionError`/`ValueError`).
+In the **`--rust-importable` crate**, which is consumed by Rust code rather than
+Python, the same conditions return a `RextioError` (a native Rust error type) so
+a Rust caller can handle them idiomatically.
+
+Operations that cannot preserve these semantics on `i64`/`f64` are rejected from
+the native subset rather than generated with surprising behavior: integer `/`
+(true division), `//`, `**`, bit operations (`<<`, `>>`, `&`, `|`, `^`, `~`), and
+`int(float)` are not part of the direct-Rust subset.
+
 ## Configuration Sources
 
 Build and analysis settings resolve in this order:
