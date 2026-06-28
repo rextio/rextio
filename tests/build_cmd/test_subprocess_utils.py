@@ -76,11 +76,15 @@ def test_run_build_tool_terminates_the_whole_process_tree(tmp_path) -> None:
     assert not _pid_alive(grandchild_pid), "grandchild survived the timeout kill"
 
 
-@pytest.mark.parametrize("bad", [0, -1.0, float("nan"), None])
+@pytest.mark.parametrize(
+    "bad",
+    [0, -1.0, float("nan"), None, True, "10", __import__("decimal").Decimal("1.0")],
+)
 def test_run_build_tool_rejects_invalid_timeout(tmp_path, bad) -> None:
-    # None/NaN/non-positive are caller bugs (config/CLI already reject them for real
-    # callers); the reusable entry point fails fast with a clear ValueError instead
-    # of a TypeError or an instantly-failing build.
+    # Non-positive / NaN / None are caller bugs, and so are non-float types: `bool`
+    # would silently become a 0/1s timeout, and `str`/`Decimal` would raise a
+    # TypeError deeper in. The reusable entry point fails fast with a clear
+    # ValueError (config/CLI already reject these for real callers).
     with pytest.raises(ValueError):
         run_build_tool([sys.executable, "-c", "pass"], cwd=tmp_path, timeout=bad)
 

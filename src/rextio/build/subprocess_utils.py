@@ -65,10 +65,14 @@ def run_build_tool(
     return code (:data:`TIMEOUT_EXIT_CODE`) and an explanatory stderr.
     """
     # Validate/clamp at this reusable entry point (config/env/CLI already do for
-    # real callers; this guards direct callers and tests). Reject clearly-invalid
-    # values fast — `None`/NaN raise inside `math` and a non-positive timeout would
-    # fail the build instantly — and clamp `inf`/over-cap down to the safe maximum.
-    if timeout is None or math.isnan(timeout) or timeout <= 0:
+    # real callers; this guards direct callers and tests). The type guard comes
+    # first so `None`/`str`/`Decimal` fail with a clear ValueError rather than a
+    # `TypeError` inside `math`, and `bool` (a subclass of `int`) is rejected rather
+    # than silently treated as a 0/1-second timeout. Reject non-positive values
+    # (they fail the build instantly) and clamp `inf`/over-cap down to the maximum.
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+        raise ValueError(f"build timeout must be a positive number, got {timeout!r}")
+    if math.isnan(timeout) or timeout <= 0:
         raise ValueError(f"build timeout must be a positive number, got {timeout!r}")
     if timeout > MAX_BUILD_TIMEOUT_SECONDS:
         timeout = float(MAX_BUILD_TIMEOUT_SECONDS)
