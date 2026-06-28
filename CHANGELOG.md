@@ -55,7 +55,11 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Generated `str` literals are now escaped into always-valid Rust (non-ASCII is
   emitted literally rather than as `\uXXXX`, which Rust rejects), fixing
   uncompilable output for string constants containing non-ASCII characters;
-  escaping remains injection-safe.
+  escaping remains injection-safe. The same escaper now covers every
+  user-derived string path (the runtime-semantics shim's fallback module/attr
+  names and logging format strings, not just plain `str` constants), and lone
+  surrogates — which a Python `str` can hold but Rust cannot represent — are
+  rejected with a clear diagnostic instead of producing unencodable output.
 - External build tools (`cargo`/`maturin`/`nuitka`) are invoked through a shared
   no-shell, bounded-timeout helper, so a hung toolchain fails the build with a
   clear message instead of blocking indefinitely.
