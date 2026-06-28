@@ -153,7 +153,14 @@ jobs:
       - name: Install build tooling
         run: python -m pip install build twine check-wheel-contents
       - name: Build sdist and wheel
-        run: python -m build
+        # Clean any prior build tree first: setuptools reuses build/lib across
+        # incremental builds, so a stale module deleted from the source tree can
+        # otherwise be repackaged into the wheel (caught locally by the pinned
+        # check-wheel-contents). CI checks out fresh, but this keeps the build
+        # self-healing and matches the recommended local workflow.
+        run: |
+          rm -rf build dist
+          python -m build
       - name: Check distribution metadata
         run: python -m twine check dist/*
       - name: Check wheel contents
