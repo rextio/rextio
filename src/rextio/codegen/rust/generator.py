@@ -7,6 +7,10 @@ from rextio.codegen.native_names import native_function_name
 from rextio.codegen.rust.checked_arith import (
     checked_arith_helpers as _checked_arith_helpers,
 )
+from rextio.codegen.rust.errors import RustCodegenError
+from rextio.codegen.rust.jit_codegen import jit_prelude as _jit_prelude
+from rextio.codegen.rust.jit_codegen import jit_pointer_type as _jit_pointer_type
+from rextio.codegen.rust.jit_codegen import render_cranelift_expr as _render_cranelift_expr
 from rextio.codegen.rust.pyo3 import render_pyo3_module
 from rextio.codegen.rust.rust_format import (
     block_always_returns as _block_always_returns,
@@ -73,8 +77,9 @@ from rextio.ir.types import (
 )
 
 
-class RustCodegenError(RuntimeError):
-    pass
+# `RustCodegenError` is imported from .errors above and re-exported here for
+# backward compatibility (tests/import `rextio.codegen.rust.generator`).
+__all__ = ["RustCodegenError", "generate_rust_module", "generate_rust_crate_module"]
 
 
 
@@ -292,77 +297,6 @@ def _render_jit_function(
             "}",
         ]
     )
-
-
-def _jit_prelude() -> list[str]:
-    return [
-        "use cranelift_codegen::ir::{types, AbiParam};",
-        "use cranelift_codegen::ir::InstBuilder;",
-        "use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};",
-        "use cranelift_jit::{JITBuilder, JITModule};",
-        "use cranelift_module::{Linkage, Module};",
-        "use std::sync::atomic::{AtomicUsize, Ordering};",
-        "use std::sync::OnceLock;",
-    ]
-
-
-def _jit_pointer_type(return_type: str, param_count: int) -> str:
-    args = ", ".join(return_type for _index in range(param_count))
-    return f"unsafe extern \"C\" fn({args}) -> {return_type}"
-
-
-def _render_cranelift_expr(
-    expr: ExprIR,
-    params: dict[str, int],
-    return_type: str,
-) -> tuple[list[str], str]:
-    lines: list[str] = []
-    temp_index = 0
-
-    def next_temp() -> str:
-        nonlocal temp_index
-        temp_index += 1
-        return f"jit_value_{temp_index}"
-
-    def lower(item: ExprIR) -> str:
-        if isinstance(item, NameIR):
-            if item.id not in params:
-                raise RustCodegenError(f"JIT expression references unsupported local: {item.id}")
-            temp = next_temp()
-            lines.append(f"let {temp} = builder.block_params(block)[{params[item.id]}];")
-            return temp
-        if isinstance(item, LiteralIR):
-            temp = next_temp()
-            if return_type == "i64" and isinstance(item.value, int) and not isinstance(item.value, bool):
-                lines.append(f"let {temp} = builder.ins().iconst(types::I64, {item.value});")
-                return temp
-            if return_type == "f64" and isinstance(item.value, (int, float)) and not isinstance(item.value, bool):
-                lines.append(f"let {temp} = builder.ins().f64const({float(item.value)!r});")
-                return temp
-            raise RustCodegenError("JIT expression literal is not supported")
-        if isinstance(item, UnaryOpIR) and item.op == "-":
-            value = lower(item.value)
-            temp = next_temp()
-            if return_type == "i64":
-                lines.append(f"let {temp} = builder.ins().ineg({value});")
-            else:
-                lines.append(f"let {temp} = builder.ins().fneg({value});")
-            return temp
-        if isinstance(item, BinaryOpIR):
-            left = lower(item.left)
-            right = lower(item.right)
-            if return_type == "i64":
-                op = {"+": "iadd", "-": "isub", "*": "imul"}.get(item.op)
-            else:
-                op = {"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv"}.get(item.op)
-            if op is None:
-                raise RustCodegenError(f"JIT binary operator is not supported: {item.op}")
-            temp = next_temp()
-            lines.append(f"let {temp} = builder.ins().{op}({left}, {right});")
-            return temp
-        raise RustCodegenError(f"unsupported JIT expression IR: {type(item).__name__}")
-
-    return lines, lower(expr)
 
 
 def _render_importable_crate_module(function_sources: list[str], used_helpers: set[str]) -> str:
