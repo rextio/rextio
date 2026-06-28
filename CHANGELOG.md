@@ -52,6 +52,12 @@ Initial public MVP for Rextio as a local hybrid build tool.
 
 ### Changed
 
+- Internal refactor (no behavior change): the two largest modules were split into
+  cohesive units guarded by the golden-snapshot and contract suites —
+  `codegen/rust/generator.py` shed its formatting helpers (`rust_format`),
+  checked-arithmetic emitter (`checked_arith`), shared error type (`errors`), and
+  Cranelift JIT helpers (`jit_codegen`); `analyzer/unsupported_patterns.py` shed
+  its stateless type/AST predicates (`type_predicates`).
 - The supported-type capability matrix (scalar/list/dict/set item/key types) is
   now defined once in `rextio.capabilities` and shared by the analyzer and the
   Rust backend, replacing duplicated constants that could drift apart. No
