@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 
 from rextio.fallback.build_result import FallbackBuildResult
+from rextio.build.subprocess_utils import run_build_tool
 
 
 def nuitka_unavailable_message() -> str:
@@ -48,13 +48,7 @@ def build_nuitka_fallback(python_dir: Path) -> FallbackBuildResult:
             "--remove-output",
         ]
         commands.append(command)
-        completed = subprocess.run(
-            command,
-            cwd=python_dir,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        completed = run_build_tool(command, cwd=python_dir)
         stdout_parts.append(_tail(completed.stdout))
         stderr_parts.append(_tail(completed.stderr))
         if completed.returncode != 0:

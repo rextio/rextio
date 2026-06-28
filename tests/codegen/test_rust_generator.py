@@ -641,6 +641,74 @@ def observe(value: int) -> str:
     assert "return Ok(chrono::Utc::now().to_rfc3339());" in source
 
 
+def test_non_ascii_logging_format_string_emits_valid_rust(tmp_path: Path) -> None:
+    # The logging format string is a user-provided literal that flows into a Rust
+    # string literal. It must be emitted literally (Rust source is UTF-8), not as
+    # `json.dumps`'s `\uXXXX` escape, which Rust rejects.
+    (tmp_path / "app.py").write_text(
+        """
+import logging as log
+import rextio
+
+@rextio.native
+def observe(value: int) -> int:
+    log.info("café %s", value)
+    return value
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert 'log::info!("café {}", value.clone());' in source
+    # No invalid `\uXXXX` escape leaks into the Rust source.
+    assert "caf\\u00e9" not in source
+
+
+def test_non_ascii_runtime_shim_module_emits_valid_rust(tmp_path: Path) -> None:
+    # A non-ASCII module file name flows into the runtime-shim fallback-module
+    # string literal; it must be emitted literally rather than `\uXXXX`-escaped.
+    (tmp_path / "café.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def read_value(x: object) -> object:
+    return getattr(x, "value")
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "rextio_call_python_runtime(" in source
+    assert "café" in source
+    assert "caf\\u00e9" not in source
+
+
+def test_non_ascii_maybe_bound_name_emits_valid_rust(tmp_path: Path) -> None:
+    # A maybe-bound (walrus) variable name is emitted as a raw Rust identifier and
+    # embedded into the UnboundLocalError message string. A non-ASCII name must go
+    # through rust_string_literal so the message is valid Rust, not a `\uXXXX`
+    # escape (which Rust rejects).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def last_positive(xs: list[int]) -> int:
+    out = [café for x in xs if (café := x) > 0]
+    return café
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "local variable 'café' referenced before assignment" in source
+    assert "caf\\u00e9" not in source
+
+
 def test_generates_rust_for_expanded_stdlib_lowering_calls(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """

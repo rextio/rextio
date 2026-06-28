@@ -151,11 +151,25 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install build tooling
-        run: python -m pip install build twine
+        run: python -m pip install build twine check-wheel-contents
       - name: Build sdist and wheel
-        run: python -m build
+        # Clean any prior build tree first: setuptools reuses build/lib across
+        # incremental builds, so a stale module deleted from the source tree can
+        # otherwise be repackaged into the wheel (caught locally by the pinned
+        # check-wheel-contents). CI checks out fresh, but this keeps the build
+        # self-healing and matches the recommended local workflow.
+        run: |
+          rm -rf build dist
+          python -m build
       - name: Check distribution metadata
         run: python -m twine check dist/*
+      - name: Check wheel contents
+        # Catch packaging mistakes the metadata check misses: stray files, files
+        # outside the package, missing RECORD entries, etc. Rextio's own wheel is
+        # pure-Python (py3-none-any); the platform-specific abi3/manylinux concern
+        # applies to the *generated* hybrid artifacts, which build on the user's
+        # machine, not to this tool's distribution.
+        run: check-wheel-contents dist/*.whl
       - name: Install the built wheel into a clean environment
         run: |
           python -m venv /tmp/rextio-wheel
