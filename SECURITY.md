@@ -14,10 +14,16 @@ external toolchain on your machine.
 
 ## What executes user code, and when
 
-- **Analysis is static.** `rextio check`, `rextio generate`, and native discovery
-  parse your source with `ast.parse` only — they do **not** import, `exec`, or
-  `eval` your modules. Dynamic constructs (`eval`/`exec`/`__import__`/`getattr`…)
-  are *rejected* from the native subset, not executed by Rextio.
+- **Analysis of your source is static.** `rextio check`, `rextio generate`, and
+  native discovery parse your source with `ast.parse` only — they do **not**
+  import, `exec`, or `eval` your modules. Dynamic constructs
+  (`eval`/`exec`/`__import__`/`getattr`…) are *rejected* from the native subset,
+  not executed by Rextio.
+- **Plugin loading executes plugin code.** If you configure `rextio.plugins`
+  entry-point plugins, resolving them imports the installed plugin packages
+  (their module-level code runs), as with any Python entry-point mechanism. This
+  is a separate, opt-in path from the source analysis above; treat installed
+  plugins with the same trust as any dependency you install.
 - **Building invokes external tools.** `rextio build` shells out to `cargo`,
   `maturin`, and (optionally) `nuitka`. See the subprocess protections below.
 - **Running the artifact executes code.** `rextio bench` and importing a built
@@ -49,10 +55,10 @@ external toolchain on your machine.
   The generated `Cargo.toml` constrains each to a compatible version range, and
   `cargo build` produces a `Cargo.lock` recording the exact resolved graph for
   reproducible builds.
-- Rextio does not fetch or execute network content during analysis. `cargo`
-  fetches crates during `build`; run builds in an environment with a trusted
-  registry/mirror, and vendor or lock dependencies for air-gapped or
-  reproducibility-sensitive builds.
+- Rextio core does not perform network I/O during source analysis (configured
+  plugins may; see above). `cargo` fetches crates during `build`; run builds in an
+  environment with a trusted registry/mirror, and vendor or lock dependencies for
+  air-gapped or reproducibility-sensitive builds.
 
 ## Reporting
 

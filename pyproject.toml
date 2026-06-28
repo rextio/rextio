@@ -64,6 +64,14 @@ version = {attr = "rextio.__about__.__version__"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.check-wheel-contents]
+# Pin the expected wheel layout so a packaging regression (a stray top-level file
+# or module) fails CI deterministically, and a check-wheel-contents version bump
+# cannot silently change the ruleset. Rextio's wheel is a single pure-Python
+# top-level package built from src/.
+toplevel = "rextio"
+package = "src/rextio"
+
 [tool.coverage.run]
 source = ["rextio"]
 branch = true
