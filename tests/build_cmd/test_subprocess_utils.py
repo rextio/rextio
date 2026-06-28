@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import time
 
@@ -97,26 +98,44 @@ def test_run_build_tool_timeout_is_bounded_when_a_grandchild_escapes_the_group(
     # (strictly bounded by the grace period), not block until the grandchild dies.
     monkeypatch.setattr(subprocess_utils, "_TERM_GRACE_SECONDS", 1.0)
     monkeypatch.setattr(subprocess_utils, "_KILL_GRACE_SECONDS", 1.0)
-    grandchild = "import os, time; os.setsid(); time.sleep(30)"
+    # The grandchild records its PID before sleeping so the test can clean it up:
+    # it detached into its own session, so the code under test cannot kill it, and
+    # we must not leak a 30s sleeper into the CI run.
+    pid_file = tmp_path / "grandchild.pid"
+    grandchild = (
+        "import os, time; os.setsid(); "
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); "
+        "time.sleep(30)"
+    )
     parent = (
         "import subprocess, sys, time; "
         f"subprocess.Popen([sys.executable, '-c', {grandchild!r}]); "
         "time.sleep(30)"
     )
 
-    start = time.monotonic()
-    result = run_build_tool([sys.executable, "-c", parent], cwd=tmp_path, timeout=0.5)
-    elapsed = time.monotonic() - start
+    try:
+        start = time.monotonic()
+        result = run_build_tool([sys.executable, "-c", parent], cwd=tmp_path, timeout=0.5)
+        elapsed = time.monotonic() - start
 
-    assert result.returncode != 0
-    assert "timed out" in result.stderr.lower()
-    # The escaped grandchild keeps the pipes open, so the drain is abandoned and the
-    # truncation is surfaced.
-    assert "truncated" in result.stderr.lower()
-    # Bounded: timeout (0.5s) + a few 1s grace windows, far below the 30s the
-    # escaped grandchild would otherwise hold the pipes open. Generous margin so a
-    # loaded CI box does not make it flaky.
-    assert elapsed < 15, f"timeout cleanup hung for {elapsed:.1f}s"
+        assert result.returncode != 0
+        assert "timed out" in result.stderr.lower()
+        # The escaped grandchild keeps the pipes open, so the drain is abandoned and
+        # the truncation is surfaced.
+        assert "truncated" in result.stderr.lower()
+        # Bounded: timeout (0.5s) + a few 1s grace windows, far below the 30s the
+        # escaped grandchild would otherwise hold the pipes open. Generous margin so
+        # a loaded CI box does not make it flaky.
+        assert elapsed < 15, f"timeout cleanup hung for {elapsed:.1f}s"
+    finally:
+        deadline = time.monotonic() + 5
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except (ProcessLookupError, ValueError):
+                pass
 
 
 def test_run_build_tool_surfaces_giveup_when_cleanup_reports_failure(tmp_path, monkeypatch) -> None:
