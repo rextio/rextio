@@ -33,6 +33,15 @@ jobs:
         run: ruff check src tests
       - name: Mypy (type-check)
         run: mypy
+      - name: No residual rextio_runtime references
+        # The dead helper crate was removed (mod-proposal P2-3); its only allowed
+        # mention is the CHANGELOG note. Fail if a source/template reference
+        # regresses. (`git grep` exit 1 == no match == success.)
+        run: |
+          if git grep -n "rextio_runtime" -- ':!CHANGELOG.md' ':!.github/workflows/ci.yml'; then
+            echo "::error::unexpected rextio_runtime reference (crate was removed)"
+            exit 1
+          fi
 
   test:
     name: Tests (py${{ matrix.python-version }} / ${{ matrix.os }})
@@ -85,8 +94,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Install test dependencies
         run: python -m pip install -e ".[test]"
-      - name: Pytest (real-cargo e2e)
-        run: python -m pytest tests/e2e -m needs_cargo -q
+      - name: Pytest (e2e; conftest auto-skips absent toolchains)
+        # Run the whole e2e directory rather than `-m needs_cargo`: the conftest
+        # auto-skips tests whose toolchain is unavailable, while `-m needs_cargo`
+        # would silently drop toolchain-free e2e tests (CLI smoke, zipapp) so they
+        # ran in no CI lane. See mod-proposal P1-10 / council B2.
+        run: python -m pytest tests/e2e -q
 
   package:
     name: Package (build + metadata + install smoke)

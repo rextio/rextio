@@ -59,17 +59,25 @@ def _write_project(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _normalize_newlines(text: str) -> str:
+    # The generator always emits LF; normalize the on-disk golden in case a
+    # Windows / `core.autocrlf` checkout rewrote it to CRLF, so the comparison
+    # tests determinism of content rather than line endings. `.gitattributes`
+    # pins these files to LF as the primary guard; this is belt-and-suspenders.
+    return text.replace("\r\n", "\n")
+
+
 def _assert_golden(name: str, generated: str) -> None:
     golden_path = _GOLDEN_DIR / name
     if os.environ.get("REXTIO_UPDATE_GOLDEN") == "1":
         _GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
-        golden_path.write_text(generated, encoding="utf-8")
+        golden_path.write_text(generated, encoding="utf-8", newline="\n")
         return
     assert golden_path.exists(), (
         f"missing golden file {golden_path}; run REXTIO_UPDATE_GOLDEN=1 pytest to create it"
     )
     expected = golden_path.read_text(encoding="utf-8")
-    assert generated == expected, (
+    assert _normalize_newlines(generated) == _normalize_newlines(expected), (
         f"generated Rust diverged from {name}; if intended, regenerate with "
         "REXTIO_UPDATE_GOLDEN=1 pytest"
     )

@@ -61,6 +61,38 @@ class RustCodegenError(RuntimeError):
     pass
 
 
+_CHECKED_INT_OPS = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
+
+
+def _checked_arith_helpers(source: str, mode: str) -> list[str]:
+    """Emit the ``__rextio_checked_*`` helpers referenced by ``source``.
+
+    Only helpers actually called from the rendered functions are emitted, so a
+    module with no integer arithmetic gains no dead code. The pyo3 variant raises
+    ``OverflowError``; the crate variant returns ``RextioError``.
+    """
+    lines: list[str] = []
+    for name, method in _CHECKED_INT_OPS.items():
+        fn = f"__rextio_checked_{name}"
+        if f"{fn}(" not in source:
+            continue
+        if mode == "pyo3":
+            ret = "PyResult<i64>"
+            err = 'pyo3::exceptions::PyOverflowError::new_err("integer overflow")'
+        else:
+            ret = "Result<i64, RextioError>"
+            err = 'RextioError::new("integer overflow")'
+        lines.extend(
+            [
+                f"fn {fn}(a: i64, b: i64) -> {ret} {{",
+                f"    a.{method}(b).ok_or_else(|| {err})",
+                "}",
+                "",
+            ]
+        )
+    return lines
+
+
 def generate_rust_module(module_ir: ModuleIR) -> str:
     names_by_qualname = {
         function.qualname: rust_identifier(native_function_name(function.qualname))
@@ -104,10 +136,16 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
         for function in module_ir.functions
         if not function.native_jit
     ]
+    prelude: list[str] = []
+    if any(function.native_jit for function in module_ir.functions):
+        prelude.extend(_jit_prelude())
+    prelude.extend(
+        _checked_arith_helpers("\n".join(source for _name, source in rendered), "pyo3")
+    )
     return render_pyo3_module(
         rendered,
         exported_functions=exported,
-        extra_prelude=_jit_prelude() if any(function.native_jit for function in module_ir.functions) else None,
+        extra_prelude=prelude or None,
     )
 
 
@@ -373,6 +411,7 @@ def _render_importable_crate_module(function_sources: list[str]) -> str:
         "impl std::error::Error for RextioError {}",
         "",
     ]
+    lines.extend(_checked_arith_helpers("\n".join(function_sources), "crate"))
     for function_source in function_sources:
         lines.append(function_source)
         lines.append("")
@@ -505,6 +544,12 @@ class _FunctionRenderer:
                 f"in {iterable} {{"
             ]
             self.declared.update(target_names(statement.target))
+            # Bind the loop variable's type for the body so type-directed
+            # rendering (e.g. checked integer arithmetic on `acc += x`) sees the
+            # element type, mirroring the comprehension-generator path.
+            self.bind_target_types(
+                statement.target, self.iterable_target_types(statement.iterable)
+            )
             lines.extend(self.render_block(statement.body, indent + 1))
             lines.append(f"{prefix}}}")
             return lines
@@ -615,6 +660,9 @@ class _FunctionRenderer:
         if isinstance(expr, SetComprehensionIR):
             return self.render_set_comprehension(expr)
         if isinstance(expr, BinaryOpIR):
+            checked = self.render_checked_int_binop(expr)
+            if checked is not None:
+                return checked
             op = {"and": "&&", "or": "||"}.get(expr.op, expr.op)
             return f"({self.render_expr(expr.left)} {op} {self.render_expr(expr.right)})"
         if isinstance(expr, UnaryOpIR):
@@ -991,6 +1039,32 @@ class _FunctionRenderer:
         if self.mode == "pyo3":
             return f"pyo3::exceptions::PyKeyError::new_err({key}.clone())"
         return f'RextioError::new(format!("key not found: {{:?}}", {key}))'
+
+    def render_checked_int_binop(self, expr: BinaryOpIR) -> str | None:
+        """Render an i64 ``+``/``-``/``*`` as checked arithmetic, or ``None``.
+
+        Returns ``None`` when the operator is not overflow-prone integer
+        arithmetic (the caller then falls back to the plain rendering). When both
+        operands are ``int``, the operation is lowered to a ``__rextio_checked_*``
+        helper that raises ``OverflowError`` (PyO3) / returns ``RextioError``
+        (crate) on overflow instead of wrapping. Python ``int`` is arbitrary
+        precision, so an i64 ``+``/``-``/``*`` that would wrap is an
+        ``OverflowError`` (catchable via ``except Exception``) rather than the
+        previous ``overflow-checks`` panic, which PyO3 surfaces as an uncatchable
+        ``PanicException`` (a ``BaseException``). The helper is a plain function
+        call, so an operand sub-expression containing ``?`` propagates in function
+        scope with no closure to leak into.
+        """
+        name = {"+": "add", "-": "sub", "*": "mul"}.get(expr.op)
+        if name is None:
+            return None
+        left_type = self.infer_expr_type(expr.left)
+        right_type = self.infer_expr_type(expr.right)
+        if not (isinstance(left_type, RxtInt) and isinstance(right_type, RxtInt)):
+            return None
+        left = strip_wrapping_parens(self.render_expr(expr.left))
+        right = strip_wrapping_parens(self.render_expr(expr.right))
+        return f"__rextio_checked_{name}({left}, {right})?"
 
     def render_index_expr(self, expr: IndexIR) -> str:
         value_type = self.infer_expr_type(expr.value)

@@ -37,12 +37,12 @@ hot_threshold = 1
         """
 import rextio
 
-def helper(x: int) -> int:
-    return x * 2
+def helper(x: float) -> float:
+    return x * 2.0
 
 @rextio.native
-def compute(x: int) -> int:
-    return helper(x) + 1
+def compute(x: float) -> float:
+    return helper(x) + 1.0
 """,
         encoding="utf-8",
     )
@@ -71,7 +71,7 @@ def compute(x: int) -> int:
         sys.modules.pop(module_name, None)
 
     native_module = importlib.import_module("_rextio_native")
-    assert native_module.jit_app__math_ops__compute(3) == 7
+    assert native_module.jit_app__math_ops__compute(3.0) == 7.0
 
     module = importlib.import_module("jit_app.math_ops")
-    assert module.compute(4) == 9
+    assert module.compute(4.0) == 9.0

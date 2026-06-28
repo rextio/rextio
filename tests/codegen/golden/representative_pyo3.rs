@@ -7,6 +7,14 @@ use sha2::Digest;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+fn __rextio_checked_add(a: i64, b: i64) -> PyResult<i64> {
+    a.checked_add(b).ok_or_else(|| pyo3::exceptions::PyOverflowError::new_err("integer overflow"))
+}
+
+fn __rextio_checked_mul(a: i64, b: i64) -> PyResult<i64> {
+    a.checked_mul(b).ok_or_else(|| pyo3::exceptions::PyOverflowError::new_err("integer overflow"))
+}
+
 
 fn rextio_call_python_runtime(
     py: Python<'_>,
@@ -45,7 +53,7 @@ fn app__doubled(xs: Vec<i64>) -> PyResult<Vec<i64>> {
     return Ok({
     let mut __rextio_list_1 = Vec::new();
     for x in xs.iter().cloned() {
-        __rextio_list_1.push(x * 2);
+        __rextio_list_1.push(__rextio_checked_mul(x, 2)?);
     }
     __rextio_list_1
 });
@@ -60,14 +68,14 @@ fn app__lookup(scores: HashMap<String, i64>, key: String) -> PyResult<i64> {
 fn app__total(xs: Vec<i64>) -> PyResult<i64> {
     let mut acc = 0;
     for x in xs.iter().cloned() {
-        acc = acc + x;
+        acc = __rextio_checked_add(acc, x)?;
     }
     return Ok(acc);
 }
 
 #[pyfunction]
 fn app__sum_total(xs: Vec<i64>) -> PyResult<i64> {
-    return Ok(app__total(xs.clone())? + 1);
+    return Ok(__rextio_checked_add(app__total(xs.clone())?, 1)?);
 }
 
 #[pymodule]

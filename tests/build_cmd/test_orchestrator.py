@@ -115,12 +115,12 @@ native_marker = "decorator"
         """
 import rextio
 
-def helper(x: int) -> int:
-    return x * 2
+def helper(x: float) -> float:
+    return x * 2.0
 
 @rextio.native
-def compute(x: int) -> int:
-    return helper(x) + 1
+def compute(x: float) -> float:
+    return helper(x) + 1.0
 """,
         encoding="utf-8",
     )
@@ -257,7 +257,7 @@ def add_twice(a: int, b: int) -> int:
     assert 'name = "demo_rust"' in (dist_crate / "Cargo.toml").read_text(encoding="utf-8")
     assert "pub fn app__add(a: i64, b: i64) -> Result<i64, RextioError>" in lib_source
     assert "pub fn app__add_twice(a: i64, b: i64) -> Result<i64, RextioError>" in lib_source
-    assert "return Ok(app__add(a.clone(), b.clone())? * 2);" in lib_source
+    assert "return Ok(__rextio_checked_mul(app__add(a.clone(), b.clone())?, 2)?);" in lib_source
     assert "pyo3" not in lib_source
 
 

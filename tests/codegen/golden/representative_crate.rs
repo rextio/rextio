@@ -28,6 +28,14 @@ impl std::fmt::Display for RextioError {
 
 impl std::error::Error for RextioError {}
 
+fn __rextio_checked_add(a: i64, b: i64) -> Result<i64, RextioError> {
+    a.checked_add(b).ok_or_else(|| RextioError::new("integer overflow"))
+}
+
+fn __rextio_checked_mul(a: i64, b: i64) -> Result<i64, RextioError> {
+    a.checked_mul(b).ok_or_else(|| RextioError::new("integer overflow"))
+}
+
 pub fn app__at(xs: Vec<i64>, i: i64) -> Result<i64, RextioError> {
     return Ok({ let __rextio_seq_1 = &xs; let __rextio_len_3 = __rextio_seq_1.len() as i64; let __rextio_index_2 = (i) as i64; let __rextio_index_2 = if __rextio_index_2 < 0 { __rextio_index_2.checked_add(__rextio_len_3) } else { Some(__rextio_index_2) }; (match __rextio_index_2 { Some(__rextio_bound_4) if __rextio_bound_4 >= 0 && __rextio_bound_4 < __rextio_len_3 => __rextio_seq_1.get(__rextio_bound_4 as usize).cloned(), _ => None }).ok_or_else(|| RextioError::new("list index out of range"))? });
 }
@@ -46,7 +54,7 @@ pub fn app__doubled(xs: Vec<i64>) -> Result<Vec<i64>, RextioError> {
     return Ok({
     let mut __rextio_list_1 = Vec::new();
     for x in xs.iter().cloned() {
-        __rextio_list_1.push(x * 2);
+        __rextio_list_1.push(__rextio_checked_mul(x, 2)?);
     }
     __rextio_list_1
 });
@@ -59,11 +67,11 @@ pub fn app__lookup(scores: HashMap<String, i64>, key: String) -> Result<i64, Rex
 pub fn app__total(xs: Vec<i64>) -> Result<i64, RextioError> {
     let mut acc = 0;
     for x in xs.iter().cloned() {
-        acc = acc + x;
+        acc = __rextio_checked_add(acc, x)?;
     }
     return Ok(acc);
 }
 
 pub fn app__sum_total(xs: Vec<i64>) -> Result<i64, RextioError> {
-    return Ok(app__total(xs.clone())? + 1);
+    return Ok(__rextio_checked_add(app__total(xs.clone())?, 1)?);
 }

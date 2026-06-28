@@ -28,7 +28,31 @@ def is_cranelift_jit_candidate(
         return False, "JIT candidates currently require a single return expression"
     if not _is_supported_expr(node.body[0].value, set(arg_types), return_type):
         return False, "JIT candidates currently support only scalar arithmetic expressions"
+    if return_type == "int" and _has_overflow_prone_int_arithmetic(node.body[0].value):
+        # The Cranelift path lowers i64 `+`/`-`/`*` to wrapping `iadd`/`isub`/`imul`
+        # and cannot raise `OverflowError`, so it would silently wrap where the
+        # regular native path now raises (Python ints are arbitrary precision).
+        # Keep such functions on the checked native path instead of JIT-compiling.
+        return False, (
+            "integer JIT disabled for overflow-prone arithmetic: the Cranelift "
+            "path cannot raise OverflowError, so the helper stays on the checked "
+            "native path"
+        )
     return True, "typed scalar helper can be compiled by the experimental Cranelift JIT"
+
+
+def _has_overflow_prone_int_arithmetic(node: ast.AST) -> bool:
+    """True if the expression contains i64 arithmetic that can overflow.
+
+    Addition, subtraction, multiplication and unary negation on a fixed-width
+    i64 can overflow; the experimental Cranelift JIT lowers them to wrapping
+    instructions, so any such node disqualifies an ``int`` helper from JIT.
+    """
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
+        return True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        return True
+    return any(_has_overflow_prone_int_arithmetic(child) for child in ast.iter_child_nodes(node))
 
 
 def _signature_types(

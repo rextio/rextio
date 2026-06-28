@@ -55,9 +55,20 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Generated sequence indexing now preserves Python semantics: a negative index
   counts from the end (`xs[-1]`), and an out-of-range index raises `IndexError`
   instead of triggering an unchecked Rust panic.
-- Generated native crates are compiled with `overflow-checks = true`, so i64
-  integer overflow raises a Python exception (Python ints are arbitrary
-  precision) instead of silently wrapping in release builds.
+- Generated integer `+`/`-`/`*` now uses checked arithmetic
+  (`checked_add`/`checked_sub`/`checked_mul`): an i64 overflow raises
+  `OverflowError` (PyO3) / returns a `RextioError` (Rust-importable crate)
+  instead of silently wrapping. Python ints are arbitrary precision, so this
+  preserves Python semantics, and `OverflowError` is a catchable `Exception`
+  (unlike the uncatchable PyO3 `PanicException` a raw overflow panic produces).
+  The guarantee travels with the generated code, so it holds even when the
+  Rust-importable crate is consumed as a dependency (where a `[profile.release]`
+  setting would be ignored). Release builds also keep `overflow-checks = true`
+  as a backstop for any arithmetic not covered by the checked path.
+- The experimental Cranelift JIT no longer accepts integer helpers that contain
+  overflow-prone arithmetic: the JIT path emits wrapping instructions and cannot
+  raise `OverflowError`, so such helpers stay on the checked native path. Float
+  scalar helpers remain JIT-eligible.
 - Removed the unused `crates/rextio_runtime` helper crate; generated code inlines
   its bounds-checked access, so the crate was never wired into any build.
 - The Python runtime-semantics shim (`RXT080`) is now strictly opt-in. Only

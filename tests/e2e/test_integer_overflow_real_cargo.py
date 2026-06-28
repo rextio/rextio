@@ -32,6 +32,13 @@ import rextio
 @rextio.native
 def square(a: int) -> int:
     return a * a
+
+@rextio.native
+def accumulate(xs: list[int]) -> int:
+    acc = 0
+    for x in xs:
+        acc += x
+    return acc
 """,
         encoding="utf-8",
     )
@@ -53,9 +60,28 @@ def square(a: int) -> int:
 
     # In-range arithmetic is unchanged.
     assert module.square(3) == 9
+    assert module.accumulate([1, 2, 3]) == 6
 
-    # An i64 overflow is a real error (Python ints are arbitrary precision), so the
-    # release build is compiled with overflow-checks and PyO3 turns the resulting
-    # panic into a Python exception instead of silently wrapping to a wrong value.
-    with pytest.raises(BaseException):  # noqa: PT011 - PyO3 PanicException is not an Exception subclass on all versions
+    # An i64 overflow is a real error (Python ints are arbitrary precision). The
+    # generated code uses checked arithmetic and raises `OverflowError` — a normal
+    # `Exception` subclass that `except Exception:` can catch — instead of either
+    # silently wrapping or raising an uncatchable PyO3 `PanicException`
+    # (`BaseException`). Pin the concrete type so a regression to either failure
+    # mode is caught.
+    with pytest.raises(OverflowError):
         module.square(2**40)
+
+    # The same guarantee holds for accumulation across a loop, not just a single
+    # multiply.
+    with pytest.raises(OverflowError):
+        module.accumulate([2**62, 2**62, 2**62])
+
+    # `OverflowError` is catchable as a plain `Exception` (the property the old
+    # PanicException approach failed to provide).
+    try:
+        module.square(2**40)
+    except Exception:
+        caught = True
+    else:  # pragma: no cover - the call above always raises
+        caught = False
+    assert caught

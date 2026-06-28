@@ -52,12 +52,12 @@ def test_generates_internal_cranelift_jit_helper_only_when_enabled(tmp_path: Pat
         """
 import rextio
 
-def helper(x: int) -> int:
-    return x * 2
+def helper(x: float) -> float:
+    return x * 2.0
 
 @rextio.native
-def compute(x: int) -> int:
-    return helper(x) + 1
+def compute(x: float) -> float:
+    return helper(x) + 1.0
 """,
         encoding="utf-8",
     )
@@ -71,11 +71,11 @@ def compute(x: int) -> int:
     source = generate_rust_module(lower_project(analysis, include_jit=True))
 
     assert "use cranelift_jit::{JITBuilder, JITModule};" in source
-    assert "fn app__helper(x: i64) -> PyResult<i64> {" in source
+    assert "fn app__helper(x: f64) -> PyResult<f64> {" in source
     assert "static app__helper_COMPILED" in source
     assert "if calls >= 2" in source
     assert "return Ok(unsafe { compiled(x) });" in source
-    assert "return Ok(app__helper(x.clone())? + 1);" in source
+    assert "return Ok(app__helper(x.clone())? + 1.0);" in source
     assert "m.add_function(wrap_pyfunction!(app__compute, m)?)?;" in source
     assert "m.add_function(wrap_pyfunction!(app__helper, m)?)?;" not in source
 
@@ -98,8 +98,8 @@ def add_square(x: int) -> int:
     assert "pub struct RextioError" in source
     assert "pub fn app__square(x: i64) -> Result<i64, RextioError> {" in source
     assert "pub fn app__add_square(x: i64) -> Result<i64, RextioError> {" in source
-    assert "return Ok(x * x);" in source
-    assert "return Ok(app__square(x.clone())? + 1);" in source
+    assert "return Ok(__rextio_checked_mul(x, x)?);" in source
+    assert "return Ok(__rextio_checked_add(app__square(x.clone())?, 1)?);" in source
     assert "pyo3" not in source
     assert "#[pyfunction]" not in source
 
@@ -183,7 +183,7 @@ def sum_squares(xs):
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert "fn app__add_one(x: i64) -> PyResult<i64> {" in source
-    assert "return Ok(x + 1);" in source
+    assert "return Ok(__rextio_checked_add(x, 1)?);" in source
     assert "fn app__sum_squares(xs: Vec<i64>) -> PyResult<i64> {" in source
     assert "for x in xs.iter().cloned() {" in source
 
@@ -242,10 +242,10 @@ def decrement_to_zero(n: int) -> int:
     assert "for i in 0..(xs.len() as i64) {" in source
     assert "if { let __rextio_seq" in source
     assert PYO3_INDEX_ERROR_SUFFIX in source
-    assert "count = count + 1;" in source
+    assert "count = __rextio_checked_add(count, 1)?;" in source
     assert "fn app__decrement_to_zero(mut n: i64) -> PyResult<i64> {" in source
     assert "while n > 0 {" in source
-    assert "n = n - 1;" in source
+    assert "n = __rextio_checked_sub(n, 1)?;" in source
 
 
 def test_generates_rust_for_string_literal_and_string_indexing(tmp_path: Path) -> None:
@@ -290,8 +290,8 @@ def sum_indices(xs: list[int]) -> int:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert "for i in 0..(xs.len() as i64) {" in source
-    assert "total = total + i;" in source
-    assert "total = total + { let __rextio_seq" in source
+    assert "total = __rextio_checked_add(total, i)?;" in source
+    assert "total = __rextio_checked_add(total, { let __rextio_seq" in source
     assert PYO3_INDEX_ERROR_SUFFIX in source
 
 
@@ -319,7 +319,7 @@ def stepped_total(n: int) -> int:
     assert "for i in (1..n).step_by(2 as usize) {" in source
     assert "break;" in source
     assert "continue;" in source
-    assert "total = total + i;" in source
+    assert "total = __rextio_checked_add(total, i)?;" in source
 
 
 def test_generates_rust_for_list_literals_and_append(tmp_path: Path) -> None:
@@ -469,7 +469,7 @@ def dot(xs: list[float], ys: list[float]) -> float:
         "for (i, x) in xs.iter().cloned().enumerate()"
         ".map(|(i, value)| (i as i64, value)) {"
     ) in source
-    assert "out.push(i + x);" in source
+    assert "out.push(__rextio_checked_add(i, x)?);" in source
     assert "for (x, y) in xs.iter().cloned().zip(ys.iter().cloned()) {" in source
     assert "total = total + (x * y);" in source
 
@@ -575,7 +575,7 @@ def z_helper(x: int) -> int:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert source.index("fn app__z_helper") < source.index("fn app__a_compute")
-    assert "return Ok(app__z_helper(x.clone())? + 1);" in source
+    assert "return Ok(__rextio_checked_add(app__z_helper(x.clone())?, 1)?);" in source
 
 
 def test_generates_rust_for_limited_builtins_and_math_subset(tmp_path: Path) -> None:
@@ -708,7 +708,7 @@ def size_plus_first(xs: list[int]) -> int:
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
-    assert "return Ok((xs.len() as i64) + { let __rextio_seq" in source
+    assert "return Ok(__rextio_checked_add(xs.len() as i64, { let __rextio_seq" in source
     assert PYO3_INDEX_ERROR_SUFFIX in source
 
 
