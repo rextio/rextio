@@ -1,0 +1,4 @@
+# Golden codegen snapshots are compared byte-for-byte by the determinism tests,
+# so they must check out with LF endings on every platform (Windows / autocrlf
+# must not rewrite them). See tests/codegen/test_golden_snapshots.py.
+tests/codegen/golden/** text eol=lf

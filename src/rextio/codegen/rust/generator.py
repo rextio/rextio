@@ -61,6 +61,161 @@ class RustCodegenError(RuntimeError):
     pass
 
 
+# Order is fixed so emitted helpers are deterministic regardless of use order.
+_CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
+_CHECKED_HELPER_ORDER = (
+    "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i"
+)
+
+
+def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
+    """Emit the ``__rextio_checked_*`` helpers in ``used``.
+
+    ``used`` is the structurally-recorded set of helper names referenced by the
+    rendered functions, so a module gains exactly the helpers it calls and no
+    dead code. The pyo3 variant raises ``OverflowError`` / ``ZeroDivisionError``;
+    the crate variant returns ``RextioError``.
+    """
+
+    def overflow_err_msg(message: str) -> str:
+        if mode == "pyo3":
+            return f'pyo3::exceptions::PyOverflowError::new_err("{message}")'
+        return f'RextioError::new("{message}")'
+
+    def overflow_err() -> str:
+        return overflow_err_msg("integer overflow")
+
+    def zero_div_err(message: str) -> str:
+        if mode == "pyo3":
+            return f'pyo3::exceptions::PyZeroDivisionError::new_err("{message}")'
+        return f'RextioError::new("{message}")'
+
+    def value_err(message: str) -> str:
+        if mode == "pyo3":
+            return f'pyo3::exceptions::PyValueError::new_err("{message}")'
+        return f'RextioError::new("{message}")'
+
+    ret = "PyResult<i64>" if mode == "pyo3" else "Result<i64, RextioError>"
+    fret = "PyResult<f64>" if mode == "pyo3" else "Result<f64, RextioError>"
+    lines: list[str] = []
+    for name in _CHECKED_HELPER_ORDER:
+        if name not in used:
+            continue
+        fn = f"__rextio_checked_{name}"
+        if name in _CHECKED_BINOP_METHOD:
+            method = _CHECKED_BINOP_METHOD[name]
+            lines.extend(
+                [
+                    f"fn {fn}(a: i64, b: i64) -> {ret} {{",
+                    f"    a.{method}(b).ok_or_else(|| {overflow_err()})",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "rem":
+            # Python `%` is floored (the result takes the divisor's sign), while
+            # Rust's `checked_rem` is truncated (it takes the dividend's sign), so
+            # `-7 % 3` is 2 in Python but -1 in Rust. Correct the sign when the
+            # truncated remainder and the divisor differ in sign. `a % 0` is a
+            # ZeroDivisionError. `checked_rem` returns `None` only for the single
+            # overflowing case `i64::MIN % -1`, whose remainder is 0 in both
+            # Python and Rust, so `unwrap_or(0)` is exact there (not a catch-all).
+            # `|r| < |b|`, so the `r + b` correction cannot overflow.
+            lines.extend(
+                [
+                    f"fn {fn}(a: i64, b: i64) -> {ret} {{",
+                    f'    if b == 0 {{ return Err({zero_div_err("integer modulo by zero")}); }}',
+                    "    let r = a.checked_rem(b).unwrap_or(0);",
+                    "    Ok(if r != 0 && (r ^ b) < 0 { r + b } else { r })",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "neg":
+            lines.extend(
+                [
+                    f"fn {fn}(a: i64) -> {ret} {{",
+                    f"    a.checked_neg().ok_or_else(|| {overflow_err()})",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "abs":
+            # `i64::MIN.abs()` overflows (Python `abs(-2**63) == 2**63`).
+            lines.extend(
+                [
+                    f"fn {fn}(a: i64) -> {ret} {{",
+                    f"    a.checked_abs().ok_or_else(|| {overflow_err()})",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "sum":
+            # Python `sum` is arbitrary precision; fold with checked addition so an
+            # i64 overflow raises instead of panicking in `Iterator::sum`.
+            lines.extend(
+                [
+                    f"fn {fn}(xs: &[i64]) -> {ret} {{",
+                    f"    xs.iter().copied().try_fold(0i64, |acc, x| "
+                    f"acc.checked_add(x).ok_or_else(|| {overflow_err()}))",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "fdiv":
+            # Python raises ZeroDivisionError for `x / 0.0`; Rust returns inf/NaN.
+            lines.extend(
+                [
+                    f"fn {fn}(a: f64, b: f64) -> {fret} {{",
+                    f'    if b == 0.0 {{ return Err({zero_div_err("float division by zero")}); }}',
+                    "    Ok(a / b)",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "f2i":
+            # `math.floor`/`ceil`/`trunc` return a Python int (arbitrary
+            # precision). A bare `as i64` cast saturates a value outside i64 range
+            # to i64::MIN/MAX (a silent wrong value), so guard the conversion:
+            # NaN -> ValueError, infinity/out-of-range -> OverflowError (a
+            # catchable error rather than a silent saturation; full arbitrary
+            # precision is a separate future item). The bounds use 2^63 exactly
+            # (representable in f64); i64's valid range is [-2^63, 2^63 - 1].
+            lines.extend(
+                [
+                    f"fn {fn}(x: f64) -> {ret} {{",
+                    f'    if x.is_nan() {{ return Err({value_err("cannot convert float NaN to integer")}); }}',
+                    "    if x >= -9223372036854775808.0 && x < 9223372036854775808.0 {",
+                    "        Ok(x as i64)",
+                    "    } else {",
+                    f'        Err({overflow_err_msg("float out of range for conversion to integer")})',
+                    "    }",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "frem":
+            # Python raises ZeroDivisionError for `x % 0.0` (message "float
+            # modulo"), and float `%` is floored (the result takes the divisor's
+            # sign) like the integer case, whereas Rust `%` is truncated. Mirror
+            # CPython's `float_rem`: when the remainder is exactly zero, the result
+            # is zero with the *divisor's* sign (`copysign(0.0, b)`), not the
+            # dividend's sign that Rust's `fmod` would keep.
+            lines.extend(
+                [
+                    f"fn {fn}(a: f64, b: f64) -> {fret} {{",
+                    f'    if b == 0.0 {{ return Err({zero_div_err("float modulo")}); }}',
+                    "    let r = a % b;",
+                    "    Ok(if r == 0.0 { (0.0_f64).copysign(b) }",
+                    "       else if (r < 0.0) != (b < 0.0) { r + b }",
+                    "       else { r })",
+                    "}",
+                    "",
+                ]
+            )
+    return lines
+
+
 def generate_rust_module(module_ir: ModuleIR) -> str:
     names_by_qualname = {
         function.qualname: rust_identifier(native_function_name(function.qualname))
@@ -73,6 +228,7 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
     return_types_by_qualname = {
         function.qualname: function.return_type for function in module_ir.functions
     }
+    used_helpers: set[str] = set()
     rendered = [
         (
             names_by_qualname[function.qualname],
@@ -94,6 +250,7 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
                     names_by_module_and_name,
                     return_types_by_qualname,
                     mode="pyo3",
+                    used_helpers=used_helpers,
                 )
             ),
         )
@@ -104,10 +261,14 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
         for function in module_ir.functions
         if not function.native_jit
     ]
+    prelude: list[str] = []
+    if any(function.native_jit for function in module_ir.functions):
+        prelude.extend(_jit_prelude())
+    prelude.extend(_checked_arith_helpers(used_helpers, "pyo3"))
     return render_pyo3_module(
         rendered,
         exported_functions=exported,
-        extra_prelude=_jit_prelude() if any(function.native_jit for function in module_ir.functions) else None,
+        extra_prelude=prelude or None,
     )
 
 
@@ -130,6 +291,7 @@ def generate_rust_crate_module(module_ir: ModuleIR) -> str:
     return_types_by_qualname = {
         function.qualname: function.return_type for function in direct_functions
     }
+    used_helpers: set[str] = set()
     rendered = [
         _render_function(
             function,
@@ -137,10 +299,11 @@ def generate_rust_crate_module(module_ir: ModuleIR) -> str:
             names_by_module_and_name,
             return_types_by_qualname,
             mode="crate",
+            used_helpers=used_helpers,
         )
         for function in direct_functions
     ]
-    return _render_importable_crate_module(rendered)
+    return _render_importable_crate_module(rendered, used_helpers)
 
 
 def rust_identifier(value: str) -> str:
@@ -340,7 +503,7 @@ def _render_cranelift_expr(
     return lines, lower(expr)
 
 
-def _render_importable_crate_module(function_sources: list[str]) -> str:
+def _render_importable_crate_module(function_sources: list[str], used_helpers: set[str]) -> str:
     lines = [
         "// Generated by Rextio. Do not edit manually.",
         "",
@@ -373,6 +536,7 @@ def _render_importable_crate_module(function_sources: list[str]) -> str:
         "impl std::error::Error for RextioError {}",
         "",
     ]
+    lines.extend(_checked_arith_helpers(used_helpers, "crate"))
     for function_source in function_sources:
         lines.append(function_source)
         lines.append("")
@@ -387,6 +551,7 @@ class _FunctionRenderer:
         native_names: dict[tuple[str, str], str],
         native_return_types: dict[str, RxtType],
         mode: str,
+        used_helpers: set[str] | None = None,
     ) -> None:
         self.function = function
         self.native_names_by_qualname = native_names_by_qualname
@@ -397,6 +562,10 @@ class _FunctionRenderer:
         self.variable_types = {param.name: param.type for param in function.params}
         self.maybe_bound_types: dict[str, RxtType] = {}
         self.temp_index = 0
+        # Checked-arithmetic helper names (e.g. "add", "neg") used by this
+        # function, recorded structurally so the module assembler emits exactly
+        # the helpers that are referenced rather than scanning the rendered text.
+        self.used_helpers = used_helpers if used_helpers is not None else set()
 
     def render(self) -> str:
         assigned_names = _assigned_names(self.function.body)
@@ -505,6 +674,12 @@ class _FunctionRenderer:
                 f"in {iterable} {{"
             ]
             self.declared.update(target_names(statement.target))
+            # Bind the loop variable's type for the body so type-directed
+            # rendering (e.g. checked integer arithmetic on `acc += x`) sees the
+            # element type, mirroring the comprehension-generator path.
+            self.bind_target_types(
+                statement.target, self.iterable_target_types(statement.iterable)
+            )
             lines.extend(self.render_block(statement.body, indent + 1))
             lines.append(f"{prefix}}}")
             return lines
@@ -615,9 +790,17 @@ class _FunctionRenderer:
         if isinstance(expr, SetComprehensionIR):
             return self.render_set_comprehension(expr)
         if isinstance(expr, BinaryOpIR):
+            checked = self.render_checked_int_binop(expr)
+            if checked is None:
+                checked = self.render_checked_float_binop(expr)
+            if checked is not None:
+                return checked
             op = {"and": "&&", "or": "||"}.get(expr.op, expr.op)
             return f"({self.render_expr(expr.left)} {op} {self.render_expr(expr.right)})"
         if isinstance(expr, UnaryOpIR):
+            checked = self.render_checked_int_neg(expr)
+            if checked is not None:
+                return checked
             op = "!" if expr.op == "not" else expr.op
             return f"({op}{self.render_expr(expr.value)})"
         if isinstance(expr, CompareIR):
@@ -992,6 +1175,68 @@ class _FunctionRenderer:
             return f"pyo3::exceptions::PyKeyError::new_err({key}.clone())"
         return f'RextioError::new(format!("key not found: {{:?}}", {key}))'
 
+    def render_checked_int_binop(self, expr: BinaryOpIR) -> str | None:
+        """Render an i64 ``+``/``-``/``*``/``%`` as checked arithmetic, or ``None``.
+
+        Returns ``None`` when the operator is not overflow-prone integer
+        arithmetic (the caller then falls back to the plain rendering). When both
+        operands are ``int``, the operation is lowered to a ``__rextio_checked_*``
+        helper that raises ``OverflowError`` / ``ZeroDivisionError`` (PyO3) or
+        returns ``RextioError`` (crate) instead of wrapping or panicking. Python
+        ``int`` is arbitrary precision, so an i64 op that would wrap/overflow is an
+        ``OverflowError`` (catchable via ``except Exception``) rather than the
+        previous ``overflow-checks`` panic, which PyO3 surfaces as an uncatchable
+        ``PanicException`` (a ``BaseException``); ``a % 0`` is a ``ZeroDivisionError``.
+        The helper is a plain function call, so an operand sub-expression
+        containing ``?`` propagates in function scope with no closure to leak into.
+        """
+        name = {"+": "add", "-": "sub", "*": "mul", "%": "rem"}.get(expr.op)
+        if name is None:
+            return None
+        left_type = self.infer_expr_type(expr.left)
+        right_type = self.infer_expr_type(expr.right)
+        if not (isinstance(left_type, RxtInt) and isinstance(right_type, RxtInt)):
+            return None
+        left = strip_wrapping_parens(self.render_expr(expr.left))
+        right = strip_wrapping_parens(self.render_expr(expr.right))
+        self.used_helpers.add(name)
+        return f"__rextio_checked_{name}({left}, {right})?"
+
+    def render_checked_int_neg(self, expr: UnaryOpIR) -> str | None:
+        """Render an i64 unary ``-`` as checked negation, or ``None``.
+
+        ``-i64::MIN`` overflows (Python ``int`` is arbitrary precision, so
+        ``-(-2**63) == 2**63``); route int negation through ``__rextio_checked_neg``
+        so it raises ``OverflowError`` instead of an uncatchable panic.
+        """
+        if expr.op != "-":
+            return None
+        if not isinstance(self.infer_expr_type(expr.value), RxtInt):
+            return None
+        value = strip_wrapping_parens(self.render_expr(expr.value))
+        self.used_helpers.add("neg")
+        return f"__rextio_checked_neg({value})?"
+
+    def render_checked_float_binop(self, expr: BinaryOpIR) -> str | None:
+        """Render an f64 ``/`` or ``%`` with Python semantics, or ``None``.
+
+        Python raises ``ZeroDivisionError`` for float division/modulo by zero
+        (Rust returns inf/NaN), and float ``%`` is floored like the integer case
+        (Rust ``%`` is truncated). Route both through helpers so the divide-by-zero
+        is catchable and the modulo sign matches Python.
+        """
+        name = {"/": "fdiv", "%": "frem"}.get(expr.op)
+        if name is None:
+            return None
+        left_type = self.infer_expr_type(expr.left)
+        right_type = self.infer_expr_type(expr.right)
+        if not (isinstance(left_type, RxtFloat) and isinstance(right_type, RxtFloat)):
+            return None
+        left = strip_wrapping_parens(self.render_expr(expr.left))
+        right = strip_wrapping_parens(self.render_expr(expr.right))
+        self.used_helpers.add(name)
+        return f"__rextio_checked_{name}({left}, {right})?"
+
     def render_index_expr(self, expr: IndexIR) -> str:
         value_type = self.infer_expr_type(expr.value)
         if isinstance(value_type, RxtTuple):
@@ -1056,12 +1301,19 @@ class _FunctionRenderer:
         if expr.function == "len" and len(expr.args) == 1:
             return f"({self.render_expr(expr.args[0])}.len() as i64)"
         if expr.function == "abs" and len(expr.args) == 1:
+            if isinstance(self.infer_expr_type(expr.args[0]), RxtInt):
+                self.used_helpers.add("abs")
+                return f"__rextio_checked_abs({strip_wrapping_parens(self.render_expr(expr.args[0]))})?"
             return f"({self.render_expr(expr.args[0])}).abs()"
         if expr.function == "min" and len(expr.args) == 2:
             return f"({self.render_expr(expr.args[0])}).min({self.render_expr(expr.args[1])})"
         if expr.function == "max" and len(expr.args) == 2:
             return f"({self.render_expr(expr.args[0])}).max({self.render_expr(expr.args[1])})"
         if expr.function == "sum" and len(expr.args) == 1:
+            arg_type = self.infer_expr_type(expr.args[0])
+            if isinstance(arg_type, RxtList) and isinstance(arg_type.item_type, RxtInt):
+                self.used_helpers.add("sum")
+                return f"__rextio_checked_sum(&{self.render_expr(expr.args[0])})?"
             return f"({self.render_expr(expr.args[0])}).iter().cloned().sum()"
         if expr.function == "all" and len(expr.args) == 1:
             return f"({self.render_expr(expr.args[0])}).iter().copied().all(|value| value)"
@@ -1100,7 +1352,8 @@ class _FunctionRenderer:
             return f"({self.render_expr(expr.args[0])}).atan2({self.render_expr(expr.args[1])})"
         if expr.function in {"math.ceil", "math.floor", "math.trunc"} and len(expr.args) == 1:
             method = expr.function.rsplit(".", 1)[1]
-            return f"(({self.render_expr(expr.args[0])}).{method}() as i64)"
+            self.used_helpers.add("f2i")
+            return f"__rextio_checked_f2i(({self.render_expr(expr.args[0])}).{method}())?"
         if expr.function in {"math.isfinite", "math.isinf", "math.isnan"} and len(expr.args) == 1:
             method = {
                 "math.isfinite": "is_finite",
@@ -1565,6 +1818,7 @@ def _render_function(
     native_names: dict[tuple[str, str], str],
     native_return_types: dict[str, RxtType],
     mode: str,
+    used_helpers: set[str] | None = None,
 ) -> str:
     return _FunctionRenderer(
         function,
@@ -1572,6 +1826,7 @@ def _render_function(
         native_names,
         native_return_types,
         mode,
+        used_helpers=used_helpers,
     ).render()
 
 

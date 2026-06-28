@@ -267,13 +267,6 @@ rextio/
 │        ├─ generator.py
 │        ├─ rules.yaml
 │        └─ templates/
-├─ crates/
-│  └─ rextio_runtime/
-│     ├─ Cargo.toml
-│     └─ src/
-│        ├─ lib.rs
-│        ├─ errors.rs
-│        └─ conversions.rs
 ├─ examples/
 │  ├─ pure_math/
 │  ├─ app_shell/

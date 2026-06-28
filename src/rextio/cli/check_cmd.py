@@ -65,6 +65,14 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
             if function.jit_hot_threshold is not None:
                 lines.append(f"    hot threshold: {function.jit_hot_threshold}")
 
+    jit_skipped = analysis.jit_skipped
+    if jit_skipped:
+        lines.extend(["", "Experimental JIT skipped (kept on checked native path):"])
+        for function in jit_skipped:
+            lines.append(f"  [native] {function.qualname}")
+            if function.jit_skipped_reason:
+                lines.append(f"    reason: {function.jit_skipped_reason}")
+
     if external_imports:
         lines.extend(["", "Import policies:"])
         for package, policy, origin, reason in external_imports:

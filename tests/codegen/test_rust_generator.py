@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
@@ -52,12 +53,12 @@ def test_generates_internal_cranelift_jit_helper_only_when_enabled(tmp_path: Pat
         """
 import rextio
 
-def helper(x: int) -> int:
-    return x * 2
+def helper(x: float) -> float:
+    return x * 2.0
 
 @rextio.native
-def compute(x: int) -> int:
-    return helper(x) + 1
+def compute(x: float) -> float:
+    return helper(x) + 1.0
 """,
         encoding="utf-8",
     )
@@ -71,11 +72,11 @@ def compute(x: int) -> int:
     source = generate_rust_module(lower_project(analysis, include_jit=True))
 
     assert "use cranelift_jit::{JITBuilder, JITModule};" in source
-    assert "fn app__helper(x: i64) -> PyResult<i64> {" in source
+    assert "fn app__helper(x: f64) -> PyResult<f64> {" in source
     assert "static app__helper_COMPILED" in source
     assert "if calls >= 2" in source
     assert "return Ok(unsafe { compiled(x) });" in source
-    assert "return Ok(app__helper(x.clone())? + 1);" in source
+    assert "return Ok(app__helper(x.clone())? + 1.0);" in source
     assert "m.add_function(wrap_pyfunction!(app__compute, m)?)?;" in source
     assert "m.add_function(wrap_pyfunction!(app__helper, m)?)?;" not in source
 
@@ -98,8 +99,8 @@ def add_square(x: int) -> int:
     assert "pub struct RextioError" in source
     assert "pub fn app__square(x: i64) -> Result<i64, RextioError> {" in source
     assert "pub fn app__add_square(x: i64) -> Result<i64, RextioError> {" in source
-    assert "return Ok(x * x);" in source
-    assert "return Ok(app__square(x.clone())? + 1);" in source
+    assert "return Ok(__rextio_checked_mul(x, x)?);" in source
+    assert "return Ok(__rextio_checked_add(app__square(x.clone())?, 1)?);" in source
     assert "pyo3" not in source
     assert "#[pyfunction]" not in source
 
@@ -183,7 +184,7 @@ def sum_squares(xs):
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert "fn app__add_one(x: i64) -> PyResult<i64> {" in source
-    assert "return Ok(x + 1);" in source
+    assert "return Ok(__rextio_checked_add(x, 1)?);" in source
     assert "fn app__sum_squares(xs: Vec<i64>) -> PyResult<i64> {" in source
     assert "for x in xs.iter().cloned() {" in source
 
@@ -242,10 +243,10 @@ def decrement_to_zero(n: int) -> int:
     assert "for i in 0..(xs.len() as i64) {" in source
     assert "if { let __rextio_seq" in source
     assert PYO3_INDEX_ERROR_SUFFIX in source
-    assert "count = count + 1;" in source
+    assert "count = __rextio_checked_add(count, 1)?;" in source
     assert "fn app__decrement_to_zero(mut n: i64) -> PyResult<i64> {" in source
     assert "while n > 0 {" in source
-    assert "n = n - 1;" in source
+    assert "n = __rextio_checked_sub(n, 1)?;" in source
 
 
 def test_generates_rust_for_string_literal_and_string_indexing(tmp_path: Path) -> None:
@@ -290,8 +291,8 @@ def sum_indices(xs: list[int]) -> int:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert "for i in 0..(xs.len() as i64) {" in source
-    assert "total = total + i;" in source
-    assert "total = total + { let __rextio_seq" in source
+    assert "total = __rextio_checked_add(total, i)?;" in source
+    assert "total = __rextio_checked_add(total, { let __rextio_seq" in source
     assert PYO3_INDEX_ERROR_SUFFIX in source
 
 
@@ -319,7 +320,7 @@ def stepped_total(n: int) -> int:
     assert "for i in (1..n).step_by(2 as usize) {" in source
     assert "break;" in source
     assert "continue;" in source
-    assert "total = total + i;" in source
+    assert "total = __rextio_checked_add(total, i)?;" in source
 
 
 def test_generates_rust_for_list_literals_and_append(tmp_path: Path) -> None:
@@ -469,7 +470,7 @@ def dot(xs: list[float], ys: list[float]) -> float:
         "for (i, x) in xs.iter().cloned().enumerate()"
         ".map(|(i, value)| (i as i64, value)) {"
     ) in source
-    assert "out.push(i + x);" in source
+    assert "out.push(__rextio_checked_add(i, x)?);" in source
     assert "for (x, y) in xs.iter().cloned().zip(ys.iter().cloned()) {" in source
     assert "total = total + (x * y);" in source
 
@@ -575,7 +576,7 @@ def z_helper(x: int) -> int:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert source.index("fn app__z_helper") < source.index("fn app__a_compute")
-    assert "return Ok(app__z_helper(x.clone())? + 1);" in source
+    assert "return Ok(__rextio_checked_add(app__z_helper(x.clone())?, 1)?);" in source
 
 
 def test_generates_rust_for_limited_builtins_and_math_subset(tmp_path: Path) -> None:
@@ -603,7 +604,10 @@ def lower(x: float, y: float) -> int:
     assert "(x).sin()" in source
     assert "(x).cos()" in source
     assert "(total).max((x).abs())" in source
-    assert "return Ok((((x).floor() as i64)).min(((y).floor() as i64)));" in source
+    assert (
+        "return Ok((__rextio_checked_f2i((x).floor())?)"
+        ".min(__rextio_checked_f2i((y).floor())?));"
+    ) in source
 
 
 def test_generates_rust_for_common_builtin_logging_and_datetime_calls(tmp_path: Path) -> None:
@@ -708,8 +712,329 @@ def size_plus_first(xs: list[int]) -> int:
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
-    assert "return Ok((xs.len() as i64) + { let __rextio_seq" in source
+    assert "return Ok(__rextio_checked_add(xs.len() as i64, { let __rextio_seq" in source
     assert PYO3_INDEX_ERROR_SUFFIX in source
+
+
+def test_int_modulo_and_negation_use_checked_helpers(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def modulo(a: int, b: int) -> int:
+    return a % b
+
+@rextio.native
+def negate(a: int) -> int:
+    return -a
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    # `%` raises ZeroDivisionError on a zero divisor, never panics on MIN % -1,
+    # and applies Python's floored-modulo sign correction.
+    assert "return Ok(__rextio_checked_rem(a, b)?);" in source
+    assert 'pyo3::exceptions::PyZeroDivisionError::new_err("integer modulo by zero")' in source
+    assert "let r = a.checked_rem(b).unwrap_or(0);" in source
+    assert "Ok(if r != 0 && (r ^ b) < 0 { r + b } else { r })" in source
+    # Unary negation is checked so `-i64::MIN` raises OverflowError, not a panic.
+    assert "return Ok(__rextio_checked_neg(a)?);" in source
+    assert "a.checked_neg().ok_or_else(" in source
+
+
+def test_int_modulo_and_negation_checked_in_crate_mode(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+def modulo(a: int, b: int) -> int:
+    return a % b
+
+def negate(a: int) -> int:
+    return -a
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
+
+    assert "return Ok(__rextio_checked_rem(a, b)?);" in source
+    assert "return Ok(__rextio_checked_neg(a)?);" in source
+    assert 'RextioError::new("integer modulo by zero")' in source
+    assert "fn __rextio_checked_neg(a: i64) -> Result<i64, RextioError> {" in source
+
+
+def test_augmented_assignment_uses_checked_helper(tmp_path: Path) -> None:
+    # `+=` / `-=` / `*=` lower through the same checked helper as their binary
+    # form, including loop accumulation over a typed iterable (council/GLM).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def fold(xs: list[int]) -> int:
+    acc = 0
+    for x in xs:
+        acc += x
+        acc *= 2
+        acc -= 1
+    return acc
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "acc = __rextio_checked_add(acc, x)?;" in source
+    assert "acc = __rextio_checked_mul(acc, 2)?;" in source
+    assert "acc = __rextio_checked_sub(acc, 1)?;" in source
+
+
+def test_unused_checked_helpers_are_not_emitted(tmp_path: Path) -> None:
+    # Helper emission is keyed off structural usage, so a module that only adds
+    # gains the add helper and none of the others (no dead code).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "fn __rextio_checked_add(" in source
+    assert "fn __rextio_checked_sub(" not in source
+    assert "fn __rextio_checked_mul(" not in source
+    assert "fn __rextio_checked_rem(" not in source
+    assert "fn __rextio_checked_neg(" not in source
+
+
+def test_int_abs_and_sum_use_checked_helpers(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def magnitude(a: int) -> int:
+    return abs(a)
+
+@rextio.native
+def total(xs: list[int]) -> int:
+    return sum(xs)
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    # `abs(i64::MIN)` and an overflowing `sum` raise OverflowError instead of
+    # panicking; Python ints are arbitrary precision.
+    assert "return Ok(__rextio_checked_abs(a)?);" in source
+    assert "a.checked_abs().ok_or_else(" in source
+    assert "return Ok(__rextio_checked_sum(&xs)?);" in source
+    assert "try_fold(0i64, |acc, x| acc.checked_add(x)" in source
+
+
+def test_float_division_and_modulo_raise_zero_division(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def divide(a: float, b: float) -> float:
+    return a / b
+
+@rextio.native
+def modulo(a: float, b: float) -> float:
+    return a % b
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    # Python raises ZeroDivisionError for float `/0.0` and `%0.0` (Rust returns
+    # inf/NaN), and float `%` is floored like the integer case.
+    assert "return Ok(__rextio_checked_fdiv(a, b)?);" in source
+    assert "return Ok(__rextio_checked_frem(a, b)?);" in source
+    assert 'pyo3::exceptions::PyZeroDivisionError::new_err("float division by zero")' in source
+    assert 'pyo3::exceptions::PyZeroDivisionError::new_err("float modulo")' in source
+    # Floored modulo with CPython's signed-zero rule (zero takes the divisor's sign).
+    assert "Ok(if r == 0.0 { (0.0_f64).copysign(b) }" in source
+    assert "else if (r < 0.0) != (b < 0.0) { r + b }" in source
+
+
+def test_float_division_checked_in_crate_mode(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+def divide(a: float, b: float) -> float:
+    return a / b
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
+
+    assert "return Ok(__rextio_checked_fdiv(a, b)?);" in source
+    assert 'RextioError::new("float division by zero")' in source
+
+
+def test_math_floor_ceil_trunc_use_checked_conversion(tmp_path: Path) -> None:
+    # `(x).floor() as i64` saturates out-of-range floats (a silent wrong value);
+    # the conversion is guarded so NaN -> ValueError and out-of-range ->
+    # OverflowError instead (council R6 F2).
+    for fn in ("floor", "ceil", "trunc"):
+        (tmp_path / "app.py").write_text(
+            f"""
+import math
+import rextio
+
+@rextio.native
+def f(x: float) -> int:
+    return math.{fn}(x)
+""",
+            encoding="utf-8",
+        )
+        source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+        assert f"__rextio_checked_f2i((x).{fn}())?" in source
+        assert "fn __rextio_checked_f2i(x: f64)" in source
+        assert 'PyValueError::new_err("cannot convert float NaN to integer")' in source
+        assert "x >= -9223372036854775808.0 && x < 9223372036854775808.0" in source
+        assert 'PyOverflowError::new_err("float out of range for conversion to integer")' in source
+
+
+def test_int_min_max_are_overflow_safe(tmp_path: Path) -> None:
+    # `min`/`max` are comparison-only (no overflow), and their result still flows
+    # through the checked add when summed (council R5 regression pin).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def clamp_sum(a: int, b: int) -> int:
+    return min(a, b) + max(a, b)
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "__rextio_checked_add((a).min(b), (a).max(b))?" in source
+
+
+def test_augmented_assignment_with_sum_is_checked(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def fold(xs: list[int]) -> int:
+    acc = 0
+    acc += sum(xs)
+    return acc
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "acc = __rextio_checked_add(acc, __rextio_checked_sum(&xs)?)?;" in source
+
+
+def test_float_abs_and_sum_stay_unchecked(tmp_path: Path) -> None:
+    # Floats saturate to inf rather than panicking, so the checked path is
+    # int-only; float abs/sum keep the plain lowering.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def magnitude(a: float) -> float:
+    return abs(a)
+
+@rextio.native
+def total(xs: list[float]) -> float:
+    return sum(xs)
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "return Ok((a).abs());" in source
+    assert "return Ok((xs).iter().cloned().sum());" in source
+    assert "__rextio_checked_abs" not in source
+    assert "__rextio_checked_sum" not in source
+
+
+def test_every_checked_helper_call_has_a_definition(tmp_path: Path) -> None:
+    # Safety net for the structural `used_helpers` tracking: every checked-helper
+    # *call* in the generated source must have a matching definition, so no render
+    # path can emit a call without registering the helper (which would otherwise
+    # be a `cannot find function` cargo error).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def mix(a: int, b: int, xs: list[int]) -> int:
+    acc = -a
+    for x in xs:
+        acc += x % b
+        acc *= 2
+        acc -= 1
+    return acc + abs(a) + sum(xs)
+""",
+        encoding="utf-8",
+    )
+
+    project = lower_project(analyze_project(tmp_path))
+    for source in (generate_rust_module(project), generate_rust_crate_module(project)):
+        called = set(re.findall(r"__rextio_checked_(\w+)\(", source))
+        defined = set(re.findall(r"fn __rextio_checked_(\w+)\(", source))
+        assert called, "expected this module to exercise checked helpers"
+        assert called <= defined, f"calls without definitions: {called - defined}"
+
+
+def test_overflow_prone_int_operators_are_rejected(tmp_path: Path) -> None:
+    # These int operations have no checked lowering yet, so they must be rejected
+    # by the subset checker rather than silently generating an unchecked i64 op
+    # (council R4: pin the rejection so a future change can't regress).
+    for expr in ("a ** b", "a // b", "a << b", "a >> b", "a & b", "a | b", "a ^ b", "~a"):
+        (tmp_path / "app.py").write_text(
+            f"""
+import rextio
+
+@rextio.native
+def f(a: int, b: int) -> int:
+    return {expr}
+""",
+            encoding="utf-8",
+        )
+        analysis = analyze_project(tmp_path)
+        accepted = [function.qualname for function in analysis.accepted_native_functions]
+        assert "app.f" not in accepted, f"expected {expr!r} to be rejected from the native subset"
+
+
+def test_int_conversion_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def f(x: float) -> int:
+    return int(x)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    accepted = [function.qualname for function in analysis.accepted_native_functions]
+    assert "app.f" not in accepted
 
 
 def test_generates_rust_for_supported_native_top_level(tmp_path: Path) -> None:

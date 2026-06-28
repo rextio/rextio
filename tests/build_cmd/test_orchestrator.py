@@ -115,12 +115,12 @@ native_marker = "decorator"
         """
 import rextio
 
-def helper(x: int) -> int:
-    return x * 2
+def helper(x: float) -> float:
+    return x * 2.0
 
 @rextio.native
-def compute(x: int) -> int:
-    return helper(x) + 1
+def compute(x: float) -> float:
+    return helper(x) + 1.0
 """,
         encoding="utf-8",
     )
@@ -257,7 +257,7 @@ def add_twice(a: int, b: int) -> int:
     assert 'name = "demo_rust"' in (dist_crate / "Cargo.toml").read_text(encoding="utf-8")
     assert "pub fn app__add(a: i64, b: i64) -> Result<i64, RextioError>" in lib_source
     assert "pub fn app__add_twice(a: i64, b: i64) -> Result<i64, RextioError>" in lib_source
-    assert "return Ok(app__add(a.clone(), b.clone())? * 2);" in lib_source
+    assert "return Ok(__rextio_checked_mul(app__add(a.clone(), b.clone())?, 2)?);" in lib_source
     assert "pyo3" not in lib_source
 
 
@@ -887,9 +887,14 @@ def add(a: int, b: int) -> int:
 
 def test_build_invokes_nuitka_when_requested_and_available(
     tmp_path: Path,
+    fake_cargo: Path,
     fake_nuitka: Path,
     capsys,
 ) -> None:
+    # `add` is auto-discovered as native (default native_marker="auto"), so the
+    # build compiles a crate; stub cargo (like the sibling build tests) so this
+    # fast-suite test exercises the Nuitka fallback path without a real, flaky
+    # cargo+pyo3 compile (mod-proposal P1-10 — real toolchains belong in tests/e2e).
     (tmp_path / "app.py").write_text(
         """
 def add(a: int, b: int) -> int:
@@ -916,9 +921,13 @@ def add(a: int, b: int) -> int:
 
 def test_build_reports_codegen_failure_and_keeps_fallback(
     tmp_path: Path,
+    fake_cargo: Path,
     monkeypatch,
     capsys,
 ) -> None:
+    # Stub cargo so the native preflight passes deterministically (the build is
+    # only here to exercise the codegen-failure path, which is monkeypatched
+    # below); avoids a real toolchain dependency in the fast suite (P1-10).
     (tmp_path / "app.py").write_text(
         """
 import rextio

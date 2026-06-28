@@ -21,6 +21,12 @@ edition = "2021"
 name = "_rextio_native"
 crate-type = ["cdylib"]
 
+# Preserve Python integer semantics: i64 arithmetic that overflows is a real error
+# (Python ints are arbitrary precision), so overflow must panic — PyO3 converts the
+# panic into a Python exception — instead of silently wrapping in release builds.
+[profile.release]
+overflow-checks = true
+
 [dependencies]
 base64 = "0.22"
 chrono = "0.4"
@@ -41,6 +47,11 @@ edition = "2021"
 
 [lib]
 name = "{package_name.replace("-", "_")}"
+
+# Integer overflow is an error (Python ints are arbitrary precision), so it must
+# panic rather than silently wrap, even in release builds.
+[profile.release]
+overflow-checks = true
 
 [dependencies]
 base64 = "0.22"

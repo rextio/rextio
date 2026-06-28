@@ -46,6 +46,7 @@ nuitka = [
 ]
 dev = [
   "pytest>=8.0",
+  "pytest-cov>=5.0",
   "ruff>=0.15",
   "mypy>=1.11",
 ]
@@ -59,9 +60,25 @@ version = {attr = "rextio.__about__.__version__"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.coverage.run]
+source = ["rextio"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# The native-build and codegen-emit paths are exercised by the real-cargo e2e
+# suite, which is excluded from the fast unit gate; the threshold leaves headroom
+# for that (fast-suite branch coverage is ~81%).
+fail_under = 78
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+  "needs_cargo: end-to-end test that requires a real Rust/Cargo toolchain",
+  "needs_nuitka: end-to-end test that requires a real Nuitka toolchain",
+  "no_toolchain: end-to-end test that needs no external toolchain (opts out of the conftest toolchain-classification warning)",
+]
 
 [tool.ruff]
 target-version = "py311"

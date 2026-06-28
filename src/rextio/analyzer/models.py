@@ -69,6 +69,11 @@ class FunctionAnalysis:
     is_jit_candidate: bool = False
     jit_hot_threshold: int | None = None
     jit_reason: str | None = None
+    # Set when a function would otherwise be JIT-eligible but was kept on the
+    # checked native path (e.g. overflow-prone int arithmetic the Cranelift path
+    # cannot make raise OverflowError). Surfaced by `rextio check`, not
+    # serialized, so it is purely diagnostic.
+    jit_skipped_reason: str | None = None
     imports: dict[str, str] = field(default_factory=dict)
     logger_names: tuple[str, ...] = ()
 
@@ -97,7 +102,7 @@ class FunctionAnalysis:
         self.diagnostics.append(diagnostic)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        data: dict[str, object] = {
             "name": self.name,
             "qualname": self.qualname,
             "module_name": self.module_name,
@@ -117,6 +122,11 @@ class FunctionAnalysis:
             "calls": [call.to_dict() for call in self.calls],
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
+        # Only present for functions kept off the JIT for overflow safety, so the
+        # common case keeps a stable report shape.
+        if self.jit_skipped_reason is not None:
+            data["jit_skipped_reason"] = self.jit_skipped_reason
+        return data
 
 
 @dataclass
@@ -231,6 +241,19 @@ class ProjectAnalysis:
                 for module in self.modules
                 for function in module.functions
                 if function.is_jit_candidate
+            ],
+            key=lambda function: function.qualname,
+        )
+
+    @property
+    def jit_skipped(self) -> list[FunctionAnalysis]:
+        """Functions kept off the JIT and on the checked native path (diagnostic)."""
+        return sorted(
+            [
+                function
+                for module in self.modules
+                for function in module.functions
+                if function.jit_skipped_reason is not None
             ],
             key=lambda function: function.qualname,
         )
