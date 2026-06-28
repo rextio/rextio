@@ -39,6 +39,14 @@ def accumulate(xs: list[int]) -> int:
     for x in xs:
         acc += x
     return acc
+
+@rextio.native
+def modulo(a: int, b: int) -> int:
+    return a % b
+
+@rextio.native
+def negate(a: int) -> int:
+    return -a
 """,
         encoding="utf-8",
     )
@@ -61,6 +69,8 @@ def accumulate(xs: list[int]) -> int:
     # In-range arithmetic is unchanged.
     assert module.square(3) == 9
     assert module.accumulate([1, 2, 3]) == 6
+    assert module.modulo(7, 3) == 1
+    assert module.negate(5) == -5
 
     # An i64 overflow is a real error (Python ints are arbitrary precision). The
     # generated code uses checked arithmetic and raises `OverflowError` — a normal
@@ -85,3 +95,14 @@ def accumulate(xs: list[int]) -> int:
     else:  # pragma: no cover - the call above always raises
         caught = False
     assert caught
+
+    # Modulo by zero is a catchable `ZeroDivisionError` (Python semantics), not a
+    # Rust divide-by-zero panic; `i64::MIN % -1` is 0, not a panic.
+    with pytest.raises(ZeroDivisionError):
+        module.modulo(5, 0)
+    assert module.modulo(-(2**63), -1) == 0
+
+    # Negating i64::MIN overflows i64 but is representable in Python, so it is a
+    # catchable `OverflowError` rather than an uncatchable panic.
+    with pytest.raises(OverflowError):
+        module.negate(-(2**63))

@@ -55,16 +55,19 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Generated sequence indexing now preserves Python semantics: a negative index
   counts from the end (`xs[-1]`), and an out-of-range index raises `IndexError`
   instead of triggering an unchecked Rust panic.
-- Generated integer `+`/`-`/`*` now uses checked arithmetic
-  (`checked_add`/`checked_sub`/`checked_mul`): an i64 overflow raises
-  `OverflowError` (PyO3) / returns a `RextioError` (Rust-importable crate)
-  instead of silently wrapping. Python ints are arbitrary precision, so this
-  preserves Python semantics, and `OverflowError` is a catchable `Exception`
-  (unlike the uncatchable PyO3 `PanicException` a raw overflow panic produces).
-  The guarantee travels with the generated code, so it holds even when the
-  Rust-importable crate is consumed as a dependency (where a `[profile.release]`
-  setting would be ignored). Release builds also keep `overflow-checks = true`
-  as a backstop for any arithmetic not covered by the checked path.
+- Generated integer `+`/`-`/`*`/`%` and unary negation now use checked
+  arithmetic (`checked_add`/`checked_sub`/`checked_mul`/`checked_rem`/
+  `checked_neg`): an i64 overflow raises `OverflowError` (PyO3) / returns a
+  `RextioError` (Rust-importable crate) instead of silently wrapping, and a
+  modulo by zero raises `ZeroDivisionError`. Python ints are arbitrary
+  precision, so this preserves Python semantics, and these are catchable
+  `Exception`s (unlike the uncatchable PyO3 `PanicException` a raw overflow
+  panic produces). The guarantee travels with the generated code, so it holds
+  even when the Rust-importable crate is consumed as a dependency (where a
+  `[profile.release]` setting would be ignored). Release builds also keep
+  `overflow-checks = true` as a safety-net backstop for any arithmetic not
+  covered by the checked path; it is not part of the catchable-exception
+  contract.
 - The experimental Cranelift JIT no longer accepts integer helpers that contain
   overflow-prone arithmetic: the JIT path emits wrapping instructions and cannot
   raise `OverflowError`, so such helpers stay on the checked native path. Float

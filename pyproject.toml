@@ -77,6 +77,7 @@ testpaths = ["tests"]
 markers = [
   "needs_cargo: end-to-end test that requires a real Rust/Cargo toolchain",
   "needs_nuitka: end-to-end test that requires a real Nuitka toolchain",
+  "no_toolchain: end-to-end test that needs no external toolchain (opts out of the conftest toolchain-classification warning)",
 ]
 
 [tool.ruff]

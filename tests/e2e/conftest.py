@@ -11,14 +11,20 @@ centrally when the toolchain is unavailable — instead of repeating a
 The CI ``e2e`` job runs the whole directory (``pytest tests/e2e``) rather than
 ``-m needs_cargo`` so that toolchain-free e2e tests (e.g. the CLI smoke and zipapp
 tests, which use the ``fake_cargo`` shim) are not silently deselected and run
-*nowhere*. To keep that guarantee, collection fails if a ``tests/e2e`` test is
-neither toolchain-tagged nor toolchain-free: such a test would otherwise drop out
-of every CI lane the moment it is misnamed (mod-proposal P1-10 / council B2).
+*nowhere* (mod-proposal P1-10 / council B2).
+
+As a backstop, any ``tests/e2e`` test that is neither toolchain-tagged nor
+recognized as toolchain-free emits a (non-fatal) warning so a misnamed
+real-toolchain test is surfaced rather than silently dropped. A genuinely
+toolchain-free test that does not use the ``fake_cargo`` shim can opt out of the
+warning with ``@pytest.mark.no_toolchain`` (council M4: the previous hard
+collection error was too aggressive for legitimate pure-Python e2e tests).
 """
 
 from __future__ import annotations
 
 import shutil
+import warnings
 
 import pytest
 
@@ -67,18 +73,21 @@ def pytest_collection_modifyitems(
             if cargo is None:
                 item.add_marker(skip_cargo)
         else:
-            # Not toolchain-tagged by filename. It must be a toolchain-free e2e
-            # (the CLI smoke / zipapp tests stub the build with the `fake_cargo`
-            # fixture). Anything else is a real-toolchain test that would silently
-            # run nowhere once `-m needs_cargo` is applied, so fail loudly.
-            if "fake_cargo" not in getattr(item, "fixturenames", ()):
+            # Not toolchain-tagged by filename. Toolchain-free tests (the CLI
+            # smoke / zipapp tests stub the build with the `fake_cargo` fixture)
+            # are fine; an explicit `no_toolchain` marker also opts out. Anything
+            # else might be a misnamed real-toolchain test, so surface it.
+            fixtures = getattr(item, "fixturenames", ())
+            has_optout = item.get_closest_marker("no_toolchain") is not None
+            if "fake_cargo" not in fixtures and not has_optout:
                 unclassified.append(item.nodeid)
 
     if unclassified:
         listing = "\n  ".join(sorted(unclassified))
-        raise pytest.UsageError(
-            "e2e tests must declare their toolchain so CI cannot silently drop "
+        warnings.warn(
+            "e2e tests should declare their toolchain so CI cannot silently drop "
             "them. Name a real-cargo test `*_real_cargo` / `*_real_toolchain`, a "
-            "Nuitka test with a `nuitka` segment, or use the `fake_cargo` fixture "
-            f"for a toolchain-free test. Unclassified:\n  {listing}"
+            "Nuitka test with a `nuitka` segment, use the `fake_cargo` fixture, or "
+            f"mark a pure-Python test `@pytest.mark.no_toolchain`. Unclassified:\n  {listing}",
+            stacklevel=2,
         )

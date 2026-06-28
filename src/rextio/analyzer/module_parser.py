@@ -257,6 +257,11 @@ def _mark_jit_candidate(
     validate_native_function(node, probe)
     accepted, reason = is_cranelift_jit_candidate(node, probe)
     if not accepted:
+        # Surface the specific case where an otherwise-eligible int helper is kept
+        # on the checked native path because the Cranelift JIT cannot raise
+        # OverflowError (council M1 follow-up: make the fallback observable).
+        if "overflow-prone arithmetic" in reason:
+            function.jit_skipped_reason = reason
         return False
     function.inferred_arg_types = dict(probe.inferred_arg_types)
     function.inferred_return_type = probe.inferred_return_type

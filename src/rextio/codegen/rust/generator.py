@@ -61,35 +61,67 @@ class RustCodegenError(RuntimeError):
     pass
 
 
-_CHECKED_INT_OPS = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
+# Order is fixed so emitted helpers are deterministic regardless of use order.
+_CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
+_CHECKED_HELPER_ORDER = ("add", "sub", "mul", "rem", "neg")
 
 
-def _checked_arith_helpers(source: str, mode: str) -> list[str]:
-    """Emit the ``__rextio_checked_*`` helpers referenced by ``source``.
+def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
+    """Emit the ``__rextio_checked_*`` helpers in ``used``.
 
-    Only helpers actually called from the rendered functions are emitted, so a
-    module with no integer arithmetic gains no dead code. The pyo3 variant raises
-    ``OverflowError``; the crate variant returns ``RextioError``.
+    ``used`` is the structurally-recorded set of helper names referenced by the
+    rendered functions, so a module gains exactly the helpers it calls and no
+    dead code. The pyo3 variant raises ``OverflowError`` / ``ZeroDivisionError``;
+    the crate variant returns ``RextioError``.
     """
-    lines: list[str] = []
-    for name, method in _CHECKED_INT_OPS.items():
-        fn = f"__rextio_checked_{name}"
-        if f"{fn}(" not in source:
-            continue
+
+    def overflow_err() -> str:
         if mode == "pyo3":
-            ret = "PyResult<i64>"
-            err = 'pyo3::exceptions::PyOverflowError::new_err("integer overflow")'
-        else:
-            ret = "Result<i64, RextioError>"
-            err = 'RextioError::new("integer overflow")'
-        lines.extend(
-            [
-                f"fn {fn}(a: i64, b: i64) -> {ret} {{",
-                f"    a.{method}(b).ok_or_else(|| {err})",
-                "}",
-                "",
-            ]
-        )
+            return 'pyo3::exceptions::PyOverflowError::new_err("integer overflow")'
+        return 'RextioError::new("integer overflow")'
+
+    def zero_div_err() -> str:
+        if mode == "pyo3":
+            return 'pyo3::exceptions::PyZeroDivisionError::new_err("integer modulo by zero")'
+        return 'RextioError::new("integer modulo by zero")'
+
+    ret = "PyResult<i64>" if mode == "pyo3" else "Result<i64, RextioError>"
+    lines: list[str] = []
+    for name in _CHECKED_HELPER_ORDER:
+        if name not in used:
+            continue
+        fn = f"__rextio_checked_{name}"
+        if name in _CHECKED_BINOP_METHOD:
+            method = _CHECKED_BINOP_METHOD[name]
+            lines.extend(
+                [
+                    f"fn {fn}(a: i64, b: i64) -> {ret} {{",
+                    f"    a.{method}(b).ok_or_else(|| {overflow_err()})",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "rem":
+            # Python `a % 0` is ZeroDivisionError; `i64::MIN % -1` is 0 (it
+            # overflows the truncated-remainder hardware op, but the value is 0).
+            lines.extend(
+                [
+                    f"fn {fn}(a: i64, b: i64) -> {ret} {{",
+                    f"    if b == 0 {{ return Err({zero_div_err()}); }}",
+                    "    Ok(a.checked_rem(b).unwrap_or(0))",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "neg":
+            lines.extend(
+                [
+                    f"fn {fn}(a: i64) -> {ret} {{",
+                    f"    a.checked_neg().ok_or_else(|| {overflow_err()})",
+                    "}",
+                    "",
+                ]
+            )
     return lines
 
 
@@ -105,6 +137,7 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
     return_types_by_qualname = {
         function.qualname: function.return_type for function in module_ir.functions
     }
+    used_helpers: set[str] = set()
     rendered = [
         (
             names_by_qualname[function.qualname],
@@ -126,6 +159,7 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
                     names_by_module_and_name,
                     return_types_by_qualname,
                     mode="pyo3",
+                    used_helpers=used_helpers,
                 )
             ),
         )
@@ -139,9 +173,7 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
     prelude: list[str] = []
     if any(function.native_jit for function in module_ir.functions):
         prelude.extend(_jit_prelude())
-    prelude.extend(
-        _checked_arith_helpers("\n".join(source for _name, source in rendered), "pyo3")
-    )
+    prelude.extend(_checked_arith_helpers(used_helpers, "pyo3"))
     return render_pyo3_module(
         rendered,
         exported_functions=exported,
@@ -168,6 +200,7 @@ def generate_rust_crate_module(module_ir: ModuleIR) -> str:
     return_types_by_qualname = {
         function.qualname: function.return_type for function in direct_functions
     }
+    used_helpers: set[str] = set()
     rendered = [
         _render_function(
             function,
@@ -175,10 +208,11 @@ def generate_rust_crate_module(module_ir: ModuleIR) -> str:
             names_by_module_and_name,
             return_types_by_qualname,
             mode="crate",
+            used_helpers=used_helpers,
         )
         for function in direct_functions
     ]
-    return _render_importable_crate_module(rendered)
+    return _render_importable_crate_module(rendered, used_helpers)
 
 
 def rust_identifier(value: str) -> str:
@@ -378,7 +412,7 @@ def _render_cranelift_expr(
     return lines, lower(expr)
 
 
-def _render_importable_crate_module(function_sources: list[str]) -> str:
+def _render_importable_crate_module(function_sources: list[str], used_helpers: set[str]) -> str:
     lines = [
         "// Generated by Rextio. Do not edit manually.",
         "",
@@ -411,7 +445,7 @@ def _render_importable_crate_module(function_sources: list[str]) -> str:
         "impl std::error::Error for RextioError {}",
         "",
     ]
-    lines.extend(_checked_arith_helpers("\n".join(function_sources), "crate"))
+    lines.extend(_checked_arith_helpers(used_helpers, "crate"))
     for function_source in function_sources:
         lines.append(function_source)
         lines.append("")
@@ -426,6 +460,7 @@ class _FunctionRenderer:
         native_names: dict[tuple[str, str], str],
         native_return_types: dict[str, RxtType],
         mode: str,
+        used_helpers: set[str] | None = None,
     ) -> None:
         self.function = function
         self.native_names_by_qualname = native_names_by_qualname
@@ -436,6 +471,10 @@ class _FunctionRenderer:
         self.variable_types = {param.name: param.type for param in function.params}
         self.maybe_bound_types: dict[str, RxtType] = {}
         self.temp_index = 0
+        # Checked-arithmetic helper names (e.g. "add", "neg") used by this
+        # function, recorded structurally so the module assembler emits exactly
+        # the helpers that are referenced rather than scanning the rendered text.
+        self.used_helpers = used_helpers if used_helpers is not None else set()
 
     def render(self) -> str:
         assigned_names = _assigned_names(self.function.body)
@@ -666,6 +705,9 @@ class _FunctionRenderer:
             op = {"and": "&&", "or": "||"}.get(expr.op, expr.op)
             return f"({self.render_expr(expr.left)} {op} {self.render_expr(expr.right)})"
         if isinstance(expr, UnaryOpIR):
+            checked = self.render_checked_int_neg(expr)
+            if checked is not None:
+                return checked
             op = "!" if expr.op == "not" else expr.op
             return f"({op}{self.render_expr(expr.value)})"
         if isinstance(expr, CompareIR):
@@ -1041,21 +1083,21 @@ class _FunctionRenderer:
         return f'RextioError::new(format!("key not found: {{:?}}", {key}))'
 
     def render_checked_int_binop(self, expr: BinaryOpIR) -> str | None:
-        """Render an i64 ``+``/``-``/``*`` as checked arithmetic, or ``None``.
+        """Render an i64 ``+``/``-``/``*``/``%`` as checked arithmetic, or ``None``.
 
         Returns ``None`` when the operator is not overflow-prone integer
         arithmetic (the caller then falls back to the plain rendering). When both
         operands are ``int``, the operation is lowered to a ``__rextio_checked_*``
-        helper that raises ``OverflowError`` (PyO3) / returns ``RextioError``
-        (crate) on overflow instead of wrapping. Python ``int`` is arbitrary
-        precision, so an i64 ``+``/``-``/``*`` that would wrap is an
+        helper that raises ``OverflowError`` / ``ZeroDivisionError`` (PyO3) or
+        returns ``RextioError`` (crate) instead of wrapping or panicking. Python
+        ``int`` is arbitrary precision, so an i64 op that would wrap/overflow is an
         ``OverflowError`` (catchable via ``except Exception``) rather than the
         previous ``overflow-checks`` panic, which PyO3 surfaces as an uncatchable
-        ``PanicException`` (a ``BaseException``). The helper is a plain function
-        call, so an operand sub-expression containing ``?`` propagates in function
-        scope with no closure to leak into.
+        ``PanicException`` (a ``BaseException``); ``a % 0`` is a ``ZeroDivisionError``.
+        The helper is a plain function call, so an operand sub-expression
+        containing ``?`` propagates in function scope with no closure to leak into.
         """
-        name = {"+": "add", "-": "sub", "*": "mul"}.get(expr.op)
+        name = {"+": "add", "-": "sub", "*": "mul", "%": "rem"}.get(expr.op)
         if name is None:
             return None
         left_type = self.infer_expr_type(expr.left)
@@ -1064,7 +1106,23 @@ class _FunctionRenderer:
             return None
         left = strip_wrapping_parens(self.render_expr(expr.left))
         right = strip_wrapping_parens(self.render_expr(expr.right))
+        self.used_helpers.add(name)
         return f"__rextio_checked_{name}({left}, {right})?"
+
+    def render_checked_int_neg(self, expr: UnaryOpIR) -> str | None:
+        """Render an i64 unary ``-`` as checked negation, or ``None``.
+
+        ``-i64::MIN`` overflows (Python ``int`` is arbitrary precision, so
+        ``-(-2**63) == 2**63``); route int negation through ``__rextio_checked_neg``
+        so it raises ``OverflowError`` instead of an uncatchable panic.
+        """
+        if expr.op != "-":
+            return None
+        if not isinstance(self.infer_expr_type(expr.value), RxtInt):
+            return None
+        value = strip_wrapping_parens(self.render_expr(expr.value))
+        self.used_helpers.add("neg")
+        return f"__rextio_checked_neg({value})?"
 
     def render_index_expr(self, expr: IndexIR) -> str:
         value_type = self.infer_expr_type(expr.value)
@@ -1639,6 +1697,7 @@ def _render_function(
     native_names: dict[tuple[str, str], str],
     native_return_types: dict[str, RxtType],
     mode: str,
+    used_helpers: set[str] | None = None,
 ) -> str:
     return _FunctionRenderer(
         function,
@@ -1646,6 +1705,7 @@ def _render_function(
         native_names,
         native_return_types,
         mode,
+        used_helpers=used_helpers,
     ).render()
 
 

@@ -1835,7 +1835,8 @@ def compute(x: float) -> float:
 def test_integer_arithmetic_is_not_jit_eligible(tmp_path: Path) -> None:
     # The Cranelift path lowers i64 `+`/`-`/`*` to wrapping instructions and
     # cannot raise OverflowError, so an int helper with overflow-prone arithmetic
-    # must stay on the checked native path rather than being JIT-compiled.
+    # must stay on the checked native path rather than being JIT-compiled. The
+    # fallback is recorded as a diagnostic (council M1 follow-up).
     write_module(
         tmp_path,
         "app.py",
@@ -1853,6 +1854,9 @@ def helper(x: int) -> int:
     )
 
     assert analysis.jit_candidates == []
+    skipped = analysis.jit_skipped
+    assert [function.qualname for function in skipped] == ["app.helper"]
+    assert "overflow-prone arithmetic" in (skipped[0].jit_skipped_reason or "")
 
 
 def test_project_scanner_respects_rextioignore(tmp_path: Path) -> None:

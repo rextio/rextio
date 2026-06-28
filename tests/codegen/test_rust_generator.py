@@ -712,6 +712,102 @@ def size_plus_first(xs: list[int]) -> int:
     assert PYO3_INDEX_ERROR_SUFFIX in source
 
 
+def test_int_modulo_and_negation_use_checked_helpers(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def modulo(a: int, b: int) -> int:
+    return a % b
+
+@rextio.native
+def negate(a: int) -> int:
+    return -a
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    # `%` raises ZeroDivisionError on a zero divisor and never panics on MIN % -1.
+    assert "return Ok(__rextio_checked_rem(a, b)?);" in source
+    assert 'pyo3::exceptions::PyZeroDivisionError::new_err("integer modulo by zero")' in source
+    assert "Ok(a.checked_rem(b).unwrap_or(0))" in source
+    # Unary negation is checked so `-i64::MIN` raises OverflowError, not a panic.
+    assert "return Ok(__rextio_checked_neg(a)?);" in source
+    assert "a.checked_neg().ok_or_else(" in source
+
+
+def test_int_modulo_and_negation_checked_in_crate_mode(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+def modulo(a: int, b: int) -> int:
+    return a % b
+
+def negate(a: int) -> int:
+    return -a
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
+
+    assert "return Ok(__rextio_checked_rem(a, b)?);" in source
+    assert "return Ok(__rextio_checked_neg(a)?);" in source
+    assert 'RextioError::new("integer modulo by zero")' in source
+    assert "fn __rextio_checked_neg(a: i64) -> Result<i64, RextioError> {" in source
+
+
+def test_augmented_assignment_uses_checked_helper(tmp_path: Path) -> None:
+    # `+=` / `-=` / `*=` lower through the same checked helper as their binary
+    # form, including loop accumulation over a typed iterable (council/GLM).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def fold(xs: list[int]) -> int:
+    acc = 0
+    for x in xs:
+        acc += x
+        acc *= 2
+        acc -= 1
+    return acc
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "acc = __rextio_checked_add(acc, x)?;" in source
+    assert "acc = __rextio_checked_mul(acc, 2)?;" in source
+    assert "acc = __rextio_checked_sub(acc, 1)?;" in source
+
+
+def test_unused_checked_helpers_are_not_emitted(tmp_path: Path) -> None:
+    # Helper emission is keyed off structural usage, so a module that only adds
+    # gains the add helper and none of the others (no dead code).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "fn __rextio_checked_add(" in source
+    assert "fn __rextio_checked_sub(" not in source
+    assert "fn __rextio_checked_mul(" not in source
+    assert "fn __rextio_checked_rem(" not in source
+    assert "fn __rextio_checked_neg(" not in source
+
+
 def test_generates_rust_for_supported_native_top_level(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """

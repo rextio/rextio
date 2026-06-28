@@ -44,11 +44,13 @@ def is_cranelift_jit_candidate(
 def _has_overflow_prone_int_arithmetic(node: ast.AST) -> bool:
     """True if the expression contains i64 arithmetic that can overflow.
 
-    Addition, subtraction, multiplication and unary negation on a fixed-width
-    i64 can overflow; the experimental Cranelift JIT lowers them to wrapping
-    instructions, so any such node disqualifies an ``int`` helper from JIT.
+    Addition, subtraction, multiplication, modulo and unary negation on a
+    fixed-width i64 can overflow (or, for modulo, divide by zero); the
+    experimental Cranelift JIT lowers them to wrapping/trapping instructions
+    that cannot raise a Python exception, so any such node disqualifies an
+    ``int`` helper from JIT.
     """
-    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Mod)):
         return True
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         return True
