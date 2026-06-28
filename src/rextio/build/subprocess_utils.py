@@ -32,20 +32,27 @@ from pathlib import Path
 # being wrong.
 DEFAULT_BUILD_TIMEOUT_SECONDS = 600
 
+# A finite but absurd timeout (e.g. 1e100) both effectively disables the bound and
+# overflows the C-level `select`/wait timeout (`OverflowError: timestamp too large
+# to convert to C PyTime_t`). Reject anything past one year — beyond that, a build
+# timeout is a configuration mistake, not an intent.
+MAX_BUILD_TIMEOUT_SECONDS = 31_536_000  # 365 days
+
 # Conventional exit code for "terminated by timeout" (matches GNU `timeout(1)`),
 # used for the synthetic CompletedProcess returned on timeout.
 TIMEOUT_EXIT_CODE = 124
 
-# Grace period (seconds) for a killed process tree to be reaped before we give up
-# collecting its buffered output.
-_REAP_GRACE_SECONDS = 10
+# Grace periods (seconds) for the timeout-cleanup path. Kept short because the
+# build has *already* exceeded its (much larger) timeout by the time we get here.
+_TERM_GRACE_SECONDS = 5  # let SIGTERM land + the tool clean up, then escalate
+_KILL_GRACE_SECONDS = 3  # reap after SIGKILL / drain the pipes, then give up
 
 
 def run_build_tool(
     command: list[str],
     *,
     cwd: Path | str,
-    timeout: float | None = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     """Run an external build tool with no shell, captured output, and a timeout.
 
@@ -59,11 +66,27 @@ def run_build_tool(
             stdout, stderr = process.communicate(timeout=timeout)
             return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         except subprocess.TimeoutExpired:
-            _terminate_process_tree(process)
-            stdout, stderr = _drain_after_kill(process)
+            reaped = _terminate_process_tree(process)
+            stdout, stderr, output_abandoned = _drain_after_kill(process)
+            # Guarantee the `with` block's ``Popen.__exit__`` can never block: it
+            # calls ``self.wait()`` with no timeout, which short-circuits only once
+            # ``returncode`` is set. If we could not reap the child (D-state /
+            # ``PermissionError``), mark it terminated so exit stays bounded too.
+            if process.returncode is None:
+                process.returncode = TIMEOUT_EXIT_CODE
             tool = command[0] if command else "build tool"
-            timeout_note = f"rextio: `{tool}` timed out after {timeout:g}s and was terminated."
-            stderr = (f"{stderr}\n" if stderr else "") + timeout_note
+            notes = [f"rextio: `{tool}` timed out after {timeout:g}s and was terminated."]
+            if not reaped:
+                notes.append(
+                    "rextio: the build process tree could not be fully terminated; "
+                    "stray processes may still be running."
+                )
+            if output_abandoned:
+                notes.append(
+                    "rextio: captured output was truncated because a process kept the "
+                    "output pipe open after the timeout."
+                )
+            stderr = (f"{stderr}\n" if stderr else "") + "\n".join(notes)
             return subprocess.CompletedProcess(
                 command, returncode=TIMEOUT_EXIT_CODE, stdout=stdout, stderr=stderr
             )
@@ -93,26 +116,39 @@ def _start_process(command: list[str], cwd: Path | str) -> subprocess.Popen[str]
     )
 
 
-def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
-    """Kill the process and everything it spawned, best-effort and idempotent."""
+def _terminate_process_tree(process: subprocess.Popen[str]) -> bool:
+    """Kill the process and everything it spawned. Bounded and idempotent.
+
+    Returns ``True`` if the direct child was confirmed gone/reaped, ``False`` if we
+    had to give up (still running after SIGKILL, or no permission to signal it) so
+    the caller can surface that in diagnostics.
+    """
     if os.name == "posix":
-        # With ``start_new_session=True`` the child is its own process-group
-        # leader, so its PID *is* the group id. Signal the group via ``process.pid``
-        # directly rather than ``os.getpgid()``: if the leader has just exited,
-        # ``getpgid`` would raise and we would skip killing the still-running
-        # grandchildren in the group.
-        for sig in (signal.SIGTERM, signal.SIGKILL):
+        # ``_start_process`` uses ``start_new_session=True``, so the child is its
+        # own process-group leader and its PID *is* the group id. Signal the group
+        # via ``process.pid`` directly rather than ``os.getpgid()``: if the leader
+        # has just exited, ``getpgid`` would raise and we would skip killing the
+        # still-running grandchildren in the group. (Invariant: pid == pgid; do not
+        # change ``_start_process`` to drop the new session without revisiting this.)
+        for sig, grace in ((signal.SIGTERM, _TERM_GRACE_SECONDS), (signal.SIGKILL, _KILL_GRACE_SECONDS)):
             try:
                 os.killpg(process.pid, sig)
-            except (ProcessLookupError, PermissionError):
-                return  # Group already gone (or not ours to signal).
+            except ProcessLookupError:
+                return True  # Group already gone.
+            except PermissionError:
+                # Cannot signal the group (rare: child changed credentials). Fall
+                # back to killing at least the direct child so it does not linger.
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                return False
             try:
-                # Bounded on both passes: never block unboundedly even after
-                # SIGKILL (a process can sit in uninterruptible-sleep `D` state).
-                process.wait(timeout=_REAP_GRACE_SECONDS)
-                return
+                process.wait(timeout=grace)
+                return True
             except subprocess.TimeoutExpired:
                 continue  # Escalate SIGTERM -> SIGKILL, then give up.
+        return False  # SIGKILL did not reap within the grace period.
     else:  # pragma: no cover - exercised on Windows only.
         # `Popen.kill()` only kills the direct child on Windows; taskkill /T walks
         # the tree.
@@ -125,28 +161,36 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
         except OSError:
             process.kill()
         try:
-            process.wait(timeout=_REAP_GRACE_SECONDS)
+            process.wait(timeout=_KILL_GRACE_SECONDS)
+            return True
         except subprocess.TimeoutExpired:
             process.kill()
+            return False
 
 
-def _drain_after_kill(process: subprocess.Popen[str]) -> tuple[str, str]:
-    """Collect any output buffered before the tree was killed, strictly bounded.
+def _drain_after_kill(process: subprocess.Popen[str]) -> tuple[str, str, bool]:
+    """Collect output buffered before the tree was killed, strictly bounded.
 
-    A grandchild that escaped the process group (e.g. it called ``setsid`` or was
-    moved to another group) can keep a copy of the stdout/stderr write-ends open,
-    so the parent's read-ends would never see EOF. We therefore wait only up to
-    the grace period and then abandon the buffered tail by closing the pipes,
-    rather than block forever — the timeout path must itself stay bounded.
+    Returns ``(stdout, stderr, abandoned)``. A grandchild that escaped the process
+    group (e.g. it called ``setsid`` or was moved to another group) can keep a copy
+    of the stdout/stderr write-ends open, so the parent's read-ends would never see
+    EOF. We therefore wait only up to the grace period and then give up rather than
+    block forever — the timeout path must itself stay bounded — signalling
+    ``abandoned=True`` so the caller can note the truncation.
     """
     try:
-        stdout, stderr = process.communicate(timeout=_REAP_GRACE_SECONDS)
-        return stdout or "", stderr or ""
+        stdout, stderr = process.communicate(timeout=_KILL_GRACE_SECONDS)
+        return stdout or "", stderr or "", False
     except subprocess.TimeoutExpired:
-        for stream in (process.stdout, process.stderr):
-            if stream is not None:
-                try:
-                    stream.close()
-                except OSError:
-                    pass
-        return "", ""
+        # Closing the read-ends unblocks the abandoned drain. This is only done on
+        # POSIX, where ``communicate`` selects in this thread; on Windows reader
+        # threads own the pipes (and ``taskkill /T`` already killed the tree, so
+        # this branch is effectively unreachable there).
+        if os.name == "posix":
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+        return "", "", True

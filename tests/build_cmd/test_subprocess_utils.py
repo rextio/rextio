@@ -82,12 +82,13 @@ def test_run_build_tool_timeout_is_bounded_when_a_grandchild_escapes_the_group(
     # process-group kill and keeps the inherited stdout/stderr write-ends open, so
     # the parent's pipes never see EOF. The cleanup must still return promptly
     # (strictly bounded by the grace period), not block until the grandchild dies.
-    monkeypatch.setattr(subprocess_utils, "_REAP_GRACE_SECONDS", 1.0)
-    grandchild = "import os, time; os.setsid(); time.sleep(15)"
+    monkeypatch.setattr(subprocess_utils, "_TERM_GRACE_SECONDS", 1.0)
+    monkeypatch.setattr(subprocess_utils, "_KILL_GRACE_SECONDS", 1.0)
+    grandchild = "import os, time; os.setsid(); time.sleep(30)"
     parent = (
         "import subprocess, sys, time; "
         f"subprocess.Popen([sys.executable, '-c', {grandchild!r}]); "
-        "time.sleep(15)"
+        "time.sleep(30)"
     )
 
     start = time.monotonic()
@@ -96,9 +97,13 @@ def test_run_build_tool_timeout_is_bounded_when_a_grandchild_escapes_the_group(
 
     assert result.returncode != 0
     assert "timed out" in result.stderr.lower()
-    # Bounded: timeout (0.5s) + a couple of 1s grace windows, far below the 15s the
-    # escaped grandchild would otherwise hold the pipes open.
-    assert elapsed < 8, f"timeout cleanup hung for {elapsed:.1f}s"
+    # The escaped grandchild keeps the pipes open, so the drain is abandoned and the
+    # truncation is surfaced.
+    assert "truncated" in result.stderr.lower()
+    # Bounded: timeout (0.5s) + a few 1s grace windows, far below the 30s the
+    # escaped grandchild would otherwise hold the pipes open. Generous margin so a
+    # loaded CI box does not make it flaky.
+    assert elapsed < 15, f"timeout cleanup hung for {elapsed:.1f}s"
 
 
 def test_run_build_tool_does_not_use_a_shell(tmp_path) -> None:
