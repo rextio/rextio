@@ -64,10 +64,13 @@ def run_build_tool(
     completed process; on timeout, returns a synthetic process with a non-zero
     return code (:data:`TIMEOUT_EXIT_CODE`) and an explanatory stderr.
     """
-    # Defensive clamp: config/env/CLI already reject values past the cap, but this
-    # is a reusable entry point, so guard direct callers (and tests) from a
-    # non-finite or overflowing timeout reaching the C-level wait/select.
-    if not math.isfinite(timeout) or timeout > MAX_BUILD_TIMEOUT_SECONDS:
+    # Validate/clamp at this reusable entry point (config/env/CLI already do for
+    # real callers; this guards direct callers and tests). Reject clearly-invalid
+    # values fast — `None`/NaN raise inside `math` and a non-positive timeout would
+    # fail the build instantly — and clamp `inf`/over-cap down to the safe maximum.
+    if timeout is None or math.isnan(timeout) or timeout <= 0:
+        raise ValueError(f"build timeout must be a positive number, got {timeout!r}")
+    if timeout > MAX_BUILD_TIMEOUT_SECONDS:
         timeout = float(MAX_BUILD_TIMEOUT_SECONDS)
     with _start_process(command, cwd) as process:
         try:
@@ -86,18 +89,20 @@ def run_build_tool(
                 process.returncode = TIMEOUT_EXIT_CODE
             tool = command[0] if command else "build tool"
             notes = [f"rextio: `{tool}` timed out after {timeout:g}s and was terminated."]
-            if not reaped or output_abandoned:
-                # ``reaped`` only covers the direct process group; an abandoned drain
-                # means something still holds the pipe — typically a child that
-                # detached into its own session and escaped the group kill.
+            # Two independent conditions, each with accurate wording: `not reaped`
+            # is a stuck *direct* child (D-state / `PermissionError`), nothing
+            # detached; `output_abandoned` is a child that escaped the group (held
+            # the pipe past the grace period) and is still running.
+            if not reaped:
                 notes.append(
-                    "rextio: the process tree could not be fully terminated; "
-                    "processes that detached into their own session may still be running."
+                    "rextio: the build process tree could not be fully terminated; "
+                    "stray processes may still be running."
                 )
             if output_abandoned:
                 notes.append(
-                    "rextio: captured output was truncated because a process kept the "
-                    "output pipe open after the timeout."
+                    "rextio: captured output was truncated because a process kept the output "
+                    "pipe open after the timeout (it likely detached into its own session and "
+                    "may still be running)."
                 )
             stderr = (f"{stderr}\n" if stderr else "") + "\n".join(notes)
             return subprocess.CompletedProcess(
