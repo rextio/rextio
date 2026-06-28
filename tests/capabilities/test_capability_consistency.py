@@ -43,9 +43,11 @@ def test_every_dict_key_type_has_a_rust_mapping(name: str) -> None:
 
 
 def test_registry_values_are_pinned() -> None:
-    # Snapshot the exact element sets so the consolidation refactor cannot have
-    # silently changed a set, and a future edit to the matrix is a deliberate,
-    # reviewable change rather than an accidental drift.
+    # Deliberate "tripwire": snapshotting the exact element sets (rather than only
+    # invariants like subset relationships) means any change to the capability
+    # matrix — adding a type, or accidentally dropping e.g. `bytes` — must be made
+    # here too, turning it into a reviewable decision instead of silent drift. The
+    # duplication with rextio.capabilities is the point, not a maintenance smell.
     assert capabilities.SCALAR_TYPES == frozenset({"int", "float", "bool", "str", "bytes"})
     assert capabilities.NUMERIC_TYPES == frozenset({"int", "float"})
     assert capabilities.LIST_ITEM_TYPES == frozenset({"int", "float", "bool", "str"})

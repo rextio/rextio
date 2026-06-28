@@ -113,8 +113,12 @@ def _assert_equivalent(native_call: Callable[[], int], reference: Callable[[], i
     except Exception as exc:  # noqa: BLE001 - we compare the raised type below
         with pytest.raises(type(exc)) as exc_info:
             native_call()
-        # Exact type match: the native op must raise the *same* exception class as
-        # CPython, not merely a subclass (e.g. a generic ArithmeticError).
+        # The contract is an *exact* builtin-type match, not "some subclass":
+        # generated native code raises the same builtin exception CPython does
+        # (PyO3 surfaces `OverflowError` / `ZeroDivisionError` as the builtins),
+        # so `is` is the precise assertion. If a future change made the native
+        # path raise a subclass (or a generic ArithmeticError), that is a contract
+        # change we want this test to catch, not silently accept.
         assert exc_info.type is type(exc)
         return
     assert native_call() == expected
