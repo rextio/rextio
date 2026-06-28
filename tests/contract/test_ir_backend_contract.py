@@ -15,13 +15,15 @@ from pathlib import Path
 import pytest
 
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.codegen.rust.generator import generate_rust_crate_module, generate_rust_module
+from rextio.codegen.rust.generator import (
+    RustCodegenError,
+    generate_rust_crate_module,
+    generate_rust_module,
+)
 from rextio.ir.lowering import lower_project
 
-# Each entry is a self-contained module whose decorated functions exercise a
-# slice of the supported subset. `direct_rust` is False when the module relies on
-# the runtime-semantics shim (RXT080), which is not emitted to the importable
-# crate, so the crate backend is only asserted for direct-Rust modules.
+# Direct-Rust corpus: each module's accepted functions lower straight to Rust, so
+# both the pyo3 module and the importable crate must succeed.
 _CORPUS: dict[str, str] = {
     "scalar_arithmetic": """
 import rextio
@@ -102,34 +104,120 @@ def square(x: int) -> int:
 def sum_of_squares(x: int) -> int:
     return square(x) + square(x + 1)
 """,
+    "tuples_and_optional": """
+import rextio
+
+@rextio.native
+def pair(a: int, b: int) -> tuple[int, int]:
+    return (a, b)
+
+@rextio.native
+def maybe(a: int, flag: bool) -> int | None:
+    if flag:
+        return a
+    return None
+""",
+    "str_and_bytes_methods": """
+import rextio
+
+@rextio.native
+def shout(s: str) -> str:
+    return s.upper()
+
+@rextio.native
+def head(b: bytes) -> int:
+    return len(b)
+""",
+    "stdlib_lowering": """
+import base64
+import hashlib
+import json
+import rextio
+
+@rextio.native
+def digest(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+@rextio.native
+def encode(b: bytes) -> bytes:
+    return base64.b64encode(b)
+
+@rextio.native
+def dump(xs: list[int]) -> str:
+    return json.dumps(xs)
+""",
+}
+
+# Runtime-semantics (RXT080) corpus: functions that preserve Python object
+# semantics through a PyO3 shim rather than direct-Rust lowering. They must still
+# emit a pyo3 module, but they are *not* part of the importable crate, so crate
+# generation must reject them rather than silently dropping or miscompiling them.
+_SHIM_CORPUS: dict[str, str] = {
+    "exception_handling": """
+import rextio
+
+@rextio.native
+def safe_inc(a: int) -> int:
+    try:
+        return a + 1
+    except Exception:
+        return 0
+""",
+    "generator": """
+import rextio
+
+@rextio.native
+def counts(n: int):
+    for i in range(n):
+        yield i
+""",
 }
 
 
-def _accepted(tmp_path: Path, source: str) -> list[str]:
+def _analyze(tmp_path: Path, source: str):
     (tmp_path / "app.py").write_text(source, encoding="utf-8")
     analysis = analyze_project(tmp_path)
     # The corpus must actually be accepted, otherwise the contract is vacuous.
     assert not analysis.has_error_diagnostics, [
         d.to_dict() for d in analysis.error_diagnostics
     ]
-    accepted = [function.qualname for function in analysis.accepted_native_functions]
-    assert accepted, "corpus module produced no accepted native functions"
-    return accepted
+    assert analysis.accepted_native_functions, "module produced no accepted native functions"
+    return analysis
 
 
-@pytest.mark.parametrize("name", sorted(_CORPUS))
+@pytest.mark.parametrize("name", sorted({**_CORPUS, **_SHIM_CORPUS}))
 def test_accepted_functions_lower_and_emit_pyo3(name: str, tmp_path: Path) -> None:
-    _accepted(tmp_path, _CORPUS[name])
+    source_text = {**_CORPUS, **_SHIM_CORPUS}[name]
+    _analyze(tmp_path, source_text)
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
     assert source.strip()
     assert "fn _rextio_native" in source
 
 
 @pytest.mark.parametrize("name", sorted(_CORPUS))
-def test_accepted_functions_emit_importable_crate(name: str, tmp_path: Path) -> None:
-    _accepted(tmp_path, _CORPUS[name])
-    # Every corpus module is direct-Rust (no runtime-semantics shim), so the
-    # importable crate backend must also succeed.
+def test_direct_rust_functions_emit_importable_crate(name: str, tmp_path: Path) -> None:
+    analysis = _analyze(tmp_path, _CORPUS[name])
+    # Sanity-check the corpus curation: these modules must be direct-Rust.
+    assert all(
+        not function.native_runtime_semantics
+        for function in analysis.accepted_native_functions
+    ), "direct corpus module unexpectedly routed to the runtime-semantics shim"
     source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
     assert source.strip()
     assert "pub fn " in source
+
+
+@pytest.mark.parametrize("name", sorted(_SHIM_CORPUS))
+def test_runtime_shim_modules_are_excluded_from_importable_crate(
+    name: str, tmp_path: Path
+) -> None:
+    analysis = _analyze(tmp_path, _SHIM_CORPUS[name])
+    # Confirm these really are runtime-shim functions, not direct-Rust.
+    assert all(
+        function.native_runtime_semantics
+        for function in analysis.accepted_native_functions
+    ), "shim corpus module unexpectedly lowered to direct Rust"
+    # The importable crate is Rust-only and cannot host the shim, so generation
+    # must reject it explicitly rather than emit nothing or miscompile.
+    with pytest.raises(RustCodegenError):
+        generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
