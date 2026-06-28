@@ -78,16 +78,21 @@ def run_build_tool(
             stdout, stderr, output_abandoned = _drain_after_kill(process)
             # Guarantee the `with` block's ``Popen.__exit__`` can never block: it
             # calls ``self.wait()`` with no timeout, which short-circuits only once
-            # ``returncode`` is set. If we could not reap the child (D-state /
-            # ``PermissionError``), mark it terminated so exit stays bounded too.
-            if process.returncode is None:
+            # ``returncode`` is set. ``poll()`` first does a non-blocking ``waitpid``
+            # — reaping the child (and setting ``returncode``) if it has exited — so
+            # we forge the code only for a genuinely stuck child (D-state /
+            # ``PermissionError``) instead of orphaning a reapable zombie.
+            if process.poll() is None:
                 process.returncode = TIMEOUT_EXIT_CODE
             tool = command[0] if command else "build tool"
             notes = [f"rextio: `{tool}` timed out after {timeout:g}s and was terminated."]
-            if not reaped:
+            if not reaped or output_abandoned:
+                # ``reaped`` only covers the direct process group; an abandoned drain
+                # means something still holds the pipe — typically a child that
+                # detached into its own session and escaped the group kill.
                 notes.append(
-                    "rextio: the build process tree could not be fully terminated; "
-                    "stray processes may still be running."
+                    "rextio: the process tree could not be fully terminated; "
+                    "processes that detached into their own session may still be running."
                 )
             if output_abandoned:
                 notes.append(

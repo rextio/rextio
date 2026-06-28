@@ -119,6 +119,24 @@ def test_run_build_tool_timeout_is_bounded_when_a_grandchild_escapes_the_group(
     assert elapsed < 15, f"timeout cleanup hung for {elapsed:.1f}s"
 
 
+def test_run_build_tool_surfaces_giveup_when_cleanup_reports_failure(tmp_path, monkeypatch) -> None:
+    # When _terminate_process_tree gives up (returns False), the synthetic timeout
+    # result must surface the stray-process note (and still be bounded). The fake
+    # still kills the child so the test does not leak it.
+    def fake_terminate(process):
+        process.kill()
+        return False
+
+    monkeypatch.setattr(subprocess_utils, "_terminate_process_tree", fake_terminate)
+    result = run_build_tool(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        cwd=tmp_path,
+        timeout=0.5,
+    )
+    assert result.returncode != 0
+    assert "could not be fully terminated" in result.stderr.lower()
+
+
 def test_run_build_tool_does_not_use_a_shell(tmp_path) -> None:
     # Arguments are passed as a list, so shell metacharacters are literal, not
     # interpreted — `$(...)` is just an argument, never a command substitution.
