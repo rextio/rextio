@@ -63,7 +63,9 @@ class RustCodegenError(RuntimeError):
 
 # Order is fixed so emitted helpers are deterministic regardless of use order.
 _CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
-_CHECKED_HELPER_ORDER = ("add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem")
+_CHECKED_HELPER_ORDER = (
+    "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i"
+)
 
 
 def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
@@ -75,14 +77,22 @@ def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
     the crate variant returns ``RextioError``.
     """
 
-    def overflow_err() -> str:
+    def overflow_err_msg(message: str) -> str:
         if mode == "pyo3":
-            return 'pyo3::exceptions::PyOverflowError::new_err("integer overflow")'
-        return 'RextioError::new("integer overflow")'
+            return f'pyo3::exceptions::PyOverflowError::new_err("{message}")'
+        return f'RextioError::new("{message}")'
+
+    def overflow_err() -> str:
+        return overflow_err_msg("integer overflow")
 
     def zero_div_err(message: str) -> str:
         if mode == "pyo3":
             return f'pyo3::exceptions::PyZeroDivisionError::new_err("{message}")'
+        return f'RextioError::new("{message}")'
+
+    def value_err(message: str) -> str:
+        if mode == "pyo3":
+            return f'pyo3::exceptions::PyValueError::new_err("{message}")'
         return f'RextioError::new("{message}")'
 
     ret = "PyResult<i64>" if mode == "pyo3" else "Result<i64, RextioError>"
@@ -163,16 +173,42 @@ def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
                     "",
                 ]
             )
+        elif name == "f2i":
+            # `math.floor`/`ceil`/`trunc` return a Python int (arbitrary
+            # precision). A bare `as i64` cast saturates a value outside i64 range
+            # to i64::MIN/MAX (a silent wrong value), so guard the conversion:
+            # NaN -> ValueError, infinity/out-of-range -> OverflowError (a
+            # catchable error rather than a silent saturation; full arbitrary
+            # precision is a separate future item). The bounds use 2^63 exactly
+            # (representable in f64); i64's valid range is [-2^63, 2^63 - 1].
+            lines.extend(
+                [
+                    f"fn {fn}(x: f64) -> {ret} {{",
+                    f'    if x.is_nan() {{ return Err({value_err("cannot convert float NaN to integer")}); }}',
+                    "    if x >= -9223372036854775808.0 && x < 9223372036854775808.0 {",
+                    "        Ok(x as i64)",
+                    "    } else {",
+                    f'        Err({overflow_err_msg("float out of range for conversion to integer")})',
+                    "    }",
+                    "}",
+                    "",
+                ]
+            )
         elif name == "frem":
-            # Python raises ZeroDivisionError for `x % 0.0`, and float `%` is
-            # floored (the result takes the divisor's sign) like the integer case,
-            # whereas Rust `%` is truncated.
+            # Python raises ZeroDivisionError for `x % 0.0` (message "float
+            # modulo"), and float `%` is floored (the result takes the divisor's
+            # sign) like the integer case, whereas Rust `%` is truncated. Mirror
+            # CPython's `float_rem`: when the remainder is exactly zero, the result
+            # is zero with the *divisor's* sign (`copysign(0.0, b)`), not the
+            # dividend's sign that Rust's `fmod` would keep.
             lines.extend(
                 [
                     f"fn {fn}(a: f64, b: f64) -> {fret} {{",
-                    f'    if b == 0.0 {{ return Err({zero_div_err("float modulo by zero")}); }}',
+                    f'    if b == 0.0 {{ return Err({zero_div_err("float modulo")}); }}',
                     "    let r = a % b;",
-                    "    Ok(if r != 0.0 && (r < 0.0) != (b < 0.0) { r + b } else { r })",
+                    "    Ok(if r == 0.0 { (0.0_f64).copysign(b) }",
+                    "       else if (r < 0.0) != (b < 0.0) { r + b }",
+                    "       else { r })",
                     "}",
                     "",
                 ]
@@ -1316,7 +1352,8 @@ class _FunctionRenderer:
             return f"({self.render_expr(expr.args[0])}).atan2({self.render_expr(expr.args[1])})"
         if expr.function in {"math.ceil", "math.floor", "math.trunc"} and len(expr.args) == 1:
             method = expr.function.rsplit(".", 1)[1]
-            return f"(({self.render_expr(expr.args[0])}).{method}() as i64)"
+            self.used_helpers.add("f2i")
+            return f"__rextio_checked_f2i(({self.render_expr(expr.args[0])}).{method}())?"
         if expr.function in {"math.isfinite", "math.isinf", "math.isnan"} and len(expr.args) == 1:
             method = {
                 "math.isfinite": "is_finite",

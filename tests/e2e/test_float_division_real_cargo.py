@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -27,6 +28,8 @@ build_tool = "cargo"
     (source.parent / "__init__.py").write_text("", encoding="utf-8")
     source.write_text(
         """
+import math
+
 import rextio
 
 @rextio.native
@@ -36,6 +39,10 @@ def divide(a: float, b: float) -> float:
 @rextio.native
 def modulo(a: float, b: float) -> float:
     return a % b
+
+@rextio.native
+def floor_to_int(x: float) -> int:
+    return math.floor(x)
 """,
         encoding="utf-8",
     )
@@ -62,9 +69,23 @@ def modulo(a: float, b: float) -> float:
     assert module.modulo(-7.0, 3.0) == 2.0
     assert module.modulo(7.0, -3.0) == -2.0
 
+    # When the remainder is exactly zero, CPython gives it the divisor's sign.
+    assert math.copysign(1.0, module.modulo(-6.0, 3.0)) == 1.0
+    assert math.copysign(1.0, module.modulo(6.0, -3.0)) == -1.0
+
     # Float division/modulo by zero is a catchable ZeroDivisionError (Python
     # semantics) instead of Rust's silent inf/NaN.
     with pytest.raises(ZeroDivisionError):
         module.divide(1.0, 0.0)
     with pytest.raises(ZeroDivisionError):
         module.modulo(1.0, 0.0)
+
+    # math.floor returns an int; an in-range float converts, but an out-of-range
+    # float raises OverflowError and NaN raises ValueError instead of silently
+    # saturating via `as i64`.
+    assert module.floor_to_int(3.7) == 3
+    assert module.floor_to_int(-3.2) == -4
+    with pytest.raises(OverflowError):
+        module.floor_to_int(1e30)
+    with pytest.raises(ValueError):
+        module.floor_to_int(float("nan"))

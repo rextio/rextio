@@ -604,7 +604,10 @@ def lower(x: float, y: float) -> int:
     assert "(x).sin()" in source
     assert "(x).cos()" in source
     assert "(total).max((x).abs())" in source
-    assert "return Ok((((x).floor() as i64)).min(((y).floor() as i64)));" in source
+    assert (
+        "return Ok((__rextio_checked_f2i((x).floor())?)"
+        ".min(__rextio_checked_f2i((y).floor())?));"
+    ) in source
 
 
 def test_generates_rust_for_common_builtin_logging_and_datetime_calls(tmp_path: Path) -> None:
@@ -860,8 +863,10 @@ def modulo(a: float, b: float) -> float:
     assert "return Ok(__rextio_checked_fdiv(a, b)?);" in source
     assert "return Ok(__rextio_checked_frem(a, b)?);" in source
     assert 'pyo3::exceptions::PyZeroDivisionError::new_err("float division by zero")' in source
-    assert 'pyo3::exceptions::PyZeroDivisionError::new_err("float modulo by zero")' in source
-    assert "Ok(if r != 0.0 && (r < 0.0) != (b < 0.0) { r + b } else { r })" in source
+    assert 'pyo3::exceptions::PyZeroDivisionError::new_err("float modulo")' in source
+    # Floored modulo with CPython's signed-zero rule (zero takes the divisor's sign).
+    assert "Ok(if r == 0.0 { (0.0_f64).copysign(b) }" in source
+    assert "else if (r < 0.0) != (b < 0.0) { r + b }" in source
 
 
 def test_float_division_checked_in_crate_mode(tmp_path: Path) -> None:
@@ -877,6 +882,30 @@ def divide(a: float, b: float) -> float:
 
     assert "return Ok(__rextio_checked_fdiv(a, b)?);" in source
     assert 'RextioError::new("float division by zero")' in source
+
+
+def test_math_floor_ceil_trunc_use_checked_conversion(tmp_path: Path) -> None:
+    # `(x).floor() as i64` saturates out-of-range floats (a silent wrong value);
+    # the conversion is guarded so NaN -> ValueError and out-of-range ->
+    # OverflowError instead (council R6 F2).
+    for fn in ("floor", "ceil", "trunc"):
+        (tmp_path / "app.py").write_text(
+            f"""
+import math
+import rextio
+
+@rextio.native
+def f(x: float) -> int:
+    return math.{fn}(x)
+""",
+            encoding="utf-8",
+        )
+        source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+        assert f"__rextio_checked_f2i((x).{fn}())?" in source
+        assert "fn __rextio_checked_f2i(x: f64)" in source
+        assert 'PyValueError::new_err("cannot convert float NaN to integer")' in source
+        assert "x >= -9223372036854775808.0 && x < 9223372036854775808.0" in source
+        assert 'PyOverflowError::new_err("float out of range for conversion to integer")' in source
 
 
 def test_int_min_max_are_overflow_safe(tmp_path: Path) -> None:

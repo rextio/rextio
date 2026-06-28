@@ -73,7 +73,11 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Generated float division and modulo now preserve Python semantics: `x / 0.0`
   and `x % 0.0` raise `ZeroDivisionError` (instead of Rust's silent `inf`/`NaN`),
   and float `%` is floored (the result takes the divisor's sign, e.g.
-  `-7.0 % 3.0 == 2.0`) rather than Rust's truncated `fmod`.
+  `-7.0 % 3.0 == 2.0`) rather than Rust's truncated `fmod`. When the remainder is
+  exactly zero it takes the divisor's sign (`copysign(0.0, b)`), matching CPython.
+- `math.floor`/`ceil`/`trunc` now convert through a guarded float-to-int helper:
+  a value outside i64 range raises `OverflowError` and `NaN` raises `ValueError`,
+  instead of silently saturating to `i64::MIN`/`MAX` via an `as i64` cast.
 - The experimental Cranelift JIT no longer accepts integer helpers that contain
   overflow-prone arithmetic: the JIT path emits wrapping instructions and cannot
   raise `OverflowError`, so such helpers stay on the checked native path. Float
