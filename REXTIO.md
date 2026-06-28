@@ -259,9 +259,8 @@ skipped when Cargo is unavailable, and the Nuitka fallback E2E is skipped when
 Nuitka is unavailable. To explicitly verify real local toolchains, run:
 
 ```text
-PYTHONPATH=src pytest tests/e2e/test_pure_math_real_toolchain.py
-PYTHONPATH=src pytest tests/e2e/test_nuitka_real_toolchain.py
-cargo test --manifest-path crates/rextio_runtime/Cargo.toml
+PYTHONPATH=src pytest -m needs_cargo tests/e2e
+PYTHONPATH=src pytest -m needs_nuitka tests/e2e
 ```
 
 The editable-install smoke also installs the generated artifact wheel into a

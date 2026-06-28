@@ -55,6 +55,11 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Generated sequence indexing now preserves Python semantics: a negative index
   counts from the end (`xs[-1]`), and an out-of-range index raises `IndexError`
   instead of triggering an unchecked Rust panic.
+- Generated native crates are compiled with `overflow-checks = true`, so i64
+  integer overflow raises a Python exception (Python ints are arbitrary
+  precision) instead of silently wrapping in release builds.
+- Removed the unused `crates/rextio_runtime` helper crate; generated code inlines
+  its bounds-checked access, so the crate was never wired into any build.
 - The Python runtime-semantics shim (`RXT080`) is now strictly opt-in. Only
   functions explicitly marked `@rextio.native` are promoted to the shim.
   Auto-discovered (undecorated) functions are accepted only within the

@@ -52,9 +52,41 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -e ".[test]"
       - name: Pytest (unit/integration, e2e excluded)
-        # The e2e suite requires a real Rust/Cargo toolchain and is run
-        # separately; see mod-proposal P1-10 (e2e isolation).
+        # The e2e suite requires a real Rust/Cargo toolchain and is run in the
+        # `e2e` job; see mod-proposal P1-10 (e2e isolation).
         run: python -m pytest tests --ignore=tests/e2e -q
+
+  coverage:
+    name: Coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dev dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Pytest with coverage gate (fail-under enforced via pyproject)
+        run: python -m pytest tests --ignore=tests/e2e -q --cov
+
+  e2e:
+    name: E2E (real Rust/Cargo toolchain)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install test dependencies
+        run: python -m pip install -e ".[test]"
+      - name: Pytest (real-cargo e2e)
+        run: python -m pytest tests/e2e -m needs_cargo -q
 
   package:
     name: Package (build + metadata + install smoke)
