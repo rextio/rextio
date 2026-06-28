@@ -19,6 +19,7 @@ from rextio.codegen.rust.rust_format import (
     default_return,
     python_logging_format_to_rust,
     render_literal,
+    rust_string_literal,
     strip_expr_if_safe,
     strip_wrapping_parens,
 )
@@ -187,7 +188,7 @@ def _render_runtime_semantics_function(function: FunctionIR) -> str:
     if function.runtime_fallback_module is None or not function.runtime_attr_path:
         raise RustCodegenError(f"missing runtime fallback metadata for {function.qualname}")
     rust_name = rust_identifier(native_function_name(function.qualname))
-    attr_path = ", ".join(json.dumps(item) for item in function.runtime_attr_path)
+    attr_path = ", ".join(rust_string_literal(item) for item in function.runtime_attr_path)
     return "\n".join(
         [
             "#[pyfunction(signature = (*args, **kwargs))]",
@@ -198,7 +199,7 @@ def _render_runtime_semantics_function(function: FunctionIR) -> str:
             ") -> PyResult<PyObject> {",
             "    rextio_call_python_runtime(",
             "        py,",
-            f"        {json.dumps(function.runtime_fallback_module)},",
+            f"        {rust_string_literal(function.runtime_fallback_module)},",
             f"        &[{attr_path}],",
             "        args,",
             "        kwargs,",
@@ -1599,7 +1600,7 @@ class _FunctionRenderer:
                         strip_wrapping_parens(self.render_call_arg(arg))
                         for arg in args[1:]
                     )
-                    return f"{macro}({json.dumps(format_string)}, {rendered_args})"
+                    return f"{macro}({rust_string_literal(format_string)}, {rendered_args})"
         return self.render_format_macro(macro, args, allow_empty=False)
 
     def format_placeholder(self, expr: ExprIR) -> str:
