@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
-from types import ModuleType
+from typing import Callable
 
 from rextio.cli.main import main
+
+
+def _install_fake_native(monkeypatch, functions: dict[str, Callable]) -> None:
+    # Patch the loader so the generated wrapper binds these fake native functions.
+    # This survives bench's module eviction and works under forced native mode.
+    def _fake_loader(module_name: str, function_name: str):
+        if module_name == "_rextio_native":
+            return functions.get(function_name)
+        return None
+
+    monkeypatch.setattr(
+        "rextio.runtime.native_loader.load_native_function", _fake_loader
+    )
 
 
 def test_bench_compares_fallback_and_native(
@@ -24,9 +36,7 @@ def add(a: int, b: int) -> int:
 """,
         encoding="utf-8",
     )
-    native_module = ModuleType("_rextio_native")
-    native_module.bench_app__add = lambda a, b: a + b
-    monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
+    _install_fake_native(monkeypatch, {"bench_app__add": lambda a, b: a + b})
 
     exit_code = main(["bench", "bench_app.add", "--project-root", str(tmp_path)])
 
@@ -111,9 +121,7 @@ def add(a: int, b: int) -> int:
 """,
         encoding="utf-8",
     )
-    native_module = ModuleType("_rextio_native")
-    native_module.bench_pkg__add = lambda a, b: a + b
-    monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
+    _install_fake_native(monkeypatch, {"bench_pkg__add": lambda a, b: a + b})
 
     exit_code = main(["bench", "bench_pkg.add", "--project-root", str(tmp_path)])
 

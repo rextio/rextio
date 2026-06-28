@@ -84,11 +84,11 @@ jobs:
           /tmp/rextio-sdist/bin/python -m pip install dist/*.tar.gz
       - name: Smoke-test the installed console script (wheel + sdist)
         run: |
+          work="$(mktemp -d)"
+          printf 'import rextio\n\n@rextio.native\ndef add(a: int, b: int) -> int:\n    return a + b\n' > "$work/app.py"
           for env in /tmp/rextio-wheel /tmp/rextio-sdist; do
             "$env/bin/rextio" --help
             "$env/bin/python" -c "import rextio; print(rextio.__version__)"
+            # Exercise a real command end-to-end from each installed distribution.
+            "$env/bin/rextio" check "$work" --no-report
           done
-          # Exercise a real command end-to-end on a tiny project.
-          work="$(mktemp -d)"
-          printf 'import rextio\n\n@rextio.native\ndef add(a: int, b: int) -> int:\n    return a + b\n' > "$work/app.py"
-          /tmp/rextio-wheel/bin/rextio check "$work" --no-report

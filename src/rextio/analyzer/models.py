@@ -253,6 +253,19 @@ class ProjectAnalysis:
             key=lambda top_level: top_level.qualname,
         )
 
+    def requires_native_build(self) -> bool:
+        """Whether building this project produces a native artifact (needs cargo).
+
+        Single source of truth for "does this build need the Rust toolchain": any
+        accepted native function or top level, or any JIT candidate (which is
+        compiled into the native module), requires a native build.
+        """
+        return bool(
+            self.accepted_native_functions
+            or self.accepted_native_top_levels
+            or self.jit_candidates
+        )
+
     @property
     def rejected_native_top_levels(self) -> list[TopLevelAnalysis]:
         return sorted(

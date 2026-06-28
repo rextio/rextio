@@ -100,10 +100,7 @@ def run(args: Namespace) -> int:
 
     # Only require the native toolchain when there is actually native code to
     # compile; a pure-Python project still builds its CPython fallback artifact.
-    needs_native = bool(
-        analysis.accepted_native_functions or analysis.accepted_native_top_levels
-    )
-    if needs_native:
+    if analysis.requires_native_build():
         missing_tools = missing_build_tools(native_backend=target_plan.spec.language)
         if missing_tools:
             print(format_missing_tools(missing_tools))

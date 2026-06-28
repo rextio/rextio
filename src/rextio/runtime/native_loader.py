@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import importlib.util
 import os
+import sys
 import warnings
 from importlib import import_module
 from types import ModuleType
 from typing import Any
+
 
 def _debug_native() -> bool:
     return os.environ.get("REXTIO_DEBUG_NATIVE") == "1"
@@ -25,25 +28,27 @@ def _surface_broken_native(module_name: str, exc: Exception) -> None:
 def load_native_module(module_name: str) -> ModuleType | None:
     """Import a generated native module, distinguishing "absent" from "broken".
 
-    A module that was never built is an expected condition and yields ``None`` so
-    the wrapper can use the Python fallback. An import-time failure of a module that
-    *does* exist (ABI mismatch, init panic, a missing dependency of the native
-    module) is a real fault and is never swallowed silently: it is re-raised under
-    ``REXTIO_DEBUG_NATIVE=1`` and otherwise surfaced as a ``RuntimeWarning``.
+    Absence is decided up front with ``importlib.util.find_spec``: if the module
+    is not importable at all (never built), return ``None`` so the wrapper uses the
+    Python fallback. If a spec exists but the import then fails (ABI mismatch, init
+    panic, a missing dependency of the native module), that is a real fault and is
+    never swallowed silently — it is re-raised under ``REXTIO_DEBUG_NATIVE=1`` and
+    otherwise surfaced as a ``RuntimeWarning``.
 
-    The two are told apart by the failed import's target: a ``ModuleNotFoundError``
-    whose ``name`` is the native module itself means "absent"; a ``ModuleNotFoundError``
-    for some *other* module means the native module loaded far enough to import a
-    dependency that is missing — that is "broken", not "absent".
+    Using ``find_spec`` instead of inspecting ``ModuleNotFoundError`` keeps the
+    absent/broken split correct regardless of how the import fails (relative vs
+    top-level import, ``exc.name`` being ``None``, custom importers, etc.).
     """
     try:
-        return import_module(module_name)
-    except ModuleNotFoundError as exc:
-        if exc.name == module_name:
-            return None
-        _surface_broken_native(module_name, exc)
+        spec = importlib.util.find_spec(module_name)
+    except (ImportError, ValueError):
+        spec = None
+    # An already-imported module (including test injections) counts as present.
+    if spec is None and module_name not in sys.modules:
         return None
-    except Exception as exc:  # noqa: BLE001 - intentionally broad; re-raised or warned below
+    try:
+        return import_module(module_name)
+    except Exception as exc:  # noqa: BLE001 - intentionally broad; re-raised or warned above
         _surface_broken_native(module_name, exc)
         return None
 

@@ -78,12 +78,16 @@ def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> Be
         raise BenchError(build_result.native_build.message)
 
     _prepend_sys_path(build_result.layout.build_python_dir)
-    # Evict any module cached from a previous build so the freshly built artifact
-    # (and its `_rextio_native` extension) is the one actually measured.
+    # Evict any module cached from a previous build (including parent packages, so
+    # no stale `__path__` resolves old submodules) so the freshly built artifact is
+    # the one actually measured.
     fallback_name = _fallback_import_name(analysis, function)
-    for module_name in ("_rextio_native", function.module_name, fallback_name):
-        sys.modules.pop(module_name, None)
-    importlib.invalidate_caches()
+    _evict_modules("_rextio_native", function.module_name, fallback_name)
+
+    # NOTE: this measures the wrapper in the current process. Because CPython does
+    # not unload a C extension once loaded and the wrapper silently falls back when
+    # the native binding is unavailable, a fully robust benchmark would run in a
+    # fresh subprocess; that isolation is tracked as a follow-up.
     wrapper_func = _import_function(function.module_name, function.name)
     fallback_func = _import_function(fallback_name, function.name)
     args = _sample_args(fallback_func)
@@ -136,6 +140,18 @@ def _prepend_sys_path(path: Path) -> None:
     value = str(path)
     if value not in sys.path:
         sys.path.insert(0, value)
+    importlib.invalidate_caches()
+
+
+def _evict_modules(*names: str) -> None:
+    """Drop the given modules and all their parent packages from ``sys.modules``."""
+    to_evict: set[str] = set()
+    for name in names:
+        parts = name.split(".")
+        for index in range(1, len(parts) + 1):
+            to_evict.add(".".join(parts[:index]))
+    for module_name in to_evict:
+        sys.modules.pop(module_name, None)
     importlib.invalidate_caches()
 
 

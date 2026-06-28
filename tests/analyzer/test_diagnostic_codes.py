@@ -10,16 +10,35 @@ _SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "rextio"
 _CODE_PATTERN = re.compile(r"RXT\d{3}")
 
 
+_DOCSTRING_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _docstring_constant_ids(tree: ast.AST) -> set[int]:
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, _DOCSTRING_OWNERS) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                if isinstance(first.value.value, str):
+                    ids.add(id(first.value))
+    return ids
+
+
 def _emitted_codes() -> set[str]:
-    # Collect codes from string *literals* only (via AST), so codes mentioned in
-    # comments don't count as real emissions and produce false positives.
+    # Collect codes from string *literals* only (via AST) and skip docstrings, so
+    # codes mentioned in comments or documentation don't count as real emissions.
     codes: set[str] = set()
     for path in _SRC_ROOT.rglob("*.py"):
         if path.name == "diagnostic_codes.py":
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings = _docstring_constant_ids(tree)
         for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+            ):
                 codes.update(_CODE_PATTERN.findall(node.value))
     return codes
 
