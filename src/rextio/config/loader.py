@@ -27,7 +27,7 @@ class ConfigError(RuntimeError):
 
 
 CONFIG_KEYS = {
-    "build": {"native_backend", "fallback_backend", "fallback_threshold"},
+    "build": {"native_backend", "fallback_backend", "fallback_threshold", "build_timeout_seconds"},
     "rust": {"binding", "build_tool", "importable", "crate_name"},
     "fallback": {"nuitka"},
     "target": {"version", "build_options"},
@@ -49,6 +49,7 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_TARGET_LANGUAGE": ("build", "native_backend", "string"),
     "REXTIO_FALLBACK_BACKEND": ("build", "fallback_backend", "string"),
     "REXTIO_BOUNDARY_FALLBACK_THRESHOLD": ("build", "fallback_threshold", "integer"),
+    "REXTIO_BUILD_TIMEOUT": ("build", "build_timeout_seconds", "positive_number"),
     "REXTIO_RUST_BINDING": ("rust", "binding", "string"),
     "REXTIO_RUST_BUILD_TOOL": ("rust", "build_tool", "string"),
     "REXTIO_RUST_IMPORTABLE": ("rust", "importable", "boolean"),
@@ -199,6 +200,7 @@ def _validate_config_values(
     _require_string("build", "native_backend", build["native_backend"])
     _require_string("build", "fallback_backend", build["fallback_backend"])
     _require_non_negative_int("build", "fallback_threshold", build["fallback_threshold"])
+    _require_positive_number("build", "build_timeout_seconds", build["build_timeout_seconds"])
     _require_string("rust", "binding", rust["binding"])
     _require_string("rust", "build_tool", rust["build_tool"])
     _require_bool("rust", "importable", rust["importable"])
@@ -272,6 +274,13 @@ def _require_non_negative_int(section: str, key: str, value: Any) -> None:
         raise ConfigError(f"[{section}].{key} must be a non-negative integer")
     if value < 0:
         raise ConfigError(f"[{section}].{key} must be a non-negative integer")
+
+
+def _require_positive_number(section: str, key: str, value: Any) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"[{section}].{key} must be a positive number")
+    if value <= 0:
+        raise ConfigError(f"[{section}].{key} must be a positive number")
 
 
 def _require_string_map(section: str, key: str, value: Any) -> None:
@@ -362,6 +371,14 @@ def _parse_environment_value(env_name: str, raw_value: str, kind: str) -> object
             return int(raw_value)
         except ValueError as exc:
             raise ConfigError(f"environment variable {env_name} must be a non-negative integer") from exc
+    if kind == "positive_number":
+        try:
+            number = float(raw_value)
+        except ValueError as exc:
+            raise ConfigError(f"environment variable {env_name} must be a positive number") from exc
+        if number <= 0:
+            raise ConfigError(f"environment variable {env_name} must be a positive number")
+        return number
     if kind == "string_map":
         return _parse_string_map(env_name, raw_value)
     if kind == "package_policy_map":

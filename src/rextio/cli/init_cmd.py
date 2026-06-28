@@ -7,6 +7,8 @@ DEFAULT_CONFIG = """[build]
 native_backend = "rust"
 fallback_backend = "cpython"
 fallback_threshold = 1000
+# Per-invocation timeout (seconds) for external build tools (cargo/maturin/nuitka).
+build_timeout_seconds = 600
 
 [rust]
 binding = "pyo3"

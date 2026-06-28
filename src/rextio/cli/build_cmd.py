@@ -23,6 +23,7 @@ def run(args: Namespace) -> int:
                 ("build", "native_backend"): args.native_backend,
                 ("build", "fallback_backend"): args.fallback,
                 ("build", "fallback_threshold"): args.fallback_threshold,
+                ("build", "build_timeout_seconds"): args.build_timeout,
                 ("rust", "binding"): args.rust_binding,
                 ("rust", "build_tool"): args.rust_build_tool,
                 ("rust", "importable"): args.rust_importable,
@@ -121,6 +122,7 @@ def run(args: Namespace) -> int:
         rust_crate_name=config.rust.crate_name,
         native_jit_enabled=config.jit.enabled,
         jit_hot_threshold=config.jit.hot_threshold,
+        build_timeout_seconds=config.build.build_timeout_seconds,
     )
     print("Rextio build")
     print(f"  target language: {target_plan.spec.language}")

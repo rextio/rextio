@@ -5,14 +5,19 @@ import zipfile
 from pathlib import Path
 
 from rextio.build.cargo_builder import NativeBuildResult
-from rextio.build.subprocess_utils import run_build_tool
+from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 
 
 def maturin_available() -> bool:
     return shutil.which("maturin") is not None
 
 
-def build_native_extension_with_maturin(rust_dir: Path, python_dir: Path) -> NativeBuildResult:
+def build_native_extension_with_maturin(
+    rust_dir: Path,
+    python_dir: Path,
+    *,
+    timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+) -> NativeBuildResult:
     maturin = shutil.which("maturin")
     if maturin is None:
         return NativeBuildResult(
@@ -35,7 +40,7 @@ def build_native_extension_with_maturin(rust_dir: Path, python_dir: Path) -> Nat
         "--out",
         str(wheels_dir),
     ]
-    completed = run_build_tool(command, cwd=rust_dir)
+    completed = run_build_tool(command, cwd=rust_dir, timeout=timeout)
     if completed.returncode != 0:
         return NativeBuildResult(
             status="failed",

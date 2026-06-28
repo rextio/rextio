@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS
+
 
 @dataclass(frozen=True)
 class BuildConfig:
     native_backend: str = "rust"
     fallback_backend: str = "cpython"
     fallback_threshold: int = 1000
+    # Wall-clock timeout (seconds) for each external build-tool invocation
+    # (cargo/maturin/nuitka). A hung toolchain fails the build instead of
+    # blocking indefinitely.
+    build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)

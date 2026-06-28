@@ -76,6 +76,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     build_parser_.add_argument(
+        "--build-timeout",
+        type=_positive_number,
+        default=None,
+        help=(
+            "Per-invocation timeout (seconds) for external build tools "
+            "(cargo/maturin/nuitka). Overrides REXTIO_BUILD_TIMEOUT and "
+            "[build] build_timeout_seconds."
+        ),
+    )
+    build_parser_.add_argument(
         "--rust-binding",
         choices=("pyo3",),
         default=None,
@@ -209,6 +219,16 @@ def _non_negative_int(value: str) -> int:
         raise argparse.ArgumentTypeError("must be a non-negative integer") from exc
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return parsed
+
+
+def _positive_number(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive number") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number")
     return parsed
 
 

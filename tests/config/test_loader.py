@@ -196,6 +196,37 @@ boundary_warnings = true
     assert config.policy.native_top_level is True
 
 
+def test_build_timeout_seconds_precedence(tmp_path: Path) -> None:
+    from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS
+
+    # Default.
+    assert load_config(tmp_path).build.build_timeout_seconds == DEFAULT_BUILD_TIMEOUT_SECONDS
+
+    # toml.
+    (tmp_path / "rextio.toml").write_text(
+        "[build]\nbuild_timeout_seconds = 120\n", encoding="utf-8"
+    )
+    assert load_config(tmp_path).build.build_timeout_seconds == 120
+
+    # env beats toml.
+    config = load_config(tmp_path, environ={"REXTIO_BUILD_TIMEOUT": "90"})
+    assert config.build.build_timeout_seconds == 90.0
+
+    # CLI override beats env/toml.
+    overridden = override_config(config, {("build", "build_timeout_seconds"): 45.0})
+    assert overridden.build.build_timeout_seconds == 45.0
+
+
+def test_build_timeout_seconds_rejects_non_positive(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"REXTIO_BUILD_TIMEOUT"):
+        load_config(tmp_path, environ={"REXTIO_BUILD_TIMEOUT": "0"})
+    (tmp_path / "rextio.toml").write_text(
+        "[build]\nbuild_timeout_seconds = -5\n", encoding="utf-8"
+    )
+    with pytest.raises(ConfigError, match=r"build_timeout_seconds"):
+        load_config(tmp_path)
+
+
 def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
     config = override_config(
         load_config(
