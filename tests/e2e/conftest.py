@@ -37,6 +37,21 @@ _NEEDS_CARGO = pytest.mark.needs_cargo
 _NEEDS_NUITKA = pytest.mark.needs_nuitka
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    # Local ergonomics for the CI escalation: `pytest --e2e-strict` reproduces the
+    # `REXTIO_E2E_STRICT=1` behavior without exporting an env var.
+    parser.addoption(
+        "--e2e-strict",
+        action="store_true",
+        default=False,
+        help="Fail collection if a tests/e2e test is not toolchain-classified.",
+    )
+
+
+def _strict_mode(config: pytest.Config) -> bool:
+    return bool(os.environ.get("REXTIO_E2E_STRICT")) or config.getoption("--e2e-strict")
+
+
 def _classify(stem: str) -> str | None:
     """Return the required toolchain for a test file stem, or ``None``.
 
@@ -95,6 +110,9 @@ def pytest_collection_modifyitems(
             "Nuitka test with a `nuitka` segment, use the `fake_cargo` fixture, or "
             f"mark a pure-Python test `@pytest.mark.no_toolchain`. Unclassified:\n  {listing}"
         )
-        if os.environ.get("REXTIO_E2E_STRICT"):
-            raise pytest.UsageError(message)
+        if _strict_mode(config):
+            # `UsageError` is pytest's idiomatic "abort collection with a message"
+            # signal; prefix it so CI logs read as a deliberate strict-check
+            # failure rather than a generic pytest misuse.
+            raise pytest.UsageError(f"strict e2e toolchain check failed: {message}")
         warnings.warn(message, stacklevel=2)

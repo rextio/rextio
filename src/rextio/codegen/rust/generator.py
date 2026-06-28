@@ -63,7 +63,7 @@ class RustCodegenError(RuntimeError):
 
 # Order is fixed so emitted helpers are deterministic regardless of use order.
 _CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
-_CHECKED_HELPER_ORDER = ("add", "sub", "mul", "rem", "neg", "abs", "sum")
+_CHECKED_HELPER_ORDER = ("add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem")
 
 
 def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
@@ -80,12 +80,13 @@ def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
             return 'pyo3::exceptions::PyOverflowError::new_err("integer overflow")'
         return 'RextioError::new("integer overflow")'
 
-    def zero_div_err() -> str:
+    def zero_div_err(message: str) -> str:
         if mode == "pyo3":
-            return 'pyo3::exceptions::PyZeroDivisionError::new_err("integer modulo by zero")'
-        return 'RextioError::new("integer modulo by zero")'
+            return f'pyo3::exceptions::PyZeroDivisionError::new_err("{message}")'
+        return f'RextioError::new("{message}")'
 
     ret = "PyResult<i64>" if mode == "pyo3" else "Result<i64, RextioError>"
+    fret = "PyResult<f64>" if mode == "pyo3" else "Result<f64, RextioError>"
     lines: list[str] = []
     for name in _CHECKED_HELPER_ORDER:
         if name not in used:
@@ -106,13 +107,14 @@ def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
             # Rust's `checked_rem` is truncated (it takes the dividend's sign), so
             # `-7 % 3` is 2 in Python but -1 in Rust. Correct the sign when the
             # truncated remainder and the divisor differ in sign. `a % 0` is a
-            # ZeroDivisionError; `i64::MIN % -1` overflows the hardware op but the
-            # remainder is 0 (so `checked_rem` -> None -> 0 is correct there).
+            # ZeroDivisionError. `checked_rem` returns `None` only for the single
+            # overflowing case `i64::MIN % -1`, whose remainder is 0 in both
+            # Python and Rust, so `unwrap_or(0)` is exact there (not a catch-all).
             # `|r| < |b|`, so the `r + b` correction cannot overflow.
             lines.extend(
                 [
                     f"fn {fn}(a: i64, b: i64) -> {ret} {{",
-                    f"    if b == 0 {{ return Err({zero_div_err()}); }}",
+                    f'    if b == 0 {{ return Err({zero_div_err("integer modulo by zero")}); }}',
                     "    let r = a.checked_rem(b).unwrap_or(0);",
                     "    Ok(if r != 0 && (r ^ b) < 0 { r + b } else { r })",
                     "}",
@@ -146,6 +148,31 @@ def _checked_arith_helpers(used: set[str], mode: str) -> list[str]:
                     f"fn {fn}(xs: &[i64]) -> {ret} {{",
                     f"    xs.iter().copied().try_fold(0i64, |acc, x| "
                     f"acc.checked_add(x).ok_or_else(|| {overflow_err()}))",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "fdiv":
+            # Python raises ZeroDivisionError for `x / 0.0`; Rust returns inf/NaN.
+            lines.extend(
+                [
+                    f"fn {fn}(a: f64, b: f64) -> {fret} {{",
+                    f'    if b == 0.0 {{ return Err({zero_div_err("float division by zero")}); }}',
+                    "    Ok(a / b)",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "frem":
+            # Python raises ZeroDivisionError for `x % 0.0`, and float `%` is
+            # floored (the result takes the divisor's sign) like the integer case,
+            # whereas Rust `%` is truncated.
+            lines.extend(
+                [
+                    f"fn {fn}(a: f64, b: f64) -> {fret} {{",
+                    f'    if b == 0.0 {{ return Err({zero_div_err("float modulo by zero")}); }}',
+                    "    let r = a % b;",
+                    "    Ok(if r != 0.0 && (r < 0.0) != (b < 0.0) { r + b } else { r })",
                     "}",
                     "",
                 ]
@@ -728,6 +755,8 @@ class _FunctionRenderer:
             return self.render_set_comprehension(expr)
         if isinstance(expr, BinaryOpIR):
             checked = self.render_checked_int_binop(expr)
+            if checked is None:
+                checked = self.render_checked_float_binop(expr)
             if checked is not None:
                 return checked
             op = {"and": "&&", "or": "||"}.get(expr.op, expr.op)
@@ -1151,6 +1180,26 @@ class _FunctionRenderer:
         value = strip_wrapping_parens(self.render_expr(expr.value))
         self.used_helpers.add("neg")
         return f"__rextio_checked_neg({value})?"
+
+    def render_checked_float_binop(self, expr: BinaryOpIR) -> str | None:
+        """Render an f64 ``/`` or ``%`` with Python semantics, or ``None``.
+
+        Python raises ``ZeroDivisionError`` for float division/modulo by zero
+        (Rust returns inf/NaN), and float ``%`` is floored like the integer case
+        (Rust ``%`` is truncated). Route both through helpers so the divide-by-zero
+        is catchable and the modulo sign matches Python.
+        """
+        name = {"/": "fdiv", "%": "frem"}.get(expr.op)
+        if name is None:
+            return None
+        left_type = self.infer_expr_type(expr.left)
+        right_type = self.infer_expr_type(expr.right)
+        if not (isinstance(left_type, RxtFloat) and isinstance(right_type, RxtFloat)):
+            return None
+        left = strip_wrapping_parens(self.render_expr(expr.left))
+        right = strip_wrapping_parens(self.render_expr(expr.right))
+        self.used_helpers.add(name)
+        return f"__rextio_checked_{name}({left}, {right})?"
 
     def render_index_expr(self, expr: IndexIR) -> str:
         value_type = self.infer_expr_type(expr.value)

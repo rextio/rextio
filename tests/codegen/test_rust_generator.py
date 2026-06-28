@@ -837,6 +837,86 @@ def total(xs: list[int]) -> int:
     assert "try_fold(0i64, |acc, x| acc.checked_add(x)" in source
 
 
+def test_float_division_and_modulo_raise_zero_division(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def divide(a: float, b: float) -> float:
+    return a / b
+
+@rextio.native
+def modulo(a: float, b: float) -> float:
+    return a % b
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    # Python raises ZeroDivisionError for float `/0.0` and `%0.0` (Rust returns
+    # inf/NaN), and float `%` is floored like the integer case.
+    assert "return Ok(__rextio_checked_fdiv(a, b)?);" in source
+    assert "return Ok(__rextio_checked_frem(a, b)?);" in source
+    assert 'pyo3::exceptions::PyZeroDivisionError::new_err("float division by zero")' in source
+    assert 'pyo3::exceptions::PyZeroDivisionError::new_err("float modulo by zero")' in source
+    assert "Ok(if r != 0.0 && (r < 0.0) != (b < 0.0) { r + b } else { r })" in source
+
+
+def test_float_division_checked_in_crate_mode(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+def divide(a: float, b: float) -> float:
+    return a / b
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
+
+    assert "return Ok(__rextio_checked_fdiv(a, b)?);" in source
+    assert 'RextioError::new("float division by zero")' in source
+
+
+def test_int_min_max_are_overflow_safe(tmp_path: Path) -> None:
+    # `min`/`max` are comparison-only (no overflow), and their result still flows
+    # through the checked add when summed (council R5 regression pin).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def clamp_sum(a: int, b: int) -> int:
+    return min(a, b) + max(a, b)
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "__rextio_checked_add((a).min(b), (a).max(b))?" in source
+
+
+def test_augmented_assignment_with_sum_is_checked(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def fold(xs: list[int]) -> int:
+    acc = 0
+    acc += sum(xs)
+    return acc
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "acc = __rextio_checked_add(acc, __rextio_checked_sum(&xs)?)?;" in source
+
+
 def test_float_abs_and_sum_stay_unchecked(tmp_path: Path) -> None:
     # Floats saturate to inf rather than panicking, so the checked path is
     # int-only; float abs/sum keep the plain lowering.
