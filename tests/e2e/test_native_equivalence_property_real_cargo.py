@@ -83,8 +83,12 @@ def native_ops(tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
     def _drop_built_modules() -> None:
         # Remove every module this build introduced — the native extension and
         # any equiv_app submodule — so no stale entry can leak into another test.
+        # Match on whole module-path segments (exact name or a `name.` prefix) so
+        # an unrelated module such as `equiv_apple` is never collaterally dropped.
         for name in list(sys.modules):
-            if name == "_rextio_native" or name.startswith(("_rextio_native.", "equiv_app")):
+            if name in ("_rextio_native", "equiv_app") or name.startswith(
+                ("_rextio_native.", "equiv_app.")
+            ):
                 del sys.modules[name]
         importlib.invalidate_caches()
 
