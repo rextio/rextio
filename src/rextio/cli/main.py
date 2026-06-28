@@ -22,6 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("project_root", nargs="?", default=".", help="Project root to check.")
     check_parser.add_argument("--json", action="store_true", help="Print structured JSON.")
     check_parser.add_argument(
+        "--no-report",
+        action="store_true",
+        help="Do not write .rextio/reports/check.json (keep the command side-effect-free).",
+    )
+    check_parser.add_argument(
         "--native-backend",
         "--target-language",
         dest="native_backend",

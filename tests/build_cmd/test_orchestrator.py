@@ -575,7 +575,7 @@ def main() -> int:
     assert report["executable_build"]["status"] == "failed"
 
 
-def test_build_reports_native_build_failure_when_cargo_is_missing(
+def test_build_fails_fast_when_rust_toolchain_is_missing(
     tmp_path: Path,
     monkeypatch,
     capsys,
@@ -596,18 +596,53 @@ def add(a: int, b: int) -> int:
 
     captured = capsys.readouterr()
     build_report = tmp_path / ".rextio" / "reports" / "build.json"
-    data = json.loads(build_report.read_text(encoding="utf-8"))
 
+    # With no toolchain on PATH the build fails fast at the preflight check,
+    # before any analysis or codegen, with actionable install guidance.
     assert exit_code == 1
-    assert "RXT060 Build failed while compiling generated Rust module" in captured.out
-    assert data["status"] == "native-build-failed"
-    assert data["native_build"]["status"] == "failed"
-    assert data["wheel_build"]["status"] == "skipped"
-    assert data["wheel_build"]["path"] is None
+    assert "RXT060 Build prerequisites are missing" in captured.out
+    assert "Rust toolchain" in captured.out
+    assert not build_report.exists()
+
+
+def test_build_pure_python_project_succeeds_without_rust_toolchain(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("PATH", "")
+    # decorator-only discovery with no @rextio.native functions -> no native build.
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+def helper(x: int) -> int:
+    return x + 1
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython"])
+
+    capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+
+    # A pure-Python project still builds its CPython fallback artifact even with
+    # no Rust toolchain available; the native build is simply skipped.
+    assert exit_code == 0
+    assert report["native_build"]["status"] == "skipped"
 
 
 def test_build_uses_maturin_when_available(
     tmp_path: Path,
+    fake_cargo: Path,
     fake_maturin: Path,
     capsys,
 ) -> None:

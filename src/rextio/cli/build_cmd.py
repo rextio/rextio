@@ -7,6 +7,7 @@ from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import build_hybrid_artifact
+from rextio.build.preflight import format_missing_tools, missing_build_tools
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.fallback.nuitka import nuitka_available, nuitka_unavailable_message
@@ -96,6 +97,14 @@ def run(args: Namespace) -> int:
         print(f"Cause: Python parse errors were found under {project_root}.")
         print(f"Suggestion: run rextio check {project_root}")
         return 1
+
+    # Only require the native toolchain when there is actually native code to
+    # compile; a pure-Python project still builds its CPython fallback artifact.
+    if analysis.requires_native_build():
+        missing_tools = missing_build_tools(native_backend=target_plan.spec.language)
+        if missing_tools:
+            print(format_missing_tools(missing_tools))
+            return 1
 
     result = build_hybrid_artifact(
         project_root,

@@ -327,6 +327,8 @@ def _write_runtime_support(python_root: Path) -> None:
     rextio_root = python_root / "rextio"
     rextio_root.mkdir(parents=True, exist_ok=True)
     shutil.copy2(package_root / "__init__.py", rextio_root / "__init__.py")
+    # `__init__` imports the version from `__about__`, so it must travel with it.
+    shutil.copy2(package_root / "__about__.py", rextio_root / "__about__.py")
 
     runtime_destination = rextio_root / "runtime"
     if runtime_destination.exists():

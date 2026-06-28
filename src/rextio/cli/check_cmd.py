@@ -127,7 +127,8 @@ def run(args: Namespace) -> int:
         native_jit_enabled=config.jit.enabled,
         jit_hot_threshold=config.jit.hot_threshold,
     )
-    write_check_report(project_root, analysis)
+    if not getattr(args, "no_report", False):
+        write_check_report(project_root, analysis)
     if args.json:
         print(json.dumps(analysis.to_dict(), indent=2, sort_keys=True))
     else:

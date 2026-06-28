@@ -55,3 +55,40 @@ jobs:
         # The e2e suite requires a real Rust/Cargo toolchain and is run
         # separately; see mod-proposal P1-10 (e2e isolation).
         run: python -m pytest tests --ignore=tests/e2e -q
+
+  package:
+    name: Package (build + metadata + install smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install build tooling
+        run: python -m pip install build twine
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+      - name: Install the built wheel into a clean environment
+        run: |
+          python -m venv /tmp/rextio-wheel
+          /tmp/rextio-wheel/bin/python -m pip install dist/*.whl
+      - name: Install from the sdist into a clean environment
+        # Rebuilding from the sdist catches files missing from the source
+        # distribution (e.g. crate sources, templates) that a wheel install hides.
+        run: |
+          python -m venv /tmp/rextio-sdist
+          /tmp/rextio-sdist/bin/python -m pip install dist/*.tar.gz
+      - name: Smoke-test the installed console script (wheel + sdist)
+        run: |
+          work="$(mktemp -d)"
+          printf 'import rextio\n\n@rextio.native\ndef add(a: int, b: int) -> int:\n    return a + b\n' > "$work/app.py"
+          for env in /tmp/rextio-wheel /tmp/rextio-sdist; do
+            "$env/bin/rextio" --help
+            "$env/bin/python" -c "import rextio; print(rextio.__version__)"
+            # Exercise a real command end-to-end from each installed distribution.
+            "$env/bin/rextio" check "$work" --no-report
+          done

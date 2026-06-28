@@ -253,6 +253,21 @@ class ProjectAnalysis:
             key=lambda top_level: top_level.qualname,
         )
 
+    def requires_native_build(self) -> bool:
+        """Whether building this project produces a native artifact (needs cargo).
+
+        Single source of truth for "does this build need the Rust toolchain". It
+        mirrors the build plan's ``has_native_artifacts``: only an *accepted*
+        native function or top level produces a native module. JIT candidates are
+        deliberately excluded — a JIT helper is compiled into the native module
+        only when an accepted native function already exists (so it is covered),
+        and a project with JIT candidates but no accepted native produces no
+        native artifact and must still build its pure-Python fallback.
+        """
+        return bool(
+            self.accepted_native_functions or self.accepted_native_top_levels
+        )
+
     @property
     def rejected_native_top_levels(self) -> list[TopLevelAnalysis]:
         return sorted(

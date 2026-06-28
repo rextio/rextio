@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rextio"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Alpha hybrid build tooling for typed Python functions."
 readme = "PYPI.md"
 requires-python = ">=3.11"
@@ -35,6 +35,15 @@ Homepage = "https://github.com/rextio/rextio"
 test = [
   "pytest>=8.0",
 ]
+# Optional toolchains used by `rextio build`. Rextio shells out to these; they
+# are not Python runtime imports, so they stay optional and are surfaced by the
+# build preflight check when missing (see rextio.build.preflight).
+build = [
+  "maturin>=1.0",
+]
+nuitka = [
+  "nuitka>=2.0",
+]
 dev = [
   "pytest>=8.0",
   "ruff>=0.15",
@@ -43,6 +52,9 @@ dev = [
 
 [project.scripts]
 rextio = "rextio.cli.main:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "rextio.__about__.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
