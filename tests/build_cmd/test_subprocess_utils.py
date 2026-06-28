@@ -161,6 +161,7 @@ def test_run_build_tool_timeout_is_bounded_when_a_grandchild_escapes_the_group(
                 pass
 
 
+@pytest.mark.skipif(os.name != "posix", reason="reaps the captured child via POSIX os.kill/os.waitpid")
 def test_run_build_tool_forges_returncode_when_the_child_cannot_be_reaped(
     tmp_path, monkeypatch
 ) -> None:
@@ -196,8 +197,17 @@ def test_run_build_tool_forges_returncode_when_the_child_cannot_be_reaped(
         assert created and created[0].returncode == subprocess_utils.TIMEOUT_EXIT_CODE
         assert elapsed < 5, f"timeout path hung for {elapsed:.1f}s"
     finally:
-        # Reap directly: Popen.kill()/wait() would no-op on the forged returncode.
+        # `_drain_after_kill` was mocked to a no-op, so the production code never
+        # closed the captured pipes — close them here to avoid leaking FDs across
+        # repeated runs. Then reap the child directly: Popen.kill()/wait() would
+        # no-op on the forged returncode.
         for proc in created:
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
             try:
                 os.kill(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, OSError):
