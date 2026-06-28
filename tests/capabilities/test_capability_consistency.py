@@ -42,6 +42,31 @@ def test_every_dict_key_type_has_a_rust_mapping(name: str) -> None:
     assert rust_type(RxtDict(_rxt(name), RxtStr()))
 
 
+def test_registry_values_are_pinned() -> None:
+    # Snapshot the exact element sets so the consolidation refactor cannot have
+    # silently changed a set, and a future edit to the matrix is a deliberate,
+    # reviewable change rather than an accidental drift.
+    assert capabilities.SCALAR_TYPES == frozenset({"int", "float", "bool", "str", "bytes"})
+    assert capabilities.NUMERIC_TYPES == frozenset({"int", "float"})
+    assert capabilities.LIST_ITEM_TYPES == frozenset({"int", "float", "bool", "str"})
+    assert capabilities.DICT_KEY_TYPES == frozenset({"int", "bool", "str"})
+    assert capabilities.SET_ITEM_TYPES == frozenset({"int", "float", "bool", "str"})
+    assert capabilities.JSON_VALUE_TYPES == frozenset({"int", "float", "bool", "str", "bytes"})
+
+
+def test_capability_sets_are_immutable() -> None:
+    # The shared matrix must not be mutable, so a caller cannot corrupt it.
+    for value in (
+        capabilities.SCALAR_TYPES,
+        capabilities.NUMERIC_TYPES,
+        capabilities.LIST_ITEM_TYPES,
+        capabilities.DICT_KEY_TYPES,
+        capabilities.SET_ITEM_TYPES,
+        capabilities.JSON_VALUE_TYPES,
+    ):
+        assert isinstance(value, frozenset)
+
+
 def test_capability_subsets_are_coherent() -> None:
     # Numeric scalars are a subset of all scalars; list/dict/set item/key types
     # must themselves be supported scalar types (no container can hold a type the
