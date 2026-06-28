@@ -602,6 +602,49 @@ def caller(x: float) -> float:
     assert accepted == {"app.shim": True, "app.caller": True}
 
 
+def test_requires_native_build_ignores_jit_only_projects(tmp_path: Path) -> None:
+    # JIT enabled, decorator-only, with an unmarked scalar helper: the helper is a
+    # JIT *candidate* but not an accepted native function, so no native artifact is
+    # produced and the build must not demand the Rust toolchain.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+def helper(x: int) -> int:
+    return x * 2
+""",
+    )
+
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        native_jit_enabled=True,
+        jit_hot_threshold=2,
+    )
+
+    assert analysis.jit_candidates  # the helper is a JIT candidate
+    assert analysis.accepted_native_functions == []
+    assert analysis.requires_native_build() is False
+
+
+def test_requires_native_build_true_for_accepted_native(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert analysis.requires_native_build() is True
+
+
 def test_non_integer_list_index_is_rejected(tmp_path: Path) -> None:
     # Python requires int list indices; a float index is a TypeError, so Rextio
     # must reject it rather than silently truncate it to an int in native code.

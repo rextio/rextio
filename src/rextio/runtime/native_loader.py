@@ -41,7 +41,7 @@ def load_native_module(module_name: str) -> ModuleType | None:
     """
     try:
         spec = importlib.util.find_spec(module_name)
-    except (ImportError, ValueError):
+    except Exception:  # noqa: BLE001 - exotic meta-path finders can raise anything
         spec = None
     # An already-imported module (including test injections) counts as present.
     if spec is None and module_name not in sys.modules:

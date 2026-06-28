@@ -24,10 +24,11 @@ def test_absent_native_module_returns_none_silently(monkeypatch: pytest.MonkeyPa
 def test_broken_native_module_warns_instead_of_silently_swallowing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    def _broken(name: str) -> object:
+        raise ImportError("bad abi")
+
     monkeypatch.setattr(native_loader.importlib.util, "find_spec", lambda name: _spec())
-    monkeypatch.setattr(
-        native_loader, "import_module", lambda name: (_ for _ in ()).throw(ImportError("bad abi"))
-    )
+    monkeypatch.setattr(native_loader, "import_module", _broken)
     monkeypatch.delenv("REXTIO_DEBUG_NATIVE", raising=False)
     with pytest.warns(RuntimeWarning, match="failed to load"):
         assert native_loader.load_native_module("_rextio_native") is None
@@ -50,12 +51,11 @@ def test_missing_native_dependency_is_not_mistaken_for_absent(
 
 
 def test_debug_native_re_raises_the_underlying_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _broken(name: str) -> object:
+        raise ImportError("ABI mismatch")
+
     monkeypatch.setattr(native_loader.importlib.util, "find_spec", lambda name: _spec())
-    monkeypatch.setattr(
-        native_loader,
-        "import_module",
-        lambda name: (_ for _ in ()).throw(ImportError("ABI mismatch")),
-    )
+    monkeypatch.setattr(native_loader, "import_module", _broken)
     monkeypatch.setenv("REXTIO_DEBUG_NATIVE", "1")
     with pytest.raises(ImportError, match="ABI mismatch"):
         native_loader.load_native_module("_rextio_native")
