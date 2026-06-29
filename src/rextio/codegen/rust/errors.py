@@ -9,4 +9,6 @@ from __future__ import annotations
 
 
 class RustCodegenError(RuntimeError):
+    """Raised when Rust source cannot be generated from the IR."""
+
     pass

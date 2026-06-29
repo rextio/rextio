@@ -1,3 +1,5 @@
+"""Generation of the Python wrapper module that dispatches to native or fallback."""
+
 from __future__ import annotations
 
 import ast
@@ -17,6 +19,7 @@ def render_wrapper_module(
     module: ModuleAnalysis,
     boundary_fallback_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
 ) -> str:
+    """Render the Python wrapper module source that dispatches to native or fallback."""
     accepted = sorted(
         [
             function

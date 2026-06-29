@@ -1,3 +1,5 @@
+"""Mapping of Rextio types to their Rust representations."""
+
 from __future__ import annotations
 
 from rextio.ir.types import (
@@ -18,6 +20,7 @@ from rextio.ir.types import (
 
 
 def rust_type(rxt_type: RxtType) -> str:
+    """Return the Rust type string for a Rextio type."""
     if isinstance(rxt_type, RxtInt):
         return "i64"
     if isinstance(rxt_type, RxtFloat):

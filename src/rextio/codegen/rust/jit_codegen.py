@@ -12,6 +12,7 @@ from rextio.codegen.rust.errors import RustCodegenError
 from rextio.ir.nodes import BinaryOpIR, ExprIR, LiteralIR, NameIR, UnaryOpIR
 
 def jit_prelude() -> list[str]:
+    """Return the Rust prelude lines required by the JIT codegen."""
     return [
         "use cranelift_codegen::ir::{types, AbiParam};",
         "use cranelift_codegen::ir::InstBuilder;",
@@ -24,6 +25,7 @@ def jit_prelude() -> list[str]:
 
 
 def jit_pointer_type(return_type: str, param_count: int) -> str:
+    """Return the Rust function-pointer type for a JIT-compiled helper."""
     args = ", ".join(return_type for _index in range(param_count))
     return f"unsafe extern \"C\" fn({args}) -> {return_type}"
 
@@ -33,6 +35,7 @@ def render_cranelift_expr(
     params: dict[str, int],
     return_type: str,
 ) -> tuple[list[str], str]:
+    """Render a scalar expression into Cranelift IR-building Rust statements."""
     lines: list[str] = []
     temp_index = 0
 
