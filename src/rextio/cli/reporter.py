@@ -72,9 +72,7 @@ class Reporter:
         print(message, file=self._stdout)
 
     def warn(self, message: str) -> None:
-        """Warning to stderr (hidden in JSON mode to keep stdout parseable)."""
-        if self.json:
-            return
+        """Warning to stderr; always emitted (stderr never affects stdout JSON)."""
         print(message, file=self._stderr)
 
     def error(self, message: str) -> None:
@@ -82,13 +80,12 @@ class Reporter:
         print(message, file=self._stderr)
 
     def print_result(self, *, text: str, data: object) -> None:
-        """Emit a command's primary result to stdout.
+        """Emit a command's primary result to stdout (text, or JSON if requested).
 
-        JSON output is always emitted (machine consumers rely on it even under
-        ``--quiet``); the human-readable text summary is suppressed by ``--quiet``,
-        leaving just the process exit code.
+        The result is the point of the command, so it is emitted at every verbosity
+        — ``--quiet`` suppresses progress (``info``/``detail``), not the result.
         """
         if self.json:
             print(json.dumps(data, indent=2, sort_keys=True), file=self._stdout)
-        elif self.verbosity >= Verbosity.NORMAL:
+        else:
             print(text, file=self._stdout)
