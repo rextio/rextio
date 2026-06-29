@@ -65,6 +65,24 @@ from rextio.capabilities import (
 
 DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
 
+# Rust 2021 strict + reserved keywords. A Python parameter or local whose name is
+# one of these would be emitted verbatim as a Rust identifier (e.g. `let mut fn =
+# …`), which does not compile — Rextio's codegen does not mangle identifiers. Such
+# functions are kept on the safe Python fallback path (RXT011) instead of
+# generating uncompilable Rust.
+RUST_RESERVED_IDENTIFIERS = frozenset(
+    {
+        "as", "break", "const", "continue", "crate", "dyn", "else", "enum",
+        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
+        "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self",
+        "static", "struct", "super", "trait", "true", "type", "unsafe", "use",
+        "where", "while", "async", "await",
+        # Reserved for future use.
+        "abstract", "become", "box", "do", "final", "macro", "override", "priv",
+        "typeof", "unsized", "virtual", "yield", "try",
+    }
+)
+
 UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.AsyncFunctionDef,
     ast.ClassDef,
@@ -109,7 +127,63 @@ def validate_native_function(node: ast.FunctionDef, function: FunctionAnalysis) 
     _infer_missing_signature_from_context(node, function)
     _validate_signature(node, function)
     _validate_body(node, function)
+    _validate_identifiers(node, function)
     function.accepted = not function.error_diagnostics
+
+
+def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+    """Reject parameters/locals that cannot be lowered to a valid Rust identifier.
+
+    Local and parameter names are emitted verbatim as Rust identifiers, so a name
+    that is a Rust keyword (`fn`, `match`, `type`, …) or contains non-ASCII
+    characters would produce uncompilable Rust. Rextio does not mangle
+    identifiers, so such a function is kept on the Python fallback path with a
+    clear diagnostic rather than emitting broken Rust.
+    """
+    args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    if node.args.vararg is not None:
+        args.append(node.args.vararg)
+    if node.args.kwarg is not None:
+        args.append(node.args.kwarg)
+    # Parameters plus every binding (Store-context) name — assignment targets,
+    # for-loop targets, and walrus targets are all `ast.Name` with `ctx=Store`,
+    # which also covers every load site (a load only follows a binding).
+    candidates: list[tuple[str, ast.AST]] = [(arg.arg, arg) for arg in args]
+    candidates.extend(
+        (child.id, child)
+        for child in ast.walk(node)
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)
+    )
+    seen: set[str] = set()
+    for name, where in candidates:
+        if name in seen:
+            continue
+        seen.add(name)
+        if name in RUST_RESERVED_IDENTIFIERS:
+            message = f"identifier '{name}' collides with a Rust keyword and cannot be lowered"
+            suggestion = (
+                f"Rename the variable '{name}' (it is a Rust reserved word) or keep "
+                "this function on Python fallback."
+            )
+        elif not (name.isascii() and name.isidentifier()):
+            message = f"identifier '{name}' uses non-ASCII characters not supported in generated Rust"
+            suggestion = (
+                f"Use an ASCII name for '{name}' or keep this function on Python fallback."
+            )
+        else:
+            continue
+        function.add_diagnostic(
+            Diagnostic(
+                code="RXT011",
+                severity="error",
+                message=message,
+                file_path=function.file_path,
+                line=getattr(where, "lineno", function.line),
+                column=getattr(where, "col_offset", function.column),
+                function_name=function.qualname,
+                suggestion=suggestion,
+            )
+        )
 
 
 def _validate_decorators(node: ast.FunctionDef, function: FunctionAnalysis) -> None:

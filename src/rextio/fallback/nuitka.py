@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from rextio.fallback.build_result import FallbackBuildResult
-from rextio.build.subprocess_utils import run_build_tool
+from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 
 
 def nuitka_unavailable_message() -> str:
@@ -18,7 +18,11 @@ def nuitka_available() -> bool:
     return shutil.which("nuitka") is not None
 
 
-def build_nuitka_fallback(python_dir: Path) -> FallbackBuildResult:
+def build_nuitka_fallback(
+    python_dir: Path,
+    *,
+    timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+) -> FallbackBuildResult:
     nuitka = shutil.which("nuitka")
     if nuitka is None:
         return FallbackBuildResult(
@@ -48,7 +52,7 @@ def build_nuitka_fallback(python_dir: Path) -> FallbackBuildResult:
             "--remove-output",
         ]
         commands.append(command)
-        completed = run_build_tool(command, cwd=python_dir)
+        completed = run_build_tool(command, cwd=python_dir, timeout=timeout)
         stdout_parts.append(_tail(completed.stdout))
         stderr_parts.append(_tail(completed.stderr))
         if completed.returncode != 0:

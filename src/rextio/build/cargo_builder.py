@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
-from rextio.build.subprocess_utils import run_build_tool
+from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -37,7 +37,12 @@ def skipped_native_build(message: str) -> NativeBuildResult:
     return NativeBuildResult(status="skipped", tool=None, message=message)
 
 
-def build_native_extension_with_cargo(rust_dir: Path, python_dir: Path) -> NativeBuildResult:
+def build_native_extension_with_cargo(
+    rust_dir: Path,
+    python_dir: Path,
+    *,
+    timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+) -> NativeBuildResult:
     cargo = shutil.which("cargo")
     if cargo is None:
         return NativeBuildResult(
@@ -50,11 +55,11 @@ def build_native_extension_with_cargo(rust_dir: Path, python_dir: Path) -> Nativ
         )
 
     command = _cargo_build_command(cargo, rust_dir, offline=False)
-    completed = _run_cargo(command, rust_dir)
+    completed = _run_cargo(command, rust_dir, timeout=timeout)
     if completed.returncode != 0:
         if _should_retry_offline(completed.stderr):
             offline_command = _cargo_build_command(cargo, rust_dir, offline=True)
-            offline_completed = _run_cargo(offline_command, rust_dir)
+            offline_completed = _run_cargo(offline_command, rust_dir, timeout=timeout)
             if offline_completed.returncode == 0:
                 command = offline_command
                 completed = offline_completed
@@ -115,8 +120,13 @@ def _cargo_build_command(cargo: str, rust_dir: Path, *, offline: bool) -> list[s
     return command
 
 
-def _run_cargo(command: list[str], rust_dir: Path) -> subprocess.CompletedProcess[str]:
-    return run_build_tool(command, cwd=rust_dir)
+def _run_cargo(
+    command: list[str],
+    rust_dir: Path,
+    *,
+    timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    return run_build_tool(command, cwd=rust_dir, timeout=timeout)
 
 
 def _should_retry_offline(stderr: str) -> bool:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import math
 from collections.abc import Sequence
 
+from rextio.build.subprocess_utils import MAX_BUILD_TIMEOUT_SECONDS
 from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, generate_cmd, init_cmd
 
 
@@ -73,6 +75,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Python-to-native wrapper calls allowed before generated fallback is used. "
             "Overrides REXTIO_BOUNDARY_FALLBACK_THRESHOLD and [build] fallback_threshold. "
             "Use 0 to disable threshold fallback."
+        ),
+    )
+    build_parser_.add_argument(
+        "--build-timeout",
+        type=_positive_number,
+        default=None,
+        help=(
+            "Per-invocation timeout (seconds) for external build tools "
+            "(cargo/maturin/nuitka). Overrides REXTIO_BUILD_TIMEOUT and "
+            "[build] build_timeout_seconds."
         ),
     )
     build_parser_.add_argument(
@@ -209,6 +221,19 @@ def _non_negative_int(value: str) -> int:
         raise argparse.ArgumentTypeError("must be a non-negative integer") from exc
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return parsed
+
+
+def _positive_number(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a finite positive number") from exc
+    # `float()` accepts "inf"/"nan"; reject them so the timeout stays meaningful.
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite positive number")
+    if parsed > MAX_BUILD_TIMEOUT_SECONDS:
+        raise argparse.ArgumentTypeError(f"must be at most {MAX_BUILD_TIMEOUT_SECONDS:g} seconds")
     return parsed
 
 

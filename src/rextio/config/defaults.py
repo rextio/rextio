@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS
 from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
 
 
@@ -8,6 +9,7 @@ DEFAULT_CONFIG = {
         "native_backend": "rust",
         "fallback_backend": "cpython",
         "fallback_threshold": DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+        "build_timeout_seconds": DEFAULT_BUILD_TIMEOUT_SECONDS,
     },
     "rust": {
         "binding": "pyo3",

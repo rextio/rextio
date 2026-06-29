@@ -129,6 +129,76 @@ def add(x: int, y: int) -> int:
     assert "unsupported @rextio.native target" in diagnostic.message
 
 
+def test_rejects_rust_keyword_local_identifier(tmp_path: Path) -> None:
+    # A Python local named after a Rust keyword would be emitted as `let mut fn …`
+    # (uncompilable Rust); the function must fall back with RXT011 instead.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def f(xs: list[int]) -> int:
+    fn = 0
+    for x in xs:
+        fn = fn + x
+    return fn
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.f"]
+    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
+    assert diagnostic.code == "RXT011"
+    assert "Rust keyword" in diagnostic.message
+
+
+def test_rejects_rust_keyword_parameter_identifier(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def g(match: int) -> int:
+    return match + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.g"]
+    assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT011"
+
+
+def test_rejects_non_ascii_local_identifier(tmp_path: Path) -> None:
+    # A non-ASCII local name is emitted verbatim as a Rust identifier; rather than
+    # rely on cross-language identifier (XID/normalization) parity, keep the
+    # function on Python fallback with RXT011.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def last_positive(xs: list[int]) -> int:
+    out = [café for x in xs if (café := x) > 0]
+    return café
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.last_positive"]
+    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
+    assert diagnostic.code == "RXT011"
+    assert "non-ASCII" in diagnostic.message
+
+
 def test_rejects_invalid_native_marker_arguments(tmp_path: Path) -> None:
     write_module(
         tmp_path,

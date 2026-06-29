@@ -29,6 +29,7 @@ _CODES: tuple[DiagnosticCode, ...] = (
     DiagnosticCode("RXT002", "Unsupported argument type for native lowering"),
     DiagnosticCode("RXT003", "Unsupported or missing return type annotation"),
     DiagnosticCode("RXT010", "Unsupported syntax or invalid @rextio.native marker"),
+    DiagnosticCode("RXT011", "Identifier not representable in generated Rust"),
     DiagnosticCode("RXT020", "Unsupported dynamic Python feature"),
     DiagnosticCode("RXT030", "Unsupported external/boundary call"),
     DiagnosticCode("RXT050", "Native code generation failure"),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import shutil
-from rextio.build.subprocess_utils import run_build_tool
+from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,6 +36,8 @@ def build_importable_rust_crate(
     crate_dir: Path,
     dist_dir: Path,
     crate_name: str,
+    *,
+    timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> RustCrateBuildResult:
     cargo = shutil.which("cargo")
     if cargo is None:
@@ -48,7 +50,7 @@ def build_importable_rust_crate(
         )
 
     command = [cargo, "build", "--release", "--manifest-path", str(crate_dir / "Cargo.toml")]
-    completed = run_build_tool(command, cwd=crate_dir)
+    completed = run_build_tool(command, cwd=crate_dir, timeout=timeout)
     if completed.returncode != 0:
         return RustCrateBuildResult(
             status="failed",

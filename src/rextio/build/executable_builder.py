@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 import zipapp
-from rextio.build.subprocess_utils import run_build_tool
+from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -106,6 +106,8 @@ def build_nuitka_executable(
     entrypoint: str | None,
     executable_name: str | None = None,
     mode: str = "standalone",
+    *,
+    timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> ExecutableBuildResult:
     if entrypoint is None:
         return skipped_executable("No executable entrypoint was requested.")
@@ -164,7 +166,7 @@ def build_nuitka_executable(
         f"--output-filename={name}",
         "--remove-output",
     ]
-    completed = run_build_tool(command, cwd=python_dir)
+    completed = run_build_tool(command, cwd=python_dir, timeout=timeout)
     if completed.returncode != 0:
         return ExecutableBuildResult(
             status="failed",
