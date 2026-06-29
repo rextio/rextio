@@ -2575,3 +2575,29 @@ def caller(x: int) -> int:
     # Both fallback-only calls are reported at once, not just the first.
     codes = [diagnostic.code for diagnostic in rejected["app.caller"].error_diagnostics]
     assert codes == ["RXT070", "RXT070"]
+
+
+def test_rejects_except_star(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def grouped(xs: list[int]) -> int:
+    out = 0
+    try:
+        out = xs[0]
+    except* IndexError:
+        out = -1
+    return out
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.grouped",
+    }

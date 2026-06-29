@@ -90,6 +90,7 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.Global,
     ast.Nonlocal,
     ast.Match,
+    ast.TryStar,
     ast.FloorDiv,
     ast.Pow,
     ast.MatMult,
@@ -2395,6 +2396,8 @@ def _unsupported_message(node: ast.AST) -> str:
         return "imports inside native functions are not supported"
     if isinstance(node, (ast.With, ast.AsyncWith)):
         return "context managers are not supported in native functions"
+    if isinstance(node, ast.TryStar):
+        return "except* (exception groups) is not supported in native functions"
     if isinstance(node, ast.Try):
         return "exception handling is not supported in native functions"
     if isinstance(node, ast.Pass):
