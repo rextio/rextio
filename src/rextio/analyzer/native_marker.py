@@ -1,3 +1,5 @@
+"""Recognition of the @rextio.native / @rextio.exempt decorators on functions."""
+
 from __future__ import annotations
 
 import ast
@@ -8,15 +10,19 @@ from rextio.targets.models import SUPPORTED_TARGET_LANGUAGES, normalize_target_l
 
 @dataclass(frozen=True)
 class NativeMarker:
+    """The result of recognizing a native/exempt marker: its kind and optional target."""
+
     target_language: str | None = None
     error: str | None = None
 
     @property
     def valid(self) -> bool:
+        """Report whether the marker is well-formed."""
         return self.error is None
 
 
 def dotted_name(node: ast.AST) -> str | None:
+    """Return the dotted name of a Name/Attribute node, or None."""
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
@@ -28,6 +34,7 @@ def dotted_name(node: ast.AST) -> str | None:
 
 
 def parse_native_marker(node: ast.AST) -> NativeMarker | None:
+    """Parse a decorator AST node into a NativeMarker, or None if it is not one."""
     if isinstance(node, ast.Call):
         name = dotted_name(node.func)
     else:
@@ -62,6 +69,7 @@ def parse_native_marker(node: ast.AST) -> NativeMarker | None:
 
 
 def native_marker_for_function(node: ast.FunctionDef | ast.AsyncFunctionDef) -> NativeMarker | None:
+    """Return the native marker applied to a function, or None."""
     for decorator in node.decorator_list:
         marker = parse_native_marker(decorator)
         if marker is not None:
@@ -70,17 +78,21 @@ def native_marker_for_function(node: ast.FunctionDef | ast.AsyncFunctionDef) -> 
 
 
 def is_native_decorator(node: ast.AST) -> bool:
+    """Report whether the node is the @rextio.native decorator."""
     return parse_native_marker(node) is not None
 
 
 def is_exempt_decorator(node: ast.AST) -> bool:
+    """Report whether the node is the @rextio.exempt decorator."""
     name = dotted_name(node)
     return name in {"rextio.exempt", "exempt"}
 
 
 def has_native_marker(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Report whether the function carries an @rextio.native marker."""
     return native_marker_for_function(node) is not None
 
 
 def has_exempt_marker(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Report whether the function carries an @rextio.exempt marker."""
     return any(is_exempt_decorator(decorator) for decorator in node.decorator_list)

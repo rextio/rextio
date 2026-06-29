@@ -1,3 +1,5 @@
+"""Resolution of a raw call target to the concrete native function it refers to."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,12 +9,16 @@ from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, ProjectAnal
 
 @dataclass(frozen=True)
 class ResolvedCall:
+    """The resolution of a call target: the concrete function (if any) and how it was reached."""
+
     raw_target: str
     resolved_target: str
     function: FunctionAnalysis | None
 
 
 class FunctionResolver:
+    """Resolves raw call targets within a module to concrete native functions."""
+
     def __init__(self, analysis: ProjectAnalysis) -> None:
         self.functions_by_qualname = {
             function.qualname: function
@@ -21,6 +27,7 @@ class FunctionResolver:
         }
 
     def resolve(self, module: ModuleAnalysis, raw_target: str) -> ResolvedCall:
+        """Resolve a raw call target against the module's imports and functions."""
         local_target = _local_qualname(module, raw_target)
         if local_target is not None and local_target in self.functions_by_qualname:
             return ResolvedCall(raw_target, local_target, self.functions_by_qualname[local_target])

@@ -1,3 +1,12 @@
+"""Analyzer result models.
+
+The dataclasses the analyzer produces — per-function, per-top-level, per-module, and
+whole-project — plus the diagnostic-accumulation helpers and the derived views
+(accepted/rejected candidates, JIT candidates, aggregated diagnostics) the CLI and
+lowering consume. Every model serializes to a plain dict via ``to_dict`` for the
+``rextio check`` JSON report.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -8,12 +17,15 @@ from rextio.analyzer.diagnostics import Diagnostic
 
 @dataclass(frozen=True)
 class CallSite:
+    """A recorded call to another function, with its source location."""
+
     target: str
     line: int
     column: int
     in_loop: bool = False
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this call site."""
         return {
             "target": self.target,
             "line": self.line,
@@ -24,6 +36,8 @@ class CallSite:
 
 @dataclass(frozen=True)
 class ImportPolicyDecision:
+    """The resolved import policy for one imported name (how the boundary treats it)."""
+
     visible_name: str
     target: str
     package: str
@@ -34,6 +48,7 @@ class ImportPolicyDecision:
     reason: str = ""
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this decision."""
         return {
             "visible_name": self.visible_name,
             "target": self.target,
@@ -48,6 +63,8 @@ class ImportPolicyDecision:
 
 @dataclass
 class FunctionAnalysis:
+    """The analysis of a single candidate function: acceptance, types, and diagnostics."""
+
     name: str
     qualname: str
     module_name: str
@@ -79,13 +96,16 @@ class FunctionAnalysis:
 
     @property
     def error_diagnostics(self) -> list[Diagnostic]:
+        """The error-severity diagnostics attached to this function."""
         return [diagnostic for diagnostic in self.diagnostics if diagnostic.severity == "error"]
 
     @property
     def warning_diagnostics(self) -> list[Diagnostic]:
+        """The warning-severity diagnostics attached to this function."""
         return [diagnostic for diagnostic in self.diagnostics if diagnostic.severity == "warning"]
 
     def has_diagnostic(self, code: str, line: int | None = None, column: int | None = None) -> bool:
+        """Report whether a diagnostic with the given code (and optional location) exists."""
         for diagnostic in self.diagnostics:
             if diagnostic.code != code:
                 continue
@@ -97,11 +117,13 @@ class FunctionAnalysis:
         return False
 
     def add_diagnostic(self, diagnostic: Diagnostic) -> None:
+        """Append a diagnostic, de-duplicating on (code, line, column)."""
         if self.has_diagnostic(diagnostic.code, diagnostic.line, diagnostic.column):
             return
         self.diagnostics.append(diagnostic)
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this function analysis."""
         data: dict[str, object] = {
             "name": self.name,
             "qualname": self.qualname,
@@ -131,6 +153,8 @@ class FunctionAnalysis:
 
 @dataclass
 class TopLevelAnalysis:
+    """The analysis of a module's top-level native-initialization candidate."""
+
     name: str
     qualname: str
     module_name: str
@@ -145,9 +169,11 @@ class TopLevelAnalysis:
 
     @property
     def error_diagnostics(self) -> list[Diagnostic]:
+        """The error-severity diagnostics attached to this top level."""
         return [diagnostic for diagnostic in self.diagnostics if diagnostic.severity == "error"]
 
     def has_diagnostic(self, code: str, line: int | None = None, column: int | None = None) -> bool:
+        """Report whether a diagnostic with the given code (and optional location) exists."""
         for diagnostic in self.diagnostics:
             if diagnostic.code != code:
                 continue
@@ -159,11 +185,13 @@ class TopLevelAnalysis:
         return False
 
     def add_diagnostic(self, diagnostic: Diagnostic) -> None:
+        """Append a diagnostic, de-duplicating on (code, line, column)."""
         if self.has_diagnostic(diagnostic.code, diagnostic.line, diagnostic.column):
             return
         self.diagnostics.append(diagnostic)
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this top-level analysis."""
         return {
             "name": self.name,
             "qualname": self.qualname,
@@ -181,6 +209,8 @@ class TopLevelAnalysis:
 
 @dataclass
 class ModuleAnalysis:
+    """The analysis of one module file: its functions, imports, and top level."""
+
     module_name: str
     file_path: str
     functions: list[FunctionAnalysis] = field(default_factory=list)
@@ -192,9 +222,11 @@ class ModuleAnalysis:
 
     @property
     def functions_by_name(self) -> dict[str, FunctionAnalysis]:
+        """Map each function's local name to its analysis."""
         return {function.name: function for function in self.functions}
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this module analysis."""
         return {
             "module_name": self.module_name,
             "file_path": self.file_path,
@@ -209,11 +241,14 @@ class ModuleAnalysis:
 
 @dataclass
 class ProjectAnalysis:
+    """The analysis of a whole project: its modules and the derived candidate views."""
+
     project_root: Path
     modules: list[ModuleAnalysis] = field(default_factory=list)
 
     @property
     def native_candidates(self) -> list[FunctionAnalysis]:
+        """All native-candidate functions across modules, sorted by qualname."""
         return sorted(
             [function for module in self.modules for function in module.functions if function.is_native_candidate],
             key=lambda function: function.qualname,
@@ -221,6 +256,7 @@ class ProjectAnalysis:
 
     @property
     def accepted_native_functions(self) -> list[FunctionAnalysis]:
+        """The native candidates that were accepted for direct-Rust lowering."""
         return sorted(
             [function for function in self.native_candidates if function.accepted],
             key=lambda function: function.qualname,
@@ -228,6 +264,7 @@ class ProjectAnalysis:
 
     @property
     def rejected_native_functions(self) -> list[FunctionAnalysis]:
+        """The native candidates that were rejected (kept on Python fallback)."""
         return sorted(
             [function for function in self.native_candidates if not function.accepted],
             key=lambda function: function.qualname,
@@ -235,6 +272,7 @@ class ProjectAnalysis:
 
     @property
     def jit_candidates(self) -> list[FunctionAnalysis]:
+        """The functions eligible for the experimental native JIT."""
         return sorted(
             [
                 function
@@ -260,6 +298,7 @@ class ProjectAnalysis:
 
     @property
     def native_top_levels(self) -> list[TopLevelAnalysis]:
+        """All top-level native candidates across modules, sorted by qualname."""
         return sorted(
             [
                 module.top_level
@@ -271,6 +310,7 @@ class ProjectAnalysis:
 
     @property
     def accepted_native_top_levels(self) -> list[TopLevelAnalysis]:
+        """The top-level native candidates that were accepted."""
         return sorted(
             [top_level for top_level in self.native_top_levels if top_level.accepted],
             key=lambda top_level: top_level.qualname,
@@ -293,6 +333,7 @@ class ProjectAnalysis:
 
     @property
     def rejected_native_top_levels(self) -> list[TopLevelAnalysis]:
+        """The top-level native candidates that were rejected."""
         return sorted(
             [top_level for top_level in self.native_top_levels if not top_level.accepted],
             key=lambda top_level: top_level.qualname,
@@ -300,6 +341,7 @@ class ProjectAnalysis:
 
     @property
     def diagnostics(self) -> list[Diagnostic]:
+        """Every diagnostic across the project, ordered by source location and code."""
         diagnostics: list[Diagnostic] = []
         for module in self.modules:
             diagnostics.extend(module.diagnostics)
@@ -319,6 +361,7 @@ class ProjectAnalysis:
 
     @property
     def boundary_warnings(self) -> list[Diagnostic]:
+        """The native/fallback boundary warnings (RXT071/RXT073)."""
         return [
             diagnostic
             for diagnostic in self.diagnostics
@@ -327,15 +370,18 @@ class ProjectAnalysis:
 
     @property
     def has_error_diagnostics(self) -> bool:
+        """Report whether any diagnostic in the project is an error."""
         return any(diagnostic.severity == "error" for diagnostic in self.diagnostics)
 
     def module_for_function(self, function: FunctionAnalysis) -> ModuleAnalysis | None:
+        """Return the module owning the given function, or None."""
         for module in self.modules:
             if module.module_name == function.module_name:
                 return module
         return None
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of the whole project analysis."""
         return {
             "project_root": str(self.project_root),
             "modules": [module.to_dict() for module in self.modules],

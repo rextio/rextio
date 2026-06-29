@@ -1,3 +1,5 @@
+"""Helpers for reading and validating type annotations."""
+
 from __future__ import annotations
 
 import ast
@@ -18,6 +20,7 @@ SUPPORTED_SET_ITEMS = SET_ITEM_TYPES
 
 
 def annotation_name(node: ast.AST | None) -> str:
+    """Return the display name of a type annotation node."""
     if node is None:
         return "<missing>"
     display = _display_type(node)
@@ -27,6 +30,7 @@ def annotation_name(node: ast.AST | None) -> str:
 
 
 def is_supported_type(node: ast.AST | None) -> bool:
+    """Report whether an annotation denotes a supported native type."""
     return _display_type(node) is not None
 
 

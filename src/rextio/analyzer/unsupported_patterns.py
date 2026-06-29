@@ -1,3 +1,5 @@
+"""Validation of a function body against the supported subset."""
+
 from __future__ import annotations
 
 import ast
@@ -107,6 +109,7 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
 
 
 def validate_native_function(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+    """Validate a function body against the supported subset, attaching diagnostics."""
     _validate_decorators(node, function)
     _infer_missing_signature_from_context(node, function)
     _validate_signature(node, function)

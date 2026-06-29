@@ -1,3 +1,5 @@
+"""Project file discovery and the analyze_project entry point."""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -29,6 +31,7 @@ IGNORED_PARTS = {
 
 
 def scan_python_files(project_root: Path) -> list[Path]:
+    """Return the project's Python files, honoring .rextioignore."""
     root = project_root.resolve()
     ignore_patterns = load_rextioignore(root)
     files: list[Path] = []
@@ -41,6 +44,7 @@ def scan_python_files(project_root: Path) -> list[Path]:
 
 
 def load_rextioignore(project_root: Path) -> list[str]:
+    """Load the .rextioignore patterns for the project, if present."""
     path = project_root / ".rextioignore"
     if not path.exists():
         return []
@@ -84,6 +88,7 @@ def analyze_project(
     native_jit_enabled: bool = False,
     jit_hot_threshold: int = 25,
 ) -> ProjectAnalysis:
+    """Analyze a project directory and return its ProjectAnalysis."""
     root = Path(project_root).resolve()
     target_language = normalize_target_language(target_language)
     analysis = ProjectAnalysis(project_root=root)
