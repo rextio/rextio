@@ -787,6 +787,46 @@ def compute(crate: object) -> object:
     assert analysis.rejected_native_functions == []
 
 
+def test_marked_method_runtime_shim_validates_the_method_name(tmp_path: Path) -> None:
+    # The class-method RXT080 shim emits `fn {native_function_name(qualname)}(...)`
+    # just like the module-level shim, so a method whose name cannot be lowered to a
+    # Rust identifier (non-ASCII, all-underscore) must be rejected (RXT011) rather than
+    # silently mangled. A representable method name with an unrepresentable *parameter*
+    # name must still be accepted (the shim emits no parameter identifiers).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+class Widget:
+    @rextio.native
+    def café(self, x: object) -> object:
+        return getattr(x, "value")
+
+    @rextio.native
+    def _(self, x: object) -> object:
+        return getattr(x, "value")
+
+    @rextio.native
+    def compute(self, crate: object) -> object:
+        return getattr(crate, "value")
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    rejected = {
+        f.qualname: f.error_diagnostics[0].code
+        for f in analysis.rejected_native_functions
+        if f.error_diagnostics
+    }
+    assert "app.Widget.compute" in accepted
+    assert rejected.get("app.Widget.café") == "RXT011"
+    assert rejected.get("app.Widget._") == "RXT011"
+
+
 def test_auto_discovery_does_not_promote_dynamic_functions_to_runtime_shim(
     tmp_path: Path,
 ) -> None:

@@ -553,6 +553,15 @@ def _collect_native_methods(
                 imports=dict(module.imports),
                 logger_names=module.logger_names,
             )
+            # The class-method shim emits `fn {name}(py, args, kwargs)` like the
+            # module-level shim, so the method name must be representable in Rust;
+            # keep it on Python fallback when it is not (mirrors the validation in
+            # `_classify_native_function` / `_runtime_semantics_function`).
+            _validate_function_name(child, function)
+            if function.error_diagnostics:
+                function.accepted = False
+                functions.append(function)
+                continue
             _add_runtime_semantics_warning(function, child)
             functions.append(function)
     return functions
