@@ -4,6 +4,7 @@ import importlib
 import json
 import math
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,10 @@ def acos_f(x: float) -> float:
     assert report["native_build"]["status"] == "built"
 
     monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "build" / "python"))
+    # Evict any cached `_rextio_native` from a prior e2e so this build's module
+    # (not another test's) is the one imported and measured.
+    for cached in ("_rextio_native", "math_app", "math_app.ops"):
+        sys.modules.pop(cached, None)
     importlib.invalidate_caches()
     module = importlib.import_module("math_app.ops")
 

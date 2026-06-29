@@ -560,7 +560,7 @@ class _FunctionRenderer:
                 guard = (
                     f"Python::with_gil(|py| {err}.is_instance_of::<{pyo3_exception}>(py))"
                 )
-                keyword = "if" if position == 0 else "}} else if"
+                keyword = "if" if position == 0 else "} else if"
                 lines.append(f"{_indent(indent + 3)}{keyword} {guard} {{")
                 lines.extend(self.render_block(handler.body, indent + 4))
                 lines.append(f"{_indent(indent + 4)}Ok(())")
