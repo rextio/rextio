@@ -50,6 +50,16 @@ def test_print_result_text_mode() -> None:
     assert out.getvalue() == "human\n"
 
 
+def test_quiet_suppresses_text_result_but_not_json_result() -> None:
+    text_reporter, text_out, _ = _reporter(verbosity=Verbosity.QUIET)
+    text_reporter.print_result(text="human", data={"k": 1})
+    assert text_out.getvalue() == ""
+
+    json_reporter, json_out, _ = _reporter(verbosity=Verbosity.QUIET, output_format="json")
+    json_reporter.print_result(text="human", data={"k": 1})
+    assert json.loads(json_out.getvalue()) == {"k": 1}
+
+
 def test_print_result_json_mode_emits_only_json_on_stdout() -> None:
     reporter, out, err = _reporter(output_format="json")
     reporter.info("status")  # suppressed so stdout stays parseable

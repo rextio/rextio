@@ -82,8 +82,13 @@ class Reporter:
         print(message, file=self._stderr)
 
     def print_result(self, *, text: str, data: object) -> None:
-        """Emit a command's primary result to stdout (text, or JSON if requested)."""
+        """Emit a command's primary result to stdout.
+
+        JSON output is always emitted (machine consumers rely on it even under
+        ``--quiet``); the human-readable text summary is suppressed by ``--quiet``,
+        leaving just the process exit code.
+        """
         if self.json:
             print(json.dumps(data, indent=2, sort_keys=True), file=self._stdout)
-        else:
+        elif self.verbosity >= Verbosity.NORMAL:
             print(text, file=self._stdout)
