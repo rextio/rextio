@@ -82,8 +82,8 @@ branch = true
 show_missing = true
 # The native-build and codegen-emit paths are exercised by the real-cargo e2e
 # suite, which is excluded from the fast unit gate; the threshold leaves headroom
-# for that (fast-suite branch coverage is ~81%).
-fail_under = 78
+# for that (fast-suite branch coverage is ~82%).
+fail_under = 80
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
