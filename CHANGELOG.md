@@ -71,11 +71,13 @@ Initial public MVP for Rextio as a local hybrid build tool.
   terminates the whole process tree (POSIX process-group / Windows
   `CREATE_NEW_PROCESS_GROUP`), so child `rustc`/linker/`python` processes spawned
   by the tool are not left running.
-- A native candidate whose parameters or locals use a Rust keyword (`fn`,
-  `match`, `type`, …) or a non-ASCII name is now rejected with `RXT011` and kept
-  on the Python fallback path, instead of emitting an identifier that produces
-  uncompilable Rust. Rextio does not mangle identifiers, so the conservative
-  fallback keeps generated Rust always valid.
+- A native candidate's function name, parameters, and locals that collide with a
+  Rust keyword (`fn`, `match`, `type`, …) are now carried as raw identifiers
+  (`r#match`), so the function stays native instead of failing to compile. Only
+  the keywords a raw identifier cannot express (`crate`/`self`/`Self`/`super`) and
+  non-ASCII names are kept on the Python fallback path with `RXT011`. The
+  function's own name is validated too, closing a gap where a root-package
+  function named after a keyword emitted uncompilable Rust.
 - Added `SECURITY.md` (threat model + protections) and a `check-wheel-contents`
   packaging gate in CI.
 - Internal refactor (no behavior change): the two largest modules were split into
