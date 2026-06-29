@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import threading
 import warnings
 from collections.abc import Sequence
 
@@ -216,6 +217,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 _REXTIO_WARNING_FILTER_INSTALLED = False
+_REXTIO_WARNING_FILTER_LOCK = threading.Lock()
 
 
 def _install_deprecation_filter() -> None:
@@ -223,13 +225,15 @@ def _install_deprecation_filter() -> None:
     # deprecations (e.g. a plugin's legacy `rules` field) would never reach a CLI user.
     # Surface ours — they print to stderr — without unmuting third-party noise. The
     # module pattern is `rextio($|\.)` so it matches the `rextio` package and its
-    # submodules but NOT lookalikes like `rextio_extra`. Installed once so repeated
-    # in-process `main()` calls don't accumulate duplicate global filter entries.
+    # submodules but NOT lookalikes like `rextio_extra`. Installed once (lock-guarded so
+    # concurrent first calls can't both register) to avoid accumulating duplicate global
+    # filter entries across repeated in-process `main()` calls.
     global _REXTIO_WARNING_FILTER_INSTALLED
-    if _REXTIO_WARNING_FILTER_INSTALLED:
-        return
-    warnings.filterwarnings("default", category=DeprecationWarning, module=r"rextio($|\.)")
-    _REXTIO_WARNING_FILTER_INSTALLED = True
+    with _REXTIO_WARNING_FILTER_LOCK:
+        if _REXTIO_WARNING_FILTER_INSTALLED:
+            return
+        warnings.filterwarnings("default", category=DeprecationWarning, module=r"rextio($|\.)")
+        _REXTIO_WARNING_FILTER_INSTALLED = True
 
 
 def main(argv: Sequence[str] | None = None) -> int:
