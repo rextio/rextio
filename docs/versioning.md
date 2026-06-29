@@ -19,18 +19,20 @@ Every user-facing change — breaking or not — is recorded in
 
 ## What counts as a public contract
 
-Stability promises apply only to the **Stable** surface in
-[docs/stability.md](stability.md). Concretely, the public contract today is:
+Stability promises apply **only to the Stable tier** in
+[docs/stability.md](stability.md) — not to every flag, key, or code that happens to
+exist. Concretely, the public contract today is the Stable-tier surface:
 
-- the `rextio` CLI commands and their documented flags;
+- the Stable `rextio` CLI commands and their documented flags;
 - the `rextio.native` and `rextio.exempt` decorators;
-- the `rextio.toml` configuration keys;
-- the diagnostic codes (`RXTxxx`) and their meaning;
+- the `rextio.toml` configuration keys for Stable features;
+- the diagnostic codes (`RXTxxx`) emitted by Stable behavior, and their meaning;
 - which supported-subset constructs compile to native versus fall back to Python.
 
-Anything marked **Experimental** in the stability doc, and any underscore-prefixed
-or otherwise internal symbol, may change or be removed in any release without a
-deprecation period.
+Anything marked **Experimental** in the stability doc — including its flags
+(e.g. `--jit`, `--fallback=nuitka`), its config keys (e.g. `[jit]`), and its
+diagnostic codes (e.g. `RXT080`) — and any underscore-prefixed or otherwise internal
+symbol, may change or be removed in any release without a deprecation period.
 
 ## Deprecation
 

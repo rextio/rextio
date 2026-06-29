@@ -6,9 +6,10 @@ experimental (correct-but-incomplete, and free to change).
 
 Tiers:
 
-- **Stable** — part of the public contract. Changes are backward-compatible within a
-  `0.MINOR` line where possible, and breaking changes are called out in the
-  [changelog](../CHANGELOG.md).
+- **Stable** — part of the public contract, governed by the
+  [versioning policy](versioning.md): a breaking change to a Stable feature may still
+  land in a `0.MINOR` release (this is `0.x`), but it is deprecation-warned where
+  possible and always called out in the [changelog](../CHANGELOG.md).
 - **Experimental** — usable but incomplete; behavior, flags, and output may change in
   any release with no deprecation period. Most are off by default and opt-in.
 - **Planned** — recognized by config/validation but not implemented; using it is
@@ -18,13 +19,13 @@ Tiers:
 
 | Feature | Tier | Notes |
 | --- | --- | --- |
-| Direct-Rust codegen for the typed subset (PyO3) | Stable | Scalars, lists, simple control flow, indexing, native↔native calls. Anything outside the subset is rejected (`RXT0xx`) or kept on fallback. |
+| Direct-Rust codegen for the typed subset (PyO3) | Stable | Scalars, lists, simple control flow, indexing, native↔native calls. Anything outside the subset is rejected (`RXTxxx`) or kept on fallback. |
 | CPython fallback packaging + generated wrappers | Stable | Preserves Python semantics for everything not lowered to native. |
 | `@rextio.native` / `@rextio.exempt` decorators | Stable | Public API. See [versioning](versioning.md). |
 | `rextio.toml` configuration schema | Stable | Keys are part of the contract. |
 | Diagnostics (`RXTxxx` codes + messages) | Stable | Deterministic and tested; treated as a contract. |
-| Cargo build orchestration | Stable | Default Rust build path. |
-| Import policy (per-package fallback/analyze/try-native) | Stable | Decides how external packages are treated at the boundary. |
+| Native build orchestration (maturin / Cargo) | Stable | `maturin` is the default `[rust] build_tool`; if maturin is not installed Rextio automatically falls back to Cargo. `--rust-build-tool=cargo` selects Cargo directly. |
+| Import policy (per-package `fallback` / `analyze` / `try-native` / `plugin`) | Stable | Decides how external packages are treated at the boundary. |
 
 ## CLI
 
@@ -43,7 +44,6 @@ Tiers:
 | Native top-level module initialization | Experimental | `[policy] native_top_level`. Lowers a restricted subset of module-level code. |
 | Nuitka fallback / executable backend | Experimental | `--fallback=nuitka`, `--executable-backend=nuitka`. Requires Nuitka; surfaced by the build preflight when missing. |
 | Rust-importable crate artifact | Experimental | `--rust-importable` / `--rust-crate-name`. Exposes accepted direct-Rust functions as a Cargo path dependency. |
-| `maturin` build tool | Experimental | `--rust-build-tool=maturin`. Cargo is the default, stable path. |
 | Plugins | Experimental (metadata-only) | Entry-point plugins declare target compatibility and the external packages they cover; they do **not** inject codegen rules. |
 
 ## Planned (not implemented)
