@@ -1152,26 +1152,35 @@ class _FunctionRenderer:
         if expr.function == "math.e" and not expr.args:
             return "std::f64::consts::E"
         if expr.function in {
-            "math.acos",
-            "math.asin",
             "math.atan",
             "math.cos",
             "math.exp",
-            "math.log10",
-            "math.log2",
             "math.sin",
-            "math.sqrt",
             "math.tan",
         } and len(expr.args) == 1:
             method = expr.function.rsplit(".", 1)[1]
-            if method == "log":
-                method = "ln"
             return f"({self.render_expr(expr.args[0])}).{method}()"
+        if expr.function in {
+            "math.acos",
+            "math.asin",
+            "math.log10",
+            "math.log2",
+            "math.sqrt",
+        } and len(expr.args) == 1:
+            # Domain-error-prone: CPython raises ValueError outside the domain
+            # where raw Rust returns NaN. Guard the result so it raises instead.
+            method = expr.function.rsplit(".", 1)[1]
+            self.used_helpers.add("mdomain")
+            return f"__rextio_checked_mdomain(({self.render_expr(expr.args[0])}).{method}())?"
         if expr.function == "math.log":
+            self.used_helpers.add("mdomain")
             if len(expr.args) == 1:
-                return f"({self.render_expr(expr.args[0])}).ln()"
+                return f"__rextio_checked_mdomain(({self.render_expr(expr.args[0])}).ln())?"
             if len(expr.args) == 2:
-                return f"({self.render_expr(expr.args[0])}).log({self.render_expr(expr.args[1])})"
+                return (
+                    "__rextio_checked_mdomain("
+                    f"({self.render_expr(expr.args[0])}).log({self.render_expr(expr.args[1])}))?"
+                )
         if expr.function == "math.atan2" and len(expr.args) == 2:
             return f"({self.render_expr(expr.args[0])}).atan2({self.render_expr(expr.args[1])})"
         if expr.function in {"math.ceil", "math.floor", "math.trunc"} and len(expr.args) == 1:

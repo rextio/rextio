@@ -12,7 +12,7 @@ from __future__ import annotations
 # Order is fixed so emitted helpers are deterministic regardless of use order.
 _CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
 _CHECKED_HELPER_ORDER = (
-    "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i"
+    "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i", "mdomain"
 )
 
 
@@ -157,6 +157,25 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
                     "    Ok(if r == 0.0 { (0.0_f64).copysign(b) }",
                     "       else if (r < 0.0) != (b < 0.0) { r + b }",
                     "       else { r })",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "mdomain":
+            # Domain-error-prone math functions (sqrt, log/log2/log10, acos,
+            # asin) return NaN or -inf in Rust where CPython raises
+            # `ValueError: math domain error`. For these functions every valid
+            # finite input yields a finite result, so a non-finite result marks
+            # a domain error: raise ValueError to match Python instead of
+            # silently returning NaN/inf.
+            lines.extend(
+                [
+                    f"fn {fn}(value: f64) -> {fret} {{",
+                    "    if value.is_finite() {",
+                    "        Ok(value)",
+                    "    } else {",
+                    f'        Err({value_err("math domain error")})',
+                    "    }",
                     "}",
                     "",
                 ]

@@ -1337,3 +1337,30 @@ def at(xs: list[int], i: int) -> int:
         '.ok_or_else(|| RextioError::new("list index out of range"))? }'
     ) in source
     assert "pyo3" not in source
+
+
+def test_domain_error_prone_math_is_guarded(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+import math
+
+@rextio.native
+def root(x: float) -> float:
+    return math.sqrt(x)
+
+@rextio.native
+def logarithm(x: float) -> float:
+    return math.log(x)
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    # sqrt/log are wrapped so a non-finite result raises ValueError (math
+    # domain error) instead of silently returning NaN/inf like raw Rust.
+    assert "__rextio_checked_mdomain((x).sqrt())?" in source
+    assert "__rextio_checked_mdomain((x).ln())?" in source
+    assert "fn __rextio_checked_mdomain(value: f64)" in source
+    assert 'PyValueError::new_err("math domain error")' in source
