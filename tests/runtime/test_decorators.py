@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import functools
+
+import pytest
+
 import rextio
 
 
@@ -34,3 +38,87 @@ def test_native_decorator_keeps_bare_form() -> None:
     assert marked() == 1
     assert getattr(marked, "__rextio_native__") is True
     assert not hasattr(marked, "__rextio_native_target__")
+
+
+@pytest.mark.parametrize("target", ["mojo", "Julia", " RUST "])
+def test_native_decorator_accepts_supported_targets(target: str) -> None:
+    @rextio.native(target=target)
+    def helper() -> int:
+        return 1
+
+    assert getattr(helper, "__rextio_native_target__") == target.strip().lower()
+
+
+@pytest.mark.parametrize("target", ["cpp", "", "   ", "rsut"])
+def test_native_decorator_rejects_unsupported_target(target: str) -> None:
+    with pytest.raises(ValueError, match="not supported"):
+        rextio.native(target=target)
+
+
+def test_native_decorator_rejects_non_string_target() -> None:
+    with pytest.raises(TypeError, match="must be a string"):
+        rextio.native(target=123)  # type: ignore[arg-type]
+
+
+def test_native_decorator_rejects_classes() -> None:
+    with pytest.raises(TypeError, match="functions, not classes"):
+
+        @rextio.native
+        class Service:  # pragma: no cover - decoration raises
+            pass
+
+
+def test_native_decorator_rejects_non_callable() -> None:
+    with pytest.raises(TypeError, match="callables"):
+        rextio.native(42)  # type: ignore[arg-type]
+
+
+def test_exempt_decorator_rejects_classes() -> None:
+    with pytest.raises(TypeError, match="functions, not classes"):
+
+        @rextio.exempt
+        class Service:  # pragma: no cover - decoration raises
+            pass
+
+
+def test_exempt_decorator_rejects_non_callable() -> None:
+    with pytest.raises(TypeError, match="callables"):
+        rextio.exempt(42)  # type: ignore[arg-type]
+
+
+def test_native_decorator_rejects_descriptors_and_callable_instances() -> None:
+    # A staticmethod/classmethod descriptor or a callable instance is callable but is
+    # not a function; setattr would misfire on the wrapper, so they must be rejected.
+    with pytest.raises(TypeError, match="functions and methods"):
+        rextio.native(staticmethod(lambda: 1))  # type: ignore[arg-type]
+    # A classmethod descriptor is not even callable here, so it is rejected too.
+    with pytest.raises(TypeError):
+        rextio.native(classmethod(lambda cls: 1))  # type: ignore[arg-type]
+
+    class Callable:
+        def __call__(self) -> int:
+            return 1
+
+    with pytest.raises(TypeError, match="functions and methods"):
+        rextio.native(Callable())  # type: ignore[arg-type]
+
+    # A functools.partial is callable but not a function; rejecting it is intentional
+    # (the analyzer needs a real function object to read the marker off).
+    with pytest.raises(TypeError, match="functions and methods"):
+        rextio.native(functools.partial(lambda x: x, 1))  # type: ignore[arg-type]
+
+
+def test_native_decorator_rejection_message_hints_at_the_workaround() -> None:
+    # Assert on the stable, actionable token (the workaround keywords) rather than the
+    # full English phrasing, so the test survives wording polish.
+    with pytest.raises(TypeError, match=r"@staticmethod/@classmethod"):
+        rextio.native(staticmethod(lambda: 1))  # type: ignore[arg-type]
+
+
+def test_native_decorator_still_accepts_plain_functions_and_lambdas() -> None:
+    assert rextio.native(lambda x: x) is not None  # lambdas are functions
+
+    def helper() -> int:
+        return 1
+
+    assert getattr(rextio.native(helper), "__rextio_native__") is True

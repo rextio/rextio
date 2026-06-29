@@ -7,13 +7,21 @@ from rextio.targets.models import TargetSpec
 
 @dataclass(frozen=True)
 class RextioPlugin:
+    """A Rextio plugin is **metadata only**.
+
+    A plugin declares (a) target compatibility — source/target language, target
+    versions, and target build options, used by :meth:`matches` — and (b) the
+    external Python packages it covers (``packages``), which the analyzer uses to
+    resolve those packages to the ``plugin`` import policy. Plugins do **not** inject
+    codegen rules or otherwise alter lowering; that is intentionally out of scope.
+    """
+
     id: str
     name: str
     source_language: str = "python"
     target_language: str = "rust"
     target_versions: tuple[str, ...] = ()
     target_build_options: dict[str, str] = field(default_factory=dict)
-    rules: tuple[str, ...] = ()
     packages: tuple[str, ...] = ()
     source: str = "entry-point"
     package: str | None = None
@@ -54,7 +62,6 @@ class RextioPlugin:
             "target_language": self.target_language,
             "target_versions": list(self.target_versions),
             "target_build_options": dict(sorted(self.target_build_options.items())),
-            "rules": list(self.rules),
             "packages": list(self.packages),
             "source": self.source,
             "package": self.package,

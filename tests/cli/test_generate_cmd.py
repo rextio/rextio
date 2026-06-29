@@ -300,7 +300,8 @@ def add(a: int, b: int) -> int:
     assert exit_code == 1
     assert "target language: mojo" in captured.out
     assert "target version: 25.1" in captured.out
-    assert "no codegen backend is implemented" in captured.out
+    # The RXT050 codegen-failure diagnostic is routed to stderr.
+    assert "no codegen backend is implemented" in captured.err
     assert report["status"] == "codegen-failed"
     assert report["target"]["spec"]["language"] == "mojo"
     assert not report["target"]["spec"]["implemented"]

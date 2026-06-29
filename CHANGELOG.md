@@ -52,8 +52,19 @@ Initial public MVP for Rextio as a local hybrid build tool.
   crate usage.
 - Example projects for pure math, application-shell scoring, fallback safety, and boundary diagnostics.
 - Focused end-to-end tests for build/import/runtime behavior, real Cargo builds, generated wheels, and Nuitka when installed.
+- Global CLI output options on every command: `--format text|json`, and mutually
+  exclusive `-v/--verbose` and `-q/--quiet`. All commands now emit their result on
+  stdout (text or JSON) while diagnostics and configuration errors go to stderr, so
+  a `--format json` run produces clean machine-parseable stdout.
 
 ### Changed
+
+- `@rextio.native` now validates its `target` against the supported languages
+  (rust/mojo/julia) and both `@rextio.native`/`@rextio.exempt` reject classes and
+  non-callables, surfacing typos and misuse at decoration time instead of silently.
+- Plugins are now explicitly metadata-only: the unused `RextioPlugin.rules` field
+  (which never affected lowering) is removed; a legacy `rules` key from an older
+  plugin is accepted and ignored so installed plugins keep loading.
 
 - Generated `str` literals are now escaped into always-valid Rust (non-ASCII is
   emitted literally rather than as `\uXXXX`, which Rust rejects), fixing

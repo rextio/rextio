@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterable, Mapping
 from importlib import metadata
 from typing import Any
@@ -105,6 +106,14 @@ def _parse_plugin_metadata(
     source_language = _optional_string(data, "source_language", "python").lower()
     if source_language != "python":
         raise PluginError(f"unsupported plugin source_language for {plugin_id!r}: {source_language!r}")
+    if "rules" in data:
+        warnings.warn(
+            f"Rextio plugin {plugin_id!r} (entry-point group {ENTRY_POINT_GROUP!r}) "
+            "declares a 'rules' field, which is no longer used — plugins are "
+            "metadata-only. Remove 'rules' from the plugin's entry-point metadata.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     return RextioPlugin(
         id=plugin_id,
         name=_optional_string(data, "name", plugin_id),
@@ -112,7 +121,7 @@ def _parse_plugin_metadata(
         target_language=target_language,
         target_versions=_optional_string_tuple(data, "target_versions"),
         target_build_options=_optional_string_map(data, "target_build_options"),
-        rules=_optional_string_tuple(data, "rules"),
+        # Plugins are metadata-only; a legacy ``rules`` key is accepted but ignored.
         packages=_optional_string_tuple(data, "packages"),
         source=source,
         package=package,

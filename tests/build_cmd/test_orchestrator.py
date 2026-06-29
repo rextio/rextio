@@ -543,7 +543,7 @@ def main() -> int:
     )
 
     assert exit_code == 1
-    assert "Nuitka is not installed" in captured.out
+    assert "Nuitka is not installed" in captured.err
     assert report["status"] == "executable-build-failed"
     assert report["executable_build"]["backend"] == "nuitka"
 
@@ -570,7 +570,7 @@ def main() -> int:
 
     assert exit_code == 1
     assert "executable artifact: failed" in captured.out
-    assert "Use module:function" in captured.out
+    assert "Use module:function" in captured.err
     assert report["status"] == "executable-build-failed"
     assert report["executable_build"]["status"] == "failed"
 
@@ -600,8 +600,8 @@ def add(a: int, b: int) -> int:
     # With no toolchain on PATH the build fails fast at the preflight check,
     # before any analysis or codegen, with actionable install guidance.
     assert exit_code == 1
-    assert "RXT060 Build prerequisites are missing" in captured.out
-    assert "Rust toolchain" in captured.out
+    assert "RXT060 Build prerequisites are missing" in captured.err
+    assert "Rust toolchain" in captured.err
     assert not build_report.exists()
 
 
@@ -736,7 +736,7 @@ def add(a: int, b: int) -> int:
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "Nuitka fallback was requested, but Nuitka is not installed." in captured.out
+    assert "Nuitka fallback was requested, but Nuitka is not installed." in captured.err
 
 
 def test_build_fallback_argument_overrides_config(
@@ -793,8 +793,8 @@ fallback_backend = "unsupported"
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "RXT060 Build failed while loading configuration." in captured.out
-    assert "unsupported config value for [build].fallback_backend" in captured.out
+    assert "RXT060 Build failed while loading configuration." in captured.err
+    assert "unsupported config value for [build].fallback_backend" in captured.err
 
 
 def test_build_reports_unsupported_native_backend(
@@ -814,8 +814,8 @@ native_backend = "llvm"
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "RXT060 Build failed while loading configuration." in captured.out
-    assert "unsupported config value for [build].native_backend" in captured.out
+    assert "RXT060 Build failed while loading configuration." in captured.err
+    assert "unsupported config value for [build].native_backend" in captured.err
 
 
 def test_build_respects_boundary_warnings_policy(
@@ -880,9 +880,9 @@ def add(a: int, b: int) -> int:
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "RXT060 Build failed while preparing Nuitka fallback." in captured.out
-    assert "Nuitka fallback was requested, but Nuitka is not installed." in captured.out
-    assert "rextio build --fallback=cpython" in captured.out
+    assert "RXT060 Build failed while preparing Nuitka fallback." in captured.err
+    assert "Nuitka fallback was requested, but Nuitka is not installed." in captured.err
+    assert "rextio build --fallback=cpython" in captured.err
 
 
 def test_build_invokes_nuitka_when_requested_and_available(
@@ -952,7 +952,7 @@ def add(a: int, b: int) -> int:
     data = json.loads(build_report.read_text(encoding="utf-8"))
 
     assert exit_code == 1
-    assert "RXT050 Codegen failure" in captured.out
+    assert "RXT050 Codegen failure" in captured.err
     assert data["status"] == "codegen-failed"
     assert data["native_build"]["tool"] == "codegen"
     assert (python_dir / "app.py").exists()

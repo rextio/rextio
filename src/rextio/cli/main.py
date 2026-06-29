@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import math
+import threading
+import warnings
 from collections.abc import Sequence
 
 from rextio.limits import MAX_BUILD_TIMEOUT_SECONDS
@@ -18,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init", help="Create default Rextio project files.")
     init_parser.add_argument("--project-root", default=".", help="Project root to initialize.")
     init_parser.add_argument("--force", action="store_true", help="Overwrite existing files.")
+    _add_output_options(init_parser)
     init_parser.set_defaults(handler=init_cmd.run)
 
     check_parser = subparsers.add_parser("check", help="Analyze native candidates.")
@@ -43,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_import_options(check_parser)
     _add_jit_options(check_parser)
     _add_policy_options(check_parser)
+    _add_output_options(check_parser)
     check_parser.set_defaults(handler=check_cmd.run)
 
     build_parser_ = subparsers.add_parser("build", help="Build a hybrid artifact.")
@@ -138,6 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Nuitka executable mode. Overrides REXTIO_NUITKA_MODE and [executable] nuitka_mode.",
     )
     _add_policy_options(build_parser_)
+    _add_output_options(build_parser_)
     build_parser_.set_defaults(handler=build_cmd.run)
 
     generate_parser = subparsers.add_parser(
@@ -194,21 +199,57 @@ def build_parser() -> argparse.ArgumentParser:
         help="Nuitka fallback policy. Overrides REXTIO_NUITKA_FALLBACK and [fallback] nuitka.",
     )
     _add_policy_options(generate_parser)
+    _add_output_options(generate_parser)
     generate_parser.set_defaults(handler=generate_cmd.run)
 
     bench_parser = subparsers.add_parser("bench", help="Benchmark a specific function.")
     bench_parser.add_argument("target", help="Fully qualified function name.")
     bench_parser.add_argument("--project-root", default=".", help="Project root to benchmark.")
+    _add_output_options(bench_parser)
     bench_parser.set_defaults(handler=bench_cmd.run)
 
     clean_parser = subparsers.add_parser("clean", help="Remove generated Rextio artifacts.")
     clean_parser.add_argument("project_root", nargs="?", default=".", help="Project root to clean.")
+    _add_output_options(clean_parser)
     clean_parser.set_defaults(handler=clean_cmd.run)
 
     return parser
 
 
+_REXTIO_DEPRECATION_MODULE = r"rextio($|\.)"
+_REXTIO_WARNING_FILTER_LOCK = threading.Lock()
+
+
+def _rextio_deprecation_filter_present() -> bool:
+    # A filter's `module` element is usually a compiled pattern, but can be a plain
+    # string or None depending on how it was registered, so read its pattern defensively.
+    return any(
+        action == "default"
+        and category is DeprecationWarning
+        and getattr(module, "pattern", module) == _REXTIO_DEPRECATION_MODULE
+        for action, _message, category, module, _lineno in warnings.filters
+    )
+
+
+def _install_deprecation_filter() -> None:
+    # Python hides DeprecationWarning under default filters, so Rextio's own
+    # deprecations (e.g. a plugin's legacy `rules` field) would never reach a CLI user.
+    # Surface ours — they print to stderr — without unmuting third-party noise. The
+    # module pattern matches the `rextio` package and its submodules but NOT lookalikes
+    # like `rextio_extra`. Idempotent by *inspecting* `warnings.filters` (not a flag), so
+    # repeated `main()` calls don't accumulate duplicates AND the filter self-heals if it
+    # was torn down (e.g. by a surrounding `warnings.catch_warnings()`). Lock-guarded so
+    # concurrent first calls can't both register.
+    with _REXTIO_WARNING_FILTER_LOCK:
+        if _rextio_deprecation_filter_present():
+            return
+        warnings.filterwarnings(
+            "default", category=DeprecationWarning, module=_REXTIO_DEPRECATION_MODULE
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _install_deprecation_filter()
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.handler(args))
@@ -244,6 +285,28 @@ def _key_value(value: str) -> tuple[str, str]:
     if not key:
         raise argparse.ArgumentTypeError("must not use an empty key")
     return key, option_value
+
+
+def _add_output_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default=None,
+        help="Output format for the command result. Defaults to text.",
+    )
+    verbosity = parser.add_mutually_exclusive_group()
+    verbosity.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Emit extra progress detail on stdout.",
+    )
+    verbosity.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress progress output; keep the result and errors.",
+    )
 
 
 def _add_target_options(parser: argparse.ArgumentParser) -> None:

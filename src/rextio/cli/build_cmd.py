@@ -6,15 +6,17 @@ from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.build.orchestrator import build_hybrid_artifact
+from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
 from rextio.build.preflight import format_missing_tools, missing_build_tools
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
+from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.fallback.nuitka import nuitka_available, nuitka_unavailable_message
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
 def run(args: Namespace) -> int:
+    reporter = Reporter.from_args(args)
     project_root = Path(args.project_root).resolve()
     try:
         config = override_config(
@@ -50,20 +52,22 @@ def run(args: Namespace) -> int:
         )
         target_plan = create_target_plan(project_root, config)
     except (ConfigError, TargetPlanError) as exc:
-        print("RXT060 Build failed while loading configuration.")
-        print(f"Cause: {exc}")
-        print(f"Suggestion: fix {project_root / 'rextio.toml'} and rerun rextio build.")
+        reporter.error("RXT060 Build failed while loading configuration.")
+        reporter.error(f"Cause: {exc}")
+        reporter.error(f"Suggestion: fix {project_root / 'rextio.toml'} and rerun rextio build.")
         return 1
     fallback = config.build.fallback_backend
     if fallback not in {"cpython", "nuitka"}:
-        print("RXT060 Build failed while preparing fallback backend.")
-        print(f"Cause: unsupported fallback backend: {fallback}")
-        print('Suggestion: use fallback_backend = "cpython" or run rextio build --fallback=cpython')
+        reporter.error("RXT060 Build failed while preparing fallback backend.")
+        reporter.error(f"Cause: unsupported fallback backend: {fallback}")
+        reporter.error(
+            'Suggestion: use fallback_backend = "cpython" or run rextio build --fallback=cpython'
+        )
         return 1
 
     if fallback == "nuitka" and not nuitka_available():
-        print("RXT060 Build failed while preparing Nuitka fallback.")
-        print(nuitka_unavailable_message())
+        reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
+        reporter.error(nuitka_unavailable_message())
         return 1
 
     analysis = analyze_project(
@@ -94,9 +98,9 @@ def run(args: Namespace) -> int:
             + "\n",
             encoding="utf-8",
         )
-        print("RXT060 Build failed during project analysis.")
-        print(f"Cause: Python parse errors were found under {project_root}.")
-        print(f"Suggestion: run rextio check {project_root}")
+        reporter.error("RXT060 Build failed during project analysis.")
+        reporter.error(f"Cause: Python parse errors were found under {project_root}.")
+        reporter.error(f"Suggestion: run rextio check {project_root}")
         return 1
 
     # Only require the native toolchain when there is actually native code to
@@ -104,7 +108,7 @@ def run(args: Namespace) -> int:
     if analysis.requires_native_build():
         missing_tools = missing_build_tools(native_backend=target_plan.spec.language)
         if missing_tools:
-            print(format_missing_tools(missing_tools))
+            reporter.error(format_missing_tools(missing_tools))
             return 1
 
     result = build_hybrid_artifact(
@@ -124,60 +128,80 @@ def run(args: Namespace) -> int:
         jit_hot_threshold=config.jit.hot_threshold,
         build_timeout_seconds=config.build.build_timeout_seconds,
     )
-    print("Rextio build")
-    print(f"  target language: {target_plan.spec.language}")
+    lines = ["Rextio build", f"  target language: {target_plan.spec.language}"]
     if target_plan.spec.version:
-        print(f"  target version: {target_plan.spec.version}")
-    print(f"  active plugins: {len(target_plan.plugins.active)}")
-    print(f"  fallback: {fallback}")
-    print(f"  boundary fallback threshold: {config.build.fallback_threshold}")
-    print(f"  experimental JIT: {'enabled' if config.jit.enabled else 'disabled'}")
+        lines.append(f"  target version: {target_plan.spec.version}")
+    lines.append(f"  active plugins: {len(target_plan.plugins.active)}")
+    lines.append(f"  fallback: {fallback}")
+    lines.append(f"  boundary fallback threshold: {config.build.fallback_threshold}")
+    lines.append(f"  experimental JIT: {'enabled' if config.jit.enabled else 'disabled'}")
     if config.jit.enabled:
-        print(f"  JIT backend: {config.jit.backend}")
-        print(f"  JIT hot threshold: {config.jit.hot_threshold}")
-    print(f"  rust build tool: {config.rust.build_tool}")
-    print(f"  accepted native functions: {result.accepted_native_count}")
-    print(f"  rejected native functions: {result.rejected_native_count}")
-    print(f"  experimental JIT candidates: {len(result.plan.native.jit_functions)}")
+        lines.append(f"  JIT backend: {config.jit.backend}")
+        lines.append(f"  JIT hot threshold: {config.jit.hot_threshold}")
+    lines.append(f"  rust build tool: {config.rust.build_tool}")
+    lines.append(f"  accepted native functions: {result.accepted_native_count}")
+    lines.append(f"  rejected native functions: {result.rejected_native_count}")
+    lines.append(f"  experimental JIT candidates: {len(result.plan.native.jit_functions)}")
     if target_plan.spec.language == "rust":
-        print(f"  generated Rust project: {result.layout.rust_dir}")
+        lines.append(f"  generated Rust project: {result.layout.rust_dir}")
     else:
-        print(f"  generated native project: {result.layout.target_dir(target_plan.spec.language)}")
-    print(f"  generated Python package tree: {result.layout.python_dir}")
-    print(f"  build artifact: {result.layout.build_python_dir}")
-    print(f"  native build: {result.native_build.status}")
-    print(f"  rust importable crate: {result.rust_crate_build.status}")
-    print(f"  fallback packaging: {result.fallback_build.status}")
-    print(f"  executable artifact: {result.executable_build.status}")
+        lines.append(
+            f"  generated native project: {result.layout.target_dir(target_plan.spec.language)}"
+        )
+    lines.append(f"  generated Python package tree: {result.layout.python_dir}")
+    lines.append(f"  build artifact: {result.layout.build_python_dir}")
+    lines.append(f"  native build: {result.native_build.status}")
+    lines.append(f"  rust importable crate: {result.rust_crate_build.status}")
+    lines.append(f"  fallback packaging: {result.fallback_build.status}")
+    lines.append(f"  executable artifact: {result.executable_build.status}")
     if config.executable.entrypoint:
-        print(f"  executable backend: {config.executable.backend}")
+        lines.append(f"  executable backend: {config.executable.backend}")
     if result.native_build.installed_path:
-        print(f"  native module: {result.native_build.installed_path}")
+        lines.append(f"  native module: {result.native_build.installed_path}")
     if result.wheel_build.path:
-        print(f"  wheel artifact: {result.wheel_build.path}")
+        lines.append(f"  wheel artifact: {result.wheel_build.path}")
     if result.executable_build.path:
-        print(f"  executable: {result.executable_build.path}")
+        lines.append(f"  executable: {result.executable_build.path}")
     if result.rust_crate_build.crate_path:
-        print(f"  rust crate source artifact: {result.rust_crate_build.crate_path}")
+        lines.append(f"  rust crate source artifact: {result.rust_crate_build.crate_path}")
     if result.rust_crate_build.artifact_path:
-        print(f"  rust crate build artifact: {result.rust_crate_build.artifact_path}")
-    print(f"  wrote {result.layout.reports_dir / 'build.json'}")
-    if result.fallback_build.status == "failed":
-        print(result.fallback_build.message)
-        if result.fallback_build.stderr:
-            print(result.fallback_build.stderr)
-        return 1
-    if result.native_build.status == "failed":
-        print(result.native_build.message)
-        if result.native_build.stderr:
-            print(result.native_build.stderr)
-        return 1
-    if result.rust_crate_build.status == "failed":
-        print(result.rust_crate_build.message)
-        if result.rust_crate_build.stderr:
-            print(result.rust_crate_build.stderr)
-        return 1
-    if result.executable_build.status == "failed":
-        print(result.executable_build.message)
+        lines.append(f"  rust crate build artifact: {result.rust_crate_build.artifact_path}")
+    report_path = result.layout.reports_dir / "build.json"
+    lines.append(f"  wrote {report_path}")
+
+    failed_stage = _first_failed_stage(result)
+    data = {
+        "status": "failed" if failed_stage else "built",
+        "target_language": target_plan.spec.language,
+        "accepted_native_count": result.accepted_native_count,
+        "rejected_native_count": result.rejected_native_count,
+        "native_build": result.native_build.status,
+        "fallback_build": result.fallback_build.status,
+        "rust_crate_build": result.rust_crate_build.status,
+        "executable_build": result.executable_build.status,
+        "report": str(report_path),
+    }
+    reporter.print_result(text="\n".join(lines), data=data)
+
+    if failed_stage is not None:
+        message, stderr = failed_stage
+        reporter.error(message)
+        if stderr:
+            reporter.error(stderr)
         return 1
     return 0
+
+
+def _first_failed_stage(result: BuildResult) -> tuple[str, str | None] | None:
+    # Surface the first failed build stage as (message, stderr) for stderr reporting,
+    # preserving the original precedence. Every stage has `status`/`message`; only some
+    # carry a `stderr` field, hence the defensive getattr.
+    for stage in (
+        result.fallback_build,
+        result.native_build,
+        result.rust_crate_build,
+        result.executable_build,
+    ):
+        if stage.status == "failed":
+            return stage.message, getattr(stage, "stderr", None)
+    return None

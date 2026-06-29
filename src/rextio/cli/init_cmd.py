@@ -3,6 +3,7 @@ from __future__ import annotations
 from argparse import Namespace
 from pathlib import Path
 
+from rextio.cli.reporter import Reporter
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS
 
 # f-string so the timeout default tracks rextio.limits rather than drifting; the
@@ -91,6 +92,7 @@ def _write_file(path: Path, contents: str, force: bool) -> str:
 
 
 def run(args: Namespace) -> int:
+    reporter = Reporter.from_args(args)
     project_root = Path(args.project_root).resolve()
     project_root.mkdir(parents=True, exist_ok=True)
     messages = [
@@ -98,7 +100,6 @@ def run(args: Namespace) -> int:
         _write_file(project_root / "REXTIO.md", DEFAULT_REXTIO_MD, args.force),
         _write_file(project_root / ".rextioignore", DEFAULT_IGNORE, args.force),
     ]
-    print("Rextio init")
-    for message in messages:
-        print(f"  {message}")
+    text = "\n".join(["Rextio init", *(f"  {message}" for message in messages)])
+    reporter.print_result(text=text, data={"status": "initialized", "files": messages})
     return 0
