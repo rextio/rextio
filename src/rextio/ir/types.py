@@ -12,10 +12,14 @@ from dataclasses import dataclass
 
 
 class RxtType:
-    """Base class for every supported Rextio type."""
+    """Base class for every supported Rextio type.
+
+    Subclasses must override :meth:`display_name`; the base raises
+    ``NotImplementedError`` and ``to_dict`` relies on it.
+    """
 
     def display_name(self) -> str:
-        """Return the human-readable Python-style name of this type."""
+        """Return the human-readable Python-style name of this type (subclasses override)."""
         raise NotImplementedError
 
     def to_dict(self) -> dict[str, object]:
