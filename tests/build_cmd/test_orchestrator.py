@@ -152,7 +152,7 @@ def compute(x: float) -> float:
     assert report["rejected_native_count"] == 0
     assert report["jit_candidate_count"] == 1
     assert "cranelift-jit" in cargo_toml
-    assert "static app__helper_COMPILED" in lib_rs
+    assert "static __rextio_jit_app__helper_COMPILED" in lib_rs
     assert "if calls >= 2" in lib_rs
     assert "wrap_pyfunction!(app__compute" in lib_rs
     assert "wrap_pyfunction!(app__helper" not in lib_rs

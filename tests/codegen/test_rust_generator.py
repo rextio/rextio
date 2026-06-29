@@ -73,7 +73,7 @@ def compute(x: float) -> float:
 
     assert "use cranelift_jit::{JITBuilder, JITModule};" in source
     assert "fn app__helper(x: f64) -> PyResult<f64> {" in source
-    assert "static app__helper_COMPILED" in source
+    assert "static __rextio_jit_app__helper_COMPILED" in source
     assert "if calls >= 2" in source
     assert "return Ok(unsafe { compiled(x) });" in source
     assert "return Ok(app__helper(x.clone())? + 1.0);" in source
@@ -84,7 +84,9 @@ def compute(x: float) -> float:
 def test_jit_helper_with_a_rust_keyword_name_uses_escaped_and_plain_forms(tmp_path: Path) -> None:
     # A root-package JIT helper named after a Rust keyword emits `fn r#loop` (escaped
     # standalone name) but its derived type/static/compile identifiers use the plain
-    # base (`loop_JitFn`, `compile_loop`) — a raw prefix cannot appear mid-identifier.
+    # base under the `__rextio_jit_` namespace (`__rextio_jit_loop_JitFn`,
+    # `__rextio_jit_loop_compile`) — a raw prefix cannot appear mid-identifier and the
+    # namespace prevents collisions with user functions.
     (tmp_path / "__init__.py").write_text(
         """
 import rextio
@@ -105,9 +107,9 @@ def compute(x: float) -> float:
     source = generate_rust_module(lower_project(analysis, include_jit=True))
 
     assert "fn r#loop(" in source
-    assert "fn compile_loop()" in source
-    assert "type loop_JitFn" in source
-    assert "compile_r#" not in source
+    assert "fn __rextio_jit_loop_compile()" in source
+    assert "type __rextio_jit_loop_JitFn" in source
+    assert "__rextio_jit_r#" not in source
     assert "r#loop_JitFn" not in source
 
 
