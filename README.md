@@ -43,6 +43,10 @@ boundary threshold.
 REXTIO_DISABLE_NATIVE=1
 ```
 
+Set `REXTIO_DEBUG_NATIVE=1` to raise the full traceback (instead of warning and
+falling back) when a built native module fails to load — useful when debugging an
+ABI mismatch or a wrapper/codegen name mismatch.
+
 ## Quick Example
 
 Start with normal Python:

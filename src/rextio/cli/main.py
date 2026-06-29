@@ -35,7 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     check_parser = subparsers.add_parser("check", help="Analyze native candidates.")
     check_parser.add_argument("project_root", nargs="?", default=".", help="Project root to check.")
-    check_parser.add_argument("--json", action="store_true", help="Print structured JSON.")
+    check_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON (legacy alias of --format json).",
+    )
     check_parser.add_argument(
         "--no-report",
         action="store_true",
@@ -212,7 +216,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_options(generate_parser)
     generate_parser.set_defaults(handler=generate_cmd.run)
 
-    bench_parser = subparsers.add_parser("bench", help="Benchmark a specific function.")
+    bench_parser = subparsers.add_parser(
+        "bench",
+        help="Benchmark a specific function (auto-samples scalar / list[scalar] parameters).",
+    )
     bench_parser.add_argument("target", help="Fully qualified function name.")
     bench_parser.add_argument("--project-root", default=".", help="Project root to benchmark.")
     _add_output_options(bench_parser)

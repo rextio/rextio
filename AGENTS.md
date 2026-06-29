@@ -1353,6 +1353,10 @@ REXTIO_NATIVE_MODE=fallback
 REXTIO_NATIVE_MODE=auto
 ```
 
+`REXTIO_DEBUG_NATIVE=1` raises the full traceback (instead of warning and
+falling back) when a built native module fails to load — useful for debugging an
+ABI mismatch or a codegen/wrapper name mismatch.
+
 Default mode:
 
 ```text
