@@ -1287,8 +1287,9 @@ def alias_mutates(xs: list[int]) -> list[int]:
 
 @rextio.native
 def container_capture_mutates(xs: list[int]) -> list[list[int]]:
-    groups: list[list[int]] = [xs]
-    xs.append(1)
+    ys: list[int] = []
+    groups: list[list[int]] = [ys]
+    ys.append(1)
     return groups
 """,
     )
@@ -2628,3 +2629,54 @@ def totals(xs: list[int]) -> int:
     accepted = {f.qualname: f for f in analysis.accepted_native_functions}
     assert "app.totals" in accepted
     assert not accepted["app.totals"].native_runtime_semantics
+
+
+def test_rejects_parameter_collection_mutation(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def push(xs: list[int], v: int) -> int:
+    xs.append(v)
+    return len(xs)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    # Mutating a parameter list is not visible to the caller in native Rust
+    # (the parameter is cloned), so it must reject instead of silently dropping
+    # the side effect.
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.push",
+    }
+
+
+def test_rejects_loop_target_rebinding_existing_variable(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def rebind(n: int) -> int:
+    x = 0
+    for x in range(3):
+        n = n + x
+    return x
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    # A Python loop variable leaks its final value, but a Rust loop binding is
+    # scoped to the loop, so reusing an outer name would mis-compile.
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.rebind",
+    }

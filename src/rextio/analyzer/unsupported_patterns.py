@@ -503,6 +503,20 @@ def _validate_statement_types(
                 "for ... else is not supported in native functions",
             )
             return
+        rebound = sorted(_assignment_target_names(node.target) & set(env))
+        if rebound:
+            # A Python loop variable leaks past the loop (its final value is
+            # observable), but a Rust `for` binding is scoped to the loop and
+            # shadows the outer one, so reusing an existing name as the loop
+            # target would silently keep the outer value. Reject so the function
+            # stays on the Python fallback instead of mis-compiling.
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"loop target rebinds an existing variable ({', '.join(rebound)}); "
+                "use a fresh loop variable name in native functions",
+            )
+            return
         body_env = dict(env)
         if _is_enumerate_call(node.iter) or _is_zip_call(node.iter):
             item_types = _iter_unpack_types(node.iter, function, env)
@@ -669,6 +683,24 @@ def _block_bound_names(blocks: list[list[ast.stmt]]) -> set[str]:
 def _validate_mutable_ownership_patterns(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
     mutation_names = _mutated_collection_names(node)
     if not mutation_names:
+        return
+    parameter_names = {
+        arg.arg
+        for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+    }
+    mutated_parameters = sorted(parameter_names & mutation_names)
+    if mutated_parameters:
+        # Parameters are passed to the generated Rust by value (cloned), so an
+        # in-place mutation (`xs.append(...)`, `d[k] = v`) of a parameter is not
+        # visible to the caller — unlike CPython, where the caller's object is
+        # mutated. Reject so the function stays on the Python fallback instead of
+        # silently dropping the side effect.
+        _add_unsupported_syntax(
+            function,
+            node,
+            f"mutating a parameter collection ({', '.join(mutated_parameters)}) is not "
+            "supported in native functions (the caller would not see the change)",
+        )
         return
     env = _initial_type_env(node, function)
     _validate_mutable_ownership_in_statements(node.body, function, env, mutation_names)

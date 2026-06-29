@@ -632,7 +632,7 @@ def lower(x: float, y: float) -> int:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert "let mut total = (values).iter().cloned().sum();" in source
-    assert "(x).sqrt()" in source
+    assert "__rextio_checked_mnonneg(x)?.sqrt()" in source
     assert "(x).sin()" in source
     assert "(x).cos()" in source
     assert "(total).max((x).abs())" in source
