@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import inspect
 import os
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import GenericAlias
@@ -17,6 +19,7 @@ from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
 from rextio.config.loader import ConfigError, load_config
 from rextio.fallback.module_copy import fallback_module_name
+from rextio.runtime.boundary_fallback import DISABLE_ENV as DISABLE_BOUNDARY_FALLBACK_ENV
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
@@ -98,15 +101,20 @@ def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> Be
     fallback_func = _import_function(fallback_name, function.name)
     args = _sample_args(fallback_func)
     fallback_result = fallback_func(*args)
-    native_result = wrapper_func(*args)
-    if fallback_result != native_result:
-        raise BenchError(
-            f"native result did not match fallback result for {target}: "
-            f"{native_result!r} != {fallback_result!r}"
-        )
+    # Force the wrapper to stay on the native path while measuring it: otherwise
+    # the per-call boundary-fallback counter crosses its threshold mid-benchmark
+    # and the last timed calls silently run the Python fallback, understating the
+    # measured native speedup.
+    with _forced_native_dispatch():
+        native_result = wrapper_func(*args)
+        if fallback_result != native_result:
+            raise BenchError(
+                f"native result did not match fallback result for {target}: "
+                f"{native_result!r} != {fallback_result!r}"
+            )
+        native_ms = _time_call(wrapper_func, args, iterations)
 
     fallback_ms = _time_call(fallback_func, args, iterations)
-    native_ms = _time_call(wrapper_func, args, iterations)
     speedup = fallback_ms / native_ms if native_ms > 0 else float("inf")
     return BenchResult(
         target=target,
@@ -116,6 +124,24 @@ def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> Be
         iterations=iterations,
         build_result=build_result,
     )
+
+
+@contextlib.contextmanager
+def _forced_native_dispatch() -> Iterator[None]:
+    """Disable the boundary-fallback counter for the duration of the block.
+
+    Sets ``REXTIO_DISABLE_BOUNDARY_FALLBACK=1`` so the measured wrapper stays on
+    the native path regardless of call count, restoring the previous value after.
+    """
+    previous = os.environ.get(DISABLE_BOUNDARY_FALLBACK_ENV)
+    os.environ[DISABLE_BOUNDARY_FALLBACK_ENV] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(DISABLE_BOUNDARY_FALLBACK_ENV, None)
+        else:
+            os.environ[DISABLE_BOUNDARY_FALLBACK_ENV] = previous
 
 
 class BenchError(RuntimeError):
