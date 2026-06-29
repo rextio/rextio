@@ -45,3 +45,6 @@ def test_real_cargo_rust_keyword_identifiers_compile_and_run(
     module = importlib.import_module("kw_app.calc")
 
     assert module.combine(3, 4) == (3 + 4) * 2
+    # PyO3 exposes the `r#`-escaped parameters under their plain Python names, so a
+    # keyword-argument call must bind correctly too.
+    assert module.combine(match=3, type=4) == (3 + 4) * 2
