@@ -455,6 +455,13 @@ def _validate_statement_types(
         _validate_statement_list_types(node.orelse, function, dict(env), return_type)
         return
     if isinstance(node, ast.For):
+        if node.orelse:
+            _add_unsupported_syntax(
+                function,
+                node,
+                "for ... else is not supported in native functions",
+            )
+            return
         body_env = dict(env)
         if _is_enumerate_call(node.iter) or _is_zip_call(node.iter):
             item_types = _iter_unpack_types(node.iter, function, env)
@@ -472,9 +479,15 @@ def _validate_statement_types(
         _validate_statement_list_types(node.orelse, function, dict(env), return_type)
         return
     if isinstance(node, ast.While):
+        if node.orelse:
+            _add_unsupported_syntax(
+                function,
+                node,
+                "while ... else is not supported in native functions",
+            )
+            return
         _infer_expr_type(node.test, function, env)
         _validate_statement_list_types(node.body, function, dict(env), return_type)
-        _validate_statement_list_types(node.orelse, function, dict(env), return_type)
 
 
 def _validate_statement_list_types(

@@ -2221,3 +2221,55 @@ def ignored(x):
         "app.accepted"
     ]
     assert analysis.diagnostics == []
+
+
+def test_rejects_for_else(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def for_else(xs: list[int]) -> int:
+    total = 0
+    for x in xs:
+        total = total + x
+    else:
+        total = total + 100
+    return total
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.for_else",
+    }
+
+
+def test_rejects_while_else(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def while_else(n: int) -> int:
+    i = 0
+    while i < n:
+        i = i + 1
+    else:
+        i = i + 500
+    return i
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.while_else",
+    }
