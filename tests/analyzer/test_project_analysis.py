@@ -760,6 +760,33 @@ async def super(x: int) -> int:
     )
 
 
+def test_runtime_shim_promotes_dynamic_function_with_unrepresentable_param_name(
+    tmp_path: Path,
+) -> None:
+    # The shim signature is the generic `(py, args, kwargs)` and emits no parameter
+    # identifiers, so a dynamic function with a representable *name* but an
+    # unrepresentable *parameter* name (a non-raw-able keyword) must still be promoted
+    # to the shim rather than over-rejected onto Python fallback — mirroring the async
+    # path, which only validates the function name.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def compute(crate: object) -> object:
+    return getattr(crate, "value")
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [f.qualname for f in analysis.accepted_native_functions] == ["app.compute"]
+    assert analysis.accepted_native_functions[0].native_runtime_semantics is True
+    assert analysis.rejected_native_functions == []
+
+
 def test_auto_discovery_does_not_promote_dynamic_functions_to_runtime_shim(
     tmp_path: Path,
 ) -> None:

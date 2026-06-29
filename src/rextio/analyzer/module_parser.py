@@ -331,18 +331,19 @@ def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis)
     if probe.accepted:
         function.accepted = True
         return
-    # The runtime shim still emits `fn {name}`, so an unrepresentable function name
-    # (RXT011) cannot be carried by the shim either — keep it on Python fallback
-    # instead of promoting it and emitting uncompilable Rust.
-    identifier_diagnostics = [d for d in probe.diagnostics if d.code == "RXT011"]
-    if identifier_diagnostics:
-        for diagnostic in identifier_diagnostics:
-            function.add_diagnostic(diagnostic)
-        function.accepted = False
-        return
     if not _requires_runtime_semantics(node):
         for diagnostic in probe.diagnostics:
             function.add_diagnostic(diagnostic)
+        function.accepted = False
+        return
+    # Promotion to the RXT080 runtime shim: the shim emits only `fn {name}` (its
+    # signature is the generic `(py, args, kwargs)` and the body is a runtime call),
+    # so parameter/local identifiers the probe flagged with RXT011 are irrelevant —
+    # only the function name itself must be representable. Validate just the name
+    # (mirrors the async path in `_runtime_semantics_function`); keep it on Python
+    # fallback when the name cannot be lowered, otherwise promote.
+    _validate_function_name(node, function)
+    if function.error_diagnostics:
         function.accepted = False
         return
     function.native_runtime_semantics = True
