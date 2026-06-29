@@ -353,10 +353,11 @@ Default `rextio.toml`:
 native_backend = "rust"
 fallback_backend = "cpython"
 fallback_threshold = 1000
+build_timeout_seconds = 600
 
 [rust]
 binding = "pyo3"
-build_tool = "maturin"
+build_tool = "cargo"
 importable = false
 crate_name = "rextio_generated_rust"
 
@@ -499,6 +500,7 @@ REXTIO_JIT_BACKEND
 REXTIO_JIT_HOT_THRESHOLD
 REXTIO_FALLBACK_BACKEND
 REXTIO_BOUNDARY_FALLBACK_THRESHOLD
+REXTIO_BUILD_TIMEOUT
 REXTIO_RUST_BINDING
 REXTIO_RUST_BUILD_TOOL
 REXTIO_RUST_IMPORTABLE

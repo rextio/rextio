@@ -226,6 +226,13 @@ Native functions may call:
   `hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`, and
   `json.dumps/json.loads` patterns
 
+> **Known limitation (0.1.0 alpha):** `json.dumps` is lowered through
+> `serde_json::to_string`, whose compact output differs from CPython's default
+> separators (`", "` / `": "`). `datetime`/`time` formatting and `timestamp`
+> behaviour are likewise not guaranteed byte-for-byte identical to CPython. If
+> you depend on exact output formatting, keep those functions on the Python
+> fallback for now.
+
 When a direct-Rust native function calls a runtime-backed native function,
 Rextio promotes the caller to the runtime shim path and emits `RXT080`.
 
