@@ -75,6 +75,7 @@ def _signature_types(
             arg_types[arg.arg] = function.inferred_arg_types[arg.arg]
         else:
             return None
+    return_type: str | None
     if node.returns is not None:
         return_type = annotation_name(node.returns)
     else:

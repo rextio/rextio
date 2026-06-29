@@ -129,7 +129,7 @@ def _expr_calls(expr: ExprIR, functions: dict[str, FunctionIR]) -> set[str]:
     if isinstance(expr, IndexIR):
         return _expr_calls(expr.value, functions) | _expr_calls(expr.index, functions)
     if isinstance(expr, ListIR):
-        calls: set[str] = set()
+        calls = set[str]()
         for item in expr.items:
             calls.update(_expr_calls(item, functions))
         return calls
@@ -141,12 +141,12 @@ def _expr_calls(expr: ExprIR, functions: dict[str, FunctionIR]) -> set[str]:
                 calls.update(_expr_calls(condition, functions))
         return calls
     if isinstance(expr, TupleIR):
-        calls: set[str] = set()
+        calls = set[str]()
         for item in expr.items:
             calls.update(_expr_calls(item, functions))
         return calls
     if isinstance(expr, DictIR):
-        calls: set[str] = set()
+        calls = set[str]()
         for key, value in expr.items:
             calls.update(_expr_calls(key, functions))
             calls.update(_expr_calls(value, functions))
@@ -159,7 +159,7 @@ def _expr_calls(expr: ExprIR, functions: dict[str, FunctionIR]) -> set[str]:
                 calls.update(_expr_calls(condition, functions))
         return calls
     if isinstance(expr, SetIR):
-        calls: set[str] = set()
+        calls = set[str]()
         for item in expr.items:
             calls.update(_expr_calls(item, functions))
         return calls

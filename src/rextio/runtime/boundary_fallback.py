@@ -24,7 +24,7 @@ _STATE = _BoundaryFallbackState()
 def boundary_fallback_threshold(default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD) -> int:
     """Return the effective boundary-fallback threshold."""
     raw_value = os.environ.get(THRESHOLD_ENV)
-    if raw_value in {None, ""}:
+    if raw_value is None or raw_value == "":
         return _valid_default_threshold(default_threshold)
     try:
         value = int(raw_value)

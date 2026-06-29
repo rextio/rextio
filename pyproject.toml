@@ -142,14 +142,10 @@ module = [
   # Pure move out of unsupported_patterns (P0-5 decomposition); inherits the same
   # pre-existing loose AST typing, so it stays in the type-debt ratchet.
   "rextio.analyzer.type_predicates",
-  "rextio.analyzer.jit",
   "rextio.config.loader",
   "rextio.codegen.rust.generator",
   "rextio.ir.nodes",
   "rextio.ir.lowering",
-  "rextio.ir.module",
-  "rextio.runtime.boundary_fallback",
-  "rextio.plugins.loader",
   "rextio",
 ]
 ignore_errors = true
