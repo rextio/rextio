@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS
+from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS
 from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
 
 

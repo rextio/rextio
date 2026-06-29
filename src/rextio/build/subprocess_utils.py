@@ -28,18 +28,17 @@ import signal
 import subprocess
 from pathlib import Path
 
-# Generous upper bound: a real cargo/maturin/nuitka build can take minutes, but
-# should never run for ten minutes in CI or a developer loop without something
-# being wrong.
-DEFAULT_BUILD_TIMEOUT_SECONDS = 600
+# Re-exported here so the builders that already import them from this module keep
+# working; the source of truth is the dependency-free ``rextio.limits`` so the
+# config layer can validate against them without depending on the build layer.
+from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
 
-# A finite but absurd timeout (e.g. 1e100) both effectively disables the bound and
-# overflows the timeout plumbing: POSIX `select` raises `OverflowError: timestamp
-# too large to convert to C PyTime_t`, and Windows `WaitForSingleObject` takes
-# milliseconds as a `DWORD` (max ~4.29e9 ms ≈ 49.7 days). 7 days is comfortably
-# below the Windows millisecond limit yet far past any sane build, so it is a
-# cross-platform-safe ceiling; beyond it, a build timeout is a config mistake.
-MAX_BUILD_TIMEOUT_SECONDS = 604_800  # 7 days
+__all__ = [
+    "DEFAULT_BUILD_TIMEOUT_SECONDS",
+    "MAX_BUILD_TIMEOUT_SECONDS",
+    "TIMEOUT_EXIT_CODE",
+    "run_build_tool",
+]
 
 # Conventional exit code for "terminated by timeout" (matches GNU `timeout(1)`),
 # used for the synthetic CompletedProcess returned on timeout.

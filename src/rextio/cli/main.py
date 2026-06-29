@@ -4,7 +4,7 @@ import argparse
 import math
 from collections.abc import Sequence
 
-from rextio.build.subprocess_utils import MAX_BUILD_TIMEOUT_SECONDS
+from rextio.limits import MAX_BUILD_TIMEOUT_SECONDS
 from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, generate_cmd, init_cmd
 
 

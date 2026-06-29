@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
-from rextio.build.subprocess_utils import MAX_BUILD_TIMEOUT_SECONDS
+from rextio.limits import MAX_BUILD_TIMEOUT_SECONDS
 from rextio.config.defaults import DEFAULT_CONFIG
 from rextio.config.schema import (
     BuildConfig,
