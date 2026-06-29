@@ -15,7 +15,7 @@ DEFAULT_CONFIG = {
     },
     "rust": {
         "binding": "pyo3",
-        "build_tool": "maturin",
+        "build_tool": "cargo",
         "importable": False,
         "crate_name": "rextio_generated_rust",
     },

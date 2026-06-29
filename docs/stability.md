@@ -24,7 +24,7 @@ Tiers:
 | `@rextio.native` / `@rextio.exempt` decorators | Stable | Public API. See [versioning](versioning.md). |
 | `rextio.toml` configuration schema | Stable | Keys are part of the contract. |
 | Diagnostics (`RXTxxx` codes + messages) | Stable | Deterministic and tested; treated as a contract. |
-| Native build orchestration (maturin / Cargo) | Stable | `maturin` is the default `[rust] build_tool`; if maturin is not installed Rextio automatically falls back to Cargo. `--rust-build-tool=cargo` selects Cargo directly. |
+| Native build orchestration (maturin / Cargo) | Stable | `cargo` is the default `[rust] build_tool` (always available). Set `--rust-build-tool=maturin` (or `[rust] build_tool = "maturin"`, requires the optional `rextio[build]` dependency) to build wheels with maturin; if maturin is selected but not installed Rextio automatically falls back to Cargo. |
 | Import policy (per-package `fallback` / `analyze` / `try-native` / `plugin`) | Stable | Decides how external packages are treated at the boundary. |
 
 ## CLI

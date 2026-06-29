@@ -20,7 +20,9 @@ build_timeout_seconds = {DEFAULT_BUILD_TIMEOUT_SECONDS}
 
 [rust]
 binding = "pyo3"
-build_tool = "maturin"
+# "cargo" (always available) is the default; set to "maturin" to build wheels
+# with maturin (requires the optional `rextio[build]` dependency).
+build_tool = "cargo"
 importable = false
 crate_name = "rextio_generated_rust"
 
