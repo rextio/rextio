@@ -373,6 +373,17 @@ class ProjectAnalysis:
         """Report whether any diagnostic in the project is an error."""
         return any(diagnostic.severity == "error" for diagnostic in self.diagnostics)
 
+    @property
+    def has_parse_errors(self) -> bool:
+        """Report whether any candidate module failed to parse (RXT000).
+
+        A parse error means a candidate could not even be analyzed, which is a
+        genuine failure. A subset *rejection* (RXT010, boundary codes, ...) is an
+        expected outcome — the function simply stays on the Python fallback — so
+        it is not treated as a failure by ``rextio check``.
+        """
+        return any(diagnostic.code == "RXT000" for diagnostic in self.diagnostics)
+
     def module_for_function(self, function: FunctionAnalysis) -> ModuleAnalysis | None:
         """Return the module owning the given function, or None."""
         for module in self.modules:

@@ -410,7 +410,10 @@ def compute(x: float) -> float:
 
     captured = capsys.readouterr()
 
-    assert exit_code == 1
+    # A dependency rejection keeps the function on the Python fallback (an
+    # expected, advisory outcome), so `check` reports it but exits 0; only a
+    # genuine parse failure makes `check` non-zero.
+    assert exit_code == 0
     assert "experimental dependency lowering" in captured.out
     assert "Import policies:" in captured.out
     assert "[try-native] safe_pkg (external)" in captured.out
@@ -461,3 +464,45 @@ def test_version_flag_reports_version(capsys: "pytest.CaptureFixture[str]") -> N
 
     assert excinfo.value.code == 0
     assert capsys.readouterr().out.strip() == f"rextio {__version__}"
+
+
+def test_check_exits_zero_on_pure_rejection(tmp_path: Path, capsys) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def loop_else(xs: list[int]) -> int:
+    total = 0
+    for x in xs:
+        total = total + x
+    else:
+        total = total + 1
+    return total
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["check", str(tmp_path), "--no-report"])
+
+    # The function is rejected (RXT010) and stays on the Python fallback — an
+    # advisory outcome, not a failure.
+    assert exit_code == 0
+
+
+def test_check_exits_nonzero_on_parse_error(tmp_path: Path, capsys) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def broken(x: int) ->
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["check", str(tmp_path), "--no-report"])
+
+    assert exit_code == 1
