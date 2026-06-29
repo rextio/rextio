@@ -1,0 +1,57 @@
+# Feature stability
+
+Rextio is **0.1.0 alpha**. This page is the source of truth for which features are
+covered by the [versioning policy](versioning.md)'s stability promises and which are
+experimental (correct-but-incomplete, and free to change).
+
+Tiers:
+
+- **Stable** — part of the public contract. Changes are backward-compatible within a
+  `0.MINOR` line where possible, and breaking changes are called out in the
+  [changelog](../CHANGELOG.md).
+- **Experimental** — usable but incomplete; behavior, flags, and output may change in
+  any release with no deprecation period. Most are off by default and opt-in.
+- **Planned** — recognized by config/validation but not implemented; using it is
+  rejected with a clear diagnostic, not silently mis-built.
+
+## Core
+
+| Feature | Tier | Notes |
+| --- | --- | --- |
+| Direct-Rust codegen for the typed subset (PyO3) | Stable | Scalars, lists, simple control flow, indexing, native↔native calls. Anything outside the subset is rejected (`RXT0xx`) or kept on fallback. |
+| CPython fallback packaging + generated wrappers | Stable | Preserves Python semantics for everything not lowered to native. |
+| `@rextio.native` / `@rextio.exempt` decorators | Stable | Public API. See [versioning](versioning.md). |
+| `rextio.toml` configuration schema | Stable | Keys are part of the contract. |
+| Diagnostics (`RXTxxx` codes + messages) | Stable | Deterministic and tested; treated as a contract. |
+| Cargo build orchestration | Stable | Default Rust build path. |
+| Import policy (per-package fallback/analyze/try-native) | Stable | Decides how external packages are treated at the boundary. |
+
+## CLI
+
+| Command | Tier | Notes |
+| --- | --- | --- |
+| `rextio init` / `check` / `build` / `generate` / `clean` | Stable | Documented flags are part of the contract. |
+| `rextio bench` | Stable | Prints a structured native-vs-fallback comparison; timings are not asserted. |
+| `--format json` / `--verbose` / `--quiet` | Stable | Result on stdout, diagnostics on stderr. |
+
+## Experimental
+
+| Feature | Tier | How to reach it |
+| --- | --- | --- |
+| Cranelift scalar JIT | Experimental | `--jit` / `[jit] enabled`. Numeric scalar helpers only; overflow-prone integer arithmetic is excluded. |
+| Runtime-semantics shim (`RXT080`) | Experimental | Auto-applied to explicitly `@rextio.native` dynamic/async functions; emits a generic shim that calls back into Python. |
+| Native top-level module initialization | Experimental | `[policy] native_top_level`. Lowers a restricted subset of module-level code. |
+| Nuitka fallback / executable backend | Experimental | `--fallback=nuitka`, `--executable-backend=nuitka`. Requires Nuitka; surfaced by the build preflight when missing. |
+| Rust-importable crate artifact | Experimental | `--rust-importable` / `--rust-crate-name`. Exposes accepted direct-Rust functions as a Cargo path dependency. |
+| `maturin` build tool | Experimental | `--rust-build-tool=maturin`. Cargo is the default, stable path. |
+| Plugins | Experimental (metadata-only) | Entry-point plugins declare target compatibility and the external packages they cover; they do **not** inject codegen rules. |
+
+## Planned (not implemented)
+
+| Feature | Tier | Notes |
+| --- | --- | --- |
+| `mojo` target language | Planned | Configurable (`native_backend = "mojo"`) but no codegen backend yet — rejected with `RXT050`. |
+| `julia` target language | Planned | Same as above. |
+
+If a feature you depend on is **Experimental**, pin your Rextio version and watch the
+changelog; if it is **Planned**, expect a diagnostic rather than a build.
