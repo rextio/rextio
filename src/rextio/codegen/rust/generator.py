@@ -814,7 +814,7 @@ class _FunctionRenderer:
             self.variable_types[name] = binding_type
             self.maybe_bound_types[name] = binding_type
             lines.append(
-                f"{_indent(indent)}let mut {name}: Option<{rust_type(binding_type)}> = None;"
+                f"{_indent(indent)}let mut {rust_identifier(name)}: Option<{rust_type(binding_type)}> = None;"
             )
         return lines
 

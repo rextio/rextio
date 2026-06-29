@@ -732,6 +732,28 @@ def f(match: int) -> int:
     assert "(match:" not in source
 
 
+def test_rust_keyword_walrus_target_is_emitted_as_raw_identifier(tmp_path: Path) -> None:
+    # The walrus/named-expr prelude declares the maybe-bound Option; a keyword
+    # target must be escaped there too (it was a missed emission site), or the
+    # `let mut match: Option<…>` declaration would not match the `r#match` uses.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def f(xs: list[int]) -> int:
+    out = [match for x in xs if (match := x) > 0]
+    return match
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "let mut r#match: Option<i64> = None;" in source
+    assert "let mut match:" not in source
+
+
 def test_generates_rust_for_expanded_stdlib_lowering_calls(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """
