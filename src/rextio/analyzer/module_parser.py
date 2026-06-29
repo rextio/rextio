@@ -422,6 +422,7 @@ def _runtime_semantics_function(
     _validate_function_name(node, function)
     if function.error_diagnostics:
         function.accepted = False
+        function.native_runtime_semantics = False
         return function
     _add_runtime_semantics_warning(function, node)
     return function
@@ -560,6 +561,7 @@ def _collect_native_methods(
             _validate_function_name(child, function)
             if function.error_diagnostics:
                 function.accepted = False
+                function.native_runtime_semantics = False
                 functions.append(function)
                 continue
             _add_runtime_semantics_warning(function, child)
