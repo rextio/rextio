@@ -14,7 +14,7 @@ from rextio.analyzer.unsupported_patterns import (
     _add_unsupported_syntax,
     _is_append_call,
     _is_supported_signature_type,
-    _underscore_used_as_value,
+    _misused_underscore_node,
     _unsupported_message,
     _validate_call,
     _validate_statement_types,
@@ -151,7 +151,14 @@ def _validate_top_level_identifiers(
     function body: non-raw-able keywords, non-ASCII names, and a value-used `_`.
     """
     module_node = ast.Module(body=list(statements), type_ignores=[])
-    underscore_misused = _underscore_used_as_value(module_node)
+    misused_underscore = _misused_underscore_node(module_node)
+    if misused_underscore is not None:
+        _add_identifier_diagnostic(
+            validator,
+            misused_underscore,
+            "'_' is a Rust discard pattern and cannot be assigned to or read",
+            "Use a named module variable instead of '_'.",
+        )
     seen: set[str] = set()
     for child in ast.walk(module_node):
         if not (isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)):
@@ -161,13 +168,6 @@ def _validate_top_level_identifiers(
             continue
         seen.add(name)
         if name == "_":
-            if underscore_misused:
-                _add_identifier_diagnostic(
-                    validator,
-                    child,
-                    "'_' is a Rust discard pattern and cannot be assigned to or read",
-                    "Use a named module variable instead of '_'.",
-                )
             continue
         if name in RUST_RAW_INCOMPATIBLE:
             _add_identifier_diagnostic(

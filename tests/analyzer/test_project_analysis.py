@@ -196,6 +196,45 @@ def Self(x: int) -> int:
     assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT011"
 
 
+def test_rejects_non_ascii_and_underscore_function_names_without_crashing(tmp_path: Path) -> None:
+    # A non-ASCII function name (silently mangled before) and an all-underscore name
+    # (which `native_function_name` cannot sanitize and would crash on at root) are
+    # rejected with RXT011 rather than mangled or crashing the analyzer.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def café(x: int) -> int:
+    return x + 1
+""",
+    )
+    write_module(
+        tmp_path,
+        "__init__.py",
+        """
+import rextio
+
+@rextio.native
+def _(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert "app.café" in rejected
+    assert "_" in rejected
+    assert all(
+        f.error_diagnostics[0].code == "RXT011"
+        for f in analysis.rejected_native_functions
+        if f.qualname in {"app.café", "_"}
+    )
+
+
 def test_accepts_keyword_function_name_in_a_submodule(tmp_path: Path) -> None:
     # A sub-module function named after a keyword emits a module-prefixed Rust name
     # (`app__crate`), which is safe — it must NOT be over-rejected by the node.name

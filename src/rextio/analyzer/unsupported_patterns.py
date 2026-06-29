@@ -126,20 +126,19 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
     not transliterate them), and `_` used as anything other than a throwaway
     loop/comprehension target (Rust `_` is a discard pattern, not a value).
     """
-    # The function's *emitted* Rust name is module-prefixed and sanitized
-    # (`native_function_name`), so only a non-raw-able keyword there is unfixable;
-    # non-ASCII is already sanitized away. (Checking the raw `node.name` would
-    # over-reject e.g. a sub-module `def crate()` that safely emits `app__crate`.)
-    if native_function_name(function.qualname) in RUST_RAW_INCOMPATIBLE:
+    _validate_function_name(node, function)
+
+    # `_` is special; emit its diagnostic once, independent of the candidate loop
+    # (it can be misused as a read with no Store occurrence to iterate over).
+    misused_underscore = _misused_underscore_node(node)
+    if misused_underscore is not None:
         _add_identifier_diagnostic(
             function,
-            node,
-            f"function name '{node.name}' lowers to the Rust keyword "
-            f"'{native_function_name(function.qualname)}', which a raw identifier cannot carry",
-            f"Rename '{node.name}' or keep this function on Python fallback.",
+            misused_underscore,
+            "'_' is a Rust discard pattern and cannot be assigned to or read",
+            "Use a named variable instead of '_', or keep '_' only as an unused loop variable.",
         )
 
-    underscore_misused = _underscore_used_as_value(node)
     args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
     if node.args.vararg is not None:
         args.append(node.args.vararg)
@@ -160,15 +159,7 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
             continue
         seen.add(name)
         if name == "_":
-            if underscore_misused:
-                _add_identifier_diagnostic(
-                    function,
-                    where,
-                    "'_' is a Rust discard pattern and cannot be assigned to or read",
-                    "Use a named variable instead of '_', or keep '_' only as an unused "
-                    "loop variable.",
-                )
-            continue
+            continue  # handled by `_misused_underscore_node` above
         if name in RUST_RAW_INCOMPATIBLE:
             message = (
                 f"identifier '{name}' is a Rust keyword that cannot be carried as a "
@@ -188,11 +179,48 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
         _add_identifier_diagnostic(function, where, message, suggestion)
 
 
-def _underscore_used_as_value(node: ast.AST) -> bool:
-    """True if `_` appears anywhere other than as a for-loop/comprehension target.
+def _validate_function_name(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+    """Reject a function whose *name* cannot be lowered to a Rust `fn` identifier.
+
+    Checked on the raw name first, before `native_function_name` (which raises on a
+    name that sanitizes to empty): a non-ASCII name would be silently mangled (and
+    can collide), an all-underscore name sanitizes to empty/`fn _` (invalid), and an
+    emitted name that is a non-raw-able keyword (`crate`/`self`/…) cannot be escaped.
+    """
+    name = node.name
+    if not name.isascii():
+        _add_identifier_diagnostic(
+            function,
+            node,
+            f"function name '{name}' uses non-ASCII characters not supported in generated Rust",
+            f"Rename '{name}' to an ASCII name or keep this function on Python fallback.",
+        )
+        return
+    if not name.strip("_"):
+        _add_identifier_diagnostic(
+            function,
+            node,
+            f"function name '{name}' has no usable characters for a Rust identifier",
+            f"Rename '{name}' or keep this function on Python fallback.",
+        )
+        return
+    emitted = native_function_name(function.qualname)
+    if emitted in RUST_RAW_INCOMPATIBLE:
+        _add_identifier_diagnostic(
+            function,
+            node,
+            f"function name '{name}' lowers to the Rust keyword '{emitted}', "
+            "which a raw identifier cannot carry",
+            f"Rename '{name}' or keep this function on Python fallback.",
+        )
+
+
+def _misused_underscore_node(node: ast.AST) -> ast.AST | None:
+    """Return the first `_` used as a value, or None.
 
     Rust accepts `_` only as a discard pattern (`for _ in …`); as an assignment or
     walrus target it would emit `let mut _` and as a read a bare `_`, both invalid.
+    Returns the offending `ast.Name` so the diagnostic can point at it.
     """
     discard_targets: set[int] = set()
     for child in ast.walk(node):
@@ -203,8 +231,8 @@ def _underscore_used_as_value(node: ast.AST) -> bool:
                     discard_targets.add(id(inner))
     for child in ast.walk(node):
         if isinstance(child, ast.Name) and child.id == "_" and id(child) not in discard_targets:
-            return True
-    return False
+            return child
+    return None
 
 
 def _add_identifier_diagnostic(
