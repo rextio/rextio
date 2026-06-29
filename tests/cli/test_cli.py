@@ -32,6 +32,10 @@ def test_main_surfaces_plugin_rules_deprecation(
     monkeypatch.setattr(plugin_loader, "_plugin_entry_points", lambda _eps: (_FakeEntryPoint(),))
     # Reset the install guard so main() registers the filter inside our scope.
     monkeypatch.setattr(cli_main, "_REXTIO_WARNING_FILTER_INSTALLED", False)
+    # Defensive: the "default" action dedups per location via the loader module's
+    # __warningregistry__. The filter mutations below already invalidate it (version
+    # bump), but clearing it makes determinism explicit regardless of prior emissions.
+    getattr(plugin_loader, "__warningregistry__", {}).clear()
     (tmp_path / "app.py").write_text("def f(x: int) -> int:\n    return x\n", encoding="utf-8")
 
     shown: list[str] = []
@@ -41,6 +45,7 @@ def test_main_surfaces_plugin_rules_deprecation(
         exit_code = main(["check", str(tmp_path), "--no-report"])
 
     assert exit_code == 0
+    assert shown, "no DeprecationWarning was shown — the CLI filter failed to unhide it"
     # The plugin `rules` deprecation was shown despite the ignore baseline.
     assert any("no longer used" in message and "legacy-plugin" in message for message in shown)
 
