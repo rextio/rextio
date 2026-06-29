@@ -138,6 +138,27 @@ def _start_process(command: list[str], cwd: Path | str) -> subprocess.Popen[str]
     )
 
 
+def _signal_group(process: subprocess.Popen[str], sig: int) -> bool:
+    """Send ``sig`` to the child's process group (POSIX, pid == pgid).
+
+    Returns ``False`` only when we lack permission to signal the group — in which
+    case it best-effort kills the direct child — and ``True`` when the signal was
+    delivered or the group is already gone.
+    """
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        return True  # Group already gone.
+    except PermissionError:
+        # Rare (child changed credentials): fall back to the direct child.
+        try:
+            process.kill()
+        except OSError:
+            pass
+        return False
+    return True
+
+
 def _terminate_process_tree(process: subprocess.Popen[str]) -> bool:
     """Kill the process and everything it spawned. Bounded and idempotent.
 
@@ -152,25 +173,22 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> bool:
         # has just exited, ``getpgid`` would raise and we would skip killing the
         # still-running grandchildren in the group. (Invariant: pid == pgid; do not
         # change ``_start_process`` to drop the new session without revisiting this.)
-        for sig, grace in ((signal.SIGTERM, _TERM_GRACE_SECONDS), (signal.SIGKILL, _KILL_GRACE_SECONDS)):
-            try:
-                os.killpg(process.pid, sig)
-            except ProcessLookupError:
-                return True  # Group already gone.
-            except PermissionError:
-                # Cannot signal the group (rare: child changed credentials). Fall
-                # back to killing at least the direct child so it does not linger.
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                return False
-            try:
-                process.wait(timeout=grace)
-                return True
-            except subprocess.TimeoutExpired:
-                continue  # Escalate SIGTERM -> SIGKILL, then give up.
-        return False  # SIGKILL did not reap within the grace period.
+        #
+        # SIGTERM the group for a graceful shutdown, then *always* SIGKILL the group
+        # — even if the direct child already exited — because a grandchild that
+        # ignored SIGTERM would otherwise survive un-killed. Finally reap the child.
+        if not _signal_group(process, signal.SIGTERM):
+            return False  # PermissionError: best-effort direct kill already attempted.
+        try:
+            process.wait(timeout=_TERM_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass  # Did not exit gracefully; SIGKILL below.
+        _signal_group(process, signal.SIGKILL)
+        try:
+            process.wait(timeout=_KILL_GRACE_SECONDS)
+            return True
+        except subprocess.TimeoutExpired:
+            return False  # Stuck (e.g. uninterruptible-sleep `D` state); give up.
     else:  # pragma: no cover - exercised on Windows only.
         # `Popen.kill()` only kills the direct child on Windows; taskkill /T walks
         # the tree.
