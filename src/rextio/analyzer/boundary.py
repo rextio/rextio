@@ -26,7 +26,6 @@ SUPPORTED_INTERNAL_CALLS = {
 
 BOUNDARY_DIAGNOSTIC_MESSAGES = {
     "RXT070": "Native function calls fallback-only function.",
-    "RXT071": "Possible excessive Python/Rust boundary crossing.",
     "RXT072": "Native dependency rejected, so caller must fall back.",
     "RXT073": "Native function call inside Python loop may erase speedup.",
     "RXT074": "Undecorated function depends on a runtime-shim native; mark it @rextio.native to opt in.",

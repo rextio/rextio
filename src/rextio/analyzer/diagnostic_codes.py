@@ -37,7 +37,6 @@ _CODES: tuple[DiagnosticCode, ...] = (
     DiagnosticCode("RXT050", "Native code generation failure"),
     DiagnosticCode("RXT060", "Build failure (configuration, prerequisites, or compile)"),
     DiagnosticCode("RXT070", "Native function calls a fallback-only function"),
-    DiagnosticCode("RXT071", "Possible excessive Python/Rust boundary crossing"),
     DiagnosticCode("RXT072", "Native dependency rejected, so the caller must fall back"),
     DiagnosticCode("RXT073", "Native function call inside a Python loop may erase the speedup"),
     DiagnosticCode("RXT074", "Auto-discovered function depends on a runtime-shim native"),

@@ -361,11 +361,11 @@ class ProjectAnalysis:
 
     @property
     def boundary_warnings(self) -> list[Diagnostic]:
-        """The native/fallback boundary warnings (RXT071/RXT073)."""
+        """The native/fallback boundary warnings (RXT073)."""
         return [
             diagnostic
             for diagnostic in self.diagnostics
-            if diagnostic.code in {"RXT071", "RXT073"} and diagnostic.severity == "warning"
+            if diagnostic.code == "RXT073" and diagnostic.severity == "warning"
         ]
 
     @property

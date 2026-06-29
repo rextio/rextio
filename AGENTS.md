@@ -1045,7 +1045,7 @@ def process_all(xs: list[float]) -> list[float]:
 Diagnostic:
 
 ```text
-RXT071 Possible excessive Python/Rust boundary crossing.
+RXT073 Native function call inside a Python loop may erase the speedup.
 ```
 
 Suggestion:
@@ -1079,7 +1079,6 @@ wrapper crossing threshold that falls back after repeated Python-to-native calls
 
 ```text
 RXT070 Native function calls fallback-only function.
-RXT071 Possible excessive Python/Rust boundary crossing.
 RXT072 Native dependency rejected, so caller must fall back.
 RXT073 Native function call inside Python loop may erase speedup.
 ```
@@ -1130,9 +1129,9 @@ RXT040 Native dependency rejected
 RXT050 Codegen failure
 RXT060 Build failure
 RXT070 Native function calls fallback-only function
-RXT071 Possible excessive Python/Rust boundary crossing
 RXT072 Native dependency rejected, so caller must fall back
 RXT073 Native function call inside Python loop may erase speedup
+RXT074 Undecorated function depends on a runtime-shim native; mark it @rextio.native to opt in
 RXT080 Native function uses Python runtime semantics shim
 ```
 
