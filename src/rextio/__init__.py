@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from typing import overload, TypeVar
 
@@ -45,6 +46,16 @@ def _require_decoratable(func: object, decorator: str) -> None:
         raise TypeError(f"@rextio.{decorator} can only decorate functions, not classes")
     if not callable(func):
         raise TypeError(f"@rextio.{decorator} can only decorate callables")
+    # The marker is read off a plain function object. A `staticmethod`/`classmethod`
+    # descriptor or a callable instance is callable but is not a function, so the
+    # `setattr` below would land on the wrapper and the analyzer would never see it —
+    # reject those rather than silently misfire. Apply `@rextio.native` directly to
+    # the function, beneath `@staticmethod`/`@classmethod`.
+    if not inspect.isfunction(func):
+        raise TypeError(
+            f"@rextio.{decorator} can only decorate functions and methods, "
+            f"not {type(func).__name__} objects"
+        )
 
 
 def _normalize_target(target: str | None) -> str | None:

@@ -82,3 +82,29 @@ def test_exempt_decorator_rejects_classes() -> None:
 def test_exempt_decorator_rejects_non_callable() -> None:
     with pytest.raises(TypeError, match="callables"):
         rextio.exempt(42)  # type: ignore[arg-type]
+
+
+def test_native_decorator_rejects_descriptors_and_callable_instances() -> None:
+    # A staticmethod/classmethod descriptor or a callable instance is callable but is
+    # not a function; setattr would misfire on the wrapper, so they must be rejected.
+    with pytest.raises(TypeError, match="functions and methods"):
+        rextio.native(staticmethod(lambda: 1))  # type: ignore[arg-type]
+    # A classmethod descriptor is not even callable here, so it is rejected too.
+    with pytest.raises(TypeError):
+        rextio.native(classmethod(lambda cls: 1))  # type: ignore[arg-type]
+
+    class Callable:
+        def __call__(self) -> int:
+            return 1
+
+    with pytest.raises(TypeError, match="functions and methods"):
+        rextio.native(Callable())  # type: ignore[arg-type]
+
+
+def test_native_decorator_still_accepts_plain_functions_and_lambdas() -> None:
+    assert rextio.native(lambda x: x) is not None  # lambdas are functions
+
+    def helper() -> int:
+        return 1
+
+    assert getattr(rextio.native(helper), "__rextio_native__") is True
