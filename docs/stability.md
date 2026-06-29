@@ -41,6 +41,7 @@ Tiers:
 | Feature | Tier | How to reach it |
 | --- | --- | --- |
 | Cranelift scalar JIT | Experimental | `--jit` / `[jit] enabled`. Numeric scalar helpers only; overflow-prone integer arithmetic and float division are excluded (they stay on the checked native path so overflow/divide-by-zero still raise). |
+| Native `try`/`except`/`finally` (built-in exceptions) | Experimental | A restricted subset compiles to native Rust: `except` handlers for built-in exceptions only (`ValueError`, `KeyError`, `IndexError`, `ZeroDivisionError`, `TypeError`, `OverflowError`, `ArithmeticError`, `RuntimeError`, `Exception`), no `try ... else`, no `as` binding, no `return`/`break`/`continue` inside the blocks, and no variable first-assigned inside a block. Anything outside the subset falls back (RXT080 shim when explicitly `@rextio.native`, otherwise Python fallback). |
 | Runtime-semantics shim (`RXT080`) | Experimental | Auto-applied to explicitly `@rextio.native` dynamic/async functions; emits a generic shim that calls back into Python. |
 | Native top-level module initialization | Experimental | `[policy] native_top_level`. Lowers a restricted subset of module-level code. |
 | Nuitka fallback / executable backend | Experimental | `--fallback=nuitka`, `--executable-backend=nuitka`. Requires Nuitka; surfaced by the build preflight when missing. The real-Nuitka end-to-end path runs only on the scheduled/manual CI job (not on every PR), so regressions there may surface later than for the Cargo path. |

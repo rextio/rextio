@@ -173,7 +173,8 @@ Runtime-backed native functions currently cover:
 
 - class/object behavior inside a marked native function
 - regular instance methods marked with `@rextio.native`
-- `try` / `except` / `finally`
+- `try` / `except` / `finally` outside the restricted native subset (built-in
+  exception handlers only — see `docs/stability.md`)
 - `raise` and `assert`
 - context managers
 - `async` functions and `await`

@@ -2456,3 +2456,94 @@ def len_str(s: str) -> int:
         "app.len_str",
     }
     assert analysis.diagnostics == []
+
+
+def test_accepts_native_try_except_finally(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def safe_mod(a: int, b: int) -> int:
+    result = 0
+    try:
+        result = a % b
+    except ZeroDivisionError:
+        result = -1
+    finally:
+        result = result + 100
+    return result
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.safe_mod"
+    ]
+    assert not analysis.accepted_native_functions[0].native_runtime_semantics
+    assert analysis.diagnostics == []
+
+
+def test_rejects_unsupported_try_shapes(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def try_else(xs: list[int]) -> int:
+    total = 0
+    try:
+        total = xs[0]
+    except IndexError:
+        total = -1
+    else:
+        total = total + 1
+    return total
+
+@rextio.native
+def except_as(xs: list[int]) -> int:
+    out = 0
+    try:
+        out = xs[0]
+    except IndexError as exc:
+        out = -1
+    return out
+
+@rextio.native
+def custom_handler(xs: list[int]) -> int:
+    out = 0
+    try:
+        out = xs[0]
+    except OSError:
+        out = -1
+    return out
+
+@rextio.native
+def return_in_try(xs: list[int]) -> int:
+    try:
+        return xs[0]
+    except IndexError:
+        return -1
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    # Unsupported try shapes on an explicit @rextio.native function fall to the
+    # safe RXT080 runtime shim (Python callback); the key property is that none
+    # is compiled to native Rust try/except.
+    assert {function.qualname for function in analysis.accepted_native_functions} == {
+        "app.try_else",
+        "app.except_as",
+        "app.custom_handler",
+        "app.return_in_try",
+    }
+    assert all(
+        function.native_runtime_semantics
+        for function in analysis.accepted_native_functions
+    )

@@ -48,6 +48,7 @@ from rextio.ir.nodes import (
     DictIR,
     DictSetIR,
     EffectCallIR,
+    ExceptHandlerIR,
     ExprIR,
     ForIR,
     FunctionIR,
@@ -66,6 +67,7 @@ from rextio.ir.nodes import (
     StatementIR,
     TargetIR,
     TupleIR,
+    TryIR,
     TupleTargetIR,
     UnaryOpIR,
     WhileIR,
@@ -322,7 +324,31 @@ def lower_statement(
             body=lower_block(node.body, module, resolver),
             orelse=lower_block(node.orelse, module, resolver),
         )
+    if isinstance(node, ast.Try):
+        return TryIR(
+            body=lower_block(node.body, module, resolver),
+            handlers=tuple(
+                ExceptHandlerIR(
+                    exception=_handler_exception_name(handler),
+                    body=lower_block(handler.body, module, resolver),
+                )
+                for handler in node.handlers
+            ),
+            finalbody=lower_block(node.finalbody, module, resolver),
+        )
     raise LoweringError(f"unsupported statement during IR lowering: {type(node).__name__}")
+
+
+def _handler_exception_name(handler: ast.ExceptHandler) -> str:
+    """Return the built-in exception name an ``except`` clause catches.
+
+    The analyzer has already restricted handlers to a single built-in exception
+    ``ast.Name`` with no ``as`` binding, so this lowering is total for accepted
+    functions.
+    """
+    if not isinstance(handler.type, ast.Name):
+        raise LoweringError("except handler type must be a built-in exception name")
+    return handler.type.id
 
 
 def lower_expr(

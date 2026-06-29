@@ -66,6 +66,7 @@ from rextio.capabilities import (
     NUMERIC_TYPES,
     SET_ITEM_TYPES,
 )
+from rextio.exceptions import is_supported_builtin_exception
 
 DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
 
@@ -100,7 +101,6 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.Invert,
     ast.In,
     ast.NotIn,
-    ast.Try,
     ast.With,
     ast.AsyncWith,
     ast.Import,
@@ -528,6 +528,9 @@ def _validate_statement_types(
             return
         _infer_expr_type(node.test, function, env)
         _validate_statement_list_types(node.body, function, dict(env), return_type)
+        return
+    if isinstance(node, ast.Try):
+        _validate_try(node, function, env, return_type)
 
 
 def _validate_statement_list_types(
@@ -538,6 +541,85 @@ def _validate_statement_list_types(
 ) -> None:
     for statement in statements:
         _validate_statement_types(statement, function, env, return_type)
+
+
+def _validate_try(
+    node: ast.Try,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+    return_type: str | None,
+) -> None:
+    """Validate the restricted native ``try``/``except``/``finally`` subset.
+
+    Native lowering uses immediately-invoked closures, so the supported subset is
+    deliberately narrow: built-in exception handlers only, no ``try ... else``,
+    no ``return``/``break``/``continue`` inside any block, no ``as`` binding, and
+    no variable first-bound inside a block (it would be closure-scoped). Anything
+    outside the subset is rejected with RXT010 so the function stays on the
+    Python fallback (or the RXT080 runtime shim when explicitly ``@rextio.native``).
+    """
+    if node.orelse:
+        _add_unsupported_syntax(
+            function, node, "try ... else is not supported in native functions"
+        )
+        return
+    if not node.handlers and not node.finalbody:
+        _add_unsupported_syntax(
+            function, node, "try without except or finally is not supported in native functions"
+        )
+        return
+    for handler in node.handlers:
+        if handler.name is not None:
+            _add_unsupported_syntax(
+                function, handler, "'except ... as name' is not supported in native functions"
+            )
+            return
+        if not isinstance(handler.type, ast.Name) or not is_supported_builtin_exception(
+            handler.type.id
+        ):
+            _add_unsupported_syntax(
+                function,
+                handler,
+                "only single built-in exception handlers are supported in native functions",
+            )
+            return
+    blocks = [node.body, node.finalbody, *(handler.body for handler in node.handlers)]
+    for block in blocks:
+        for statement in block:
+            for child in ast.walk(statement):
+                if isinstance(child, (ast.Return, ast.Break, ast.Continue)):
+                    _add_unsupported_syntax(
+                        function,
+                        node,
+                        "return/break/continue inside try/except/finally is not "
+                        "supported in native functions",
+                    )
+                    return
+    bound_before = set(env)
+    new_bindings = sorted(_block_bound_names(blocks) - bound_before)
+    if new_bindings:
+        _add_unsupported_syntax(
+            function,
+            node,
+            "variables first assigned inside try/except/finally are not supported "
+            f"in native functions: {', '.join(new_bindings)}",
+        )
+        return
+    _validate_statement_list_types(node.body, function, env, return_type)
+    for handler in node.handlers:
+        _validate_statement_list_types(handler.body, function, env, return_type)
+    _validate_statement_list_types(node.finalbody, function, env, return_type)
+
+
+def _block_bound_names(blocks: list[list[ast.stmt]]) -> set[str]:
+    """Return the names bound (Store context) anywhere in the given blocks."""
+    names: set[str] = set()
+    for block in blocks:
+        for statement in block:
+            for child in ast.walk(statement):
+                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+                    names.add(child.id)
+    return names
 
 
 def _validate_mutable_ownership_patterns(node: ast.FunctionDef, function: FunctionAnalysis) -> None:

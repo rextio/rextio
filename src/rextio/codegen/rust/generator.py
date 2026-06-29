@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from rextio.codegen.native_names import native_function_name
+from rextio.exceptions import BUILTIN_EXCEPTION_TO_PYO3
 from rextio.codegen.rust.checked_arith import (
     checked_arith_helpers as _checked_arith_helpers,
 )
@@ -59,6 +60,7 @@ from rextio.ir.nodes import (
     SetIR,
     StatementIR,
     TargetIR,
+    TryIR,
     TupleIR,
     TupleTargetIR,
     UnaryOpIR,
@@ -516,7 +518,62 @@ class _FunctionRenderer:
             lines.extend(self.render_block(statement.body, indent + 1))
             lines.append(f"{prefix}}}")
             return lines
+        if isinstance(statement, TryIR):
+            return self.render_try(statement, indent)
         raise RustCodegenError(f"unsupported statement IR: {type(statement).__name__}")
+
+    def render_try(self, statement: TryIR, indent: int) -> list[str]:
+        """Render a ``try``/``except``/``finally`` statement.
+
+        Python ``try`` semantics are modelled with immediately-invoked closures:
+        the inner closure runs the ``try`` body (``?`` turns a Python exception
+        into an ``Err``); a ``match`` dispatches to the first ``except`` handler
+        whose built-in type matches (preserving Python's top-to-bottom order),
+        re-raising otherwise. The whole try/except is itself a closure, so the
+        ``finally`` body runs on every path before any pending error is
+        propagated with ``?`` — matching Python's "finally always runs, then the
+        exception continues" rule. The analyzer guarantees the restricted subset
+        this relies on (built-in handlers only, no ``return``/``break``/
+        ``continue`` and no new bindings inside the blocks).
+        """
+        if self.mode != "pyo3":
+            raise RustCodegenError(
+                "native try/except is only supported in the pyo3 backend, "
+                "not the importable Rust crate"
+            )
+        prefix = _indent(indent)
+        outcome = self.next_temp("__rextio_try")
+        err = f"{outcome}_err"
+        inner = f"{outcome}_body"
+        lines = [f"{prefix}let {outcome}: PyResult<()> = (|| -> PyResult<()> {{"]
+        lines.append(f"{_indent(indent + 1)}let {inner}: PyResult<()> = (|| -> PyResult<()> {{")
+        lines.extend(self.render_block(statement.body, indent + 2))
+        lines.append(f"{_indent(indent + 2)}Ok(())")
+        lines.append(f"{_indent(indent + 1)}}})();")
+        lines.append(f"{_indent(indent + 1)}match {inner} {{")
+        lines.append(f"{_indent(indent + 2)}Ok(()) => Ok(()),")
+        lines.append(f"{_indent(indent + 2)}Err({err}) => {{")
+        if statement.handlers:
+            for position, handler in enumerate(statement.handlers):
+                pyo3_exception = BUILTIN_EXCEPTION_TO_PYO3[handler.exception]
+                guard = (
+                    f"Python::with_gil(|py| {err}.is_instance_of::<{pyo3_exception}>(py))"
+                )
+                keyword = "if" if position == 0 else "}} else if"
+                lines.append(f"{_indent(indent + 3)}{keyword} {guard} {{")
+                lines.extend(self.render_block(handler.body, indent + 4))
+                lines.append(f"{_indent(indent + 4)}Ok(())")
+            lines.append(f"{_indent(indent + 3)}}} else {{")
+            lines.append(f"{_indent(indent + 4)}Err({err})")
+            lines.append(f"{_indent(indent + 3)}}}")
+        else:
+            lines.append(f"{_indent(indent + 3)}Err({err})")
+        lines.append(f"{_indent(indent + 2)}}}")
+        lines.append(f"{_indent(indent + 1)}}}")
+        lines.append(f"{prefix}}})();")
+        lines.extend(self.render_block(statement.finalbody, indent))
+        lines.append(f"{prefix}{outcome}?;")
+        return lines
 
     def render_iterable(self, expr: ExprIR) -> str:
         if isinstance(expr, NameIR):
@@ -1699,6 +1756,11 @@ def _assigned_names(block: BlockIR) -> set[str]:
             names.update(_expr_assigned_names(statement.condition))
             names.update(_assigned_names(statement.body))
             names.update(_assigned_names(statement.orelse))
+        elif isinstance(statement, TryIR):
+            names.update(_assigned_names(statement.body))
+            names.update(_assigned_names(statement.finalbody))
+            for handler in statement.handlers:
+                names.update(_assigned_names(handler.body))
     return names
 
 

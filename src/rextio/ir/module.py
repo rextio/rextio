@@ -25,6 +25,7 @@ from rextio.ir.nodes import (
     SetComprehensionIR,
     SetIR,
     StatementIR,
+    TryIR,
     TupleIR,
     UnaryOpIR,
     WhileIR,
@@ -101,6 +102,12 @@ def _statement_calls(statement: StatementIR, functions: dict[str, FunctionIR]) -
             | _called_native_qualnames(statement.body, functions)
             | _called_native_qualnames(statement.orelse, functions)
         )
+    if isinstance(statement, TryIR):
+        calls = _called_native_qualnames(statement.body, functions)
+        calls |= _called_native_qualnames(statement.finalbody, functions)
+        for handler in statement.handlers:
+            calls |= _called_native_qualnames(handler.body, functions)
+        return calls
     return set()
 
 
