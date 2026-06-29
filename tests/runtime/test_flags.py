@@ -51,3 +51,12 @@ def test_invalid_native_mode_warns(monkeypatch) -> None:
         warnings.simplefilter("always")
         assert native_mode() == "auto"
     assert any(issubclass(w.category, RuntimeWarning) for w in caught)
+
+
+def test_boundary_disable_accepts_truthy_strings(monkeypatch) -> None:
+    from rextio.runtime.boundary_fallback import boundary_fallback_disabled
+
+    monkeypatch.setenv("REXTIO_BOUNDARY_FALLBACK_THRESHOLD", "1000")
+    for value in ("1", "true", "YES", "on"):
+        monkeypatch.setenv("REXTIO_DISABLE_BOUNDARY_FALLBACK", value)
+        assert boundary_fallback_disabled(), value
