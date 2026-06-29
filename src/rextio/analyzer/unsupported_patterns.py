@@ -188,7 +188,7 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
         _add_identifier_diagnostic(function, where, message, suggestion)
 
 
-def _underscore_used_as_value(node: ast.FunctionDef) -> bool:
+def _underscore_used_as_value(node: ast.AST) -> bool:
     """True if `_` appears anywhere other than as a for-loop/comprehension target.
 
     Rust accepts `_` only as a discard pattern (`for _ in …`); as an assignment or

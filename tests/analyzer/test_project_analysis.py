@@ -248,6 +248,26 @@ def discard_loop(n: int) -> int:
     assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT011"
 
 
+def test_rejects_non_raw_able_keyword_top_level_name(tmp_path: Path) -> None:
+    # native_top_level emits top-level assignments through the same renderer, so a
+    # non-raw-able keyword module variable must be rejected (a raw-able one like
+    # `match` stays native, escaped to `r#match`).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+crate = 5
+value = crate + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator", native_top_level=True)
+
+    assert "RXT011" in {diagnostic.code for diagnostic in analysis.diagnostics}
+
+
 def test_rejects_non_ascii_local_identifier(tmp_path: Path) -> None:
     # A non-ASCII local name is emitted verbatim as a Rust identifier; rather than
     # rely on cross-language identifier (XID/normalization) parity, keep the
