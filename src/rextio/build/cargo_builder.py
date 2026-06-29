@@ -1,3 +1,5 @@
+"""Building the native extension with Cargo."""
+
 from __future__ import annotations
 
 import shutil
@@ -11,6 +13,8 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class NativeBuildResult:
+    """The outcome of building the native extension."""
+
     status: str
     tool: str | None
     message: str
@@ -21,6 +25,7 @@ class NativeBuildResult:
     stderr: str = ""
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this result."""
         return {
             "status": self.status,
             "tool": self.tool,
@@ -34,6 +39,7 @@ class NativeBuildResult:
 
 
 def skipped_native_build(message: str) -> NativeBuildResult:
+    """Return a result marking the native build as skipped."""
     return NativeBuildResult(status="skipped", tool=None, message=message)
 
 
@@ -43,6 +49,7 @@ def build_native_extension_with_cargo(
     *,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> NativeBuildResult:
+    """Build the native extension with Cargo and return the result."""
     cargo = shutil.which("cargo")
     if cargo is None:
         return NativeBuildResult(

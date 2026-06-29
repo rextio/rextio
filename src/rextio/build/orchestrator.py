@@ -1,3 +1,5 @@
+"""Build/generate orchestration: ties analysis, lowering, codegen, and the builders together."""
+
 from __future__ import annotations
 
 import json
@@ -56,11 +58,14 @@ from rextio.targets.plan import TargetPlan, default_target_plan
 
 @dataclass(frozen=True)
 class NativeSourceResult:
+    """The outcome of generating native source (no compilation)."""
+
     status: str
     message: str
     path: str | None = None
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this result."""
         return {
             "status": self.status,
             "message": self.message,
@@ -70,6 +75,8 @@ class NativeSourceResult:
 
 @dataclass(frozen=True)
 class GenerateResult:
+    """The aggregate result of ``rextio generate``."""
+
     fallback: str
     boundary_fallback_threshold: int
     target_plan: TargetPlan
@@ -81,6 +88,7 @@ class GenerateResult:
     rust_crate_source: NativeSourceResult
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this result."""
         return {
             "fallback": self.fallback,
             "boundary_fallback_threshold": self.boundary_fallback_threshold,
@@ -99,6 +107,8 @@ class GenerateResult:
 
 @dataclass(frozen=True)
 class BuildResult:
+    """The aggregate result of ``rextio build``."""
+
     fallback: str
     boundary_fallback_threshold: int
     target_plan: TargetPlan
@@ -113,6 +123,7 @@ class BuildResult:
     rust_crate_build: RustCrateBuildResult
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this result."""
         return {
             "fallback": self.fallback,
             "boundary_fallback_threshold": self.boundary_fallback_threshold,
@@ -150,6 +161,7 @@ def build_hybrid_artifact(
     jit_hot_threshold: int = 25,
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> BuildResult:
+    """Build the hybrid native+fallback artifact for a project."""
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
     plan = create_build_plan(analysis, fallback)
@@ -233,6 +245,7 @@ def generate_source_artifact(
     native_jit_enabled: bool = False,
     jit_hot_threshold: int = 25,
 ) -> GenerateResult:
+    """Generate native and Python source artifacts without compiling."""
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
     plan = create_build_plan(analysis, fallback)

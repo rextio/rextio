@@ -1,3 +1,5 @@
+"""Building a wheel from the generated Python package."""
+
 from __future__ import annotations
 
 import base64
@@ -12,11 +14,14 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class WheelBuildResult:
+    """The outcome of building a wheel."""
+
     status: str
     path: str | None
     message: str
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this result."""
         return {
             "status": self.status,
             "path": self.path,
@@ -25,6 +30,7 @@ class WheelBuildResult:
 
 
 def skipped_wheel(message: str) -> WheelBuildResult:
+    """Return a result marking the wheel build as skipped."""
     return WheelBuildResult(status="skipped", path=None, message=message)
 
 
@@ -33,6 +39,7 @@ def build_artifact_wheel(
     python_dir: Path,
     dist_dir: Path,
 ) -> WheelBuildResult:
+    """Build a wheel from the generated Python package and return the result."""
     if not python_dir.exists():
         return WheelBuildResult(
             status="failed",
