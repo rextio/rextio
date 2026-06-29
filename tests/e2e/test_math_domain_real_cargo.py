@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import importlib
 import json
 import math
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
@@ -17,6 +15,7 @@ def test_real_cargo_math_domain_matches_cpython(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    fresh_import,
 ) -> None:
     (tmp_path / "rextio.toml").write_text(
         """
@@ -72,12 +71,7 @@ def logbase_f(x: float, base: float) -> float:
     assert report["native_build"]["status"] == "built"
 
     monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "build" / "python"))
-    # Evict any cached `_rextio_native` from a prior e2e so this build's module
-    # (not another test's) is the one imported and measured.
-    for cached in ("_rextio_native", "math_app", "math_app.ops"):
-        sys.modules.pop(cached, None)
-    importlib.invalidate_caches()
-    module = importlib.import_module("math_app.ops")
+    module = fresh_import("math_app.ops")
 
     inf = float("inf")
     nan = float("nan")

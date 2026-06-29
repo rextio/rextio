@@ -125,3 +125,23 @@ def pytest_collection_modifyitems(
             # failure rather than a generic pytest misuse.
             raise pytest.UsageError(f"strict e2e toolchain check failed: {message}")
         warnings.warn(message, stacklevel=2)
+
+
+@pytest.fixture
+def fresh_import():
+    """Import a freshly-built module, evicting any cached `_rextio_native`.
+
+    Each real-cargo e2e builds its own `_rextio_native` extension; without
+    eviction a later test would reuse an earlier test's module (and miss its own
+    functions). Returns a callable: ``fresh_import("pkg.mod")``.
+    """
+    import importlib
+    import sys
+
+    def _import(name: str) -> object:
+        for cached in ("_rextio_native", name, name.split(".")[0]):
+            sys.modules.pop(cached, None)
+        importlib.invalidate_caches()
+        return importlib.import_module(name)
+
+    return _import

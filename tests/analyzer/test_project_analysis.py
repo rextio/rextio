@@ -2680,3 +2680,33 @@ def rebind(n: int) -> int:
     assert {function.qualname for function in analysis.rejected_native_functions} == {
         "app.rebind",
     }
+
+
+def test_rejects_parameter_dict_and_subscript_mutation(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def set_key(d: dict[str, int]) -> int:
+    d["k"] = 1
+    return d["k"]
+
+@rextio.native
+def bump_index(xs: list[int], i: int, v: int) -> int:
+    xs[i] += v
+    return xs[i]
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    # Subscript-assign and augmented-subscript on a parameter collection are not
+    # visible to the caller in native Rust either, so both must reject.
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.set_key",
+        "app.bump_index",
+    }
+    assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}

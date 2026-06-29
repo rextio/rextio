@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import importlib
 import json
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
@@ -11,20 +9,12 @@ import pytest
 from rextio.cli.main import main
 
 
-def _fresh_import(name: str) -> object:
-    # Each e2e builds its own `_rextio_native`; evict any cached one (and the app
-    # package) so a prior test's extension module is not reused for this import.
-    for cached in ("_rextio_native", name, name.split(".")[0]):
-        sys.modules.pop(cached, None)
-    importlib.invalidate_caches()
-    return importlib.import_module(name)
-
-
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for native e2e")
 def test_real_cargo_build_native_try_except_finally(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    fresh_import,
 ) -> None:
     (tmp_path / "rextio.toml").write_text(
         """
@@ -86,7 +76,7 @@ def reraises(a: int, b: int) -> int:
     assert report["rejected_native_count"] == 0
 
     monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "build" / "python"))
-    module = _fresh_import("exc_app.ops")
+    module = fresh_import("exc_app.ops")
 
     # No exception: try body runs, then finally.
     assert module.safe_mod(10, 3) == 10 % 3 + 100
@@ -106,6 +96,7 @@ def test_real_cargo_multiple_except_handlers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    fresh_import,
 ) -> None:
     (tmp_path / "rextio.toml").write_text(
         """
@@ -132,7 +123,7 @@ def dispatch(xs: list[int], i: int, d: int) -> int:
     return out
 
 @rextio.native
-def mro_order(d: int) -> int:
+def first_matching_handler(d: int) -> int:
     out = 0
     try:
         out = 10 % d
@@ -154,7 +145,7 @@ def mro_order(d: int) -> int:
     assert report["native_build"]["status"] == "built"
 
     monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "build" / "python"))
-    module = _fresh_import("multi_exc.ops")
+    module = fresh_import("multi_exc.ops")
 
     # Each handler is reachable, and no exception flows through.
     assert module.dispatch([10, 20], 0, 3) == 10 % 3
@@ -162,5 +153,5 @@ def mro_order(d: int) -> int:
     assert module.dispatch([10, 20], 0, 0) == -2  # ZeroDivisionError handler
     # First matching handler wins (ZeroDivisionError is-a ArithmeticError), so
     # the ArithmeticError handler catches the divide-by-zero.
-    assert module.mro_order(0) == 100
-    assert module.mro_order(3) == 10 % 3
+    assert module.first_matching_handler(0) == 100
+    assert module.first_matching_handler(3) == 10 % 3

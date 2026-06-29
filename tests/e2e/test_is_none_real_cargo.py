@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import importlib
 import json
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
@@ -16,6 +14,7 @@ def test_real_cargo_is_none_against_optional(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    fresh_import,
 ) -> None:
     (tmp_path / "rextio.toml").write_text(
         """
@@ -50,10 +49,7 @@ def is_not_none(x: str | None) -> bool:
     assert report["native_build"]["status"] == "built"
 
     monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "build" / "python"))
-    for cached in ("_rextio_native", "none_app", "none_app.ops"):
-        sys.modules.pop(cached, None)
-    importlib.invalidate_caches()
-    module = importlib.import_module("none_app.ops")
+    module = fresh_import("none_app.ops")
 
     assert module.is_none(None) is True
     assert module.is_none(5) is False
