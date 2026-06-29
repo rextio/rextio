@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import warnings
 from collections.abc import Sequence
 
 from rextio.limits import MAX_BUILD_TIMEOUT_SECONDS
@@ -215,6 +216,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # Python hides DeprecationWarning under default filters, so Rextio's own
+    # deprecations (e.g. a plugin's legacy `rules` field) would never reach a CLI
+    # user. Surface ours — they print to stderr — without unmuting third-party noise.
+    warnings.filterwarnings("default", category=DeprecationWarning, module=r"rextio\..*")
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.handler(args))

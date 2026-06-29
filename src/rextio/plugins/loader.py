@@ -108,8 +108,9 @@ def _parse_plugin_metadata(
         raise PluginError(f"unsupported plugin source_language for {plugin_id!r}: {source_language!r}")
     if "rules" in data:
         warnings.warn(
-            f"plugin {plugin_id!r} declares a 'rules' field, which is no longer used; "
-            "Rextio plugins are metadata-only. Remove it from the plugin metadata.",
+            f"Rextio plugin {plugin_id!r} (entry-point group {ENTRY_POINT_GROUP!r}) "
+            "declares a 'rules' field, which is no longer used — plugins are "
+            "metadata-only. Remove 'rules' from the plugin's entry-point metadata.",
             DeprecationWarning,
             stacklevel=2,
         )
