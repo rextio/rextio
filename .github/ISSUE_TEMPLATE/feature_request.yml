@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest a new capability or an expansion of the supported subset.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Rextio's value is a *conservative, correct* subset. Proposals to widen what
+        compiles to native are welcome, but correctness and clear fallback behavior
+        come first. See [docs/stability.md](../blob/main/docs/stability.md).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What are you trying to do that Rextio can't (or rejects) today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: |
+        What should happen — including how it should behave at the native/fallback
+        boundary, and what should still be rejected.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried or other designs you weighed.

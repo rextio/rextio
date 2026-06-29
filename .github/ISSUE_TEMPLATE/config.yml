@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/rextio/rextio/security/policy
+    about: Do not file security issues publicly — follow the security policy (SECURITY.md).
+  - name: Question or discussion
+    url: https://github.com/rextio/rextio/discussions
+    about: For usage questions and open-ended discussion, use Discussions.
