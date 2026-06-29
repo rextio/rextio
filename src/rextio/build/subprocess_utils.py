@@ -175,19 +175,23 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> bool:
         #
         # SIGTERM the group for a graceful shutdown, then *always* SIGKILL the group
         # — even if the direct child already exited — because a grandchild that
-        # ignored SIGTERM would otherwise survive un-killed. Finally reap the child.
-        if not _signal_group(process, signal.SIGTERM):
-            return False  # PermissionError: best-effort direct kill already attempted.
-        try:
-            process.wait(timeout=_TERM_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            pass  # Did not exit gracefully; SIGKILL below.
-        _signal_group(process, signal.SIGKILL)
+        # ignored SIGTERM would otherwise survive un-killed. On a (rare)
+        # PermissionError, `_signal_group` has best-effort killed the direct child;
+        # skip the group SIGKILL (it would fail the same way) but still fall through
+        # to reap so we never leak an unreaped child.
+        group_signalled = _signal_group(process, signal.SIGTERM)
+        if group_signalled:
+            try:
+                process.wait(timeout=_TERM_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass  # Did not exit gracefully; SIGKILL below.
+            _signal_group(process, signal.SIGKILL)
         try:
             process.wait(timeout=_KILL_GRACE_SECONDS)
-            return True
         except subprocess.TimeoutExpired:
             return False  # Stuck (e.g. uninterruptible-sleep `D` state); give up.
+        # Reaped: report True only if we could actually signal the whole group.
+        return group_signalled
     else:  # pragma: no cover - exercised on Windows only.
         # `Popen.kill()` only kills the direct child on Windows; taskkill /T walks
         # the tree.
