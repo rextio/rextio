@@ -2,12 +2,36 @@ from __future__ import annotations
 
 import argparse
 import json
+import warnings
 from pathlib import Path
 
 import pytest
 
-from rextio.cli.main import _positive_number, main
+import rextio.cli.main as cli_main
+from rextio.cli.main import _install_deprecation_filter, _positive_number, main
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
+
+
+def test_deprecation_filter_is_idempotent_and_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli_main, "_REXTIO_WARNING_FILTER_INSTALLED", False)
+    with warnings.catch_warnings():
+        warnings.resetwarnings()
+        baseline = len(warnings.filters)
+        _install_deprecation_filter()
+        _install_deprecation_filter()  # second call must not add a duplicate
+        added = [
+            f
+            for f in warnings.filters
+            if f[2] is DeprecationWarning and f[3] is not None and f[3].pattern == r"rextio($|\.)"
+        ]
+        assert len(warnings.filters) == baseline + 1
+        assert len(added) == 1
+        pattern = added[0][3]
+        # Matches the package and its submodules, not lookalikes.
+        assert pattern.match("rextio")
+        assert pattern.match("rextio.plugins.loader")
+        assert not pattern.match("rextio_extra")
+        assert not pattern.match("rextiofoo")
 
 
 @pytest.mark.parametrize("bad", ["inf", "nan", "0", "-1", "abc", str(MAX_BUILD_TIMEOUT_SECONDS + 1)])

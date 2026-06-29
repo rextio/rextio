@@ -215,11 +215,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+_REXTIO_WARNING_FILTER_INSTALLED = False
+
+
+def _install_deprecation_filter() -> None:
     # Python hides DeprecationWarning under default filters, so Rextio's own
-    # deprecations (e.g. a plugin's legacy `rules` field) would never reach a CLI
-    # user. Surface ours — they print to stderr — without unmuting third-party noise.
-    warnings.filterwarnings("default", category=DeprecationWarning, module=r"rextio\..*")
+    # deprecations (e.g. a plugin's legacy `rules` field) would never reach a CLI user.
+    # Surface ours — they print to stderr — without unmuting third-party noise. The
+    # module pattern is `rextio($|\.)` so it matches the `rextio` package and its
+    # submodules but NOT lookalikes like `rextio_extra`. Installed once so repeated
+    # in-process `main()` calls don't accumulate duplicate global filter entries.
+    global _REXTIO_WARNING_FILTER_INSTALLED
+    if _REXTIO_WARNING_FILTER_INSTALLED:
+        return
+    warnings.filterwarnings("default", category=DeprecationWarning, module=r"rextio($|\.)")
+    _REXTIO_WARNING_FILTER_INSTALLED = True
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    _install_deprecation_filter()
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.handler(args))
