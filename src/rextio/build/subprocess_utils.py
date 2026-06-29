@@ -70,9 +70,9 @@ def run_build_tool(
     # than silently treated as a 0/1-second timeout. Reject non-positive values
     # (they fail the build instantly) and clamp `inf`/over-cap down to the maximum.
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
-        raise ValueError(f"build timeout must be a positive number, got {timeout!r}")
+        raise ValueError(f"build timeout must be a finite positive number, got {timeout!r}")
     if math.isnan(timeout) or timeout <= 0:
-        raise ValueError(f"build timeout must be a positive number, got {timeout!r}")
+        raise ValueError(f"build timeout must be a finite positive number, got {timeout!r}")
     if timeout > MAX_BUILD_TIMEOUT_SECONDS:
         timeout = float(MAX_BUILD_TIMEOUT_SECONDS)
     with _start_process(command, cwd) as process:

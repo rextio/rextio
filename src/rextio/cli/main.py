@@ -233,7 +233,7 @@ def _positive_number(value: str) -> float:
     if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("must be a finite positive number")
     if parsed > MAX_BUILD_TIMEOUT_SECONDS:
-        raise argparse.ArgumentTypeError(f"must be at most {MAX_BUILD_TIMEOUT_SECONDS:g} seconds")
+        raise argparse.ArgumentTypeError(f"must be at most {MAX_BUILD_TIMEOUT_SECONDS} seconds")
     return parsed
 
 

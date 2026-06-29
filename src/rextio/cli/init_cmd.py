@@ -3,12 +3,17 @@ from __future__ import annotations
 from argparse import Namespace
 from pathlib import Path
 
-DEFAULT_CONFIG = """[build]
+from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS
+
+# f-string so the timeout default tracks rextio.limits rather than drifting; the
+# `{{ }}` in the inline-table comment examples are escaped braces (rendered as
+# single braces in the generated toml).
+DEFAULT_CONFIG = f"""[build]
 native_backend = "rust"
 fallback_backend = "cpython"
 fallback_threshold = 1000
 # Per-invocation timeout (seconds) for external build tools (cargo/maturin/nuitka).
-build_timeout_seconds = 600
+build_timeout_seconds = {DEFAULT_BUILD_TIMEOUT_SECONDS}
 
 [rust]
 binding = "pyo3"
@@ -32,8 +37,8 @@ enabled = []
 default_external_policy = "fallback"
 
 [imports.packages]
-# "some_pkg" = { policy = "try-native", max_depth = 1 }
-# "known_pkg" = { policy = "plugin", plugin = "known-rust" }
+# "some_pkg" = {{ policy = "try-native", max_depth = 1 }}
+# "known_pkg" = {{ policy = "plugin", plugin = "known-rust" }}
 
 [jit]
 enabled = false

@@ -242,7 +242,7 @@ def test_build_timeout_seconds_rejects_inf_and_nan(tmp_path: Path) -> None:
 
 def test_build_timeout_seconds_rejects_absurdly_large_values(tmp_path: Path) -> None:
     # A finite but absurd timeout effectively disables the bound and overflows the
-    # C-level select timeout; reject anything past the one-year cap.
+    # C-level select timeout; reject anything past the 7-day cap.
     from rextio.build.subprocess_utils import MAX_BUILD_TIMEOUT_SECONDS
 
     too_big = MAX_BUILD_TIMEOUT_SECONDS + 1
