@@ -24,7 +24,7 @@ _RUST_STRING_ESCAPES = {
 
 
 def rust_string_literal(value: str) -> str:
-    """Render a Python ``str`` as a Rust string literal that is always valid.
+    r"""Render a Python ``str`` as a Rust string literal that is always valid.
 
     Unlike ``json.dumps`` (which emits ``\\uXXXX`` / surrogate-pair escapes that
     Rust does not accept), this escapes only the characters that must be escaped

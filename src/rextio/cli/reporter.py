@@ -60,7 +60,7 @@ class Reporter:
         return self.output_format == "json"
 
     def info(self, message: str = "") -> None:
-        """Normal status output to stdout (hidden when quiet or in JSON mode)."""
+        """Emit normal status output to stdout (hidden when quiet or in JSON mode)."""
         if self.json or self.verbosity < Verbosity.NORMAL:
             return
         print(message, file=self._stdout)
