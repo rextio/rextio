@@ -2547,3 +2547,31 @@ def return_in_try(xs: list[int]) -> int:
         function.native_runtime_semantics
         for function in analysis.accepted_native_functions
     )
+
+
+def test_reports_all_boundary_errors_per_function(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def helper_a(x: int) -> int:
+    return x
+
+def helper_b(x: int) -> int:
+    return x
+
+@rextio.native
+def caller(x: int) -> int:
+    return helper_a(x) + helper_b(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {function.qualname: function for function in analysis.rejected_native_functions}
+    assert "app.caller" in rejected
+    # Both fallback-only calls are reported at once, not just the first.
+    codes = [diagnostic.code for diagnostic in rejected["app.caller"].error_diagnostics]
+    assert codes == ["RXT070", "RXT070"]

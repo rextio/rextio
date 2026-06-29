@@ -69,14 +69,15 @@ def apply_boundary_checks(
                         )
                     changed = True
                     continue
-                diagnostic = _first_boundary_error(
+                boundary_errors = _boundary_errors(
                     module,
                     function,
                     resolver,
                     native_jit_enabled=native_jit_enabled,
                 )
-                if diagnostic is not None:
-                    function.add_diagnostic(diagnostic)
+                if boundary_errors:
+                    for diagnostic in boundary_errors:
+                        function.add_diagnostic(diagnostic)
                     function.accepted = False
                     changed = True
 
@@ -84,15 +85,16 @@ def apply_boundary_checks(
         _add_python_loop_boundary_warnings(analysis, resolver)
 
 
-def _first_boundary_error(
+def _boundary_errors(
     module: ModuleAnalysis,
     function: FunctionAnalysis,
     resolver: FunctionResolver,
     native_jit_enabled: bool = False,
-) -> Diagnostic | None:
+) -> list[Diagnostic]:
+    if function.native_runtime_semantics:
+        return []
+    diagnostics: list[Diagnostic] = []
     for call in function.calls:
-        if function.native_runtime_semantics:
-            return None
         target = call.target
         resolved = resolver.resolve(module, target)
         if target in SUPPORTED_INTERNAL_CALLS or target.endswith(".append"):
@@ -101,46 +103,54 @@ def _first_boundary_error(
         if native_jit_enabled and dependency is not None and dependency.is_jit_candidate:
             continue
         if dependency is not None and not dependency.is_native_candidate:
-            return Diagnostic(
-                code="RXT070",
-                severity="error",
-                message=f"native function calls fallback-only function: {resolved.resolved_target}",
-                file_path=function.file_path,
-                line=call.line,
-                column=call.column,
-                function_name=function.qualname,
-                suggestion=(
-                    "Mark the dependency as @rextio.native if it belongs to the supported subset, "
-                    "or remove the call from the native function."
-                ),
+            diagnostics.append(
+                Diagnostic(
+                    code="RXT070",
+                    severity="error",
+                    message=f"native function calls fallback-only function: {resolved.resolved_target}",
+                    file_path=function.file_path,
+                    line=call.line,
+                    column=call.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "Mark the dependency as @rextio.native if it belongs to the supported subset, "
+                        "or remove the call from the native function."
+                    ),
+                )
             )
+            continue
         if dependency is not None and not dependency.accepted:
-            return Diagnostic(
-                code="RXT072",
-                severity="error",
-                message=f"native dependency rejected, so caller must fall back: {resolved.resolved_target}",
-                file_path=function.file_path,
-                line=call.line,
-                column=call.column,
-                function_name=function.qualname,
-                suggestion="Fix the rejected native dependency or keep this caller on fallback.",
+            diagnostics.append(
+                Diagnostic(
+                    code="RXT072",
+                    severity="error",
+                    message=f"native dependency rejected, so caller must fall back: {resolved.resolved_target}",
+                    file_path=function.file_path,
+                    line=call.line,
+                    column=call.column,
+                    function_name=function.qualname,
+                    suggestion="Fix the rejected native dependency or keep this caller on fallback.",
+                )
             )
+            continue
         if dependency is not None:
             continue
 
         decision = decision_for_target(module, resolved.resolved_target)
         message, suggestion = _external_call_diagnostic_text(resolved.resolved_target, call.in_loop, decision)
-        return Diagnostic(
-            code="RXT030",
-            severity="error",
-            message=message,
-            file_path=function.file_path,
-            line=call.line,
-            column=call.column,
-            function_name=function.qualname,
-            suggestion=suggestion,
+        diagnostics.append(
+            Diagnostic(
+                code="RXT030",
+                severity="error",
+                message=message,
+                file_path=function.file_path,
+                line=call.line,
+                column=call.column,
+                function_name=function.qualname,
+                suggestion=suggestion,
+            )
         )
-    return None
+    return diagnostics
 
 
 def _external_call_diagnostic_text(target: str, in_loop: bool, decision) -> tuple[str, str]:
