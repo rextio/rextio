@@ -1254,6 +1254,32 @@ def compute(crate: object) -> object:
     assert "crate" not in signature.group(0)
 
 
+def test_class_method_runtime_shim_emits_generic_signature(tmp_path: Path) -> None:
+    # Codegen coverage for the class-method shim path (`_collect_native_methods`): a
+    # marked dynamic method lowers to a generic `(py, args, kwargs)` shim named after
+    # the sanitized qualname (`app__Widget__compute`), with no Rust parameter named
+    # after the keyword parameter.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+class Widget:
+    @rextio.native
+    def compute(self, crate: object) -> object:
+        return getattr(crate, "value")
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "rextio_call_python_runtime(" in source
+    signature = re.search(r"fn app__Widget__compute\((?s:.*?)\)\s*->", source)
+    assert signature is not None
+    assert "args" in signature.group(0) and "kwargs" in signature.group(0)
+    assert "crate" not in signature.group(0)
+
+
 def test_sequence_indexing_is_bounds_checked_and_normalizes_negatives(tmp_path: Path) -> None:
     # Generated list indexing must preserve Python semantics: a negative index
     # counts from the end, and an out-of-range index raises IndexError instead
