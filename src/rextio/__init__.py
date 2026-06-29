@@ -55,7 +55,8 @@ def _require_decoratable(func: object, decorator: str) -> None:
         raise TypeError(
             f"@rextio.{decorator} can only decorate functions and methods, "
             f"not {type(func).__name__} objects; apply @rextio.{decorator} directly to "
-            f"the function, beneath @staticmethod/@classmethod"
+            f"the function (e.g. as the innermost decorator, below "
+            f"@staticmethod/@classmethod)"
         )
 
 

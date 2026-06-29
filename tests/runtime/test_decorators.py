@@ -109,7 +109,7 @@ def test_native_decorator_rejects_descriptors_and_callable_instances() -> None:
 
 
 def test_native_decorator_rejection_message_hints_at_the_workaround() -> None:
-    with pytest.raises(TypeError, match="beneath @staticmethod/@classmethod"):
+    with pytest.raises(TypeError, match="innermost decorator, below @staticmethod/@classmethod"):
         rextio.native(staticmethod(lambda: 1))  # type: ignore[arg-type]
 
 
