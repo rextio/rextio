@@ -382,7 +382,7 @@ def _apply_environment_overrides(
     }
     for env_name, (section, key, kind) in ENVIRONMENT_OVERRIDES.items():
         raw_value = environ.get(env_name)
-        if raw_value in {None, ""}:
+        if raw_value is None or raw_value == "":
             continue
         sections[section][key] = _parse_environment_value(env_name, raw_value, kind)
 

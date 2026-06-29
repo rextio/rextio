@@ -6,7 +6,7 @@ from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS
 from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
 
 
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: dict[str, dict[str, object]] = {
     "build": {
         "native_backend": "rust",
         "fallback_backend": "cpython",
