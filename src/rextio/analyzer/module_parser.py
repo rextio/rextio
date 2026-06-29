@@ -421,11 +421,23 @@ def _runtime_semantics_function(
     # qualifies for the shim.
     _validate_function_name(node, function)
     if function.error_diagnostics:
-        function.accepted = False
-        function.native_runtime_semantics = False
+        _mark_shim_rejected(function)
         return function
     _add_runtime_semantics_warning(function, node)
     return function
+
+
+def _mark_shim_rejected(function: FunctionAnalysis) -> None:
+    """Drop a shim candidate to Python fallback after a failed name validation.
+
+    The shim builders pre-set ``native_runtime_semantics=True`` before validating the
+    name; clearing it together with ``accepted`` keeps a rejected function from looking
+    like a live shim to any consumer that reads the flag without also checking
+    ``accepted``. Centralized so a future rejection site cannot reintroduce the
+    ``accepted is False and native_runtime_semantics is True`` inconsistency.
+    """
+    function.accepted = False
+    function.native_runtime_semantics = False
 
 
 def _add_runtime_semantics_warning(
@@ -560,8 +572,7 @@ def _collect_native_methods(
             # `_classify_native_function` / `_runtime_semantics_function`).
             _validate_function_name(child, function)
             if function.error_diagnostics:
-                function.accepted = False
-                function.native_runtime_semantics = False
+                _mark_shim_rejected(function)
                 functions.append(function)
                 continue
             _add_runtime_semantics_warning(function, child)
