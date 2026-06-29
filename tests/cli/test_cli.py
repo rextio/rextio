@@ -9,14 +9,13 @@ from typing import Any, cast
 import pytest
 
 from rextio.cli.main import (
+    _REXTIO_DEPRECATION_MODULE,
     _install_deprecation_filter,
     _positive_number,
     _rextio_deprecation_filter_present,
     main,
 )
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
-
-_REXTIO_DEPRECATION_PATTERN = r"rextio($|\.)"
 
 
 def _installed_rextio_filters() -> list[tuple]:
@@ -25,7 +24,7 @@ def _installed_rextio_filters() -> list[tuple]:
     return [
         f
         for f in warnings.filters
-        if f[2] is DeprecationWarning and getattr(f[3], "pattern", f[3]) == _REXTIO_DEPRECATION_PATTERN
+        if f[2] is DeprecationWarning and getattr(f[3], "pattern", f[3]) == _REXTIO_DEPRECATION_MODULE
     ]
 
 
@@ -105,13 +104,16 @@ def test_deprecation_filter_presence_handles_str_and_none_module_elements() -> N
         warnings.resetwarnings()
         # warnings.filters is typed as an immutable Sequence but is a mutable list at
         # runtime; we craft synthetic entries (str / None module elements) it can't model.
+        # Use action="default" so each entry passes the presence check's action gate and
+        # actually reaches the defensive `getattr(module, ...)` read (an "ignore" action
+        # would short-circuit before it, leaving the str/None branches unexercised).
         filters = cast("list[Any]", warnings.filters)
         filters[:] = [
-            ("ignore", None, DeprecationWarning, None, 0),  # module is None
-            ("ignore", None, DeprecationWarning, "rextio_extra", 0),  # module is a str
+            ("default", None, DeprecationWarning, None, 0),  # module is None
+            ("default", None, DeprecationWarning, "rextio_extra", 0),  # module is a non-matching str
         ]
         assert _rextio_deprecation_filter_present() is False
-        filters.insert(0, ("default", None, DeprecationWarning, _REXTIO_DEPRECATION_PATTERN, 0))
+        filters.insert(0, ("default", None, DeprecationWarning, _REXTIO_DEPRECATION_MODULE, 0))
         assert _rextio_deprecation_filter_present() is True
 
 
