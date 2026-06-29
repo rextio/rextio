@@ -446,6 +446,12 @@ def _parse_package_policy_map(raw_value: str) -> dict[str, dict[str, object]]:
         package, policy = item.split("=", 1)
         if not package:
             raise ConfigError("environment variable REXTIO_IMPORTS_PACKAGES must not contain empty package names")
+        if policy == "plugin":
+            raise ConfigError(
+                f"REXTIO_IMPORTS_PACKAGES {package}=plugin is not supported: the 'plugin' "
+                "policy needs a plugin name, so configure it in rextio.toml under "
+                f'[imports.packages.{package}] with plugin = "..." instead.'
+            )
         values[package] = {"policy": policy}
     return values
 
