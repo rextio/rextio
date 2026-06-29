@@ -43,6 +43,22 @@ def log_f(x: float) -> float:
 @rextio.native
 def acos_f(x: float) -> float:
     return math.acos(x)
+
+@rextio.native
+def log2_f(x: float) -> float:
+    return math.log2(x)
+
+@rextio.native
+def log10_f(x: float) -> float:
+    return math.log10(x)
+
+@rextio.native
+def asin_f(x: float) -> float:
+    return math.asin(x)
+
+@rextio.native
+def logbase_f(x: float, base: float) -> float:
+    return math.log(x, base)
 """,
         encoding="utf-8",
     )
@@ -72,7 +88,10 @@ def acos_f(x: float) -> float:
     cases = [
         (module.sqrt_f, math.sqrt, [4.0, 0.0, inf, nan]),
         (module.log_f, math.log, [math.e, 1.0, inf, nan]),
+        (module.log2_f, math.log2, [8.0, 1.0, inf, nan]),
+        (module.log10_f, math.log10, [100.0, 1.0, inf, nan]),
         (module.acos_f, math.acos, [0.5, -1.0, 1.0, nan]),
+        (module.asin_f, math.asin, [0.5, -1.0, 1.0, nan]),
     ]
     for native_fn, cpython_fn, ok_inputs in cases:
         for value in ok_inputs:
@@ -83,12 +102,28 @@ def acos_f(x: float) -> float:
             else:
                 assert native == expected, (native_fn, value)
 
-    # Out-of-domain inputs must raise ValueError natively, just like CPython.
+    # 2-arg math.log(x, base): the base is also constrained — nan/inf bases are
+    # valid (CPython returns nan / 0.0), base <= 0 raises ValueError, base == 1
+    # raises ZeroDivisionError.
+    assert module.logbase_f(8.0, 2.0) == math.log(8.0, 2.0)
+    assert module.logbase_f(8.0, inf) == math.log(8.0, inf)  # 0.0
+    assert math.isnan(module.logbase_f(8.0, nan))
+
+    # Out-of-domain inputs must raise the same exception natively as CPython.
     for native_fn, bad in [
         (module.sqrt_f, -1.0),
         (module.log_f, 0.0),
         (module.log_f, -1.0),
+        (module.log2_f, 0.0),
+        (module.log10_f, -1.0),
         (module.acos_f, 2.0),
+        (module.asin_f, -2.0),
     ]:
         with pytest.raises(ValueError):
             native_fn(bad)
+    with pytest.raises(ValueError):
+        module.logbase_f(8.0, 0.0)
+    with pytest.raises(ValueError):
+        module.logbase_f(8.0, -1.0)
+    with pytest.raises(ZeroDivisionError):
+        module.logbase_f(8.0, 1.0)

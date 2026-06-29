@@ -13,7 +13,7 @@ from __future__ import annotations
 _CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
 _CHECKED_HELPER_ORDER = (
     "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i",
-    "mnonneg", "mpositive", "munit",
+    "mnonneg", "mpositive", "munit", "mlogbase",
 )
 
 
@@ -180,6 +180,24 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
                 [
                     f"fn {fn}(value: f64) -> {fret} {{",
                     f"    if {condition} {{",
+                    f'        Err({value_err("math domain error")})',
+                    "    } else {",
+                    "        Ok(value)",
+                    "    }",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "mlogbase":
+            # `math.log(x, base)` base domain: CPython raises ZeroDivisionError
+            # for base == 1 (log(1) is 0) and ValueError for base <= 0. A nan/inf
+            # base is valid (returns nan / 0.0), so it passes through.
+            lines.extend(
+                [
+                    f"fn {fn}(value: f64) -> {fret} {{",
+                    "    if value == 1.0 {",
+                    f'        Err({zero_div_err("float division by zero")})',
+                    "    } else if value <= 0.0 {",
                     f'        Err({value_err("math domain error")})',
                     "    } else {",
                     "        Ok(value)",

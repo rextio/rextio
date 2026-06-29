@@ -1352,6 +1352,10 @@ def root(x: float) -> float:
 @rextio.native
 def logarithm(x: float) -> float:
     return math.log(x)
+
+@rextio.native
+def logarithm_base(x: float, base: float) -> float:
+    return math.log(x, base)
 """,
         encoding="utf-8",
     )
@@ -1369,3 +1373,8 @@ def logarithm(x: float) -> float:
     assert "fn __rextio_checked_mpositive(value: f64)" in source
     assert "if value <= 0.0 {" in source
     assert 'PyValueError::new_err("math domain error")' in source
+    # The 2-arg log(x, base) also guards the base (ZeroDivisionError for base==1,
+    # ValueError for base<=0).
+    assert "__rextio_checked_mpositive(x)?.log(__rextio_checked_mlogbase(base)?)" in source
+    assert "fn __rextio_checked_mlogbase(value: f64)" in source
+    assert "if value == 1.0 {" in source

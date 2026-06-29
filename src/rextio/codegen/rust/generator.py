@@ -1243,9 +1243,14 @@ class _FunctionRenderer:
             if len(expr.args) == 1:
                 return f"__rextio_checked_mpositive({self.render_expr(expr.args[0])})?.ln()"
             if len(expr.args) == 2:
+                # `math.log(x, base)` also constrains the base: CPython raises
+                # ValueError for base <= 0 and ZeroDivisionError for base == 1
+                # (log(base) is 0). x is validated first (its receiver `?` runs
+                # before the argument), matching CPython's check order.
+                self.used_helpers.add("mlogbase")
                 return (
                     f"__rextio_checked_mpositive({self.render_expr(expr.args[0])})?"
-                    f".log({self.render_expr(expr.args[1])})"
+                    f".log(__rextio_checked_mlogbase({self.render_expr(expr.args[1])})?)"
                 )
         if expr.function == "math.atan2" and len(expr.args) == 2:
             return f"({self.render_expr(expr.args[0])}).atan2({self.render_expr(expr.args[1])})"
