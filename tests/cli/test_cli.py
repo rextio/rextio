@@ -12,6 +12,39 @@ from rextio.cli.main import _install_deprecation_filter, _positive_number, main
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
 
 
+def test_main_surfaces_plugin_rules_deprecation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End-to-end: a `rextio check` run that discovers a plugin declaring a legacy
+    # `rules` field must SURFACE the DeprecationWarning — i.e. the CLI's filter
+    # actually unhides it (overrides Python's default-ignore), not merely installs a
+    # filter object. We start from an "ignore" baseline and capture which warnings the
+    # filter machinery decides to *show* via a recording showwarning hook (this is what
+    # writing to stderr means, without fighting pytest's own warning capture).
+    from rextio.plugins import loader as plugin_loader
+
+    class _FakeEntryPoint:
+        name = "legacy-plugin"
+
+        def load(self) -> dict[str, object]:
+            return {"target_language": "rust", "packages": ["x"], "rules": ["y"]}
+
+    monkeypatch.setattr(plugin_loader, "_plugin_entry_points", lambda _eps: (_FakeEntryPoint(),))
+    # Reset the install guard so main() registers the filter inside our scope.
+    monkeypatch.setattr(cli_main, "_REXTIO_WARNING_FILTER_INSTALLED", False)
+    (tmp_path / "app.py").write_text("def f(x: int) -> int:\n    return x\n", encoding="utf-8")
+
+    shown: list[str] = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)  # Python's default baseline
+        monkeypatch.setattr(warnings, "showwarning", lambda message, *a, **k: shown.append(str(message)))
+        exit_code = main(["check", str(tmp_path), "--no-report"])
+
+    assert exit_code == 0
+    # The plugin `rules` deprecation was shown despite the ignore baseline.
+    assert any("no longer used" in message and "legacy-plugin" in message for message in shown)
+
+
 def test_deprecation_filter_is_idempotent_and_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_main, "_REXTIO_WARNING_FILTER_INSTALLED", False)
     with warnings.catch_warnings():
