@@ -1,3 +1,5 @@
+"""Rust/PyO3 source generation from the Rextio IR."""
+
 from __future__ import annotations
 
 import re
@@ -86,6 +88,7 @@ from rextio.ir.types import (
 
 
 def generate_rust_module(module_ir: ModuleIR) -> str:
+    """Generate the PyO3 extension-module Rust source for a lowered module."""
     names_by_qualname = {
         function.qualname: rust_identifier(native_function_name(function.qualname))
         for function in module_ir.functions
@@ -142,6 +145,7 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
 
 
 def generate_rust_crate_module(module_ir: ModuleIR) -> str:
+    """Generate the Rust-importable crate source for a lowered module."""
     direct_functions = [
         function
         for function in module_ir.functions
@@ -176,6 +180,7 @@ def generate_rust_crate_module(module_ir: ModuleIR) -> str:
 
 
 def rust_identifier(value: str) -> str:
+    """Return a valid Rust identifier for a name, escaping keywords as raw identifiers."""
     identifier = re.sub(r"[^0-9a-zA-Z_]", "_", value)
     if not identifier:
         raise RustCodegenError("empty Rust identifier")
@@ -1747,6 +1752,7 @@ def _comprehension_assigned_names(
 
 
 def target_names(target: TargetIR) -> set[str]:
+    """Return the set of names bound by an assignment target."""
     if isinstance(target, NameIR):
         return {target.id}
     if isinstance(target, TupleTargetIR):
@@ -1755,18 +1761,21 @@ def target_names(target: TargetIR) -> set[str]:
 
 
 def literal_int(expr: ExprIR) -> int | None:
+    """Return the integer value of an expression if it is an int literal, else None."""
     if isinstance(expr, LiteralIR) and isinstance(expr.value, int) and not isinstance(expr.value, bool):
         return expr.value
     return None
 
 
 def same_type(left: RxtType | None, right: RxtType | None) -> bool:
+    """Report whether two optional Rextio types are equal."""
     if left is None or right is None:
         return False
     return left.to_dict() == right.to_dict()
 
 
 def is_copy_rust_type(value_type: RxtType | None) -> bool:
+    """Report whether a value type lowers to a Copy Rust type."""
     if isinstance(value_type, (RxtBool, RxtFloat, RxtInt, RxtNone)):
         return True
     if isinstance(value_type, RxtOptional):

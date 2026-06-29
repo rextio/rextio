@@ -1,3 +1,5 @@
+"""Eligibility check for the experimental Cranelift scalar JIT."""
+
 from __future__ import annotations
 
 import ast
@@ -14,6 +16,7 @@ def is_cranelift_jit_candidate(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
 ) -> tuple[bool, str]:
+    """Report whether a typed scalar function is eligible for the experimental Cranelift JIT, with a reason."""
     if function.error_diagnostics:
         return False, "native subset validation failed"
     signature_types = _signature_types(node, function)
@@ -44,7 +47,7 @@ def is_cranelift_jit_candidate(
 
 
 def _has_overflow_prone_int_arithmetic(node: ast.AST) -> bool:
-    """True if the expression contains i64 arithmetic that can overflow.
+    """Report whether the expression contains i64 arithmetic that can overflow.
 
     Addition, subtraction, multiplication, modulo and unary negation on a
     fixed-width i64 can overflow (or, for modulo, divide by zero); the

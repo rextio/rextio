@@ -1,3 +1,5 @@
+"""Analysis of supported module top-level native-initialization code."""
+
 from __future__ import annotations
 
 import ast
@@ -25,12 +27,14 @@ TOP_LEVEL_NATIVE_NAME = "__rextio_top_level__"
 
 
 def top_level_qualname(module_name: str) -> str:
+    """Return the synthetic qualname for a module's top-level native init."""
     if module_name:
         return f"{module_name}.{TOP_LEVEL_NATIVE_NAME}"
     return TOP_LEVEL_NATIVE_NAME
 
 
 def collect_native_top_level_statements(tree: ast.Module) -> list[ast.stmt]:
+    """Return the module-level statements eligible for native top-level lowering."""
     statements: list[ast.stmt] = []
     for index, statement in enumerate(tree.body):
         if _is_module_metadata_statement(index, statement):
@@ -51,6 +55,7 @@ def collect_native_top_level_statements(tree: ast.Module) -> list[ast.stmt]:
 
 
 def analyze_native_top_level(tree: ast.Module, module: ModuleAnalysis) -> TopLevelAnalysis | None:
+    """Analyze a module's top-level code as a native-init candidate, or None."""
     statements = collect_native_top_level_statements(tree)
     if not statements:
         return None

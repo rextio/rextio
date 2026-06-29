@@ -1,3 +1,5 @@
+"""Resolution of the target plan (spec + active plugins)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,15 +12,20 @@ from rextio.targets.models import SUPPORTED_TARGET_LANGUAGES, TargetSpec, normal
 
 
 class TargetPlanError(RuntimeError):
+    """Raised when a target plan cannot be resolved."""
+
     pass
 
 
 @dataclass(frozen=True)
 class TargetPlan:
+    """The resolved target plan: spec and active plugins."""
+
     spec: TargetSpec
     plugins: PluginRegistry
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this plan."""
         return {
             "spec": self.spec.to_dict(),
             "plugins": self.plugins.to_dict(),
@@ -26,6 +33,7 @@ class TargetPlan:
 
 
 def create_target_plan(project_root: Path, config: RextioConfig) -> TargetPlan:
+    """Resolve the target plan for a project and configuration."""
     target = create_target_spec(config)
     try:
         plugins = load_plugin_registry(config.plugins, target)
@@ -36,10 +44,12 @@ def create_target_plan(project_root: Path, config: RextioConfig) -> TargetPlan:
 
 
 def default_target_plan() -> TargetPlan:
+    """Return the default target plan (Rust, no plugins)."""
     return TargetPlan(spec=TargetSpec(), plugins=PluginRegistry())
 
 
 def create_target_spec(config: RextioConfig) -> TargetSpec:
+    """Resolve the target spec from configuration."""
     language = normalize_target_language(config.build.native_backend)
     if language not in SUPPORTED_TARGET_LANGUAGES:
         options = ", ".join(sorted(SUPPORTED_TARGET_LANGUAGES))

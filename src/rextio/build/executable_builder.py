@@ -1,3 +1,5 @@
+"""Building executable artifacts (zipapp / Nuitka)."""
+
 from __future__ import annotations
 
 import re
@@ -10,6 +12,8 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class ExecutableBuildResult:
+    """The outcome of building an executable artifact."""
+
     status: str
     path: str | None
     message: str
@@ -20,6 +24,7 @@ class ExecutableBuildResult:
     stderr: str = ""
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this result."""
         return {
             "status": self.status,
             "path": self.path,
@@ -33,6 +38,7 @@ class ExecutableBuildResult:
 
 
 def skipped_executable(message: str) -> ExecutableBuildResult:
+    """Return a result marking the executable build as skipped."""
     return ExecutableBuildResult(
         status="skipped",
         path=None,
@@ -46,6 +52,7 @@ def build_zipapp_executable(
     entrypoint: str | None,
     executable_name: str | None = None,
 ) -> ExecutableBuildResult:
+    """Build a zipapp executable from the entrypoint and return the result."""
     if entrypoint is None:
         return skipped_executable("No executable entrypoint was requested.")
     if not python_dir.exists():
@@ -109,6 +116,7 @@ def build_nuitka_executable(
     *,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> ExecutableBuildResult:
+    """Build a Nuitka executable from the entrypoint and return the result."""
     if entrypoint is None:
         return skipped_executable("No executable entrypoint was requested.")
     if not python_dir.exists():

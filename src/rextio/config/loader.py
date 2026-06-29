@@ -1,3 +1,5 @@
+"""Loading and overriding rextio.toml configuration."""
+
 from __future__ import annotations
 
 import math
@@ -25,6 +27,8 @@ from rextio.config.schema import (
 
 
 class ConfigError(RuntimeError):
+    """Raised when configuration is invalid or cannot be loaded."""
+
     pass
 
 
@@ -92,6 +96,7 @@ def load_config(
     project_root: Path,
     environ: Mapping[str, str] | None = None,
 ) -> RextioConfig:
+    """Load the project configuration from rextio.toml and the environment."""
     path = project_root / "rextio.toml"
     raw: dict[str, object] = dict(DEFAULT_CONFIG)
     if path.exists():
@@ -134,6 +139,7 @@ def override_config(
     config: RextioConfig,
     overrides: Mapping[tuple[str, str], object | None],
 ) -> RextioConfig:
+    """Apply CLI/programmatic overrides on top of a loaded config."""
     build = asdict(config.build)
     rust = asdict(config.rust)
     fallback = asdict(config.fallback)

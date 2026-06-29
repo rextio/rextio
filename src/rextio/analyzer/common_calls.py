@@ -1,3 +1,5 @@
+"""Recognition of supported stdlib/builtin call targets for direct-Rust lowering."""
+
 from __future__ import annotations
 
 import ast
@@ -153,6 +155,7 @@ def canonical_call_target(
     imports: dict[str, str],
     logger_names: set[str] | tuple[str, ...] = (),
 ) -> str | None:
+    """Return the canonical dotted target of a call, or None if it is not a recognized form."""
     chained_target = canonical_chained_call(node, imports)
     if chained_target is not None:
         return chained_target
@@ -173,6 +176,7 @@ def canonical_simple_call_target(
     imports: dict[str, str],
     logger_names: set[str] | tuple[str, ...] = (),
 ) -> str:
+    """Return the canonical target of a simple name/attribute call, or None."""
     if target == "print":
         return target
 
@@ -188,6 +192,7 @@ def canonical_simple_call_target(
 
 
 def canonical_attribute_target(node: ast.Attribute, imports: dict[str, str]) -> str | None:
+    """Return the canonical dotted name of an attribute access, or None."""
     raw_target = dotted_name(node)
     if raw_target is None:
         return None
@@ -195,6 +200,7 @@ def canonical_attribute_target(node: ast.Attribute, imports: dict[str, str]) -> 
 
 
 def canonical_chained_call(node: ast.Call, imports: dict[str, str]) -> str | None:
+    """Return the canonical target of a supported chained call (e.g. hashlib), or None."""
     if not isinstance(node.func, ast.Attribute):
         return None
     receiver = node.func.value
@@ -211,6 +217,7 @@ def canonical_chained_call(node: ast.Call, imports: dict[str, str]) -> str | Non
 
 
 def canonical_datetime_terminal_call(node: ast.Call, imports: dict[str, str]) -> str | None:
+    """Return the canonical target of a supported datetime terminal call, or None."""
     if not isinstance(node.func, ast.Attribute) or node.func.attr not in {"isoformat", "timestamp"}:
         return None
     receiver = node.func.value
@@ -226,6 +233,7 @@ def canonical_datetime_terminal_call(node: ast.Call, imports: dict[str, str]) ->
 
 
 def canonical_method_call(node: ast.Call, imports: dict[str, str]) -> str | None:
+    """Return the canonical target of a supported str/bytes/list method call, or None."""
     if not isinstance(node.func, ast.Attribute):
         return None
     attr = node.func.attr
@@ -239,6 +247,7 @@ def canonical_method_call(node: ast.Call, imports: dict[str, str]) -> str | None
 
 
 def is_logging_get_logger_call(node: ast.AST, imports: dict[str, str]) -> bool:
+    """Report whether the node is a logging.getLogger(...) call."""
     if not isinstance(node, ast.Call):
         return False
     raw_target = dotted_name(node.func)
@@ -252,6 +261,7 @@ def is_supported_effect_call(
     imports: dict[str, str],
     logger_names: set[str] | tuple[str, ...] = (),
 ) -> bool:
+    """Report whether a call is a supported statement-level effect (e.g. list.append, logging)."""
     if not isinstance(node, ast.Call):
         return False
     target = canonical_call_target(node, imports, logger_names)
@@ -259,6 +269,7 @@ def is_supported_effect_call(
 
 
 def resolve_import_target(target: str, imports: dict[str, str]) -> str:
+    """Resolve a target name through import aliases to its canonical dotted path."""
     head, separator, tail = target.partition(".")
     imported = imports.get(head)
     if imported is None:

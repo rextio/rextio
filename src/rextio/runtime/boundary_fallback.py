@@ -1,3 +1,5 @@
+"""Runtime boundary-fallback threshold tracking."""
+
 from __future__ import annotations
 
 import os
@@ -20,6 +22,7 @@ _STATE = _BoundaryFallbackState()
 
 
 def boundary_fallback_threshold(default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD) -> int:
+    """Return the effective boundary-fallback threshold."""
     raw_value = os.environ.get(THRESHOLD_ENV)
     if raw_value in {None, ""}:
         return _valid_default_threshold(default_threshold)
@@ -33,6 +36,7 @@ def boundary_fallback_threshold(default_threshold: int = DEFAULT_BOUNDARY_FALLBA
 
 
 def boundary_fallback_disabled(default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD) -> bool:
+    """Report whether boundary fallback is disabled."""
     return os.environ.get(DISABLE_ENV) == "1" or boundary_fallback_threshold(default_threshold) == 0
 
 
@@ -40,6 +44,7 @@ def boundary_fallback_required(
     function_name: str,
     default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
 ) -> bool:
+    """Report whether a function has crossed the boundary-fallback threshold."""
     threshold = boundary_fallback_threshold(default_threshold)
     if threshold == 0 or os.environ.get(DISABLE_ENV) == "1":
         return False
@@ -57,11 +62,13 @@ def boundary_fallback_required(
 
 
 def boundary_fallback_count(function_name: str) -> int:
+    """Return the recorded boundary-crossing count for a function."""
     with _STATE.lock:
         return _STATE.counts.get(function_name, 0)
 
 
 def reset_boundary_fallback_state() -> None:
+    """Reset the in-process boundary-fallback counters (test helper)."""
     with _STATE.lock:
         _STATE.counts.clear()
         _STATE.fallback_functions.clear()

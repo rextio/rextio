@@ -1,3 +1,5 @@
+"""Rextio's public package surface: the ``native`` and ``exempt`` marker decorators."""
+
 from __future__ import annotations
 
 import inspect

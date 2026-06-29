@@ -1,3 +1,5 @@
+"""The ``rextio bench`` command."""
+
 from __future__ import annotations
 
 import json
@@ -9,6 +11,7 @@ from rextio.cli.reporter import Reporter
 
 
 def run(args: Namespace) -> int:
+    """Run the bench command; return the process exit code."""
     reporter = Reporter.from_args(args)
     project_root = Path(args.project_root).resolve()
     try:
@@ -33,6 +36,7 @@ def run(args: Namespace) -> int:
 
 
 def write_bench_report(project_root: Path, result: BenchResult) -> Path:
+    """Write the bench JSON report and return its path."""
     reports_dir = project_root / ".rextio" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     report_path = reports_dir / "bench.json"

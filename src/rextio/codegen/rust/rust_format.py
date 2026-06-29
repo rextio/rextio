@@ -24,7 +24,7 @@ _RUST_STRING_ESCAPES = {
 
 
 def rust_string_literal(value: str) -> str:
-    """Render a Python ``str`` as a Rust string literal that is always valid.
+    r"""Render a Python ``str`` as a Rust string literal that is always valid.
 
     Unlike ``json.dumps`` (which emits ``\\uXXXX`` / surrogate-pair escapes that
     Rust does not accept), this escapes only the characters that must be escaped
@@ -58,6 +58,7 @@ def rust_string_literal(value: str) -> str:
 
 
 def render_literal(value: object) -> str:
+    """Render a Python literal value as Rust source."""
     if value is None:
         return "None"
     if isinstance(value, bool):
@@ -70,6 +71,7 @@ def render_literal(value: object) -> str:
 
 
 def python_logging_format_to_rust(value: str) -> tuple[str, int] | None:
+    """Translate a printf-style logging format into a Rust format string + arg count, or None."""
     output: list[str] = []
     placeholders = 0
     index = 0
@@ -105,6 +107,7 @@ def python_logging_format_to_rust(value: str) -> tuple[str, int] | None:
 
 
 def strip_wrapping_parens(value: str) -> str:
+    """Strip a single layer of redundant wrapping parentheses from an expression string."""
     if not value.startswith("(") or not value.endswith(")"):
         return value
     depth = 0
@@ -121,12 +124,14 @@ def strip_wrapping_parens(value: str) -> str:
 
 
 def strip_expr_if_safe(expr: ExprIR, value: str) -> str:
+    """Strip redundant parentheses from a rendered expression when safe."""
     if isinstance(expr, TupleIR):
         return value
     return strip_wrapping_parens(value)
 
 
 def default_return(return_type: str) -> str:
+    """Return the Rust default-return expression for a return type."""
     if return_type == "()":
         return "()"
     if return_type == "bool":
@@ -149,8 +154,10 @@ def default_return(return_type: str) -> str:
 
 
 def block_always_returns(block: BlockIR) -> bool:
+    """Report whether every path through a block returns."""
     return bool(block.statements) and isinstance(block.statements[-1], ReturnIR)
 
 
 def indent(level: int) -> str:
+    """Return the Rust indentation string for a given nesting level."""
     return "    " * level

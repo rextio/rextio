@@ -1,3 +1,5 @@
+"""Loading compiled native functions at runtime."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -54,6 +56,7 @@ def load_native_module(module_name: str) -> ModuleType | None:
 
 
 def load_native_function(module_name: str, function_name: str) -> Any | None:
+    """Load a compiled native function, or None if unavailable."""
     module = load_native_module(module_name)
     if module is None:
         return None

@@ -1,3 +1,5 @@
+"""The ``rextio`` CLI entry point and argument parser."""
+
 from __future__ import annotations
 
 import argparse
@@ -11,6 +13,7 @@ from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, generate_cmd,
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the top-level argparse parser for the rextio CLI."""
     parser = argparse.ArgumentParser(
         prog="rextio",
         description="Rextio 0.1.0 alpha hybrid build tool.",
@@ -249,6 +252,7 @@ def _install_deprecation_filter() -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Parse arguments and dispatch to the selected command; return the exit code."""
     _install_deprecation_filter()
     parser = build_parser()
     args = parser.parse_args(argv)

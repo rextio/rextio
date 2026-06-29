@@ -1,3 +1,5 @@
+"""The Diagnostic record emitted by the analyzer."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -5,6 +7,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Diagnostic:
+    """A single analyzer diagnostic (error or warning) at a source location."""
+
     code: str
     severity: str
     message: str
@@ -15,6 +19,7 @@ class Diagnostic:
     suggestion: str | None = None
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this diagnostic."""
         return {
             "code": self.code,
             "severity": self.severity,

@@ -1,3 +1,5 @@
+"""Runtime dispatch between native and fallback implementations."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -9,6 +11,7 @@ T = TypeVar("T")
 
 
 def dispatch(native_func: Callable[..., T] | None, fallback_func: Callable[..., T], *args: object) -> T:
+    """Call the native implementation if available, else the fallback."""
     if native_disabled():
         return fallback_func(*args)
     if native_func is None:

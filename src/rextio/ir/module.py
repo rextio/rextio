@@ -1,3 +1,5 @@
+"""Assembly of an ``ModuleIR`` from lowered functions in dependency order."""
+
 from __future__ import annotations
 
 from rextio.ir.nodes import (
@@ -30,10 +32,12 @@ from rextio.ir.nodes import (
 
 
 def empty_module() -> ModuleIR:
+    """Return a module IR with no functions."""
     return ModuleIR(functions=[])
 
 
 def module_from_functions(functions: list[FunctionIR]) -> ModuleIR:
+    """Build a module IR, ordering functions so callees precede their callers."""
     return ModuleIR(functions=_dependency_ordered_functions(functions))
 
 

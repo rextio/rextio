@@ -1,3 +1,5 @@
+"""Parsing a Python module file into per-function analysis records."""
+
 from __future__ import annotations
 
 import ast
@@ -36,6 +38,7 @@ def parse_module(
     native_jit_enabled: bool = False,
     jit_hot_threshold: int = 25,
 ) -> ModuleAnalysis:
+    """Parse a module file into a ModuleAnalysis (functions, imports, top level)."""
     target_language = normalize_target_language(target_language)
     module_name = module_name_for_path(path, project_root)
     module = ModuleAnalysis(module_name=module_name, file_path=str(path))
@@ -85,11 +88,14 @@ def parse_module(
 
 @dataclass(frozen=True)
 class StubSignature:
+    """A signature extracted from annotations: argument types and return type."""
+
     arg_types: dict[str, str] = field(default_factory=dict)
     return_type: str | None = None
 
 
 def module_name_for_path(path: Path, project_root: Path) -> str:
+    """Return the dotted module name for a file path within the project root."""
     relative = path.relative_to(project_root)
     parts = list(relative.with_suffix("").parts)
     if parts and parts[0] == "src":
@@ -721,6 +727,7 @@ def collect_call_sites(
     imports: dict[str, str] | None = None,
     logger_names: tuple[str, ...] = (),
 ) -> list[CallSite]:
+    """Collect the call sites within a function body, noting which are inside loops."""
     collector = _CallCollector(imports or {}, logger_names)
     collector.visit(node)
     return collector.calls

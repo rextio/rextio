@@ -1,3 +1,5 @@
+"""Default configuration values."""
+
 from __future__ import annotations
 
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS

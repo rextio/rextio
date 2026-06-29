@@ -1,3 +1,5 @@
+"""Per-package import-policy classification for external dependencies."""
+
 from __future__ import annotations
 
 import sys
@@ -23,6 +25,7 @@ def classify_import_policies(
     imports_config: ImportsConfig | None = None,
     active_plugins: Iterable[RextioPlugin] = (),
 ) -> tuple[ImportPolicyDecision, ...]:
+    """Classify each external import in a module into its resolved import policy."""
     config = imports_config or ImportsConfig()
     decisions: list[ImportPolicyDecision] = []
     for visible_name, target in sorted(imports.items()):
@@ -99,6 +102,7 @@ def classify_import_policies(
 
 
 def decision_for_target(module: ModuleAnalysis, target: str) -> ImportPolicyDecision | None:
+    """Return the import-policy decision that applies to a target, or None."""
     matches = [
         decision
         for decision in module.import_policies

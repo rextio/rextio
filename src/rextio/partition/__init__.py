@@ -1,3 +1,5 @@
+"""Partitioning of a project into its native and fallback build plans."""
+
 from __future__ import annotations
 
 from rextio.partition.build_plan import BuildPlan, create_build_plan

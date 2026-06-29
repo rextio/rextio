@@ -56,6 +56,10 @@ Initial public MVP for Rextio as a local hybrid build tool.
   exclusive `-v/--verbose` and `-q/--quiet`. All commands now emit their result on
   stdout (text or JSON) while diagnostics and configuration errors go to stderr, so
   a `--format json` run produces clean machine-parseable stdout.
+- Project documentation and governance: a `CONTRIBUTING.md` guide, GitHub issue forms
+  and a pull-request template, a feature-stability table (`docs/stability.md`) and a
+  versioning policy (`docs/versioning.md`) documenting the SemVer pre-1.0 stance and
+  what is stable versus experimental.
 
 ### Changed
 

@@ -18,6 +18,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class DiagnosticCode:
+    """A registered diagnostic: its code, message, and category."""
+
     code: str
     title: str
     stability: str = "stable"
@@ -46,4 +48,5 @@ DIAGNOSTIC_CODES: dict[str, DiagnosticCode] = {entry.code: entry for entry in _C
 
 
 def is_registered(code: str) -> bool:
+    """Report whether a diagnostic code is in the registry."""
     return code in DIAGNOSTIC_CODES

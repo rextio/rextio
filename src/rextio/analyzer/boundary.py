@@ -1,3 +1,5 @@
+"""Native/fallback boundary checks (RXT07x): which native↔fallback crossings are allowed or warned."""
+
 from __future__ import annotations
 
 from rextio.analyzer.common_calls import COMMON_DIRECT_RUST_CALLS
@@ -36,6 +38,7 @@ def apply_boundary_checks(
     boundary_warnings: bool = True,
     native_jit_enabled: bool = False,
 ) -> None:
+    """Apply the native/fallback boundary policy, attaching RXT07x diagnostics."""
     resolver = FunctionResolver(analysis)
     for function in analysis.native_candidates:
         function.accepted = not function.error_diagnostics

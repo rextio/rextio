@@ -1,3 +1,5 @@
+"""Building the optional Rust-importable crate artifact."""
+
 from __future__ import annotations
 
 import shutil
@@ -8,6 +10,8 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class RustCrateBuildResult:
+    """The outcome of building the Rust-importable crate."""
+
     status: str
     message: str
     command: list[str] = field(default_factory=list)
@@ -17,6 +21,7 @@ class RustCrateBuildResult:
     stderr: str = ""
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this result."""
         return {
             "status": self.status,
             "message": self.message,
@@ -29,6 +34,7 @@ class RustCrateBuildResult:
 
 
 def skipped_rust_crate_build(message: str) -> RustCrateBuildResult:
+    """Return a result marking the crate build as skipped."""
     return RustCrateBuildResult(status="skipped", message=message)
 
 
@@ -39,6 +45,7 @@ def build_importable_rust_crate(
     *,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> RustCrateBuildResult:
+    """Build the Rust-importable crate artifact and return the result."""
     cargo = shutil.which("cargo")
     if cargo is None:
         return RustCrateBuildResult(

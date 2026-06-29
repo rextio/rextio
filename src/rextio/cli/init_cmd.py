@@ -1,3 +1,5 @@
+"""The ``rextio init`` command."""
+
 from __future__ import annotations
 
 from argparse import Namespace
@@ -92,6 +94,7 @@ def _write_file(path: Path, contents: str, force: bool) -> str:
 
 
 def run(args: Namespace) -> int:
+    """Run the init command; return the process exit code."""
     reporter = Reporter.from_args(args)
     project_root = Path(args.project_root).resolve()
     project_root.mkdir(parents=True, exist_ok=True)

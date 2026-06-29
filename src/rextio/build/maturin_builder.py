@@ -1,3 +1,5 @@
+"""Building the native extension with maturin."""
+
 from __future__ import annotations
 
 import shutil
@@ -9,6 +11,7 @@ from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_bui
 
 
 def maturin_available() -> bool:
+    """Report whether maturin is available on PATH."""
     return shutil.which("maturin") is not None
 
 
@@ -18,6 +21,7 @@ def build_native_extension_with_maturin(
     *,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> NativeBuildResult:
+    """Build the native extension with maturin and return the result."""
     maturin = shutil.which("maturin")
     if maturin is None:
         return NativeBuildResult(

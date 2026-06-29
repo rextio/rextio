@@ -15,11 +15,14 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class MissingTool:
+    """A required external build tool that was not found, with install guidance."""
+
     name: str
     reason: str
     install: str
 
     def message(self) -> str:
+        """Return a human-readable message describing the missing tool and how to install it."""
         return f"{self.name} was not found ({self.reason}). Install it with: {self.install}"
 
 
@@ -47,6 +50,7 @@ def missing_build_tools(*, native_backend: str = "rust") -> list[MissingTool]:
 
 
 def format_missing_tools(missing: list[MissingTool]) -> str:
+    """Format a list of missing tools into a user-facing diagnostic string."""
     lines = ["RXT060 Build prerequisites are missing:"]
     lines.extend(f"  - {tool.message()}" for tool in missing)
     return "\n".join(lines)

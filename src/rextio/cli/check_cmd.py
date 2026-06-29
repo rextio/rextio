@@ -1,3 +1,5 @@
+"""The ``rextio check`` command."""
+
 from __future__ import annotations
 
 import json
@@ -14,6 +16,7 @@ from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
 def format_check_report(analysis: ProjectAnalysis) -> str:
+    """Format the analysis into the human-readable check report text."""
     lines: list[str] = ["Rextio check", ""]
 
     accepted = analysis.accepted_native_functions
@@ -99,6 +102,7 @@ def _external_import_policies(analysis: ProjectAnalysis) -> list[tuple[str, str,
 
 
 def run(args: Namespace) -> int:
+    """Run the check command; return the process exit code."""
     reporter = Reporter.from_args(args)
     project_root = Path(args.project_root).resolve()
     try:
@@ -143,6 +147,7 @@ def run(args: Namespace) -> int:
 
 
 def write_check_report(project_root: Path, analysis: ProjectAnalysis) -> Path:
+    """Write the check JSON report and return its path."""
     reports_dir = project_root / ".rextio" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     report_path = reports_dir / "check.json"

@@ -1,0 +1,48 @@
+name: Bug report
+description: Report incorrect behavior in Rextio (analysis, codegen, build, or runtime).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Rextio is 0.1.0 alpha — please check
+        [docs/stability.md](../blob/main/docs/stability.md) first; experimental
+        features have known gaps. **Do not report security issues here** — see
+        [SECURITY.md](../blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected versus what Rextio actually did.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: |
+        The smallest typed-Python snippet and the exact `rextio` command that
+        triggers it. Include any relevant `rextio.toml` settings.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output / diagnostics
+      description: The full command output, including any `RXTxxx` diagnostic codes.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Rextio version
+      description: Output of `rextio --version` (or the commit you built from).
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, and `rustc`/`cargo` versions if the build is involved.
+    validations:
+      required: true

@@ -410,3 +410,15 @@ python -m pytest
 
 Real Cargo, Nuitka, and executable tests are skipped when the corresponding
 toolchain is unavailable.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development setup and quality
+gates.
+
+## Project Information
+
+- [Feature stability](docs/stability.md) — what is stable vs. experimental in 0.1.0 alpha.
+- [Versioning policy](docs/versioning.md) — SemVer with pre-1.0 caveats.
+- [Unsupported features](docs/unsupported-features.md) — the 0.1.0 alpha subset boundaries.
+- [Security model](SECURITY.md) — trust boundary and how to report vulnerabilities.
+- [Contributing](CONTRIBUTING.md) — setup, gates, and conventions.
+- [Changelog](CHANGELOG.md).
