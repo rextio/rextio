@@ -18,7 +18,7 @@ from rextio.analyzer.native_marker import (
 )
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.analyzer.top_level import analyze_native_top_level
-from rextio.analyzer.unsupported_patterns import validate_native_function
+from rextio.analyzer.unsupported_patterns import _validate_function_name, validate_native_function
 from rextio.config.schema import ImportsConfig
 from rextio.plugins.models import RextioPlugin
 from rextio.targets.models import normalize_target_language
@@ -331,6 +331,15 @@ def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis)
     if probe.accepted:
         function.accepted = True
         return
+    # The runtime shim still emits `fn {name}`, so an unrepresentable function name
+    # (RXT011) cannot be carried by the shim either — keep it on Python fallback
+    # instead of promoting it and emitting uncompilable Rust.
+    identifier_diagnostics = [d for d in probe.diagnostics if d.code == "RXT011"]
+    if identifier_diagnostics:
+        for diagnostic in identifier_diagnostics:
+            function.add_diagnostic(diagnostic)
+        function.accepted = False
+        return
     if not _requires_runtime_semantics(node):
         for diagnostic in probe.diagnostics:
             function.add_diagnostic(diagnostic)
@@ -406,6 +415,13 @@ def _runtime_semantics_function(
         imports=dict(module.imports),
         logger_names=module.logger_names,
     )
+    # The shim emits `fn {name}`; a function name that can't be lowered (non-raw-able
+    # keyword / non-ASCII / `_`) keeps it on Python fallback even though the body
+    # qualifies for the shim.
+    _validate_function_name(node, function)
+    if function.error_diagnostics:
+        function.accepted = False
+        return function
     _add_runtime_semantics_warning(function, node)
     return function
 

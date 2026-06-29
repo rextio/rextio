@@ -726,6 +726,40 @@ def bad(x: float) -> float:
     assert analysis.accepted_native_functions[0].native_runtime_semantics is True
 
 
+def test_runtime_semantics_shim_does_not_bypass_identifier_validation(tmp_path: Path) -> None:
+    # The RXT080 runtime shim still emits `fn {name}`, so a root function named after a
+    # non-raw-able keyword must be rejected (RXT011) instead of promoted to the shim and
+    # emitting uncompilable Rust — for both the dynamic (sync) and async promotion paths.
+    write_module(
+        tmp_path,
+        "__init__.py",
+        """
+import rextio
+
+@rextio.native
+def crate(x: int) -> int:
+    return getattr(x, "value")
+
+@rextio.native
+async def super(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert {"crate", "super"} <= rejected
+    assert all(
+        f.error_diagnostics[0].code == "RXT011"
+        for f in analysis.rejected_native_functions
+        if f.qualname in {"crate", "super"}
+    )
+    assert not any(
+        f.qualname in {"crate", "super"} for f in analysis.accepted_native_functions
+    )
+
+
 def test_auto_discovery_does_not_promote_dynamic_functions_to_runtime_shim(
     tmp_path: Path,
 ) -> None:

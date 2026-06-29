@@ -179,7 +179,10 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
         _add_identifier_diagnostic(function, where, message, suggestion)
 
 
-def _validate_function_name(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+def _validate_function_name(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    function: FunctionAnalysis,
+) -> None:
     """Reject a function whose *name* cannot be lowered to a Rust `fn` identifier.
 
     Checked on the raw name first, before `native_function_name` (which raises on a
