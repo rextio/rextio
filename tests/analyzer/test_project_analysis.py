@@ -2601,3 +2601,30 @@ def grouped(xs: list[int]) -> int:
     assert {function.qualname for function in analysis.rejected_native_functions} == {
         "app.grouped",
     }
+
+
+def test_accepts_comprehension_target_inside_try(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def totals(xs: list[int]) -> int:
+    out = 0
+    try:
+        out = sum([y * 2 for y in xs])
+    except ValueError:
+        out = -1
+    return out
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    # The comprehension target `y` is scoped to the comprehension and never
+    # leaks, so it must not block native acceptance of the try block.
+    accepted = {f.qualname: f for f in analysis.accepted_native_functions}
+    assert "app.totals" in accepted
+    assert not accepted["app.totals"].native_runtime_semantics

@@ -588,14 +588,25 @@ def _validate_try(
     for block in blocks:
         for statement in block:
             for child in ast.walk(statement):
-                if isinstance(child, (ast.Return, ast.Break, ast.Continue)):
+                if isinstance(child, ast.Return):
+                    # The try body is lowered into an immediately-invoked closure,
+                    # so a `return` would return from the closure, not the function.
                     _add_unsupported_syntax(
                         function,
                         node,
-                        "return/break/continue inside try/except/finally is not "
-                        "supported in native functions",
+                        "return inside try/except/finally is not supported in native functions",
                     )
                     return
+        if any(_has_free_break_continue(statement) for statement in block):
+            # break/continue bound to a loop *inside* the block is fine; one that
+            # targets a loop enclosing the try cannot cross the closure boundary.
+            _add_unsupported_syntax(
+                function,
+                node,
+                "break/continue targeting a loop outside try/except/finally is not "
+                "supported in native functions",
+            )
+            return
     bound_before = set(env)
     new_bindings = sorted(_block_bound_names(blocks) - bound_before)
     if new_bindings:
@@ -612,14 +623,46 @@ def _validate_try(
     _validate_statement_list_types(node.finalbody, function, env, return_type)
 
 
+def _has_free_break_continue(node: ast.AST) -> bool:
+    """Report whether a node has a ``break``/``continue`` not bound to a loop it contains.
+
+    A loop (or nested scope) binds any ``break``/``continue`` inside it, so only a
+    ``break``/``continue`` that would target an *enclosing* loop is "free".
+    """
+    if isinstance(node, (ast.Break, ast.Continue)):
+        return True
+    if isinstance(node, (ast.For, ast.While, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return False
+    return any(_has_free_break_continue(child) for child in ast.iter_child_nodes(node))
+
+
+def _assignment_target_names(target: ast.AST) -> set[str]:
+    """Return the Store-context names in an assignment/loop target (handles tuples)."""
+    return {
+        node.id
+        for node in ast.walk(target)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    }
+
+
 def _block_bound_names(blocks: list[list[ast.stmt]]) -> set[str]:
-    """Return the names bound (Store context) anywhere in the given blocks."""
+    """Return the names a block first binds and that could escape its closure.
+
+    Collects assignment / annotated-assignment / augmented-assignment / for-loop /
+    walrus targets. Comprehension targets are intentionally excluded: they are
+    scoped to the comprehension in both Python and Rust and never leak, so they
+    are not new function-scope bindings. (Loop targets stay included — a Python
+    loop variable leaks past its loop where a Rust one does not.)
+    """
     names: set[str] = set()
     for block in blocks:
         for statement in block:
             for child in ast.walk(statement):
-                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
-                    names.add(child.id)
+                if isinstance(child, ast.Assign):
+                    for target in child.targets:
+                        names |= _assignment_target_names(target)
+                elif isinstance(child, (ast.AnnAssign, ast.AugAssign, ast.For, ast.NamedExpr)):
+                    names |= _assignment_target_names(child.target)
     return names
 
 
