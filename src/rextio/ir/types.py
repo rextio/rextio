@@ -1,3 +1,10 @@
+"""Rextio's type lattice (``RxtType``) and annotation parsing.
+
+The supported native types and the helpers that resolve a Python annotation (AST or
+string) into one. An unsupported annotation raises ``ValueError`` so the caller can
+reject the function rather than mis-type it.
+"""
+
 from __future__ import annotations
 
 import ast
@@ -5,63 +12,92 @@ from dataclasses import dataclass
 
 
 class RxtType:
+    """Base class for every supported Rextio type."""
+
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         raise NotImplementedError
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this type."""
         return {"kind": self.display_name()}
 
 
 @dataclass(frozen=True)
 class RxtInt(RxtType):
+    """The ``int`` type (lowered to a fixed-width i64)."""
+
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         return "int"
 
 
 @dataclass(frozen=True)
 class RxtFloat(RxtType):
+    """The ``float`` type (f64)."""
+
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         return "float"
 
 
 @dataclass(frozen=True)
 class RxtBool(RxtType):
+    """The ``bool`` type."""
+
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         return "bool"
 
 
 @dataclass(frozen=True)
 class RxtStr(RxtType):
+    """The ``str`` type."""
+
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         return "str"
 
 
 @dataclass(frozen=True)
 class RxtBytes(RxtType):
+    """The ``bytes`` type."""
+
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         return "bytes"
 
 
 @dataclass(frozen=True)
 class RxtNone(RxtType):
+    """The ``None`` type."""
+
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         return "None"
 
 
 @dataclass(frozen=True)
 class RxtPyObject(RxtType):
+    """An opaque Python object (the dynamic-semantics escape hatch)."""
+
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         return "object"
 
 
 @dataclass(frozen=True)
 class RxtList(RxtType):
+    """A homogeneous ``list[item_type]``."""
+
     item_type: RxtType
 
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         return f"list[{self.item_type.display_name()}]"
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this type."""
         return {
             "kind": "list",
             "item_type": self.item_type.to_dict(),
@@ -70,12 +106,16 @@ class RxtList(RxtType):
 
 @dataclass(frozen=True)
 class RxtSet(RxtType):
+    """A homogeneous ``set[item_type]``."""
+
     item_type: RxtType
 
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         return f"set[{self.item_type.display_name()}]"
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this type."""
         return {
             "kind": "set",
             "item_type": self.item_type.to_dict(),
@@ -84,12 +124,16 @@ class RxtSet(RxtType):
 
 @dataclass(frozen=True)
 class RxtTuple(RxtType):
+    """A fixed-shape ``tuple[...]`` of element types."""
+
     item_types: tuple[RxtType, ...]
 
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         return f"tuple[{', '.join(item.display_name() for item in self.item_types)}]"
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this type."""
         return {
             "kind": "tuple",
             "item_types": [item.to_dict() for item in self.item_types],
@@ -98,13 +142,17 @@ class RxtTuple(RxtType):
 
 @dataclass(frozen=True)
 class RxtDict(RxtType):
+    """A homogeneous ``dict[key_type, value_type]``."""
+
     key_type: RxtType
     value_type: RxtType
 
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         return f"dict[{self.key_type.display_name()}, {self.value_type.display_name()}]"
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this type."""
         return {
             "kind": "dict",
             "key_type": self.key_type.to_dict(),
@@ -114,12 +162,16 @@ class RxtDict(RxtType):
 
 @dataclass(frozen=True)
 class RxtOptional(RxtType):
+    """An ``Optional[item_type]`` (i.e. ``item_type | None``)."""
+
     item_type: RxtType
 
     def display_name(self) -> str:
+        """Return the human-readable Python-style name of this type."""
         return f"Optional[{self.item_type.display_name()}]"
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this type."""
         return {
             "kind": "optional",
             "item_type": self.item_type.to_dict(),
@@ -127,6 +179,10 @@ class RxtOptional(RxtType):
 
 
 def type_from_annotation(node: ast.AST | None) -> RxtType:
+    """Resolve a type-annotation AST node into an ``RxtType``.
+
+    Raises ``ValueError`` for a missing or unsupported annotation.
+    """
     if node is None:
         raise ValueError("missing type annotation")
     if isinstance(node, ast.Name):
@@ -162,11 +218,13 @@ def type_from_annotation(node: ast.AST | None) -> RxtType:
 
 
 def type_from_string(value: str) -> RxtType:
+    """Resolve a type annotation given as a string into an ``RxtType``."""
     node = ast.parse(value, mode="eval").body
     return type_from_annotation(node)
 
 
 def _optional_inner(node: ast.AST) -> ast.AST | None:
+    """Return the inner annotation of an ``Optional[...]`` / ``X | None``, else None."""
     if isinstance(node, ast.Subscript) and _annotation_dotted_name(node.value) in {"Optional", "typing.Optional"}:
         return node.slice
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
@@ -180,6 +238,7 @@ def _optional_inner(node: ast.AST) -> ast.AST | None:
 
 
 def _is_none_annotation(node: ast.AST) -> bool:
+    """Report whether the annotation node denotes ``None``."""
     return (
         (isinstance(node, ast.Name) and node.id == "None")
         or (isinstance(node, ast.Constant) and node.value is None)
@@ -187,6 +246,7 @@ def _is_none_annotation(node: ast.AST) -> bool:
 
 
 def _annotation_dotted_name(node: ast.AST) -> str | None:
+    """Return the dotted name of a ``Name``/``Attribute`` annotation, else None."""
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
@@ -198,6 +258,7 @@ def _annotation_dotted_name(node: ast.AST) -> str | None:
 
 
 def _tuple_slice_items(node: ast.AST) -> list[ast.AST]:
+    """Return the elements of a subscript slice, treating a non-tuple as a single item."""
     if isinstance(node, ast.Tuple):
         return list(node.elts)
     return [node]

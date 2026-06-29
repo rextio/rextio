@@ -108,15 +108,8 @@ select = ["E", "W", "F", "D"]
 ignore = [
     # E501 (line length) is deferred to the formatter; not enforced during bootstrap.
     "E501",
-    # P2-2 enforces docstring *format/convention* now and defers the "missing
-    # docstring" family (D1xx) to a later ratchet — requiring a docstring on every
-    # module/class/function is a large, separate effort. Format rules (D2/D3/D4)
-    # stay on, so the docstrings that do exist must be well-formed.
-    "D100",  # undocumented public module
-    "D101",  # undocumented public class
-    "D102",  # undocumented public method
-    "D103",  # undocumented public function
-    "D104",  # undocumented public package
+    # Magic-method and __init__ docstrings are not required: a dunder's behavior is
+    # conventional, and a class docstring documents construction.
     "D105",  # undocumented magic method
     "D107",  # undocumented public __init__
 ]

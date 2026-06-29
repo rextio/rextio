@@ -1,3 +1,11 @@
+"""Lowering of accepted analyzer results into Rextio IR.
+
+Walks the AST of each accepted native function (and supported top-level module code)
+and produces the ``ModuleIR`` the codegen backends consume. Anything the lowering
+cannot represent raises ``LoweringError`` — by this stage the analyzer has already
+accepted the input, so a failure here is an internal invariant violation, not user error.
+"""
+
 from __future__ import annotations
 
 import ast
@@ -67,10 +75,11 @@ from rextio.ir.types import RxtDict, RxtPyObject, RxtStr
 
 
 class LoweringError(RuntimeError):
-    pass
+    """Raised when an accepted analysis result cannot be lowered to IR."""
 
 
 def lower_project(analysis: ProjectAnalysis, include_jit: bool = False) -> ModuleIR:
+    """Lower every accepted native function (and JIT candidate, if included) to a module IR."""
     functions: list[FunctionIR] = []
     nodes_by_file: dict[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]] = {}
     module_trees_by_file: dict[str, ast.Module] = {}
@@ -127,6 +136,7 @@ def lower_function(
     *,
     native_jit: bool = False,
 ) -> FunctionIR:
+    """Lower a single analyzed native function (signature + body) to a ``FunctionIR``."""
     if function.native_runtime_semantics:
         return FunctionIR(
             name=function.name,
@@ -164,6 +174,7 @@ def lower_top_level(
     module: ModuleAnalysis,
     resolver: FunctionResolver,
 ) -> FunctionIR:
+    """Lower supported module top-level initialization into a synthetic ``FunctionIR``."""
     if top_level.export_value_type is None:
         raise LoweringError(f"missing export value type for top-level native init: {top_level.qualname}")
     statements = lower_block(collect_native_top_level_statements(tree), module, resolver).statements
@@ -227,6 +238,7 @@ def lower_block(
     module: ModuleAnalysis,
     resolver: FunctionResolver,
 ) -> BlockIR:
+    """Lower a list of statements into a ``BlockIR``."""
     return BlockIR(
         statements=[lower_statement(statement, module, resolver) for statement in statements]
     )
@@ -237,6 +249,7 @@ def lower_statement(
     module: ModuleAnalysis,
     resolver: FunctionResolver,
 ) -> StatementIR:
+    """Lower a single statement AST node into a ``StatementIR``."""
     if isinstance(node, ast.Assign):
         if len(node.targets) != 1:
             raise LoweringError("multiple assignment targets are not supported")
@@ -317,6 +330,7 @@ def lower_expr(
     module: ModuleAnalysis,
     resolver: FunctionResolver,
 ) -> ExprIR:
+    """Lower an expression AST node into an ``ExprIR`` (``None`` becomes a ``None`` literal)."""
     if node is None:
         return LiteralIR(None)
     if isinstance(node, ast.Constant):
@@ -404,12 +418,14 @@ def lower_expr(
 
 
 def lower_name_target(node: ast.AST) -> NameIR:
+    """Lower an assignment target that must be a bare name into a ``NameIR``."""
     if not isinstance(node, ast.Name):
         raise LoweringError(f"unsupported assignment target: {type(node).__name__}")
     return NameIR(node.id)
 
 
 def lower_loop_target(node: ast.AST) -> TargetIR:
+    """Lower a ``for``-loop target (a name or a tuple of names) into a ``TargetIR``."""
     if isinstance(node, ast.Name):
         return NameIR(node.id)
     if isinstance(node, ast.Tuple):
@@ -423,6 +439,7 @@ def lower_comprehension_generators(
     module: ModuleAnalysis,
     resolver: FunctionResolver,
 ) -> list[ComprehensionGeneratorIR]:
+    """Lower the ``for``/``if`` clauses of a comprehension into ``ComprehensionGeneratorIR``."""
     lowered: list[ComprehensionGeneratorIR] = []
     for generator in generators:
         if generator.is_async:
@@ -438,6 +455,7 @@ def lower_comprehension_generators(
 
 
 def lower_binary_op(node: ast.operator) -> str:
+    """Return the Rust operator string for a binary AST operator."""
     if isinstance(node, ast.Add):
         return "+"
     if isinstance(node, ast.Sub):
@@ -452,6 +470,7 @@ def lower_binary_op(node: ast.operator) -> str:
 
 
 def lower_unary_op(node: ast.unaryop) -> str:
+    """Return the Rust operator string for a unary AST operator."""
     if isinstance(node, ast.USub):
         return "-"
     if isinstance(node, ast.Not):
@@ -460,6 +479,7 @@ def lower_unary_op(node: ast.unaryop) -> str:
 
 
 def lower_compare_op(node: ast.cmpop) -> str:
+    """Return the Rust operator string for a comparison AST operator."""
     if isinstance(node, ast.Eq):
         return "=="
     if isinstance(node, ast.NotEq):
