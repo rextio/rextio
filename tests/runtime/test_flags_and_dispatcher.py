@@ -36,3 +36,23 @@ def test_dispatch_native_mode_requires_native_function(monkeypatch) -> None:
         assert "native mode requires generated native function" in str(exc)
     else:
         raise AssertionError("native mode should fail when native function is unavailable")
+
+
+def test_disable_native_accepts_truthy_strings(monkeypatch) -> None:
+    monkeypatch.delenv("REXTIO_NATIVE_MODE", raising=False)
+    for value in ("1", "true", "TRUE", "yes", "on"):
+        monkeypatch.setenv("REXTIO_DISABLE_NATIVE", value)
+        assert native_disabled(), value
+
+
+def test_invalid_native_mode_warns(monkeypatch) -> None:
+    import warnings
+
+    from rextio.runtime import flags
+
+    flags._warned_modes.clear()
+    monkeypatch.setenv("REXTIO_NATIVE_MODE", "nativ")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert native_mode() == "auto"
+    assert any(issubclass(w.category, RuntimeWarning) for w in caught)
