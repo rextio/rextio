@@ -161,9 +161,12 @@ def _signal_group(process: subprocess.Popen[str], sig: int) -> bool:
 def _terminate_process_tree(process: subprocess.Popen[str]) -> bool:
     """Kill the process and everything it spawned. Bounded and idempotent.
 
-    Returns ``True`` if the direct child was confirmed gone/reaped, ``False`` if we
-    had to give up (still running after SIGKILL, or no permission to signal it) so
-    the caller can surface that in diagnostics.
+    Returns:
+        ``True`` when the whole process group was signalled and the child reaped
+        (a clean teardown with no expected strays). ``False`` when the teardown is
+        not fully accounted for — the child is still running after SIGKILL, or we
+        lacked permission to signal the group — so the caller can warn that stray
+        processes may still be running.
     """
     if os.name == "posix":
         # ``_start_process`` uses ``start_new_session=True``, so the child is its
