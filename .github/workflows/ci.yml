@@ -146,6 +146,26 @@ jobs:
       - name: Pytest (real-Nuitka e2e)
         run: python -m pytest tests/e2e -m needs_nuitka -q
 
+  maturin-e2e:
+    name: E2E (real maturin build)
+    # The default build_tool is cargo; maturin is the optional wheel builder
+    # (rextio[build]). The fast e2e job forces cargo, so this lane installs
+    # maturin and exercises the real maturin native-build path on every push/PR.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install test + build (maturin) dependencies
+        run: python -m pip install -e ".[test,build]"
+      - name: Pytest (real-maturin e2e)
+        run: python -m pytest tests/e2e -m needs_maturin -q
+
   package:
     name: Package (build + metadata + install smoke)
     runs-on: ubuntu-latest

@@ -35,6 +35,7 @@ import pytest
 
 _NEEDS_CARGO = pytest.mark.needs_cargo
 _NEEDS_NUITKA = pytest.mark.needs_nuitka
+_NEEDS_MATURIN = pytest.mark.needs_maturin
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -62,6 +63,8 @@ def _classify(stem: str) -> str | None:
     segments = stem.split("_")
     if "nuitka" in segments:
         return "nuitka"
+    if "maturin" in segments:
+        return "maturin"
     adjacent = set(zip(segments, segments[1:]))
     if ("real", "cargo") in adjacent or ("real", "toolchain") in adjacent:
         return "cargo"
@@ -74,8 +77,10 @@ def pytest_collection_modifyitems(
 ) -> None:
     cargo = shutil.which("cargo")
     nuitka = shutil.which("nuitka")
+    maturin = shutil.which("maturin")
     skip_cargo = pytest.mark.skip(reason="cargo is required for this real-toolchain e2e")
     skip_nuitka = pytest.mark.skip(reason="nuitka is required for this real-toolchain e2e")
+    skip_maturin = pytest.mark.skip(reason="maturin and cargo are required for this real-toolchain e2e")
 
     unclassified: list[str] = []
     for item in items:
@@ -88,6 +93,10 @@ def pytest_collection_modifyitems(
             item.add_marker(_NEEDS_NUITKA)
             if nuitka is None:
                 item.add_marker(skip_nuitka)
+        elif toolchain == "maturin":
+            item.add_marker(_NEEDS_MATURIN)
+            if maturin is None or cargo is None:
+                item.add_marker(skip_maturin)
         elif toolchain == "cargo":
             item.add_marker(_NEEDS_CARGO)
             if cargo is None:
