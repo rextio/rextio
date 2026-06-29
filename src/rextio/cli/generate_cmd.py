@@ -8,11 +8,13 @@ from pathlib import Path
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import generate_source_artifact
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
+from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
 def run(args: Namespace) -> int:
+    reporter = Reporter.from_args(args)
     project_root = Path(args.project_root).resolve()
     try:
         config = override_config(
@@ -42,9 +44,9 @@ def run(args: Namespace) -> int:
         )
         target_plan = create_target_plan(project_root, config)
     except (ConfigError, TargetPlanError) as exc:
-        print("RXT060 Generate failed while loading configuration.")
-        print(f"Cause: {exc}")
-        print(f"Suggestion: fix {project_root / 'rextio.toml'} and rerun rextio generate.")
+        reporter.error("RXT060 Generate failed while loading configuration.")
+        reporter.error(f"Cause: {exc}")
+        reporter.error(f"Suggestion: fix {project_root / 'rextio.toml'} and rerun rextio generate.")
         return 1
 
     fallback = config.build.fallback_backend
@@ -76,9 +78,9 @@ def run(args: Namespace) -> int:
             + "\n",
             encoding="utf-8",
         )
-        print("RXT060 Generate failed during project analysis.")
-        print(f"Cause: Python parse errors were found under {project_root}.")
-        print(f"Suggestion: run rextio check {project_root}")
+        reporter.error("RXT060 Generate failed during project analysis.")
+        reporter.error(f"Cause: Python parse errors were found under {project_root}.")
+        reporter.error(f"Suggestion: run rextio check {project_root}")
         return 1
 
     result = generate_source_artifact(
@@ -92,34 +94,50 @@ def run(args: Namespace) -> int:
         native_jit_enabled=config.jit.enabled,
         jit_hot_threshold=config.jit.hot_threshold,
     )
-    print("Rextio generate")
-    print(f"  target language: {target_plan.spec.language}")
+    lines = ["Rextio generate", f"  target language: {target_plan.spec.language}"]
     if target_plan.spec.version:
-        print(f"  target version: {target_plan.spec.version}")
-    print(f"  active plugins: {len(target_plan.plugins.active)}")
-    print(f"  fallback: {fallback}")
-    print(f"  boundary fallback threshold: {config.build.fallback_threshold}")
-    print(f"  experimental JIT: {'enabled' if config.jit.enabled else 'disabled'}")
+        lines.append(f"  target version: {target_plan.spec.version}")
+    lines.append(f"  active plugins: {len(target_plan.plugins.active)}")
+    lines.append(f"  fallback: {fallback}")
+    lines.append(f"  boundary fallback threshold: {config.build.fallback_threshold}")
+    lines.append(f"  experimental JIT: {'enabled' if config.jit.enabled else 'disabled'}")
     if config.jit.enabled:
-        print(f"  JIT backend: {config.jit.backend}")
-        print(f"  JIT hot threshold: {config.jit.hot_threshold}")
-    print(f"  accepted native functions: {result.accepted_native_count}")
-    print(f"  rejected native functions: {result.rejected_native_count}")
-    print(f"  experimental JIT candidates: {len(result.plan.native.jit_functions)}")
+        lines.append(f"  JIT backend: {config.jit.backend}")
+        lines.append(f"  JIT hot threshold: {config.jit.hot_threshold}")
+    lines.append(f"  accepted native functions: {result.accepted_native_count}")
+    lines.append(f"  rejected native functions: {result.rejected_native_count}")
+    lines.append(f"  experimental JIT candidates: {len(result.plan.native.jit_functions)}")
     if target_plan.spec.language == "rust":
-        print(f"  generated Rust project: {result.layout.rust_dir}")
+        lines.append(f"  generated Rust project: {result.layout.rust_dir}")
     else:
-        print(f"  generated native project: {result.layout.target_dir(target_plan.spec.language)}")
-    print(f"  generated Python package tree: {result.layout.python_dir}")
-    print(f"  native source: {result.native_source.status}")
-    print(f"  rust crate source: {result.rust_crate_source.status}")
-    print(f"  wrote {result.layout.reports_dir / 'generate.json'}")
-    if result.native_source.status == "failed":
-        print("RXT050 Codegen failure while generating native target code.")
-        print(f"Cause: {result.native_source.message}")
+        lines.append(
+            f"  generated native project: {result.layout.target_dir(target_plan.spec.language)}"
+        )
+    lines.append(f"  generated Python package tree: {result.layout.python_dir}")
+    lines.append(f"  native source: {result.native_source.status}")
+    lines.append(f"  rust crate source: {result.rust_crate_source.status}")
+    report_path = result.layout.reports_dir / "generate.json"
+    lines.append(f"  wrote {report_path}")
+
+    native_failed = result.native_source.status == "failed"
+    crate_failed = result.rust_crate_source.status == "failed"
+    data = {
+        "status": "failed" if native_failed or crate_failed else "generated",
+        "target_language": target_plan.spec.language,
+        "accepted_native_count": result.accepted_native_count,
+        "rejected_native_count": result.rejected_native_count,
+        "native_source": result.native_source.status,
+        "rust_crate_source": result.rust_crate_source.status,
+        "report": str(report_path),
+    }
+    reporter.print_result(text="\n".join(lines), data=data)
+
+    if native_failed:
+        reporter.error("RXT050 Codegen failure while generating native target code.")
+        reporter.error(f"Cause: {result.native_source.message}")
         return 1
-    if result.rust_crate_source.status == "failed":
-        print("RXT050 Codegen failure while generating Rust-importable crate source.")
-        print(f"Cause: {result.rust_crate_source.message}")
+    if crate_failed:
+        reporter.error("RXT050 Codegen failure while generating Rust-importable crate source.")
+        reporter.error(f"Cause: {result.rust_crate_source.message}")
         return 1
     return 0

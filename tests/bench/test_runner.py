@@ -81,7 +81,7 @@ def add(a: int, b: int) -> int:
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "RXT060 Benchmark failed" in captured.out
+    assert "RXT060 Benchmark failed" in captured.err
 
 
 def test_bench_reports_config_error(tmp_path: Path, capsys) -> None:
@@ -98,9 +98,9 @@ require_type_hints = false
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "RXT060 Benchmark failed" in captured.out
-    assert "configuration error" in captured.out
-    assert "require_type_hints" in captured.out
+    assert "RXT060 Benchmark failed" in captured.err
+    assert "configuration error" in captured.err
+    assert "require_type_hints" in captured.err
 
 
 def test_bench_supports_native_function_in_package_init(
