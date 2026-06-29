@@ -1225,6 +1225,30 @@ def read_value(x: object) -> object:
     assert '"_rextio_original_app__read_value"' in source
 
 
+def test_runtime_shim_with_keyword_param_emits_generic_signature(tmp_path: Path) -> None:
+    # A dynamic function with an unrepresentable parameter name (a non-raw-able Rust
+    # keyword) is promoted to the shim; the generated Rust must use the generic
+    # `(py, args, kwargs)` signature and must NOT emit a Rust parameter named after
+    # the keyword (which would not compile).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def compute(crate: object) -> object:
+    return getattr(crate, "value")
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "#[pyfunction(signature = (*args, **kwargs))]" in source
+    assert "fn app__compute(" in source
+    assert "crate" not in source
+    assert "rextio_call_python_runtime(" in source
+
+
 def test_sequence_indexing_is_bounds_checked_and_normalizes_negatives(tmp_path: Path) -> None:
     # Generated list indexing must preserve Python semantics: a negative index
     # counts from the end, and an out-of-range index raises IndexError instead
