@@ -49,6 +49,15 @@ def boundary_fallback_required(
     if threshold == 0 or os.environ.get(DISABLE_ENV) == "1":
         return False
 
+    # Fast path: once a function has crossed the threshold it stays on fallback
+    # permanently, so the steady state — every call after the threshold — needs
+    # no lock at all. The set membership read is atomic under the GIL; a race
+    # with a concurrent insert only costs one extra slow-path check, never a
+    # wrong answer. This removes the per-call global-lock contention that would
+    # otherwise persist for the hot functions that fell back.
+    if function_name in _STATE.fallback_functions:
+        return True
+
     with _STATE.lock:
         if function_name in _STATE.fallback_functions:
             return True
