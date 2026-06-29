@@ -1248,9 +1248,12 @@ def compute(crate: object) -> object:
     # Assert the *signature* is the generic shim shape and carries no parameter named
     # after the keyword. A whole-module `"crate" not in source` ban would be brittle
     # (it false-fails on any legitimate `crate::` path the generator might emit).
-    signature = re.search(r"fn app__compute\((?s:.*?)\)\s*->", source)
+    # `[^)]*` cannot overflow the parameter list (the generic shim's parameter types
+    # contain no inner parens), and `\b…\b` avoids the `"args" in "kwargs"` masking trap.
+    signature = re.search(r"fn app__compute\([^)]*\)", source)
     assert signature is not None
-    assert "args" in signature.group(0) and "kwargs" in signature.group(0)
+    assert re.search(r"\bargs\b", signature.group(0))
+    assert re.search(r"\bkwargs\b", signature.group(0))
     assert "crate" not in signature.group(0)
 
 
@@ -1274,9 +1277,10 @@ class Widget:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert "rextio_call_python_runtime(" in source
-    signature = re.search(r"fn app__Widget__compute\((?s:.*?)\)\s*->", source)
+    signature = re.search(r"fn app__Widget__compute\([^)]*\)", source)
     assert signature is not None
-    assert "args" in signature.group(0) and "kwargs" in signature.group(0)
+    assert re.search(r"\bargs\b", signature.group(0))
+    assert re.search(r"\bkwargs\b", signature.group(0))
     assert "crate" not in signature.group(0)
 
 
