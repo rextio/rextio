@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-import rextio.cli.main as cli_main
 from rextio.cli.main import _install_deprecation_filter, _positive_number, main
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
 
@@ -30,8 +29,8 @@ def test_main_surfaces_plugin_rules_deprecation(
             return {"target_language": "rust", "packages": ["x"], "rules": ["y"]}
 
     monkeypatch.setattr(plugin_loader, "_plugin_entry_points", lambda _eps: (_FakeEntryPoint(),))
-    # Reset the install guard so main() registers the filter inside our scope.
-    monkeypatch.setattr(cli_main, "_REXTIO_WARNING_FILTER_INSTALLED", False)
+    # The install is presence-based, so inside this fresh `catch_warnings` scope (no
+    # rextio filter yet) main() registers it; no guard reset needed.
     # Defensive: the "default" action dedups per location via the loader module's
     # __warningregistry__. The filter mutations below already invalidate it (version
     # bump), but clearing it makes determinism explicit regardless of prior emissions.
@@ -50,13 +49,12 @@ def test_main_surfaces_plugin_rules_deprecation(
     assert any("no longer used" in message and "legacy-plugin" in message for message in shown)
 
 
-def test_deprecation_filter_is_idempotent_and_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli_main, "_REXTIO_WARNING_FILTER_INSTALLED", False)
+def test_deprecation_filter_is_idempotent_and_scoped() -> None:
     with warnings.catch_warnings():
         warnings.resetwarnings()
         baseline = len(warnings.filters)
         _install_deprecation_filter()
-        _install_deprecation_filter()  # second call must not add a duplicate
+        _install_deprecation_filter()  # second call must not add a duplicate (presence-based)
         added = [
             f
             for f in warnings.filters
@@ -70,6 +68,22 @@ def test_deprecation_filter_is_idempotent_and_scoped(monkeypatch: pytest.MonkeyP
         assert pattern.match("rextio.plugins.loader")
         assert not pattern.match("rextio_extra")
         assert not pattern.match("rextiofoo")
+
+
+def test_deprecation_filter_self_heals_after_teardown() -> None:
+    # The presence-based install re-registers the filter if it was torn down (e.g. by a
+    # surrounding catch_warnings), where the old flag-based guard would have stayed set.
+    with warnings.catch_warnings():
+        warnings.resetwarnings()
+        _install_deprecation_filter()
+        warnings.resetwarnings()  # simulate the filter being removed
+        _install_deprecation_filter()
+        added = [
+            f
+            for f in warnings.filters
+            if f[2] is DeprecationWarning and f[3] is not None and f[3].pattern == r"rextio($|\.)"
+        ]
+        assert len(added) == 1
 
 
 @pytest.mark.parametrize("bad", ["inf", "nan", "0", "-1", "abc", str(MAX_BUILD_TIMEOUT_SECONDS + 1)])

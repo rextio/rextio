@@ -216,24 +216,36 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-_REXTIO_WARNING_FILTER_INSTALLED = False
+_REXTIO_DEPRECATION_MODULE = r"rextio($|\.)"
 _REXTIO_WARNING_FILTER_LOCK = threading.Lock()
+
+
+def _rextio_deprecation_filter_present() -> bool:
+    # A filter's `module` element is usually a compiled pattern, but can be a plain
+    # string or None depending on how it was registered, so read its pattern defensively.
+    return any(
+        action == "default"
+        and category is DeprecationWarning
+        and getattr(module, "pattern", module) == _REXTIO_DEPRECATION_MODULE
+        for action, _message, category, module, _lineno in warnings.filters
+    )
 
 
 def _install_deprecation_filter() -> None:
     # Python hides DeprecationWarning under default filters, so Rextio's own
     # deprecations (e.g. a plugin's legacy `rules` field) would never reach a CLI user.
     # Surface ours — they print to stderr — without unmuting third-party noise. The
-    # module pattern is `rextio($|\.)` so it matches the `rextio` package and its
-    # submodules but NOT lookalikes like `rextio_extra`. Installed once (lock-guarded so
-    # concurrent first calls can't both register) to avoid accumulating duplicate global
-    # filter entries across repeated in-process `main()` calls.
-    global _REXTIO_WARNING_FILTER_INSTALLED
+    # module pattern matches the `rextio` package and its submodules but NOT lookalikes
+    # like `rextio_extra`. Idempotent by *inspecting* `warnings.filters` (not a flag), so
+    # repeated `main()` calls don't accumulate duplicates AND the filter self-heals if it
+    # was torn down (e.g. by a surrounding `warnings.catch_warnings()`). Lock-guarded so
+    # concurrent first calls can't both register.
     with _REXTIO_WARNING_FILTER_LOCK:
-        if _REXTIO_WARNING_FILTER_INSTALLED:
+        if _rextio_deprecation_filter_present():
             return
-        warnings.filterwarnings("default", category=DeprecationWarning, module=r"rextio($|\.)")
-        _REXTIO_WARNING_FILTER_INSTALLED = True
+        warnings.filterwarnings(
+            "default", category=DeprecationWarning, module=_REXTIO_DEPRECATION_MODULE
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
