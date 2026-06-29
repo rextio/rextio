@@ -2325,3 +2325,56 @@ def is_not_none(x: str | None) -> bool:
         "app.is_not_none",
     }
     assert analysis.diagnostics == []
+
+
+def test_rejects_value_function_that_can_fall_through(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def maybe(x: int) -> int:
+    if x > 0:
+        return x
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.maybe",
+    }
+
+
+def test_accepts_value_function_returning_on_all_paths(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def both_paths(x: int) -> int:
+    if x > 0:
+        return x
+    else:
+        return -x
+
+@rextio.native
+def trailing_return(x: int) -> int:
+    if x > 0:
+        return x
+    return 0
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {function.qualname for function in analysis.accepted_native_functions} == {
+        "app.both_paths",
+        "app.trailing_return",
+    }
+    assert analysis.diagnostics == []

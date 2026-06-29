@@ -357,6 +357,46 @@ def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
             if isinstance(child, ast.Call):
                 _validate_call(function, child)
     _validate_mutable_ownership_patterns(node, function)
+    _validate_return_paths(node, function, return_type)
+
+
+def _validate_return_paths(
+    node: ast.FunctionDef,
+    function: FunctionAnalysis,
+    return_type: str | None,
+) -> None:
+    """Reject a value-returning function whose body can fall off the end.
+
+    Python returns ``None`` when control reaches the end of a function, but the
+    Rust generator appends a synthesized default return (``0``/``false``/empty
+    string/``None``) for the declared type, so a fall-through path would silently
+    return a fabricated value instead of ``None``. Keep such functions on the
+    Python fallback path with a diagnostic rather than mis-compile them.
+    """
+    if return_type is None or return_type == "None":
+        return
+    if not _block_always_returns(node.body):
+        _add_unsupported_syntax(
+            function,
+            node,
+            "not all control-flow paths return a value; "
+            f"a fall-through path would not return the declared {return_type}",
+        )
+
+
+def _block_always_returns(statements: list[ast.stmt]) -> bool:
+    """Report whether a statement list guarantees a return/raise on every path."""
+    for statement in statements:
+        if isinstance(statement, (ast.Return, ast.Raise)):
+            return True
+        if (
+            isinstance(statement, ast.If)
+            and statement.orelse
+            and _block_always_returns(statement.body)
+            and _block_always_returns(statement.orelse)
+        ):
+            return True
+    return False
 
 
 def _initial_type_env(node: ast.FunctionDef, function: FunctionAnalysis) -> dict[str, str]:
