@@ -27,6 +27,7 @@ from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import FunctionAnalysis
 from rextio.analyzer.native_marker import dotted_name, is_native_decorator
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
+from rextio.codegen.native_names import native_function_name
 from rextio.codegen.rust.keywords import RUST_RAW_INCOMPATIBLE
 
 # Shared, stateless type/AST predicates (see rextio.analyzer.type_predicates).
@@ -119,22 +120,35 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
 
     The function name, parameters, and locals are emitted as Rust identifiers.
     Codegen carries a name that collides with a Rust keyword as a raw identifier
-    (`match` -> `r#match`), so those stay native. The two cases that still cannot be
-    represented are kept on the Python fallback path with a clear diagnostic:
-    keywords `r#` cannot express (`crate`/`self`/`Self`/`super`) and non-ASCII
-    names (Rextio does not transliterate them).
+    (`match` -> `r#match`), so those stay native. What still cannot be represented
+    is kept on the Python fallback path with a clear diagnostic: keywords `r#`
+    cannot express (`crate`/`self`/`Self`/`super`), non-ASCII names (Rextio does
+    not transliterate them), and `_` used as anything other than a throwaway
+    loop/comprehension target (Rust `_` is a discard pattern, not a value).
     """
+    # The function's *emitted* Rust name is module-prefixed and sanitized
+    # (`native_function_name`), so only a non-raw-able keyword there is unfixable;
+    # non-ASCII is already sanitized away. (Checking the raw `node.name` would
+    # over-reject e.g. a sub-module `def crate()` that safely emits `app__crate`.)
+    if native_function_name(function.qualname) in RUST_RAW_INCOMPATIBLE:
+        _add_identifier_diagnostic(
+            function,
+            node,
+            f"function name '{node.name}' lowers to the Rust keyword "
+            f"'{native_function_name(function.qualname)}', which a raw identifier cannot carry",
+            f"Rename '{node.name}' or keep this function on Python fallback.",
+        )
+
+    underscore_misused = _underscore_used_as_value(node)
     args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
     if node.args.vararg is not None:
         args.append(node.args.vararg)
     if node.args.kwarg is not None:
         args.append(node.args.kwarg)
-    # The function's own name (emitted as the Rust `fn` identifier) plus parameters
-    # and every binding (Store-context) name — assignment targets, for-loop
-    # targets, and walrus targets are all `ast.Name` with `ctx=Store`, which also
-    # covers every load site (a load only follows a binding).
-    candidates: list[tuple[str, ast.AST]] = [(node.name, node)]
-    candidates.extend((arg.arg, arg) for arg in args)
+    # Parameters plus every binding (Store-context) name — assignment targets,
+    # for-loop targets, and walrus targets are all `ast.Name` with `ctx=Store`,
+    # which also covers every load site (a load only follows a binding).
+    candidates: list[tuple[str, ast.AST]] = [(arg.arg, arg) for arg in args]
     candidates.extend(
         (child.id, child)
         for child in ast.walk(node)
@@ -145,6 +159,16 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
         if name in seen:
             continue
         seen.add(name)
+        if name == "_":
+            if underscore_misused:
+                _add_identifier_diagnostic(
+                    function,
+                    where,
+                    "'_' is a Rust discard pattern and cannot be assigned to or read",
+                    "Use a named variable instead of '_', or keep '_' only as an unused "
+                    "loop variable.",
+                )
+            continue
         if name in RUST_RAW_INCOMPATIBLE:
             message = (
                 f"identifier '{name}' is a Rust keyword that cannot be carried as a "
@@ -161,18 +185,46 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
             )
         else:
             continue
-        function.add_diagnostic(
-            Diagnostic(
-                code="RXT011",
-                severity="error",
-                message=message,
-                file_path=function.file_path,
-                line=getattr(where, "lineno", function.line),
-                column=getattr(where, "col_offset", function.column),
-                function_name=function.qualname,
-                suggestion=suggestion,
-            )
+        _add_identifier_diagnostic(function, where, message, suggestion)
+
+
+def _underscore_used_as_value(node: ast.FunctionDef) -> bool:
+    """True if `_` appears anywhere other than as a for-loop/comprehension target.
+
+    Rust accepts `_` only as a discard pattern (`for _ in …`); as an assignment or
+    walrus target it would emit `let mut _` and as a read a bare `_`, both invalid.
+    """
+    discard_targets: set[int] = set()
+    for child in ast.walk(node):
+        target = child.target if isinstance(child, (ast.For, ast.comprehension)) else None
+        if target is not None:
+            for inner in ast.walk(target):
+                if isinstance(inner, ast.Name) and inner.id == "_":
+                    discard_targets.add(id(inner))
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and child.id == "_" and id(child) not in discard_targets:
+            return True
+    return False
+
+
+def _add_identifier_diagnostic(
+    function: FunctionAnalysis,
+    where: ast.AST,
+    message: str,
+    suggestion: str,
+) -> None:
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT011",
+            severity="error",
+            message=message,
+            file_path=function.file_path,
+            line=getattr(where, "lineno", function.line),
+            column=getattr(where, "col_offset", function.column),
+            function_name=function.qualname,
+            suggestion=suggestion,
         )
+    )
 
 
 def _validate_decorators(node: ast.FunctionDef, function: FunctionAnalysis) -> None:

@@ -196,6 +196,58 @@ def Self(x: int) -> int:
     assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT011"
 
 
+def test_accepts_keyword_function_name_in_a_submodule(tmp_path: Path) -> None:
+    # A sub-module function named after a keyword emits a module-prefixed Rust name
+    # (`app__crate`), which is safe — it must NOT be over-rejected by the node.name
+    # check (regression guard).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def crate(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.crate"]
+    assert analysis.rejected_native_functions == []
+
+
+def test_rejects_underscore_used_as_a_value_but_accepts_discard_loop(tmp_path: Path) -> None:
+    # Rust `_` is a discard pattern: reading or assigning it is invalid, but an
+    # unused `for _ in …` loop variable is fine.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def reads_underscore(xs: list[int]) -> int:
+    _ = len(xs)
+    return _
+
+@rextio.native
+def discard_loop(n: int) -> int:
+    total = 0
+    for _ in range(n):
+        total = total + 1
+    return total
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [f.qualname for f in analysis.accepted_native_functions] == ["app.discard_loop"]
+    assert [f.qualname for f in analysis.rejected_native_functions] == ["app.reads_underscore"]
+    assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT011"
+
+
 def test_rejects_non_ascii_local_identifier(tmp_path: Path) -> None:
     # A non-ASCII local name is emitted verbatim as a Rust identifier; rather than
     # rely on cross-language identifier (XID/normalization) parity, keep the
