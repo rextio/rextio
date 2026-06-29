@@ -112,7 +112,7 @@ def _parse_plugin_metadata(
         target_language=target_language,
         target_versions=_optional_string_tuple(data, "target_versions"),
         target_build_options=_optional_string_map(data, "target_build_options"),
-        rules=_optional_string_tuple(data, "rules"),
+        # Plugins are metadata-only; a legacy ``rules`` key is accepted but ignored.
         packages=_optional_string_tuple(data, "packages"),
         source=source,
         package=package,
