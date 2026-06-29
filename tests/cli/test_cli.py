@@ -10,6 +10,18 @@ import pytest
 from rextio.cli.main import _install_deprecation_filter, _positive_number, main
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
 
+_REXTIO_DEPRECATION_PATTERN = r"rextio($|\.)"
+
+
+def _installed_rextio_filters() -> list[tuple]:
+    # Read each filter's module element defensively (it may be a compiled pattern, a
+    # plain string, or None) — mirrors `_rextio_deprecation_filter_present` in the source.
+    return [
+        f
+        for f in warnings.filters
+        if f[2] is DeprecationWarning and getattr(f[3], "pattern", f[3]) == _REXTIO_DEPRECATION_PATTERN
+    ]
+
 
 def test_main_surfaces_plugin_rules_deprecation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -55,11 +67,7 @@ def test_deprecation_filter_is_idempotent_and_scoped() -> None:
         baseline = len(warnings.filters)
         _install_deprecation_filter()
         _install_deprecation_filter()  # second call must not add a duplicate (presence-based)
-        added = [
-            f
-            for f in warnings.filters
-            if f[2] is DeprecationWarning and f[3] is not None and f[3].pattern == r"rextio($|\.)"
-        ]
+        added = _installed_rextio_filters()
         assert len(warnings.filters) == baseline + 1
         assert len(added) == 1
         pattern = added[0][3]
@@ -78,12 +86,7 @@ def test_deprecation_filter_self_heals_after_teardown() -> None:
         _install_deprecation_filter()
         warnings.resetwarnings()  # simulate the filter being removed
         _install_deprecation_filter()
-        added = [
-            f
-            for f in warnings.filters
-            if f[2] is DeprecationWarning and f[3] is not None and f[3].pattern == r"rextio($|\.)"
-        ]
-        assert len(added) == 1
+        assert len(_installed_rextio_filters()) == 1
 
 
 @pytest.mark.parametrize("bad", ["inf", "nan", "0", "-1", "abc", str(MAX_BUILD_TIMEOUT_SECONDS + 1)])
