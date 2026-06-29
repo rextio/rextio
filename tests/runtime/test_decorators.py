@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import functools
+
 import pytest
 
 import rextio
@@ -99,6 +101,16 @@ def test_native_decorator_rejects_descriptors_and_callable_instances() -> None:
 
     with pytest.raises(TypeError, match="functions and methods"):
         rextio.native(Callable())  # type: ignore[arg-type]
+
+    # A functools.partial is callable but not a function; rejecting it is intentional
+    # (the analyzer needs a real function object to read the marker off).
+    with pytest.raises(TypeError, match="functions and methods"):
+        rextio.native(functools.partial(lambda x: x, 1))  # type: ignore[arg-type]
+
+
+def test_native_decorator_rejection_message_hints_at_the_workaround() -> None:
+    with pytest.raises(TypeError, match="beneath @staticmethod/@classmethod"):
+        rextio.native(staticmethod(lambda: 1))  # type: ignore[arg-type]
 
 
 def test_native_decorator_still_accepts_plain_functions_and_lambdas() -> None:
