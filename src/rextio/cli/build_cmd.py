@@ -6,7 +6,7 @@ from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.build.orchestrator import build_hybrid_artifact
+from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
 from rextio.build.preflight import format_missing_tools, missing_build_tools
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
 from rextio.cli.reporter import Reporter
@@ -192,13 +192,15 @@ def run(args: Namespace) -> int:
     return 0
 
 
-def _first_failed_stage(result: object) -> tuple[str, str | None] | None:
-    # Surface the first failed build stage as (message, stderr) for stderr reporting.
+def _first_failed_stage(result: BuildResult) -> tuple[str, str | None] | None:
+    # Surface the first failed build stage as (message, stderr) for stderr reporting,
+    # preserving the original precedence. Every stage has `status`/`message`; only some
+    # carry a `stderr` field, hence the defensive getattr.
     for stage in (
-        result.fallback_build,  # type: ignore[attr-defined]
-        result.native_build,  # type: ignore[attr-defined]
-        result.rust_crate_build,  # type: ignore[attr-defined]
-        result.executable_build,  # type: ignore[attr-defined]
+        result.fallback_build,
+        result.native_build,
+        result.rust_crate_build,
+        result.executable_build,
     ):
         if stage.status == "failed":
             return stage.message, getattr(stage, "stderr", None)
