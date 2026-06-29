@@ -1,3 +1,5 @@
+"""The experimental Nuitka fallback backend."""
+
 from __future__ import annotations
 
 import shutil
@@ -8,6 +10,7 @@ from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_bui
 
 
 def nuitka_unavailable_message() -> str:
+    """Return the message shown when Nuitka is required but not installed."""
     return (
         "Nuitka fallback was requested, but Nuitka is not installed.\n"
         "Install Nuitka or run: rextio build --fallback=cpython"
@@ -15,6 +18,7 @@ def nuitka_unavailable_message() -> str:
 
 
 def nuitka_available() -> bool:
+    """Report whether Nuitka is available."""
     return shutil.which("nuitka") is not None
 
 
@@ -23,6 +27,7 @@ def build_nuitka_fallback(
     *,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> FallbackBuildResult:
+    """Build the Nuitka fallback and return the result."""
     nuitka = shutil.which("nuitka")
     if nuitka is None:
         return FallbackBuildResult(

@@ -1,3 +1,5 @@
+"""The ``rextio bench`` benchmark runner."""
+
 from __future__ import annotations
 
 import importlib
@@ -20,6 +22,8 @@ from rextio.targets.plan import TargetPlanError, create_target_plan
 
 @dataclass(frozen=True)
 class BenchResult:
+    """The result of a benchmark: iteration count and per-backend timings."""
+
     target: str
     fallback_ms: float
     native_ms: float
@@ -28,6 +32,7 @@ class BenchResult:
     build_result: BuildResult
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this result."""
         return {
             "target": self.target,
             "iterations": self.iterations,
@@ -39,6 +44,7 @@ class BenchResult:
 
 
 def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> BenchResult:
+    """Benchmark a target function (native vs. fallback) and return the comparison."""
     try:
         config = load_config(project_root, environ=os.environ)
         target_plan = create_target_plan(project_root, config)
@@ -113,6 +119,8 @@ def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> Be
 
 
 class BenchError(RuntimeError):
+    """Raised when a benchmark cannot be run."""
+
     pass
 
 

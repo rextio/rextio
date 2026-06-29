@@ -1,3 +1,5 @@
+"""The fallback half of the build plan."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,15 +14,19 @@ from rextio.analyzer.models import (
 
 @dataclass(frozen=True)
 class FallbackModulePlan:
+    """The fallback plan for a single module."""
+
     module: ModuleAnalysis
     accepted_native_functions: tuple[FunctionAnalysis, ...]
     accepted_native_top_level: TopLevelAnalysis | None = None
 
     @property
     def needs_wrapper(self) -> bool:
+        """Report whether the module needs a generated dispatch wrapper."""
         return bool(self.accepted_native_functions or self.accepted_native_top_level is not None)
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this plan."""
         return {
             "module": self.module.module_name,
             "needs_wrapper": self.needs_wrapper,
@@ -37,10 +43,13 @@ class FallbackModulePlan:
 
 @dataclass(frozen=True)
 class FallbackPlan:
+    """The fallback plan across modules."""
+
     backend: str
     modules: tuple[FallbackModulePlan, ...]
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this plan."""
         return {
             "backend": self.backend,
             "modules": [module.to_dict() for module in self.modules],
@@ -48,6 +57,7 @@ class FallbackPlan:
 
 
 def create_fallback_plan(analysis: ProjectAnalysis, backend: str) -> FallbackPlan:
+    """Create the fallback plan for a project and backend."""
     modules = []
     for module in sorted(analysis.modules, key=lambda item: item.module_name):
         accepted = tuple(

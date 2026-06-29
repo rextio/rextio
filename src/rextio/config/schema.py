@@ -1,3 +1,5 @@
+"""The typed rextio.toml configuration schema."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -7,6 +9,8 @@ from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS
 
 @dataclass(frozen=True)
 class BuildConfig:
+    """The [build] configuration section."""
+
     native_backend: str = "rust"
     fallback_backend: str = "cpython"
     fallback_threshold: int = 1000
@@ -18,6 +22,8 @@ class BuildConfig:
 
 @dataclass(frozen=True)
 class RustConfig:
+    """The [rust] configuration section."""
+
     binding: str = "pyo3"
     build_tool: str = "maturin"
     importable: bool = False
@@ -26,22 +32,30 @@ class RustConfig:
 
 @dataclass(frozen=True)
 class FallbackConfig:
+    """The [fallback] configuration section."""
+
     nuitka: str = "experimental"
 
 
 @dataclass(frozen=True)
 class TargetConfig:
+    """The [target] configuration section."""
+
     version: str | None = None
     build_options: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class PluginConfig:
+    """The [plugins] configuration section."""
+
     enabled: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class ImportPackagePolicy:
+    """The import policy configured for a single package."""
+
     policy: str = "fallback"
     plugin: str | None = None
     max_depth: int = 0
@@ -49,12 +63,16 @@ class ImportPackagePolicy:
 
 @dataclass(frozen=True)
 class ImportsConfig:
+    """The [imports] configuration section."""
+
     default_external_policy: str = "fallback"
     packages: dict[str, ImportPackagePolicy] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class JitConfig:
+    """The [jit] configuration section."""
+
     enabled: bool = False
     backend: str = "cranelift"
     hot_threshold: int = 25
@@ -62,6 +80,8 @@ class JitConfig:
 
 @dataclass(frozen=True)
 class ExecutableConfig:
+    """The [executable] configuration section."""
+
     entrypoint: str | None = None
     name: str | None = None
     backend: str = "zipapp"
@@ -70,6 +90,8 @@ class ExecutableConfig:
 
 @dataclass(frozen=True)
 class PolicyConfig:
+    """The [policy] configuration section."""
+
     native_marker: str = "auto"
     require_type_hints: bool = True
     allow_dynamic_features: bool = False
@@ -79,6 +101,8 @@ class PolicyConfig:
 
 @dataclass(frozen=True)
 class RextioConfig:
+    """The full, resolved Rextio configuration."""
+
     build: BuildConfig = BuildConfig()
     rust: RustConfig = RustConfig()
     fallback: FallbackConfig = FallbackConfig()

@@ -1,3 +1,5 @@
+"""Plugin metadata models: ``RextioPlugin`` and the discovered/active registry."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -28,6 +30,7 @@ class RextioPlugin:
     entry_point: str | None = None
 
     def matches(self, target: TargetSpec) -> bool:
+        """Report whether this plugin applies to the given target spec."""
         if self.source_language != "python":
             return False
         if self.target_language != target.language:
@@ -47,6 +50,7 @@ class RextioPlugin:
         package: str | None = None,
         entry_point: str | None = None,
     ) -> RextioPlugin:
+        """Return a copy of this plugin annotated with its discovery source."""
         return replace(
             self,
             source=source,
@@ -55,6 +59,7 @@ class RextioPlugin:
         )
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this object."""
         return {
             "id": self.id,
             "name": self.name,
@@ -71,11 +76,14 @@ class RextioPlugin:
 
 @dataclass(frozen=True)
 class PluginRegistry:
+    """The set of discovered and active plugins."""
+
     enabled: tuple[str, ...] = ()
     discovered: tuple[RextioPlugin, ...] = ()
     active: tuple[RextioPlugin, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this object."""
         return {
             "enabled": list(self.enabled),
             "discovered": [plugin.to_dict() for plugin in self.discovered],

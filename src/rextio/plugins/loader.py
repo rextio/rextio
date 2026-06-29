@@ -1,3 +1,5 @@
+"""Discovery and loading of entry-point plugins."""
+
 from __future__ import annotations
 
 import warnings
@@ -11,6 +13,8 @@ from rextio.targets.models import SUPPORTED_TARGET_LANGUAGES, TargetSpec
 
 
 class PluginError(RuntimeError):
+    """Raised when a plugin cannot be loaded or is misconfigured."""
+
     pass
 
 
@@ -23,6 +27,7 @@ def load_plugin_registry(
     *,
     entry_points: Iterable[Any] | None = None,
 ) -> PluginRegistry:
+    """Discover entry-point plugins and return the resolved registry."""
     discovered = tuple(_load_entry_point_plugin(entry_point) for entry_point in _plugin_entry_points(entry_points))
     _validate_enabled_plugins(discovered, config.enabled)
     active = tuple(

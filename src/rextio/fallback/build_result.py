@@ -1,3 +1,5 @@
+"""The result of building the CPython fallback."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -5,6 +7,8 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class FallbackBuildResult:
+    """The outcome of building the CPython fallback packaging."""
+
     status: str
     backend: str
     message: str
@@ -14,6 +18,7 @@ class FallbackBuildResult:
     stderr: str = ""
 
     def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this result."""
         return {
             "status": self.status,
             "backend": self.backend,
@@ -26,6 +31,7 @@ class FallbackBuildResult:
 
 
 def cpython_fallback_build_result() -> FallbackBuildResult:
+    """Return the fallback build result for the CPython backend."""
     return FallbackBuildResult(
         status="built",
         backend="cpython",
