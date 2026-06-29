@@ -8,6 +8,7 @@ import threading
 import warnings
 from collections.abc import Sequence
 
+from rextio.__about__ import __version__
 from rextio.limits import MAX_BUILD_TIMEOUT_SECONDS
 from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, generate_cmd, init_cmd
 
@@ -17,6 +18,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rextio",
         description="Rextio 0.1.0 alpha hybrid build tool.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"rextio {__version__}",
+        help="Show the Rextio version and exit.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

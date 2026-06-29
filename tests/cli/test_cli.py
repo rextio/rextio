@@ -449,3 +449,15 @@ def test_clean_removes_generated_artifacts(tmp_path: Path, capsys) -> None:
     assert not (tmp_path / ".rextio" / "build").exists()
     assert not (tmp_path / ".rextio" / "generated").exists()
     assert not (tmp_path / ".rextio" / "reports").exists()
+
+
+def test_version_flag_reports_version(capsys: "pytest.CaptureFixture[str]") -> None:
+    import pytest
+
+    from rextio.__about__ import __version__
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--version"])
+
+    assert excinfo.value.code == 0
+    assert capsys.readouterr().out.strip() == f"rextio {__version__}"
