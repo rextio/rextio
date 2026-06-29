@@ -248,7 +248,13 @@ def _render_jit_function(
         return_statement.value,
         interpreter.render_expr_with_expected(return_statement.value, function.return_type),
     )
-    compile_name = f"compile_{rust_name}"
+    # ``rust_name`` may be a raw identifier (``r#fn``) for a keyword function name.
+    # That is valid as the standalone ``fn`` name, but the derived type/static/helper
+    # identifiers are *compound* (``{base}_JitFn``, ``compile_{base}``, …) and a
+    # raw-identifier prefix cannot appear mid-identifier, so build those from the
+    # unescaped base (``fn`` -> ``fn_JitFn``/``compile_fn``, which are plain idents).
+    base = rust_name.removeprefix("r#")
+    compile_name = f"compile_{base}"
     signature_params = ", ".join(
         f"{rust_identifier(param.name)}: {rust_type(param.type)}" for param in function.params
     )
@@ -259,25 +265,25 @@ def _render_jit_function(
         {param.name: index for index, param in enumerate(function.params)},
         return_type,
     )
-    name_literal = rust_string_literal(rust_name)
+    name_literal = rust_string_literal(base)
     return "\n".join(
         [
-            f"type {rust_name}_JitFn = {pointer_type};",
+            f"type {base}_JitFn = {pointer_type};",
             "",
-            f"static {rust_name}_HOT_COUNT: AtomicUsize = AtomicUsize::new(0);",
-            f"static {rust_name}_COMPILED: OnceLock<Result<{rust_name}_JitFn, String>> = OnceLock::new();",
+            f"static {base}_HOT_COUNT: AtomicUsize = AtomicUsize::new(0);",
+            f"static {base}_COMPILED: OnceLock<Result<{base}_JitFn, String>> = OnceLock::new();",
             "",
             f"fn {rust_name}({signature_params}) -> PyResult<{return_type}> {{",
-            f"    let calls = {rust_name}_HOT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;",
+            f"    let calls = {base}_HOT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;",
             f"    if calls >= {threshold} {{",
-            f"        if let Ok(compiled) = {rust_name}_COMPILED.get_or_init({compile_name}) {{",
+            f"        if let Ok(compiled) = {base}_COMPILED.get_or_init({compile_name}) {{",
             f"            return Ok(unsafe {{ compiled({pointer_args}) }});",
             "        }",
             "    }",
             f"    Ok({interpreter_expr})",
             "}",
             "",
-            f"fn {compile_name}() -> Result<{rust_name}_JitFn, String> {{",
+            f"fn {compile_name}() -> Result<{base}_JitFn, String> {{",
             "    let jit_builder = JITBuilder::new(cranelift_module::default_libcall_names())",
             "        .map_err(|err| err.to_string())?;",
             "    let mut module = JITModule::new(jit_builder);",
@@ -303,7 +309,7 @@ def _render_jit_function(
             "    module.finalize_definitions().map_err(|err| err.to_string())?;",
             "    let module = Box::leak(Box::new(module));",
             "    let code = module.get_finalized_function(id);",
-            f"    Ok(unsafe {{ std::mem::transmute::<*const u8, {rust_name}_JitFn>(code) }})",
+            f"    Ok(unsafe {{ std::mem::transmute::<*const u8, {base}_JitFn>(code) }})",
             "}",
         ]
     )

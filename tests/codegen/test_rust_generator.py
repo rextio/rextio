@@ -81,6 +81,36 @@ def compute(x: float) -> float:
     assert "m.add_function(wrap_pyfunction!(app__helper, m)?)?;" not in source
 
 
+def test_jit_helper_with_a_rust_keyword_name_uses_escaped_and_plain_forms(tmp_path: Path) -> None:
+    # A root-package JIT helper named after a Rust keyword emits `fn r#loop` (escaped
+    # standalone name) but its derived type/static/compile identifiers use the plain
+    # base (`loop_JitFn`, `compile_loop`) — a raw prefix cannot appear mid-identifier.
+    (tmp_path / "__init__.py").write_text(
+        """
+import rextio
+
+def loop(x: float) -> float:
+    return x * 2.0
+
+@rextio.native
+def compute(x: float) -> float:
+    return loop(x) + 1.0
+""",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_project(
+        tmp_path, native_marker="decorator", native_jit_enabled=True, jit_hot_threshold=2
+    )
+    source = generate_rust_module(lower_project(analysis, include_jit=True))
+
+    assert "fn r#loop(" in source
+    assert "fn compile_loop()" in source
+    assert "type loop_JitFn" in source
+    assert "compile_r#" not in source
+    assert "r#loop_JitFn" not in source
+
+
 def test_generates_rust_importable_crate_module_for_native_functions(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """
