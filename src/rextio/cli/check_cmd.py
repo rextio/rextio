@@ -8,6 +8,7 @@ from pathlib import Path
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
+from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
@@ -98,6 +99,7 @@ def _external_import_policies(analysis: ProjectAnalysis) -> list[tuple[str, str,
 
 
 def run(args: Namespace) -> int:
+    reporter = Reporter.from_args(args)
     project_root = Path(args.project_root).resolve()
     try:
         config = override_config(
@@ -121,8 +123,7 @@ def run(args: Namespace) -> int:
         )
         target_plan = create_target_plan(project_root, config)
     except (ConfigError, TargetPlanError) as exc:
-        print("Rextio check")
-        print(f"RXT060 Configuration error: {exc}")
+        reporter.error(f"RXT060 Configuration error: {exc}")
         return 1
     analysis = analyze_project(
         project_root,
@@ -137,10 +138,7 @@ def run(args: Namespace) -> int:
     )
     if not getattr(args, "no_report", False):
         write_check_report(project_root, analysis)
-    if args.json:
-        print(json.dumps(analysis.to_dict(), indent=2, sort_keys=True))
-    else:
-        print(format_check_report(analysis))
+    reporter.print_result(text=format_check_report(analysis), data=analysis.to_dict())
     return 1 if analysis.has_error_diagnostics else 0
 
 

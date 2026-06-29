@@ -261,8 +261,9 @@ def test_check_rejects_unsupported_cli_policy_override(tmp_path: Path, capsys) -
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "RXT060 Configuration error" in captured.out
-    assert "allow_dynamic_features" in captured.out
+    # Configuration errors are routed to stderr so stdout stays a clean result stream.
+    assert "RXT060 Configuration error" in captured.err
+    assert "allow_dynamic_features" in captured.err
 
 
 def test_check_reports_plugin_configuration_error(tmp_path: Path, capsys) -> None:
@@ -277,8 +278,8 @@ def test_check_reports_plugin_configuration_error(tmp_path: Path, capsys) -> Non
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "RXT060 Configuration error" in captured.out
-    assert "enabled plugin was not discovered: numpy-rust" in captured.out
+    assert "RXT060 Configuration error" in captured.err
+    assert "enabled plugin was not discovered: numpy-rust" in captured.err
 
 
 def test_check_applies_package_import_policy_override(tmp_path: Path, capsys) -> None:
@@ -322,8 +323,8 @@ allow_dynamic_features = true
     captured = capsys.readouterr()
 
     assert exit_code == 1
-    assert "RXT060 Configuration error" in captured.out
-    assert "allow_dynamic_features" in captured.out
+    assert "RXT060 Configuration error" in captured.err
+    assert "allow_dynamic_features" in captured.err
 
 
 def test_clean_removes_generated_artifacts(tmp_path: Path, capsys) -> None:
