@@ -2378,3 +2378,34 @@ def trailing_return(x: int) -> int:
         "app.trailing_return",
     }
     assert analysis.diagnostics == []
+
+
+def test_float_division_is_not_jit_eligible(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def fdiv(a: float, b: float) -> float:
+    return a / b
+
+def fmul(a: float, b: float) -> float:
+    return a * b
+
+@rextio.native
+def compute(a: float, b: float) -> float:
+    return fdiv(a, b) + fmul(a, b)
+""",
+    )
+
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        native_jit_enabled=True,
+        jit_hot_threshold=2,
+    )
+
+    # Float multiply is JIT-eligible; float division stays on the checked
+    # native path (raw Cranelift fdiv returns inf/NaN on divide-by-zero).
+    assert [function.qualname for function in analysis.jit_candidates] == ["app.fmul"]

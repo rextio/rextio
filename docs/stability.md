@@ -39,7 +39,7 @@ Tiers:
 
 | Feature | Tier | How to reach it |
 | --- | --- | --- |
-| Cranelift scalar JIT | Experimental | `--jit` / `[jit] enabled`. Numeric scalar helpers only; overflow-prone integer arithmetic is excluded. |
+| Cranelift scalar JIT | Experimental | `--jit` / `[jit] enabled`. Numeric scalar helpers only; overflow-prone integer arithmetic and float division are excluded (they stay on the checked native path so overflow/divide-by-zero still raise). |
 | Runtime-semantics shim (`RXT080`) | Experimental | Auto-applied to explicitly `@rextio.native` dynamic/async functions; emits a generic shim that calls back into Python. |
 | Native top-level module initialization | Experimental | `[policy] native_top_level`. Lowers a restricted subset of module-level code. |
 | Nuitka fallback / executable backend | Experimental | `--fallback=nuitka`, `--executable-backend=nuitka`. Requires Nuitka; surfaced by the build preflight when missing. |
