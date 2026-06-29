@@ -129,9 +129,9 @@ def add(x: int, y: int) -> int:
     assert "unsupported @rextio.native target" in diagnostic.message
 
 
-def test_rejects_rust_keyword_local_identifier(tmp_path: Path) -> None:
-    # A Python local named after a Rust keyword would be emitted as `let mut fn …`
-    # (uncompilable Rust); the function must fall back with RXT011 instead.
+def test_accepts_rust_keyword_identifier_via_raw_escaping(tmp_path: Path) -> None:
+    # A Python local/parameter named after a Rust keyword is carried as a raw
+    # identifier (`r#fn`), so the function stays native rather than falling back.
     write_module(
         tmp_path,
         "app.py",
@@ -139,23 +139,21 @@ def test_rejects_rust_keyword_local_identifier(tmp_path: Path) -> None:
 import rextio
 
 @rextio.native
-def f(xs: list[int]) -> int:
-    fn = 0
-    for x in xs:
-        fn = fn + x
+def f(match: int) -> int:
+    fn = match
     return fn
 """,
     )
 
     analysis = analyze_project(tmp_path, native_marker="decorator")
 
-    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.f"]
-    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
-    assert diagnostic.code == "RXT011"
-    assert "Rust keyword" in diagnostic.message
+    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.f"]
+    assert analysis.rejected_native_functions == []
 
 
-def test_rejects_rust_keyword_parameter_identifier(tmp_path: Path) -> None:
+def test_rejects_non_raw_able_rust_keyword_identifier(tmp_path: Path) -> None:
+    # `crate`/`self`/`Self`/`super` are the keywords a raw identifier cannot carry,
+    # so they fall back with RXT011 instead of emitting uncompilable Rust.
     write_module(
         tmp_path,
         "app.py",
@@ -163,14 +161,38 @@ def test_rejects_rust_keyword_parameter_identifier(tmp_path: Path) -> None:
 import rextio
 
 @rextio.native
-def g(match: int) -> int:
-    return match + 1
+def g(xs: list[int]) -> int:
+    crate = len(xs)
+    return crate
 """,
     )
 
     analysis = analyze_project(tmp_path, native_marker="decorator")
 
     assert [function.qualname for function in analysis.rejected_native_functions] == ["app.g"]
+    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
+    assert diagnostic.code == "RXT011"
+    assert "raw identifier" in diagnostic.message
+
+
+def test_rejects_non_raw_able_rust_keyword_function_name(tmp_path: Path) -> None:
+    # The function's own name is also checked: a root-package function named after a
+    # non-raw-able keyword cannot be lowered.
+    write_module(
+        tmp_path,
+        "__init__.py",
+        """
+import rextio
+
+@rextio.native
+def Self(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["Self"]
     assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT011"
 
 

@@ -27,6 +27,7 @@ from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import FunctionAnalysis
 from rextio.analyzer.native_marker import dotted_name, is_native_decorator
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
+from rextio.codegen.rust.keywords import RUST_RAW_INCOMPATIBLE
 
 # Shared, stateless type/AST predicates (see rextio.analyzer.type_predicates).
 from rextio.analyzer.type_predicates import (
@@ -64,24 +65,6 @@ from rextio.capabilities import (
 )
 
 DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
-
-# Rust 2021 strict + reserved keywords. A Python parameter or local whose name is
-# one of these would be emitted verbatim as a Rust identifier (e.g. `let mut fn =
-# …`), which does not compile — Rextio's codegen does not mangle identifiers. Such
-# functions are kept on the safe Python fallback path (RXT011) instead of
-# generating uncompilable Rust.
-RUST_RESERVED_IDENTIFIERS = frozenset(
-    {
-        "as", "break", "const", "continue", "crate", "dyn", "else", "enum",
-        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
-        "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self",
-        "static", "struct", "super", "trait", "true", "type", "unsafe", "use",
-        "where", "while", "async", "await",
-        # Reserved for future use.
-        "abstract", "become", "box", "do", "final", "macro", "override", "priv",
-        "typeof", "unsized", "virtual", "yield", "try",
-    }
-)
 
 UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.AsyncFunctionDef,
@@ -132,23 +115,26 @@ def validate_native_function(node: ast.FunctionDef, function: FunctionAnalysis) 
 
 
 def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
-    """Reject parameters/locals that cannot be lowered to a valid Rust identifier.
+    """Reject identifiers that cannot be lowered to a valid Rust identifier.
 
-    Local and parameter names are emitted verbatim as Rust identifiers, so a name
-    that is a Rust keyword (`fn`, `match`, `type`, …) or contains non-ASCII
-    characters would produce uncompilable Rust. Rextio does not mangle
-    identifiers, so such a function is kept on the Python fallback path with a
-    clear diagnostic rather than emitting broken Rust.
+    The function name, parameters, and locals are emitted as Rust identifiers.
+    Codegen carries a name that collides with a Rust keyword as a raw identifier
+    (`match` -> `r#match`), so those stay native. The two cases that still cannot be
+    represented are kept on the Python fallback path with a clear diagnostic:
+    keywords `r#` cannot express (`crate`/`self`/`Self`/`super`) and non-ASCII
+    names (Rextio does not transliterate them).
     """
     args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
     if node.args.vararg is not None:
         args.append(node.args.vararg)
     if node.args.kwarg is not None:
         args.append(node.args.kwarg)
-    # Parameters plus every binding (Store-context) name — assignment targets,
-    # for-loop targets, and walrus targets are all `ast.Name` with `ctx=Store`,
-    # which also covers every load site (a load only follows a binding).
-    candidates: list[tuple[str, ast.AST]] = [(arg.arg, arg) for arg in args]
+    # The function's own name (emitted as the Rust `fn` identifier) plus parameters
+    # and every binding (Store-context) name — assignment targets, for-loop
+    # targets, and walrus targets are all `ast.Name` with `ctx=Store`, which also
+    # covers every load site (a load only follows a binding).
+    candidates: list[tuple[str, ast.AST]] = [(node.name, node)]
+    candidates.extend((arg.arg, arg) for arg in args)
     candidates.extend(
         (child.id, child)
         for child in ast.walk(node)
@@ -159,11 +145,14 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
         if name in seen:
             continue
         seen.add(name)
-        if name in RUST_RESERVED_IDENTIFIERS:
-            message = f"identifier '{name}' collides with a Rust keyword and cannot be lowered"
+        if name in RUST_RAW_INCOMPATIBLE:
+            message = (
+                f"identifier '{name}' is a Rust keyword that cannot be carried as a "
+                "raw identifier"
+            )
             suggestion = (
-                f"Rename the variable '{name}' (it is a Rust reserved word) or keep "
-                "this function on Python fallback."
+                f"Rename '{name}' (a Rust keyword `r#` cannot escape) or keep this "
+                "function on Python fallback."
             )
         elif not (name.isascii() and name.isidentifier()):
             message = f"identifier '{name}' uses non-ASCII characters not supported in generated Rust"

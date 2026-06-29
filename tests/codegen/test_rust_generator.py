@@ -708,6 +708,30 @@ def last_positive(xs: list[int]) -> int:
     assert "local variable 'value' referenced before assignment" in source
 
 
+def test_rust_keyword_identifiers_are_emitted_as_raw_identifiers(tmp_path: Path) -> None:
+    # A Python parameter/local named after a Rust keyword is carried as a raw
+    # identifier (`r#name`) so the generated Rust compiles, instead of `let mut fn`.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def f(match: int) -> int:
+    fn = match
+    return fn
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "r#match: i64" in source  # parameter
+    assert "let mut r#fn = r#match;" in source  # local + load
+    # No bare keyword identifier leaks through.
+    assert "let mut fn " not in source
+    assert "(match:" not in source
+
+
 def test_generates_rust_for_expanded_stdlib_lowering_calls(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """
