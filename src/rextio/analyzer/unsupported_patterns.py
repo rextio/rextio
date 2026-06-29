@@ -27,6 +27,8 @@ from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import FunctionAnalysis
 from rextio.analyzer.native_marker import dotted_name, is_native_decorator
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
+from rextio.codegen.native_names import native_function_name
+from rextio.codegen.rust.keywords import RUST_RAW_INCOMPATIBLE
 
 # Shared, stateless type/AST predicates (see rextio.analyzer.type_predicates).
 from rextio.analyzer.type_predicates import (
@@ -64,24 +66,6 @@ from rextio.capabilities import (
 )
 
 DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
-
-# Rust 2021 strict + reserved keywords. A Python parameter or local whose name is
-# one of these would be emitted verbatim as a Rust identifier (e.g. `let mut fn =
-# …`), which does not compile — Rextio's codegen does not mangle identifiers. Such
-# functions are kept on the safe Python fallback path (RXT011) instead of
-# generating uncompilable Rust.
-RUST_RESERVED_IDENTIFIERS = frozenset(
-    {
-        "as", "break", "const", "continue", "crate", "dyn", "else", "enum",
-        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
-        "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self",
-        "static", "struct", "super", "trait", "true", "type", "unsafe", "use",
-        "where", "while", "async", "await",
-        # Reserved for future use.
-        "abstract", "become", "box", "do", "final", "macro", "override", "priv",
-        "typeof", "unsized", "virtual", "yield", "try",
-    }
-)
 
 UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.AsyncFunctionDef,
@@ -132,14 +116,29 @@ def validate_native_function(node: ast.FunctionDef, function: FunctionAnalysis) 
 
 
 def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
-    """Reject parameters/locals that cannot be lowered to a valid Rust identifier.
+    """Reject identifiers that cannot be lowered to a valid Rust identifier.
 
-    Local and parameter names are emitted verbatim as Rust identifiers, so a name
-    that is a Rust keyword (`fn`, `match`, `type`, …) or contains non-ASCII
-    characters would produce uncompilable Rust. Rextio does not mangle
-    identifiers, so such a function is kept on the Python fallback path with a
-    clear diagnostic rather than emitting broken Rust.
+    The function name, parameters, and locals are emitted as Rust identifiers.
+    Codegen carries a name that collides with a Rust keyword as a raw identifier
+    (`match` -> `r#match`), so those stay native. What still cannot be represented
+    is kept on the Python fallback path with a clear diagnostic: keywords `r#`
+    cannot express (`crate`/`self`/`Self`/`super`), non-ASCII names (Rextio does
+    not transliterate them), and `_` used as anything other than a throwaway
+    loop/comprehension target (Rust `_` is a discard pattern, not a value).
     """
+    _validate_function_name(node, function)
+
+    # `_` is special; emit its diagnostic once, independent of the candidate loop
+    # (it can be misused as a read with no Store occurrence to iterate over).
+    misused_underscore = _misused_underscore_node(node)
+    if misused_underscore is not None:
+        _add_identifier_diagnostic(
+            function,
+            misused_underscore,
+            "'_' is a Rust discard pattern and cannot be assigned to or read",
+            "Use a named variable instead of '_', or keep '_' only as an unused loop variable.",
+        )
+
     args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
     if node.args.vararg is not None:
         args.append(node.args.vararg)
@@ -159,11 +158,16 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
         if name in seen:
             continue
         seen.add(name)
-        if name in RUST_RESERVED_IDENTIFIERS:
-            message = f"identifier '{name}' collides with a Rust keyword and cannot be lowered"
+        if name == "_":
+            continue  # handled by `_misused_underscore_node` above
+        if name in RUST_RAW_INCOMPATIBLE:
+            message = (
+                f"identifier '{name}' is a Rust keyword that cannot be carried as a "
+                "raw identifier"
+            )
             suggestion = (
-                f"Rename the variable '{name}' (it is a Rust reserved word) or keep "
-                "this function on Python fallback."
+                f"Rename '{name}' (a Rust keyword `r#` cannot escape) or keep this "
+                "function on Python fallback."
             )
         elif not (name.isascii() and name.isidentifier()):
             message = f"identifier '{name}' uses non-ASCII characters not supported in generated Rust"
@@ -172,18 +176,86 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
             )
         else:
             continue
-        function.add_diagnostic(
-            Diagnostic(
-                code="RXT011",
-                severity="error",
-                message=message,
-                file_path=function.file_path,
-                line=getattr(where, "lineno", function.line),
-                column=getattr(where, "col_offset", function.column),
-                function_name=function.qualname,
-                suggestion=suggestion,
-            )
+        _add_identifier_diagnostic(function, where, message, suggestion)
+
+
+def _validate_function_name(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    function: FunctionAnalysis,
+) -> None:
+    """Reject a function whose *name* cannot be lowered to a Rust `fn` identifier.
+
+    Checked on the raw name first, before `native_function_name` (which raises on a
+    name that sanitizes to empty): a non-ASCII name would be silently mangled (and
+    can collide), an all-underscore name sanitizes to empty/`fn _` (invalid), and an
+    emitted name that is a non-raw-able keyword (`crate`/`self`/…) cannot be escaped.
+    """
+    name = node.name
+    if not name.isascii():
+        _add_identifier_diagnostic(
+            function,
+            node,
+            f"function name '{name}' uses non-ASCII characters not supported in generated Rust",
+            f"Rename '{name}' to an ASCII name or keep this function on Python fallback.",
         )
+        return
+    if not name.strip("_"):
+        _add_identifier_diagnostic(
+            function,
+            node,
+            f"function name '{name}' has no usable characters for a Rust identifier",
+            f"Rename '{name}' or keep this function on Python fallback.",
+        )
+        return
+    emitted = native_function_name(function.qualname)
+    if emitted in RUST_RAW_INCOMPATIBLE:
+        _add_identifier_diagnostic(
+            function,
+            node,
+            f"function name '{name}' lowers to the Rust keyword '{emitted}', "
+            "which a raw identifier cannot carry",
+            f"Rename '{name}' or keep this function on Python fallback.",
+        )
+
+
+def _misused_underscore_node(node: ast.AST) -> ast.AST | None:
+    """Return the first `_` used as a value, or None.
+
+    Rust accepts `_` only as a discard pattern (`for _ in …`); as an assignment or
+    walrus target it would emit `let mut _` and as a read a bare `_`, both invalid.
+    Returns the offending `ast.Name` so the diagnostic can point at it.
+    """
+    discard_targets: set[int] = set()
+    for child in ast.walk(node):
+        target = child.target if isinstance(child, (ast.For, ast.comprehension)) else None
+        if target is not None:
+            for inner in ast.walk(target):
+                if isinstance(inner, ast.Name) and inner.id == "_":
+                    discard_targets.add(id(inner))
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and child.id == "_" and id(child) not in discard_targets:
+            return child
+    return None
+
+
+def _add_identifier_diagnostic(
+    function: FunctionAnalysis,
+    where: ast.AST,
+    message: str,
+    suggestion: str,
+) -> None:
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT011",
+            severity="error",
+            message=message,
+            file_path=function.file_path,
+            line=getattr(where, "lineno", function.line),
+            column=getattr(where, "col_offset", function.column),
+            function_name=function.qualname,
+            suggestion=suggestion,
+        )
+    )
 
 
 def _validate_decorators(node: ast.FunctionDef, function: FunctionAnalysis) -> None:

@@ -129,9 +129,9 @@ def add(x: int, y: int) -> int:
     assert "unsupported @rextio.native target" in diagnostic.message
 
 
-def test_rejects_rust_keyword_local_identifier(tmp_path: Path) -> None:
-    # A Python local named after a Rust keyword would be emitted as `let mut fn …`
-    # (uncompilable Rust); the function must fall back with RXT011 instead.
+def test_accepts_rust_keyword_identifier_via_raw_escaping(tmp_path: Path) -> None:
+    # A Python local/parameter named after a Rust keyword is carried as a raw
+    # identifier (`r#fn`), so the function stays native rather than falling back.
     write_module(
         tmp_path,
         "app.py",
@@ -139,23 +139,21 @@ def test_rejects_rust_keyword_local_identifier(tmp_path: Path) -> None:
 import rextio
 
 @rextio.native
-def f(xs: list[int]) -> int:
-    fn = 0
-    for x in xs:
-        fn = fn + x
+def f(match: int) -> int:
+    fn = match
     return fn
 """,
     )
 
     analysis = analyze_project(tmp_path, native_marker="decorator")
 
-    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.f"]
-    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
-    assert diagnostic.code == "RXT011"
-    assert "Rust keyword" in diagnostic.message
+    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.f"]
+    assert analysis.rejected_native_functions == []
 
 
-def test_rejects_rust_keyword_parameter_identifier(tmp_path: Path) -> None:
+def test_rejects_non_raw_able_rust_keyword_identifier(tmp_path: Path) -> None:
+    # `crate`/`self`/`Self`/`super` are the keywords a raw identifier cannot carry,
+    # so they fall back with RXT011 instead of emitting uncompilable Rust.
     write_module(
         tmp_path,
         "app.py",
@@ -163,15 +161,150 @@ def test_rejects_rust_keyword_parameter_identifier(tmp_path: Path) -> None:
 import rextio
 
 @rextio.native
-def g(match: int) -> int:
-    return match + 1
+def g(xs: list[int]) -> int:
+    crate = len(xs)
+    return crate
 """,
     )
 
     analysis = analyze_project(tmp_path, native_marker="decorator")
 
     assert [function.qualname for function in analysis.rejected_native_functions] == ["app.g"]
+    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
+    assert diagnostic.code == "RXT011"
+    assert "raw identifier" in diagnostic.message
+
+
+def test_rejects_non_raw_able_rust_keyword_function_name(tmp_path: Path) -> None:
+    # The function's own name is also checked: a root-package function named after a
+    # non-raw-able keyword cannot be lowered.
+    write_module(
+        tmp_path,
+        "__init__.py",
+        """
+import rextio
+
+@rextio.native
+def Self(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["Self"]
     assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT011"
+
+
+def test_rejects_non_ascii_and_underscore_function_names_without_crashing(tmp_path: Path) -> None:
+    # A non-ASCII function name (silently mangled before) and an all-underscore name
+    # (which `native_function_name` cannot sanitize and would crash on at root) are
+    # rejected with RXT011 rather than mangled or crashing the analyzer.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def café(x: int) -> int:
+    return x + 1
+""",
+    )
+    write_module(
+        tmp_path,
+        "__init__.py",
+        """
+import rextio
+
+@rextio.native
+def _(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert "app.café" in rejected
+    assert "_" in rejected
+    assert all(
+        f.error_diagnostics[0].code == "RXT011"
+        for f in analysis.rejected_native_functions
+        if f.qualname in {"app.café", "_"}
+    )
+
+
+def test_accepts_keyword_function_name_in_a_submodule(tmp_path: Path) -> None:
+    # A sub-module function named after a keyword emits a module-prefixed Rust name
+    # (`app__crate`), which is safe — it must NOT be over-rejected by the node.name
+    # check (regression guard).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def crate(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.crate"]
+    assert analysis.rejected_native_functions == []
+
+
+def test_rejects_underscore_used_as_a_value_but_accepts_discard_loop(tmp_path: Path) -> None:
+    # Rust `_` is a discard pattern: reading or assigning it is invalid, but an
+    # unused `for _ in …` loop variable is fine.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def reads_underscore(xs: list[int]) -> int:
+    _ = len(xs)
+    return _
+
+@rextio.native
+def discard_loop(n: int) -> int:
+    total = 0
+    for _ in range(n):
+        total = total + 1
+    return total
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [f.qualname for f in analysis.accepted_native_functions] == ["app.discard_loop"]
+    assert [f.qualname for f in analysis.rejected_native_functions] == ["app.reads_underscore"]
+    assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT011"
+
+
+def test_rejects_non_raw_able_keyword_top_level_name(tmp_path: Path) -> None:
+    # native_top_level emits top-level assignments through the same renderer, so a
+    # non-raw-able keyword module variable must be rejected (a raw-able one like
+    # `match` stays native, escaped to `r#match`).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+crate = 5
+value = crate + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator", native_top_level=True)
+
+    assert "RXT011" in {diagnostic.code for diagnostic in analysis.diagnostics}
 
 
 def test_rejects_non_ascii_local_identifier(tmp_path: Path) -> None:
@@ -591,6 +724,116 @@ def bad(x: float) -> float:
     assert "RXT080" in {diagnostic.code for diagnostic in analysis.diagnostics}
     assert [function.qualname for function in analysis.accepted_native_functions] == ["app.bad"]
     assert analysis.accepted_native_functions[0].native_runtime_semantics is True
+
+
+def test_runtime_semantics_shim_does_not_bypass_identifier_validation(tmp_path: Path) -> None:
+    # The RXT080 runtime shim still emits `fn {name}`, so a root function named after a
+    # non-raw-able keyword must be rejected (RXT011) instead of promoted to the shim and
+    # emitting uncompilable Rust — for both the dynamic (sync) and async promotion paths.
+    write_module(
+        tmp_path,
+        "__init__.py",
+        """
+import rextio
+
+@rextio.native
+def crate(x: int) -> int:
+    return getattr(x, "value")
+
+@rextio.native
+async def super(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert {"crate", "super"} <= rejected
+    assert all(
+        f.error_diagnostics[0].code == "RXT011"
+        for f in analysis.rejected_native_functions
+        if f.qualname in {"crate", "super"}
+    )
+    assert not any(
+        f.qualname in {"crate", "super"} for f in analysis.accepted_native_functions
+    )
+
+
+def test_runtime_shim_promotes_dynamic_function_with_unrepresentable_param_name(
+    tmp_path: Path,
+) -> None:
+    # The shim signature is the generic `(py, args, kwargs)` and emits no parameter
+    # identifiers, so a dynamic function with a representable *name* but an
+    # unrepresentable *parameter* name (a non-raw-able keyword) must still be promoted
+    # to the shim rather than over-rejected onto Python fallback — mirroring the async
+    # path, which only validates the function name.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def compute(crate: object) -> object:
+    return getattr(crate, "value")
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [f.qualname for f in analysis.accepted_native_functions] == ["app.compute"]
+    assert analysis.accepted_native_functions[0].native_runtime_semantics is True
+    assert analysis.rejected_native_functions == []
+
+
+def test_marked_method_runtime_shim_validates_the_method_name(tmp_path: Path) -> None:
+    # The class-method RXT080 shim emits `fn {native_function_name(qualname)}(...)`
+    # just like the module-level shim, so a method whose name cannot be lowered to a
+    # Rust identifier (non-ASCII, all-underscore) must be rejected (RXT011) rather than
+    # silently mangled. A representable method name with an unrepresentable *parameter*
+    # name must still be accepted (the shim emits no parameter identifiers).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+class Widget:
+    @rextio.native
+    def café(self, x: object) -> object:
+        return getattr(x, "value")
+
+    @rextio.native
+    def _(self, x: object) -> object:
+        return getattr(x, "value")
+
+    @rextio.native
+    def compute(self, crate: object) -> object:
+        return getattr(crate, "value")
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    rejected = {
+        f.qualname: f.error_diagnostics[0].code
+        for f in analysis.rejected_native_functions
+        if f.error_diagnostics
+    }
+    assert "app.Widget.compute" in accepted
+    assert rejected.get("app.Widget.café") == "RXT011"
+    assert rejected.get("app.Widget._") == "RXT011"
+    # A rejected method must not be left flagged as a runtime-semantics shim: the
+    # builder sets `native_runtime_semantics=True` before validating the name, and the
+    # rejection path clears it (defense-in-depth against any consumer that reads the
+    # flag without also checking `accepted`).
+    rejected_flags = {
+        f.qualname: f.native_runtime_semantics for f in analysis.rejected_native_functions
+    }
+    assert rejected_flags.get("app.Widget.café") is False
+    assert rejected_flags.get("app.Widget._") is False
 
 
 def test_auto_discovery_does_not_promote_dynamic_functions_to_runtime_shim(

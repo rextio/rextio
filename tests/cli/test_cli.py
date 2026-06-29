@@ -1,9 +1,25 @@
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
-from rextio.cli.main import main
+import pytest
+
+from rextio.cli.main import _positive_number, main
+from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("bad", ["inf", "nan", "0", "-1", "abc", str(MAX_BUILD_TIMEOUT_SECONDS + 1)])
+def test_build_timeout_cli_validator_rejects(bad: str) -> None:
+    # The --build-timeout argparse type must reject inf/nan/non-positive/over-cap.
+    with pytest.raises(argparse.ArgumentTypeError):
+        _positive_number(bad)
+
+
+def test_build_timeout_cli_validator_accepts_valid_value() -> None:
+    assert _positive_number(str(DEFAULT_BUILD_TIMEOUT_SECONDS)) == float(DEFAULT_BUILD_TIMEOUT_SECONDS)
+    assert _positive_number(str(MAX_BUILD_TIMEOUT_SECONDS)) == float(MAX_BUILD_TIMEOUT_SECONDS)
 
 
 def test_init_creates_default_project_files(tmp_path: Path, capsys) -> None:

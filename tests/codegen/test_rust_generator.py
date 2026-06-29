@@ -73,12 +73,44 @@ def compute(x: float) -> float:
 
     assert "use cranelift_jit::{JITBuilder, JITModule};" in source
     assert "fn app__helper(x: f64) -> PyResult<f64> {" in source
-    assert "static app__helper_COMPILED" in source
+    assert "static __rextio_jit_app__helper_COMPILED" in source
     assert "if calls >= 2" in source
     assert "return Ok(unsafe { compiled(x) });" in source
     assert "return Ok(app__helper(x.clone())? + 1.0);" in source
     assert "m.add_function(wrap_pyfunction!(app__compute, m)?)?;" in source
     assert "m.add_function(wrap_pyfunction!(app__helper, m)?)?;" not in source
+
+
+def test_jit_helper_with_a_rust_keyword_name_uses_escaped_and_plain_forms(tmp_path: Path) -> None:
+    # A root-package JIT helper named after a Rust keyword emits `fn r#loop` (escaped
+    # standalone name) but its derived type/static/compile identifiers use the plain
+    # base under the `__rextio_jit_` namespace (`__rextio_jit_loop_JitFn`,
+    # `__rextio_jit_loop_compile`) — a raw prefix cannot appear mid-identifier and the
+    # namespace prevents collisions with user functions.
+    (tmp_path / "__init__.py").write_text(
+        """
+import rextio
+
+def loop(x: float) -> float:
+    return x * 2.0
+
+@rextio.native
+def compute(x: float) -> float:
+    return loop(x) + 1.0
+""",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_project(
+        tmp_path, native_marker="decorator", native_jit_enabled=True, jit_hot_threshold=2
+    )
+    source = generate_rust_module(lower_project(analysis, include_jit=True))
+
+    assert "fn r#loop(" in source
+    assert "fn __rextio_jit_loop_compile()" in source
+    assert "type __rextio_jit_loop_JitFn" in source
+    assert "__rextio_jit_r#" not in source
+    assert "r#loop_JitFn" not in source
 
 
 def test_generates_rust_importable_crate_module_for_native_functions(tmp_path: Path) -> None:
@@ -708,6 +740,52 @@ def last_positive(xs: list[int]) -> int:
     assert "local variable 'value' referenced before assignment" in source
 
 
+def test_rust_keyword_identifiers_are_emitted_as_raw_identifiers(tmp_path: Path) -> None:
+    # A Python parameter/local named after a Rust keyword is carried as a raw
+    # identifier (`r#name`) so the generated Rust compiles, instead of `let mut fn`.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def f(match: int) -> int:
+    fn = match
+    return fn
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "r#match: i64" in source  # parameter
+    assert "let mut r#fn = r#match;" in source  # local + load
+    # No bare keyword identifier leaks through.
+    assert "let mut fn " not in source
+    assert "(match:" not in source
+
+
+def test_rust_keyword_walrus_target_is_emitted_as_raw_identifier(tmp_path: Path) -> None:
+    # The walrus/named-expr prelude declares the maybe-bound Option; a keyword
+    # target must be escaped there too (it was a missed emission site), or the
+    # `let mut match: Option<…>` declaration would not match the `r#match` uses.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def f(xs: list[int]) -> int:
+    out = [match for x in xs if (match := x) > 0]
+    return match
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "let mut r#match: Option<i64> = None;" in source
+    assert "let mut match:" not in source
+
+
 def test_generates_rust_for_expanded_stdlib_lowering_calls(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """
@@ -1145,6 +1223,65 @@ def read_value(x: object) -> object:
     assert "rextio_call_python_runtime(" in source
     assert '"_fallback_app"' in source
     assert '"_rextio_original_app__read_value"' in source
+
+
+def test_runtime_shim_with_keyword_param_emits_generic_signature(tmp_path: Path) -> None:
+    # A dynamic function with an unrepresentable parameter name (a non-raw-able Rust
+    # keyword) is promoted to the shim; the generated Rust must use the generic
+    # `(py, args, kwargs)` signature and must NOT emit a Rust parameter named after
+    # the keyword (which would not compile).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def compute(crate: object) -> object:
+    return getattr(crate, "value")
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "#[pyfunction(signature = (*args, **kwargs))]" in source
+    assert "rextio_call_python_runtime(" in source
+    # Assert the *signature* is the generic shim shape and carries no parameter named
+    # after the keyword. A whole-module `"crate" not in source` ban would be brittle
+    # (it false-fails on any legitimate `crate::` path the generator might emit).
+    # `[^)]*` cannot overflow the parameter list (the generic shim's parameter types
+    # contain no inner parens), and `\b…\b` avoids the `"args" in "kwargs"` masking trap.
+    signature = re.search(r"fn app__compute\([^)]*\)", source)
+    assert signature is not None
+    assert re.search(r"\bargs\b", signature.group(0))
+    assert re.search(r"\bkwargs\b", signature.group(0))
+    assert "crate" not in signature.group(0)
+
+
+def test_class_method_runtime_shim_emits_generic_signature(tmp_path: Path) -> None:
+    # Codegen coverage for the class-method shim path (`_collect_native_methods`): a
+    # marked dynamic method lowers to a generic `(py, args, kwargs)` shim named after
+    # the sanitized qualname (`app__Widget__compute`), with no Rust parameter named
+    # after the keyword parameter.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+class Widget:
+    @rextio.native
+    def compute(self, crate: object) -> object:
+        return getattr(crate, "value")
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "rextio_call_python_runtime(" in source
+    signature = re.search(r"fn app__Widget__compute\([^)]*\)", source)
+    assert signature is not None
+    assert re.search(r"\bargs\b", signature.group(0))
+    assert re.search(r"\bkwargs\b", signature.group(0))
+    assert "crate" not in signature.group(0)
 
 
 def test_sequence_indexing_is_bounds_checked_and_normalizes_negatives(tmp_path: Path) -> None:

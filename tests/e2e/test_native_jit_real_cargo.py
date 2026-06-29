@@ -62,7 +62,7 @@ def compute(x: float) -> float:
     assert report["native_build"]["status"] == "built"
     assert report["accepted_native_count"] == 1
     assert report["jit_candidate_count"] == 1
-    assert "static jit_app__math_ops__helper_COMPILED" in lib_rs
+    assert "static __rextio_jit_jit_app__math_ops__helper_COMPILED" in lib_rs
     assert "wrap_pyfunction!(jit_app__math_ops__helper" not in lib_rs
 
     monkeypatch.syspath_prepend(str(build_python))

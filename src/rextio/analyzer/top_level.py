@@ -10,13 +10,16 @@ from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis, TopLevelAna
 from rextio.analyzer.native_marker import dotted_name
 from rextio.analyzer.unsupported_patterns import (
     UNSUPPORTED_SYNTAX,
+    _add_identifier_diagnostic,
     _add_unsupported_syntax,
     _is_append_call,
     _is_supported_signature_type,
+    _misused_underscore_node,
     _unsupported_message,
     _validate_call,
     _validate_statement_types,
 )
+from rextio.codegen.rust.keywords import RUST_RAW_INCOMPATIBLE
 
 TOP_LEVEL_NATIVE_NAME = "__rextio_top_level__"
 
@@ -83,6 +86,7 @@ def analyze_native_top_level(tree: ast.Module, module: ModuleAnalysis) -> TopLev
     assigned_names: set[str] = set()
     for statement in statements:
         _validate_top_level_statement(statement, validator, validator_module, env, assigned_names)
+    _validate_top_level_identifiers(statements, validator)
 
     for diagnostic in validator.diagnostics:
         top_level.add_diagnostic(diagnostic)
@@ -134,6 +138,51 @@ def _validate_top_level_statement(
     _reject_unsupported_top_level_calls(statement, validator, module)
     if isinstance(statement, (ast.If, ast.While)):
         env.update({name: before[name] for name in before if name not in env})
+
+
+def _validate_top_level_identifiers(
+    statements: list[ast.stmt],
+    validator: FunctionAnalysis,
+) -> None:
+    """Reject top-level module names that cannot be lowered to a Rust identifier.
+
+    Top-level assignments are emitted through the same renderer (which escapes
+    raw-able keywords as `r#name`), so the unrepresentable cases mirror those of a
+    function body: non-raw-able keywords, non-ASCII names, and a value-used `_`.
+    """
+    module_node = ast.Module(body=list(statements), type_ignores=[])
+    misused_underscore = _misused_underscore_node(module_node)
+    if misused_underscore is not None:
+        _add_identifier_diagnostic(
+            validator,
+            misused_underscore,
+            "'_' is a Rust discard pattern and cannot be assigned to or read",
+            "Use a named module variable instead of '_'.",
+        )
+    seen: set[str] = set()
+    for child in ast.walk(module_node):
+        if not (isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)):
+            continue
+        name = child.id
+        if name in seen:
+            continue
+        seen.add(name)
+        if name == "_":
+            continue
+        if name in RUST_RAW_INCOMPATIBLE:
+            _add_identifier_diagnostic(
+                validator,
+                child,
+                f"identifier '{name}' is a Rust keyword that cannot be carried as a raw identifier",
+                f"Rename the module variable '{name}' or keep this module top level on Python fallback.",
+            )
+        elif not (name.isascii() and name.isidentifier()):
+            _add_identifier_diagnostic(
+                validator,
+                child,
+                f"identifier '{name}' uses non-ASCII characters not supported in generated Rust",
+                f"Use an ASCII name for '{name}' or keep this module top level on Python fallback.",
+            )
 
 
 def _validate_top_level_ast(statement: ast.stmt, validator: FunctionAnalysis) -> None:

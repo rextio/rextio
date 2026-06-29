@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS
+from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)

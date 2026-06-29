@@ -7,6 +7,7 @@ from rextio.codegen.rust.checked_arith import (
     checked_arith_helpers as _checked_arith_helpers,
 )
 from rextio.codegen.rust.errors import RustCodegenError
+from rextio.codegen.rust.keywords import RUST_RAWABLE_KEYWORDS
 from rextio.codegen.rust.jit_codegen import jit_prelude as _jit_prelude
 from rextio.codegen.rust.jit_codegen import jit_pointer_type as _jit_pointer_type
 from rextio.codegen.rust.jit_codegen import render_cranelift_expr as _render_cranelift_expr
@@ -180,6 +181,12 @@ def rust_identifier(value: str) -> str:
         raise RustCodegenError("empty Rust identifier")
     if identifier[0].isdigit():
         identifier = f"_{identifier}"
+    # Carry a name that collides with a Rust keyword as a raw identifier so it
+    # stays valid Rust (e.g. a Python local `match` -> `r#match`). The handful of
+    # keywords `r#` cannot express (`crate`/`self`/`Self`/`super`) are rejected
+    # upstream by the analyzer (RXT011), so they never reach here.
+    if identifier in RUST_RAWABLE_KEYWORDS:
+        return f"r#{identifier}"
     return identifier
 
 
@@ -241,34 +248,44 @@ def _render_jit_function(
         return_statement.value,
         interpreter.render_expr_with_expected(return_statement.value, function.return_type),
     )
-    compile_name = f"compile_{rust_name}"
-    signature_params = ", ".join(f"{param.name}: {rust_type(param.type)}" for param in function.params)
-    pointer_args = ", ".join(param.name for param in function.params)
+    # ``rust_name`` may be a raw identifier (``r#fn``) for a keyword function name.
+    # That is valid as the standalone ``fn`` name, but the derived type/static/helper
+    # identifiers are *compound* and a raw-identifier prefix cannot appear
+    # mid-identifier, so build those from the unescaped base. They are also namespaced
+    # under ``__rextio_jit_`` so they can never collide with a user function that
+    # happens to be named like one of the helpers (e.g. a real ``compile_foo``).
+    base = rust_name.removeprefix("r#")
+    helper = f"__rextio_jit_{base}"
+    compile_name = f"{helper}_compile"
+    signature_params = ", ".join(
+        f"{rust_identifier(param.name)}: {rust_type(param.type)}" for param in function.params
+    )
+    pointer_args = ", ".join(rust_identifier(param.name) for param in function.params)
     cranelift_type = "types::I64" if return_type == "i64" else "types::F64"
     jit_lines, jit_value = _render_cranelift_expr(
         return_statement.value,
         {param.name: index for index, param in enumerate(function.params)},
         return_type,
     )
-    name_literal = rust_string_literal(rust_name)
+    name_literal = rust_string_literal(base)
     return "\n".join(
         [
-            f"type {rust_name}_JitFn = {pointer_type};",
+            f"type {helper}_JitFn = {pointer_type};",
             "",
-            f"static {rust_name}_HOT_COUNT: AtomicUsize = AtomicUsize::new(0);",
-            f"static {rust_name}_COMPILED: OnceLock<Result<{rust_name}_JitFn, String>> = OnceLock::new();",
+            f"static {helper}_HOT_COUNT: AtomicUsize = AtomicUsize::new(0);",
+            f"static {helper}_COMPILED: OnceLock<Result<{helper}_JitFn, String>> = OnceLock::new();",
             "",
             f"fn {rust_name}({signature_params}) -> PyResult<{return_type}> {{",
-            f"    let calls = {rust_name}_HOT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;",
+            f"    let calls = {helper}_HOT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;",
             f"    if calls >= {threshold} {{",
-            f"        if let Ok(compiled) = {rust_name}_COMPILED.get_or_init({compile_name}) {{",
+            f"        if let Ok(compiled) = {helper}_COMPILED.get_or_init({compile_name}) {{",
             f"            return Ok(unsafe {{ compiled({pointer_args}) }});",
             "        }",
             "    }",
             f"    Ok({interpreter_expr})",
             "}",
             "",
-            f"fn {compile_name}() -> Result<{rust_name}_JitFn, String> {{",
+            f"fn {compile_name}() -> Result<{helper}_JitFn, String> {{",
             "    let jit_builder = JITBuilder::new(cranelift_module::default_libcall_names())",
             "        .map_err(|err| err.to_string())?;",
             "    let mut module = JITModule::new(jit_builder);",
@@ -294,7 +311,7 @@ def _render_jit_function(
             "    module.finalize_definitions().map_err(|err| err.to_string())?;",
             "    let module = Box::leak(Box::new(module));",
             "    let code = module.get_finalized_function(id);",
-            f"    Ok(unsafe {{ std::mem::transmute::<*const u8, {rust_name}_JitFn>(code) }})",
+            f"    Ok(unsafe {{ std::mem::transmute::<*const u8, {helper}_JitFn>(code) }})",
             "}",
         ]
     )
@@ -367,7 +384,8 @@ class _FunctionRenderer:
     def render(self) -> str:
         assigned_names = _assigned_names(self.function.body)
         params = ", ".join(
-            f"{'mut ' if param.name in assigned_names else ''}{param.name}: {rust_type(param.type)}"
+            f"{'mut ' if param.name in assigned_names else ''}"
+            f"{rust_identifier(param.name)}: {rust_type(param.type)}"
             for param in self.function.params
         )
         return_type = rust_type(self.function.return_type)
@@ -397,7 +415,8 @@ class _FunctionRenderer:
         prefix = _indent(indent)
         if isinstance(statement, AssignIR):
             lines = self.named_expr_prelude(statement.value, indent)
-            target = statement.target.id
+            target = statement.target.id  # original name for bookkeeping
+            emit = rust_identifier(target)  # escaped name for emission
             target_type = statement.target_type or self.infer_expr_type(statement.value)
             value = strip_expr_if_safe(
                 statement.value,
@@ -406,13 +425,13 @@ class _FunctionRenderer:
             if target_type is not None:
                 self.variable_types[target] = target_type
             if target in self.maybe_bound_types:
-                return [*lines, f"{prefix}{target} = Some({value});"]
+                return [*lines, f"{prefix}{emit} = Some({value});"]
             if target in self.declared:
-                return [*lines, f"{prefix}{target} = {value};"]
+                return [*lines, f"{prefix}{emit} = {value};"]
             self.declared.add(target)
             if statement.target_type is not None and _needs_local_type_annotation(statement.value, statement.target_type):
-                return [*lines, f"{prefix}let mut {target}: {rust_type(statement.target_type)} = {value};"]
-            return [*lines, f"{prefix}let mut {target} = {value};"]
+                return [*lines, f"{prefix}let mut {emit}: {rust_type(statement.target_type)} = {value};"]
+            return [*lines, f"{prefix}let mut {emit} = {value};"]
         if isinstance(statement, DictSetIR):
             # Python evaluates the RHS value before the subscript key for
             # `d[k] = v`; bind the value first to preserve that order.
@@ -426,14 +445,14 @@ class _FunctionRenderer:
             self.declared.add(statement.target.id)
             return [
                 *lines,
-                f"{prefix}{statement.target.id}.insert("
+                f"{prefix}{rust_identifier(statement.target.id)}.insert("
                 f"{strip_wrapping_parens(self.render_call_arg(statement.key))}, {value_tmp});"
             ]
         if isinstance(statement, AppendIR):
             lines = self.named_expr_prelude(statement.value, indent)
             return [
                 *lines,
-                f"{prefix}{statement.target.id}.push("
+                f"{prefix}{rust_identifier(statement.target.id)}.push("
                 f"{strip_wrapping_parens(self.render_call_arg(statement.value))});"
             ]
         if isinstance(statement, EffectCallIR):
@@ -491,7 +510,7 @@ class _FunctionRenderer:
 
     def render_iterable(self, expr: ExprIR) -> str:
         if isinstance(expr, NameIR):
-            return f"{expr.id}.iter().cloned()"
+            return f"{rust_identifier(expr.id)}.iter().cloned()"
         if isinstance(expr, CallIR) and expr.function == "enumerate" and len(expr.args) == 1:
             return (
                 f"{self.render_expr(expr.args[0])}.iter().cloned().enumerate()"
@@ -526,9 +545,9 @@ class _FunctionRenderer:
 
     def render_loop_target(self, target: TargetIR) -> str:
         if isinstance(target, NameIR):
-            return target.id
+            return rust_identifier(target.id)
         if isinstance(target, TupleTargetIR):
-            return f"({', '.join(item.id for item in target.items)})"
+            return f"({', '.join(rust_identifier(item.id) for item in target.items)})"
         raise RustCodegenError(f"unsupported loop target IR: {type(target).__name__}")
 
     def render_expr(self, expr: ExprIR) -> str:
@@ -537,7 +556,7 @@ class _FunctionRenderer:
         if isinstance(expr, NameIR):
             if expr.id in self.maybe_bound_types:
                 return self.render_maybe_bound_name(expr.id)
-            return expr.id
+            return rust_identifier(expr.id)
         if isinstance(expr, ListIR):
             return f"vec![{', '.join(self.render_owned_expr(item) for item in expr.items)}]"
         if isinstance(expr, ListComprehensionIR):
@@ -743,22 +762,25 @@ class _FunctionRenderer:
                 self.variable_types[item.id] = item_type
 
     def render_named_expr(self, expr: NamedExprIR) -> str:
-        target = expr.target.id
+        target = expr.target.id  # original name for bookkeeping
+        emit = rust_identifier(target)  # escaped name for emission
         value = strip_expr_if_safe(
             expr.value,
             self.render_call_arg(expr.value),
         )
         if target in self.maybe_bound_types:
             return (
-                f"{{ {target} = Some({value}); "
+                f"{{ {emit} = Some({value}); "
                 f"{self.render_maybe_bound_name(target)} }}"
             )
-        return f"{{ {target} = {value}; {target}.clone() }}"
+        return f"{{ {emit} = {value}; {emit}.clone() }}"
 
     def render_maybe_bound_name(self, name: str) -> str:
+        # The diagnostic message keeps the original Python name; the emitted Rust
+        # identifier is escaped (e.g. a keyword name -> `r#name`).
         message = rust_string_literal(f"local variable '{name}' referenced before assignment")
         return (
-            f"{name}.clone().ok_or_else(|| "
+            f"{rust_identifier(name)}.clone().ok_or_else(|| "
             f"{self.error_new(message, kind='unbound')})?"
         )
 
@@ -800,7 +822,7 @@ class _FunctionRenderer:
             self.variable_types[name] = binding_type
             self.maybe_bound_types[name] = binding_type
             lines.append(
-                f"{_indent(indent)}let mut {name}: Option<{rust_type(binding_type)}> = None;"
+                f"{_indent(indent)}let mut {rust_identifier(name)}: Option<{rust_type(binding_type)}> = None;"
             )
         return lines
 
@@ -1346,7 +1368,7 @@ class _FunctionRenderer:
         if isinstance(expr, NameIR):
             if expr.id in self.maybe_bound_types:
                 return self.render_expr(expr)
-            return f"{expr.id}.clone()"
+            return f"{rust_identifier(expr.id)}.clone()"
         return self.render_expr(expr)
 
     def render_owned_expr(self, expr: ExprIR) -> str:

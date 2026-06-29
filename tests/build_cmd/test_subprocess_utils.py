@@ -111,6 +111,45 @@ def test_run_build_tool_clamps_an_over_cap_timeout_to_the_maximum(tmp_path, monk
     assert elapsed < 5, f"clamp not applied (took {elapsed:.1f}s)"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="process-group signalling is POSIX-specific")
+def test_run_build_tool_sigkills_a_sigterm_ignoring_in_group_grandchild(
+    tmp_path, monkeypatch
+) -> None:
+    # The direct child exits on SIGTERM, but an in-group grandchild ignores SIGTERM.
+    # The cleanup must still escalate to a group SIGKILL (which cannot be ignored)
+    # rather than returning as soon as the direct child is reaped.
+    monkeypatch.setattr(subprocess_utils, "_TERM_GRACE_SECONDS", 0.5)
+    monkeypatch.setattr(subprocess_utils, "_KILL_GRACE_SECONDS", 1.0)
+    pid_file = tmp_path / "grandchild.pid"
+    grandchild = (
+        "import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(30)"
+    )
+    parent = (  # default SIGTERM disposition -> dies on SIGTERM
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}]); time.sleep(30)"
+    )
+
+    try:
+        result = run_build_tool([sys.executable, "-c", parent], cwd=tmp_path, timeout=0.5)
+        assert result.returncode != 0
+
+        deadline = time.monotonic() + 5
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert pid_file.exists(), "grandchild never started"
+        grandchild_pid = int(pid_file.read_text())
+        while _pid_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _pid_alive(grandchild_pid), "SIGTERM-ignoring grandchild was not SIGKILLed"
+    finally:
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except (FileNotFoundError, ProcessLookupError, ValueError):
+                pass
+
+
 @pytest.mark.skipif(os.name != "posix", reason="process-group escape is POSIX-specific")
 def test_run_build_tool_timeout_is_bounded_when_a_grandchild_escapes_the_group(
     tmp_path, monkeypatch

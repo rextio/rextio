@@ -28,18 +28,17 @@ import signal
 import subprocess
 from pathlib import Path
 
-# Generous upper bound: a real cargo/maturin/nuitka build can take minutes, but
-# should never run for ten minutes in CI or a developer loop without something
-# being wrong.
-DEFAULT_BUILD_TIMEOUT_SECONDS = 600
+# Re-exported here so the builders that already import them from this module keep
+# working; the source of truth is the dependency-free ``rextio.limits`` so the
+# config layer can validate against them without depending on the build layer.
+from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
 
-# A finite but absurd timeout (e.g. 1e100) both effectively disables the bound and
-# overflows the timeout plumbing: POSIX `select` raises `OverflowError: timestamp
-# too large to convert to C PyTime_t`, and Windows `WaitForSingleObject` takes
-# milliseconds as a `DWORD` (max ~4.29e9 ms ≈ 49.7 days). 7 days is comfortably
-# below the Windows millisecond limit yet far past any sane build, so it is a
-# cross-platform-safe ceiling; beyond it, a build timeout is a config mistake.
-MAX_BUILD_TIMEOUT_SECONDS = 604_800  # 7 days
+__all__ = [
+    "DEFAULT_BUILD_TIMEOUT_SECONDS",
+    "MAX_BUILD_TIMEOUT_SECONDS",
+    "TIMEOUT_EXIT_CODE",
+    "run_build_tool",
+]
 
 # Conventional exit code for "terminated by timeout" (matches GNU `timeout(1)`),
 # used for the synthetic CompletedProcess returned on timeout.
@@ -71,9 +70,9 @@ def run_build_tool(
     # than silently treated as a 0/1-second timeout. Reject non-positive values
     # (they fail the build instantly) and clamp `inf`/over-cap down to the maximum.
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
-        raise ValueError(f"build timeout must be a positive number, got {timeout!r}")
+        raise ValueError(f"build timeout must be a finite positive number, got {timeout!r}")
     if math.isnan(timeout) or timeout <= 0:
-        raise ValueError(f"build timeout must be a positive number, got {timeout!r}")
+        raise ValueError(f"build timeout must be a finite positive number, got {timeout!r}")
     if timeout > MAX_BUILD_TIMEOUT_SECONDS:
         timeout = float(MAX_BUILD_TIMEOUT_SECONDS)
     with _start_process(command, cwd) as process:
@@ -138,12 +137,36 @@ def _start_process(command: list[str], cwd: Path | str) -> subprocess.Popen[str]
     )
 
 
+def _signal_group(process: subprocess.Popen[str], sig: int) -> bool:
+    """Send ``sig`` to the child's process group (POSIX, pid == pgid).
+
+    Returns ``False`` only when we lack permission to signal the group — in which
+    case it best-effort kills the direct child — and ``True`` when the signal was
+    delivered or the group is already gone.
+    """
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        return True  # Group already gone.
+    except PermissionError:
+        # Rare (child changed credentials): fall back to the direct child.
+        try:
+            process.kill()
+        except OSError:
+            pass
+        return False
+    return True
+
+
 def _terminate_process_tree(process: subprocess.Popen[str]) -> bool:
     """Kill the process and everything it spawned. Bounded and idempotent.
 
-    Returns ``True`` if the direct child was confirmed gone/reaped, ``False`` if we
-    had to give up (still running after SIGKILL, or no permission to signal it) so
-    the caller can surface that in diagnostics.
+    Returns:
+        ``True`` when the whole process group was signalled and the child reaped
+        (a clean teardown with no expected strays). ``False`` when the teardown is
+        not fully accounted for — the child is still running after SIGKILL, or we
+        lacked permission to signal the group — so the caller can warn that stray
+        processes may still be running.
     """
     if os.name == "posix":
         # ``_start_process`` uses ``start_new_session=True``, so the child is its
@@ -152,25 +175,26 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> bool:
         # has just exited, ``getpgid`` would raise and we would skip killing the
         # still-running grandchildren in the group. (Invariant: pid == pgid; do not
         # change ``_start_process`` to drop the new session without revisiting this.)
-        for sig, grace in ((signal.SIGTERM, _TERM_GRACE_SECONDS), (signal.SIGKILL, _KILL_GRACE_SECONDS)):
+        #
+        # SIGTERM the group for a graceful shutdown, then *always* SIGKILL the group
+        # — even if the direct child already exited — because a grandchild that
+        # ignored SIGTERM would otherwise survive un-killed. On a (rare)
+        # PermissionError, `_signal_group` has best-effort killed the direct child;
+        # skip the group SIGKILL (it would fail the same way) but still fall through
+        # to reap so we never leak an unreaped child.
+        group_signalled = _signal_group(process, signal.SIGTERM)
+        if group_signalled:
             try:
-                os.killpg(process.pid, sig)
-            except ProcessLookupError:
-                return True  # Group already gone.
-            except PermissionError:
-                # Cannot signal the group (rare: child changed credentials). Fall
-                # back to killing at least the direct child so it does not linger.
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                return False
-            try:
-                process.wait(timeout=grace)
-                return True
+                process.wait(timeout=_TERM_GRACE_SECONDS)
             except subprocess.TimeoutExpired:
-                continue  # Escalate SIGTERM -> SIGKILL, then give up.
-        return False  # SIGKILL did not reap within the grace period.
+                pass  # Did not exit gracefully; SIGKILL below.
+            _signal_group(process, signal.SIGKILL)
+        try:
+            process.wait(timeout=_KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            return False  # Stuck (e.g. uninterruptible-sleep `D` state); give up.
+        # Reaped: report True only if we could actually signal the whole group.
+        return group_signalled
     else:  # pragma: no cover - exercised on Windows only.
         # `Popen.kill()` only kills the direct child on Windows; taskkill /T walks
         # the tree.

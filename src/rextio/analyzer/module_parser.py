@@ -18,7 +18,7 @@ from rextio.analyzer.native_marker import (
 )
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.analyzer.top_level import analyze_native_top_level
-from rextio.analyzer.unsupported_patterns import validate_native_function
+from rextio.analyzer.unsupported_patterns import _validate_function_name, validate_native_function
 from rextio.config.schema import ImportsConfig
 from rextio.plugins.models import RextioPlugin
 from rextio.targets.models import normalize_target_language
@@ -336,6 +336,16 @@ def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis)
             function.add_diagnostic(diagnostic)
         function.accepted = False
         return
+    # Promotion to the RXT080 runtime shim: the shim emits only `fn {name}` (its
+    # signature is the generic `(py, args, kwargs)` and the body is a runtime call),
+    # so parameter/local identifiers the probe flagged with RXT011 are irrelevant —
+    # only the function name itself must be representable. Validate just the name
+    # (mirrors the async path in `_runtime_semantics_function`); keep it on Python
+    # fallback when the name cannot be lowered, otherwise promote.
+    _validate_function_name(node, function)
+    if function.error_diagnostics:
+        function.accepted = False
+        return
     function.native_runtime_semantics = True
     function.accepted = True
     _add_runtime_semantics_warning(function, node)
@@ -406,8 +416,28 @@ def _runtime_semantics_function(
         imports=dict(module.imports),
         logger_names=module.logger_names,
     )
+    # The shim emits `fn {name}`; a function name that can't be lowered (non-raw-able
+    # keyword / non-ASCII / `_`) keeps it on Python fallback even though the body
+    # qualifies for the shim.
+    _validate_function_name(node, function)
+    if function.error_diagnostics:
+        _mark_shim_rejected(function)
+        return function
     _add_runtime_semantics_warning(function, node)
     return function
+
+
+def _mark_shim_rejected(function: FunctionAnalysis) -> None:
+    """Drop a shim candidate to Python fallback after a failed name validation.
+
+    The shim builders pre-set ``native_runtime_semantics=True`` before validating the
+    name; clearing it together with ``accepted`` keeps a rejected function from looking
+    like a live shim to any consumer that reads the flag without also checking
+    ``accepted``. Centralized so a future rejection site cannot reintroduce the
+    ``accepted is False and native_runtime_semantics is True`` inconsistency.
+    """
+    function.accepted = False
+    function.native_runtime_semantics = False
 
 
 def _add_runtime_semantics_warning(
@@ -536,6 +566,15 @@ def _collect_native_methods(
                 imports=dict(module.imports),
                 logger_names=module.logger_names,
             )
+            # The class-method shim emits `fn {name}(py, args, kwargs)` like the
+            # module-level shim, so the method name must be representable in Rust;
+            # keep it on Python fallback when it is not (mirrors the validation in
+            # `_classify_native_function` / `_runtime_semantics_function`).
+            _validate_function_name(child, function)
+            if function.error_diagnostics:
+                _mark_shim_rejected(function)
+                functions.append(function)
+                continue
             _add_runtime_semantics_warning(function, child)
             functions.append(function)
     return functions
