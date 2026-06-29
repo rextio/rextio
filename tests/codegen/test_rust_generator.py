@@ -1244,9 +1244,14 @@ def compute(crate: object) -> object:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert "#[pyfunction(signature = (*args, **kwargs))]" in source
-    assert "fn app__compute(" in source
-    assert "crate" not in source
     assert "rextio_call_python_runtime(" in source
+    # Assert the *signature* is the generic shim shape and carries no parameter named
+    # after the keyword. A whole-module `"crate" not in source` ban would be brittle
+    # (it false-fails on any legitimate `crate::` path the generator might emit).
+    signature = re.search(r"fn app__compute\((?s:.*?)\)\s*->", source)
+    assert signature is not None
+    assert "args" in signature.group(0) and "kwargs" in signature.group(0)
+    assert "crate" not in signature.group(0)
 
 
 def test_sequence_indexing_is_bounds_checked_and_normalizes_negatives(tmp_path: Path) -> None:
