@@ -1,3 +1,5 @@
+"""The CLI ``Reporter``: routes results, progress, and diagnostics to the right stream."""
+
 from __future__ import annotations
 
 import enum
@@ -57,6 +59,7 @@ class Reporter:
 
     @property
     def json(self) -> bool:
+        """Whether the output format is JSON."""
         return self.output_format == "json"
 
     def info(self, message: str = "") -> None:

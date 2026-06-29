@@ -1,3 +1,5 @@
+"""The ``rextio clean`` command."""
+
 from __future__ import annotations
 
 import shutil
@@ -11,6 +13,7 @@ GENERATED_PATHS = ("build", "generated", "reports")
 
 
 def run(args: Namespace) -> int:
+    """Run the clean command; return the process exit code."""
     reporter = Reporter.from_args(args)
     project_root = Path(args.project_root).resolve()
     rextio_dir = project_root / ".rextio"

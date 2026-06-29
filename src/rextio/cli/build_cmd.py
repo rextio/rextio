@@ -1,3 +1,5 @@
+"""The ``rextio build`` command."""
+
 from __future__ import annotations
 
 import json
@@ -16,6 +18,7 @@ from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
 def run(args: Namespace) -> int:
+    """Run the build command; return the process exit code."""
     reporter = Reporter.from_args(args)
     project_root = Path(args.project_root).resolve()
     try:
