@@ -52,8 +52,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust", "mojo", "julia"),
         default=None,
         help=(
-            "Native target language. Overrides REXTIO_TARGET_LANGUAGE, "
-            "REXTIO_NATIVE_BACKEND, and [build] native_backend."
+            "Native target language (0.1.0 alpha implements rust; mojo/julia are "
+            "planned). Overrides REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
+            "and [build] native_backend."
         ),
     )
     _add_target_options(check_parser)
@@ -72,8 +73,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust", "mojo", "julia"),
         default=None,
         help=(
-            "Native target language. Overrides REXTIO_TARGET_LANGUAGE, "
-            "REXTIO_NATIVE_BACKEND, and [build] native_backend."
+            "Native target language (0.1.0 alpha implements rust; mojo/julia are "
+            "planned). Overrides REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
+            "and [build] native_backend."
         ),
     )
     _add_target_options(build_parser_)
@@ -83,7 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--fallback",
         choices=("cpython", "nuitka"),
         default=None,
-        help="Fallback backend. Overrides REXTIO_FALLBACK_BACKEND and [build] fallback_backend.",
+        help="Fallback backend (cpython is stable; nuitka is experimental). "
+        "Overrides REXTIO_FALLBACK_BACKEND and [build] fallback_backend.",
     )
     build_parser_.add_argument(
         "--fallback-threshold",
@@ -109,7 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--rust-binding",
         choices=("pyo3",),
         default=None,
-        help="Rust binding backend. Overrides REXTIO_RUST_BINDING and [rust] binding.",
+        help="Rust binding backend (0.1.0 alpha supports pyo3 only). "
+        "Overrides REXTIO_RUST_BINDING and [rust] binding.",
     )
     build_parser_.add_argument(
         "--rust-build-tool",
@@ -176,8 +180,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust", "mojo", "julia"),
         default=None,
         help=(
-            "Native target language. Overrides REXTIO_TARGET_LANGUAGE, "
-            "REXTIO_NATIVE_BACKEND, and [build] native_backend."
+            "Native target language (0.1.0 alpha implements rust; mojo/julia are "
+            "planned). Overrides REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
+            "and [build] native_backend."
         ),
     )
     _add_target_options(generate_parser)
