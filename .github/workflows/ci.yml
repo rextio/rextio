@@ -89,8 +89,14 @@ jobs:
         run: python -m pytest tests --ignore=tests/e2e -q --cov
 
   e2e:
-    name: E2E (real Rust/Cargo toolchain)
-    runs-on: ubuntu-latest
+    name: E2E (real Rust/Cargo toolchain / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Exercise the macOS-only generated `.cargo/config.toml` linker flags
+        # (`-undefined dynamic_lookup`) that never run on ubuntu (council H4).
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
