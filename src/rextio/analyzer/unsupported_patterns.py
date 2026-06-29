@@ -901,7 +901,7 @@ class _SignatureInferencer:
         if isinstance(node, ast.Tuple):
             item_types = [self.infer_expr(item) for item in node.elts]
             if all(item_type is not None for item_type in item_types):
-                return f"tuple[{', '.join(item_types)}]"
+                return f"tuple[{', '.join(item for item in item_types if item is not None)}]"
             return None
         if isinstance(node, ast.Dict):
             key_types = [self.infer_expr(key) for key in node.keys if key is not None]
@@ -1039,8 +1039,8 @@ class _SignatureInferencer:
             self.infer_expr(node.args[0])
             return "float"
         if target in HASHLIB_CHAIN_TARGETS:
-            for arg in _chained_call_args(node):
-                self.infer_expr(arg, "bytes")
+            for chain_arg in _chained_call_args(node):
+                self.infer_expr(chain_arg, "bytes")
             return "str"
         if target in BASE64_TARGETS and node.args:
             self.infer_expr(node.args[0], "bytes" if target.endswith("b64encode") else None)
@@ -1444,7 +1444,7 @@ def _infer_tuple_type(
     item_types = [_infer_expr_type(item, function, env) for item in node.elts]
     if any(item_type is None for item_type in item_types):
         return None
-    tuple_type = f"tuple[{', '.join(item_types)}]"
+    tuple_type = f"tuple[{', '.join(item for item in item_types if item is not None)}]"
     if expected_type is not None and _is_tuple_type(expected_type):
         _validate_type_match(tuple_type, expected_type, function, node)
     return tuple_type
@@ -1730,7 +1730,7 @@ def _infer_call_type(
         target = dotted_name(node.func)
     if target == "print":
         return _infer_effect_call_type("print", node, function, env)
-    if target in LOGGING_CANONICAL_TARGETS.values():
+    if target is not None and target in LOGGING_CANONICAL_TARGETS.values():
         return _infer_effect_call_type(target, node, function, env)
     if target in DATETIME_ISOFORMAT_TARGETS:
         if not _require_arg_count(target, node, function, {0}):
@@ -2313,7 +2313,7 @@ def _validate_dict_set(
     assigned_type = _infer_expr_type(value, function, env)
     if slice_type != key_type:
         _add_unsupported_syntax(function, target.slice, f"dict assignment key must be {key_type}, got {slice_type}")
-    if assigned_type is not None and not _types_assignable(assigned_type, value_type):
+    if assigned_type is not None and value_type is not None and not _types_assignable(assigned_type, value_type):
         _add_unsupported_syntax(
             function,
             value,
@@ -2439,7 +2439,7 @@ def _unsupported_message(node: ast.AST) -> str:
 
 def _add_unsupported_syntax(
     function: FunctionAnalysis,
-    node: ast.AST,
+    node: ast.AST | FunctionAnalysis,
     message: str,
     suggestion: str = "Keep native candidates inside the supported 0.1.0 alpha subset.",
 ) -> None:

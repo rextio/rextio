@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 from rextio.codegen.native_names import native_function_name
 from rextio.exceptions import BUILTIN_EXCEPTION_TO_PYO3
@@ -655,8 +656,8 @@ class _FunctionRenderer:
                 lines.append("    let mut set = Vec::new();")
                 for item in expr.items:
                     temp = self.next_temp("__rextio_set_value")
-                    value = strip_wrapping_parens(self.render_call_arg(item))
-                    lines.append(f"    let {temp} = {value};")
+                    value_src = strip_wrapping_parens(self.render_call_arg(item))
+                    lines.append(f"    let {temp} = {value_src};")
                     lines.append(f"    if !set.contains(&{temp}) {{")
                     lines.append(f"        set.push({temp});")
                     lines.append("    }")
@@ -776,7 +777,7 @@ class _FunctionRenderer:
         self,
         generators: list[ComprehensionGeneratorIR],
         index: int,
-        render_leaf: callable,
+        render_leaf: Callable[[int], list[str]],
     ) -> list[str]:
         if index > len(generators):
             return render_leaf(index)
@@ -1126,10 +1127,10 @@ class _FunctionRenderer:
     def render_index_expr(self, expr: IndexIR) -> str:
         value_type = self.infer_expr_type(expr.value)
         if isinstance(value_type, RxtTuple):
-            index = literal_int(expr.index)
-            if index is None or index < 0 or index >= len(value_type.item_types):
+            tuple_index = literal_int(expr.index)
+            if tuple_index is None or tuple_index < 0 or tuple_index >= len(value_type.item_types):
                 raise RustCodegenError("tuple index must be an in-range literal")
-            return f"{self.render_expr(expr.value)}.{index}.clone()"
+            return f"{self.render_expr(expr.value)}.{tuple_index}.clone()"
         if isinstance(value_type, RxtDict):
             mapping = self.next_temp("__rextio_map")
             key_tmp = self.next_temp("__rextio_key")
@@ -1777,30 +1778,30 @@ def _expr_assigned_names(expr: ExprIR) -> set[str]:
             names.update(_expr_assigned_names(comparator))
         return names
     if isinstance(expr, CallIR):
-        names: set[str] = set()
+        names = set[str]()
         for arg in expr.args:
             names.update(_expr_assigned_names(arg))
         return names
     if isinstance(expr, IndexIR):
         return _expr_assigned_names(expr.value) | _expr_assigned_names(expr.index)
     if isinstance(expr, ListIR):
-        names: set[str] = set()
+        names = set[str]()
         for item in expr.items:
             names.update(_expr_assigned_names(item))
         return names
     if isinstance(expr, TupleIR):
-        names: set[str] = set()
+        names = set[str]()
         for item in expr.items:
             names.update(_expr_assigned_names(item))
         return names
     if isinstance(expr, DictIR):
-        names: set[str] = set()
+        names = set[str]()
         for key, value in expr.items:
             names.update(_expr_assigned_names(key))
             names.update(_expr_assigned_names(value))
         return names
     if isinstance(expr, SetIR):
-        names: set[str] = set()
+        names = set[str]()
         for item in expr.items:
             names.update(_expr_assigned_names(item))
         return names

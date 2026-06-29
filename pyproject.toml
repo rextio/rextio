@@ -132,16 +132,6 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_optional = true
 
-# ---------------------------------------------------------------------------
-# Type-debt ratchet (mod-proposal P0-2): these modules have pre-existing mypy
-# errors recorded at gate-bootstrap time. Remove entries as they are cleaned
-# up; the CI gate enforces type-cleanliness on every other module.
-# ---------------------------------------------------------------------------
-[[tool.mypy.overrides]]
-module = [
-  "rextio.analyzer.unsupported_patterns",
-  "rextio.codegen.rust.generator",
-  "rextio.ir.lowering",
-  "rextio",
-]
-ignore_errors = true
+# The type-debt ratchet (mod-proposal P0-2) is now empty: every module
+# type-checks cleanly, so there is no per-module ignore_errors override. Keep
+# it that way — fix types rather than re-introducing an ignore list.
