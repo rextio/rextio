@@ -2273,3 +2273,55 @@ def while_else(n: int) -> int:
     assert {function.qualname for function in analysis.rejected_native_functions} == {
         "app.while_else",
     }
+
+
+def test_rejects_is_comparison_on_non_none(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def identity_eq(a: str, b: str) -> bool:
+    return a is b
+
+@rextio.native
+def identity_neq(a: int, b: int) -> bool:
+    return a is not b
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.identity_eq",
+        "app.identity_neq",
+    }
+
+
+def test_accepts_is_comparison_against_none(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def is_none(x: int | None) -> bool:
+    return x is None
+
+@rextio.native
+def is_not_none(x: str | None) -> bool:
+    return x is not None
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {function.qualname for function in analysis.accepted_native_functions} == {
+        "app.is_none",
+        "app.is_not_none",
+    }
+    assert analysis.diagnostics == []

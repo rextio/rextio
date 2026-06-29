@@ -1974,6 +1974,13 @@ def _infer_unary_type(
     return None
 
 
+def _is_none_literal(node: ast.AST) -> bool:
+    """Report whether an expression node is the ``None`` literal."""
+    return (isinstance(node, ast.Constant) and node.value is None) or (
+        isinstance(node, ast.Name) and node.id == "None"
+    )
+
+
 def _validate_compare_types(
     node: ast.Compare,
     function: FunctionAnalysis,
@@ -1997,8 +2004,21 @@ def _validate_compare_types(
         )
 
     left_type = infer_side(node.left)
+    left_node = node.left
     for op, comparator in zip(node.ops, node.comparators, strict=True):
         right_type = infer_side(comparator)
+        if isinstance(op, (ast.Is, ast.IsNot)) and not (
+            _is_none_literal(left_node) or _is_none_literal(comparator)
+        ):
+            # `is`/`is not` lower to Rust `==`/`!=`, which is only faithful to
+            # Python identity semantics when one side is `None`. For arbitrary
+            # values (e.g. `a is b` on two strings) `==` is value equality, so
+            # reject and keep the function on the Python fallback path.
+            _add_unsupported_syntax(
+                function,
+                node,
+                "'is'/'is not' is supported only against None in native functions",
+            )
         if (
             left_type is not None
             and right_type is not None
@@ -2010,6 +2030,7 @@ def _validate_compare_types(
                 f"mixed comparison operand types are not supported: {left_type} and {right_type}",
             )
         left_type = right_type
+        left_node = comparator
 
 
 def _iter_item_type(node: ast.AST, iterable_type: str | None) -> str | None:
