@@ -91,17 +91,18 @@ def test_load_plugin_registry_accepts_rextio_plugin_object() -> None:
 
 def test_load_plugin_registry_ignores_legacy_rules_metadata() -> None:
     # Plugins are metadata-only: a legacy `rules` key from an older plugin must be
-    # accepted (not rejected) and silently dropped rather than parsed.
-    registry = load_plugin_registry(
-        PluginConfig(enabled=("numpy-rust",)),
-        TargetSpec(language="rust"),
-        entry_points=(
-            FakeEntryPoint(
-                "numpy-rust",
-                {"target_language": "rust", "packages": ["numpy"], "rules": ["numpy.ndarray"]},
+    # accepted (not rejected) and dropped, with a DeprecationWarning guiding removal.
+    with pytest.warns(DeprecationWarning, match="metadata-only"):
+        registry = load_plugin_registry(
+            PluginConfig(enabled=("numpy-rust",)),
+            TargetSpec(language="rust"),
+            entry_points=(
+                FakeEntryPoint(
+                    "numpy-rust",
+                    {"target_language": "rust", "packages": ["numpy"], "rules": ["numpy.ndarray"]},
+                ),
             ),
-        ),
-    )
+        )
 
     assert [plugin.id for plugin in registry.active] == ["numpy-rust"]
     assert registry.active[0].packages == ("numpy",)
