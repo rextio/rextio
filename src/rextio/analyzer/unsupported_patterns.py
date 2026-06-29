@@ -696,7 +696,11 @@ def _validate_mutable_ownership_patterns(node: ast.FunctionDef, function: Functi
         # in-place mutation (`xs.append(...)`, `d[k] = v`) of a parameter is not
         # visible to the caller — unlike CPython, where the caller's object is
         # mutated. Reject so the function stays on the Python fallback instead of
-        # silently dropping the side effect.
+        # silently dropping the side effect. This is intentionally conservative:
+        # a parameter that is locally reassigned before the mutation (e.g.
+        # `xs = []; xs.append(1)`) is safe but is also rejected, because proving
+        # the reassignment dominates every mutation needs flow analysis and a
+        # wrong relaxation would re-admit the mis-compile.
         _add_unsupported_syntax(
             function,
             node,
