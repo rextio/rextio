@@ -1358,9 +1358,14 @@ def logarithm(x: float) -> float:
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
-    # sqrt/log are wrapped so a non-finite result raises ValueError (math
-    # domain error) instead of silently returning NaN/inf like raw Rust.
-    assert "__rextio_checked_mdomain((x).sqrt())?" in source
-    assert "__rextio_checked_mdomain((x).ln())?" in source
-    assert "fn __rextio_checked_mdomain(value: f64)" in source
+    # sqrt/log validate the INPUT domain (sqrt: x < 0, log: x <= 0) so a
+    # domain-error input raises ValueError while valid nan/inf inputs pass
+    # through to nan/inf (matching CPython), instead of an output-finiteness
+    # check that would wrongly raise for sqrt(inf)/sqrt(nan).
+    assert "__rextio_checked_mnonneg(x)?.sqrt()" in source
+    assert "__rextio_checked_mpositive(x)?.ln()" in source
+    assert "fn __rextio_checked_mnonneg(value: f64)" in source
+    assert "if value < 0.0 {" in source
+    assert "fn __rextio_checked_mpositive(value: f64)" in source
+    assert "if value <= 0.0 {" in source
     assert 'PyValueError::new_err("math domain error")' in source

@@ -12,7 +12,8 @@ from __future__ import annotations
 # Order is fixed so emitted helpers are deterministic regardless of use order.
 _CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
 _CHECKED_HELPER_ORDER = (
-    "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i", "mdomain"
+    "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i",
+    "mnonneg", "mpositive", "munit",
 )
 
 
@@ -161,20 +162,27 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
                     "",
                 ]
             )
-        elif name == "mdomain":
-            # Domain-error-prone math functions (sqrt, log/log2/log10, acos,
-            # asin) return NaN or -inf in Rust where CPython raises
-            # `ValueError: math domain error`. For these functions every valid
-            # finite input yields a finite result, so a non-finite result marks
-            # a domain error: raise ValueError to match Python instead of
-            # silently returning NaN/inf.
+        elif name in {"mnonneg", "mpositive", "munit"}:
+            # Math domain guards validate the *input* (a nan/inf input returns
+            # nan/inf in CPython, so an output-finiteness check would wrongly
+            # raise — and could not even distinguish sqrt(-1)=NaN from
+            # sqrt(nan)=NaN). Each returns the validated value or raises
+            # ValueError, and the caller then applies the math method.
+            #   mnonneg  -> sqrt        (CPython raises for x < 0)
+            #   mpositive-> log/log2/log10 (CPython raises for x <= 0)
+            #   munit    -> acos/asin   (CPython raises for |x| > 1)
+            condition = {
+                "mnonneg": "value < 0.0",
+                "mpositive": "value <= 0.0",
+                "munit": "value < -1.0 || value > 1.0",
+            }[name]
             lines.extend(
                 [
                     f"fn {fn}(value: f64) -> {fret} {{",
-                    "    if value.is_finite() {",
-                    "        Ok(value)",
-                    "    } else {",
+                    f"    if {condition} {{",
                     f'        Err({value_err("math domain error")})',
+                    "    } else {",
+                    "        Ok(value)",
                     "    }",
                     "}",
                     "",

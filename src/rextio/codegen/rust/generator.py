@@ -1223,26 +1223,29 @@ class _FunctionRenderer:
         } and len(expr.args) == 1:
             method = expr.function.rsplit(".", 1)[1]
             return f"({self.render_expr(expr.args[0])}).{method}()"
-        if expr.function in {
-            "math.acos",
-            "math.asin",
-            "math.log10",
-            "math.log2",
-            "math.sqrt",
-        } and len(expr.args) == 1:
-            # Domain-error-prone: CPython raises ValueError outside the domain
-            # where raw Rust returns NaN. Guard the result so it raises instead.
+        # Domain-error-prone math functions: CPython raises ValueError only for
+        # an out-of-domain *input* (a nan/inf input returns nan/inf, not an
+        # error), so validate the input before applying the operation rather
+        # than checking the result for finiteness.
+        if expr.function == "math.sqrt" and len(expr.args) == 1:
+            self.used_helpers.add("mnonneg")
+            return f"__rextio_checked_mnonneg({self.render_expr(expr.args[0])})?.sqrt()"
+        if expr.function in {"math.acos", "math.asin"} and len(expr.args) == 1:
             method = expr.function.rsplit(".", 1)[1]
-            self.used_helpers.add("mdomain")
-            return f"__rextio_checked_mdomain(({self.render_expr(expr.args[0])}).{method}())?"
+            self.used_helpers.add("munit")
+            return f"__rextio_checked_munit({self.render_expr(expr.args[0])})?.{method}()"
+        if expr.function in {"math.log10", "math.log2"} and len(expr.args) == 1:
+            method = expr.function.rsplit(".", 1)[1]
+            self.used_helpers.add("mpositive")
+            return f"__rextio_checked_mpositive({self.render_expr(expr.args[0])})?.{method}()"
         if expr.function == "math.log":
-            self.used_helpers.add("mdomain")
+            self.used_helpers.add("mpositive")
             if len(expr.args) == 1:
-                return f"__rextio_checked_mdomain(({self.render_expr(expr.args[0])}).ln())?"
+                return f"__rextio_checked_mpositive({self.render_expr(expr.args[0])})?.ln()"
             if len(expr.args) == 2:
                 return (
-                    "__rextio_checked_mdomain("
-                    f"({self.render_expr(expr.args[0])}).log({self.render_expr(expr.args[1])}))?"
+                    f"__rextio_checked_mpositive({self.render_expr(expr.args[0])})?"
+                    f".log({self.render_expr(expr.args[1])})"
                 )
         if expr.function == "math.atan2" and len(expr.args) == 2:
             return f"({self.render_expr(expr.args[0])}).atan2({self.render_expr(expr.args[1])})"
