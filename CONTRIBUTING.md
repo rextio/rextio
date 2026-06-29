@@ -36,7 +36,9 @@ python -m pytest tests --ignore=tests/e2e -q   # unit + integration
 ```
 
 The end-to-end tests under `tests/e2e/` need a real Rust/Cargo toolchain (and, for a
-few, Nuitka). They are excluded from the default run and gated in CI behind a label:
+few, Nuitka). They are excluded from the default unit run and have their own CI job; the
+conftest auto-skips a test whose toolchain is absent. The real-Cargo e2e job runs on every
+PR, while the slow real-Nuitka e2e is opt-in via the `test-nuitka` PR label.
 
 ```bash
 python -m pytest tests/e2e -q              # requires cargo on PATH
@@ -74,6 +76,11 @@ Guidelines:
   user-facing changes in `CHANGELOG.md`.
 - PRs are squash-merged; the PR title becomes the commit subject, so write it as a
   Conventional Commit.
+
+## Code of conduct
+
+Participation in this project is governed by our
+[Code of Conduct](CODE_OF_CONDUCT.md). By contributing, you agree to abide by it.
 
 ## Reporting bugs and requesting features
 
