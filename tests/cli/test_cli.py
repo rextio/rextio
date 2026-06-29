@@ -4,10 +4,16 @@ import argparse
 import json
 import warnings
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
-from rextio.cli.main import _install_deprecation_filter, _positive_number, main
+from rextio.cli.main import (
+    _install_deprecation_filter,
+    _positive_number,
+    _rextio_deprecation_filter_present,
+    main,
+)
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
 
 _REXTIO_DEPRECATION_PATTERN = r"rextio($|\.)"
@@ -41,17 +47,20 @@ def test_main_surfaces_plugin_rules_deprecation(
             return {"target_language": "rust", "packages": ["x"], "rules": ["y"]}
 
     monkeypatch.setattr(plugin_loader, "_plugin_entry_points", lambda _eps: (_FakeEntryPoint(),))
-    # The install is presence-based, so inside this fresh `catch_warnings` scope (no
-    # rextio filter yet) main() registers it; no guard reset needed.
-    # Defensive: the "default" action dedups per location via the loader module's
-    # __warningregistry__. The filter mutations below already invalidate it (version
-    # bump), but clearing it makes determinism explicit regardless of prior emissions.
-    getattr(plugin_loader, "__warningregistry__", {}).clear()
+    # The "default" action dedups per location via the loader module's
+    # __warningregistry__; clear it so the deprecation re-surfaces regardless of prior
+    # emissions (the filter mutations below already bump the version, but this is explicit).
+    if hasattr(plugin_loader, "__warningregistry__"):
+        plugin_loader.__warningregistry__.clear()
     (tmp_path / "app.py").write_text("def f(x: int) -> int:\n    return x\n", encoding="utf-8")
 
     shown: list[str] = []
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)  # Python's default baseline
+        # Reset to a clean baseline (don't depend on whatever filters leak in), then make
+        # Python's default-ignore the fallback. main()'s presence-based install prepends
+        # the rextio "default" filter, which must win over this ignore for rextio modules.
+        warnings.resetwarnings()
+        warnings.simplefilter("ignore", DeprecationWarning)
         monkeypatch.setattr(warnings, "showwarning", lambda message, *a, **k: shown.append(str(message)))
         exit_code = main(["check", str(tmp_path), "--no-report"])
 
@@ -87,6 +96,23 @@ def test_deprecation_filter_self_heals_after_teardown() -> None:
         warnings.resetwarnings()  # simulate the filter being removed
         _install_deprecation_filter()
         assert len(_installed_rextio_filters()) == 1
+
+
+def test_deprecation_filter_presence_handles_str_and_none_module_elements() -> None:
+    # A filter's module element can be a compiled pattern, a plain string, or None.
+    # The presence check must read it defensively (no AttributeError) and not false-match.
+    with warnings.catch_warnings():
+        warnings.resetwarnings()
+        # warnings.filters is typed as an immutable Sequence but is a mutable list at
+        # runtime; we craft synthetic entries (str / None module elements) it can't model.
+        filters = cast("list[Any]", warnings.filters)
+        filters[:] = [
+            ("ignore", None, DeprecationWarning, None, 0),  # module is None
+            ("ignore", None, DeprecationWarning, "rextio_extra", 0),  # module is a str
+        ]
+        assert _rextio_deprecation_filter_present() is False
+        filters.insert(0, ("default", None, DeprecationWarning, _REXTIO_DEPRECATION_PATTERN, 0))
+        assert _rextio_deprecation_filter_present() is True
 
 
 @pytest.mark.parametrize("bad", ["inf", "nan", "0", "-1", "abc", str(MAX_BUILD_TIMEOUT_SECONDS + 1)])
