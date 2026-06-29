@@ -568,8 +568,10 @@ def _validate_try(
 
     Native lowering uses immediately-invoked closures, so the supported subset is
     deliberately narrow: built-in exception handlers only, no ``try ... else``,
-    no ``return``/``break``/``continue`` inside any block, no ``as`` binding, and
-    no variable first-bound inside a block (it would be closure-scoped). Anything
+    no ``return`` and no ``break``/``continue`` targeting a loop outside the
+    block (one bound to a loop inside the block is fine), no ``as`` binding, and
+    no non-comprehension variable first-bound inside a block (it would be
+    closure-scoped; comprehension targets never leak and are allowed). Anything
     outside the subset is rejected with RXT010 so the function stays on the
     Python fallback (or the RXT080 runtime shim when explicitly ``@rextio.native``).
     """

@@ -534,8 +534,9 @@ class _FunctionRenderer:
         ``finally`` body runs on every path before any pending error is
         propagated with ``?`` — matching Python's "finally always runs, then the
         exception continues" rule. The analyzer guarantees the restricted subset
-        this relies on (built-in handlers only, no ``return``/``break``/
-        ``continue`` and no new bindings inside the blocks).
+        this relies on (built-in handlers only, no ``return`` and no
+        ``break``/``continue`` targeting a loop outside the block, and no
+        non-comprehension variable first-bound inside a block).
         """
         if self.mode != "pyo3":
             raise RustCodegenError(
