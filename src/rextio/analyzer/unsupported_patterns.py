@@ -1665,6 +1665,17 @@ def _infer_call_type(
     if target == "len":
         if not _require_arg_count("len", node, function, {1}):
             return None
+        arg_type = infer_arg(node.args[0])
+        if arg_type is not None and not _is_sized_type(arg_type):
+            # `len(x)` on a scalar lowers to `x.len()`, which is not valid Rust
+            # for i64/f64/bool and would fail the cargo build instead of falling
+            # back. Reject so the function stays on the Python fallback path.
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"len() requires a sized type (list/set/dict/tuple/str/bytes), got {arg_type}",
+            )
+            return None
         return "int"
     if target in {"all", "any"}:
         if not _require_arg_count(target, node, function, {1}):
@@ -2012,6 +2023,13 @@ def _infer_unary_type(
                 f"unary minus is not supported for inferred operand type: {value_type}",
             )
     return None
+
+
+def _is_sized_type(type_name: str) -> bool:
+    """Report whether a type supports ``len()`` (maps to Rust ``.len()``)."""
+    return type_name in {"str", "bytes"} or type_name.startswith(
+        ("list[", "set[", "dict[", "tuple[")
+    )
 
 
 def _is_none_literal(node: ast.AST) -> bool:

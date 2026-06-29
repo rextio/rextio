@@ -2409,3 +2409,50 @@ def compute(a: float, b: float) -> float:
     # Float multiply is JIT-eligible; float division stays on the checked
     # native path (raw Cranelift fdiv returns inf/NaN on divide-by-zero).
     assert [function.qualname for function in analysis.jit_candidates] == ["app.fmul"]
+
+
+def test_rejects_len_on_scalar(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def len_scalar(x: int) -> int:
+    return len(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.len_scalar",
+    }
+
+
+def test_accepts_len_on_sized_types(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def len_list(xs: list[int]) -> int:
+    return len(xs)
+
+@rextio.native
+def len_str(s: str) -> int:
+    return len(s)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {function.qualname for function in analysis.accepted_native_functions} == {
+        "app.len_list",
+        "app.len_str",
+    }
+    assert analysis.diagnostics == []
