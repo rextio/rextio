@@ -825,6 +825,15 @@ class Widget:
     assert "app.Widget.compute" in accepted
     assert rejected.get("app.Widget.café") == "RXT011"
     assert rejected.get("app.Widget._") == "RXT011"
+    # A rejected method must not be left flagged as a runtime-semantics shim: the
+    # builder sets `native_runtime_semantics=True` before validating the name, and the
+    # rejection path clears it (defense-in-depth against any consumer that reads the
+    # flag without also checking `accepted`).
+    rejected_flags = {
+        f.qualname: f.native_runtime_semantics for f in analysis.rejected_native_functions
+    }
+    assert rejected_flags.get("app.Widget.café") is False
+    assert rejected_flags.get("app.Widget._") is False
 
 
 def test_auto_discovery_does_not_promote_dynamic_functions_to_runtime_shim(
