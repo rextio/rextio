@@ -57,10 +57,10 @@ Guidelines:
 ## Coding conventions
 
 - **Style/format:** `ruff` is the single source of truth. The lint set is ratcheting
-  up over time (`E`/`W`/`F` → `I`/`UP`/`B` → `D`); run `ruff check --fix` for the
-  autofixable parts. Docstring *format* (pydocstyle `D2`/`D3`/`D4`) is enforced;
-  the "missing docstring" family (`D1xx`) is a deliberate future ratchet, not yet
-  required on every symbol.
+  up over time (`E`/`W`/`F` → `D`, with `I`/`UP`/`B` still to come); run
+  `ruff check --fix` for the autofixable parts. Docstrings (pydocstyle `D`) are fully
+  enforced — every public module, class, function, and method needs one — except
+  magic methods (`D105`) and `__init__` (`D107`), which a class docstring covers.
 - **Types:** new code is fully typed and must pass `mypy` with no new ignores.
 - **Public API:** the public entry points are `rextio.native`, `rextio.exempt`, and
   the `rextio` CLI. Changing their behavior is a compatibility concern — call it out

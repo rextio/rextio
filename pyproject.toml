@@ -101,9 +101,9 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 # Conservative bootstrap set (see mod-proposal P0-2): E/W = pycodestyle,
-# F = pyflakes. D = pydocstyle (docstring *format*; see the pydocstyle section and
-# P2-2). Ratchet up to I (isort), UP (pyupgrade), B (bugbear) once the one-time
-# autofix churn can be reviewed on its own.
+# F = pyflakes. D = pydocstyle, fully enforced (format + the missing-docstring
+# family) except the D105/D107 exemptions below; see P2-2. Ratchet up to I (isort),
+# UP (pyupgrade), B (bugbear) once the one-time autofix churn can be reviewed on its own.
 select = ["E", "W", "F", "D"]
 ignore = [
     # E501 (line length) is deferred to the formatter; not enforced during bootstrap.
