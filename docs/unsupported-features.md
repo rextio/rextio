@@ -73,7 +73,9 @@ Supported syntax is intentionally small:
 - augmented assignment: `+=`, `-=`, `*=`, `/=`
 - arithmetic with supported operators
 - boolean operations
-- comparisons with supported comparison operators
+- comparisons with supported comparison operators, where `if`/`while`/
+  comprehension conditions must evaluate to `bool` (`dict`/`set` operands
+  support only `==` and `!=`, not ordering)
 - `if` / `elif` / `else`
 - `for x in xs`
 - `for i in range(len(xs))`
@@ -104,12 +106,14 @@ Supported syntax is intentionally small:
 - `Optional[T]` / `T | None` annotations, `None` returns, and `is None` /
   `is not None` checks
 - calls to accepted native functions
-- `len(x)`
+- `len(x)` for `list`, `set`, `dict`, `str`, and `bytes` (a `str` length counts
+  Unicode code points, matching CPython, not UTF-8 bytes)
 - `abs(x)` for `int` and `float`
 - two-argument `min(x, y)` and `max(x, y)` for matching numeric types
 - `sum(xs)` for `list[int]` and `list[float]`
 - `math.sqrt`, `math.sin`, `math.cos`, and `math.floor`
-- simple indexing such as `xs[i]`
+- simple `list`, fixed `tuple`, and fixed `dict` indexing such as `xs[i]`
+  (`str` and `bytes` indexing is not supported)
 
 ## Unsupported Native Syntax
 
@@ -133,7 +137,25 @@ semantics shim section below:
 - empty dict literals without a supported fixed `dict[K, V]` annotation
 - `enumerate` outside a supported loop or comprehension iterable
 - `zip` outside a supported loop or comprehension iterable
+- `range` outside a supported loop or comprehension iterable (a value-position
+  `range(...)`, e.g. `return range(n)`, has no native representation)
 - `enumerate` or `zip` over non-list expressions
+- non-`bool` `if`, `elif`, `while`, and comprehension `if` conditions; native
+  lowering requires the condition to be `bool`, so use an explicit comparison
+  (`if len(xs) > 0:` rather than `if xs:`, `if x != 0:` rather than `if x:`)
+- ordering comparisons (`<`, `<=`, `>`, `>=`) on `dict` or `set` operands; only
+  `==` and `!=` are supported for those types
+- `str` and `bytes` indexing such as `s[0]` (only `list`, fixed `tuple`, and
+  fixed `dict` subscripting is lowered)
+- `len()` of a fixed tuple (a Rust tuple has no length method; use the known
+  arity directly)
+- multiple assignment targets such as `a = b = value`
+- integer literals outside the signed 64-bit range (`int` lowers to `i64`)
+- a value-position read of a name bound nowhere in the function (a module
+  global, a closure variable, or a name first bound inside a nested
+  `if`/`for`/`while`/`try` block and read after it)
+- calling a name that a local binding or a module-level assignment shadows
+  (e.g. `len = 5` at module scope, then `len(xs)`)
 - slices such as `xs[1:]`
 - f-strings
 - `pass`
