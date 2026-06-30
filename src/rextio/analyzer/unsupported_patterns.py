@@ -914,6 +914,73 @@ def _infer_missing_signature_from_context(
     inferencer.infer()
 
 
+def _local_binding_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Return the names bound as locals in this function's own scope.
+
+    A name assigned anywhere in a function body is local for the whole function
+    (Python scoping), so a nested call to such a name does not reach an imported or
+    sibling function of the same name — it is shadowed. Includes parameters and
+    every binding form (assignment / augmented / annotated / walrus / for / with-as /
+    except-as targets, and nested def/class/import-alias names) regardless of the
+    bound value's inferred type. Excludes nested function/lambda scopes and
+    comprehension targets, which never leak into the enclosing scope in Python 3.
+    """
+    names: set[str] = set()
+    args = node.args
+    for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
+        names.add(arg.arg)
+    if args.vararg is not None:
+        names.add(args.vararg.arg)
+    if args.kwarg is not None:
+        names.add(args.kwarg.arg)
+
+    class _Collector(ast.NodeVisitor):
+        def visit_Name(self, name: ast.Name) -> None:
+            if isinstance(name.ctx, ast.Store):
+                names.add(name.id)
+
+        def visit_FunctionDef(self, fn: ast.FunctionDef) -> None:
+            names.add(fn.name)  # bound here; do not recurse into the new scope
+
+        visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+        def visit_ClassDef(self, cls: ast.ClassDef) -> None:
+            names.add(cls.name)  # bound here; do not recurse
+
+        def visit_Lambda(self, _lam: ast.Lambda) -> None:
+            return  # new scope
+
+        def _visit_comprehension(self, comp: ast.expr) -> None:
+            # Comprehension targets are scoped to the comprehension and never leak;
+            # only the leftmost generator's iterable is evaluated in this scope.
+            generators = getattr(comp, "generators", [])
+            if generators:
+                self.visit(generators[0].iter)
+
+        visit_ListComp = _visit_comprehension  # type: ignore[assignment]
+        visit_SetComp = _visit_comprehension  # type: ignore[assignment]
+        visit_DictComp = _visit_comprehension  # type: ignore[assignment]
+        visit_GeneratorExp = _visit_comprehension  # type: ignore[assignment]
+
+        def visit_ExceptHandler(self, handler: ast.ExceptHandler) -> None:
+            if handler.name:
+                names.add(handler.name)
+            self.generic_visit(handler)
+
+        def visit_Import(self, imp: ast.Import) -> None:
+            for alias in imp.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+
+        def visit_ImportFrom(self, imp: ast.ImportFrom) -> None:
+            for alias in imp.names:
+                names.add(alias.asname or alias.name)
+
+    collector = _Collector()
+    for statement in node.body:
+        collector.visit(statement)
+    return names
+
+
 class _SignatureInferencer:
     def __init__(
         self,
@@ -926,6 +993,9 @@ class _SignatureInferencer:
         # name -> return type for sibling functions in the same module, used to
         # resolve the type of a nested call argument (e.g. callee(producer())).
         self.sibling_return_types = return_types or {}
+        # Names bound as locals in this function, used to detect a nested call whose
+        # callee name is shadowed by a local (so it does not reach the import/sibling).
+        self.local_names = _local_binding_names(node)
         self.args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
         self.arg_names = {arg.arg for arg in self.args}
         self.known: dict[str, str] = {}
@@ -1222,16 +1292,20 @@ class _SignatureInferencer:
         arg_type = self.infer_expr(arg)
         target: str | None = None
         if isinstance(arg, ast.Call):
-            func = arg.func
-            if isinstance(func, ast.Name) and func.id in self.known:
-                # The callable name is bound to a local variable/parameter that
-                # shadows any imported or sibling function of the same name, so the
-                # call does not reach that function. Leave the argument unresolved
-                # (the conservative backstop keeps the caller on the fallback).
+            root = arg.func
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if isinstance(root, ast.Name) and root.id in self.local_names:
+                # The callable's root name is bound to a local variable / parameter
+                # that shadows any imported or sibling function of the same name (for
+                # a bare call `f()` or an attribute call `mod.f()` whose receiver is
+                # shadowed), so the call does not reach that function. Leave the
+                # argument unresolved so the conservative backstop keeps the caller
+                # on the Python fallback.
                 return None, None
             target = canonical_call_target(arg, self.function.imports, self.function.logger_names)
             if target is None:
-                target = dotted_name(func)
+                target = dotted_name(arg.func)
             if arg_type is None and target is not None:
                 arg_type = self.sibling_return_types.get(target)
         return arg_type, target

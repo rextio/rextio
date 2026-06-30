@@ -240,13 +240,19 @@ def _native_arg_type_errors(
         if target is None:
             continue
         resolved = resolver.resolve(module, target).function
-        if (
-            resolved is not None
-            and (resolved.accepted or resolved.is_jit_candidate)
-            and not resolved.native_runtime_semantics
-        ):
+        if resolved is None:
+            # Not a project function (a supported builtin / standard-library call,
+            # or unresolved): trust the locally-inferred argument type rather than
+            # discarding it, which would falsely reject e.g. take_int(len(xs)).
+            continue
+        if resolved.accepted and not resolved.native_runtime_semantics:
+            # `accepted` (no error diagnostics) covers a valid JIT candidate too; a
+            # rejected one is not accepted and must not be trusted.
             arg_types[index] = resolved.signature_return_type
         else:
+            # A rejected, fallback-only, or runtime-shim project function is not
+            # lowered to typed native code, so its result type cannot be trusted to
+            # keep the caller native.
             arg_types[index] = None
 
     if (

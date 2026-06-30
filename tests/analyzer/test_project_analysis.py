@@ -2732,6 +2732,93 @@ def same_caller() -> int:
     assert "pkg.main.same_caller" in rejected
 
 
+def test_builtin_nested_call_argument_stays_native(tmp_path: Path) -> None:
+    # A nested call argument that is a supported builtin / standard-library call
+    # (`len(...)`, `math.floor(...)`) is not a project function, so the boundary must
+    # trust the locally-inferred argument type rather than discarding it — otherwise
+    # a common, valid native call would be falsely rejected.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import math
+import rextio
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def via_len(xs: list[int]) -> int:
+    return take_int(len(xs))
+
+@rextio.native
+def via_floor(y: float) -> int:
+    return take_int(math.floor(y))
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.via_len" in accepted
+    assert "app.via_floor" in accepted
+
+
+def test_shadowed_nested_call_variants_kept_off_native(tmp_path: Path) -> None:
+    # The shadow detection is based on the function's local binding names (from the
+    # AST), so it catches a shadow regardless of the bound value's type and for an
+    # attribute-call receiver — while a comprehension target (which does not leak in
+    # Python 3) must NOT be treated as a shadow.
+    write_module(
+        tmp_path,
+        "pkg/lib.py",
+        """
+import rextio
+
+@rextio.native
+def make_int() -> int:
+    return 1
+""",
+    )
+    write_module(
+        tmp_path,
+        "pkg/main.py",
+        """
+import rextio
+import pkg.lib as lib
+from pkg.lib import make_int
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def none_typed_shadow() -> int:
+    make_int = take_int   # local binding (type None) shadows the import
+    return take_int(make_int())
+
+@rextio.native
+def attr_receiver_shadow() -> int:
+    lib = 2               # local shadows the module alias
+    return take_int(lib.make_int())
+
+@rextio.native
+def comprehension_ok(xs: list[int]) -> int:
+    ys = [v for v in xs]  # `v` is comprehension-scoped, does not leak
+    return take_int(make_int())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "pkg.main.none_typed_shadow" in rejected
+    assert "pkg.main.attr_receiver_shadow" in rejected
+    assert "pkg.main.comprehension_ok" in accepted
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,
