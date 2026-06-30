@@ -29,7 +29,7 @@ from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import FunctionAnalysis
 from rextio.analyzer.native_marker import dotted_name, is_native_decorator
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
-from rextio.codegen.native_names import native_function_name
+from rextio.codegen.native_names import RESERVED_NATIVE_PREFIX, native_function_name
 from rextio.codegen.rust.keywords import RUST_RAW_INCOMPATIBLE
 
 # Shared, stateless type/AST predicates (see rextio.analyzer.type_predicates).
@@ -69,13 +69,6 @@ from rextio.capabilities import (
 from rextio.exceptions import is_supported_builtin_exception
 
 DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
-
-# Code generation emits every internal temporary and helper with this prefix
-# (e.g. `__rextio_min_a_1`, `__rextio_checked_add`). A user parameter or local
-# sharing the prefix could be shadowed by a generated `let` binding inside an
-# emitted block, silently changing behavior, so such names are kept on the
-# Python fallback instead.
-_RESERVED_INTERNAL_PREFIX = "__rextio"
 
 UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.AsyncFunctionDef,
@@ -180,13 +173,13 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
                 f"Rename '{name}' (a Rust keyword `r#` cannot escape) or keep this "
                 "function on Python fallback."
             )
-        elif name.startswith(_RESERVED_INTERNAL_PREFIX):
+        elif name.startswith(RESERVED_NATIVE_PREFIX):
             message = (
-                f"identifier '{name}' uses the reserved '{_RESERVED_INTERNAL_PREFIX}' "
+                f"identifier '{name}' uses the reserved '{RESERVED_NATIVE_PREFIX}' "
                 "prefix that the code generator emits for internal temporaries"
             )
             suggestion = (
-                f"Rename '{name}' to avoid the '{_RESERVED_INTERNAL_PREFIX}' prefix or "
+                f"Rename '{name}' to avoid the '{RESERVED_NATIVE_PREFIX}' prefix or "
                 "keep this function on Python fallback."
             )
         elif not (name.isascii() and name.isidentifier()):
@@ -225,6 +218,21 @@ def _validate_function_name(
             node,
             f"function name '{name}' has no usable characters for a Rust identifier",
             f"Rename '{name}' or keep this function on Python fallback.",
+        )
+        return
+    if name.startswith(RESERVED_NATIVE_PREFIX):
+        # `native_function_name` strips leading underscores, so a `__rextio`-named
+        # function rarely collides with a generated symbol -- but the synthetic
+        # native top-level function is itself named `__rextio_top_level__`, so a
+        # user function sharing the prefix could collide once mangled. Reject it
+        # outright to keep the reserved namespace fully off-limits.
+        _add_identifier_diagnostic(
+            function,
+            node,
+            f"function name '{name}' uses the reserved '{RESERVED_NATIVE_PREFIX}' "
+            "prefix that the code generator emits for internal symbols",
+            f"Rename '{name}' to avoid the '{RESERVED_NATIVE_PREFIX}' prefix or keep "
+            "this function on Python fallback.",
         )
         return
     emitted = native_function_name(function.qualname)
@@ -2240,6 +2248,26 @@ def _validate_compare_types(
             named_expr_binding_env=binding_env,
             active_comprehension_targets=active_targets,
         )
+
+    # A chained comparison `a < b < c` lowers to `(a < b) && (b < c)`, which
+    # evaluates each shared middle operand (every comparator except the last)
+    # twice. For a pure, deterministic operand that is harmless, but a middle
+    # operand containing a call may be non-deterministic (`time.time()`,
+    # `datetime.now()`) or side-effecting (a callee that prints/logs), so
+    # CPython's single evaluation would diverge from the native double
+    # evaluation. Reject such chains to the Python fallback rather than risk a
+    # silent mismatch. (print/logging themselves return None and so cannot be a
+    # comparison operand; only a call wrapping such effects can reach here.)
+    if len(node.ops) >= 2:
+        for middle in node.comparators[:-1]:
+            if any(isinstance(inner, ast.Call) for inner in ast.walk(middle)):
+                _add_unsupported_syntax(
+                    function,
+                    node,
+                    "a chained comparison with a function call as a middle operand "
+                    "is not supported in native functions",
+                )
+                break
 
     left_type = infer_side(node.left)
     left_node = node.left

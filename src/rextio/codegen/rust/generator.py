@@ -1185,14 +1185,14 @@ class _FunctionRenderer:
             left = comparator
         # A chained comparison `a < b < c` lowers to `(a < b) && (b < c)`, which
         # renders the shared middle operand `b` twice and so evaluates it twice
-        # when the first comparison is true (CPython evaluates it once). This is
-        # intentionally left as-is: Rust `&&` preserves CPython's left-to-right
-        # short-circuit exactly, and because the Rextio native subset is pure and
-        # deterministic, the second evaluation always yields the same value -- the
-        # only cost is redundant computation, never a semantic divergence. A
-        # single-evaluation rewrite would have to bind operands lazily per step to
-        # keep both the evaluation order and the short-circuit, which is more
-        # error-prone than the divergence it would remove.
+        # when the first comparison is true (CPython evaluates it once). Rust `&&`
+        # preserves CPython's left-to-right short-circuit exactly, so for a pure,
+        # deterministic operand the second evaluation yields the same value and
+        # the only cost is redundant computation. The analyzer rejects any chained
+        # comparison whose middle operand contains a call (see
+        # `_validate_compare_types`), which is the only way a non-deterministic or
+        # side-effecting operand could reach here, so the doubled evaluation is
+        # always divergence-free by construction.
         return " && ".join(parts)
 
     def render_call(self, expr: CallIR) -> str:

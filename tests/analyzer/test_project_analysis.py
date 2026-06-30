@@ -357,6 +357,84 @@ def compute(__rextio_min_a_1: int, y: int) -> int:
     assert "__rextio" in diagnostic.message
 
 
+def test_rejects_reserved_internal_prefix_function_name(tmp_path: Path) -> None:
+    # A function whose own name shares the `__rextio` prefix is rejected too: the
+    # synthetic native top-level function is named `__rextio_top_level__`, so a
+    # user function sharing the prefix could collide once name-mangled.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def __rextio_helper(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.__rextio_helper"]
+    assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT011"
+
+
+def test_rejects_reserved_internal_prefix_top_level_identifier(tmp_path: Path) -> None:
+    # A native top-level emits module variables as `let` bindings into the same
+    # scope as the generator's own `__rextio_*` temporaries, so a module variable
+    # sharing the prefix could silently shadow one. It must be kept on fallback.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+__rextio_seed = 5
+value = __rextio_seed + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator", native_top_level=True)
+
+    assert "RXT011" in {diagnostic.code for diagnostic in analysis.diagnostics}
+
+
+def test_rejects_chained_comparison_with_call_middle_operand(tmp_path: Path) -> None:
+    # `0 < marker(x) < 10` lowers to `(0 < marker(x)) && (marker(x) < 10)`,
+    # calling the middle operand twice where CPython calls it once. The callee
+    # could be non-deterministic or side-effecting (print/log), so this is a
+    # silent divergence. The analyzer conservatively rejects any chained
+    # comparison with a call as a middle operand (purity isn't known
+    # syntactically) -> Python fallback. A chained comparison whose middle
+    # operand is pure (here `x`) stays native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def marker(x: int) -> int:
+    return x * 2
+
+@rextio.native
+def between(x: int) -> bool:
+    return 0 < marker(x) < 10
+
+@rextio.native
+def in_range(x: int, n: int) -> bool:
+    return 0 <= x < n
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [f.qualname for f in analysis.rejected_native_functions] == ["app.between"]
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert {"app.marker", "app.in_range"} <= accepted
+    assert "app.between" not in accepted
+
+
 def test_rejects_invalid_native_marker_arguments(tmp_path: Path) -> None:
     write_module(
         tmp_path,
