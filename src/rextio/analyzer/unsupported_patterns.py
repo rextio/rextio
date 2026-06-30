@@ -70,6 +70,13 @@ from rextio.exceptions import is_supported_builtin_exception
 
 DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
 
+# Code generation emits every internal temporary and helper with this prefix
+# (e.g. `__rextio_min_a_1`, `__rextio_checked_add`). A user parameter or local
+# sharing the prefix could be shadowed by a generated `let` binding inside an
+# emitted block, silently changing behavior, so such names are kept on the
+# Python fallback instead.
+_RESERVED_INTERNAL_PREFIX = "__rextio"
+
 UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.AsyncFunctionDef,
     ast.ClassDef,
@@ -172,6 +179,15 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
             suggestion = (
                 f"Rename '{name}' (a Rust keyword `r#` cannot escape) or keep this "
                 "function on Python fallback."
+            )
+        elif name.startswith(_RESERVED_INTERNAL_PREFIX):
+            message = (
+                f"identifier '{name}' uses the reserved '{_RESERVED_INTERNAL_PREFIX}' "
+                "prefix that the code generator emits for internal temporaries"
+            )
+            suggestion = (
+                f"Rename '{name}' to avoid the '{_RESERVED_INTERNAL_PREFIX}' prefix or "
+                "keep this function on Python fallback."
             )
         elif not (name.isascii() and name.isidentifier()):
             message = f"identifier '{name}' uses non-ASCII characters not supported in generated Rust"

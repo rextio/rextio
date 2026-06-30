@@ -332,6 +332,31 @@ def last_positive(xs: list[int]) -> int:
     assert "non-ASCII" in diagnostic.message
 
 
+def test_rejects_reserved_internal_prefix_identifier(tmp_path: Path) -> None:
+    # Codegen emits internal temporaries with the `__rextio` prefix (e.g.
+    # `__rextio_min_a_1`). A user binding sharing that prefix could be shadowed by
+    # a generated `let` inside an emitted block, silently changing behavior, so it
+    # is kept on the Python fallback with RXT011 instead.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def compute(__rextio_min_a_1: int, y: int) -> int:
+    return __rextio_min_a_1 + y
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.compute"]
+    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
+    assert diagnostic.code == "RXT011"
+    assert "__rextio" in diagnostic.message
+
+
 def test_rejects_invalid_native_marker_arguments(tmp_path: Path) -> None:
     write_module(
         tmp_path,
