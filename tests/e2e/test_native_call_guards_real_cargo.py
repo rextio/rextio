@@ -26,6 +26,9 @@ def test_real_cargo_build_keeps_uncompilable_shapes_off_native(
     # their callers/owners on the Python fallback so the native module still builds,
     # while type-matching callers (including a matching nested call), an exact-arity
     # call, and an all-scalar tuple stay native with CPython-equivalent results.
+    # It also covers a scalar argument passed to a list parameter (E0308, rejected)
+    # alongside a matching list argument and a nested call to an inferred-return
+    # sibling, both of which stay native.
     (tmp_path / "rextio.toml").write_text(
         """
 [rust]
@@ -91,6 +94,30 @@ def make_float() -> float:
 
 def bad_nested_arg() -> int:
     return callee(make_float())
+
+
+def take_list(xs: list[int]) -> int:
+    return len(xs)
+
+
+def bad_scalar_to_list() -> int:
+    return take_list(1)
+
+
+def make_list() -> list[int]:
+    return [1, 2]
+
+
+def good_list_arg() -> int:
+    return take_list(make_list())
+
+
+def producer():
+    return 9
+
+
+def good_inferred_nested() -> int:
+    return callee(producer())
 
 
 def bare_local() -> Optional[int]:

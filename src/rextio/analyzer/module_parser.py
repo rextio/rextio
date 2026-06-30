@@ -244,6 +244,18 @@ def _collect_module_functions(
             return_types,
         ):
             pass
+        # Make this function's resolved return type available to later functions'
+        # nested-call argument resolution, even when the return type was inferred
+        # rather than annotated (annotations are already seeded above). A function
+        # defined before its caller is the common case; this closes the false-reject
+        # of `caller(): return take(producer())` where producer's int return is
+        # inferred. A name not already present (annotated returns take precedence).
+        if (
+            node.name not in return_types
+            and function.inferred_return_type is not None
+            and function.inferred_return_type != "None"
+        ):
+            return_types[node.name] = function.inferred_return_type
         functions.append(function)
     return functions
 

@@ -158,6 +158,11 @@ def _boundary_errors(
 
 
 _SCALAR_PARAM_TYPES = {"int", "float", "bool", "str", "bytes"}
+# Parameter types lowered to a concrete fixed Rust type (Vec/HashMap/tuple/HashSet)
+# that requires an exactly-matching argument — no coercion from a scalar or a
+# differently-parameterised container. `Optional[...]` / `... | None` are excluded:
+# they admit the inner type or None, so exact-string equality is not the right test.
+_CONTAINER_PARAM_PREFIXES = ("list[", "tuple[", "dict[", "set[", "frozenset[")
 
 
 def _native_arg_type_errors(
@@ -249,7 +254,25 @@ def _native_arg_type_errors(
         if index >= len(param_types):
             continue
         param_type = param_types[index]
-        if param_type not in _SCALAR_PARAM_TYPES or arg_type == param_type:
+        if arg_type == param_type:
+            continue
+        is_optional = param_type.startswith("Optional[") or (
+            "|" in param_type and "None" in param_type
+        )
+        if is_optional and arg_type == "None":
+            # A bare `None` literal lowers to `Option::None`, valid for any
+            # `Optional[...]` / `... | None` parameter.
+            continue
+        is_scalar = param_type in _SCALAR_PARAM_TYPES
+        is_container = param_type.startswith(_CONTAINER_PARAM_PREFIXES)
+        if not (is_scalar or is_container or is_optional):
+            # Any other looser parameter type: leave to the existing passes rather
+            # than over-rejecting on string inequality.
+            continue
+        if arg_type is None and not is_scalar:
+            # An argument whose type could not be inferred against a container or
+            # optional parameter: do not reject (would over-reject valid args); the
+            # conservative undetermined-type backstop applies to scalars only.
             continue
         actual = arg_type if arg_type is not None else "an undetermined type"
         diagnostics.append(
@@ -258,8 +281,9 @@ def _native_arg_type_errors(
                 severity="error",
                 message=(
                     f"native call argument {index + 1} to {dependency.qualname} has "
-                    f"{actual} but the parameter is {param_type}; Rust has no implicit "
-                    "scalar coercion, so this would emit native code that fails to compile"
+                    f"{actual} but the parameter is {param_type}; the lowered Rust type "
+                    "must match exactly (no scalar/container coercion), so this would "
+                    "emit native code that fails to compile"
                 ),
                 file_path=function.file_path,
                 line=call.line,

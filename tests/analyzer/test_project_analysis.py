@@ -2506,6 +2506,92 @@ def good_caller() -> int:
     assert "app.good_caller" in accepted
 
 
+def test_nested_call_to_inferred_return_sibling_stays_native(tmp_path: Path) -> None:
+    # A nested call argument to a sibling whose return type is *inferred* (not
+    # annotated) must resolve via the module return-type registry — which now also
+    # carries inferred returns — so a matching nested call stays native instead of
+    # being conservatively rejected by the undetermined-type backstop.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def producer():
+    return 5
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def caller() -> int:
+    return take_int(producer())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.caller" in accepted
+    assert "app.producer" in accepted
+    assert "app.take_int" in accepted
+
+
+def test_non_scalar_parameter_argument_mismatch_kept_off_native(tmp_path: Path) -> None:
+    # A container or Optional parameter lowers to a concrete fixed Rust type that
+    # admits no coercion from a scalar, so a scalar argument passed to a list/dict
+    # or Optional parameter is rejected (E0308). A matching container argument, a
+    # `None` argument to an Optional parameter, and an Optional-typed argument all
+    # stay native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+from typing import Optional
+import rextio
+
+@rextio.native
+def take_list(xs: list[int]) -> int:
+    return 1
+
+@rextio.native
+def take_opt(x: Optional[int]) -> int:
+    return 0
+
+@rextio.native
+def make_list() -> list[int]:
+    return [1]
+
+@rextio.native
+def bad_scalar_to_list() -> int:
+    return take_list(1)
+
+@rextio.native
+def bad_scalar_to_opt() -> int:
+    return take_opt(1)
+
+@rextio.native
+def good_list() -> int:
+    return take_list(make_list())
+
+@rextio.native
+def good_none_to_opt() -> int:
+    return take_opt(None)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.bad_scalar_to_list" in rejected
+    assert "app.bad_scalar_to_opt" in rejected
+    assert "app.good_list" in accepted
+    assert "app.good_none_to_opt" in accepted
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,
