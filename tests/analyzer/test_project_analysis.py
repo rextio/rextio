@@ -2070,16 +2070,15 @@ def list_ops(xs: list[int]) -> int:
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
-def b64_roundtrip(value: str) -> str:
-    encoded = base64.b64encode(value.encode())
-    return base64.b64decode(encoded).decode()
+def b64_encode(value: str) -> bytes:
+    return base64.b64encode(value.encode())
 """,
     )
 
     analysis = analyze_project(tmp_path)
 
     assert [function.name for function in analysis.accepted_native_functions] == [
-        "b64_roundtrip",
+        "b64_encode",
         "digest",
         "list_ops",
         "numeric",
@@ -2143,6 +2142,60 @@ def now_ts() -> float:
     # The faithful datetime forms stay native.
     assert "app.now_iso" in pure_native
     assert "app.now_ts" in pure_native
+
+
+def test_statistics_mean_int_and_b64decode_kept_off_native(tmp_path: Path) -> None:
+    # CPython `statistics.mean(list[int])` returns an int for an integral mean
+    # (not an f64), and `base64.b64decode` silently discards non-alphabet
+    # characters the native decoder rejects -- both are kept off the pure native
+    # path. `fmean` (always float), `mean(list[float])`, and `b64encode` stay
+    # native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import statistics
+import base64
+import rextio
+
+@rextio.native
+def mean_int(xs: list[int]) -> float:
+    return statistics.mean(xs)
+
+@rextio.native
+def mean_float(xs: list[float]) -> float:
+    return statistics.mean(xs)
+
+@rextio.native
+def fmean_int(xs: list[int]) -> float:
+    return statistics.fmean(xs)
+
+@rextio.native
+def decode(s: str) -> bytes:
+    return base64.b64decode(s)
+
+@rextio.native
+def encode(b: bytes) -> bytes:
+    return base64.b64encode(b)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    diags = {
+        f.qualname: {d.code for d in f.diagnostics}
+        for f in (*analysis.accepted_native_functions, *analysis.rejected_native_functions)
+    }
+
+    def off_native(name: str) -> bool:
+        return name in rejected or "RXT080" in diags.get(name, set())
+
+    assert off_native("app.mean_int")
+    assert off_native("app.decode")
+    assert "app.mean_float" not in rejected and diags["app.mean_float"] == set()
+    assert "app.fmean_int" not in rejected and diags["app.fmean_int"] == set()
+    assert "app.encode" not in rejected and diags["app.encode"] == set()
 
 
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:

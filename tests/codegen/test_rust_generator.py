@@ -809,9 +809,8 @@ def list_ops(xs: list[int]) -> int:
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
-def b64_roundtrip(value: str) -> str:
-    encoded = base64.b64encode(value.encode())
-    return base64.b64decode(encoded).decode()
+def b64_encode(value: str) -> bytes:
+    return base64.b64encode(value.encode())
 
 def mathy(x: float) -> float:
     return math.atan2(x, 1.0) + math.pi + statistics.mean([x]) + datetime.now().timestamp()
@@ -834,7 +833,6 @@ def truth(flags: list[bool]) -> bool:
     assert ".position(|item| item == &__rextio_needle" in source
     assert "format!(\"{:x}\", sha2::Sha256::digest(&" in source
     assert "base64::engine::general_purpose::STANDARD.encode" in source
-    assert "base64::engine::general_purpose::STANDARD.decode" in source
     assert "std::f64::consts::PI" in source
     assert ".atan2(1.0)" in source
     assert "chrono::Local::now()" in source

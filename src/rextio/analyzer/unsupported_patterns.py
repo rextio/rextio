@@ -1999,6 +1999,20 @@ def _infer_call_type(
             return None
         arg_type = infer_arg(node.args[0])
         item_type = _list_item_type(arg_type)
+        if item_type == "int" and target == "statistics.mean":
+            # CPython `statistics.mean(list[int])` returns an *int* when the mean
+            # is integral (and a Fraction otherwise), not an f64, so it is not
+            # faithfully a native float. Keep it on the Python fallback.
+            # `statistics.fmean` always returns a float, so fmean(list[int]) and
+            # mean/fmean(list[float]) stay native.
+            _add_unsupported_syntax(
+                function,
+                node,
+                "statistics.mean on a list[int] is not supported in native "
+                "functions because CPython returns an int for an integral mean; "
+                "use statistics.fmean or keep this on the Python fallback",
+            )
+            return None
         if item_type in NUMERIC_TYPES:
             return "float"
         _add_unsupported_syntax(function, node, f"{target} requires list[int] or list[float], got {arg_type}")
@@ -2017,11 +2031,23 @@ def _infer_call_type(
         if not _require_arg_count(target, node, function, {1}):
             return None
         arg_type = infer_arg(node.args[0])
+        if target == "base64.b64decode":
+            # CPython `base64.b64decode` (validate=False) silently DISCARDS
+            # characters outside the base64 alphabet before decoding, while the
+            # native decoder rejects them -- so whitespace/malformed input
+            # succeeds in CPython but raises natively. Keep it on the Python
+            # fallback. (b64encode is deterministic and stays native.)
+            _add_unsupported_syntax(
+                function,
+                node,
+                "base64.b64decode is not supported in native functions because "
+                "CPython silently discards non-alphabet characters that the native "
+                "decoder rejects; kept on the Python fallback",
+            )
+            return None
         if target == "base64.b64encode" and arg_type == "bytes":
             return "bytes"
-        if target == "base64.b64decode" and arg_type in {"bytes", "str"}:
-            return "bytes"
-        _add_unsupported_syntax(function, node, f"{target} requires bytes input" if target.endswith("b64encode") else f"{target} requires bytes or str input")
+        _add_unsupported_syntax(function, node, f"{target} requires bytes input")
         return None
     if target in JSON_TARGETS:
         # serde_json (the native lowering) is not CPython-`json`-compatible:

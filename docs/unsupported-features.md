@@ -290,6 +290,38 @@ Python code does not call a separate JIT API directly.
 Code outside this subset remains on the normal direct Rust, Python runtime shim,
 or CPython/Nuitka fallback path.
 
+## Accepted Native Semantic Divergences
+
+A small number of native lowerings are kept on the direct Rust path even though
+they differ from CPython in a narrow, documented way. These are accepted trade-
+offs for 0.1.0 alpha (the alternative being a Python fallback for a common
+operation or replicating a large amount of CPython runtime formatting). All
+other observed divergences are treated as bugs and either fixed or rejected to
+fallback.
+
+- **`print` / `logging` of a `float`.** Rust's `{}` Display for `f64` differs
+  from CPython's `float` repr on stdout: it omits the trailing `.0` for whole
+  numbers (`print(1.0)` writes `1`, not `1.0`), never switches to scientific
+  notation for very large/small magnitudes, and writes `NaN`/`inf` rather than
+  `nan`/`inf`. Computed values are unaffected — only the textual stdout/ log
+  output of a float can differ. A faithful Python float repr is out of scope for
+  0.1.0 alpha. Bool, int, and str format identically.
+- **`bytes.decode()` on invalid UTF-8.** The native path raises `ValueError`
+  where CPython raises `UnicodeDecodeError`. `UnicodeDecodeError` is a subclass
+  of `ValueError`, so `except ValueError` still catches it; only code that
+  catches `UnicodeDecodeError` specifically sees the difference. A faithful
+  `UnicodeDecodeError` cannot be constructed inside the native function (it has
+  no `py` token or decode-position data), so the narrower exception type is
+  accepted. Valid UTF-8 decodes identically.
+
+Operations whose divergence could not be bounded this narrowly are kept on the
+Python fallback instead — for example `json.dumps`/`json.loads` (serde is not
+CPython-`json`-compatible), `set[float]` / `sorted(list[float])` (NaN identity),
+`statistics.mean(list[int])` (CPython returns an `int` for an integral mean),
+`base64.b64decode` (CPython silently discards non-alphabet characters), and
+`datetime.utcnow().timestamp()` (CPython interprets the naive UTC wall-clock as
+local time).
+
 ## Out of Scope for 0.1.0 alpha
 
 0.1.0 alpha does not include:

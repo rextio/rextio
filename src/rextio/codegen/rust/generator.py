@@ -1358,6 +1358,13 @@ class _FunctionRenderer:
         if expr.function == "str.encode" and len(expr.args) == 1:
             return f"{receiver}.as_bytes().to_vec()"
         if expr.function == "bytes.decode" and len(expr.args) == 1:
+            # KNOWN LIMITATION (documented in docs/known-limitations.md): on
+            # invalid UTF-8 this raises ValueError, whereas CPython raises
+            # UnicodeDecodeError. UnicodeDecodeError is a subclass of ValueError
+            # (so `except ValueError` still catches it), and a faithful
+            # UnicodeDecodeError cannot be constructed inside the native function
+            # (no `py` token / decode position data), so the narrower exception
+            # type is accepted for 0.1.0-alpha. Valid UTF-8 decodes identically.
             return (
                 f"String::from_utf8({receiver})"
                 f"{self.map_err_to_error()}"
@@ -1707,6 +1714,12 @@ class _FunctionRenderer:
 
     def format_placeholder(self, expr: ExprIR) -> str:
         expr_type = self.infer_expr_type(expr)
+        # KNOWN LIMITATION (documented in docs/known-limitations.md): Rust's `{}`
+        # Display for f64 differs from CPython's float repr -- it omits the `.0`
+        # for whole numbers (`1.0` -> `1`), never uses scientific notation, and
+        # prints `NaN` rather than `nan`. A faithful Python float repr is out of
+        # scope for 0.1.0-alpha, so `print`/`logging` of a float can differ from
+        # CPython on stdout. (Bool/int/str format identically.)
         if isinstance(expr_type, (RxtInt, RxtFloat, RxtBool, RxtStr)):
             return "{}"
         return "{:?}"
