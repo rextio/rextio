@@ -1404,3 +1404,51 @@ def logarithm_base(x: float, base: float) -> float:
     assert ".log(__rextio_checked_mlogbase(__rextio_log_base" in source
     assert "fn __rextio_checked_mlogbase(value: f64)" in source
     assert "if value == 1.0 {" in source
+
+
+def test_len_of_str_counts_code_points_not_bytes(tmp_path: Path) -> None:
+    # CPython `len(str)` counts code points; `String::len` would return the UTF-8
+    # byte length, so a `str` argument must lower to `.chars().count()`.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def char_count(s: str) -> int:
+    return len(s)
+
+@rextio.native
+def byte_count(b: bytes) -> int:
+    return len(b)
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "s.chars().count() as i64" in source
+    assert "b.len() as i64" in source
+
+
+def test_bare_return_in_optional_function_emits_ok_none(tmp_path: Path) -> None:
+    # A bare `return` is Python `return None`; in an `Optional[T]` function that
+    # is `Ok(None)`, not `Ok(())` (which would fail to compile against the
+    # `Option<T>` return type).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+from typing import Optional
+
+@rextio.native
+def maybe(c: bool) -> Optional[int]:
+    if c:
+        return 1
+    return
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "return Ok(None);" in source
+    assert "return Ok(());" not in source

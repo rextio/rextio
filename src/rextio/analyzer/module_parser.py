@@ -193,6 +193,22 @@ def _collect_module_functions(
         for item in tree.body
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
+    # Every module-level assignment target name. A module global rebinds the
+    # builtin/import/sibling of the same name for all functions in the module
+    # (e.g. `len = 5` makes `len(xs)` a TypeError), so the shadow checker treats a
+    # bare call to such a name as shadowed.
+    module_assigned_names: frozenset[str] = frozenset(
+        target.id
+        for item in tree.body
+        for target in (
+            item.targets
+            if isinstance(item, ast.Assign)
+            else [item.target]
+            if isinstance(item, ast.AnnAssign)
+            else []
+        )
+        if isinstance(target, ast.Name)
+    )
     for node in tree.body:
         if isinstance(node, ast.AsyncFunctionDef):
             marker = native_marker_for_function(node)
@@ -226,6 +242,7 @@ def _collect_module_functions(
             native_target_language=_marker_target_language(marker, target_language),
             imports=dict(module.imports),
             logger_names=module.logger_names,
+            module_assigned_names=module_assigned_names,
         )
         if has_exempt:
             function.is_native_candidate = False
@@ -294,6 +311,7 @@ def _mark_jit_candidate(
         native_target_language=target_language,
         imports=dict(function.imports),
         logger_names=function.logger_names,
+        module_assigned_names=function.module_assigned_names,
     )
     validate_native_function(node, probe, return_types, module_function_names)
     accepted, reason = is_cranelift_jit_candidate(node, probe)
@@ -342,6 +360,7 @@ def _is_auto_native_candidate(
         native_target_language=target_language,
         imports=dict(function.imports),
         logger_names=function.logger_names,
+        module_assigned_names=function.module_assigned_names,
     )
     validate_native_function(node, probe, return_types, module_function_names)
     if probe.accepted:
@@ -384,6 +403,7 @@ def _classify_native_function(
         native_target_language=function.native_target_language,
         imports=dict(function.imports),
         logger_names=function.logger_names,
+        module_assigned_names=function.module_assigned_names,
     )
     validate_native_function(node, probe, return_types, module_function_names)
     function.inferred_arg_types = dict(probe.inferred_arg_types)

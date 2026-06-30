@@ -132,6 +132,17 @@ class FunctionAnalysis:
     jit_skipped_reason: str | None = None
     imports: dict[str, str] = field(default_factory=dict)
     logger_names: tuple[str, ...] = ()
+    # All names bound anywhere in the function body (params, assignments, loop
+    # targets, ...), captured during validation. A value-position name read that
+    # is absent from both the local type environment and this set is unbound in
+    # the function (a module global, closure, or genuinely undefined name) and
+    # cannot be lowered as a Rust local, so it is rejected to the fallback.
+    local_binding_names: frozenset[str] = frozenset()
+    # Module-level names bound by an assignment (e.g. `len = 5` or `helper = ...`
+    # at module scope). Such a binding shadows a builtin / import / sibling
+    # function of the same name for every function in the module, so a bare call
+    # to that name would lower to the wrong callable. Used by the shadow checker.
+    module_assigned_names: frozenset[str] = frozenset()
 
     @property
     def error_diagnostics(self) -> list[Diagnostic]:

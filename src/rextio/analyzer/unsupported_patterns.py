@@ -111,6 +111,13 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
 )
 
 
+# Python `int` lowers to Rust `i64`; an integer literal outside this range cannot
+# be emitted as an `i64` literal (it fails to compile), so it is rejected to the
+# Python fallback rather than silently truncated.
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
+
+
 def validate_native_function(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
@@ -377,6 +384,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
 def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
     type_env = _initial_type_env(node, function)
     return_type = _return_type_name(node, function)
+    function.local_binding_names = frozenset(_local_binding_names(node))
     for statement in node.body:
         _validate_statement_types(statement, function, type_env, return_type)
         for child in ast.walk(statement):
@@ -442,6 +450,41 @@ def _initial_type_env(node: ast.FunctionDef, function: FunctionAnalysis) -> dict
     return env
 
 
+def _is_range_call(node: ast.AST) -> bool:
+    """Whether a node is a ``range(...)`` call.
+
+    ``range`` has a native lowering only as a for-loop iterable; the loop
+    validators intercept it here so it bypasses ``_infer_call_type`` (which
+    rejects ``range`` in value position, e.g. ``return range(n)``).
+    """
+    return isinstance(node, ast.Call) and dotted_name(node.func) == "range"
+
+
+def _require_bool_condition(
+    test: ast.expr,
+    kind: str,
+    function: FunctionAnalysis,
+    env: dict[str, str],
+) -> None:
+    """Reject a non-bool ``if``/``while`` test.
+
+    Python evaluates truthiness for any type, but native lowering emits the test
+    directly as a Rust ``if``/``while`` condition, which must be ``bool`` (a bare
+    ``if x`` on an ``i64``/``Vec`` fails to compile, E0308). Implementing full
+    truthiness for every type is out of scope for 0.1.0 alpha, so a non-bool test
+    is kept on the Python fallback. A ``None`` inferred type means a diagnostic was
+    already attached (e.g. an unknown name), so it is not double-reported here.
+    """
+    test_type = _infer_expr_type(test, function, env)
+    if test_type is not None and test_type != "bool":
+        _add_unsupported_syntax(
+            function,
+            test,
+            f"{kind} condition must be a bool in native functions, got {test_type}; "
+            "use an explicit comparison (e.g. 'if len(xs) > 0:' or 'if x != 0:')",
+        )
+
+
 def _validate_statement_types(
     node: ast.stmt,
     function: FunctionAnalysis,
@@ -460,6 +503,17 @@ def _validate_statement_types(
                 node,
                 "assigning None to an unannotated local is not supported in native "
                 "functions; annotate it as Optional[...] or keep on the Python fallback",
+            )
+            return
+        if len(node.targets) > 1:
+            # `a = b = expr` binds every target to the same object; native lowering
+            # only models a single target (lowering raises on more), and faithful
+            # multi-target aliasing is out of scope for 0.1.0 alpha, so keep it on
+            # the Python fallback.
+            _add_unsupported_syntax(
+                function,
+                node,
+                "multiple assignment targets (a = b = ...) are not supported in native functions",
             )
             return
         for target in node.targets:
@@ -534,7 +588,7 @@ def _validate_statement_types(
             _validate_type_match(value_type, return_type, function, node)
         return
     if isinstance(node, ast.If):
-        _infer_expr_type(node.test, function, env)
+        _require_bool_condition(node.test, "if", function, env)
         _validate_statement_list_types(node.body, function, dict(env), return_type)
         _validate_statement_list_types(node.orelse, function, dict(env), return_type)
         return
@@ -565,7 +619,14 @@ def _validate_statement_types(
             item_types = _iter_unpack_types(node.iter, function, env)
             _bind_loop_target_types(node.target, item_types, function, body_env)
         else:
-            iterable_type = _infer_expr_type(node.iter, function, env)
+            if isinstance(node.iter, ast.Call) and _is_range_call(node.iter):
+                # `range` as a loop iterable: validate its args here and let
+                # `_iter_item_type` derive the `int` item type, bypassing the
+                # value-position rejection in `_infer_call_type`.
+                _validate_range_call(node.iter, function, env)
+                iterable_type = None
+            else:
+                iterable_type = _infer_expr_type(node.iter, function, env)
             item_type = _iter_item_type(node.iter, iterable_type)
             _bind_loop_target_types(
                 node.target,
@@ -584,7 +645,7 @@ def _validate_statement_types(
                 "while ... else is not supported in native functions",
             )
             return
-        _infer_expr_type(node.test, function, env)
+        _require_bool_condition(node.test, "while", function, env)
         _validate_statement_list_types(node.body, function, dict(env), return_type)
         return
     if isinstance(node, ast.Try):
@@ -816,7 +877,13 @@ def _validate_mutable_ownership_in_statements(
                 item_types = _iter_unpack_types(statement.iter, function, env)
                 _bind_loop_target_types(statement.target, item_types, function, body_env)
             else:
-                iterable_type = _infer_expr_type(statement.iter, function, env)
+                # `range` args were already validated by the primary type pass;
+                # bypass the value-position rejection here (see `_is_range_call`).
+                iterable_type = (
+                    None
+                    if _is_range_call(statement.iter)
+                    else _infer_expr_type(statement.iter, function, env)
+                )
                 item_type = _iter_item_type(statement.iter, iterable_type)
                 _bind_loop_target_types(
                     statement.target,
@@ -1288,11 +1355,19 @@ class _SignatureInferencer:
         """
         func = node.func
         if isinstance(func, ast.Name):
-            return func.id in self.local_names and (
+            resolves_to_callable = (
                 func.id in self.function.imports
                 or func.id in self.module_function_names
                 or func.id in _SHADOWABLE_BUILTIN_CALLS
             )
+            # The callable name is shadowed when a function-local binding OR a
+            # module-level assignment (`len = 5` at module scope) rebinds it, so a
+            # bare call would lower to the wrong callable.
+            shadowed_by_binding = (
+                func.id in self.local_names
+                or func.id in self.function.module_assigned_names
+            )
+            return resolves_to_callable and shadowed_by_binding
         # Attribute / chained call. `canonical_call_target` resolves the call the way
         # codegen does (mapping import aliases and recognizing method vs module forms);
         # an unresolved (None) call is not a receiver-ignored native call, so it cannot
@@ -1650,6 +1725,13 @@ def _infer_expr_type(
         if isinstance(node.value, bool):
             return "bool"
         if isinstance(node.value, int):
+            if not (_I64_MIN <= node.value <= _I64_MAX):
+                _add_unsupported_syntax(
+                    function,
+                    node,
+                    "integer literal is outside the supported i64 range in native functions",
+                )
+                return None
             return "int"
         if isinstance(node.value, float):
             return "float"
@@ -1661,7 +1743,22 @@ def _infer_expr_type(
             return "None"
         return None
     if isinstance(node, ast.Name):
-        return env.get(node.id)
+        bound = env.get(node.id)
+        if bound is None and node.id not in function.local_binding_names:
+            # The name is neither a typed local nor bound anywhere in this
+            # function: it is a module global, a closure variable, or an undefined
+            # name. None of those can be lowered as a Rust local (it would emit an
+            # undefined identifier), so keep the function on the Python fallback. A
+            # name that *is* bound locally but whose type could not be inferred
+            # here (``bound is None`` yet present in ``local_binding_names``) is
+            # left to the existing untyped-name handling.
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"name '{node.id}' is not defined in this native function "
+                "(module globals and closures are unsupported)",
+            )
+        return bound
     if isinstance(node, ast.Attribute):
         target = canonical_attribute_target(node, function.imports)
         if target in MATH_CONSTANT_TARGETS:
@@ -1784,6 +1881,17 @@ def _infer_expr_type(
                 _add_unsupported_syntax(function, node.slice, f"dict keys must be {key_type}, got {slice_type}")
                 return None
             return value_item_type
+        if value_type in {"str", "bytes"}:
+            # `str`/`bytes` indexing has no faithful generic-sequence lowering:
+            # a Rust `String` cannot be indexed by `usize` (CPython indexes by
+            # code point), and `bytes` indexing yields a `u8` rather than the
+            # `int` CPython returns. Keep it on the Python fallback.
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"indexing a {value_type} value is not supported in native functions",
+            )
+            return None
         return None
     return None
 
@@ -2044,7 +2152,14 @@ def _comprehension_iter_item_types(
 ) -> list[str]:
     if isinstance(node, ast.Call) and (_is_enumerate_call(node) or _is_zip_call(node)):
         return _iter_unpack_types(node, function, env)
-    iterable_type = _infer_expr_type(node, function, env)
+    if isinstance(node, ast.Call) and _is_range_call(node):
+        # `range` as a comprehension iterable (`[i for i in range(n)]`): validate
+        # its args and let `_iter_item_type` derive the `int` item type, bypassing
+        # the value-position rejection in `_infer_call_type`.
+        _validate_range_call(node, function, env)
+        iterable_type: str | None = None
+    else:
+        iterable_type = _infer_expr_type(node, function, env)
     item_type = _iter_item_type(node, iterable_type)
     return [item_type] if item_type is not None else []
 
@@ -2206,7 +2321,14 @@ def _infer_call_type(
         _add_unsupported_syntax(function, node, f"reversed requires a supported list, got {arg_type}")
         return None
     if target == "range":
-        _validate_range_call(node, function, env)
+        # `range` only has a native lowering as a `for`-loop iterable (handled by
+        # the loop validator). In value position it has no native representation,
+        # so reject it the way `enumerate`/`zip` are rejected below.
+        _add_unsupported_syntax(
+            function,
+            node,
+            "range is supported only as a for-loop iterable",
+        )
         return None
     if target == "enumerate":
         _add_unsupported_syntax(
@@ -2288,7 +2410,17 @@ def _infer_call_type(
         _add_unsupported_syntax(function, node, f"{target} requires a float argument")
         return None
     if target in MATH_CONSTANT_TARGETS:
-        return "float"
+        # `math.pi`/`math.e`/... are float *constants*, not callables. Reaching
+        # here means they appear in call position (`math.pi()`), which CPython
+        # rejects with `TypeError: 'float' object is not callable`. Attribute
+        # access (`math.pi`) is handled separately in `_infer_expr_type` and stays
+        # native; only the call form is rejected here.
+        _add_unsupported_syntax(
+            function,
+            node,
+            f"{target} is a constant and is not callable in native functions",
+        )
+        return None
     if target in STR_METHOD_TARGETS:
         return _infer_str_method_type(target, node, function, env)
     if target in BYTES_METHOD_TARGETS:
@@ -2576,9 +2708,15 @@ def _infer_unary_type(
 
 
 def _is_sized_type(type_name: str) -> bool:
-    """Report whether a type supports ``len()`` (maps to Rust ``.len()``)."""
+    """Report whether a type supports ``len()``.
+
+    ``str`` maps to ``.chars().count()`` (CPython counts code points, not the
+    UTF-8 byte length ``String::len`` returns), ``bytes`` and the list/set/dict
+    containers map to ``.len()``. ``tuple`` is excluded: a Rust tuple has no
+    ``.len()`` method, so ``len(tuple)`` is kept on the Python fallback.
+    """
     return type_name in {"str", "bytes"} or type_name.startswith(
-        ("list[", "set[", "dict[", "tuple[")
+        ("list[", "set[", "dict[")
     )
 
 
@@ -2706,6 +2844,25 @@ def _validate_compare_types(
                 function,
                 node,
                 "'is'/'is not' is supported only against None in native functions",
+            )
+        if isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)) and (
+            _is_dict_type(left_type)
+            or _is_dict_type(right_type)
+            or _is_set_type(left_type)
+            or _is_set_type(right_type)
+        ):
+            # Ordering comparisons have no faithful native lowering for dict/set:
+            # Rust `HashMap`/`HashSet` do not implement `<`/`<=`/`>`/`>=` (the Rust
+            # fails to compile), and even in CPython `dict` ordering raises
+            # `TypeError` while `set` ordering means subset/superset, not an
+            # arbitrary order. Keep on the Python fallback. (`==`/`!=` are value
+            # equality, which `HashMap`/`HashSet` support faithfully, so they are
+            # left native.)
+            _add_unsupported_syntax(
+                function,
+                node,
+                "ordering comparisons (<, <=, >, >=) on dict/set operands are not "
+                "supported in native functions",
             )
         if (
             left_type is not None

@@ -477,6 +477,12 @@ class _FunctionRenderer:
             return [f"{prefix}continue;"]
         if isinstance(statement, ReturnIR):
             if statement.value is None:
+                # A bare `return` is Python `return None`. In an `Optional[T]`
+                # function that is `Ok(None)` (the `Option` is `None`), not
+                # `Ok(())` which would be a unit value and fail to compile against
+                # the `Option<T>` return type.
+                if isinstance(self.function.return_type, RxtOptional):
+                    return [f"{prefix}return Ok(None);"]
                 return [f"{prefix}return Ok(());"]
             lines = self.named_expr_prelude(statement.value, indent)
             value = strip_expr_if_safe(
@@ -1163,6 +1169,12 @@ class _FunctionRenderer:
 
     def render_call(self, expr: CallIR) -> str:
         if expr.function == "len" and len(expr.args) == 1:
+            # CPython `len(str)` counts Unicode code points; Rust `String::len`
+            # returns the UTF-8 byte length, so a `str` argument must use
+            # `.chars().count()` to match (e.g. `len("é") == 1`, not 2). Other
+            # sized types (bytes/list/set/dict) use `.len()` faithfully.
+            if isinstance(self.infer_expr_type(expr.args[0]), RxtStr):
+                return f"({self.render_expr(expr.args[0])}.chars().count() as i64)"
             return f"({self.render_expr(expr.args[0])}.len() as i64)"
         if expr.function == "abs" and len(expr.args) == 1:
             if isinstance(self.infer_expr_type(expr.args[0]), RxtInt):

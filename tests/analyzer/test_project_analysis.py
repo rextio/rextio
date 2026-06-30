@@ -3989,3 +3989,128 @@ def bump_index(xs: list[int], i: int, v: int) -> int:
         "app.bump_index",
     }
     assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}
+
+
+def test_council24_rejects_unsafe_native_patterns(tmp_path: Path) -> None:
+    # Whole-codebase council round 24: a batch of patterns that were accepted as
+    # direct-native but emitted wrong or uncompilable Rust. Each is now kept off
+    # the direct-native path (rejected to the Python fallback, or routed to the
+    # RXT080 runtime shim), never silently mis-compiled.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+len = 5
+
+@rextio.native
+def non_bool_if(x: int) -> int:
+    if x:
+        return 1
+    return 0
+
+@rextio.native
+def non_bool_while(x: int) -> int:
+    while x:
+        x = x - 1
+    return x
+
+@rextio.native
+def str_index(s: str) -> str:
+    return s[0]
+
+@rextio.native
+def multi_assign() -> int:
+    a = b = 1
+    return a + b
+
+@rextio.native
+def int_literal_too_big() -> int:
+    return 100000000000000000000
+
+@rextio.native
+def dict_ordering(a: dict[str, int], b: dict[str, int]) -> bool:
+    return a < b
+
+@rextio.native
+def len_of_tuple(t: tuple[int, float]) -> int:
+    return len(t)
+
+@rextio.native
+def range_as_value(n: int) -> int:
+    return range(n)
+
+@rextio.native
+def reads_module_global() -> int:
+    return y
+
+@rextio.native
+def shadowed_builtin(xs: list[int]) -> int:
+    return len(xs)
+
+y = 4
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {function.qualname for function in analysis.rejected_native_functions}
+    assert {
+        "app.non_bool_if",
+        "app.non_bool_while",
+        "app.str_index",
+        "app.multi_assign",
+        "app.int_literal_too_big",
+        "app.dict_ordering",
+        "app.len_of_tuple",
+        "app.range_as_value",
+        "app.reads_module_global",
+        "app.shadowed_builtin",
+    } <= rejected
+    assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}
+
+
+def test_council24_keeps_safe_native_forms(tmp_path: Path) -> None:
+    # The council-24 guards must not over-reject: a bool-typed condition, a
+    # `range` for-loop iterable, a bool ordering comparison (Rust `bool` is
+    # ordered like Python), and `len(str)` (faithfully lowered to a code-point
+    # count) all stay on the direct-native path.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def bool_if(x: int) -> int:
+    if x > 0:
+        return 1
+    return 0
+
+@rextio.native
+def range_loop(n: int) -> int:
+    total = 0
+    for i in range(1, n, 2):
+        total += i
+    return total
+
+@rextio.native
+def bool_ordering(a: bool, b: bool) -> bool:
+    return a < b
+
+@rextio.native
+def length_of_str(s: str) -> int:
+    return len(s)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert {function.qualname for function in analysis.accepted_native_functions} == {
+        "app.bool_if",
+        "app.range_loop",
+        "app.bool_ordering",
+        "app.length_of_str",
+    }
+    assert analysis.rejected_native_functions == []
