@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import sys
 import zipapp
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 from dataclasses import dataclass
@@ -82,10 +83,14 @@ def build_zipapp_executable(
         target.unlink()
 
     try:
+        # Pin the interpreter to the build-time Python's minor version so a
+        # zipapp generated under, e.g., 3.13 is not silently run by an older
+        # python3 that lacks the native extension's ABI.
+        interpreter = f"/usr/bin/env python{sys.version_info.major}.{sys.version_info.minor}"
         zipapp.create_archive(
             source=python_dir,
             target=target,
-            interpreter="/usr/bin/env python3",
+            interpreter=interpreter,
             main=entrypoint,
             compressed=True,
         )

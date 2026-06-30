@@ -8,7 +8,7 @@ when native is disabled or missing. This is the behavior controlled by
 
 ```text
 rextio build examples/fallback_demo --fallback=cpython
-PYTHONPATH=examples/fallback_demo/.rextio/generated/python REXTIO_DISABLE_NATIVE=1 python -m fallback_demo.run_demo
+PYTHONPATH=examples/fallback_demo/.rextio/build/python REXTIO_DISABLE_NATIVE=1 python -m fallback_demo.run_demo
 ```
 
 When `REXTIO_DISABLE_NATIVE=1` is set, generated wrappers use the fallback

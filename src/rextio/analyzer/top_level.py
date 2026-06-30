@@ -21,6 +21,7 @@ from rextio.analyzer.unsupported_patterns import (
     _validate_call,
     _validate_statement_types,
 )
+from rextio.codegen.native_names import RESERVED_NATIVE_PREFIX
 from rextio.codegen.rust.keywords import RUST_RAW_INCOMPATIBLE
 
 TOP_LEVEL_NATIVE_NAME = "__rextio_top_level__"
@@ -179,6 +180,18 @@ def _validate_top_level_identifiers(
                 validator,
                 child,
                 f"identifier '{name}' is a Rust keyword that cannot be carried as a raw identifier",
+                f"Rename the module variable '{name}' or keep this module top level on Python fallback.",
+            )
+        elif name.startswith(RESERVED_NATIVE_PREFIX):
+            # A native top-level emits module variables as `let` bindings into the
+            # same scope as the generator's own `__rextio_*` temporaries, so a user
+            # name sharing the prefix could silently shadow one. Keep the module
+            # top level on Python fallback instead.
+            _add_identifier_diagnostic(
+                validator,
+                child,
+                f"identifier '{name}' uses the reserved '{RESERVED_NATIVE_PREFIX}' prefix "
+                "that the code generator emits for internal temporaries",
                 f"Rename the module variable '{name}' or keep this module top level on Python fallback.",
             )
         elif not (name.isascii() and name.isidentifier()):

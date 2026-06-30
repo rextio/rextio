@@ -146,6 +146,21 @@ Initial public MVP for Rextio as a local hybrid build tool.
   - Migration: if a previously auto-accepted dynamic function (or a caller of a
     runtime-shim native) regressed to Python fallback, add `@rextio.native` to
     opt back into the runtime-semantics shim.
+- Hardened the native subset checker so a batch of patterns that were accepted as
+  direct-Rust but emitted wrong or uncompilable Rust are now kept off the
+  direct-native path (rejected to the Python fallback, or routed to the `RXT080`
+  runtime shim) — preserving the contract that an accepted function is either
+  CPython-equivalent or rejected, never silently mis-compiled. Newly rejected:
+  non-`bool` `if`/`while`/comprehension conditions; multiple assignment
+  (`a = b = ...`); integer literals outside the `i64` range; ordering
+  comparisons on `dict`/`set` operands (`==`/`!=` stay native); `len()` of a
+  fixed tuple; value-position `range(...)`; `str`/`bytes` indexing; a
+  value-position read of a name bound nowhere in the function (a module global, a
+  closure, or a name leaked from a nested block); and a call to a name shadowed
+  by a local binding or a module-level assignment (`len = 5` then `len(xs)`).
+  Two cases are now lowered faithfully instead of rejected: `len(str)` counts
+  Unicode code points (`.chars().count()`) rather than UTF-8 bytes, and a bare
+  `return` in an `Optional[T]` function emits `Ok(None)` rather than `Ok(())`.
 
 ### Notes
 

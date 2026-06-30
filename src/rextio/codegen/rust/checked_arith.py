@@ -12,7 +12,8 @@ from __future__ import annotations
 # Order is fixed so emitted helpers are deterministic regardless of use order.
 _CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
 _CHECKED_HELPER_ORDER = (
-    "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i"
+    "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i",
+    "mnonneg", "mpositive", "munit", "mlogbase",
 )
 
 
@@ -157,6 +158,51 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
                     "    Ok(if r == 0.0 { (0.0_f64).copysign(b) }",
                     "       else if (r < 0.0) != (b < 0.0) { r + b }",
                     "       else { r })",
+                    "}",
+                    "",
+                ]
+            )
+        elif name in {"mnonneg", "mpositive", "munit"}:
+            # Math domain guards validate the *input* (a nan/inf input returns
+            # nan/inf in CPython, so an output-finiteness check would wrongly
+            # raise — and could not even distinguish sqrt(-1)=NaN from
+            # sqrt(nan)=NaN). Each returns the validated value or raises
+            # ValueError, and the caller then applies the math method.
+            #   mnonneg  -> sqrt        (CPython raises for x < 0)
+            #   mpositive-> log/log2/log10 (CPython raises for x <= 0)
+            #   munit    -> acos/asin   (CPython raises for |x| > 1)
+            condition = {
+                "mnonneg": "value < 0.0",
+                "mpositive": "value <= 0.0",
+                "munit": "value < -1.0 || value > 1.0",
+            }[name]
+            lines.extend(
+                [
+                    f"fn {fn}(value: f64) -> {fret} {{",
+                    f"    if {condition} {{",
+                    f'        Err({value_err("math domain error")})',
+                    "    } else {",
+                    "        Ok(value)",
+                    "    }",
+                    "}",
+                    "",
+                ]
+            )
+        elif name == "mlogbase":
+            # `math.log(x, base)` base domain: CPython raises ZeroDivisionError
+            # for base == 1 (log(1) is 0) and ValueError for base <= 0 (which
+            # includes -inf). A nan or +inf base is valid (returns nan / 0.0), so
+            # those pass through.
+            lines.extend(
+                [
+                    f"fn {fn}(value: f64) -> {fret} {{",
+                    "    if value == 1.0 {",
+                    f'        Err({zero_div_err("float division by zero")})',
+                    "    } else if value <= 0.0 {",
+                    f'        Err({value_err("math domain error")})',
+                    "    } else {",
+                    "        Ok(value)",
+                    "    }",
                     "}",
                     "",
                 ]

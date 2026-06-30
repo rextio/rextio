@@ -131,6 +131,62 @@ def _collect_imports(
     return imports
 
 
+def _collect_module_assigned_names(tree: ast.Module) -> frozenset[str]:
+    """Names bound by a module-level assignment (for the shadow checker).
+
+    Descends into module-level control-flow bodies (a binding under `if`/`for`/
+    `while`/`with`/`try` still shadows at module scope) but not into nested
+    function or class bodies (those bind in their own scope). Handles tuple/list
+    unpacking and starred targets, augmented assignment, `with ... as`, and `for`
+    targets. A bare `AnnAssign` with no value (`len: int`) is *not* a binding, so
+    it is excluded (it must not be treated as a shadow).
+    """
+    names: set[str] = set()
+
+    def add_target(target: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            names.add(target.id)
+        elif isinstance(target, ast.Starred):
+            add_target(target.value)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                add_target(element)
+
+    def walk(statements: list[ast.stmt]) -> None:
+        for node in statements:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    add_target(target)
+            elif isinstance(node, ast.AnnAssign):
+                if node.value is not None:
+                    add_target(node.target)
+            elif isinstance(node, ast.AugAssign):
+                add_target(node.target)
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                add_target(node.target)
+                walk(node.body)
+                walk(node.orelse)
+            elif isinstance(node, (ast.While, ast.If)):
+                walk(node.body)
+                walk(node.orelse)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for with_item in node.items:
+                    if with_item.optional_vars is not None:
+                        add_target(with_item.optional_vars)
+                walk(node.body)
+            elif isinstance(node, ast.Try):
+                walk(node.body)
+                walk(node.orelse)
+                walk(node.finalbody)
+                for handler in node.handlers:
+                    walk(handler.body)
+
+    walk(tree.body)
+    return frozenset(names)
+
+
 def _collect_logger_names(tree: ast.Module, imports: dict[str, str]) -> tuple[str, ...]:
     names: set[str] = set()
     for node in tree.body:
@@ -176,6 +232,28 @@ def _collect_module_functions(
     jit_hot_threshold: int,
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
+    # Module-level map of function name -> annotated return type, so the signature
+    # inferencer can resolve the type of a nested call argument (callee(producer())).
+    return_types: dict[str, str] = {
+        item.name: annotation_name(item.returns)
+        for item in tree.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and item.returns is not None
+        and is_supported_type(item.returns)
+    }
+    # Every same-module function name (regardless of return annotation), so the
+    # shadow check can detect a local that rebinds any sibling function — including
+    # forward-referenced or unannotated ones absent from return_types.
+    module_function_names: set[str] = {
+        item.name
+        for item in tree.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    # Every name bound by a module-level assignment. A module global rebinds the
+    # builtin/import/sibling of the same name for all functions in the module
+    # (e.g. `len = 5` makes `len(xs)` a TypeError), so the shadow checker treats a
+    # call to such a name as shadowed.
+    module_assigned_names = _collect_module_assigned_names(tree)
     for node in tree.body:
         if isinstance(node, ast.AsyncFunctionDef):
             marker = native_marker_for_function(node)
@@ -209,6 +287,7 @@ def _collect_module_functions(
             native_target_language=_marker_target_language(marker, target_language),
             imports=dict(module.imports),
             logger_names=module.logger_names,
+            module_assigned_names=module_assigned_names,
         )
         if has_exempt:
             function.is_native_candidate = False
@@ -218,11 +297,13 @@ def _collect_module_functions(
         elif marker is not None and not _native_marker_applies(marker, target_language):
             function.is_native_candidate = False
         elif has_marker:
-            _classify_native_function(node, function)
+            _classify_native_function(node, function, return_types, module_function_names)
         elif native_marker == "auto" and _is_auto_native_candidate(
             node,
             function,
             target_language,
+            return_types,
+            module_function_names,
         ):
             function.is_native_candidate = True
             function.accepted = True
@@ -231,8 +312,22 @@ def _collect_module_functions(
             function,
             target_language,
             jit_hot_threshold,
+            return_types,
+            module_function_names,
         ):
             pass
+        # Make this function's resolved return type available to later functions'
+        # nested-call argument resolution, even when the return type was inferred
+        # rather than annotated (annotations are already seeded above). A function
+        # defined before its caller is the common case; this closes the false-reject
+        # of `caller(): return take(producer())` where producer's int return is
+        # inferred. A name not already present (annotated returns take precedence).
+        if (
+            node.name not in return_types
+            and function.inferred_return_type is not None
+            and function.inferred_return_type != "None"
+        ):
+            return_types[node.name] = function.inferred_return_type
         functions.append(function)
     return functions
 
@@ -242,6 +337,8 @@ def _mark_jit_candidate(
     function: FunctionAnalysis,
     target_language: str,
     jit_hot_threshold: int,
+    return_types: dict[str, str] | None = None,
+    module_function_names: set[str] | None = None,
 ) -> bool:
     if node.decorator_list:
         return False
@@ -259,8 +356,9 @@ def _mark_jit_candidate(
         native_target_language=target_language,
         imports=dict(function.imports),
         logger_names=function.logger_names,
+        module_assigned_names=function.module_assigned_names,
     )
-    validate_native_function(node, probe)
+    validate_native_function(node, probe, return_types, module_function_names)
     accepted, reason = is_cranelift_jit_candidate(node, probe)
     if not accepted:
         # Surface the specific case where an otherwise-eligible int helper is kept
@@ -270,6 +368,12 @@ def _mark_jit_candidate(
             function.jit_skipped_reason = reason
         return False
     function.inferred_arg_types = dict(probe.inferred_arg_types)
+    function.signature_arg_types = dict(probe.signature_arg_types)
+    function.signature_return_type = probe.signature_return_type
+    function.call_arg_types = dict(probe.call_arg_types)
+    function.call_arg_targets = dict(probe.call_arg_targets)
+    function.positional_param_count = probe.positional_param_count
+    function.has_keyword_only_params = probe.has_keyword_only_params
     function.inferred_return_type = probe.inferred_return_type
     function.native_target_language = target_language
     function.is_jit_candidate = True
@@ -282,6 +386,8 @@ def _is_auto_native_candidate(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
     target_language: str,
+    return_types: dict[str, str] | None = None,
+    module_function_names: set[str] | None = None,
 ) -> bool:
     if node.decorator_list:
         return False
@@ -299,10 +405,17 @@ def _is_auto_native_candidate(
         native_target_language=target_language,
         imports=dict(function.imports),
         logger_names=function.logger_names,
+        module_assigned_names=function.module_assigned_names,
     )
-    validate_native_function(node, probe)
+    validate_native_function(node, probe, return_types, module_function_names)
     if probe.accepted:
         function.inferred_arg_types = dict(probe.inferred_arg_types)
+        function.signature_arg_types = dict(probe.signature_arg_types)
+        function.signature_return_type = probe.signature_return_type
+        function.call_arg_types = dict(probe.call_arg_types)
+        function.call_arg_targets = dict(probe.call_arg_targets)
+        function.positional_param_count = probe.positional_param_count
+        function.has_keyword_only_params = probe.has_keyword_only_params
         function.inferred_return_type = probe.inferred_return_type
         function.native_target_language = target_language
         return True
@@ -315,7 +428,12 @@ def _is_auto_native_candidate(
     return False
 
 
-def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+def _classify_native_function(
+    node: ast.FunctionDef,
+    function: FunctionAnalysis,
+    return_types: dict[str, str] | None = None,
+    module_function_names: set[str] | None = None,
+) -> None:
     probe = FunctionAnalysis(
         name=function.name,
         qualname=function.qualname,
@@ -330,9 +448,16 @@ def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis)
         native_target_language=function.native_target_language,
         imports=dict(function.imports),
         logger_names=function.logger_names,
+        module_assigned_names=function.module_assigned_names,
     )
-    validate_native_function(node, probe)
+    validate_native_function(node, probe, return_types, module_function_names)
     function.inferred_arg_types = dict(probe.inferred_arg_types)
+    function.signature_arg_types = dict(probe.signature_arg_types)
+    function.signature_return_type = probe.signature_return_type
+    function.call_arg_types = dict(probe.call_arg_types)
+    function.call_arg_targets = dict(probe.call_arg_targets)
+    function.positional_param_count = probe.positional_param_count
+    function.has_keyword_only_params = probe.has_keyword_only_params
     function.inferred_return_type = probe.inferred_return_type
     if probe.accepted:
         function.accepted = True
@@ -674,6 +799,31 @@ def _rejected_native_marker_method(
     return function
 
 
+def _literal_arg_type(node: ast.expr) -> str | None:
+    """Return the scalar type name of a literal-constant argument, else None.
+
+    Only directly-readable literals (``ast.Constant``) yield a type here; this is
+    intentionally env-free so it can run at call-collection time. ``bool`` is
+    checked before ``int`` because ``True``/``False`` are ``int`` instances.
+    """
+    if not isinstance(node, ast.Constant):
+        return None
+    value = node.value
+    if value is None:
+        return "None"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, bytes):
+        return "bytes"
+    return None
+
+
 class _CallCollector(ast.NodeVisitor):
     def __init__(self, imports: dict[str, str], logger_names: tuple[str, ...]) -> None:
         self.imports = imports
@@ -717,6 +867,7 @@ class _CallCollector(ast.NodeVisitor):
                 line=node.lineno,
                 column=node.col_offset,
                 in_loop=self.loop_depth > 0,
+                arg_types=tuple(_literal_arg_type(arg) for arg in node.args),
             )
         )
         self.generic_visit(node)

@@ -59,3 +59,18 @@ def test_debug_native_re_raises_the_underlying_error(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("REXTIO_DEBUG_NATIVE", "1")
     with pytest.raises(ImportError, match="ABI mismatch"):
         native_loader.load_native_module("_rextio_native")
+
+
+def test_missing_function_in_loaded_module_warns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The native module loads but lacks the requested function: a codegen /
+    # wrapper name mismatch, surfaced as a warning rather than silent fallback.
+    import types
+
+    module = types.ModuleType("_rextio_native")
+    monkeypatch.setattr(native_loader.importlib.util, "find_spec", lambda name: _spec())
+    monkeypatch.setattr(native_loader, "import_module", lambda name: module)
+    monkeypatch.delenv("REXTIO_DEBUG_NATIVE", raising=False)
+    with pytest.warns(RuntimeWarning, match="no function"):
+        assert native_loader.load_native_function("_rextio_native", "missing_fn") is None

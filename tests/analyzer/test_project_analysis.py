@@ -332,6 +332,247 @@ def last_positive(xs: list[int]) -> int:
     assert "non-ASCII" in diagnostic.message
 
 
+def test_rejects_reserved_internal_prefix_identifier(tmp_path: Path) -> None:
+    # Codegen emits internal temporaries with the `__rextio` prefix (e.g.
+    # `__rextio_min_a_1`). A user binding sharing that prefix could be shadowed by
+    # a generated `let` inside an emitted block, silently changing behavior, so it
+    # is kept on the Python fallback with RXT011 instead.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def compute(__rextio_min_a_1: int, y: int) -> int:
+    return __rextio_min_a_1 + y
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.compute"]
+    diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
+    assert diagnostic.code == "RXT011"
+    assert "__rextio" in diagnostic.message
+
+
+def test_rejects_reserved_internal_prefix_function_name(tmp_path: Path) -> None:
+    # A function whose own name shares the `__rextio` prefix is rejected too: the
+    # synthetic native top-level function is named `__rextio_top_level__`, so a
+    # user function sharing the prefix could collide once name-mangled.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def __rextio_helper(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.__rextio_helper"]
+    assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT011"
+
+
+def test_rejects_reserved_internal_prefix_top_level_identifier(tmp_path: Path) -> None:
+    # A native top-level emits module variables as `let` bindings into the same
+    # scope as the generator's own `__rextio_*` temporaries, so a module variable
+    # sharing the prefix could silently shadow one. It must be kept on fallback.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+__rextio_seed = 5
+value = __rextio_seed + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator", native_top_level=True)
+
+    assert "RXT011" in {diagnostic.code for diagnostic in analysis.diagnostics}
+
+
+def test_rejects_chained_comparison_with_call_middle_operand(tmp_path: Path) -> None:
+    # `0 < marker(x) < 10` lowers to `(0 < marker(x)) && (marker(x) < 10)`,
+    # calling the middle operand twice where CPython calls it once. The callee
+    # could be non-deterministic or side-effecting (print/log), so this is a
+    # silent divergence. The analyzer conservatively rejects any chained
+    # comparison with a call as a middle operand (purity isn't known
+    # syntactically) -> Python fallback. A chained comparison whose middle
+    # operand is pure (here `x`) stays native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def marker(x: int) -> int:
+    return x * 2
+
+@rextio.native
+def between(x: int) -> bool:
+    return 0 < marker(x) < 10
+
+@rextio.native
+def in_range(x: int, n: int) -> bool:
+    return 0 <= x < n
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [f.qualname for f in analysis.rejected_native_functions] == ["app.between"]
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert {"app.marker", "app.in_range"} <= accepted
+    assert "app.between" not in accepted
+
+
+def test_rejects_native_sorted_of_floats(tmp_path: Path) -> None:
+    # sorted(list[float]) cannot match CPython on NaN (floats have no total
+    # order), so it is kept on the Python fallback; sorted(list[int]) is totally
+    # ordered and stays native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def sort_floats(xs: list[float]) -> list[float]:
+    return sorted(xs)
+
+@rextio.native
+def sort_ints(xs: list[int]) -> list[int]:
+    return sorted(xs)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [f.qualname for f in analysis.rejected_native_functions] == ["app.sort_floats"]
+    assert [f.qualname for f in analysis.accepted_native_functions] == ["app.sort_ints"]
+
+
+def test_rejects_float_container_comparison_and_count(tmp_path: Path) -> None:
+    # Python container `==`/`!=`/`.count()`/`.index()` compares elements with
+    # identity-or-equality; a NaN element is `is`-equal but not `==`-equal to
+    # itself, so native Rust value comparison (`Vec<f64> == ...`) diverges. Keep
+    # float-containing container comparisons and list[float].count/index off the
+    # pure native path. int containers and scalar-float comparisons stay native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def eq_floats(xs: list[float], ys: list[float]) -> bool:
+    return xs == ys
+
+@rextio.native
+def eq_tuples(a: tuple[float, float], b: tuple[float, float]) -> bool:
+    return a != b
+
+@rextio.native
+def eq_ints(xs: list[int], ys: list[int]) -> bool:
+    return xs == ys
+
+@rextio.native
+def scalar_eq(xs: list[float]) -> bool:
+    return xs[0] == 1.0
+
+@rextio.native
+def count_floats(xs: list[float]) -> int:
+    return xs.count(1.0)
+
+@rextio.native
+def eq_nested(a: list[list[float]], b: list[list[float]]) -> bool:
+    return a == b
+
+@rextio.native
+def count_nested(rows: list[list[float]], row: list[float]) -> int:
+    return rows.count(row)
+
+@rextio.native
+def opt_scalar_is_none(x: float | None) -> bool:
+    return x is None
+
+@rextio.native
+def opt_container_is_none(x: list[float] | None) -> bool:
+    return x is None
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    diags = {
+        f.qualname: {d.code for d in f.diagnostics}
+        for f in (*analysis.accepted_native_functions, *analysis.rejected_native_functions)
+    }
+
+    def off_native(name: str) -> bool:
+        # Never compiled to a divergent native comparison: either rejected to the
+        # Python fallback (RXT010) or routed to the Python runtime shim (RXT080).
+        return name in rejected or "RXT080" in diags.get(name, set())
+
+    # Float-container `==`/`!=` falls back to Python (RXT010), including nested.
+    assert "app.eq_floats" in rejected
+    assert "app.eq_tuples" in rejected
+    assert "app.eq_nested" in rejected
+    # list.count/index on a float-containing element type (scalar or nested) is
+    # kept off the pure native path.
+    assert off_native("app.count_floats")
+    assert off_native("app.count_nested")
+    # int containers, scalar-float comparisons, and `x is None` on an optional
+    # (scalar or container) float stay pure native -- `is None` never compares
+    # elements, and a scalar Optional[float] compares faithfully.
+    assert "app.eq_ints" not in rejected
+    assert diags["app.eq_ints"] == set()
+    assert "app.scalar_eq" not in rejected
+    assert diags["app.scalar_eq"] == set()
+    assert diags["app.opt_scalar_is_none"] == set()
+    assert diags["app.opt_container_is_none"] == set()
+
+
+def test_rejects_native_set_of_floats(tmp_path: Path) -> None:
+    # A Rust set of f64 (lowered as Vec + `contains`) cannot reproduce CPython's
+    # set semantics for NaN: CPython dedups the *same* NaN object by identity
+    # (`{n, n}` has length 1) while f64 has no object identity. There is no
+    # faithful native lowering, so set[float] is kept on the Python fallback
+    # (float is excluded from SET_ITEM_TYPES); set[int] still compiles natively.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def unique_floats(xs: list[float]) -> set[float]:
+    return {x for x in xs}
+
+@rextio.native
+def unique_ints(xs: list[int]) -> set[int]:
+    return {x for x in xs}
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.unique_floats" in rejected
+    assert "app.unique_ints" in accepted
+
+
 def test_rejects_invalid_native_marker_arguments(tmp_path: Path) -> None:
     write_module(
         tmp_path,
@@ -1287,8 +1528,9 @@ def alias_mutates(xs: list[int]) -> list[int]:
 
 @rextio.native
 def container_capture_mutates(xs: list[int]) -> list[list[int]]:
-    groups: list[list[int]] = [xs]
-    xs.append(1)
+    ys: list[int] = []
+    groups: list[list[int]] = [ys]
+    ys.append(1)
     return groups
 """,
     )
@@ -1341,10 +1583,6 @@ def unique(xs: list[int]) -> set[int]:
     return {x for x in xs if x > 0}
 
 @rextio.native
-def unique_float(xs: list[float]) -> set[float]:
-    return {x for x in xs if x > 0.0}
-
-@rextio.native
 def by_index(xs: list[int]) -> dict[int, float]:
     return {i: 1.5 for i, x in enumerate(xs) if x > 0}
 
@@ -1371,7 +1609,6 @@ def last_positive(xs: list[int]) -> int:
         "app.nested",
         "app.squares",
         "app.unique",
-        "app.unique_float",
     ]
     assert analysis.rejected_native_functions == []
 
@@ -1790,7 +2027,6 @@ def test_accepts_expanded_stdlib_lowering_calls(tmp_path: Path) -> None:
         """
 import base64
 import hashlib
-import json
 import math
 import statistics
 import time
@@ -1809,17 +2045,15 @@ def numeric(xs: list[float], flags: list[bool]) -> float:
         + math.log2(xs[1])
         + math.log10(xs[1])
         + math.pi
-        + statistics.mean(xs)
-        + statistics.fmean(xs)
         + time.time()
-        + datetime.utcnow().timestamp()
+        + datetime.now().timestamp()
     )
 
 def predicates(x: float, flags: list[bool]) -> bool:
     return math.isfinite(x) and not math.isnan(x) and not math.isinf(x) and any(flags) and all(flags)
 
 def text(value: str) -> str:
-    return value.strip().lower().replace("a", "b").upper()
+    return value.lower().replace("a", "b").upper()
 
 def prefix_suffix(value: str) -> bool:
     return value.startswith("a") or value.endswith("z")
@@ -1834,26 +2068,16 @@ def list_ops(xs: list[int]) -> int:
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
-def b64_roundtrip(value: str) -> str:
-    encoded = base64.b64encode(value.encode())
-    return base64.b64decode(encoded).decode()
-
-def json_roundtrip(value: str) -> dict[str, int]:
-    parsed: dict[str, int] = json.loads(value)
-    return parsed
-
-def json_dump(value: dict[str, int]) -> str:
-    return json.dumps(value)
+def b64_encode(value: str) -> bytes:
+    return base64.b64encode(value.encode())
 """,
     )
 
     analysis = analyze_project(tmp_path)
 
     assert [function.name for function in analysis.accepted_native_functions] == [
-        "b64_roundtrip",
+        "b64_encode",
         "digest",
-        "json_dump",
-        "json_roundtrip",
         "list_ops",
         "numeric",
         "predicates",
@@ -1861,6 +2085,1059 @@ def json_dump(value: dict[str, int]) -> str:
         "text",
     ]
     assert analysis.rejected_native_functions == []
+
+
+def test_json_and_unfaithful_datetime_kept_off_native(tmp_path: Path) -> None:
+    # serde_json is not CPython-`json`-compatible (separators/key order/ensure_ascii/
+    # NaN/error types), `utcnow().timestamp()` interprets naive-UTC as local in
+    # CPython (offset divergence), and `isoformat(timespec=...)` carries args we do
+    # not reproduce -- all are kept off the pure native path. `now()/utcnow()
+    # .isoformat()` (faithful naive formatter) and `now().timestamp()` stay native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import json
+import datetime
+import rextio
+
+@rextio.native
+def dump(d: dict[str, int]) -> str:
+    return json.dumps(d)
+
+@rextio.native
+def load(s: str) -> dict[str, int]:
+    return json.loads(s)
+
+@rextio.native
+def utc_ts() -> float:
+    return datetime.datetime.utcnow().timestamp()
+
+@rextio.native
+def iso_args() -> str:
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+@rextio.native
+def now_iso() -> str:
+    return datetime.datetime.now().isoformat()
+
+@rextio.native
+def now_ts() -> float:
+    return datetime.datetime.now().timestamp()
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    pure_native = {
+        f.qualname
+        for f in analysis.accepted_native_functions
+        if not any(d.code == "RXT080" for d in f.diagnostics)
+    }
+    # The four unfaithful forms are never compiled to native (rejected or shimmed).
+    for name in ("app.dump", "app.load", "app.utc_ts", "app.iso_args"):
+        assert name not in pure_native
+    # The faithful datetime forms stay native.
+    assert "app.now_iso" in pure_native
+    assert "app.now_ts" in pure_native
+
+
+def test_unfaithful_stdlib_kept_off_native(tmp_path: Path) -> None:
+    # `statistics.mean`/`fmean` (naive native summation diverges from CPython's
+    # exact/math.fsum), `base64.b64decode` (CPython discards non-alphabet chars),
+    # and `str.strip` (Rust trim() differs on the C0 separators) are all kept off
+    # the pure native path. `b64encode` and other str methods stay native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import statistics
+import base64
+import rextio
+
+@rextio.native
+def mean_int(xs: list[int]) -> float:
+    return statistics.mean(xs)
+
+@rextio.native
+def mean_float(xs: list[float]) -> float:
+    return statistics.mean(xs)
+
+@rextio.native
+def fmean_float(xs: list[float]) -> float:
+    return statistics.fmean(xs)
+
+@rextio.native
+def strip_it(s: str) -> str:
+    return s.strip()
+
+@rextio.native
+def decode(s: str) -> bytes:
+    return base64.b64decode(s)
+
+@rextio.native
+def encode(b: bytes) -> bytes:
+    return base64.b64encode(b)
+
+@rextio.native
+def lower_it(s: str) -> str:
+    return s.lower()
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    diags = {
+        f.qualname: {d.code for d in f.diagnostics}
+        for f in (*analysis.accepted_native_functions, *analysis.rejected_native_functions)
+    }
+
+    def off_native(name: str) -> bool:
+        return name in rejected or "RXT080" in diags.get(name, set())
+
+    for name in ("app.mean_int", "app.mean_float", "app.fmean_float", "app.strip_it", "app.decode"):
+        assert off_native(name), name
+    assert "app.encode" not in rejected and diags["app.encode"] == set()
+    assert "app.lower_it" not in rejected and diags["app.lower_it"] == set()
+
+
+def test_none_literal_positions_kept_off_native(tmp_path: Path) -> None:
+    # A bare native `None` literal has no inferable `Option<T>` type in these
+    # positions and would break the cargo build (E0282), so they are kept off the
+    # native path: `print`/`logging` of None, and `None <op> None`. None in an
+    # inferable position stays native: `return None` from `-> None` (-> `()`),
+    # `x == None` against an Optional operand, and an Optional return.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+from typing import Optional
+import rextio
+
+@rextio.native
+def print_none() -> None:
+    print(None)
+
+@rextio.native
+def cmp_none_none() -> bool:
+    return None == None
+
+@rextio.native
+def ret_none_unit(x: int) -> None:
+    return None
+
+@rextio.native
+def cmp_optional(x: Optional[int]) -> bool:
+    return x == None
+
+@rextio.native
+def ret_optional(flag: bool, x: int) -> Optional[int]:
+    if flag:
+        return x
+    return None
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    for name in ("app.print_none", "app.cmp_none_none"):
+        assert name in rejected, name
+    for name in ("app.ret_none_unit", "app.cmp_optional", "app.ret_optional"):
+        assert name in accepted, name
+
+
+def test_bare_none_local_and_tuple_none_kept_off_native(tmp_path: Path) -> None:
+    # A bare `None` assigned to an unannotated local infers as the unit type `()`
+    # and breaks any later use; a `None` tuple item lowers to a bare Rust `None`
+    # with no inferable `Option<T>` (E0282). Both are kept off native. An
+    # explicitly `Optional`-annotated local and an all-scalar tuple stay native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+from typing import Optional
+import rextio
+
+@rextio.native
+def bare_local() -> Optional[int]:
+    x = None
+    return x
+
+@rextio.native
+def tuple_none() -> None:
+    pair = (None,)
+    return None
+
+@rextio.native
+def annotated_local() -> Optional[int]:
+    y: Optional[int] = None
+    return y
+
+@rextio.native
+def scalar_tuple() -> tuple[int, float]:
+    return (1, 2.0)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    for name in ("app.bare_local", "app.tuple_none"):
+        assert name in rejected, name
+    for name in ("app.annotated_local", "app.scalar_tuple"):
+        assert name in accepted, name
+
+
+def test_native_call_scalar_argument_type_mismatch_kept_off_native(tmp_path: Path) -> None:
+    # Rust has no implicit scalar coercion, so a native caller passing a literal of
+    # a different scalar type than the callee declares (float->int here) would emit
+    # native code that fails to compile (E0308). The caller is kept on the Python
+    # fallback (RXT010); the callee and a type-matching caller stay native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def callee(x: int) -> int:
+    return x
+
+@rextio.native
+def bad_caller() -> int:
+    return callee(1.2)
+
+@rextio.native
+def good_caller() -> int:
+    return callee(1)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.bad_caller" in rejected
+    assert "app.callee" in accepted
+    assert "app.good_caller" in accepted
+    assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}
+
+
+def test_native_call_nonliteral_argument_type_mismatch_kept_off_native(tmp_path: Path) -> None:
+    # A known local of the wrong scalar type is just as uncompilable as a literal
+    # (float local -> int parameter is E0308). The caller's inferred argument types
+    # (not only literal constants) must be validated against the callee signature.
+    # A local whose type matches stays native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def callee(x: int) -> int:
+    return x
+
+@rextio.native
+def bad_caller() -> int:
+    y = 1.2
+    return callee(y)
+
+@rextio.native
+def good_caller(z: int) -> int:
+    y = z
+    return callee(y)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.bad_caller" in rejected
+    assert "app.good_caller" in accepted
+    assert "app.callee" in accepted
+
+
+def test_native_call_arity_mismatch_kept_off_native(tmp_path: Path) -> None:
+    # The lowered Rust inner function has a fixed arity and no default arguments, so
+    # omitting a defaulted argument or passing an extra one is E0061. Both callers
+    # are kept off native; a call with the exact arity stays native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def with_default(x: int = 1) -> int:
+    return x
+
+@rextio.native
+def one_param(x: int) -> int:
+    return x
+
+@rextio.native
+def too_few() -> int:
+    return with_default()
+
+@rextio.native
+def too_many() -> int:
+    return one_param(1, 2)
+
+@rextio.native
+def exact() -> int:
+    return one_param(1)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.too_few" in rejected
+    assert "app.too_many" in rejected
+    assert "app.exact" in accepted
+
+
+def test_zero_parameter_callee_called_with_args_kept_off_native(tmp_path: Path) -> None:
+    # A genuinely zero-parameter native callee has an empty signature, but its
+    # lowered Rust inner function still has fixed (zero) arity. Calling it with an
+    # argument would emit `app__callee(1)` -> E0061. Arity is checked against the
+    # callee's true positional-parameter count (0), not the truthiness of the
+    # signature map, so the caller is kept off native; a correct no-arg call stays.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def callee() -> int:
+    return 1
+
+@rextio.native
+def bad_caller() -> int:
+    return callee(1)
+
+@rextio.native
+def good_caller() -> int:
+    return callee()
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.bad_caller" in rejected
+    assert "app.good_caller" in accepted
+    assert "app.callee" in accepted
+
+
+def test_keyword_only_parameter_callee_kept_off_native(tmp_path: Path) -> None:
+    # A keyword-only parameter cannot be supplied through the native calling
+    # convention (keyword call arguments are unsupported, and a positional argument
+    # for a keyword-only parameter would silently diverge from CPython's TypeError),
+    # so a native caller of such a function is kept on the Python fallback.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def kwonly(*, x: int) -> int:
+    return x
+
+@rextio.native
+def bad_caller() -> int:
+    return kwonly(1)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert "app.bad_caller" in rejected
+
+
+def test_nested_native_call_argument_type_is_resolved(tmp_path: Path) -> None:
+    # An argument that is itself a native call resolves to the callee's return type
+    # via the module return-type registry, so a mismatch (float result -> int param)
+    # is rejected while a matching nested call (int result -> int param) stays native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def make_float() -> float:
+    return 1.5
+
+@rextio.native
+def make_int() -> int:
+    return 5
+
+@rextio.native
+def bad_caller() -> int:
+    return take_int(make_float())
+
+@rextio.native
+def good_caller() -> int:
+    return take_int(make_int())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.bad_caller" in rejected
+    assert "app.good_caller" in accepted
+
+
+def test_nested_call_to_inferred_return_sibling_stays_native(tmp_path: Path) -> None:
+    # A nested call argument to a sibling whose return type is *inferred* (not
+    # annotated) must resolve via the module return-type registry — which now also
+    # carries inferred returns — so a matching nested call stays native instead of
+    # being conservatively rejected by the undetermined-type backstop.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def producer():
+    return 5
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def caller() -> int:
+    return take_int(producer())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.caller" in accepted
+    assert "app.producer" in accepted
+    assert "app.take_int" in accepted
+
+
+def test_non_scalar_parameter_argument_mismatch_kept_off_native(tmp_path: Path) -> None:
+    # A container or Optional parameter lowers to a concrete fixed Rust type that
+    # admits no coercion from a scalar, so a scalar argument passed to a list/dict
+    # or Optional parameter is rejected (E0308). A matching container argument, a
+    # `None` argument to an Optional parameter, and an Optional-typed argument all
+    # stay native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+from typing import Optional
+import rextio
+
+@rextio.native
+def take_list(xs: list[int]) -> int:
+    return 1
+
+@rextio.native
+def take_opt(x: Optional[int]) -> int:
+    return 0
+
+@rextio.native
+def make_list() -> list[int]:
+    return [1]
+
+@rextio.native
+def bad_scalar_to_list() -> int:
+    return take_list(1)
+
+@rextio.native
+def bad_scalar_to_opt() -> int:
+    return take_opt(1)
+
+@rextio.native
+def good_list() -> int:
+    return take_list(make_list())
+
+@rextio.native
+def good_none_to_opt() -> int:
+    return take_opt(None)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.bad_scalar_to_list" in rejected
+    assert "app.bad_scalar_to_opt" in rejected
+    assert "app.good_list" in accepted
+    assert "app.good_none_to_opt" in accepted
+
+
+def test_cross_module_nested_call_argument_is_resolved(tmp_path: Path) -> None:
+    # A nested call argument targeting a function imported from another module is
+    # resolved through the project resolver (which spans modules), so a matching
+    # cross-module nested call stays native while a mismatched one is rejected —
+    # closing the per-module registry's blind spot for imported callees.
+    write_module(
+        tmp_path,
+        "pkg/lib.py",
+        """
+import rextio
+
+@rextio.native
+def make_int() -> int:
+    return 1
+
+@rextio.native
+def make_float() -> float:
+    return 1.5
+""",
+    )
+    write_module(
+        tmp_path,
+        "pkg/main.py",
+        """
+import rextio
+from pkg.lib import make_int, make_float
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def good_caller() -> int:
+    return take_int(make_int())
+
+@rextio.native
+def bad_caller() -> int:
+    return take_int(make_float())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "pkg.main.good_caller" in accepted
+    assert "pkg.main.bad_caller" in rejected
+
+
+def test_locally_shadowed_import_nested_call_kept_off_native(tmp_path: Path) -> None:
+    # When a local binding shadows an imported function of the same name, a nested
+    # call `take_int(make_int())` does not actually reach the imported function (in
+    # CPython the local shadows it). The argument must not be resolved to the
+    # imported callee's return type — doing so would silently lower a call to the
+    # wrong function. The caller is kept on the Python fallback.
+    write_module(
+        tmp_path,
+        "pkg/lib.py",
+        """
+import rextio
+
+@rextio.native
+def make_int() -> int:
+    return 1
+""",
+    )
+    write_module(
+        tmp_path,
+        "pkg/main.py",
+        """
+import rextio
+from pkg.lib import make_int
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def shadowed() -> int:
+    make_int = 2
+    return take_int(make_int())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert "pkg.main.shadowed" in rejected
+
+
+def test_nested_call_to_rejected_callee_kept_off_native(tmp_path: Path) -> None:
+    # A nested call argument whose callee is itself rejected (kept on the Python
+    # fallback) must not contribute a typed return value that keeps the outer caller
+    # native — the caller would then be lowered to call a function with no native
+    # implementation. The resolved return type is trusted only for accepted,
+    # non-shim callees; otherwise the caller falls back. Holds across modules and
+    # within a module.
+    write_module(
+        tmp_path,
+        "pkg/lib.py",
+        """
+import rextio
+
+@rextio.native
+def rejected_maker() -> int:
+    return eval("1")
+""",
+    )
+    write_module(
+        tmp_path,
+        "pkg/main.py",
+        """
+import rextio
+from pkg.lib import rejected_maker
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def cross_caller() -> int:
+    return take_int(rejected_maker())
+
+@rextio.native
+def same_rejected() -> int:
+    return eval("2")
+
+@rextio.native
+def same_caller() -> int:
+    return take_int(same_rejected())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert "pkg.main.cross_caller" in rejected
+    assert "pkg.main.same_caller" in rejected
+
+
+def test_builtin_nested_call_argument_stays_native(tmp_path: Path) -> None:
+    # A nested call argument that is a supported builtin / standard-library call
+    # (`len(...)`, `math.floor(...)`) is not a project function, so the boundary must
+    # trust the locally-inferred argument type rather than discarding it — otherwise
+    # a common, valid native call would be falsely rejected.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import math
+import rextio
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def via_len(xs: list[int]) -> int:
+    return take_int(len(xs))
+
+@rextio.native
+def via_floor(y: float) -> int:
+    return take_int(math.floor(y))
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.via_len" in accepted
+    assert "app.via_floor" in accepted
+
+
+def test_shadowed_nested_call_variants_kept_off_native(tmp_path: Path) -> None:
+    # The shadow detection is based on the function's local binding names (from the
+    # AST), so it catches a shadow regardless of the bound value's type and for an
+    # attribute-call receiver — while a comprehension target (which does not leak in
+    # Python 3) must NOT be treated as a shadow.
+    write_module(
+        tmp_path,
+        "pkg/lib.py",
+        """
+import rextio
+
+@rextio.native
+def make_int() -> int:
+    return 1
+""",
+    )
+    write_module(
+        tmp_path,
+        "pkg/main.py",
+        """
+import rextio
+import pkg.lib as lib
+from pkg.lib import make_int
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def none_typed_shadow() -> int:
+    make_int = take_int   # local binding (type None) shadows the import
+    return take_int(make_int())
+
+@rextio.native
+def attr_receiver_shadow() -> int:
+    lib = 2               # local shadows the module alias
+    return take_int(lib.make_int())
+
+@rextio.native
+def comprehension_ok(xs: list[int]) -> int:
+    ys = [v for v in xs]  # `v` is comprehension-scoped, does not leak
+    return take_int(make_int())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    by_name = {
+        f.qualname: f
+        for f in (*analysis.accepted_native_functions, *analysis.rejected_native_functions)
+    }
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "pkg.main.none_typed_shadow" in rejected
+    # The attribute access on a shadowed local forces the Python runtime-semantics
+    # shim (RXT080), which runs real CPython and is therefore non-divergent — equally
+    # contract-safe as a fallback. Either way it must be off the direct-native path.
+    attr = by_name["pkg.main.attr_receiver_shadow"]
+    assert (not attr.accepted) or attr.native_runtime_semantics
+    assert "pkg.main.comprehension_ok" in accepted
+
+
+def test_method_call_on_local_is_not_treated_as_shadow(tmp_path: Path) -> None:
+    # A method call on an ordinary local / parameter (`xs.index(...)`) whose root
+    # name is not an imported or sibling function must NOT be treated as a shadow —
+    # it is a normal, valid nested call argument and the caller stays native. (The
+    # shadow guard only fires when the root name is also a callable being shadowed.)
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def via_param(xs: list[int]) -> int:
+    return take_int(xs.index(5))
+
+@rextio.native
+def via_local() -> int:
+    ys = [1, 2, 3]
+    return take_int(ys.index(2))
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.via_param" in accepted
+    assert "app.via_local" in accepted
+
+
+def test_shadow_via_container_param_and_walrus_comprehension_kept_off_native(
+    tmp_path: Path,
+) -> None:
+    # A genuine shadow of an imported function is rejected regardless of the callee
+    # parameter type (a container parameter's None-argument backstop would otherwise
+    # miss it), and a PEP 572 walrus binding inside a comprehension — which leaks into
+    # the enclosing function scope in Python 3 — is detected as a shadow.
+    write_module(
+        tmp_path,
+        "pkg/lib.py",
+        """
+import rextio
+
+@rextio.native
+def make_int() -> int:
+    return 1
+
+@rextio.native
+def make_list() -> list[int]:
+    return [1]
+""",
+    )
+    write_module(
+        tmp_path,
+        "pkg/main.py",
+        """
+import rextio
+from pkg.lib import make_int, make_list
+
+@rextio.native
+def take_list(xs: list[int]) -> int:
+    return 1
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def container_param_shadow() -> int:
+    make_list = 0
+    return take_list(make_list())
+
+@rextio.native
+def walrus_comprehension_shadow(xs: list[int]) -> int:
+    ys = [(make_int := 0) for x in xs]
+    return take_int(make_int())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert "pkg.main.container_param_shadow" in rejected
+    assert "pkg.main.walrus_comprehension_shadow" in rejected
+
+
+def test_direct_and_builtin_and_untyped_sibling_shadows_kept_off_native(
+    tmp_path: Path,
+) -> None:
+    # The shadow check covers every call (direct calls, not only nested arguments) and
+    # the complete set of callable names: a same-module function whether annotated,
+    # unannotated, or forward-referenced, and supported builtins. A local that rebinds
+    # any of those and then calls it must keep the function off the direct-native path.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def direct_call_shadow() -> int:
+    take_int = 0
+    return take_int(1)
+
+@rextio.native
+def builtin_shadow() -> int:
+    len = 0
+    return len([1])
+
+@rextio.native
+def forward_untyped_sibling_shadow() -> int:
+    make_thing = 0
+    return take_int(make_thing())
+
+@rextio.native
+def make_thing():
+    return 7
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert "app.direct_call_shadow" in rejected
+    assert "app.builtin_shadow" in rejected
+    assert "app.forward_untyped_sibling_shadow" in rejected
+
+
+def test_walrus_in_nested_comprehension_is_not_over_collected(tmp_path: Path) -> None:
+    # A PEP 572 walrus inside a NESTED comprehension is scoped to that inner
+    # comprehension and does not leak into the function, so it must not be treated as
+    # a shadow of an imported callable — the outer function stays native. A normal
+    # builtin call (not shadowed) also stays native.
+    write_module(
+        tmp_path,
+        "pkg/lib.py",
+        """
+import rextio
+
+@rextio.native
+def make_int() -> int:
+    return 1
+""",
+    )
+    write_module(
+        tmp_path,
+        "pkg/main.py",
+        """
+import rextio
+from pkg.lib import make_int
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def nested_comp_walrus(xs: list[int]) -> int:
+    zs = [[(make_int := 0) for y in xs] for x in xs]
+    return take_int(len(xs))
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "pkg.main.nested_comp_walrus" in accepted
+
+
+def test_method_call_on_param_named_like_a_callable_stays_native(tmp_path: Path) -> None:
+    # An attribute call resolves to a native function only when its receiver is an
+    # imported module (or a module logger). A method call on an ordinary parameter
+    # whose name merely collides with a builtin or a same-module function
+    # (`sum.index(...)`, `helper.index(...)`) is a genuine method call, not a shadow,
+    # so the caller stays on the direct-native path.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def helper() -> int:
+    return 1
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def via_builtin_name(sum: list[int]) -> int:
+    return take_int(sum.index(5))
+
+@rextio.native
+def via_sibling_name(helper: list[int]) -> int:
+    return take_int(helper.index(5))
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    direct_native = {
+        f.qualname
+        for f in analysis.accepted_native_functions
+        if not f.native_runtime_semantics
+    }
+    assert "app.via_builtin_name" in direct_native
+    assert "app.via_sibling_name" in direct_native
+
+
+def test_shadowed_stdlib_module_receiver_kept_off_direct_native(tmp_path: Path) -> None:
+    # A `module.func(...)` standard-library call (possibly chained) lowers to a static
+    # native call that ignores the receiver. A local that rebinds the module name
+    # (`def f(math: float): math.sqrt(...)`, `def g(hashlib: bytes):
+    # hashlib.sha256(...).hexdigest()`) must be kept off the direct-native path
+    # (rejected or routed to the runtime shim), since CPython evaluates the call on
+    # the local and raises AttributeError. A method call on a local merely named like
+    # a module (`math.index(...)` where `math` is a list) is a genuine method and
+    # stays native, as does a normal unshadowed `math.sqrt(x)`.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import hashlib
+import math
+import rextio
+
+@rextio.native
+def math_shadow(math: float) -> float:
+    return math.sqrt(2.0)
+
+@rextio.native
+def hashlib_chain_shadow(hashlib: bytes) -> str:
+    return hashlib.sha256(hashlib).hexdigest()
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def module_named_list_method(math: list[int]) -> int:
+    return take_int(math.index(5))
+
+@rextio.native
+def normal_math(x: float) -> float:
+    return math.sqrt(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    direct_native = {
+        f.qualname
+        for f in analysis.accepted_native_functions
+        if not f.native_runtime_semantics
+    }
+    # The shadowed-module receivers must not be lowered as direct native calls.
+    assert "app.math_shadow" not in direct_native
+    assert "app.hashlib_chain_shadow" not in direct_native
+    # The genuine method call and the unshadowed stdlib call stay native.
+    assert "app.module_named_list_method" in direct_native
+    assert "app.normal_math" in direct_native
+
+
+def test_aliased_stdlib_module_shadow_kept_off_direct_native(tmp_path: Path) -> None:
+    # A stdlib module imported under an alias and shadowed by a local of the same
+    # alias must be kept off the direct-native path: the call resolves to the static
+    # stdlib target, but the receiver (the alias) is the local. The check keys off the
+    # source receiver name, not the resolved module name, so `import math as m;
+    # def f(m: float): m.sqrt(...)` is rejected/shimmed, while a parameter named like
+    # the canonical module whose alias is NOT shadowed stays native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import hashlib as h
+import math as m
+import rextio
+
+@rextio.native
+def alias_math_shadow(m: float) -> float:
+    return m.sqrt(4.0)
+
+@rextio.native
+def alias_hashlib_chain_shadow(h: bytes) -> str:
+    return h.sha256(h).hexdigest()
+
+@rextio.native
+def alias_not_shadowed(math: float) -> float:
+    return m.sqrt(math)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    direct_native = {
+        f.qualname
+        for f in analysis.accepted_native_functions
+        if not f.native_runtime_semantics
+    }
+    assert "app.alias_math_shadow" not in direct_native
+    assert "app.alias_hashlib_chain_shadow" not in direct_native
+    # The canonical module name as a parameter, with the alias `m` not shadowed, is a
+    # normal stdlib call and stays native.
+    assert "app.alias_not_shadowed" in direct_native
 
 
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
@@ -2221,3 +3498,754 @@ def ignored(x):
         "app.accepted"
     ]
     assert analysis.diagnostics == []
+
+
+def test_rejects_for_else(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def for_else(xs: list[int]) -> int:
+    total = 0
+    for x in xs:
+        total = total + x
+    else:
+        total = total + 100
+    return total
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.for_else",
+    }
+
+
+def test_rejects_while_else(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def while_else(n: int) -> int:
+    i = 0
+    while i < n:
+        i = i + 1
+    else:
+        i = i + 500
+    return i
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.while_else",
+    }
+
+
+def test_rejects_is_comparison_on_non_none(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def identity_eq(a: str, b: str) -> bool:
+    return a is b
+
+@rextio.native
+def identity_neq(a: int, b: int) -> bool:
+    return a is not b
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.identity_eq",
+        "app.identity_neq",
+    }
+
+
+def test_accepts_is_comparison_against_none(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def is_none(x: int | None) -> bool:
+    return x is None
+
+@rextio.native
+def is_not_none(x: str | None) -> bool:
+    return x is not None
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {function.qualname for function in analysis.accepted_native_functions} == {
+        "app.is_none",
+        "app.is_not_none",
+    }
+    assert analysis.diagnostics == []
+
+
+def test_rejects_value_function_that_can_fall_through(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def maybe(x: int) -> int:
+    if x > 0:
+        return x
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.maybe",
+    }
+
+
+def test_accepts_value_function_returning_on_all_paths(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def both_paths(x: int) -> int:
+    if x > 0:
+        return x
+    else:
+        return -x
+
+@rextio.native
+def trailing_return(x: int) -> int:
+    if x > 0:
+        return x
+    return 0
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {function.qualname for function in analysis.accepted_native_functions} == {
+        "app.both_paths",
+        "app.trailing_return",
+    }
+    assert analysis.diagnostics == []
+
+
+def test_float_division_is_not_jit_eligible(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def fdiv(a: float, b: float) -> float:
+    return a / b
+
+def fmul(a: float, b: float) -> float:
+    return a * b
+
+@rextio.native
+def compute(a: float, b: float) -> float:
+    return fdiv(a, b) + fmul(a, b)
+""",
+    )
+
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        native_jit_enabled=True,
+        jit_hot_threshold=2,
+    )
+
+    # Float multiply is JIT-eligible; float division stays on the checked
+    # native path (raw Cranelift fdiv returns inf/NaN on divide-by-zero).
+    assert [function.qualname for function in analysis.jit_candidates] == ["app.fmul"]
+
+
+def test_rejects_len_on_scalar(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def len_scalar(x: int) -> int:
+    return len(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.len_scalar",
+    }
+
+
+def test_accepts_len_on_sized_types(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def len_list(xs: list[int]) -> int:
+    return len(xs)
+
+@rextio.native
+def len_str(s: str) -> int:
+    return len(s)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {function.qualname for function in analysis.accepted_native_functions} == {
+        "app.len_list",
+        "app.len_str",
+    }
+    assert analysis.diagnostics == []
+
+
+def test_accepts_native_try_except_finally(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def safe_mod(a: int, b: int) -> int:
+    result = 0
+    try:
+        result = a % b
+    except ZeroDivisionError:
+        result = -1
+    finally:
+        result = result + 100
+    return result
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.safe_mod"
+    ]
+    assert not analysis.accepted_native_functions[0].native_runtime_semantics
+    assert analysis.diagnostics == []
+
+
+def test_rejects_unsupported_try_shapes(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def try_else(xs: list[int]) -> int:
+    total = 0
+    try:
+        total = xs[0]
+    except IndexError:
+        total = -1
+    else:
+        total = total + 1
+    return total
+
+@rextio.native
+def except_as(xs: list[int]) -> int:
+    out = 0
+    try:
+        out = xs[0]
+    except IndexError as exc:
+        out = -1
+    return out
+
+@rextio.native
+def custom_handler(xs: list[int]) -> int:
+    out = 0
+    try:
+        out = xs[0]
+    except OSError:
+        out = -1
+    return out
+
+@rextio.native
+def return_in_try(xs: list[int]) -> int:
+    try:
+        return xs[0]
+    except IndexError:
+        return -1
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    # Unsupported try shapes on an explicit @rextio.native function fall to the
+    # safe RXT080 runtime shim (Python callback); the key property is that none
+    # is compiled to native Rust try/except.
+    assert {function.qualname for function in analysis.accepted_native_functions} == {
+        "app.try_else",
+        "app.except_as",
+        "app.custom_handler",
+        "app.return_in_try",
+    }
+    assert all(
+        function.native_runtime_semantics
+        for function in analysis.accepted_native_functions
+    )
+
+
+def test_reports_all_boundary_errors_per_function(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def helper_a(x: int) -> int:
+    return x
+
+def helper_b(x: int) -> int:
+    return x
+
+@rextio.native
+def caller(x: int) -> int:
+    return helper_a(x) + helper_b(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {function.qualname: function for function in analysis.rejected_native_functions}
+    assert "app.caller" in rejected
+    # Both fallback-only calls are reported at once, not just the first.
+    codes = [diagnostic.code for diagnostic in rejected["app.caller"].error_diagnostics]
+    assert codes == ["RXT070", "RXT070"]
+
+
+def test_rejects_except_star(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def grouped(xs: list[int]) -> int:
+    out = 0
+    try:
+        out = xs[0]
+    except* IndexError:
+        out = -1
+    return out
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.grouped",
+    }
+
+
+def test_accepts_comprehension_target_inside_try(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def totals(xs: list[int]) -> int:
+    out = 0
+    try:
+        out = sum([y * 2 for y in xs])
+    except ValueError:
+        out = -1
+    return out
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    # The comprehension target `y` is scoped to the comprehension and never
+    # leaks, so it must not block native acceptance of the try block.
+    accepted = {f.qualname: f for f in analysis.accepted_native_functions}
+    assert "app.totals" in accepted
+    assert not accepted["app.totals"].native_runtime_semantics
+
+
+def test_rejects_parameter_collection_mutation(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def push(xs: list[int], v: int) -> int:
+    xs.append(v)
+    return len(xs)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    # Mutating a parameter list is not visible to the caller in native Rust
+    # (the parameter is cloned), so it must reject instead of silently dropping
+    # the side effect.
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.push",
+    }
+
+
+def test_rejects_loop_target_rebinding_existing_variable(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def rebind(n: int) -> int:
+    x = 0
+    for x in range(3):
+        n = n + x
+    return x
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    # A Python loop variable leaks its final value, but a Rust loop binding is
+    # scoped to the loop, so reusing an outer name would mis-compile.
+    assert {diagnostic.code for diagnostic in analysis.diagnostics} == {"RXT010"}
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.rebind",
+    }
+
+
+def test_rejects_parameter_dict_and_subscript_mutation(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def set_key(d: dict[str, int]) -> int:
+    d["k"] = 1
+    return d["k"]
+
+@rextio.native
+def bump_index(xs: list[int], i: int, v: int) -> int:
+    xs[i] += v
+    return xs[i]
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
+    # Both reject with RXT010, by two different rules: `set_key` (`d["k"] = 1`)
+    # via the parameter-collection mutation check (it would not be visible to the
+    # caller in native Rust), and `bump_index` (`xs[i] += v`) via the separate
+    # "augmented assignment targets must be local names" check. Either way they
+    # stay on the Python fallback.
+    assert {function.qualname for function in analysis.rejected_native_functions} == {
+        "app.set_key",
+        "app.bump_index",
+    }
+    assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}
+
+
+def test_council24_rejects_unsafe_native_patterns(tmp_path: Path) -> None:
+    # Whole-codebase council round 24: a batch of patterns that were accepted as
+    # direct-native but emitted wrong or uncompilable Rust. Each is now kept off
+    # the direct-native path (rejected to the Python fallback, or routed to the
+    # RXT080 runtime shim), never silently mis-compiled.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+len = 5
+
+@rextio.native
+def non_bool_if(x: int) -> int:
+    if x:
+        return 1
+    return 0
+
+@rextio.native
+def non_bool_while(x: int) -> int:
+    while x:
+        x = x - 1
+    return x
+
+@rextio.native
+def str_index(s: str) -> str:
+    return s[0]
+
+@rextio.native
+def multi_assign() -> int:
+    a = b = 1
+    return a + b
+
+@rextio.native
+def int_literal_too_big() -> int:
+    return 100000000000000000000
+
+@rextio.native
+def dict_ordering(a: dict[str, int], b: dict[str, int]) -> bool:
+    return a < b
+
+@rextio.native
+def len_of_tuple(t: tuple[int, float]) -> int:
+    return len(t)
+
+@rextio.native
+def range_as_value(n: int) -> int:
+    return range(n)
+
+@rextio.native
+def reads_module_global() -> int:
+    return y
+
+@rextio.native
+def shadowed_builtin(xs: list[int]) -> int:
+    return len(xs)
+
+y = 4
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {function.qualname for function in analysis.rejected_native_functions}
+    assert {
+        "app.non_bool_if",
+        "app.non_bool_while",
+        "app.str_index",
+        "app.multi_assign",
+        "app.int_literal_too_big",
+        "app.dict_ordering",
+        "app.len_of_tuple",
+        "app.range_as_value",
+        "app.reads_module_global",
+        "app.shadowed_builtin",
+    } <= rejected
+    assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}
+
+
+def test_council24_rejects_block_scoped_binding_leak(tmp_path: Path) -> None:
+    # A name first bound inside an if/while block and read after it leaks Rust
+    # block scope (Python locals are function-scoped; the generated `let` is not),
+    # so it must be kept off the direct-native path. A name bound at the function
+    # body level (even from an un-inferred sibling call) and a name used only
+    # inside its block must still be accepted.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def if_branch_leak(c: bool) -> int:
+    if c:
+        x = 1
+    else:
+        x = 2
+    return x
+
+@rextio.native
+def while_block_leak(c: bool) -> int:
+    while c:
+        y = 1
+        c = False
+    return y
+
+@rextio.native
+def producer(xs: list[int]) -> int:
+    return xs[0]
+
+@rextio.native
+def body_level_local(xs: list[int]) -> int:
+    subtotal = producer(xs)
+    return subtotal + xs[0]
+
+@rextio.native
+def used_inside_block(c: bool, n: int) -> int:
+    total = 0
+    if c:
+        step = n
+        total = total + step
+    return total
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {function.qualname for function in analysis.rejected_native_functions}
+    accepted = {function.qualname for function in analysis.accepted_native_functions}
+    assert {"app.if_branch_leak", "app.while_block_leak"} <= rejected
+    assert {
+        "app.producer",
+        "app.body_level_local",
+        "app.used_inside_block",
+    } <= accepted
+
+
+def test_council24_keeps_safe_native_forms(tmp_path: Path) -> None:
+    # The council-24 guards must not over-reject: a bool-typed condition, a
+    # `range` for-loop iterable, a bool ordering comparison (Rust `bool` is
+    # ordered like Python), and `len(str)` (faithfully lowered to a code-point
+    # count) all stay on the direct-native path.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def bool_if(x: int) -> int:
+    if x > 0:
+        return 1
+    return 0
+
+@rextio.native
+def range_loop(n: int) -> int:
+    total = 0
+    for i in range(1, n, 2):
+        total += i
+    return total
+
+@rextio.native
+def bool_ordering(a: bool, b: bool) -> bool:
+    return a < b
+
+@rextio.native
+def length_of_str(s: str) -> int:
+    return len(s)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert {function.qualname for function in analysis.accepted_native_functions} == {
+        "app.bool_if",
+        "app.range_loop",
+        "app.bool_ordering",
+        "app.length_of_str",
+    }
+    assert analysis.rejected_native_functions == []
+
+
+def test_council25_module_shadow_covers_unpack_and_controlflow(tmp_path: Path) -> None:
+    # Council 25: the module-global shadow collector must descend into tuple/list
+    # unpacking and module-level control-flow bodies (a binding there still
+    # shadows the builtin), but must NOT treat a value-less `AnnAssign` (which
+    # binds nothing) as a shadow.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+import math
+
+sorted, other = (5, 0)
+
+if True:
+    abs = 7
+
+math = 5
+
+len: int
+
+@rextio.native
+def unpack_shadow(xs: list[int]) -> list[int]:
+    return sorted(xs)
+
+@rextio.native
+def controlflow_shadow(x: int) -> int:
+    return abs(x)
+
+@rextio.native
+def attr_shadow(x: float) -> float:
+    return math.sqrt(x)
+
+@rextio.native
+def annotation_only_ok(xs: list[int]) -> int:
+    return len(xs)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert {
+        "app.unpack_shadow",
+        "app.controlflow_shadow",
+        "app.attr_shadow",
+    } <= rejected
+    # `len: int` with no value binds nothing, so `len` is the builtin here.
+    assert "app.annotation_only_ok" in accepted
+
+
+def test_council25_accepts_i64_min_literal(tmp_path: Path) -> None:
+    # `-9223372036854775808` is i64::MIN — a valid native literal — even though
+    # its positive operand 2**63 exceeds i64::MAX. `-(2**63 + 1)` stays rejected.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def at_min() -> int:
+    return -9223372036854775808
+
+@rextio.native
+def below_min() -> int:
+    return -9223372036854775809
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [f.qualname for f in analysis.accepted_native_functions] == ["app.at_min"]
+    assert [f.qualname for f in analysis.rejected_native_functions] == ["app.below_min"]

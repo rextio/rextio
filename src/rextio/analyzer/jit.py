@@ -75,6 +75,7 @@ def _signature_types(
             arg_types[arg.arg] = function.inferred_arg_types[arg.arg]
         else:
             return None
+    return_type: str | None
     if node.returns is not None:
         return_type = annotation_name(node.returns)
     else:
@@ -100,7 +101,12 @@ def _is_supported_expr(node: ast.AST, names: set[str], return_type: str) -> bool
     if isinstance(node, ast.BinOp):
         if return_type == "int" and not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
             return False
-        if return_type == "float" and not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+        # Float `/` is excluded: the Cranelift path lowers it to a raw `fdiv`
+        # that returns inf/NaN on division by zero, whereas the checked native
+        # path raises ZeroDivisionError. Allowing it would make a JIT candidate
+        # change results once it crosses the hot threshold (silent mis-compile),
+        # so float division stays on the checked native path.
+        if return_type == "float" and not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
             return False
         return (
             _is_supported_expr(node.left, names, return_type)

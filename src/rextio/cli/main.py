@@ -8,6 +8,7 @@ import threading
 import warnings
 from collections.abc import Sequence
 
+from rextio.__about__ import __version__
 from rextio.limits import MAX_BUILD_TIMEOUT_SECONDS
 from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, generate_cmd, init_cmd
 
@@ -17,6 +18,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rextio",
         description="Rextio 0.1.0 alpha hybrid build tool.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"rextio {__version__}",
+        help="Show the Rextio version and exit.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -28,7 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     check_parser = subparsers.add_parser("check", help="Analyze native candidates.")
     check_parser.add_argument("project_root", nargs="?", default=".", help="Project root to check.")
-    check_parser.add_argument("--json", action="store_true", help="Print structured JSON.")
+    check_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON (legacy alias of --format json).",
+    )
     check_parser.add_argument(
         "--no-report",
         action="store_true",
@@ -41,8 +52,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust", "mojo", "julia"),
         default=None,
         help=(
-            "Native target language. Overrides REXTIO_TARGET_LANGUAGE, "
-            "REXTIO_NATIVE_BACKEND, and [build] native_backend."
+            "Native target language (0.1.0 alpha implements rust; mojo/julia are "
+            "planned). Overrides REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
+            "and [build] native_backend."
         ),
     )
     _add_target_options(check_parser)
@@ -61,8 +73,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust", "mojo", "julia"),
         default=None,
         help=(
-            "Native target language. Overrides REXTIO_TARGET_LANGUAGE, "
-            "REXTIO_NATIVE_BACKEND, and [build] native_backend."
+            "Native target language (0.1.0 alpha implements rust; mojo/julia are "
+            "planned). Overrides REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
+            "and [build] native_backend."
         ),
     )
     _add_target_options(build_parser_)
@@ -72,7 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--fallback",
         choices=("cpython", "nuitka"),
         default=None,
-        help="Fallback backend. Overrides REXTIO_FALLBACK_BACKEND and [build] fallback_backend.",
+        help="Fallback backend (cpython is stable; nuitka is experimental). "
+        "Overrides REXTIO_FALLBACK_BACKEND and [build] fallback_backend.",
     )
     build_parser_.add_argument(
         "--fallback-threshold",
@@ -98,7 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--rust-binding",
         choices=("pyo3",),
         default=None,
-        help="Rust binding backend. Overrides REXTIO_RUST_BINDING and [rust] binding.",
+        help="Rust binding backend (0.1.0 alpha supports pyo3 only). "
+        "Overrides REXTIO_RUST_BINDING and [rust] binding.",
     )
     build_parser_.add_argument(
         "--rust-build-tool",
@@ -165,8 +180,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust", "mojo", "julia"),
         default=None,
         help=(
-            "Native target language. Overrides REXTIO_TARGET_LANGUAGE, "
-            "REXTIO_NATIVE_BACKEND, and [build] native_backend."
+            "Native target language (0.1.0 alpha implements rust; mojo/julia are "
+            "planned). Overrides REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
+            "and [build] native_backend."
         ),
     )
     _add_target_options(generate_parser)
@@ -205,7 +221,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_options(generate_parser)
     generate_parser.set_defaults(handler=generate_cmd.run)
 
-    bench_parser = subparsers.add_parser("bench", help="Benchmark a specific function.")
+    bench_parser = subparsers.add_parser(
+        "bench",
+        help="Benchmark a specific function (auto-samples scalar / list[scalar] parameters).",
+    )
     bench_parser.add_argument("target", help="Fully qualified function name.")
     bench_parser.add_argument("--project-root", default=".", help="Project root to benchmark.")
     _add_output_options(bench_parser)

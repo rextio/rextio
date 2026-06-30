@@ -63,7 +63,7 @@ class FunctionIR(IRNode):
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this node."""
-        data = {
+        data: dict[str, object] = {
             "name": self.name,
             "qualname": self.qualname,
             "module_name": self.module_name,
@@ -114,7 +114,11 @@ class AssignIR(StatementIR):
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this node."""
-        data = {"kind": "assign", "target": self.target.to_dict(), "value": self.value.to_dict()}
+        data: dict[str, object] = {
+            "kind": "assign",
+            "target": self.target.to_dict(),
+            "value": self.value.to_dict(),
+        }
         if self.target_type is not None:
             data["target_type"] = self.target_type.to_dict()
         return data
@@ -246,6 +250,39 @@ class WhileIR(StatementIR):
             "condition": self.condition.to_dict(),
             "body": self.body.to_dict(),
             "orelse": self.orelse.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class ExceptHandlerIR(IRNode):
+    """A single ``except <BuiltinException>:`` handler and its body."""
+
+    exception: str
+    body: BlockIR
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this node."""
+        return {
+            "exception": self.exception,
+            "body": self.body.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class TryIR(StatementIR):
+    """A ``try`` statement with built-in ``except`` handlers and ``finally``."""
+
+    body: BlockIR
+    handlers: tuple[ExceptHandlerIR, ...]
+    finalbody: BlockIR
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this node."""
+        return {
+            "kind": "try",
+            "body": self.body.to_dict(),
+            "handlers": [handler.to_dict() for handler in self.handlers],
+            "finalbody": self.finalbody.to_dict(),
         }
 
 

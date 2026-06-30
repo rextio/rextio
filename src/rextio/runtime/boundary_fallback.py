@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass, field
 from threading import Lock
 
+from rextio.runtime.flags import env_truthy
+
 DEFAULT_BOUNDARY_FALLBACK_THRESHOLD = 1000
 THRESHOLD_ENV = "REXTIO_BOUNDARY_FALLBACK_THRESHOLD"
 DISABLE_ENV = "REXTIO_DISABLE_BOUNDARY_FALLBACK"
@@ -24,7 +26,7 @@ _STATE = _BoundaryFallbackState()
 def boundary_fallback_threshold(default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD) -> int:
     """Return the effective boundary-fallback threshold."""
     raw_value = os.environ.get(THRESHOLD_ENV)
-    if raw_value in {None, ""}:
+    if raw_value is None or raw_value == "":
         return _valid_default_threshold(default_threshold)
     try:
         value = int(raw_value)
@@ -37,7 +39,7 @@ def boundary_fallback_threshold(default_threshold: int = DEFAULT_BOUNDARY_FALLBA
 
 def boundary_fallback_disabled(default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD) -> bool:
     """Report whether boundary fallback is disabled."""
-    return os.environ.get(DISABLE_ENV) == "1" or boundary_fallback_threshold(default_threshold) == 0
+    return env_truthy(DISABLE_ENV) or boundary_fallback_threshold(default_threshold) == 0
 
 
 def boundary_fallback_required(
@@ -46,8 +48,17 @@ def boundary_fallback_required(
 ) -> bool:
     """Report whether a function has crossed the boundary-fallback threshold."""
     threshold = boundary_fallback_threshold(default_threshold)
-    if threshold == 0 or os.environ.get(DISABLE_ENV) == "1":
+    if threshold == 0 or env_truthy(DISABLE_ENV):
         return False
+
+    # Fast path: once a function has crossed the threshold it stays on fallback
+    # permanently, so the steady state — every call after the threshold — needs
+    # no lock at all. The set membership read is atomic under the GIL; a race
+    # with a concurrent insert only costs one extra slow-path check, never a
+    # wrong answer. This removes the per-call global-lock contention that would
+    # otherwise persist for the hot functions that fell back.
+    if function_name in _STATE.fallback_functions:
+        return True
 
     with _STATE.lock:
         if function_name in _STATE.fallback_functions:

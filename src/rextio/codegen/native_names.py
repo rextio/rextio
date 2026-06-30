@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import re
 
+# The code generator emits every internal temporary and helper with this prefix
+# (e.g. ``__rextio_min_a_1``, ``__rextio_checked_add``, ``__rextio_top_level__``).
+# The analyzer rejects user identifiers sharing it so a generated ``let`` binding
+# can never silently shadow a user name. Kept here, next to the other native
+# naming rules, so the analyzer and code generator cannot drift apart.
+RESERVED_NATIVE_PREFIX = "__rextio"
+
 
 def native_function_name(qualname: str) -> str:
     """Return the sanitized native (Rust) identifier for a qualname; raises ValueError if empty."""

@@ -36,9 +36,14 @@ DATETIME_ISOFORMAT_TARGETS = {
     "datetime.datetime.utcnow.isoformat",
 }
 
+# `utcnow().timestamp()` is intentionally excluded: CPython interprets the naive
+# `utcnow()` wall-clock as *local* time, so its timestamp is `trueUTC - localOffset`,
+# whereas a native `Utc::now().timestamp()` returns the true POSIX timestamp -- a
+# divergence of the local offset (hours) in any non-UTC zone. It stays on the
+# Python fallback. `now().timestamp()` (naive local interpreted as local) is
+# correct and remains native.
 DATETIME_TIMESTAMP_TARGETS = {
     "datetime.datetime.now.timestamp",
-    "datetime.datetime.utcnow.timestamp",
 }
 
 MATH_FLOAT_UNARY_TARGETS = {
@@ -82,7 +87,12 @@ STR_METHOD_TARGETS = {
     "str.lower",
     "str.replace",
     "str.startswith",
-    "str.strip",
+    # `str.strip` is intentionally excluded: it lowers to Rust `trim()`
+    # (`char::is_whitespace`), but CPython strips per `str.isspace()`, which also
+    # treats the C0 separators U+001C-U+001F (FS/GS/RS/US) as whitespace. So
+    # `'\x1cx\x1c'.strip()` is `'x'` in CPython but unchanged natively -- a silent
+    # divergence. It stays on the Python fallback. (lstrip/rstrip are not
+    # supported either.)
     "str.upper",
 }
 
@@ -135,14 +145,12 @@ COMMON_DIRECT_RUST_CALLS = {
     *LOGGING_CANONICAL_TARGETS.values(),
     *HASHLIB_CHAIN_TARGETS,
     *HASHLIB_INTERNAL_TARGETS,
-    *JSON_TARGETS,
     *LIST_METHOD_TARGETS,
     *MATH_CONSTANT_TARGETS,
     *MATH_FLOAT_BINARY_TARGETS,
     *MATH_FLOAT_TO_BOOL_TARGETS,
     *MATH_FLOAT_TO_INT_TARGETS,
     *MATH_FLOAT_UNARY_TARGETS,
-    *STATISTICS_TARGETS,
     *STR_METHOD_TARGETS,
     *TIME_TARGETS,
     *DATETIME_NOW_TARGETS,
@@ -220,6 +228,11 @@ def canonical_datetime_terminal_call(node: ast.Call, imports: dict[str, str]) ->
     """Return the canonical target of a supported datetime terminal call, or None."""
     if not isinstance(node.func, ast.Attribute) or node.func.attr not in {"isoformat", "timestamp"}:
         return None
+    if node.args or node.keywords:
+        # `.isoformat(sep=, timespec=)` / `.timestamp(...)` carry argument
+        # semantics the native lowering does not reproduce; returning None keeps
+        # the function on the Python fallback instead of crashing codegen.
+        return None
     receiver = node.func.value
     if not isinstance(receiver, ast.Call) or receiver.args or receiver.keywords:
         return None
@@ -227,8 +240,11 @@ def canonical_datetime_terminal_call(node: ast.Call, imports: dict[str, str]) ->
     if raw_inner is None:
         return None
     inner = resolve_import_target(raw_inner, imports)
-    if inner in DATETIME_NOW_TARGETS:
-        return f"{inner}.{node.func.attr}"
+    candidate = f"{inner}.{node.func.attr}"
+    # Only the canonical targets that are actually supported natively (e.g. NOT
+    # `utcnow().timestamp()`, which is excluded from DATETIME_TIMESTAMP_TARGETS).
+    if candidate in DATETIME_ISOFORMAT_TARGETS or candidate in DATETIME_TIMESTAMP_TARGETS:
+        return candidate
     return None
 
 

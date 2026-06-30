@@ -143,7 +143,11 @@ def run(args: Namespace) -> int:
     if not getattr(args, "no_report", False):
         write_check_report(project_root, analysis)
     reporter.print_result(text=format_check_report(analysis), data=analysis.to_dict())
-    return 1 if analysis.has_error_diagnostics else 0
+    # `check` is advisory: a rejected candidate stays on the Python fallback,
+    # which is an expected outcome, so it does not fail the command. Only a
+    # genuine parse failure (RXT000) — a candidate that could not be analyzed —
+    # is reported as a non-zero exit so `check` is usable as a CI gate.
+    return 1 if analysis.has_parse_errors else 0
 
 
 def write_check_report(project_root: Path, analysis: ProjectAnalysis) -> Path:

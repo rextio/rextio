@@ -448,11 +448,23 @@ def echo(value: int | None) -> int | None:
     if value is None:
         return None
     return value
+
+@rextio.native
+def unit_ret(x: int) -> None:
+    if x > 0:
+        return None
+    return None
 """,
         encoding="utf-8",
     )
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    # `return None` from a `-> None` function lowers to the unit `Ok(())`, not the
+    # invalid `Ok()` (the `()` literal must not be stripped to empty).
+    assert "fn app__unit_ret(x: i64) -> PyResult<()> {" in source
+    assert "return Ok(());" in source
+    assert "return Ok();" not in source
 
     assert "use std::collections::HashMap;" in source
     assert "fn app__first_value(pair: (i64, f64)) -> PyResult<i64> {" in source
@@ -545,10 +557,6 @@ def unique(xs: list[int]) -> set[int]:
     return {x for x in xs if x > 0}
 
 @rextio.native
-def unique_float(xs: list[float]) -> set[float]:
-    return {x for x in xs if x > 0.0}
-
-@rextio.native
 def by_index(xs: list[int]) -> dict[int, float]:
     return {i: 1.5 for i, x in enumerate(xs) if x > 0}
 
@@ -581,9 +589,6 @@ def last_positive(xs: list[int]) -> int:
     assert "fn app__flags(xs: Vec<i64>) -> PyResult<HashMap<bool, String>> {" in source
     assert "PyKeyError::new_err(__rextio_key" in source
     assert "fn app__unique(xs: Vec<i64>) -> PyResult<HashSet<i64>> {" in source
-    assert "fn app__unique_float(xs: Vec<f64>) -> PyResult<Vec<f64>> {" in source
-    assert "let mut __rextio_set_1 = Vec::new();" in source
-    assert "if !__rextio_set_1.contains(&__rextio_set_value_" in source
     assert "let mut y: Option<i64> = None;" in source
     assert "y = Some(x.clone());" in source
     assert "PyUnboundLocalError" in source
@@ -632,13 +637,21 @@ def lower(x: float, y: float) -> int:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert "let mut total = (values).iter().cloned().sum();" in source
-    assert "(x).sqrt()" in source
+    assert "__rextio_checked_mnonneg(x)?.sqrt()" in source
     assert "(x).sin()" in source
     assert "(x).cos()" in source
-    assert "(total).max((x).abs())" in source
     assert (
-        "return Ok((__rextio_checked_f2i((x).floor())?)"
-        ".min(__rextio_checked_f2i((y).floor())?));"
+        "let __rextio_max_a_1 = total; "
+        "let __rextio_max_b_2 = (x).abs(); "
+        "if __rextio_max_b_2 > __rextio_max_a_1 { __rextio_max_b_2 } "
+        "else { __rextio_max_a_1 }"
+    ) in source
+    assert (
+        "return Ok({ "
+        "let __rextio_min_a_1 = __rextio_checked_f2i((x).floor())?; "
+        "let __rextio_min_b_2 = __rextio_checked_f2i((y).floor())?; "
+        "if __rextio_min_b_2 < __rextio_min_a_1 { __rextio_min_b_2 } "
+        "else { __rextio_min_a_1 } });"
     ) in source
 
 
@@ -670,7 +683,10 @@ def observe(value: int) -> str:
     assert 'log::info!("module {}", value.clone());' in source
     assert 'log::warn!("logger {}", value.clone());' in source
     assert 'log::info!("imported {}", value.clone());' in source
-    assert "return Ok(chrono::Utc::now().to_rfc3339());" in source
+    # utcnow().isoformat() lowers to a naive (offset-free) formatter matching
+    # CPython's naive datetime isoformat, not chrono's offset-bearing to_rfc3339.
+    assert "chrono::Utc::now().naive_utc()" in source
+    assert 'format!("{}.{:06}"' in source
 
 
 def test_non_ascii_logging_format_string_emits_valid_rust(tmp_path: Path) -> None:
@@ -791,13 +807,12 @@ def test_generates_rust_for_expanded_stdlib_lowering_calls(tmp_path: Path) -> No
         """
 import base64
 import hashlib
-import json
 import math
 import statistics
 from datetime import datetime
 
 def text(value: str) -> str:
-    return value.strip().lower().replace("a", "b").upper()
+    return value.lower().replace("a", "b").upper()
 
 def list_ops(xs: list[int]) -> int:
     copied = sorted(xs)
@@ -806,15 +821,11 @@ def list_ops(xs: list[int]) -> int:
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
-def b64_roundtrip(value: str) -> str:
-    encoded = base64.b64encode(value.encode())
-    return base64.b64decode(encoded).decode()
-
-def json_roundtrip(value: str) -> dict[str, int]:
-    return json.loads(value)
+def b64_encode(value: str) -> bytes:
+    return base64.b64encode(value.encode())
 
 def mathy(x: float) -> float:
-    return math.atan2(x, 1.0) + math.pi + statistics.mean([x]) + datetime.utcnow().timestamp()
+    return math.atan2(x, 1.0) + math.pi + datetime.now().timestamp()
 
 def rounding(x: float) -> int:
     return math.ceil(x) + math.trunc(x)
@@ -827,18 +838,16 @@ def truth(flags: list[bool]) -> bool:
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
-    assert ".trim().to_string().to_lowercase().replace(&String::from(\"a\"), &String::from(\"b\")).to_uppercase()" in source
+    assert ".to_lowercase().replace(&String::from(\"a\"), &String::from(\"b\")).to_uppercase()" in source
     assert "values.sort();" in source
     assert ".iter().filter(|item| *item == &__rextio_needle" in source
     assert ".count() as i64 }" in source
     assert ".position(|item| item == &__rextio_needle" in source
     assert "format!(\"{:x}\", sha2::Sha256::digest(&" in source
     assert "base64::engine::general_purpose::STANDARD.encode" in source
-    assert "base64::engine::general_purpose::STANDARD.decode" in source
-    assert "serde_json::from_str::<HashMap<String, i64>>" in source
     assert "std::f64::consts::PI" in source
     assert ".atan2(1.0)" in source
-    assert "chrono::Utc::now()" in source
+    assert "chrono::Local::now()" in source
     assert ".iter().copied().all(|value| value)" in source
     assert ".iter().copied().any(|value| value)" in source
 
@@ -1054,8 +1063,10 @@ def f(x: float) -> int:
 
 
 def test_int_min_max_are_overflow_safe(tmp_path: Path) -> None:
-    # `min`/`max` are comparison-only (no overflow), and their result still flows
-    # through the checked add when summed (council R5 regression pin).
+    # `min`/`max` lower to CPython's own `b < a ? b : a` / `b > a ? b : a`
+    # comparison form (NOT Rust's f64::min/max, which diverge on NaN), and the
+    # result still flows through the checked add when summed (council R5
+    # regression pin).
     (tmp_path / "app.py").write_text(
         """
 import rextio
@@ -1069,7 +1080,17 @@ def clamp_sum(a: int, b: int) -> int:
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
-    assert "__rextio_checked_add((a).min(b), (a).max(b))?" in source
+    assert ".min(" not in source
+    assert ".max(" not in source
+    assert (
+        "__rextio_checked_add("
+        "{ let __rextio_min_a_1 = a; let __rextio_min_b_2 = b; "
+        "if __rextio_min_b_2 < __rextio_min_a_1 { __rextio_min_b_2 } "
+        "else { __rextio_min_a_1 } }, "
+        "{ let __rextio_max_a_3 = a; let __rextio_max_b_4 = b; "
+        "if __rextio_max_b_4 > __rextio_max_a_3 { __rextio_max_b_4 } "
+        "else { __rextio_max_a_3 } })?"
+    ) in source
 
 
 def test_augmented_assignment_with_sum_is_checked(tmp_path: Path) -> None:
@@ -1337,3 +1358,128 @@ def at(xs: list[int], i: int) -> int:
         '.ok_or_else(|| RextioError::new("list index out of range"))? }'
     ) in source
     assert "pyo3" not in source
+
+
+def test_domain_error_prone_math_is_guarded(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+import math
+
+@rextio.native
+def root(x: float) -> float:
+    return math.sqrt(x)
+
+@rextio.native
+def logarithm(x: float) -> float:
+    return math.log(x)
+
+@rextio.native
+def logarithm_base(x: float, base: float) -> float:
+    return math.log(x, base)
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    # sqrt/log validate the INPUT domain (sqrt: x < 0, log: x <= 0) so a
+    # domain-error input raises ValueError while valid nan/inf inputs pass
+    # through to nan/inf (matching CPython), instead of an output-finiteness
+    # check that would wrongly raise for sqrt(inf)/sqrt(nan).
+    assert "__rextio_checked_mnonneg(x)?.sqrt()" in source
+    assert "__rextio_checked_mpositive(x)?.ln()" in source
+    assert "fn __rextio_checked_mnonneg(value: f64)" in source
+    assert "if value < 0.0 {" in source
+    assert "fn __rextio_checked_mpositive(value: f64)" in source
+    assert "if value <= 0.0 {" in source
+    assert 'PyValueError::new_err("math domain error")' in source
+    # The 2-arg log(x, base) also guards the base (ZeroDivisionError for base==1,
+    # ValueError for base<=0). Both args are bound to locals first so the base is
+    # evaluated before x's domain check (matching CPython's left-to-right arg
+    # evaluation), then the guards are applied.
+    assert "let __rextio_log_x" in source
+    assert "let __rextio_log_base" in source
+    assert "__rextio_checked_mpositive(__rextio_log_x" in source
+    assert ".log(__rextio_checked_mlogbase(__rextio_log_base" in source
+    assert "fn __rextio_checked_mlogbase(value: f64)" in source
+    assert "if value == 1.0 {" in source
+
+
+def test_len_of_str_counts_code_points_not_bytes(tmp_path: Path) -> None:
+    # CPython `len(str)` counts code points; `String::len` would return the UTF-8
+    # byte length, so a `str` argument must lower to `.chars().count()`.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def char_count(s: str) -> int:
+    return len(s)
+
+@rextio.native
+def byte_count(b: bytes) -> int:
+    return len(b)
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "s.chars().count() as i64" in source
+    assert "b.len() as i64" in source
+
+
+def test_bare_return_in_optional_function_emits_ok_none(tmp_path: Path) -> None:
+    # A bare `return` is Python `return None`; in an `Optional[T]` function that
+    # is `Ok(None)`, not `Ok(())` (which would fail to compile against the
+    # `Option<T>` return type).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+from typing import Optional
+
+@rextio.native
+def maybe(c: bool) -> Optional[int]:
+    if c:
+        return 1
+    return
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "return Ok(None);" in source
+    assert "return Ok(());" not in source
+
+
+def test_range_len_str_counts_code_points(tmp_path: Path) -> None:
+    # The inline `range(len(x))` loop bound must mirror the value-position `len`
+    # rule: a `str` counts code points (`.chars().count()`), a `bytes`/`list`
+    # uses the byte/element length (`.len()`).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def over_str(s: str) -> int:
+    n = 0
+    for _i in range(len(s)):
+        n += 1
+    return n
+
+@rextio.native
+def over_list(xs: list[int]) -> int:
+    n = 0
+    for _i in range(len(xs)):
+        n += 1
+    return n
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "0..(s.chars().count() as i64)" in source
+    assert "0..(xs.len() as i64)" in source

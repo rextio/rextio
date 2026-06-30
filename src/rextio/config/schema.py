@@ -25,7 +25,7 @@ class RustConfig:
     """The [rust] configuration section."""
 
     binding: str = "pyo3"
-    build_tool: str = "maturin"
+    build_tool: str = "cargo"
     importable: bool = False
     crate_name: str = "rextio_generated_rust"
 

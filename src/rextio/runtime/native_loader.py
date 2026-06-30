@@ -56,8 +56,33 @@ def load_native_module(module_name: str) -> ModuleType | None:
 
 
 def load_native_function(module_name: str, function_name: str) -> Any | None:
-    """Load a compiled native function, or None if unavailable."""
+    """Load a compiled native function, or None if unavailable.
+
+    A missing *module* is normal absence (fall back silently). A module that
+    loaded but is missing the requested *function* is a codegen/wrapper naming
+    mismatch — a real fault — so surface it (re-raised under
+    ``REXTIO_DEBUG_NATIVE=1``, otherwise a ``RuntimeWarning``) instead of
+    silently falling back.
+    """
     module = load_native_module(module_name)
     if module is None:
         return None
-    return getattr(module, function_name, None)
+    function = getattr(module, function_name, None)
+    if function is None:
+        _surface_missing_function(module_name, function_name)
+    return function
+
+
+def _surface_missing_function(module_name: str, function_name: str) -> None:
+    """Re-raise (debug) or warn that a loaded native module lacks a function."""
+    if _debug_native():
+        raise AttributeError(
+            f"Rextio native module {module_name!r} has no function {function_name!r}"
+        )
+    warnings.warn(
+        f"Rextio native module {module_name!r} loaded but has no function "
+        f"{function_name!r} (codegen/wrapper name mismatch); falling back to Python. "
+        f"Set REXTIO_DEBUG_NATIVE=1 to raise instead.",
+        RuntimeWarning,
+        stacklevel=3,
+    )

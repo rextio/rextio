@@ -24,8 +24,9 @@ Tiers:
 | `@rextio.native` / `@rextio.exempt` decorators | Stable | Public API. See [versioning](versioning.md). |
 | `rextio.toml` configuration schema | Stable | Keys are part of the contract. |
 | Diagnostics (`RXTxxx` codes + messages) | Stable | Deterministic and tested; treated as a contract. |
-| Native build orchestration (maturin / Cargo) | Stable | `maturin` is the default `[rust] build_tool`; if maturin is not installed Rextio automatically falls back to Cargo. `--rust-build-tool=cargo` selects Cargo directly. |
-| Import policy (per-package `fallback` / `analyze` / `try-native` / `plugin`) | Stable | Decides how external packages are treated at the boundary. |
+| Native build orchestration (maturin / Cargo) | Stable | `cargo` is the default `[rust] build_tool` (always available). Set `--rust-build-tool=maturin` (or `[rust] build_tool = "maturin"`, requires the optional `rextio[build]` dependency) to build wheels with maturin; if maturin is selected but not installed Rextio automatically falls back to Cargo. If the native build fails, packaging still produces a fallback-only pure-Python (`py3-none-any`) wheel that works through the Python fallback. |
+| Import policy — `fallback` | Stable | Treats an external package as fallback-only at the boundary. |
+| Import policy — `analyze` / `try-native` / `plugin` | Experimental | Accepted as configuration, but in 0.1.0 alpha these are largely planning metadata; concrete third-party native lowering is not yet implemented. |
 
 ## CLI
 
@@ -39,10 +40,11 @@ Tiers:
 
 | Feature | Tier | How to reach it |
 | --- | --- | --- |
-| Cranelift scalar JIT | Experimental | `--jit` / `[jit] enabled`. Numeric scalar helpers only; overflow-prone integer arithmetic is excluded. |
+| Cranelift scalar JIT | Experimental | `--jit` / `[jit] enabled`. Numeric scalar helpers only; overflow-prone integer arithmetic and float division are excluded (they stay on the checked native path so overflow/divide-by-zero still raise). |
+| Native `try`/`except`/`finally` (built-in exceptions) | Experimental | A restricted subset compiles to native Rust: `except` handlers for built-in exceptions only (`ValueError`, `KeyError`, `IndexError`, `ZeroDivisionError`, `TypeError`, `OverflowError`, `ArithmeticError`, `RuntimeError`, `Exception`), no `try ... else`, no `as` binding, no `return` and no `break`/`continue` targeting a loop outside the block, and no non-comprehension variable first-assigned inside a block. Anything outside the subset falls back (RXT080 shim when explicitly `@rextio.native`, otherwise Python fallback). Known limitation: if the `finally` body itself raises, the original pending exception is dropped without `__context__` chaining (CPython preserves it as the new exception's context). |
 | Runtime-semantics shim (`RXT080`) | Experimental | Auto-applied to explicitly `@rextio.native` dynamic/async functions; emits a generic shim that calls back into Python. |
 | Native top-level module initialization | Experimental | `[policy] native_top_level`. Lowers a restricted subset of module-level code. |
-| Nuitka fallback / executable backend | Experimental | `--fallback=nuitka`, `--executable-backend=nuitka`. Requires Nuitka; surfaced by the build preflight when missing. |
+| Nuitka fallback / executable backend | Experimental | `--fallback=nuitka`, `--executable-backend=nuitka`. Requires Nuitka; surfaced by the build preflight when missing. The real-Nuitka end-to-end path runs only on the scheduled/manual CI job (not on every PR), so regressions there may surface later than for the Cargo path. |
 | Rust-importable crate artifact | Experimental | `--rust-importable` / `--rust-crate-name`. Exposes accepted direct-Rust functions as a Cargo path dependency. |
 | Plugins | Experimental (metadata-only) | Entry-point plugins declare target compatibility and the external packages they cover; they do **not** inject codegen rules. |
 

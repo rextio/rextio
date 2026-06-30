@@ -26,7 +26,6 @@ SUPPORTED_INTERNAL_CALLS = {
 
 BOUNDARY_DIAGNOSTIC_MESSAGES = {
     "RXT070": "Native function calls fallback-only function.",
-    "RXT071": "Possible excessive Python/Rust boundary crossing.",
     "RXT072": "Native dependency rejected, so caller must fall back.",
     "RXT073": "Native function call inside Python loop may erase speedup.",
     "RXT074": "Undecorated function depends on a runtime-shim native; mark it @rextio.native to opt in.",
@@ -70,14 +69,15 @@ def apply_boundary_checks(
                         )
                     changed = True
                     continue
-                diagnostic = _first_boundary_error(
+                boundary_errors = _boundary_errors(
                     module,
                     function,
                     resolver,
                     native_jit_enabled=native_jit_enabled,
                 )
-                if diagnostic is not None:
-                    function.add_diagnostic(diagnostic)
+                if boundary_errors:
+                    for diagnostic in boundary_errors:
+                        function.add_diagnostic(diagnostic)
                     function.accepted = False
                     changed = True
 
@@ -85,63 +85,249 @@ def apply_boundary_checks(
         _add_python_loop_boundary_warnings(analysis, resolver)
 
 
-def _first_boundary_error(
+def _boundary_errors(
     module: ModuleAnalysis,
     function: FunctionAnalysis,
     resolver: FunctionResolver,
     native_jit_enabled: bool = False,
-) -> Diagnostic | None:
+) -> list[Diagnostic]:
+    if function.native_runtime_semantics:
+        return []
+    diagnostics: list[Diagnostic] = []
     for call in function.calls:
-        if function.native_runtime_semantics:
-            return None
         target = call.target
         resolved = resolver.resolve(module, target)
         if target in SUPPORTED_INTERNAL_CALLS or target.endswith(".append"):
             continue
         dependency = resolved.function
         if native_jit_enabled and dependency is not None and dependency.is_jit_candidate:
+            # JIT candidates are lowered to a typed native inner function just like
+            # accepted native siblings, so the same call-compatibility check applies.
+            diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
             continue
         if dependency is not None and not dependency.is_native_candidate:
-            return Diagnostic(
-                code="RXT070",
+            diagnostics.append(
+                Diagnostic(
+                    code="RXT070",
+                    severity="error",
+                    message=f"native function calls fallback-only function: {resolved.resolved_target}",
+                    file_path=function.file_path,
+                    line=call.line,
+                    column=call.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "Mark the dependency as @rextio.native if it belongs to the supported subset, "
+                        "or remove the call from the native function."
+                    ),
+                )
+            )
+            continue
+        if dependency is not None and not dependency.accepted:
+            diagnostics.append(
+                Diagnostic(
+                    code="RXT072",
+                    severity="error",
+                    message=f"native dependency rejected, so caller must fall back: {resolved.resolved_target}",
+                    file_path=function.file_path,
+                    line=call.line,
+                    column=call.column,
+                    function_name=function.qualname,
+                    suggestion="Fix the rejected native dependency or keep this caller on fallback.",
+                )
+            )
+            continue
+        if dependency is not None:
+            diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
+            continue
+
+        decision = decision_for_target(module, resolved.resolved_target)
+        message, suggestion = _external_call_diagnostic_text(resolved.resolved_target, call.in_loop, decision)
+        diagnostics.append(
+            Diagnostic(
+                code="RXT030",
                 severity="error",
-                message=f"native function calls fallback-only function: {resolved.resolved_target}",
+                message=message,
+                file_path=function.file_path,
+                line=call.line,
+                column=call.column,
+                function_name=function.qualname,
+                suggestion=suggestion,
+            )
+        )
+    return diagnostics
+
+
+_SCALAR_PARAM_TYPES = {"int", "float", "bool", "str", "bytes"}
+# Parameter types lowered to a concrete fixed Rust type (Vec/HashMap/tuple/HashSet)
+# that requires an exactly-matching argument — no coercion from a scalar or a
+# differently-parameterised container. `Optional[...]` / `... | None` are excluded:
+# they admit the inner type or None, so exact-string equality is not the right test.
+_CONTAINER_PARAM_PREFIXES = ("list[", "tuple[", "dict[", "set[", "frozenset[")
+
+
+def _native_arg_type_errors(
+    module: ModuleAnalysis,
+    function: FunctionAnalysis,
+    call: CallSite,
+    dependency: FunctionAnalysis,
+    resolver: FunctionResolver,
+) -> list[Diagnostic]:
+    """Reject native→native calls that are not compatible with the callee signature.
+
+    The lowered Rust inner function has a fixed positional arity and exact scalar
+    parameter types with no implicit coercion and no default arguments, so a call
+    that CPython accepts can still emit Rust that fails ``cargo build`` (or, for
+    keyword-only parameters, silently diverge from CPython):
+
+    - a callee with keyword-only parameters cannot be called faithfully through the
+      native convention (keyword call arguments are unsupported, and a keyword-only
+      parameter supplied positionally diverges from CPython's ``TypeError``);
+    - too few or too many positional arguments vs the callee's positional arity
+      (including a genuine zero-parameter callee) -> E0061;
+    - a scalar argument of a different type than the parameter (``g(1.2)`` where
+      ``g(x: int)``, or ``g(1)`` where ``g(x: float)``) -> E0308, or a scalar
+      argument whose type cannot be proven to match.
+
+    The contract requires keeping such a caller on the Python fallback (RXT010)
+    rather than silently building broken or divergent native code.
+
+    Argument types come from the caller's inferred ``call_arg_types`` (which covers
+    non-literal arguments such as known locals and resolved nested calls) when
+    available, falling back to the literal-only ``CallSite.arg_types``. Arity is
+    checked against ``positional_param_count`` (``None`` only for callees whose
+    signature was never captured, e.g. runtime-shim methods).
+    """
+    diagnostics: list[Diagnostic] = []
+
+    if dependency.has_keyword_only_params:
+        diagnostics.append(
+            Diagnostic(
+                code="RXT010",
+                severity="error",
+                message=(
+                    f"native call to {dependency.qualname} targets a function with "
+                    "keyword-only parameters, which cannot be supplied through the native "
+                    "calling convention (keyword arguments are unsupported, and a "
+                    "positional argument for a keyword-only parameter diverges from CPython)"
+                ),
                 file_path=function.file_path,
                 line=call.line,
                 column=call.column,
                 function_name=function.qualname,
                 suggestion=(
-                    "Mark the dependency as @rextio.native if it belongs to the supported subset, "
-                    "or remove the call from the native function."
+                    "Remove the keyword-only parameters from the native callee, or keep "
+                    "this caller on the Python fallback."
                 ),
             )
-        if dependency is not None and not dependency.accepted:
-            return Diagnostic(
-                code="RXT072",
+        )
+        return diagnostics
+
+    param_types = list(dependency.signature_arg_types.values())
+    arg_types = list(function.call_arg_types.get((call.line, call.column), call.arg_types))
+    arg_targets = function.call_arg_targets.get((call.line, call.column), ())
+
+    # Resolve every nested call argument's type through the project resolver, which
+    # spans modules and is the authoritative source of acceptance. Only trust a
+    # resolved callee's return type when that callee is actually lowered to typed
+    # native code (accepted, and not a runtime-semantics shim); a rejected,
+    # fallback-only, or shim callee leaves the argument type unknown so the
+    # conservative backstop keeps the caller on the Python fallback. (The locally
+    # inferred type, when present, already agrees for accepted same-module callees.)
+    for index in range(len(arg_types)):
+        if index >= len(arg_targets):
+            break
+        target = arg_targets[index]
+        if target is None:
+            continue
+        resolved = resolver.resolve(module, target).function
+        if resolved is None:
+            # Not a project function (a supported builtin / standard-library call,
+            # or unresolved): trust the locally-inferred argument type rather than
+            # discarding it, which would falsely reject e.g. take_int(len(xs)).
+            continue
+        if resolved.accepted and not resolved.native_runtime_semantics:
+            # `accepted` (no error diagnostics) covers a valid JIT candidate too; a
+            # rejected one is not accepted and must not be trusted.
+            arg_types[index] = resolved.signature_return_type
+        else:
+            # A rejected, fallback-only, or runtime-shim project function is not
+            # lowered to typed native code, so its result type cannot be trusted to
+            # keep the caller native.
+            arg_types[index] = None
+
+    if (
+        dependency.positional_param_count is not None
+        and len(arg_types) != dependency.positional_param_count
+    ):
+        diagnostics.append(
+            Diagnostic(
+                code="RXT010",
                 severity="error",
-                message=f"native dependency rejected, so caller must fall back: {resolved.resolved_target}",
+                message=(
+                    f"native call to {dependency.qualname} passes {len(arg_types)} "
+                    f"argument(s) but the native function takes "
+                    f"{dependency.positional_param_count}; the lowered Rust function has a "
+                    "fixed arity with no default arguments, so this would emit native code "
+                    "that fails to compile"
+                ),
                 file_path=function.file_path,
                 line=call.line,
                 column=call.column,
                 function_name=function.qualname,
-                suggestion="Fix the rejected native dependency or keep this caller on fallback.",
+                suggestion=(
+                    "Pass exactly one argument per native parameter (defaults are not "
+                    "lowered), or keep this caller on the Python fallback."
+                ),
             )
-        if dependency is not None:
-            continue
-
-        decision = decision_for_target(module, resolved.resolved_target)
-        message, suggestion = _external_call_diagnostic_text(resolved.resolved_target, call.in_loop, decision)
-        return Diagnostic(
-            code="RXT030",
-            severity="error",
-            message=message,
-            file_path=function.file_path,
-            line=call.line,
-            column=call.column,
-            function_name=function.qualname,
-            suggestion=suggestion,
         )
-    return None
+        return diagnostics
+
+    for index, arg_type in enumerate(arg_types):
+        if index >= len(param_types):
+            continue
+        param_type = param_types[index]
+        if arg_type == param_type:
+            continue
+        is_optional = param_type.startswith("Optional[") or (
+            "|" in param_type and "None" in param_type
+        )
+        if is_optional and arg_type == "None":
+            # A bare `None` literal lowers to `Option::None`, valid for any
+            # `Optional[...]` / `... | None` parameter.
+            continue
+        is_scalar = param_type in _SCALAR_PARAM_TYPES
+        is_container = param_type.startswith(_CONTAINER_PARAM_PREFIXES)
+        if not (is_scalar or is_container or is_optional):
+            # Any other looser parameter type: leave to the existing passes rather
+            # than over-rejecting on string inequality.
+            continue
+        if arg_type is None and not is_scalar:
+            # An argument whose type could not be inferred against a container or
+            # optional parameter: do not reject (would over-reject valid args); the
+            # conservative undetermined-type backstop applies to scalars only.
+            continue
+        actual = arg_type if arg_type is not None else "an undetermined type"
+        diagnostics.append(
+            Diagnostic(
+                code="RXT010",
+                severity="error",
+                message=(
+                    f"native call argument {index + 1} to {dependency.qualname} has "
+                    f"{actual} but the parameter is {param_type}; the lowered Rust type "
+                    "must match exactly (no scalar/container coercion), so this would "
+                    "emit native code that fails to compile"
+                ),
+                file_path=function.file_path,
+                line=call.line,
+                column=call.column,
+                function_name=function.qualname,
+                suggestion=(
+                    "Pass an argument whose type matches the native parameter exactly "
+                    "(no int/float/bool mixing), or keep this caller on the Python fallback."
+                ),
+            )
+        )
+    return diagnostics
 
 
 def _external_call_diagnostic_text(target: str, in_loop: bool, decision) -> tuple[str, str]:

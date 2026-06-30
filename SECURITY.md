@@ -55,7 +55,8 @@ external toolchain on your machine.
 ## Supply chain
 
 - Generated crates depend on a small, fixed set of crates — `pyo3`, `base64`,
-  `chrono`, `log`, and (only with `--jit`) the feature-gated `cranelift-*` crates.
+  `sha2`, `serde_json`, `chrono`, `log`, and (only with `--jit`) the
+  feature-gated `cranelift-*` crates.
   The generated `Cargo.toml` constrains each to a compatible version range, and
   `cargo build` produces a `Cargo.lock` recording the exact resolved graph for
   reproducible builds.

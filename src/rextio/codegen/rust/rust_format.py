@@ -60,6 +60,14 @@ def rust_string_literal(value: str) -> str:
 def render_literal(value: object) -> str:
     """Render a Python literal value as Rust source."""
     if value is None:
+        # A None literal renders to Rust `None` (`Option::None`). This is only
+        # sound where the surrounding type lets Rust infer the concrete
+        # `Option<T>` (e.g. comparing against an `Optional[T]` operand). A bare
+        # `None` with no inferable type fails to compile (E0282), so the analyzer
+        # keeps None out of those positions -- a `-> None` `return None` lowers to
+        # the unit `()` via `render_expr_with_expected`, an Optional return uses
+        # the Option-typed path, and `print`/`logging` of a None argument is
+        # rejected to the Python fallback (see `_infer_effect_call_type`).
         return "None"
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -109,6 +117,11 @@ def python_logging_format_to_rust(value: str) -> tuple[str, int] | None:
 def strip_wrapping_parens(value: str) -> str:
     """Strip a single layer of redundant wrapping parentheses from an expression string."""
     if not value.startswith("(") or not value.endswith(")"):
+        return value
+    if value == "()":
+        # The unit value `()` (e.g. a `None` literal lowered for a `-> None`
+        # function) is not redundant wrapping -- stripping it to "" would emit
+        # `Ok()` instead of `Ok(())` and fail to compile.
         return value
     depth = 0
     for index, char in enumerate(value):

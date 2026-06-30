@@ -82,8 +82,8 @@ branch = true
 show_missing = true
 # The native-build and codegen-emit paths are exercised by the real-cargo e2e
 # suite, which is excluded from the fast unit gate; the threshold leaves headroom
-# for that (fast-suite branch coverage is ~81%).
-fail_under = 78
+# for that (fast-suite branch coverage is ~82%).
+fail_under = 80
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -91,6 +91,7 @@ testpaths = ["tests"]
 markers = [
   "needs_cargo: end-to-end test that requires a real Rust/Cargo toolchain",
   "needs_nuitka: end-to-end test that requires a real Nuitka toolchain",
+  "needs_maturin: end-to-end test that requires a real maturin (and Cargo) toolchain",
   "no_toolchain: end-to-end test that needs no external toolchain (opts out of the conftest toolchain-classification warning)",
 ]
 
@@ -131,25 +132,6 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_optional = true
 
-# ---------------------------------------------------------------------------
-# Type-debt ratchet (mod-proposal P0-2): these modules have pre-existing mypy
-# errors recorded at gate-bootstrap time. Remove entries as they are cleaned
-# up; the CI gate enforces type-cleanliness on every other module.
-# ---------------------------------------------------------------------------
-[[tool.mypy.overrides]]
-module = [
-  "rextio.analyzer.unsupported_patterns",
-  # Pure move out of unsupported_patterns (P0-5 decomposition); inherits the same
-  # pre-existing loose AST typing, so it stays in the type-debt ratchet.
-  "rextio.analyzer.type_predicates",
-  "rextio.analyzer.jit",
-  "rextio.config.loader",
-  "rextio.codegen.rust.generator",
-  "rextio.ir.nodes",
-  "rextio.ir.lowering",
-  "rextio.ir.module",
-  "rextio.runtime.boundary_fallback",
-  "rextio.plugins.loader",
-  "rextio",
-]
-ignore_errors = true
+# The type-debt ratchet (mod-proposal P0-2) is now empty: every module
+# type-checks cleanly, so there is no per-module ignore_errors override. Keep
+# it that way — fix types rather than re-introducing an ignore list.

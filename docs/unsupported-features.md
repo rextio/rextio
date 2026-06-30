@@ -73,7 +73,9 @@ Supported syntax is intentionally small:
 - augmented assignment: `+=`, `-=`, `*=`, `/=`
 - arithmetic with supported operators
 - boolean operations
-- comparisons with supported comparison operators
+- comparisons with supported comparison operators, where `if`/`while`/
+  comprehension conditions must evaluate to `bool` (`dict`/`set` operands
+  support only `==` and `!=`, not ordering)
 - `if` / `elif` / `else`
 - `for x in xs`
 - `for i in range(len(xs))`
@@ -104,12 +106,14 @@ Supported syntax is intentionally small:
 - `Optional[T]` / `T | None` annotations, `None` returns, and `is None` /
   `is not None` checks
 - calls to accepted native functions
-- `len(x)`
+- `len(x)` for `list`, `set`, `dict`, `str`, and `bytes` (a `str` length counts
+  Unicode code points, matching CPython, not UTF-8 bytes)
 - `abs(x)` for `int` and `float`
 - two-argument `min(x, y)` and `max(x, y)` for matching numeric types
 - `sum(xs)` for `list[int]` and `list[float]`
 - `math.sqrt`, `math.sin`, `math.cos`, and `math.floor`
-- simple indexing such as `xs[i]`
+- simple `list`, fixed `tuple`, and fixed `dict` indexing such as `xs[i]`
+  (`str` and `bytes` indexing is not supported)
 
 ## Unsupported Native Syntax
 
@@ -133,7 +137,25 @@ semantics shim section below:
 - empty dict literals without a supported fixed `dict[K, V]` annotation
 - `enumerate` outside a supported loop or comprehension iterable
 - `zip` outside a supported loop or comprehension iterable
+- `range` outside a supported loop or comprehension iterable (a value-position
+  `range(...)`, e.g. `return range(n)`, has no native representation)
 - `enumerate` or `zip` over non-list expressions
+- non-`bool` `if`, `elif`, `while`, and comprehension `if` conditions; native
+  lowering requires the condition to be `bool`, so use an explicit comparison
+  (`if len(xs) > 0:` rather than `if xs:`, `if x != 0:` rather than `if x:`)
+- ordering comparisons (`<`, `<=`, `>`, `>=`) on `dict` or `set` operands; only
+  `==` and `!=` are supported for those types
+- `str` and `bytes` indexing such as `s[0]` (only `list`, fixed `tuple`, and
+  fixed `dict` subscripting is lowered)
+- `len()` of a fixed tuple (a Rust tuple has no length method; use the known
+  arity directly)
+- multiple assignment targets such as `a = b = value`
+- integer literals outside the signed 64-bit range (`int` lowers to `i64`)
+- a value-position read of a name bound nowhere in the function (a module
+  global, a closure variable, or a name first bound inside a nested
+  `if`/`for`/`while`/`try` block and read after it)
+- calling a name that a local binding or a module-level assignment shadows
+  (e.g. `len = 5` at module scope, then `len(xs)`)
 - slices such as `xs[1:]`
 - f-strings
 - `pass`
@@ -173,7 +195,8 @@ Runtime-backed native functions currently cover:
 
 - class/object behavior inside a marked native function
 - regular instance methods marked with `@rextio.native`
-- `try` / `except` / `finally`
+- `try` / `except` / `finally` outside the restricted native subset (built-in
+  exception handlers only — see `docs/stability.md`)
 - `raise` and `assert`
 - context managers
 - `async` functions and `await`
@@ -221,10 +244,21 @@ Native functions may call:
   finite/NaN checks, `math.pi`, and `math.e`
 - limited side-effect and standard-library calls: `print(...)`,
   `logging.debug/info/warning/error(...)`, logger variables assigned from
-  `logging.getLogger(...)`, `datetime`/`time` timestamp calls,
-  `statistics.mean/fmean`, selected `str`/`bytes`/`list` methods,
-  `hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`, and
-  `json.dumps/json.loads` patterns
+  `logging.getLogger(...)`, `datetime.now()/utcnow().isoformat()` and
+  `datetime.now().timestamp()`, `time.time()`, selected `str`/`bytes`/`list`
+  methods, `hashlib.sha256(...).hexdigest()`, and `base64.b64encode(...)`
+
+> **Kept on the Python fallback for fidelity (0.1.0 alpha):** some stdlib calls
+> have no faithful native lowering and are rejected to fallback rather than
+> silently mis-compiled: `json.dumps`/`json.loads` (serde is not
+> CPython-`json`-compatible), `statistics.mean`/`statistics.fmean` (naive native
+> summation diverges from CPython's exact/`math.fsum`), `base64.b64decode`
+> (CPython discards non-alphabet characters the native decoder rejects),
+> `str.strip` (Rust `trim()` and CPython whitespace sets differ on the C0
+> separators), `set[float]`/`sorted(list[float])` (NaN identity/order), and
+> `datetime.utcnow().timestamp()` (naive-UTC-as-local). See "Accepted Native
+> Semantic Divergences" below for the handful of native lowerings that are kept
+> with a small, documented textual difference.
 
 When a direct-Rust native function calls a runtime-backed native function,
 Rextio promotes the caller to the runtime shim path and emits `RXT080`.
@@ -281,6 +315,44 @@ Python code does not call a separate JIT API directly.
 
 Code outside this subset remains on the normal direct Rust, Python runtime shim,
 or CPython/Nuitka fallback path.
+
+## Accepted Native Semantic Divergences
+
+A small number of native lowerings are kept on the direct Rust path even though
+they differ from CPython in a narrow, documented way. These are accepted trade-
+offs for 0.1.0 alpha (the alternative being a Python fallback for a common
+operation or replicating a large amount of CPython runtime formatting). All
+other observed divergences are treated as bugs and either fixed or rejected to
+fallback.
+
+- **`print` / `logging` of a `float`.** A float is formatted with Rust's `{:?}`
+  (Debug), which matches CPython's `float` repr for the common cases (`print(1.0)`
+  writes `1.0`, and large/small magnitudes use scientific notation), but still
+  differs on two narrow points: the NaN spelling (`NaN` vs CPython `nan`) and the
+  exponent format (`1e16` / `1e-5` vs CPython `1e+16` / `1e-05`). Computed values
+  are unaffected — only the textual stdout/log output can differ. int and str
+  format identically.
+- **`print` / `logging` of a `bool`.** Rust prints `true`/`false` where CPython
+  prints `True`/`False`. Same class as the float case: only the textual output
+  differs, and the boolean value itself is unaffected.
+- **`bytes.decode()` on invalid UTF-8.** The native path raises `ValueError`
+  where CPython raises `UnicodeDecodeError`. `UnicodeDecodeError` is a subclass
+  of `ValueError`, so `except ValueError` still catches it; only code that
+  catches `UnicodeDecodeError` specifically sees the difference. A faithful
+  `UnicodeDecodeError` is feasible but DEFERRED for alpha — it would require
+  threading the decode-position data through to the wrapper boundary (where the
+  `py` token is available), since the inner native function has no `py` token.
+  Valid UTF-8 decodes identically.
+
+Operations whose divergence could not be bounded this narrowly are kept on the
+Python fallback instead — for example `json.dumps`/`json.loads` (serde is not
+CPython-`json`-compatible), `set[float]` / `sorted(list[float])` (NaN identity),
+`statistics.mean`/`statistics.fmean` (naive native summation diverges from
+CPython's exact/`math.fsum`), `base64.b64decode` (CPython silently discards
+non-alphabet characters), `str.strip` (Rust `trim()` differs from CPython's
+whitespace set on the C0 separators `\x1c`–`\x1f`), and
+`datetime.utcnow().timestamp()` (CPython interprets the naive UTC wall-clock as
+local time).
 
 ## Out of Scope for 0.1.0 alpha
 

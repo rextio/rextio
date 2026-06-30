@@ -538,8 +538,10 @@ def _build_wheel_artifact(
 ) -> WheelBuildResult:
     if fallback_build.status != "built":
         return skipped_wheel("Fallback packaging failed, so no wheel was generated.")
-    if native_build.status == "failed":
-        return skipped_wheel("Native build failed, so no wheel was generated.")
+    # A native build failure is not fatal to packaging: the importable hybrid
+    # tree still works through the Python fallback, so produce a fallback-only
+    # (pure-Python, py3-none-any) wheel instead of skipping. The wheel tag
+    # reflects the absence of the native extension automatically.
     return build_artifact_wheel(project_root, layout.build_python_dir, layout.dist_dir)
 
 

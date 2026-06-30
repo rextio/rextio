@@ -136,7 +136,6 @@ def head(b: bytes) -> int:
     "stdlib_lowering": """
 import base64
 import hashlib
-import json
 import rextio
 
 @rextio.native
@@ -146,10 +145,6 @@ def digest(b: bytes) -> str:
 @rextio.native
 def encode(b: bytes) -> bytes:
     return base64.b64encode(b)
-
-@rextio.native
-def dump(xs: list[int]) -> str:
-    return json.dumps(xs)
 """,
 }
 

@@ -18,6 +18,11 @@ def render_pyo3_module(
     lines = [
         GENERATED_HEADER,
         "",
+        # pyo3 generates snake_case-violating function names (e.g. `app__f`) and
+        # the prelude carries a few crate imports that a given module may not use;
+        # silence those lints so a clean build does not bury the success line.
+        "#![allow(non_snake_case, unused_imports)]",
+        "",
         "use pyo3::prelude::*;",
         "use pyo3::types::{PyDict, PyTuple};",
         "use base64::Engine;",

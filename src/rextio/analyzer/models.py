@@ -23,6 +23,12 @@ class CallSite:
     line: int
     column: int
     in_loop: bool = False
+    # The scalar type of each positional argument that is a literal constant
+    # (int/float/bool/str/bytes/None), positionally; None for any argument whose
+    # type is not a directly-readable literal. Used by the boundary pass to reject
+    # native→native calls whose literal argument type differs from the callee's
+    # scalar parameter type, which would otherwise emit Rust that fails to compile.
+    arg_types: tuple[str | None, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this call site."""
@@ -31,6 +37,7 @@ class CallSite:
             "line": self.line,
             "column": self.column,
             "in_loop": self.in_loop,
+            "arg_types": list(self.arg_types),
         }
 
 
@@ -80,6 +87,38 @@ class FunctionAnalysis:
     calls: list[CallSite] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
     inferred_arg_types: dict[str, str] = field(default_factory=dict)
+    # The complete resolved parameter types in positional order (annotated params
+    # plus inferred ones), name->type. Unlike inferred_arg_types this includes
+    # explicitly annotated parameters, so the boundary pass can compare a caller's
+    # literal argument types against the callee's declared scalar parameters.
+    signature_arg_types: dict[str, str] = field(default_factory=dict)
+    # Inferred positional argument types for each call this function makes, keyed by
+    # the call's (line, column). Unlike CallSite.arg_types (literal constants only,
+    # captured without an environment) this is filled during type inference, so it
+    # also covers non-literal arguments (known locals/params, sub-expressions). The
+    # boundary pass prefers it over the literal-only types when validating calls.
+    call_arg_types: dict[tuple[int, int], tuple[str | None, ...]] = field(default_factory=dict)
+    # For each call (keyed by its (line, column)), the call target of any argument
+    # that is itself a call, positionally; None for non-call arguments. Lets the
+    # boundary pass resolve a nested call argument's return type through the project
+    # resolver (covering cross-module / imported callees the per-module inference
+    # registry cannot reach) when the locally-inferred type is unknown.
+    call_arg_targets: dict[tuple[int, int], tuple[str | None, ...]] = field(default_factory=dict)
+    # The number of positional parameters (positional-only + normal), or None when
+    # the signature was never captured (e.g. runtime-shim methods). The boundary
+    # pass uses this — not the truthiness/length of signature_arg_types — to check
+    # call arity, so a genuine zero-parameter callee (count 0, not None) is still
+    # validated against over-arity calls.
+    # The resolved return type (annotated, else inferred), used by the boundary pass
+    # to resolve this function's return type when it appears as a nested call
+    # argument — including across modules, via the project resolver.
+    signature_return_type: str | None = None
+    positional_param_count: int | None = None
+    # True when the callee declares any keyword-only parameters. Such a function
+    # cannot be faithfully called through the native calling convention (keyword
+    # call arguments are unsupported, and a keyword-only parameter supplied
+    # positionally diverges from CPython), so native callers are kept on fallback.
+    has_keyword_only_params: bool = False
     inferred_return_type: str | None = None
     native_target_language: str | None = None
     native_runtime_semantics: bool = False
@@ -93,6 +132,16 @@ class FunctionAnalysis:
     jit_skipped_reason: str | None = None
     imports: dict[str, str] = field(default_factory=dict)
     logger_names: tuple[str, ...] = ()
+    # All names bound anywhere in the function body (params, assignments, loop
+    # targets, ...), captured during validation. A value-position name read that
+    # is absent from both the local type environment and this set is unbound in
+    # the function (a module global, closure, or genuinely undefined name) and
+    # cannot be lowered as a Rust local, so it is rejected to the fallback.
+    # Module-level names bound by an assignment (e.g. `len = 5` or `helper = ...`
+    # at module scope). Such a binding shadows a builtin / import / sibling
+    # function of the same name for every function in the module, so a bare call
+    # to that name would lower to the wrong callable. Used by the shadow checker.
+    module_assigned_names: frozenset[str] = frozenset()
 
     @property
     def error_diagnostics(self) -> list[Diagnostic]:
@@ -361,17 +410,28 @@ class ProjectAnalysis:
 
     @property
     def boundary_warnings(self) -> list[Diagnostic]:
-        """The native/fallback boundary warnings (RXT071/RXT073)."""
+        """The native/fallback boundary warnings (RXT073)."""
         return [
             diagnostic
             for diagnostic in self.diagnostics
-            if diagnostic.code in {"RXT071", "RXT073"} and diagnostic.severity == "warning"
+            if diagnostic.code == "RXT073" and diagnostic.severity == "warning"
         ]
 
     @property
     def has_error_diagnostics(self) -> bool:
         """Report whether any diagnostic in the project is an error."""
         return any(diagnostic.severity == "error" for diagnostic in self.diagnostics)
+
+    @property
+    def has_parse_errors(self) -> bool:
+        """Report whether any candidate module failed to parse (RXT000).
+
+        A parse error means a candidate could not even be analyzed, which is a
+        genuine failure. A subset *rejection* (RXT010, boundary codes, ...) is an
+        expected outcome — the function simply stays on the Python fallback — so
+        it is not treated as a failure by ``rextio check``.
+        """
+        return any(diagnostic.code == "RXT000" for diagnostic in self.diagnostics)
 
     def module_for_function(self, function: FunctionAnalysis) -> ModuleAnalysis | None:
         """Return the module owning the given function, or None."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,6 +55,16 @@ def create_target_spec(config: RextioConfig) -> TargetSpec:
     if language not in SUPPORTED_TARGET_LANGUAGES:
         options = ", ".join(sorted(SUPPORTED_TARGET_LANGUAGES))
         raise TargetPlanError(f"unsupported target language: {language!r}. Use {options}.")
+    if config.target.version is not None or config.target.build_options:
+        # These are accepted as forward-looking config but have no effect on
+        # codegen or the build yet; warn so users do not assume they control the
+        # toolchain version or pass build options.
+        warnings.warn(
+            "[target].version and [target].build_options are accepted but have no "
+            "effect in 0.1.0 alpha; they are reserved for a future release.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return TargetSpec(
         language=language,
         version=config.target.version,

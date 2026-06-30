@@ -27,13 +27,17 @@ def native(func: F | None = None, *, target: str | None = None) -> F | Callable[
     functions and methods, not classes.
     """
     normalized_target = _normalize_target(target)
+
+    def apply(wrapped: F) -> F:
+        _require_decoratable(wrapped, "native")
+        setattr(wrapped, "__rextio_native__", True)
+        if normalized_target is not None:
+            setattr(wrapped, "__rextio_native_target__", normalized_target)
+        return wrapped
+
     if func is None:
-        return lambda wrapped: native(wrapped, target=normalized_target)
-    _require_decoratable(func, "native")
-    setattr(func, "__rextio_native__", True)
-    if normalized_target is not None:
-        setattr(func, "__rextio_native_target__", normalized_target)
-    return func
+        return apply
+    return apply(func)
 
 
 def exempt(func: F) -> F:

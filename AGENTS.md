@@ -353,10 +353,11 @@ Default `rextio.toml`:
 native_backend = "rust"
 fallback_backend = "cpython"
 fallback_threshold = 1000
+build_timeout_seconds = 600
 
 [rust]
 binding = "pyo3"
-build_tool = "maturin"
+build_tool = "cargo"
 importable = false
 crate_name = "rextio_generated_rust"
 
@@ -499,6 +500,7 @@ REXTIO_JIT_BACKEND
 REXTIO_JIT_HOT_THRESHOLD
 REXTIO_FALLBACK_BACKEND
 REXTIO_BOUNDARY_FALLBACK_THRESHOLD
+REXTIO_BUILD_TIMEOUT
 REXTIO_RUST_BINDING
 REXTIO_RUST_BUILD_TOOL
 REXTIO_RUST_IMPORTABLE
@@ -712,8 +714,8 @@ Support inside native candidate functions:
 * augmented assignment: `+=`, `-=`, `*=`, `/=`
 * arithmetic operations
 * boolean operations
-* comparisons
-* `if` / `elif` / `else`
+* comparisons (`dict`/`set` operands support only `==` and `!=`, not ordering)
+* `if` / `elif` / `else` with a `bool` condition
 * `for x in xs`
 * `for i in range(len(xs))`
 * `for i in range(n)`
@@ -721,7 +723,7 @@ Support inside native candidate functions:
 * `for i in range(start, stop, step)` when `step` is a positive int literal
 * `for i, x in enumerate(xs)`
 * `for x, y in zip(xs, ys)`
-* `while`
+* `while` with a `bool` condition
 * `break`
 * `continue`
 * `return`
@@ -743,7 +745,8 @@ Support inside native candidate functions:
 * `Optional[T]` / `T | None` annotations with `None` returns and `is None` /
   `is not None` checks
 * calls to other accepted native functions
-* `len(x)`
+* `len(x)` for `list`, `set`, `dict`, `str`, and `bytes` (`str` counts Unicode
+  code points, matching CPython, not UTF-8 bytes)
 * limited `abs`, `min`, `max`, and `sum` builtins
 * limited `all`, `any`, `sorted`, and `reversed` builtins
 * limited `math` subset including trigonometric, logarithmic, rounding,
@@ -760,7 +763,8 @@ Support inside native candidate functions:
 * limited `hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`, and
   `json.dumps/json.loads` lowering, with `json.loads` requiring an expected
   supported target type
-* simple indexing such as `xs[i]`
+* simple `list`, fixed `tuple`, and fixed `dict` indexing such as `xs[i]`
+  (`str` and `bytes` indexing is not supported)
 
 Direct Rust lowering must treat Python/Rust ownership differences
 conservatively. Generated Rust may clone owned values such as `String`,
@@ -823,6 +827,23 @@ semantics shim explicitly covers the construct:
 * dataclasses in 0.1.0 alpha
 * `enumerate` outside a supported loop or comprehension iterable
 * `zip` outside a supported loop or comprehension iterable
+* `range` outside a supported loop or comprehension iterable (value-position
+  `range(...)` such as `return range(n)`)
+* non-`bool` `if`, `elif`, `while`, and comprehension `if` conditions; the
+  condition must be `bool`, so use an explicit comparison (`if len(xs) > 0:`,
+  `if x != 0:`) rather than relying on Python truthiness
+* ordering comparisons (`<`, `<=`, `>`, `>=`) on `dict` or `set` operands; only
+  `==` and `!=` are supported for those types
+* `str` and `bytes` indexing such as `s[0]` (only `list`, fixed `tuple`, and
+  fixed `dict` subscripting is lowered)
+* `len()` of a fixed tuple
+* multiple assignment targets such as `a = b = value`
+* integer literals outside the signed 64-bit (`i64`) range
+* a value-position read of a name bound nowhere in the function (a module
+  global, a closure, or a name first bound inside a nested `if`/`for`/`while`/
+  `try` block and read after it)
+* calling a name shadowed by a local binding or a module-level assignment (such
+  as `len = 5` at module scope, then `len(xs)`)
 * dynamic import
 * `globals`
 * `locals`
@@ -1045,7 +1066,7 @@ def process_all(xs: list[float]) -> list[float]:
 Diagnostic:
 
 ```text
-RXT071 Possible excessive Python/Rust boundary crossing.
+RXT073 Native function call inside a Python loop may erase the speedup.
 ```
 
 Suggestion:
@@ -1079,7 +1100,6 @@ wrapper crossing threshold that falls back after repeated Python-to-native calls
 
 ```text
 RXT070 Native function calls fallback-only function.
-RXT071 Possible excessive Python/Rust boundary crossing.
 RXT072 Native dependency rejected, so caller must fall back.
 RXT073 Native function call inside Python loop may erase speedup.
 ```
@@ -1130,9 +1150,9 @@ RXT040 Native dependency rejected
 RXT050 Codegen failure
 RXT060 Build failure
 RXT070 Native function calls fallback-only function
-RXT071 Possible excessive Python/Rust boundary crossing
 RXT072 Native dependency rejected, so caller must fall back
 RXT073 Native function call inside Python loop may erase speedup
+RXT074 Undecorated function depends on a runtime-shim native; mark it @rextio.native to opt in
 RXT080 Native function uses Python runtime semantics shim
 ```
 
@@ -1351,6 +1371,10 @@ REXTIO_NATIVE_MODE=native
 REXTIO_NATIVE_MODE=fallback
 REXTIO_NATIVE_MODE=auto
 ```
+
+`REXTIO_DEBUG_NATIVE=1` raises the full traceback (instead of warning and
+falling back) when a built native module fails to load — useful for debugging an
+ABI mismatch or a codegen/wrapper name mismatch.
 
 Default mode:
 

@@ -19,7 +19,7 @@ def _is_list_type(value: str | None) -> bool:
 
 
 def _list_item_type(value: str | None) -> str | None:
-    if _is_list_type(value):
+    if value is not None and _is_list_type(value):
         return value[5:-1]
     return None
 
@@ -34,12 +34,12 @@ def _is_supported_list_item_type(value: str) -> bool:
 def _is_supported_dict_value_type(value: str) -> bool:
     if value in {"int", "float", "bool", "str", "bytes"}:
         return True
-    if _is_list_type(value):
+    if value is not None and _is_list_type(value):
         item_type = _list_item_type(value)
         return item_type is not None and _is_supported_list_item_type(item_type)
-    if _is_tuple_type(value):
+    if value is not None and _is_tuple_type(value):
         return all(item_type in {"int", "float", "bool", "str", "bytes"} for item_type in _tuple_item_types(value))
-    if _is_dict_type(value):
+    if value is not None and _is_dict_type(value):
         key_type, value_type = _dict_item_types(value)
         return (
             key_type in DICT_KEY_TYPES
@@ -55,19 +55,19 @@ def _is_supported_dict_value_type(value: str) -> bool:
 def _is_supported_signature_type(value: str) -> bool:
     if value in {"int", "float", "bool", "str", "bytes", "None"}:
         return True
-    if _is_list_type(value):
+    if value is not None and _is_list_type(value):
         item_type = _list_item_type(value)
         return item_type is not None and _is_supported_list_item_type(item_type)
-    if _is_tuple_type(value):
+    if value is not None and _is_tuple_type(value):
         return all(item_type in {"int", "float", "bool", "str", "bytes"} for item_type in _tuple_item_types(value))
-    if _is_dict_type(value):
+    if value is not None and _is_dict_type(value):
         key_type, value_type = _dict_item_types(value)
         return (
             key_type in DICT_KEY_TYPES
             and value_type is not None
             and _is_supported_dict_value_type(value_type)
         )
-    if _is_set_type(value):
+    if value is not None and _is_set_type(value):
         return _set_item_type(value) in SET_ITEM_TYPES
     optional_item = _optional_item_type(value)
     if optional_item is not None:
@@ -80,7 +80,7 @@ def _is_tuple_type(value: str | None) -> bool:
 
 
 def _tuple_item_types(value: str | None) -> list[str]:
-    if not _is_tuple_type(value):
+    if value is None or not _is_tuple_type(value):
         return []
     return _split_type_args(value[6:-1])
 
@@ -90,7 +90,7 @@ def _is_dict_type(value: str | None) -> bool:
 
 
 def _dict_item_types(value: str | None) -> tuple[str | None, str | None]:
-    if not _is_dict_type(value):
+    if value is None or not _is_dict_type(value):
         return None, None
     items = _split_type_args(value[5:-1])
     if len(items) != 2:
@@ -103,7 +103,7 @@ def _is_set_type(value: str | None) -> bool:
 
 
 def _set_item_type(value: str | None) -> str | None:
-    if _is_set_type(value):
+    if value is not None and _is_set_type(value):
         return value[4:-1]
     return None
 
@@ -117,7 +117,7 @@ def _is_optional_type(value: str | None) -> bool:
 
 
 def _optional_item_type(value: str | None) -> str | None:
-    if _is_optional_type(value):
+    if value is not None and _is_optional_type(value):
         return value[9:-1]
     return None
 
@@ -168,7 +168,7 @@ def _constant_int(node: ast.AST) -> int | None:
 def _mutated_collection_names(node: ast.FunctionDef) -> set[str]:
     names: set[str] = set()
     for child in ast.walk(node):
-        if _is_append_call(child) and isinstance(child.func, ast.Attribute):
+        if isinstance(child, ast.Call) and _is_append_call(child) and isinstance(child.func, ast.Attribute):
             receiver = child.func.value
             if isinstance(receiver, ast.Name):
                 names.add(receiver.id)
@@ -253,12 +253,12 @@ def _chained_call_args(node: ast.Call) -> list[ast.AST]:
 def _is_json_supported_type(value: str | None) -> bool:
     if value in JSON_VALUE_TYPES:
         return True
-    if _is_list_type(value):
+    if value is not None and _is_list_type(value):
         item_type = _list_item_type(value)
         return item_type is not None and _is_json_supported_type(item_type)
-    if _is_tuple_type(value):
+    if value is not None and _is_tuple_type(value):
         return all(_is_json_supported_type(item_type) for item_type in _tuple_item_types(value))
-    if _is_dict_type(value):
+    if value is not None and _is_dict_type(value):
         key_type, value_type = _dict_item_types(value)
         return key_type == "str" and _is_json_supported_type(value_type)
     optional_item = _optional_item_type(value)

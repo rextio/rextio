@@ -984,3 +984,24 @@ target.chmod(0o755)
     )
     nuitka.chmod(0o755)
     return nuitka
+
+
+def test_native_build_failure_still_produces_a_fallback_wheel(tmp_path: Path) -> None:
+    from rextio.build.artifact_layout import ArtifactLayout
+    from rextio.build.cargo_builder import NativeBuildResult
+    from rextio.fallback.build_result import FallbackBuildResult
+
+    layout = ArtifactLayout(tmp_path)
+    layout.build_python_dir.mkdir(parents=True, exist_ok=True)
+    (layout.build_python_dir / "mod.py").write_text("x = 1\n", encoding="utf-8")
+
+    native = NativeBuildResult(status="failed", tool="cargo", message="native build failed")
+    fallback = FallbackBuildResult(status="built", backend="cpython", message="ok")
+
+    result = orchestrator._build_wheel_artifact(tmp_path, layout, native, fallback)
+
+    # The hybrid still works via the Python fallback, so packaging produces a
+    # pure-Python (py3-none-any) fallback wheel rather than skipping.
+    assert result.status == "built"
+    assert result.path is not None
+    assert result.path.endswith("-py3-none-any.whl")

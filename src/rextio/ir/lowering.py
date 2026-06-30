@@ -48,6 +48,7 @@ from rextio.ir.nodes import (
     DictIR,
     DictSetIR,
     EffectCallIR,
+    ExceptHandlerIR,
     ExprIR,
     ForIR,
     FunctionIR,
@@ -66,6 +67,7 @@ from rextio.ir.nodes import (
     StatementIR,
     TargetIR,
     TupleIR,
+    TryIR,
     TupleTargetIR,
     UnaryOpIR,
     WhileIR,
@@ -207,7 +209,7 @@ def _argument_type(function: FunctionAnalysis, arg: ast.arg):
     return type_from_string(inferred)
 
 
-def _return_type(function: FunctionAnalysis, node: ast.FunctionDef):
+def _return_type(function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef):
     if node.returns is not None:
         return type_from_annotation(node.returns)
     if function.inferred_return_type is None:
@@ -254,10 +256,10 @@ def lower_statement(
         if len(node.targets) != 1:
             raise LoweringError("multiple assignment targets are not supported")
         if isinstance(node.targets[0], ast.Subscript):
-            target = node.targets[0]
+            subscript_target = node.targets[0]
             return DictSetIR(
-                target=lower_name_target(target.value),
-                key=lower_expr(target.slice, module, resolver),
+                target=lower_name_target(subscript_target.value),
+                key=lower_expr(subscript_target.slice, module, resolver),
                 value=lower_expr(node.value, module, resolver),
             )
         return AssignIR(
@@ -282,12 +284,12 @@ def lower_statement(
         )
     if isinstance(node, ast.Expr):
         if isinstance(node.value, ast.Call) and _is_append_call(node.value):
-            call = node.value
-            if not isinstance(call.func, ast.Attribute):
+            append_call = node.value
+            if not isinstance(append_call.func, ast.Attribute):
                 raise LoweringError("append call target cannot be lowered")
             return AppendIR(
-                target=lower_name_target(call.func.value),
-                value=lower_expr(call.args[0], module, resolver),
+                target=lower_name_target(append_call.func.value),
+                value=lower_expr(append_call.args[0], module, resolver),
             )
         if is_supported_effect_call(node.value, module.imports, module.logger_names):
             call = lower_expr(node.value, module, resolver)
@@ -322,7 +324,31 @@ def lower_statement(
             body=lower_block(node.body, module, resolver),
             orelse=lower_block(node.orelse, module, resolver),
         )
+    if isinstance(node, ast.Try):
+        return TryIR(
+            body=lower_block(node.body, module, resolver),
+            handlers=tuple(
+                ExceptHandlerIR(
+                    exception=_handler_exception_name(handler),
+                    body=lower_block(handler.body, module, resolver),
+                )
+                for handler in node.handlers
+            ),
+            finalbody=lower_block(node.finalbody, module, resolver),
+        )
     raise LoweringError(f"unsupported statement during IR lowering: {type(node).__name__}")
+
+
+def _handler_exception_name(handler: ast.ExceptHandler) -> str:
+    """Return the built-in exception name an ``except`` clause catches.
+
+    The analyzer has already restricted handlers to a single built-in exception
+    ``ast.Name`` with no ``as`` binding, so this lowering is total for accepted
+    functions.
+    """
+    if not isinstance(handler.type, ast.Name):
+        raise LoweringError("except handler type must be a built-in exception name")
+    return handler.type.id
 
 
 def lower_expr(
