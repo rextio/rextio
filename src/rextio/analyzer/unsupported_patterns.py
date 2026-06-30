@@ -1995,27 +1995,22 @@ def _infer_call_type(
     if target in LIST_METHOD_TARGETS:
         return _infer_list_method_type(target, node, function, env)
     if target in STATISTICS_TARGETS:
-        if not _require_arg_count(target, node, function, {1}):
-            return None
-        arg_type = infer_arg(node.args[0])
-        item_type = _list_item_type(arg_type)
-        if item_type == "int" and target == "statistics.mean":
-            # CPython `statistics.mean(list[int])` returns an *int* when the mean
-            # is integral (and a Fraction otherwise), not an f64, so it is not
-            # faithfully a native float. Keep it on the Python fallback.
-            # `statistics.fmean` always returns a float, so fmean(list[int]) and
-            # mean/fmean(list[float]) stay native.
-            _add_unsupported_syntax(
-                function,
-                node,
-                "statistics.mean on a list[int] is not supported in native "
-                "functions because CPython returns an int for an integral mean; "
-                "use statistics.fmean or keep this on the Python fallback",
-            )
-            return None
-        if item_type in NUMERIC_TYPES:
-            return "float"
-        _add_unsupported_syntax(function, node, f"{target} requires list[int] or list[float], got {arg_type}")
+        # CPython `statistics.mean` uses exact (Fraction) summation and `fmean`
+        # uses `math.fsum` (compensated summation); a naive native `sum::<f64>()`
+        # diverges on finite inputs (overflow/cancellation: `mean([1e308, 1e308,
+        # -1e308])` -> CPython `3.33e307` vs native `inf`; `fmean([1e18, 1,
+        # -1e18])` -> CPython `0.333` vs native `0.0`). Exception/NaN semantics
+        # also differ (empty -> StatisticsError, `fmean([inf, -inf])` ->
+        # ValueError; mean(list[int]) returns an int for an integral mean). A
+        # faithful native lowering is out of scope for 0.1.0-alpha, so keep all
+        # of statistics.mean/fmean on the Python fallback.
+        _add_unsupported_syntax(
+            function,
+            node,
+            f"{target} is not supported in native functions because a naive native "
+            "sum diverges from CPython's exact/fsum summation and exception "
+            "semantics; kept on the Python fallback",
+        )
         return None
     if target in HASHLIB_CHAIN_TARGETS:
         inner_args = _chained_call_args(node)
@@ -2118,7 +2113,7 @@ def _infer_str_method_type(
     if receiver_type != "str":
         _add_unsupported_syntax(function, node, f"{target} receiver must be str, got {receiver_type}")
         return None
-    if target in {"str.lower", "str.upper", "str.strip", "str.encode"}:
+    if target in {"str.lower", "str.upper", "str.encode"}:
         if not _require_arg_count(target, node, function, {0}):
             return None
         return "bytes" if target == "str.encode" else "str"

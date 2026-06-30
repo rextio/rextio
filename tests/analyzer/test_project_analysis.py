@@ -2045,8 +2045,6 @@ def numeric(xs: list[float], flags: list[bool]) -> float:
         + math.log2(xs[1])
         + math.log10(xs[1])
         + math.pi
-        + statistics.mean(xs)
-        + statistics.fmean(xs)
         + time.time()
         + datetime.now().timestamp()
     )
@@ -2055,7 +2053,7 @@ def predicates(x: float, flags: list[bool]) -> bool:
     return math.isfinite(x) and not math.isnan(x) and not math.isinf(x) and any(flags) and all(flags)
 
 def text(value: str) -> str:
-    return value.strip().lower().replace("a", "b").upper()
+    return value.lower().replace("a", "b").upper()
 
 def prefix_suffix(value: str) -> bool:
     return value.startswith("a") or value.endswith("z")
@@ -2144,12 +2142,11 @@ def now_ts() -> float:
     assert "app.now_ts" in pure_native
 
 
-def test_statistics_mean_int_and_b64decode_kept_off_native(tmp_path: Path) -> None:
-    # CPython `statistics.mean(list[int])` returns an int for an integral mean
-    # (not an f64), and `base64.b64decode` silently discards non-alphabet
-    # characters the native decoder rejects -- both are kept off the pure native
-    # path. `fmean` (always float), `mean(list[float])`, and `b64encode` stay
-    # native.
+def test_unfaithful_stdlib_kept_off_native(tmp_path: Path) -> None:
+    # `statistics.mean`/`fmean` (naive native summation diverges from CPython's
+    # exact/math.fsum), `base64.b64decode` (CPython discards non-alphabet chars),
+    # and `str.strip` (Rust trim() differs on the C0 separators) are all kept off
+    # the pure native path. `b64encode` and other str methods stay native.
     write_module(
         tmp_path,
         "app.py",
@@ -2167,8 +2164,12 @@ def mean_float(xs: list[float]) -> float:
     return statistics.mean(xs)
 
 @rextio.native
-def fmean_int(xs: list[int]) -> float:
+def fmean_float(xs: list[float]) -> float:
     return statistics.fmean(xs)
+
+@rextio.native
+def strip_it(s: str) -> str:
+    return s.strip()
 
 @rextio.native
 def decode(s: str) -> bytes:
@@ -2177,6 +2178,10 @@ def decode(s: str) -> bytes:
 @rextio.native
 def encode(b: bytes) -> bytes:
     return base64.b64encode(b)
+
+@rextio.native
+def lower_it(s: str) -> str:
+    return s.lower()
 """,
     )
 
@@ -2191,11 +2196,10 @@ def encode(b: bytes) -> bytes:
     def off_native(name: str) -> bool:
         return name in rejected or "RXT080" in diags.get(name, set())
 
-    assert off_native("app.mean_int")
-    assert off_native("app.decode")
-    assert "app.mean_float" not in rejected and diags["app.mean_float"] == set()
-    assert "app.fmean_int" not in rejected and diags["app.fmean_int"] == set()
+    for name in ("app.mean_int", "app.mean_float", "app.fmean_float", "app.strip_it", "app.decode"):
+        assert off_native(name), name
     assert "app.encode" not in rejected and diags["app.encode"] == set()
+    assert "app.lower_it" not in rejected and diags["app.lower_it"] == set()
 
 
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:

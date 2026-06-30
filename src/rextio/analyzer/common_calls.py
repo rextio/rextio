@@ -87,7 +87,12 @@ STR_METHOD_TARGETS = {
     "str.lower",
     "str.replace",
     "str.startswith",
-    "str.strip",
+    # `str.strip` is intentionally excluded: it lowers to Rust `trim()`
+    # (`char::is_whitespace`), but CPython strips per `str.isspace()`, which also
+    # treats the C0 separators U+001C-U+001F (FS/GS/RS/US) as whitespace. So
+    # `'\x1cx\x1c'.strip()` is `'x'` in CPython but unchanged natively -- a silent
+    # divergence. It stays on the Python fallback. (lstrip/rstrip are not
+    # supported either.)
     "str.upper",
 }
 
@@ -146,7 +151,6 @@ COMMON_DIRECT_RUST_CALLS = {
     *MATH_FLOAT_TO_BOOL_TARGETS,
     *MATH_FLOAT_TO_INT_TARGETS,
     *MATH_FLOAT_UNARY_TARGETS,
-    *STATISTICS_TARGETS,
     *STR_METHOD_TARGETS,
     *TIME_TARGETS,
     *DATETIME_NOW_TARGETS,

@@ -222,17 +222,21 @@ Native functions may call:
   finite/NaN checks, `math.pi`, and `math.e`
 - limited side-effect and standard-library calls: `print(...)`,
   `logging.debug/info/warning/error(...)`, logger variables assigned from
-  `logging.getLogger(...)`, `datetime`/`time` timestamp calls,
-  `statistics.mean/fmean`, selected `str`/`bytes`/`list` methods,
-  `hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`, and
-  `json.dumps/json.loads` patterns
+  `logging.getLogger(...)`, `datetime.now()/utcnow().isoformat()` and
+  `datetime.now().timestamp()`, `time.time()`, selected `str`/`bytes`/`list`
+  methods, `hashlib.sha256(...).hexdigest()`, and `base64.b64encode(...)`
 
-> **Known limitation (0.1.0 alpha):** `json.dumps` is lowered through
-> `serde_json::to_string`, whose compact output differs from CPython's default
-> separators (`", "` / `": "`). `datetime`/`time` formatting and `timestamp`
-> behaviour are likewise not guaranteed byte-for-byte identical to CPython. If
-> you depend on exact output formatting, keep those functions on the Python
-> fallback for now.
+> **Kept on the Python fallback for fidelity (0.1.0 alpha):** some stdlib calls
+> have no faithful native lowering and are rejected to fallback rather than
+> silently mis-compiled: `json.dumps`/`json.loads` (serde is not
+> CPython-`json`-compatible), `statistics.mean`/`statistics.fmean` (naive native
+> summation diverges from CPython's exact/`math.fsum`), `base64.b64decode`
+> (CPython discards non-alphabet characters the native decoder rejects),
+> `str.strip` (Rust `trim()` and CPython whitespace sets differ on the C0
+> separators), `set[float]`/`sorted(list[float])` (NaN identity/order), and
+> `datetime.utcnow().timestamp()` (naive-UTC-as-local). See "Accepted Native
+> Semantic Divergences" below for the handful of native lowerings that are kept
+> with a small, documented textual difference.
 
 When a direct-Rust native function calls a runtime-backed native function,
 Rextio promotes the caller to the runtime shim path and emits `RXT080`.
@@ -299,26 +303,32 @@ operation or replicating a large amount of CPython runtime formatting). All
 other observed divergences are treated as bugs and either fixed or rejected to
 fallback.
 
-- **`print` / `logging` of a `float`.** Rust's `{}` Display for `f64` differs
-  from CPython's `float` repr on stdout: it omits the trailing `.0` for whole
-  numbers (`print(1.0)` writes `1`, not `1.0`), never switches to scientific
-  notation for very large/small magnitudes, and writes `NaN`/`inf` rather than
-  `nan`/`inf`. Computed values are unaffected — only the textual stdout/ log
-  output of a float can differ. A faithful Python float repr is out of scope for
-  0.1.0 alpha. Bool, int, and str format identically.
+- **`print` / `logging` of a `float`.** A float is formatted with Rust's `{:?}`
+  (Debug), which matches CPython's `float` repr for the common cases (`print(1.0)`
+  writes `1.0`, and large/small magnitudes use scientific notation), but still
+  differs on two narrow points: the NaN spelling (`NaN` vs CPython `nan`) and the
+  exponent format (`1e16` / `1e-5` vs CPython `1e+16` / `1e-05`). Computed values
+  are unaffected — only the textual stdout/log output can differ. int and str
+  format identically.
+- **`print` / `logging` of a `bool`.** Rust prints `true`/`false` where CPython
+  prints `True`/`False`. Same class as the float case: only the textual output
+  differs, and the boolean value itself is unaffected.
 - **`bytes.decode()` on invalid UTF-8.** The native path raises `ValueError`
   where CPython raises `UnicodeDecodeError`. `UnicodeDecodeError` is a subclass
   of `ValueError`, so `except ValueError` still catches it; only code that
   catches `UnicodeDecodeError` specifically sees the difference. A faithful
-  `UnicodeDecodeError` cannot be constructed inside the native function (it has
-  no `py` token or decode-position data), so the narrower exception type is
-  accepted. Valid UTF-8 decodes identically.
+  `UnicodeDecodeError` is feasible but DEFERRED for alpha — it would require
+  threading the decode-position data through to the wrapper boundary (where the
+  `py` token is available), since the inner native function has no `py` token.
+  Valid UTF-8 decodes identically.
 
 Operations whose divergence could not be bounded this narrowly are kept on the
 Python fallback instead — for example `json.dumps`/`json.loads` (serde is not
 CPython-`json`-compatible), `set[float]` / `sorted(list[float])` (NaN identity),
-`statistics.mean(list[int])` (CPython returns an `int` for an integral mean),
-`base64.b64decode` (CPython silently discards non-alphabet characters), and
+`statistics.mean`/`statistics.fmean` (naive native summation diverges from
+CPython's exact/`math.fsum`), `base64.b64decode` (CPython silently discards
+non-alphabet characters), `str.strip` (Rust `trim()` differs from CPython's
+whitespace set on the C0 separators `\x1c`–`\x1f`), and
 `datetime.utcnow().timestamp()` (CPython interprets the naive UTC wall-clock as
 local time).
 

@@ -1270,8 +1270,6 @@ class _FunctionRenderer:
             return self.render_string_or_bytes_method(expr)
         if expr.function.startswith("list."):
             return self.render_list_method(expr)
-        if expr.function in {"statistics.mean", "statistics.fmean"} and len(expr.args) == 1:
-            return self.render_statistics_mean(expr.args[0])
         if expr.function == "print":
             return self.render_format_macro("println!", expr.args, allow_empty=True)
         if expr.function in {"logging.debug", "logging.info", "logging.warning", "logging.error"}:
@@ -1301,15 +1299,6 @@ class _FunctionRenderer:
             return (
                 "base64::engine::general_purpose::STANDARD"
                 f".encode({strip_wrapping_parens(self.render_call_arg(expr.args[0]))}).into_bytes()"
-            )
-        if expr.function == "base64.b64decode" and len(expr.args) == 1:
-            source = strip_wrapping_parens(self.render_call_arg(expr.args[0]))
-            if isinstance(self.infer_expr_type(expr.args[0]), RxtStr):
-                source = f"{source}.as_bytes()"
-            return (
-                "base64::engine::general_purpose::STANDARD"
-                f".decode({source})"
-                f"{self.map_err_to_error()}"
             )
         rust_name = self.native_names_by_qualname.get(expr.function)
         if rust_name is None:
@@ -1353,18 +1342,18 @@ class _FunctionRenderer:
             return f"{receiver}.to_lowercase()"
         if expr.function == "str.upper" and len(expr.args) == 1:
             return f"{receiver}.to_uppercase()"
-        if expr.function == "str.strip" and len(expr.args) == 1:
-            return f"{receiver}.trim().to_string()"
         if expr.function == "str.encode" and len(expr.args) == 1:
             return f"{receiver}.as_bytes().to_vec()"
         if expr.function == "bytes.decode" and len(expr.args) == 1:
-            # KNOWN LIMITATION (documented in docs/known-limitations.md): on
-            # invalid UTF-8 this raises ValueError, whereas CPython raises
-            # UnicodeDecodeError. UnicodeDecodeError is a subclass of ValueError
-            # (so `except ValueError` still catches it), and a faithful
-            # UnicodeDecodeError cannot be constructed inside the native function
-            # (no `py` token / decode position data), so the narrower exception
-            # type is accepted for 0.1.0-alpha. Valid UTF-8 decodes identically.
+            # KNOWN LIMITATION (documented in docs/unsupported-features.md,
+            # "Accepted Native Semantic Divergences"): on invalid UTF-8 this raises
+            # ValueError, whereas CPython raises UnicodeDecodeError. UnicodeDecodeError
+            # is a subclass of ValueError (so `except ValueError` still catches it).
+            # A faithful UnicodeDecodeError is feasible but DEFERRED for alpha: the
+            # inner native fn has no `py` token and `RextioError` only carries a
+            # message, so it would require threading the decode-position data
+            # (`str::from_utf8(...).valid_up_to()`) through to the wrapper boundary
+            # where `py` is available. Valid UTF-8 decodes identically.
             return (
                 f"String::from_utf8({receiver})"
                 f"{self.map_err_to_error()}"
@@ -1410,25 +1399,6 @@ class _FunctionRenderer:
                 f".ok_or_else(|| {self.error_new(rust_string_literal('list.index(x): x not in list'))})? }}"
             )
         raise RustCodegenError(f"unsupported list method during Rust codegen: {expr.function}")
-
-    def render_statistics_mean(self, expr: ExprIR) -> str:
-        source = strip_wrapping_parens(self.render_call_arg(expr))
-        item_type = None
-        expr_type = self.infer_expr_type(expr)
-        if isinstance(expr_type, RxtList):
-            item_type = expr_type.item_type
-        value_expr = "value" if isinstance(item_type, RxtFloat) else "value as f64"
-        return "\n".join(
-            [
-                "{",
-                f"    let values = {source};",
-                "    if values.is_empty() {",
-                f"        return Err({self.error_new(rust_string_literal('statistics.mean requires at least one data point'))});",
-                "    }",
-                f"    values.iter().copied().map(|value| {value_expr}).sum::<f64>() / values.len() as f64",
-                "}",
-            ]
-        )
 
     def render_naive_isoformat(self, naive_expr: str) -> str:
         # CPython's datetime.now()/utcnow() are *naive*, so .isoformat() has NO
@@ -1644,7 +1614,7 @@ class _FunctionRenderer:
             return RxtInt()
         if expr.function in {"math.isfinite", "math.isinf", "math.isnan"}:
             return RxtBool()
-        if expr.function in {"str.lower", "str.upper", "str.strip", "str.replace"}:
+        if expr.function in {"str.lower", "str.upper", "str.replace"}:
             return RxtStr()
         if expr.function in {"str.startswith", "str.endswith"}:
             return RxtBool()
@@ -1656,8 +1626,6 @@ class _FunctionRenderer:
             return self.infer_expr_type(expr.args[0])
         if expr.function in {"list.count", "list.index"}:
             return RxtInt()
-        if expr.function in {"statistics.mean", "statistics.fmean"}:
-            return RxtFloat()
         if expr.function == "print" or expr.function.startswith("logging."):
             return RxtNone()
         if expr.function in {
@@ -1673,7 +1641,7 @@ class _FunctionRenderer:
             return RxtFloat()
         if expr.function == "hashlib.sha256.hexdigest":
             return RxtStr()
-        if expr.function in {"base64.b64encode", "base64.b64decode"}:
+        if expr.function == "base64.b64encode":
             return RxtBytes()
         return self.native_return_types.get(expr.function)
 
@@ -1714,13 +1682,17 @@ class _FunctionRenderer:
 
     def format_placeholder(self, expr: ExprIR) -> str:
         expr_type = self.infer_expr_type(expr)
-        # KNOWN LIMITATION (documented in docs/known-limitations.md): Rust's `{}`
-        # Display for f64 differs from CPython's float repr -- it omits the `.0`
-        # for whole numbers (`1.0` -> `1`), never uses scientific notation, and
-        # prints `NaN` rather than `nan`. A faithful Python float repr is out of
-        # scope for 0.1.0-alpha, so `print`/`logging` of a float can differ from
-        # CPython on stdout. (Bool/int/str format identically.)
-        if isinstance(expr_type, (RxtInt, RxtFloat, RxtBool, RxtStr)):
+        # KNOWN LIMITATION (documented in docs/unsupported-features.md, "Accepted
+        # Native Semantic Divergences"): the textual print/log form of some scalars
+        # differs from CPython. A float uses Rust Debug (`{:?}`), which matches
+        # CPython's float repr for the common cases (`1.0` -> "1.0", scientific
+        # notation for large/small magnitudes) but still differs on NaN casing
+        # ("NaN" vs "nan") and the exponent format ("1e16"/"1e-5" vs the CPython
+        # "1e+16"/"1e-05"). A bool prints lowercase ("true"/"false") where CPython
+        # prints "True"/"False". int and str format identically to CPython.
+        if isinstance(expr_type, RxtFloat):
+            return "{:?}"
+        if isinstance(expr_type, (RxtInt, RxtBool, RxtStr)):
             return "{}"
         return "{:?}"
 

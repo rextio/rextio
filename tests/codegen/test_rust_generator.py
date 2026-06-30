@@ -800,7 +800,7 @@ import statistics
 from datetime import datetime
 
 def text(value: str) -> str:
-    return value.strip().lower().replace("a", "b").upper()
+    return value.lower().replace("a", "b").upper()
 
 def list_ops(xs: list[int]) -> int:
     copied = sorted(xs)
@@ -813,7 +813,7 @@ def b64_encode(value: str) -> bytes:
     return base64.b64encode(value.encode())
 
 def mathy(x: float) -> float:
-    return math.atan2(x, 1.0) + math.pi + statistics.mean([x]) + datetime.now().timestamp()
+    return math.atan2(x, 1.0) + math.pi + datetime.now().timestamp()
 
 def rounding(x: float) -> int:
     return math.ceil(x) + math.trunc(x)
@@ -826,7 +826,7 @@ def truth(flags: list[bool]) -> bool:
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
-    assert ".trim().to_string().to_lowercase().replace(&String::from(\"a\"), &String::from(\"b\")).to_uppercase()" in source
+    assert ".to_lowercase().replace(&String::from(\"a\"), &String::from(\"b\")).to_uppercase()" in source
     assert "values.sort();" in source
     assert ".iter().filter(|item| *item == &__rextio_needle" in source
     assert ".count() as i64 }" in source
