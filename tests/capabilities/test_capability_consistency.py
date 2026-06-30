@@ -52,7 +52,10 @@ def test_registry_values_are_pinned() -> None:
     assert capabilities.NUMERIC_TYPES == frozenset({"int", "float"})
     assert capabilities.LIST_ITEM_TYPES == frozenset({"int", "float", "bool", "str"})
     assert capabilities.DICT_KEY_TYPES == frozenset({"int", "bool", "str"})
-    assert capabilities.SET_ITEM_TYPES == frozenset({"int", "float", "bool", "str"})
+    # `float` is intentionally excluded from set items (and dict keys): a Rust set
+    # of f64 cannot reproduce CPython's identity-based NaN dedup, so set[float]
+    # stays on the Python fallback.
+    assert capabilities.SET_ITEM_TYPES == frozenset({"int", "bool", "str"})
     assert capabilities.JSON_VALUE_TYPES == frozenset({"int", "float", "bool", "str", "bytes"})
 
 

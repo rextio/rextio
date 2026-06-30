@@ -652,19 +652,6 @@ class _FunctionRenderer:
         if isinstance(expr, SetIR):
             if not expr.items:
                 return "HashSet::new()"
-            if self.is_float_set_expr(expr):
-                lines = ["{"]
-                lines.append("    let mut set = Vec::new();")
-                for item in expr.items:
-                    temp = self.next_temp("__rextio_set_value")
-                    value_src = strip_wrapping_parens(self.render_call_arg(item))
-                    lines.append(f"    let {temp} = {value_src};")
-                    lines.append(f"    if !set.contains(&{temp}) {{")
-                    lines.append(f"        set.push({temp});")
-                    lines.append("    }")
-                lines.append("    set")
-                lines.append("}")
-                return "\n".join(lines)
             lines = ["{"]
             lines.append("    let mut set = HashSet::new();")
             for item in expr.items:
@@ -738,41 +725,20 @@ class _FunctionRenderer:
     def render_set_comprehension(self, expr: SetComprehensionIR) -> str:
         target = self.next_temp("__rextio_set")
         lines = ["{"]
-        is_float_set = self.is_float_set_expr(expr)
-        collection_type = "Vec::new()" if is_float_set else "HashSet::new()"
-        lines.append(f"    let mut {target} = {collection_type};")
+        lines.append(f"    let mut {target} = HashSet::new();")
         lines.extend(
             self.render_comprehension_generators(
                 expr.generators,
                 1,
-                (
-                    lambda indent: self.render_float_set_insert(target, expr.item, indent)
-                    if is_float_set
-                    else [
-                        f"{_indent(indent)}{target}.insert("
-                        f"{strip_wrapping_parens(self.render_call_arg(expr.item))});"
-                    ]
-                ),
+                lambda indent: [
+                    f"{_indent(indent)}{target}.insert("
+                    f"{strip_wrapping_parens(self.render_call_arg(expr.item))});"
+                ],
             )
         )
         lines.append(f"    {target}")
         lines.append("}")
         return "\n".join(lines)
-
-    def render_float_set_insert(self, target: str, item: ExprIR, indent: int) -> list[str]:
-        temp = self.next_temp("__rextio_set_value")
-        value = strip_wrapping_parens(self.render_call_arg(item))
-        prefix = _indent(indent)
-        return [
-            f"{prefix}let {temp} = {value};",
-            f"{prefix}if !{target}.contains(&{temp}) {{",
-            f"{prefix}    {target}.push({temp});",
-            f"{prefix}}}",
-        ]
-
-    def is_float_set_expr(self, expr: ExprIR) -> bool:
-        expr_type = self.infer_expr_type(expr)
-        return isinstance(expr_type, RxtSet) and isinstance(expr_type.item_type, RxtFloat)
 
     def render_comprehension_generators(
         self,

@@ -492,6 +492,22 @@ def scalar_eq(xs: list[float]) -> bool:
 @rextio.native
 def count_floats(xs: list[float]) -> int:
     return xs.count(1.0)
+
+@rextio.native
+def eq_nested(a: list[list[float]], b: list[list[float]]) -> bool:
+    return a == b
+
+@rextio.native
+def count_nested(rows: list[list[float]], row: list[float]) -> int:
+    return rows.count(row)
+
+@rextio.native
+def opt_scalar_is_none(x: float | None) -> bool:
+    return x is None
+
+@rextio.native
+def opt_container_is_none(x: list[float] | None) -> bool:
+    return x is None
 """,
     )
 
@@ -502,17 +518,59 @@ def count_floats(xs: list[float]) -> int:
         f.qualname: {d.code for d in f.diagnostics}
         for f in (*analysis.accepted_native_functions, *analysis.rejected_native_functions)
     }
-    # Float-container `==`/`!=` falls back to Python (RXT010).
+
+    def off_native(name: str) -> bool:
+        # Never compiled to a divergent native comparison: either rejected to the
+        # Python fallback (RXT010) or routed to the Python runtime shim (RXT080).
+        return name in rejected or "RXT080" in diags.get(name, set())
+
+    # Float-container `==`/`!=` falls back to Python (RXT010), including nested.
     assert "app.eq_floats" in rejected
     assert "app.eq_tuples" in rejected
-    # int containers and scalar-float comparisons stay pure native.
+    assert "app.eq_nested" in rejected
+    # list.count/index on a float-containing element type (scalar or nested) is
+    # kept off the pure native path.
+    assert off_native("app.count_floats")
+    assert off_native("app.count_nested")
+    # int containers, scalar-float comparisons, and `x is None` on an optional
+    # (scalar or container) float stay pure native -- `is None` never compares
+    # elements, and a scalar Optional[float] compares faithfully.
     assert "app.eq_ints" not in rejected
     assert diags["app.eq_ints"] == set()
     assert "app.scalar_eq" not in rejected
     assert diags["app.scalar_eq"] == set()
-    # list[float].count is never compiled to a divergent native `==` scan: it is
-    # either rejected to fallback or routed to the Python runtime shim (RXT080).
-    assert "app.count_floats" in rejected or "RXT080" in diags["app.count_floats"]
+    assert diags["app.opt_scalar_is_none"] == set()
+    assert diags["app.opt_container_is_none"] == set()
+
+
+def test_rejects_native_set_of_floats(tmp_path: Path) -> None:
+    # A Rust set of f64 (lowered as Vec + `contains`) cannot reproduce CPython's
+    # set semantics for NaN: CPython dedups the *same* NaN object by identity
+    # (`{n, n}` has length 1) while f64 has no object identity. There is no
+    # faithful native lowering, so set[float] is kept on the Python fallback
+    # (float is excluded from SET_ITEM_TYPES); set[int] still compiles natively.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def unique_floats(xs: list[float]) -> set[float]:
+    return {x for x in xs}
+
+@rextio.native
+def unique_ints(xs: list[int]) -> set[int]:
+    return {x for x in xs}
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.unique_floats" in rejected
+    assert "app.unique_ints" in accepted
 
 
 def test_rejects_invalid_native_marker_arguments(tmp_path: Path) -> None:
@@ -1525,10 +1583,6 @@ def unique(xs: list[int]) -> set[int]:
     return {x for x in xs if x > 0}
 
 @rextio.native
-def unique_float(xs: list[float]) -> set[float]:
-    return {x for x in xs if x > 0.0}
-
-@rextio.native
 def by_index(xs: list[int]) -> dict[int, float]:
     return {i: 1.5 for i, x in enumerate(xs) if x > 0}
 
@@ -1555,7 +1609,6 @@ def last_positive(xs: list[int]) -> int:
         "app.nested",
         "app.squares",
         "app.unique",
-        "app.unique_float",
     ]
     assert analysis.rejected_native_functions == []
 

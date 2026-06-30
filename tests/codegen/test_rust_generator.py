@@ -545,10 +545,6 @@ def unique(xs: list[int]) -> set[int]:
     return {x for x in xs if x > 0}
 
 @rextio.native
-def unique_float(xs: list[float]) -> set[float]:
-    return {x for x in xs if x > 0.0}
-
-@rextio.native
 def by_index(xs: list[int]) -> dict[int, float]:
     return {i: 1.5 for i, x in enumerate(xs) if x > 0}
 
@@ -581,9 +577,6 @@ def last_positive(xs: list[int]) -> int:
     assert "fn app__flags(xs: Vec<i64>) -> PyResult<HashMap<bool, String>> {" in source
     assert "PyKeyError::new_err(__rextio_key" in source
     assert "fn app__unique(xs: Vec<i64>) -> PyResult<HashSet<i64>> {" in source
-    assert "fn app__unique_float(xs: Vec<f64>) -> PyResult<Vec<f64>> {" in source
-    assert "let mut __rextio_set_1 = Vec::new();" in source
-    assert "if !__rextio_set_1.contains(&__rextio_set_value_" in source
     assert "let mut y: Option<i64> = None;" in source
     assert "y = Some(x.clone());" in source
     assert "PyUnboundLocalError" in source

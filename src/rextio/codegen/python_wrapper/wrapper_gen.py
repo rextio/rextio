@@ -235,32 +235,21 @@ def _call_args(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
 
 
 def _native_call_args(function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    args = [
-        _native_arg(arg.arg, _arg_type_name(function, arg))
-        for arg in [*node.args.posonlyargs, *node.args.args]
-    ]
+    # All natively-supported argument types pass through the PyO3 boundary as-is.
+    # (set[float] used to be lowered to a Vec and needed a `list(...)` conversion
+    # here, but it is no longer native -- it stays on the Python fallback -- so no
+    # element-type-specific conversion is required.)
+    args = [arg.arg for arg in [*node.args.posonlyargs, *node.args.args]]
     if node.args.vararg is not None:
         args.append(f"*{node.args.vararg.arg}")
-    args.extend(
-        f"{arg.arg}={_native_arg(arg.arg, _arg_type_name(function, arg))}" for arg in node.args.kwonlyargs
-    )
+    args.extend(f"{arg.arg}={arg.arg}" for arg in node.args.kwonlyargs)
     if node.args.kwarg is not None:
         args.append(f"**{node.args.kwarg.arg}")
     return ", ".join(args)
 
 
-def _native_arg(name: str, type_name: str | None) -> str:
-    if type_name == "set[float]":
-        return f"list({name})"
-    return name
-
-
 def _is_set_type(type_name: str | None) -> bool:
     return type_name is not None and type_name.startswith("set[") and type_name.endswith("]")
-
-
-def _arg_type_name(function: FunctionAnalysis, arg: ast.arg) -> str | None:
-    return _annotation_name(arg.annotation) or function.inferred_arg_types.get(arg.arg)
 
 
 def _return_type_name(function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:

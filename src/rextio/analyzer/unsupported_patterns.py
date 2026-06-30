@@ -2153,16 +2153,20 @@ def _infer_list_method_type(
     if target in {"list.count", "list.index"}:
         if not _require_arg_count(target, node, function, {1}):
             return None
-        if item_type == "float":
+        if item_type is not None and "float" in item_type:
             # count/index compare the needle against each element with CPython's
-            # identity-or-equality semantics, so a NaN needle (or NaN element)
-            # diverges from native Rust `==`. Keep on the Python fallback.
+            # identity-or-equality semantics, so a NaN diverges from native Rust
+            # `==`. This applies to a scalar `float` element AND to any element
+            # type that itself contains a float (e.g. list[list[float]],
+            # list[dict[str, float]], list[tuple[float, float]]), which would
+            # otherwise lower to a nested `Vec<f64>::eq` scan. Keep on the Python
+            # fallback.
             _add_unsupported_syntax(
                 function,
                 node,
-                f"{target} on a list[float] is not supported in native functions "
-                "because a NaN element diverges from CPython's identity-or-equality "
-                "comparison",
+                f"{target} on a list whose element type contains float is not "
+                "supported in native functions because a NaN element diverges from "
+                "CPython's identity-or-equality comparison",
             )
             return None
         arg_type = _infer_expr_type(node.args[0], function, env)
@@ -2253,6 +2257,9 @@ def _is_none_literal(node: ast.AST) -> bool:
     )
 
 
+_FLOAT_CONTAINER_CONSTRUCTORS = ("list[", "tuple[", "dict[", "set[", "frozenset[")
+
+
 def _is_float_containing_container(type_name: str | None) -> bool:
     """Report whether a type is a container (list/tuple/dict/set) holding a float.
 
@@ -2260,10 +2267,21 @@ def _is_float_containing_container(type_name: str | None) -> bool:
     (`x is y or x == y`); the only value where `is` is True but `==` is False is
     NaN. Native Rust container comparison (`Vec<f64> == ...`) has no identity
     short-circuit, so a container holding a float diverges from CPython on a NaN
-    element. A bare scalar `float` is excluded -- scalar `nan == nan` is False in
-    both languages, so it matches.
+    element -- including nested containers such as ``list[list[float]]`` and
+    ``dict[str, float]``.
+
+    Requires an actual container constructor, so a bare scalar ``float`` and a
+    scalar ``Optional[float]`` / ``float | None`` are excluded: scalar
+    ``nan == nan`` is False in both languages (Rust ``Option<f64>`` derives the
+    same), so those compare faithfully and must not be over-rejected. A float
+    nested inside an optional container (``Optional[list[float]]``) still matches
+    via the ``list[`` constructor.
     """
-    return type_name is not None and "[" in type_name and "float" in type_name
+    return (
+        type_name is not None
+        and "float" in type_name
+        and any(constructor in type_name for constructor in _FLOAT_CONTAINER_CONSTRUCTORS)
+    )
 
 
 def _validate_compare_types(
@@ -2313,14 +2331,20 @@ def _validate_compare_types(
     reported_float_container = False
     for op, comparator in zip(node.ops, node.comparators, strict=True):
         right_type = infer_side(comparator)
-        if not reported_float_container and (
-            _is_float_containing_container(left_type)
-            or _is_float_containing_container(right_type)
+        if (
+            not reported_float_container
+            and not isinstance(op, (ast.Is, ast.IsNot))
+            and (
+                _is_float_containing_container(left_type)
+                or _is_float_containing_container(right_type)
+            )
         ):
             # CPython container `==`/`!=`/`<`... compares elements with
             # identity-or-equality, so a NaN element (which is `is`-equal but not
             # `==`-equal to itself) makes the result diverge from native Rust value
-            # comparison. Keep the function on the Python fallback.
+            # comparison. Keep the function on the Python fallback. (`is`/`is not`
+            # do not compare elements -- they are identity checks against None --
+            # so they are exempt and handled by the `is`/`is not` guard below.)
             _add_unsupported_syntax(
                 function,
                 node,

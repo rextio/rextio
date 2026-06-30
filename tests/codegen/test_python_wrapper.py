@@ -44,14 +44,17 @@ def helper(x: int) -> int:
     assert "_rextio_fallback_module.add = add" in wrapper
 
 
-def test_wrapper_converts_float_sets_for_native_boundary(tmp_path: Path) -> None:
+def test_wrapper_wraps_native_set_return_as_python_set(tmp_path: Path) -> None:
+    # The native side returns a Rust HashSet; the wrapper normalizes it back to a
+    # Python `set`. (set[float] is not native -- it stays on the Python fallback --
+    # so the boundary only handles int/bool/str sets, which pass through as-is.)
     source = tmp_path / "app.py"
     source.write_text(
         """
 import rextio
 
 @rextio.native
-def unique(values: set[float]) -> set[float]:
+def unique(values: set[int]) -> set[int]:
     return {value for value in values}
 """,
         encoding="utf-8",
@@ -61,34 +64,9 @@ def unique(values: set[float]) -> set[float]:
 
     wrapper = render_wrapper_module(module)
 
-    assert "def unique(values: set[float]) -> set[float]:" in wrapper
+    assert "def unique(values: set[int]) -> set[int]:" in wrapper
     assert "return _fallback_unique(values)" in wrapper
-    assert "return set(_native_unique(list(values)))" in wrapper
-
-
-def test_wrapper_uses_pyi_signature_for_float_set_boundary(tmp_path: Path) -> None:
-    source = tmp_path / "app.py"
-    source.write_text(
-        """
-def unique(values):
-    return {value for value in values}
-""",
-        encoding="utf-8",
-    )
-    source.with_suffix(".pyi").write_text(
-        """
-def unique(values: set[float]) -> set[float]: ...
-""",
-        encoding="utf-8",
-    )
-    analysis = analyze_project(tmp_path)
-    module = analysis.modules[0]
-
-    wrapper = render_wrapper_module(module)
-
-    assert "def unique(values):" in wrapper
-    assert "return _fallback_unique(values)" in wrapper
-    assert "return set(_native_unique(list(values)))" in wrapper
+    assert "return set(_native_unique(values))" in wrapper
 
 
 def test_wrapper_selects_native_top_level_fallback_module(tmp_path: Path) -> None:
