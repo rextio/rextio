@@ -185,6 +185,14 @@ def _collect_module_functions(
         and item.returns is not None
         and is_supported_type(item.returns)
     }
+    # Every same-module function name (regardless of return annotation), so the
+    # shadow check can detect a local that rebinds any sibling function — including
+    # forward-referenced or unannotated ones absent from return_types.
+    module_function_names: set[str] = {
+        item.name
+        for item in tree.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
     for node in tree.body:
         if isinstance(node, ast.AsyncFunctionDef):
             marker = native_marker_for_function(node)
@@ -227,12 +235,13 @@ def _collect_module_functions(
         elif marker is not None and not _native_marker_applies(marker, target_language):
             function.is_native_candidate = False
         elif has_marker:
-            _classify_native_function(node, function, return_types)
+            _classify_native_function(node, function, return_types, module_function_names)
         elif native_marker == "auto" and _is_auto_native_candidate(
             node,
             function,
             target_language,
             return_types,
+            module_function_names,
         ):
             function.is_native_candidate = True
             function.accepted = True
@@ -242,6 +251,7 @@ def _collect_module_functions(
             target_language,
             jit_hot_threshold,
             return_types,
+            module_function_names,
         ):
             pass
         # Make this function's resolved return type available to later functions'
@@ -266,6 +276,7 @@ def _mark_jit_candidate(
     target_language: str,
     jit_hot_threshold: int,
     return_types: dict[str, str] | None = None,
+    module_function_names: set[str] | None = None,
 ) -> bool:
     if node.decorator_list:
         return False
@@ -284,7 +295,7 @@ def _mark_jit_candidate(
         imports=dict(function.imports),
         logger_names=function.logger_names,
     )
-    validate_native_function(node, probe, return_types)
+    validate_native_function(node, probe, return_types, module_function_names)
     accepted, reason = is_cranelift_jit_candidate(node, probe)
     if not accepted:
         # Surface the specific case where an otherwise-eligible int helper is kept
@@ -313,6 +324,7 @@ def _is_auto_native_candidate(
     function: FunctionAnalysis,
     target_language: str,
     return_types: dict[str, str] | None = None,
+    module_function_names: set[str] | None = None,
 ) -> bool:
     if node.decorator_list:
         return False
@@ -331,7 +343,7 @@ def _is_auto_native_candidate(
         imports=dict(function.imports),
         logger_names=function.logger_names,
     )
-    validate_native_function(node, probe, return_types)
+    validate_native_function(node, probe, return_types, module_function_names)
     if probe.accepted:
         function.inferred_arg_types = dict(probe.inferred_arg_types)
         function.signature_arg_types = dict(probe.signature_arg_types)
@@ -356,6 +368,7 @@ def _classify_native_function(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
     return_types: dict[str, str] | None = None,
+    module_function_names: set[str] | None = None,
 ) -> None:
     probe = FunctionAnalysis(
         name=function.name,
@@ -372,7 +385,7 @@ def _classify_native_function(
         imports=dict(function.imports),
         logger_names=function.logger_names,
     )
-    validate_native_function(node, probe, return_types)
+    validate_native_function(node, probe, return_types, module_function_names)
     function.inferred_arg_types = dict(probe.inferred_arg_types)
     function.signature_arg_types = dict(probe.signature_arg_types)
     function.signature_return_type = probe.signature_return_type

@@ -2916,6 +2916,92 @@ def walrus_comprehension_shadow(xs: list[int]) -> int:
     assert "pkg.main.walrus_comprehension_shadow" in rejected
 
 
+def test_direct_and_builtin_and_untyped_sibling_shadows_kept_off_native(
+    tmp_path: Path,
+) -> None:
+    # The shadow check covers every call (direct calls, not only nested arguments) and
+    # the complete set of callable names: a same-module function whether annotated,
+    # unannotated, or forward-referenced, and supported builtins. A local that rebinds
+    # any of those and then calls it must keep the function off the direct-native path.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def direct_call_shadow() -> int:
+    take_int = 0
+    return take_int(1)
+
+@rextio.native
+def builtin_shadow() -> int:
+    len = 0
+    return len([1])
+
+@rextio.native
+def forward_untyped_sibling_shadow() -> int:
+    make_thing = 0
+    return take_int(make_thing())
+
+@rextio.native
+def make_thing():
+    return 7
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert "app.direct_call_shadow" in rejected
+    assert "app.builtin_shadow" in rejected
+    assert "app.forward_untyped_sibling_shadow" in rejected
+
+
+def test_walrus_in_nested_comprehension_is_not_over_collected(tmp_path: Path) -> None:
+    # A PEP 572 walrus inside a NESTED comprehension is scoped to that inner
+    # comprehension and does not leak into the function, so it must not be treated as
+    # a shadow of an imported callable — the outer function stays native. A normal
+    # builtin call (not shadowed) also stays native.
+    write_module(
+        tmp_path,
+        "pkg/lib.py",
+        """
+import rextio
+
+@rextio.native
+def make_int() -> int:
+    return 1
+""",
+    )
+    write_module(
+        tmp_path,
+        "pkg/main.py",
+        """
+import rextio
+from pkg.lib import make_int
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def nested_comp_walrus(xs: list[int]) -> int:
+    zs = [[(make_int := 0) for y in xs] for x in xs]
+    return take_int(len(xs))
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "pkg.main.nested_comp_walrus" in accepted
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,

@@ -113,10 +113,11 @@ def validate_native_function(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
     return_types: dict[str, str] | None = None,
+    module_function_names: set[str] | None = None,
 ) -> None:
     """Validate a function body against the supported subset, attaching diagnostics."""
     _validate_decorators(node, function)
-    _infer_missing_signature_from_context(node, function, return_types)
+    _infer_missing_signature_from_context(node, function, return_types, module_function_names)
     _validate_signature(node, function)
     _validate_body(node, function)
     _validate_identifiers(node, function)
@@ -909,9 +910,49 @@ def _infer_missing_signature_from_context(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
     return_types: dict[str, str] | None = None,
+    module_function_names: set[str] | None = None,
 ) -> None:
-    inferencer = _SignatureInferencer(node, function, return_types)
+    inferencer = _SignatureInferencer(node, function, return_types, module_function_names)
     inferencer.infer()
+
+
+# Bare-name builtins the analyzer/codegen resolve to a native call. If one of these
+# is rebound as a local and then called, lowering would emit the builtin instead of
+# the local, so a local shadow of one of these names must reject the function.
+_SHADOWABLE_BUILTIN_CALLS = frozenset(
+    {
+        "abs", "all", "any", "bool", "bytes", "dict", "enumerate", "float", "frozenset",
+        "int", "len", "list", "max", "min", "print", "range", "reversed", "set",
+        "sorted", "str", "sum", "tuple", "zip",
+    }
+)
+
+
+def _collect_leaked_walrus_targets(node: ast.AST, names: set[str]) -> None:
+    """Add PEP 572 walrus (`:=`) target names that leak from ``node`` into its scope.
+
+    Walrus targets inside a comprehension leak to the enclosing function scope, but a
+    walrus inside a *nested* comprehension or lambda is scoped to that inner scope and
+    does not leak here, so do not descend into nested comprehension/lambda/function
+    nodes.
+    """
+    for child in ast.iter_child_nodes(node):
+        if isinstance(
+            child,
+            (
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.GeneratorExp,
+                ast.Lambda,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+            ),
+        ):
+            continue
+        if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+            names.add(child.target.id)
+        _collect_leaked_walrus_targets(child, names)
 
 
 def _local_binding_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
@@ -954,10 +995,10 @@ def _local_binding_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[st
             # Comprehension `for` targets are scoped to the comprehension and never
             # leak, but PEP 572 walrus (`:=`) targets inside the element, conditions,
             # or iterables DO leak into this (the enclosing function) scope, so collect
-            # them. The leftmost generator's iterable is also evaluated in this scope.
-            for sub in ast.walk(comp):
-                if isinstance(sub, ast.NamedExpr) and isinstance(sub.target, ast.Name):
-                    names.add(sub.target.id)
+            # them — without descending into a nested comprehension/lambda, whose own
+            # walrus targets are scoped to that inner scope and do not leak here. The
+            # leftmost generator's iterable is also evaluated in this scope.
+            _collect_leaked_walrus_targets(comp, names)
             generators = getattr(comp, "generators", [])
             if generators:
                 self.visit(generators[0].iter)
@@ -992,14 +1033,20 @@ class _SignatureInferencer:
         node: ast.FunctionDef,
         function: FunctionAnalysis,
         return_types: dict[str, str] | None = None,
+        module_function_names: set[str] | None = None,
     ) -> None:
         self.node = node
         self.function = function
         # name -> return type for sibling functions in the same module, used to
         # resolve the type of a nested call argument (e.g. callee(producer())).
         self.sibling_return_types = return_types or {}
-        # Names bound as locals in this function, used to detect a nested call whose
-        # callee name is shadowed by a local (so it does not reach the import/sibling).
+        # Every same-module function name (regardless of return-type annotation), used
+        # — together with imports and supported builtins — to detect a call whose
+        # callee name is shadowed by a local binding (so it does not reach the
+        # import/sibling/builtin and would lower to a call to the wrong function).
+        self.module_function_names = module_function_names or set()
+        # Names bound as locals in this function, used to detect a call whose callee
+        # name is shadowed by a local (so it does not reach the import/sibling).
         self.local_names = _local_binding_names(node)
         self.args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
         self.arg_names = {arg.arg for arg in self.args}
@@ -1188,7 +1235,42 @@ class _SignatureInferencer:
                 left_type = self.infer_expr(node.left, right_type)
             left_type = right_type or left_type
 
+    def _is_shadowed_callable(self, node: ast.Call) -> bool:
+        """Whether this call's callee root name is shadowed by a local binding.
+
+        True only when the root name (bare `f()` or the receiver of `mod.f()`) is both
+        bound as a local in this function AND a name that would otherwise resolve to a
+        callable — an import, a same-module function, or a supported builtin. In that
+        case the call does not reach that callable (the local shadows it), so lowering
+        would emit a call to the wrong function. A method call on an ordinary local /
+        parameter (whose name is none of those) is not a shadow.
+        """
+        root = node.func
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        return (
+            isinstance(root, ast.Name)
+            and root.id in self.local_names
+            and (
+                root.id in self.function.imports
+                or root.id in self.module_function_names
+                or root.id in _SHADOWABLE_BUILTIN_CALLS
+            )
+        )
+
     def infer_call(self, node: ast.Call, expected: str | None) -> str | None:
+        if self._is_shadowed_callable(node):
+            # Calling a name that is shadowed by a local binding would lower to a call
+            # to the wrong (imported / sibling / builtin) function, diverging from
+            # CPython, so reject the whole function (covers direct and nested calls,
+            # for any parameter type). De-duplicated by (code, line, column).
+            _add_unsupported_syntax(
+                self.function,
+                node,
+                "calling a name that is shadowed by a local binding is not supported "
+                "in native functions; it would lower to a call to the wrong function",
+            )
+            return None
         target = canonical_call_target(node, self.function.imports, self.function.logger_names)
         if target is None:
             target = dotted_name(node.func)
@@ -1297,31 +1379,8 @@ class _SignatureInferencer:
         arg_type = self.infer_expr(arg)
         target: str | None = None
         if isinstance(arg, ast.Call):
-            root = arg.func
-            while isinstance(root, ast.Attribute):
-                root = root.value
-            if (
-                isinstance(root, ast.Name)
-                and root.id in self.local_names
-                and (root.id in self.function.imports or root.id in self.sibling_return_types)
-            ):
-                # The callable's root name is an imported or same-module function that
-                # is ALSO bound as a local in this function, so the call does not reach
-                # that function (the local shadows it) — for a bare call `f()` or an
-                # attribute call `mod.f()` whose receiver `mod` is shadowed. Lowering
-                # would emit a call to the wrong (imported/sibling) function, diverging
-                # from CPython, so reject the whole function (a plain argument backstop
-                # would miss this for a non-scalar parameter). A method call on an
-                # ordinary local/parameter (whose name is not an import/sibling) is not
-                # a shadow and is left alone.
-                _add_unsupported_syntax(
-                    self.function,
-                    arg,
-                    "calling a name that is shadowed by a local binding is not "
-                    "supported in native functions; it would lower to a call to the "
-                    "wrong (imported or sibling) function",
-                )
-                return None, None
+            # A shadowed callee is already rejected in `infer_call` (reached via the
+            # `infer_expr(arg)` above), which covers direct and nested calls alike.
             target = canonical_call_target(arg, self.function.imports, self.function.logger_names)
             if target is None:
                 target = dotted_name(arg.func)
