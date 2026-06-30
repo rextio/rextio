@@ -101,6 +101,9 @@ def _boundary_errors(
             continue
         dependency = resolved.function
         if native_jit_enabled and dependency is not None and dependency.is_jit_candidate:
+            # JIT candidates are lowered to a typed native inner function just like
+            # accepted native siblings, so the same call-compatibility check applies.
+            diagnostics.extend(_native_arg_type_errors(function, call, dependency))
             continue
         if dependency is not None and not dependency.is_native_candidate:
             diagnostics.append(
@@ -162,21 +165,54 @@ def _native_arg_type_errors(
     call: CallSite,
     dependency: FunctionAnalysis,
 ) -> list[Diagnostic]:
-    """Reject native→native calls with literal args that mismatch scalar params.
+    """Reject native→native calls that are not compatible with the callee signature.
 
-    Rust has no implicit numeric coercion, so passing a literal of a different
-    scalar type than the callee declares (e.g. ``g(1.2)`` where ``g(x: int)``,
-    or ``g(1)`` where ``g(x: float)``) compiles to Rust that fails ``cargo build``
-    with E0308. CPython accepts such calls, so the contract requires keeping the
-    caller on the Python fallback rather than silently building broken native code.
+    The lowered Rust inner function has a fixed positional arity and exact scalar
+    parameter types with no implicit coercion and no default arguments, so a call
+    that CPython accepts can still emit Rust that fails ``cargo build``:
 
-    Only literal arguments (``call.arg_types`` entry not None) against scalar
-    parameters are checked; non-literal arguments and non-scalar parameters
-    (``Optional[...]``, ``list[...]``, etc.) are left to the existing passes.
+    - a scalar argument of a different type than the parameter (``g(1.2)`` where
+      ``g(x: int)``, or ``g(1)`` where ``g(x: float)``) -> E0308;
+    - too few arguments (an omitted default, ``g()`` where ``g(x: int = 1)``) or
+      too many arguments (``g(1, 2)`` where ``g(x: int)``) -> E0061.
+
+    The contract requires keeping such a caller on the Python fallback (RXT010)
+    rather than silently building broken native code.
+
+    Argument types come from the caller's inferred ``call_arg_types`` (which covers
+    non-literal arguments such as known locals) when available, falling back to the
+    literal-only ``CallSite.arg_types``. Non-scalar parameters (``Optional[...]``,
+    ``list[...]``, etc.) and arguments whose type cannot be inferred are not type
+    checked. Arity is only checked when the callee's parameter types are known.
     """
     param_types = list(dependency.signature_arg_types.values())
+    arg_types = function.call_arg_types.get((call.line, call.column), call.arg_types)
     diagnostics: list[Diagnostic] = []
-    for index, arg_type in enumerate(call.arg_types):
+
+    if param_types and len(arg_types) != len(param_types):
+        diagnostics.append(
+            Diagnostic(
+                code="RXT010",
+                severity="error",
+                message=(
+                    f"native call to {dependency.qualname} passes {len(arg_types)} "
+                    f"argument(s) but the native function takes {len(param_types)}; the "
+                    "lowered Rust function has a fixed arity with no default arguments, so "
+                    "this would emit native code that fails to compile"
+                ),
+                file_path=function.file_path,
+                line=call.line,
+                column=call.column,
+                function_name=function.qualname,
+                suggestion=(
+                    "Pass exactly one argument per native parameter (defaults are not "
+                    "lowered), or keep this caller on the Python fallback."
+                ),
+            )
+        )
+        return diagnostics
+
+    for index, arg_type in enumerate(arg_types):
         if arg_type is None or index >= len(param_types):
             continue
         param_type = param_types[index]

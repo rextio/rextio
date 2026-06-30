@@ -2327,6 +2327,83 @@ def good_caller() -> int:
     assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}
 
 
+def test_native_call_nonliteral_argument_type_mismatch_kept_off_native(tmp_path: Path) -> None:
+    # A known local of the wrong scalar type is just as uncompilable as a literal
+    # (float local -> int parameter is E0308). The caller's inferred argument types
+    # (not only literal constants) must be validated against the callee signature.
+    # A local whose type matches stays native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def callee(x: int) -> int:
+    return x
+
+@rextio.native
+def bad_caller() -> int:
+    y = 1.2
+    return callee(y)
+
+@rextio.native
+def good_caller(z: int) -> int:
+    y = z
+    return callee(y)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.bad_caller" in rejected
+    assert "app.good_caller" in accepted
+    assert "app.callee" in accepted
+
+
+def test_native_call_arity_mismatch_kept_off_native(tmp_path: Path) -> None:
+    # The lowered Rust inner function has a fixed arity and no default arguments, so
+    # omitting a defaulted argument or passing an extra one is E0061. Both callers
+    # are kept off native; a call with the exact arity stays native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def with_default(x: int = 1) -> int:
+    return x
+
+@rextio.native
+def one_param(x: int) -> int:
+    return x
+
+@rextio.native
+def too_few() -> int:
+    return with_default()
+
+@rextio.native
+def too_many() -> int:
+    return one_param(1, 2)
+
+@rextio.native
+def exact() -> int:
+    return one_param(1)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.too_few" in rejected
+    assert "app.too_many" in rejected
+    assert "app.exact" in accepted
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,

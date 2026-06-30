@@ -1174,8 +1174,13 @@ class _SignatureInferencer:
         if target == "json.loads" and node.args:
             self.infer_expr(node.args[0], "str")
             return expected if expected is not None and _is_json_supported_type(expected) else None
-        for arg in node.args:
-            self.infer_expr(arg)
+        # Fall-through: a call to a user-defined function (native sibling or fallback).
+        # Record each positional argument's inferred type so the boundary pass can
+        # validate it against the callee signature, including non-literal arguments
+        # whose type is only known here (with the local environment).
+        self.function.call_arg_types[(node.lineno, node.col_offset)] = tuple(
+            self.infer_expr(arg) for arg in node.args
+        )
         return None
 
     def infer_string_method(self, node: ast.Call, expected: str | None, target: str) -> str | None:

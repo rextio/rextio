@@ -271,6 +271,7 @@ def _mark_jit_candidate(
         return False
     function.inferred_arg_types = dict(probe.inferred_arg_types)
     function.signature_arg_types = dict(probe.signature_arg_types)
+    function.call_arg_types = dict(probe.call_arg_types)
     function.inferred_return_type = probe.inferred_return_type
     function.native_target_language = target_language
     function.is_jit_candidate = True
@@ -305,6 +306,7 @@ def _is_auto_native_candidate(
     if probe.accepted:
         function.inferred_arg_types = dict(probe.inferred_arg_types)
         function.signature_arg_types = dict(probe.signature_arg_types)
+        function.call_arg_types = dict(probe.call_arg_types)
         function.inferred_return_type = probe.inferred_return_type
         function.native_target_language = target_language
         return True
@@ -336,6 +338,7 @@ def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis)
     validate_native_function(node, probe)
     function.inferred_arg_types = dict(probe.inferred_arg_types)
     function.signature_arg_types = dict(probe.signature_arg_types)
+    function.call_arg_types = dict(probe.call_arg_types)
     function.inferred_return_type = probe.inferred_return_type
     if probe.accepted:
         function.accepted = True

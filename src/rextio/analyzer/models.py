@@ -92,6 +92,12 @@ class FunctionAnalysis:
     # explicitly annotated parameters, so the boundary pass can compare a caller's
     # literal argument types against the callee's declared scalar parameters.
     signature_arg_types: dict[str, str] = field(default_factory=dict)
+    # Inferred positional argument types for each call this function makes, keyed by
+    # the call's (line, column). Unlike CallSite.arg_types (literal constants only,
+    # captured without an environment) this is filled during type inference, so it
+    # also covers non-literal arguments (known locals/params, sub-expressions). The
+    # boundary pass prefers it over the literal-only types when validating calls.
+    call_arg_types: dict[tuple[int, int], tuple[str | None, ...]] = field(default_factory=dict)
     inferred_return_type: str | None = None
     native_target_language: str | None = None
     native_runtime_semantics: bool = False

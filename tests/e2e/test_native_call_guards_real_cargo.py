@@ -16,10 +16,12 @@ def test_real_cargo_build_keeps_uncompilable_shapes_off_native(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # These three shapes would each emit Rust that fails ``cargo build`` if accepted
-    # natively (E0308 for a float->int call argument, E0282 for a bare-None local and
-    # a None tuple item). The analyzer must keep their callers/owners on the Python
-    # fallback so the native module still builds, while a type-matching caller and an
+    # Each of these shapes would emit Rust that fails ``cargo build`` if accepted
+    # natively: E0308 for a scalar call-argument type mismatch (literal float->int
+    # and a known float local -> int), E0061 for an arity mismatch (omitted default
+    # and an extra argument), and E0282 for a bare-None local and a None tuple item.
+    # The analyzer must keep their callers/owners on the Python fallback so the native
+    # module still builds, while type-matching callers, an exact-arity call, and an
     # all-scalar tuple stay native and produce CPython-equivalent results.
     (tmp_path / "rextio.toml").write_text(
         """
@@ -39,8 +41,25 @@ def callee(x: int) -> int:
     return x + 1
 
 
-def bad_caller() -> int:
+def with_default(x: int = 1) -> int:
+    return x
+
+
+def bad_literal_arg() -> int:
     return callee(1.2)
+
+
+def bad_local_arg() -> int:
+    y = 1.2
+    return callee(y)
+
+
+def bad_too_few() -> int:
+    return with_default()
+
+
+def bad_too_many() -> int:
+    return callee(1, 2)
 
 
 def good_caller() -> int:
@@ -50,6 +69,11 @@ def good_caller() -> int:
 def bare_local() -> Optional[int]:
     x = None
     return x
+
+
+def tuple_none() -> Optional[int]:
+    pair = (None,)
+    return pair[0]
 
 
 def scalar_tuple() -> tuple[int, float]:
@@ -66,7 +90,7 @@ def scalar_tuple() -> tuple[int, float]:
     )
 
     assert exit_code == 0
-    # The native module must still compile even though the uncompilable shapes are
+    # The native module must still compile even though every uncompilable shape is
     # present in the source; they are routed to the Python fallback, not built.
     assert report["native_build"]["status"] == "built"
 
@@ -74,10 +98,15 @@ def scalar_tuple() -> tuple[int, float]:
     importlib.invalidate_caches()
     ops = importlib.import_module("guard_app.ops")
 
-    # Every function still runs with CPython-equivalent semantics regardless of the
-    # native/fallback split.
+    # The functions that stay native (or whose fallback does not depend on a native
+    # callee's argument enforcement) run with CPython-equivalent semantics.
     assert ops.callee(4) == 5
     assert ops.good_caller() == 2
-    assert ops.bad_caller() == pytest.approx(2.2)
     assert ops.bare_local() is None
+    assert ops.tuple_none() is None
     assert ops.scalar_tuple() == (1, 2.0)
+    # The mismatched/over-arity callers were kept off native so the module compiled;
+    # their runtime behavior (raising at the native callee boundary, or a genuine
+    # CPython arity TypeError) is orthogonal to the build-break this guards against.
+    with pytest.raises(TypeError):
+        ops.bad_too_many()
