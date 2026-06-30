@@ -635,10 +635,18 @@ def lower(x: float, y: float) -> int:
     assert "__rextio_checked_mnonneg(x)?.sqrt()" in source
     assert "(x).sin()" in source
     assert "(x).cos()" in source
-    assert "(total).max((x).abs())" in source
     assert (
-        "return Ok((__rextio_checked_f2i((x).floor())?)"
-        ".min(__rextio_checked_f2i((y).floor())?));"
+        "let __rextio_max_a_1 = total; "
+        "let __rextio_max_b_2 = (x).abs(); "
+        "if __rextio_max_b_2 > __rextio_max_a_1 { __rextio_max_b_2 } "
+        "else { __rextio_max_a_1 }"
+    ) in source
+    assert (
+        "return Ok({ "
+        "let __rextio_min_a_1 = __rextio_checked_f2i((x).floor())?; "
+        "let __rextio_min_b_2 = __rextio_checked_f2i((y).floor())?; "
+        "if __rextio_min_b_2 < __rextio_min_a_1 { __rextio_min_b_2 } "
+        "else { __rextio_min_a_1 } });"
     ) in source
 
 
@@ -1054,8 +1062,10 @@ def f(x: float) -> int:
 
 
 def test_int_min_max_are_overflow_safe(tmp_path: Path) -> None:
-    # `min`/`max` are comparison-only (no overflow), and their result still flows
-    # through the checked add when summed (council R5 regression pin).
+    # `min`/`max` lower to CPython's own `b < a ? b : a` / `b > a ? b : a`
+    # comparison form (NOT Rust's f64::min/max, which diverge on NaN), and the
+    # result still flows through the checked add when summed (council R5
+    # regression pin).
     (tmp_path / "app.py").write_text(
         """
 import rextio
@@ -1069,7 +1079,17 @@ def clamp_sum(a: int, b: int) -> int:
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
-    assert "__rextio_checked_add((a).min(b), (a).max(b))?" in source
+    assert ".min(" not in source
+    assert ".max(" not in source
+    assert (
+        "__rextio_checked_add("
+        "{ let __rextio_min_a_1 = a; let __rextio_min_b_2 = b; "
+        "if __rextio_min_b_2 < __rextio_min_a_1 { __rextio_min_b_2 } "
+        "else { __rextio_min_a_1 } }, "
+        "{ let __rextio_max_a_3 = a; let __rextio_max_b_4 = b; "
+        "if __rextio_max_b_4 > __rextio_max_a_3 { __rextio_max_b_4 } "
+        "else { __rextio_max_a_3 } })?"
+    ) in source
 
 
 def test_augmented_assignment_with_sum_is_checked(tmp_path: Path) -> None:

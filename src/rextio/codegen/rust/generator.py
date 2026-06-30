@@ -1193,10 +1193,25 @@ class _FunctionRenderer:
                 self.used_helpers.add("abs")
                 return f"__rextio_checked_abs({strip_wrapping_parens(self.render_expr(expr.args[0]))})?"
             return f"({self.render_expr(expr.args[0])}).abs()"
-        if expr.function == "min" and len(expr.args) == 2:
-            return f"({self.render_expr(expr.args[0])}).min({self.render_expr(expr.args[1])})"
-        if expr.function == "max" and len(expr.args) == 2:
-            return f"({self.render_expr(expr.args[0])}).max({self.render_expr(expr.args[1])})"
+        if expr.function in {"min", "max"} and len(expr.args) == 2:
+            # Rust's f64::min/max are NOT CPython-equivalent on NaN: f64::min
+            # returns the non-NaN operand, but CPython's min/max keep the first
+            # operand whenever the comparison is False (which it always is when
+            # either operand is NaN). So `min(nan, 1.0)` is `nan` in CPython but
+            # `1.0` via f64::min -> a silent wrong value. Emit CPython's own
+            # `b < a ? b : a` (min) / `b > a ? b : a` (max) form instead, binding
+            # both operands to locals first so each is evaluated exactly once,
+            # left-to-right, matching CPython argument evaluation. Integers have
+            # no NaN, but the comparison form is equally correct, so use it for
+            # both numeric types.
+            cmp = "<" if expr.function == "min" else ">"
+            a_tmp = self.next_temp(f"__rextio_{expr.function}_a")
+            b_tmp = self.next_temp(f"__rextio_{expr.function}_b")
+            return (
+                f"{{ let {a_tmp} = {self.render_expr(expr.args[0])}; "
+                f"let {b_tmp} = {self.render_expr(expr.args[1])}; "
+                f"if {b_tmp} {cmp} {a_tmp} {{ {b_tmp} }} else {{ {a_tmp} }} }}"
+            )
         if expr.function == "sum" and len(expr.args) == 1:
             arg_type = self.infer_expr_type(expr.args[0])
             if isinstance(arg_type, RxtList) and isinstance(arg_type.item_type, RxtInt):
