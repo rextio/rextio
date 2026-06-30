@@ -117,6 +117,15 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
 _I64_MIN = -(2**63)
 _I64_MAX = 2**63 - 1
 
+# Sentinel stored in the type environment for a local that is bound but whose
+# type could not be inferred (e.g. assigned from a sibling call whose return type
+# is unresolved). It marks the name as in-scope for definite-assignment without
+# claiming a type: it matches no real type name, and the ``ast.Name`` reader maps
+# it back to ``None``. A value-position read of a name absent from the
+# environment entirely is then genuinely unbound in this scope (a module global,
+# a closure, or a name leaked from a nested block) and is rejected.
+_UNTYPED_LOCAL = "<untyped-local>"
+
 
 def validate_native_function(
     node: ast.FunctionDef,
@@ -384,7 +393,6 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
 def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
     type_env = _initial_type_env(node, function)
     return_type = _return_type_name(node, function)
-    function.local_binding_names = frozenset(_local_binding_names(node))
     for statement in node.body:
         _validate_statement_types(statement, function, type_env, return_type)
         for child in ast.walk(statement):
@@ -523,8 +531,9 @@ def _validate_statement_types(
             if not isinstance(target, ast.Name):
                 _add_unsupported_syntax(function, target, "assignment targets must be local names")
                 continue
-            if value_type is not None:
-                env[target.id] = value_type
+            # Bind the target even when the value type could not be inferred, using
+            # a sentinel so the name still counts as in-scope (see _UNTYPED_LOCAL).
+            env[target.id] = value_type if value_type is not None else _UNTYPED_LOCAL
         return
     if isinstance(node, ast.AnnAssign):
         if not isinstance(node.target, ast.Name):
@@ -1744,19 +1753,21 @@ def _infer_expr_type(
         return None
     if isinstance(node, ast.Name):
         bound = env.get(node.id)
-        if bound is None and node.id not in function.local_binding_names:
-            # The name is neither a typed local nor bound anywhere in this
-            # function: it is a module global, a closure variable, or an undefined
-            # name. None of those can be lowered as a Rust local (it would emit an
-            # undefined identifier), so keep the function on the Python fallback. A
-            # name that *is* bound locally but whose type could not be inferred
-            # here (``bound is None`` yet present in ``local_binding_names``) is
-            # left to the existing untyped-name handling.
+        if bound == _UNTYPED_LOCAL:
+            # Bound in this scope but with an un-inferred type: in scope, untyped.
+            return None
+        if bound is None:
+            # Not bound in this scope: a module global, a closure variable, an
+            # undefined name, or a name first bound inside a nested if/for/while
+            # block and read after it (Python locals are function-scoped, but the
+            # generated Rust `let` is block-scoped, so the read would not compile).
+            # None can be lowered as a Rust local, so keep on the Python fallback.
             _add_unsupported_syntax(
                 function,
                 node,
-                f"name '{node.id}' is not defined in this native function "
-                "(module globals and closures are unsupported)",
+                f"name '{node.id}' is not defined in this scope of the native "
+                "function (module globals, closures, and names first bound inside a "
+                "nested block then read after it are unsupported)",
             )
         return bound
     if isinstance(node, ast.Attribute):

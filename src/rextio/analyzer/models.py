@@ -137,7 +137,6 @@ class FunctionAnalysis:
     # is absent from both the local type environment and this set is unbound in
     # the function (a module global, closure, or genuinely undefined name) and
     # cannot be lowered as a Rust local, so it is rejected to the fallback.
-    local_binding_names: frozenset[str] = frozenset()
     # Module-level names bound by an assignment (e.g. `len = 5` or `helper = ...`
     # at module scope). Such a binding shadows a builtin / import / sibling
     # function of the same name for every function in the module, so a bare call

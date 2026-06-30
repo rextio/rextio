@@ -4071,6 +4071,64 @@ y = 4
     assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}
 
 
+def test_council24_rejects_block_scoped_binding_leak(tmp_path: Path) -> None:
+    # A name first bound inside an if/while block and read after it leaks Rust
+    # block scope (Python locals are function-scoped; the generated `let` is not),
+    # so it must be kept off the direct-native path. A name bound at the function
+    # body level (even from an un-inferred sibling call) and a name used only
+    # inside its block must still be accepted.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def if_branch_leak(c: bool) -> int:
+    if c:
+        x = 1
+    else:
+        x = 2
+    return x
+
+@rextio.native
+def while_block_leak(c: bool) -> int:
+    while c:
+        y = 1
+        c = False
+    return y
+
+@rextio.native
+def producer(xs: list[int]) -> int:
+    return xs[0]
+
+@rextio.native
+def body_level_local(xs: list[int]) -> int:
+    subtotal = producer(xs)
+    return subtotal + xs[0]
+
+@rextio.native
+def used_inside_block(c: bool, n: int) -> int:
+    total = 0
+    if c:
+        step = n
+        total = total + step
+    return total
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {function.qualname for function in analysis.rejected_native_functions}
+    accepted = {function.qualname for function in analysis.accepted_native_functions}
+    assert {"app.if_branch_leak", "app.while_block_leak"} <= rejected
+    assert {
+        "app.producer",
+        "app.body_level_local",
+        "app.used_inside_block",
+    } <= accepted
+
+
 def test_council24_keeps_safe_native_forms(tmp_path: Path) -> None:
     # The council-24 guards must not over-reject: a bool-typed condition, a
     # `range` for-loop iterable, a bool ordering comparison (Rust `bool` is
