@@ -461,6 +461,60 @@ def sort_ints(xs: list[int]) -> list[int]:
     assert [f.qualname for f in analysis.accepted_native_functions] == ["app.sort_ints"]
 
 
+def test_rejects_float_container_comparison_and_count(tmp_path: Path) -> None:
+    # Python container `==`/`!=`/`.count()`/`.index()` compares elements with
+    # identity-or-equality; a NaN element is `is`-equal but not `==`-equal to
+    # itself, so native Rust value comparison (`Vec<f64> == ...`) diverges. Keep
+    # float-containing container comparisons and list[float].count/index off the
+    # pure native path. int containers and scalar-float comparisons stay native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def eq_floats(xs: list[float], ys: list[float]) -> bool:
+    return xs == ys
+
+@rextio.native
+def eq_tuples(a: tuple[float, float], b: tuple[float, float]) -> bool:
+    return a != b
+
+@rextio.native
+def eq_ints(xs: list[int], ys: list[int]) -> bool:
+    return xs == ys
+
+@rextio.native
+def scalar_eq(xs: list[float]) -> bool:
+    return xs[0] == 1.0
+
+@rextio.native
+def count_floats(xs: list[float]) -> int:
+    return xs.count(1.0)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    diags = {
+        f.qualname: {d.code for d in f.diagnostics}
+        for f in (*analysis.accepted_native_functions, *analysis.rejected_native_functions)
+    }
+    # Float-container `==`/`!=` falls back to Python (RXT010).
+    assert "app.eq_floats" in rejected
+    assert "app.eq_tuples" in rejected
+    # int containers and scalar-float comparisons stay pure native.
+    assert "app.eq_ints" not in rejected
+    assert diags["app.eq_ints"] == set()
+    assert "app.scalar_eq" not in rejected
+    assert diags["app.scalar_eq"] == set()
+    # list[float].count is never compiled to a divergent native `==` scan: it is
+    # either rejected to fallback or routed to the Python runtime shim (RXT080).
+    assert "app.count_floats" in rejected or "RXT080" in diags["app.count_floats"]
+
+
 def test_rejects_invalid_native_marker_arguments(tmp_path: Path) -> None:
     write_module(
         tmp_path,

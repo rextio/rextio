@@ -2153,6 +2153,18 @@ def _infer_list_method_type(
     if target in {"list.count", "list.index"}:
         if not _require_arg_count(target, node, function, {1}):
             return None
+        if item_type == "float":
+            # count/index compare the needle against each element with CPython's
+            # identity-or-equality semantics, so a NaN needle (or NaN element)
+            # diverges from native Rust `==`. Keep on the Python fallback.
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"{target} on a list[float] is not supported in native functions "
+                "because a NaN element diverges from CPython's identity-or-equality "
+                "comparison",
+            )
+            return None
         arg_type = _infer_expr_type(node.args[0], function, env)
         if arg_type == item_type:
             return "int"
@@ -2241,6 +2253,19 @@ def _is_none_literal(node: ast.AST) -> bool:
     )
 
 
+def _is_float_containing_container(type_name: str | None) -> bool:
+    """Report whether a type is a container (list/tuple/dict/set) holding a float.
+
+    Python container `==`/`!=` compares elements with identity-or-equality
+    (`x is y or x == y`); the only value where `is` is True but `==` is False is
+    NaN. Native Rust container comparison (`Vec<f64> == ...`) has no identity
+    short-circuit, so a container holding a float diverges from CPython on a NaN
+    element. A bare scalar `float` is excluded -- scalar `nan == nan` is False in
+    both languages, so it matches.
+    """
+    return type_name is not None and "[" in type_name and "float" in type_name
+
+
 def _validate_compare_types(
     node: ast.Compare,
     function: FunctionAnalysis,
@@ -2285,8 +2310,25 @@ def _validate_compare_types(
 
     left_type = infer_side(node.left)
     left_node = node.left
+    reported_float_container = False
     for op, comparator in zip(node.ops, node.comparators, strict=True):
         right_type = infer_side(comparator)
+        if not reported_float_container and (
+            _is_float_containing_container(left_type)
+            or _is_float_containing_container(right_type)
+        ):
+            # CPython container `==`/`!=`/`<`... compares elements with
+            # identity-or-equality, so a NaN element (which is `is`-equal but not
+            # `==`-equal to itself) makes the result diverge from native Rust value
+            # comparison. Keep the function on the Python fallback.
+            _add_unsupported_syntax(
+                function,
+                node,
+                "comparing a container that holds floats is not supported in native "
+                "functions because a NaN element diverges from CPython's "
+                "identity-or-equality element comparison",
+            )
+            reported_float_container = True
         if isinstance(op, (ast.Is, ast.IsNot)) and not (
             _is_none_literal(left_node) or _is_none_literal(comparator)
         ):
