@@ -1246,12 +1246,21 @@ class _FunctionRenderer:
             if len(expr.args) == 2:
                 # `math.log(x, base)` also constrains the base: CPython raises
                 # ValueError for base <= 0 and ZeroDivisionError for base == 1
-                # (log(base) is 0). x is validated first (its receiver `?` runs
-                # before the argument), matching CPython's check order.
+                # (log(base) is 0). CPython evaluates BOTH argument expressions
+                # left-to-right before any domain check, so bind both to locals
+                # first — otherwise `mpositive(x)?` as the receiver would
+                # short-circuit before `base` is even evaluated, dropping a
+                # raising base's exception (e.g. `log(-1.0, a / 0.0)` would raise
+                # ValueError natively where CPython raises ZeroDivisionError).
+                # x's domain is then checked before the base's, matching CPython.
                 self.used_helpers.add("mlogbase")
+                x_tmp = self.next_temp("__rextio_log_x")
+                base_tmp = self.next_temp("__rextio_log_base")
                 return (
-                    f"__rextio_checked_mpositive({self.render_expr(expr.args[0])})?"
-                    f".log(__rextio_checked_mlogbase({self.render_expr(expr.args[1])})?)"
+                    f"{{ let {x_tmp} = {self.render_expr(expr.args[0])}; "
+                    f"let {base_tmp} = {self.render_expr(expr.args[1])}; "
+                    f"__rextio_checked_mpositive({x_tmp})?"
+                    f".log(__rextio_checked_mlogbase({base_tmp})?) }}"
                 )
         if expr.function == "math.atan2" and len(expr.args) == 2:
             return f"({self.render_expr(expr.args[0])}).atan2({self.render_expr(expr.args[1])})"

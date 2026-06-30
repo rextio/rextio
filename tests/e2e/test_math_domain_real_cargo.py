@@ -58,6 +58,10 @@ def asin_f(x: float) -> float:
 @rextio.native
 def logbase_f(x: float, base: float) -> float:
     return math.log(x, base)
+
+@rextio.native
+def logbase_div(x: float, a: float, b: float) -> float:
+    return math.log(x, a / b)
 """,
         encoding="utf-8",
     )
@@ -69,6 +73,10 @@ def logbase_f(x: float, base: float) -> float:
     )
     assert exit_code == 0
     assert report["native_build"]["status"] == "built"
+    # Every function must be compiled natively (not silently rejected to the
+    # fallback), otherwise the assertions below would pass via CPython.
+    assert report["accepted_native_count"] == 8
+    assert report["rejected_native_count"] == 0
 
     monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "build" / "python"))
     module = fresh_import("math_app.ops")
@@ -96,9 +104,9 @@ def logbase_f(x: float, base: float) -> float:
             else:
                 assert native == expected, (native_fn, value)
 
-    # 2-arg math.log(x, base): the base is also constrained — nan/inf bases are
-    # valid (CPython returns nan / 0.0), base <= 0 raises ValueError, base == 1
-    # raises ZeroDivisionError.
+    # 2-arg math.log(x, base): the base is also constrained — nan and +inf bases
+    # are valid (CPython returns nan / 0.0), while base <= 0 (including -inf)
+    # raises ValueError and base == 1 raises ZeroDivisionError.
     assert module.logbase_f(8.0, 2.0) == math.log(8.0, 2.0)
     assert module.logbase_f(8.0, inf) == math.log(8.0, inf)  # 0.0
     assert math.isnan(module.logbase_f(8.0, nan))
@@ -115,9 +123,22 @@ def logbase_f(x: float, base: float) -> float:
     ]:
         with pytest.raises(ValueError):
             native_fn(bad)
-    with pytest.raises(ValueError):
-        module.logbase_f(8.0, 0.0)
-    with pytest.raises(ValueError):
-        module.logbase_f(8.0, -1.0)
+    for bad_base in (0.0, -1.0, -inf):
+        with pytest.raises(ValueError):
+            module.logbase_f(8.0, bad_base)
     with pytest.raises(ZeroDivisionError):
         module.logbase_f(8.0, 1.0)
+
+    # x's domain is checked before the base's (CPython checks log(x) first), so a
+    # bad x wins over a bad literal base.
+    with pytest.raises(ValueError):
+        module.logbase_f(-1.0, 1.0)  # CPython: ValueError (x), not ZeroDivisionError
+    with pytest.raises(ZeroDivisionError):
+        module.logbase_f(nan, 1.0)  # x (nan) passes; base==1 -> ZeroDivisionError
+
+    # ...but BOTH argument expressions are evaluated before any domain check, so
+    # a raising base expression (a / 0.0) raises ZeroDivisionError even when x is
+    # itself out of domain — the argument-evaluation-order case.
+    with pytest.raises(ZeroDivisionError):
+        module.logbase_div(-1.0, 1.0, 0.0)
+    assert module.logbase_div(8.0, 4.0, 2.0) == math.log(8.0, 4.0 / 2.0)

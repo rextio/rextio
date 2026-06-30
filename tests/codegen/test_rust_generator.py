@@ -1374,7 +1374,12 @@ def logarithm_base(x: float, base: float) -> float:
     assert "if value <= 0.0 {" in source
     assert 'PyValueError::new_err("math domain error")' in source
     # The 2-arg log(x, base) also guards the base (ZeroDivisionError for base==1,
-    # ValueError for base<=0).
-    assert "__rextio_checked_mpositive(x)?.log(__rextio_checked_mlogbase(base)?)" in source
+    # ValueError for base<=0). Both args are bound to locals first so the base is
+    # evaluated before x's domain check (matching CPython's left-to-right arg
+    # evaluation), then the guards are applied.
+    assert "let __rextio_log_x" in source
+    assert "let __rextio_log_base" in source
+    assert "__rextio_checked_mpositive(__rextio_log_x" in source
+    assert ".log(__rextio_checked_mlogbase(__rextio_log_base" in source
     assert "fn __rextio_checked_mlogbase(value: f64)" in source
     assert "if value == 1.0 {" in source

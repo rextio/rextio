@@ -190,8 +190,9 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
             )
         elif name == "mlogbase":
             # `math.log(x, base)` base domain: CPython raises ZeroDivisionError
-            # for base == 1 (log(1) is 0) and ValueError for base <= 0. A nan/inf
-            # base is valid (returns nan / 0.0), so it passes through.
+            # for base == 1 (log(1) is 0) and ValueError for base <= 0 (which
+            # includes -inf). A nan or +inf base is valid (returns nan / 0.0), so
+            # those pass through.
             lines.extend(
                 [
                     f"fn {fn}(value: f64) -> {fret} {{",
