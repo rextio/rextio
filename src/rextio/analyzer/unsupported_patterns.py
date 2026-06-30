@@ -951,8 +951,13 @@ def _local_binding_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[st
             return  # new scope
 
         def _visit_comprehension(self, comp: ast.expr) -> None:
-            # Comprehension targets are scoped to the comprehension and never leak;
-            # only the leftmost generator's iterable is evaluated in this scope.
+            # Comprehension `for` targets are scoped to the comprehension and never
+            # leak, but PEP 572 walrus (`:=`) targets inside the element, conditions,
+            # or iterables DO leak into this (the enclosing function) scope, so collect
+            # them. The leftmost generator's iterable is also evaluated in this scope.
+            for sub in ast.walk(comp):
+                if isinstance(sub, ast.NamedExpr) and isinstance(sub.target, ast.Name):
+                    names.add(sub.target.id)
             generators = getattr(comp, "generators", [])
             if generators:
                 self.visit(generators[0].iter)
@@ -1295,13 +1300,27 @@ class _SignatureInferencer:
             root = arg.func
             while isinstance(root, ast.Attribute):
                 root = root.value
-            if isinstance(root, ast.Name) and root.id in self.local_names:
-                # The callable's root name is bound to a local variable / parameter
-                # that shadows any imported or sibling function of the same name (for
-                # a bare call `f()` or an attribute call `mod.f()` whose receiver is
-                # shadowed), so the call does not reach that function. Leave the
-                # argument unresolved so the conservative backstop keeps the caller
-                # on the Python fallback.
+            if (
+                isinstance(root, ast.Name)
+                and root.id in self.local_names
+                and (root.id in self.function.imports or root.id in self.sibling_return_types)
+            ):
+                # The callable's root name is an imported or same-module function that
+                # is ALSO bound as a local in this function, so the call does not reach
+                # that function (the local shadows it) — for a bare call `f()` or an
+                # attribute call `mod.f()` whose receiver `mod` is shadowed. Lowering
+                # would emit a call to the wrong (imported/sibling) function, diverging
+                # from CPython, so reject the whole function (a plain argument backstop
+                # would miss this for a non-scalar parameter). A method call on an
+                # ordinary local/parameter (whose name is not an import/sibling) is not
+                # a shadow and is left alone.
+                _add_unsupported_syntax(
+                    self.function,
+                    arg,
+                    "calling a name that is shadowed by a local binding is not "
+                    "supported in native functions; it would lower to a call to the "
+                    "wrong (imported or sibling) function",
+                )
                 return None, None
             target = canonical_call_target(arg, self.function.imports, self.function.logger_names)
             if target is None:

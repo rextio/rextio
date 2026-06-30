@@ -2812,11 +2812,108 @@ def comprehension_ok(xs: list[int]) -> int:
 
     analysis = analyze_project(tmp_path, native_marker="decorator")
 
+    by_name = {
+        f.qualname: f
+        for f in (*analysis.accepted_native_functions, *analysis.rejected_native_functions)
+    }
     rejected = {f.qualname for f in analysis.rejected_native_functions}
     accepted = {f.qualname for f in analysis.accepted_native_functions}
     assert "pkg.main.none_typed_shadow" in rejected
-    assert "pkg.main.attr_receiver_shadow" in rejected
+    # The attribute access on a shadowed local forces the Python runtime-semantics
+    # shim (RXT080), which runs real CPython and is therefore non-divergent — equally
+    # contract-safe as a fallback. Either way it must be off the direct-native path.
+    attr = by_name["pkg.main.attr_receiver_shadow"]
+    assert (not attr.accepted) or attr.native_runtime_semantics
     assert "pkg.main.comprehension_ok" in accepted
+
+
+def test_method_call_on_local_is_not_treated_as_shadow(tmp_path: Path) -> None:
+    # A method call on an ordinary local / parameter (`xs.index(...)`) whose root
+    # name is not an imported or sibling function must NOT be treated as a shadow —
+    # it is a normal, valid nested call argument and the caller stays native. (The
+    # shadow guard only fires when the root name is also a callable being shadowed.)
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def via_param(xs: list[int]) -> int:
+    return take_int(xs.index(5))
+
+@rextio.native
+def via_local() -> int:
+    ys = [1, 2, 3]
+    return take_int(ys.index(2))
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.via_param" in accepted
+    assert "app.via_local" in accepted
+
+
+def test_shadow_via_container_param_and_walrus_comprehension_kept_off_native(
+    tmp_path: Path,
+) -> None:
+    # A genuine shadow of an imported function is rejected regardless of the callee
+    # parameter type (a container parameter's None-argument backstop would otherwise
+    # miss it), and a PEP 572 walrus binding inside a comprehension — which leaks into
+    # the enclosing function scope in Python 3 — is detected as a shadow.
+    write_module(
+        tmp_path,
+        "pkg/lib.py",
+        """
+import rextio
+
+@rextio.native
+def make_int() -> int:
+    return 1
+
+@rextio.native
+def make_list() -> list[int]:
+    return [1]
+""",
+    )
+    write_module(
+        tmp_path,
+        "pkg/main.py",
+        """
+import rextio
+from pkg.lib import make_int, make_list
+
+@rextio.native
+def take_list(xs: list[int]) -> int:
+    return 1
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def container_param_shadow() -> int:
+    make_list = 0
+    return take_list(make_list())
+
+@rextio.native
+def walrus_comprehension_shadow(xs: list[int]) -> int:
+    ys = [(make_int := 0) for x in xs]
+    return take_int(make_int())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert "pkg.main.container_param_shadow" in rejected
+    assert "pkg.main.walrus_comprehension_shadow" in rejected
 
 
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
