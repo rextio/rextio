@@ -1694,7 +1694,7 @@ def _infer_set_comprehension_type(
         _add_unsupported_syntax(
             function,
             node.elt,
-            f"set comprehension item type must be int, float, bool, or str, got {item_type}",
+            f"set comprehension item type must be int, bool, or str, got {item_type}",
         )
         return None
     return f"set[{item_type}]"
