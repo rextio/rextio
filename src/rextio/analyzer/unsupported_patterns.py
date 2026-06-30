@@ -1236,26 +1236,33 @@ class _SignatureInferencer:
             left_type = right_type or left_type
 
     def _is_shadowed_callable(self, node: ast.Call) -> bool:
-        """Whether this call's callee root name is shadowed by a local binding.
+        """Whether this call's callee name is shadowed by a local binding.
 
-        True only when the root name (bare `f()` or the receiver of `mod.f()`) is both
-        bound as a local in this function AND a name that would otherwise resolve to a
-        callable — an import, a same-module function, or a supported builtin. In that
-        case the call does not reach that callable (the local shadows it), so lowering
-        would emit a call to the wrong function. A method call on an ordinary local /
-        parameter (whose name is none of those) is not a shadow.
+        A bare call ``f()`` is shadowed when ``f`` is a local binding AND a name that
+        would otherwise resolve to a callable — an import, a same-module function, or a
+        supported builtin — so lowering would call the wrong function.
+
+        An attribute call ``mod.f()`` only resolves to a native function when its
+        receiver is an imported module or a module logger (``logger.info(...)`` ->
+        ``logging.*``); only those receivers being shadowed cause a wrong-function
+        lowering. A method call on an ordinary local/parameter (`xs.index(...)`, even
+        when the parameter name happens to collide with a function/builtin) is a
+        genuine method call, not a shadow, so it is left on the direct-native path.
         """
-        root = node.func
+        func = node.func
+        if isinstance(func, ast.Name):
+            return func.id in self.local_names and (
+                func.id in self.function.imports
+                or func.id in self.module_function_names
+                or func.id in _SHADOWABLE_BUILTIN_CALLS
+            )
+        root = func
         while isinstance(root, ast.Attribute):
             root = root.value
         return (
             isinstance(root, ast.Name)
             and root.id in self.local_names
-            and (
-                root.id in self.function.imports
-                or root.id in self.module_function_names
-                or root.id in _SHADOWABLE_BUILTIN_CALLS
-            )
+            and (root.id in self.function.imports or root.id in self.function.logger_names)
         )
 
     def infer_call(self, node: ast.Call, expected: str | None) -> str | None:

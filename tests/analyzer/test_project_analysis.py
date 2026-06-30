@@ -3002,6 +3002,47 @@ def nested_comp_walrus(xs: list[int]) -> int:
     assert "pkg.main.nested_comp_walrus" in accepted
 
 
+def test_method_call_on_param_named_like_a_callable_stays_native(tmp_path: Path) -> None:
+    # An attribute call resolves to a native function only when its receiver is an
+    # imported module (or a module logger). A method call on an ordinary parameter
+    # whose name merely collides with a builtin or a same-module function
+    # (`sum.index(...)`, `helper.index(...)`) is a genuine method call, not a shadow,
+    # so the caller stays on the direct-native path.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def helper() -> int:
+    return 1
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def via_builtin_name(sum: list[int]) -> int:
+    return take_int(sum.index(5))
+
+@rextio.native
+def via_sibling_name(helper: list[int]) -> int:
+    return take_int(helper.index(5))
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    direct_native = {
+        f.qualname
+        for f in analysis.accepted_native_functions
+        if not f.native_runtime_semantics
+    }
+    assert "app.via_builtin_name" in direct_native
+    assert "app.via_sibling_name" in direct_native
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,
