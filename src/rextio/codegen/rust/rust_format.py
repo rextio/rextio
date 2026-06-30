@@ -60,6 +60,10 @@ def rust_string_literal(value: str) -> str:
 def render_literal(value: object) -> str:
     """Render a Python literal value as Rust source."""
     if value is None:
+        # A None literal renders to Rust `None` (`Option::None`). This is reached
+        # only in Option-typed positions (e.g. `return None` from an
+        # `Optional[T]`-returning function), where Rust infers the concrete
+        # `Option<T>` from the surrounding type, so the bare `None` is valid.
         return "None"
     if isinstance(value, bool):
         return "true" if value else "false"
