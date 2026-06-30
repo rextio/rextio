@@ -927,6 +927,37 @@ _SHADOWABLE_BUILTIN_CALLS = frozenset(
     }
 )
 
+# Standard-library module names whose `module.func(...)` (or chained) call the codegen
+# lowers to a static native call, IGNORING the receiver expression. A local that
+# rebinds one of these module names and then calls `module.method(...)` must reject
+# the function — lowering would emit the stdlib call against the wrong receiver
+# (e.g. `def f(math): math.sqrt(x)` would compute sqrt instead of CPython's
+# `AttributeError`). Derived from the recognized stdlib target sets so it stays in
+# sync. (`logging.*` calls route to the RXT080 shim, so logger receivers are handled
+# separately via `logger_names`.)
+# Roots of a canonical call target that denote a method on the receiver object
+# (`recv.index(...)` -> `list.index`): the receiver is used, so such a call is never a
+# module/import shadow even when the receiver name collides with one.
+_METHOD_RECEIVER_TYPES = frozenset({"str", "list", "bytes"})
+
+_SHADOWABLE_STDLIB_MODULES = frozenset(
+    target.split(".")[0]
+    for target in (
+        *BASE64_TARGETS,
+        *DATETIME_ISOFORMAT_TARGETS,
+        *DATETIME_TIMESTAMP_TARGETS,
+        *HASHLIB_CHAIN_TARGETS,
+        *JSON_TARGETS,
+        *MATH_CONSTANT_TARGETS,
+        *MATH_FLOAT_BINARY_TARGETS,
+        *MATH_FLOAT_TO_BOOL_TARGETS,
+        *MATH_FLOAT_TO_INT_TARGETS,
+        *MATH_FLOAT_UNARY_TARGETS,
+        *STATISTICS_TARGETS,
+        *TIME_TARGETS,
+    )
+)
+
 
 def _collect_leaked_walrus_targets(node: ast.AST, names: set[str]) -> None:
     """Add PEP 572 walrus (`:=`) target names that leak from ``node`` into its scope.
@@ -1242,12 +1273,15 @@ class _SignatureInferencer:
         would otherwise resolve to a callable — an import, a same-module function, or a
         supported builtin — so lowering would call the wrong function.
 
-        An attribute call ``mod.f()`` only resolves to a native function when its
-        receiver is an imported module or a module logger (``logger.info(...)`` ->
-        ``logging.*``); only those receivers being shadowed cause a wrong-function
-        lowering. A method call on an ordinary local/parameter (`xs.index(...)`, even
-        when the parameter name happens to collide with a function/builtin) is a
-        genuine method call, not a shadow, so it is left on the direct-native path.
+        An attribute call ``mod.f()`` resolves to a native function (lowered with the
+        receiver IGNORED) when its receiver is an imported module, a recognized
+        standard-library module (``math``/``hashlib``/``datetime``/… , whose
+        ``module.method(...)`` lowers statically even without an import), or a module
+        logger (``logger.info(...)`` -> ``logging.*``); only those receivers being
+        shadowed cause a wrong-function lowering. A method call on an ordinary
+        local/parameter (`xs.index(...)`, even when the name collides with a
+        function/builtin) is a genuine method call, not a shadow, and stays on the
+        direct-native path.
         """
         func = node.func
         if isinstance(func, ast.Name):
@@ -1256,6 +1290,27 @@ class _SignatureInferencer:
                 or func.id in self.module_function_names
                 or func.id in _SHADOWABLE_BUILTIN_CALLS
             )
+        # Attribute / chained call. Resolve the call the way codegen does; the
+        # resolved target tells us whether the receiver is USED (a method) or IGNORED
+        # (a module / import / stdlib call).
+        target = canonical_call_target(node, self.function.imports, self.function.logger_names)
+        if target is None:
+            target = dotted_name(func)
+        if target is None:
+            return False
+        target_root = target.split(".", 1)[0]
+        if target_root in _METHOD_RECEIVER_TYPES:
+            # A method call (`recv.index(...)` -> `list.index`) uses the receiver, so
+            # it is a genuine method even when the receiver name collides with a module
+            # or builtin — never a shadow.
+            return False
+        if target_root in _SHADOWABLE_STDLIB_MODULES:
+            # A static stdlib module call (`math.sqrt`, `hashlib.sha256(...).hexdigest`)
+            # whose module name is locally shadowed: the resolved target's root is the
+            # module name itself, so check it against local bindings.
+            return target_root in self.local_names
+        # An imported-module or module-logger receiver (its resolved target root is the
+        # import qualname / `logging`, not the alias) that is locally shadowed.
         root = func
         while isinstance(root, ast.Attribute):
             root = root.value

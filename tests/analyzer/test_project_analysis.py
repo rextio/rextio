@@ -3043,6 +3043,60 @@ def via_sibling_name(helper: list[int]) -> int:
     assert "app.via_sibling_name" in direct_native
 
 
+def test_shadowed_stdlib_module_receiver_kept_off_direct_native(tmp_path: Path) -> None:
+    # A `module.func(...)` standard-library call (possibly chained) lowers to a static
+    # native call that ignores the receiver. A local that rebinds the module name
+    # (`def f(math: float): math.sqrt(...)`, `def g(hashlib: bytes):
+    # hashlib.sha256(...).hexdigest()`) must be kept off the direct-native path
+    # (rejected or routed to the runtime shim), since CPython evaluates the call on
+    # the local and raises AttributeError. A method call on a local merely named like
+    # a module (`math.index(...)` where `math` is a list) is a genuine method and
+    # stays native, as does a normal unshadowed `math.sqrt(x)`.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import hashlib
+import math
+import rextio
+
+@rextio.native
+def math_shadow(math: float) -> float:
+    return math.sqrt(2.0)
+
+@rextio.native
+def hashlib_chain_shadow(hashlib: bytes) -> str:
+    return hashlib.sha256(hashlib).hexdigest()
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def module_named_list_method(math: list[int]) -> int:
+    return take_int(math.index(5))
+
+@rextio.native
+def normal_math(x: float) -> float:
+    return math.sqrt(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    direct_native = {
+        f.qualname
+        for f in analysis.accepted_native_functions
+        if not f.native_runtime_semantics
+    }
+    # The shadowed-module receivers must not be lowered as direct native calls.
+    assert "app.math_shadow" not in direct_native
+    assert "app.hashlib_chain_shadow" not in direct_native
+    # The genuine method call and the unshadowed stdlib call stay native.
+    assert "app.module_named_list_method" in direct_native
+    assert "app.normal_math" in direct_native
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,
