@@ -8,8 +8,10 @@ from rextio.analyzer.common_calls import (
     BASE64_TARGETS,
     BYTES_METHOD_TARGETS,
     DATETIME_ISOFORMAT_TARGETS,
+    DATETIME_NOW_TARGETS,
     DATETIME_TIMESTAMP_TARGETS,
     HASHLIB_CHAIN_TARGETS,
+    HASHLIB_INTERNAL_TARGETS,
     JSON_TARGETS,
     LIST_METHOD_TARGETS,
     LOGGING_CANONICAL_TARGETS,
@@ -927,26 +929,27 @@ _SHADOWABLE_BUILTIN_CALLS = frozenset(
     }
 )
 
-# Standard-library module names whose `module.func(...)` (or chained) call the codegen
-# lowers to a static native call, IGNORING the receiver expression. A local that
-# rebinds one of these module names and then calls `module.method(...)` must reject
-# the function — lowering would emit the stdlib call against the wrong receiver
-# (e.g. `def f(math): math.sqrt(x)` would compute sqrt instead of CPython's
-# `AttributeError`). Derived from the recognized stdlib target sets so it stays in
-# sync. (`logging.*` calls route to the RXT080 shim, so logger receivers are handled
-# separately via `logger_names`.)
 # Roots of a canonical call target that denote a method on the receiver object
 # (`recv.index(...)` -> `list.index`): the receiver is used, so such a call is never a
 # module/import shadow even when the receiver name collides with one.
 _METHOD_RECEIVER_TYPES = frozenset({"str", "list", "bytes"})
 
-_SHADOWABLE_STDLIB_MODULES = frozenset(
-    target.split(".")[0]
-    for target in (
+# Recognized standard-library call targets whose `module.func(...)` (or chained) form
+# the codegen lowers to a static native call, IGNORING the receiver expression. A
+# local that rebinds the receiver name of one of these calls must reject the function,
+# since lowering would emit the stdlib call against the wrong receiver
+# (e.g. `def f(math): math.sqrt(x)` would compute sqrt instead of CPython's
+# `AttributeError`). The full resolved target is matched (not just the module name),
+# so an unrecognized `module.method` such as `list.append` is not treated as a stdlib
+# call. (`logging.*` routes to the RXT080 shim, so logger receivers use `logger_names`.)
+_RECEIVER_IGNORED_STDLIB_TARGETS = frozenset(
+    {
         *BASE64_TARGETS,
         *DATETIME_ISOFORMAT_TARGETS,
+        *DATETIME_NOW_TARGETS,
         *DATETIME_TIMESTAMP_TARGETS,
         *HASHLIB_CHAIN_TARGETS,
+        *HASHLIB_INTERNAL_TARGETS,
         *JSON_TARGETS,
         *MATH_CONSTANT_TARGETS,
         *MATH_FLOAT_BINARY_TARGETS,
@@ -955,7 +958,7 @@ _SHADOWABLE_STDLIB_MODULES = frozenset(
         *MATH_FLOAT_UNARY_TARGETS,
         *STATISTICS_TARGETS,
         *TIME_TARGETS,
-    )
+    }
 )
 
 
@@ -1290,34 +1293,31 @@ class _SignatureInferencer:
                 or func.id in self.module_function_names
                 or func.id in _SHADOWABLE_BUILTIN_CALLS
             )
-        # Attribute / chained call. Resolve the call the way codegen does; the
-        # resolved target tells us whether the receiver is USED (a method) or IGNORED
-        # (a module / import / stdlib call).
+        # Attribute / chained call. `canonical_call_target` resolves the call the way
+        # codegen does (mapping import aliases and recognizing method vs module forms);
+        # an unresolved (None) call is not a receiver-ignored native call, so it cannot
+        # be a module/import shadow (a `list.append` not in the canonical method map is
+        # a genuine method, not a module call).
         target = canonical_call_target(node, self.function.imports, self.function.logger_names)
         if target is None:
-            target = dotted_name(func)
-        if target is None:
             return False
-        target_root = target.split(".", 1)[0]
-        if target_root in _METHOD_RECEIVER_TYPES:
-            # A method call (`recv.index(...)` -> `list.index`) uses the receiver, so
-            # it is a genuine method even when the receiver name collides with a module
-            # or builtin — never a shadow.
+        if target.split(".", 1)[0] in _METHOD_RECEIVER_TYPES:
+            # A method call (`recv.index(...)` -> `list.index`) uses the receiver, so it
+            # is a genuine method even when the receiver name collides with a module.
             return False
-        if target_root in _SHADOWABLE_STDLIB_MODULES:
-            # A static stdlib module call (`math.sqrt`, `hashlib.sha256(...).hexdigest`)
-            # whose module name is locally shadowed: the resolved target's root is the
-            # module name itself, so check it against local bindings.
-            return target_root in self.local_names
-        # An imported-module or module-logger receiver (its resolved target root is the
-        # import qualname / `logging`, not the alias) that is locally shadowed.
+        # A receiver-ignored static call (stdlib module / imported module / logger). Use
+        # the SOURCE receiver name (walking attribute and chained-call receivers to the
+        # base name), not the resolved target root, so an aliased import (`import math
+        # as m`) is keyed on the local `m`, not the canonical `math`.
         root = func
-        while isinstance(root, ast.Attribute):
-            root = root.value
+        while isinstance(root, (ast.Attribute, ast.Call)):
+            root = root.value if isinstance(root, ast.Attribute) else root.func
+        if not (isinstance(root, ast.Name) and root.id in self.local_names):
+            return False
         return (
-            isinstance(root, ast.Name)
-            and root.id in self.local_names
-            and (root.id in self.function.imports or root.id in self.function.logger_names)
+            target in _RECEIVER_IGNORED_STDLIB_TARGETS
+            or root.id in self.function.imports
+            or root.id in self.function.logger_names
         )
 
     def infer_call(self, node: ast.Call, expected: str | None) -> str | None:

@@ -3097,6 +3097,49 @@ def normal_math(x: float) -> float:
     assert "app.normal_math" in direct_native
 
 
+def test_aliased_stdlib_module_shadow_kept_off_direct_native(tmp_path: Path) -> None:
+    # A stdlib module imported under an alias and shadowed by a local of the same
+    # alias must be kept off the direct-native path: the call resolves to the static
+    # stdlib target, but the receiver (the alias) is the local. The check keys off the
+    # source receiver name, not the resolved module name, so `import math as m;
+    # def f(m: float): m.sqrt(...)` is rejected/shimmed, while a parameter named like
+    # the canonical module whose alias is NOT shadowed stays native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import hashlib as h
+import math as m
+import rextio
+
+@rextio.native
+def alias_math_shadow(m: float) -> float:
+    return m.sqrt(4.0)
+
+@rextio.native
+def alias_hashlib_chain_shadow(h: bytes) -> str:
+    return h.sha256(h).hexdigest()
+
+@rextio.native
+def alias_not_shadowed(math: float) -> float:
+    return m.sqrt(math)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    direct_native = {
+        f.qualname
+        for f in analysis.accepted_native_functions
+        if not f.native_runtime_semantics
+    }
+    assert "app.alias_math_shadow" not in direct_native
+    assert "app.alias_hashlib_chain_shadow" not in direct_native
+    # The canonical module name as a parameter, with the alias `m` not shadowed, is a
+    # normal stdlib call and stays native.
+    assert "app.alias_not_shadowed" in direct_native
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,
