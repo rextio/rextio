@@ -134,6 +134,7 @@ def _boundary_errors(
             )
             continue
         if dependency is not None:
+            diagnostics.extend(_native_arg_type_errors(function, call, dependency))
             continue
 
         decision = decision_for_target(module, resolved.resolved_target)
@@ -148,6 +149,57 @@ def _boundary_errors(
                 column=call.column,
                 function_name=function.qualname,
                 suggestion=suggestion,
+            )
+        )
+    return diagnostics
+
+
+_SCALAR_PARAM_TYPES = {"int", "float", "bool", "str", "bytes"}
+
+
+def _native_arg_type_errors(
+    function: FunctionAnalysis,
+    call: CallSite,
+    dependency: FunctionAnalysis,
+) -> list[Diagnostic]:
+    """Reject native→native calls with literal args that mismatch scalar params.
+
+    Rust has no implicit numeric coercion, so passing a literal of a different
+    scalar type than the callee declares (e.g. ``g(1.2)`` where ``g(x: int)``,
+    or ``g(1)`` where ``g(x: float)``) compiles to Rust that fails ``cargo build``
+    with E0308. CPython accepts such calls, so the contract requires keeping the
+    caller on the Python fallback rather than silently building broken native code.
+
+    Only literal arguments (``call.arg_types`` entry not None) against scalar
+    parameters are checked; non-literal arguments and non-scalar parameters
+    (``Optional[...]``, ``list[...]``, etc.) are left to the existing passes.
+    """
+    param_types = list(dependency.signature_arg_types.values())
+    diagnostics: list[Diagnostic] = []
+    for index, arg_type in enumerate(call.arg_types):
+        if arg_type is None or index >= len(param_types):
+            continue
+        param_type = param_types[index]
+        if param_type not in _SCALAR_PARAM_TYPES or arg_type == param_type:
+            continue
+        diagnostics.append(
+            Diagnostic(
+                code="RXT010",
+                severity="error",
+                message=(
+                    f"native call argument {index + 1} to {dependency.qualname} has "
+                    f"type {arg_type} but the parameter is {param_type}; Rust has no "
+                    "implicit scalar coercion, so this would emit native code that fails "
+                    "to compile"
+                ),
+                file_path=function.file_path,
+                line=call.line,
+                column=call.column,
+                function_name=function.qualname,
+                suggestion=(
+                    "Pass an argument whose type matches the native parameter exactly "
+                    "(no int/float/bool mixing), or keep this caller on the Python fallback."
+                ),
             )
         )
     return diagnostics

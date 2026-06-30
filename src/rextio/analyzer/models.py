@@ -23,6 +23,12 @@ class CallSite:
     line: int
     column: int
     in_loop: bool = False
+    # The scalar type of each positional argument that is a literal constant
+    # (int/float/bool/str/bytes/None), positionally; None for any argument whose
+    # type is not a directly-readable literal. Used by the boundary pass to reject
+    # native→native calls whose literal argument type differs from the callee's
+    # scalar parameter type, which would otherwise emit Rust that fails to compile.
+    arg_types: tuple[str | None, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this call site."""
@@ -31,6 +37,7 @@ class CallSite:
             "line": self.line,
             "column": self.column,
             "in_loop": self.in_loop,
+            "arg_types": list(self.arg_types),
         }
 
 
@@ -80,6 +87,11 @@ class FunctionAnalysis:
     calls: list[CallSite] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
     inferred_arg_types: dict[str, str] = field(default_factory=dict)
+    # The complete resolved parameter types in positional order (annotated params
+    # plus inferred ones), name->type. Unlike inferred_arg_types this includes
+    # explicitly annotated parameters, so the boundary pass can compare a caller's
+    # literal argument types against the callee's declared scalar parameters.
+    signature_arg_types: dict[str, str] = field(default_factory=dict)
     inferred_return_type: str | None = None
     native_target_language: str | None = None
     native_runtime_semantics: bool = False

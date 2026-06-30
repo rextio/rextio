@@ -270,6 +270,7 @@ def _mark_jit_candidate(
             function.jit_skipped_reason = reason
         return False
     function.inferred_arg_types = dict(probe.inferred_arg_types)
+    function.signature_arg_types = dict(probe.signature_arg_types)
     function.inferred_return_type = probe.inferred_return_type
     function.native_target_language = target_language
     function.is_jit_candidate = True
@@ -303,6 +304,7 @@ def _is_auto_native_candidate(
     validate_native_function(node, probe)
     if probe.accepted:
         function.inferred_arg_types = dict(probe.inferred_arg_types)
+        function.signature_arg_types = dict(probe.signature_arg_types)
         function.inferred_return_type = probe.inferred_return_type
         function.native_target_language = target_language
         return True
@@ -333,6 +335,7 @@ def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis)
     )
     validate_native_function(node, probe)
     function.inferred_arg_types = dict(probe.inferred_arg_types)
+    function.signature_arg_types = dict(probe.signature_arg_types)
     function.inferred_return_type = probe.inferred_return_type
     if probe.accepted:
         function.accepted = True
@@ -674,6 +677,31 @@ def _rejected_native_marker_method(
     return function
 
 
+def _literal_arg_type(node: ast.expr) -> str | None:
+    """Return the scalar type name of a literal-constant argument, else None.
+
+    Only directly-readable literals (``ast.Constant``) yield a type here; this is
+    intentionally env-free so it can run at call-collection time. ``bool`` is
+    checked before ``int`` because ``True``/``False`` are ``int`` instances.
+    """
+    if not isinstance(node, ast.Constant):
+        return None
+    value = node.value
+    if value is None:
+        return "None"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, bytes):
+        return "bytes"
+    return None
+
+
 class _CallCollector(ast.NodeVisitor):
     def __init__(self, imports: dict[str, str], logger_names: tuple[str, ...]) -> None:
         self.imports = imports
@@ -717,6 +745,7 @@ class _CallCollector(ast.NodeVisitor):
                 line=node.lineno,
                 column=node.col_offset,
                 in_loop=self.loop_depth > 0,
+                arg_types=tuple(_literal_arg_type(arg) for arg in node.args),
             )
         )
         self.generic_visit(node)

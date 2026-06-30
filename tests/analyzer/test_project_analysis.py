@@ -2249,6 +2249,84 @@ def ret_optional(flag: bool, x: int) -> Optional[int]:
         assert name in accepted, name
 
 
+def test_bare_none_local_and_tuple_none_kept_off_native(tmp_path: Path) -> None:
+    # A bare `None` assigned to an unannotated local infers as the unit type `()`
+    # and breaks any later use; a `None` tuple item lowers to a bare Rust `None`
+    # with no inferable `Option<T>` (E0282). Both are kept off native. An
+    # explicitly `Optional`-annotated local and an all-scalar tuple stay native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+from typing import Optional
+import rextio
+
+@rextio.native
+def bare_local() -> Optional[int]:
+    x = None
+    return x
+
+@rextio.native
+def tuple_none() -> None:
+    pair = (None,)
+    return None
+
+@rextio.native
+def annotated_local() -> Optional[int]:
+    y: Optional[int] = None
+    return y
+
+@rextio.native
+def scalar_tuple() -> tuple[int, float]:
+    return (1, 2.0)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    for name in ("app.bare_local", "app.tuple_none"):
+        assert name in rejected, name
+    for name in ("app.annotated_local", "app.scalar_tuple"):
+        assert name in accepted, name
+
+
+def test_native_call_scalar_argument_type_mismatch_kept_off_native(tmp_path: Path) -> None:
+    # Rust has no implicit scalar coercion, so a native caller passing a literal of
+    # a different scalar type than the callee declares (float->int here) would emit
+    # native code that fails to compile (E0308). The caller is kept on the Python
+    # fallback (RXT010); the callee and a type-matching caller stay native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def callee(x: int) -> int:
+    return x
+
+@rextio.native
+def bad_caller() -> int:
+    return callee(1.2)
+
+@rextio.native
+def good_caller() -> int:
+    return callee(1)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.bad_caller" in rejected
+    assert "app.callee" in accepted
+    assert "app.good_caller" in accepted
+    assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,

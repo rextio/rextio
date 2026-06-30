@@ -443,6 +443,18 @@ def _validate_statement_types(
 ) -> None:
     if isinstance(node, ast.Assign):
         value_type = _infer_expr_type(node.value, function, env)
+        if value_type == "None":
+            # A bare `None` assigned to an unannotated local infers as the unit
+            # type `()` and breaks any later use as `Option<T>`/bool/comparison
+            # (E0282/E0308). Require an explicit `Optional[...]` annotation (an
+            # annotated assignment) or keep the function on the Python fallback.
+            _add_unsupported_syntax(
+                function,
+                node,
+                "assigning None to an unannotated local is not supported in native "
+                "functions; annotate it as Optional[...] or keep on the Python fallback",
+            )
+            return
         for target in node.targets:
             if isinstance(target, ast.Subscript):
                 _validate_dict_set(target, node.value, function, env)
@@ -927,6 +939,11 @@ class _SignatureInferencer:
                 and _is_supported_signature_type(self.known[arg.arg])
             ):
                 self.function.inferred_arg_types[arg.arg] = self.known[arg.arg]
+        # Persist the complete positional parameter-type map (annotated + inferred)
+        # so the boundary pass can validate caller argument types against it.
+        self.function.signature_arg_types = {
+            arg.arg: self.known[arg.arg] for arg in self.args if arg.arg in self.known
+        }
         if self.node.returns is None and self.return_types:
             unique = set(self.return_types)
             if len(unique) == 1:
@@ -1550,6 +1567,18 @@ def _infer_tuple_type(
     item_types = [_infer_expr_type(item, function, env) for item in node.elts]
     if any(item_type is None for item_type in item_types):
         return None
+    for item, item_type in zip(node.elts, item_types):
+        if item_type not in {"int", "float", "bool", "str", "bytes"}:
+            # Tuple items must be scalars (matching the supported signature types).
+            # In particular a `None` item lowers to a bare Rust `None` with no
+            # inferable `Option<T>` and fails to compile (E0282), so keep it off
+            # the native path -- consistent with list/dict/set item validation.
+            _add_unsupported_syntax(
+                function,
+                item,
+                f"tuple items must be int/float/bool/str/bytes, got {item_type}",
+            )
+            return None
     tuple_type = f"tuple[{', '.join(item for item in item_types if item is not None)}]"
     if expected_type is not None and _is_tuple_type(expected_type):
         _validate_type_match(tuple_type, expected_type, function, node)
