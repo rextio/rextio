@@ -2027,7 +2027,6 @@ def test_accepts_expanded_stdlib_lowering_calls(tmp_path: Path) -> None:
         """
 import base64
 import hashlib
-import json
 import math
 import statistics
 import time
@@ -2049,7 +2048,7 @@ def numeric(xs: list[float], flags: list[bool]) -> float:
         + statistics.mean(xs)
         + statistics.fmean(xs)
         + time.time()
-        + datetime.utcnow().timestamp()
+        + datetime.now().timestamp()
     )
 
 def predicates(x: float, flags: list[bool]) -> bool:
@@ -2074,13 +2073,6 @@ def digest(value: str) -> str:
 def b64_roundtrip(value: str) -> str:
     encoded = base64.b64encode(value.encode())
     return base64.b64decode(encoded).decode()
-
-def json_roundtrip(value: str) -> dict[str, int]:
-    parsed: dict[str, int] = json.loads(value)
-    return parsed
-
-def json_dump(value: dict[str, int]) -> str:
-    return json.dumps(value)
 """,
     )
 
@@ -2089,8 +2081,6 @@ def json_dump(value: dict[str, int]) -> str:
     assert [function.name for function in analysis.accepted_native_functions] == [
         "b64_roundtrip",
         "digest",
-        "json_dump",
-        "json_roundtrip",
         "list_ops",
         "numeric",
         "predicates",
@@ -2098,6 +2088,61 @@ def json_dump(value: dict[str, int]) -> str:
         "text",
     ]
     assert analysis.rejected_native_functions == []
+
+
+def test_json_and_unfaithful_datetime_kept_off_native(tmp_path: Path) -> None:
+    # serde_json is not CPython-`json`-compatible (separators/key order/ensure_ascii/
+    # NaN/error types), `utcnow().timestamp()` interprets naive-UTC as local in
+    # CPython (offset divergence), and `isoformat(timespec=...)` carries args we do
+    # not reproduce -- all are kept off the pure native path. `now()/utcnow()
+    # .isoformat()` (faithful naive formatter) and `now().timestamp()` stay native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import json
+import datetime
+import rextio
+
+@rextio.native
+def dump(d: dict[str, int]) -> str:
+    return json.dumps(d)
+
+@rextio.native
+def load(s: str) -> dict[str, int]:
+    return json.loads(s)
+
+@rextio.native
+def utc_ts() -> float:
+    return datetime.datetime.utcnow().timestamp()
+
+@rextio.native
+def iso_args() -> str:
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+@rextio.native
+def now_iso() -> str:
+    return datetime.datetime.now().isoformat()
+
+@rextio.native
+def now_ts() -> float:
+    return datetime.datetime.now().timestamp()
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    pure_native = {
+        f.qualname
+        for f in analysis.accepted_native_functions
+        if not any(d.code == "RXT080" for d in f.diagnostics)
+    }
+    # The four unfaithful forms are never compiled to native (rejected or shimmed).
+    for name in ("app.dump", "app.load", "app.utc_ts", "app.iso_args"):
+        assert name not in pure_native
+    # The faithful datetime forms stay native.
+    assert "app.now_iso" in pure_native
+    assert "app.now_ts" in pure_native
 
 
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:

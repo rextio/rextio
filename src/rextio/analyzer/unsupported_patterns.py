@@ -2024,21 +2024,19 @@ def _infer_call_type(
         _add_unsupported_syntax(function, node, f"{target} requires bytes input" if target.endswith("b64encode") else f"{target} requires bytes or str input")
         return None
     if target in JSON_TARGETS:
-        if not _require_arg_count(target, node, function, {1}):
-            return None
-        if target == "json.dumps":
-            arg_type = infer_arg(node.args[0])
-            if _is_json_supported_type(arg_type):
-                return "str"
-            _add_unsupported_syntax(function, node, f"json.dumps argument type is not supported: {arg_type}")
-            return None
-        arg_type = infer_arg(node.args[0])
-        if arg_type != "str":
-            _add_unsupported_syntax(function, node, f"json.loads requires str input, got {arg_type}")
-            return None
-        if expected_type is not None and _is_json_supported_type(expected_type):
-            return expected_type
-        _add_unsupported_syntax(function, node, "json.loads requires an expected supported target type")
+        # serde_json (the native lowering) is not CPython-`json`-compatible:
+        # json.dumps diverges on separators, dict key order, ensure_ascii,
+        # NaN/Infinity, and bytes; json.loads coerces to the static annotation
+        # instead of CPython's dynamic result and maps errors to PyValueError
+        # rather than json.JSONDecodeError. There is no faithful native lowering
+        # for 0.1.0-alpha, so keep json on the Python fallback.
+        _add_unsupported_syntax(
+            function,
+            node,
+            f"{target} is not supported in native functions because serde_json is "
+            "not CPython-json-compatible (separators, key order, ensure_ascii, "
+            "NaN/Infinity, error types); kept on the Python fallback",
+        )
         return None
     if _is_append_call(node):
         return _infer_append_call_type(node, function, env)

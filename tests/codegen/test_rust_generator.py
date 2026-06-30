@@ -671,7 +671,10 @@ def observe(value: int) -> str:
     assert 'log::info!("module {}", value.clone());' in source
     assert 'log::warn!("logger {}", value.clone());' in source
     assert 'log::info!("imported {}", value.clone());' in source
-    assert "return Ok(chrono::Utc::now().to_rfc3339());" in source
+    # utcnow().isoformat() lowers to a naive (offset-free) formatter matching
+    # CPython's naive datetime isoformat, not chrono's offset-bearing to_rfc3339.
+    assert "chrono::Utc::now().naive_utc()" in source
+    assert 'format!("{}.{:06}"' in source
 
 
 def test_non_ascii_logging_format_string_emits_valid_rust(tmp_path: Path) -> None:
@@ -792,7 +795,6 @@ def test_generates_rust_for_expanded_stdlib_lowering_calls(tmp_path: Path) -> No
         """
 import base64
 import hashlib
-import json
 import math
 import statistics
 from datetime import datetime
@@ -811,11 +813,8 @@ def b64_roundtrip(value: str) -> str:
     encoded = base64.b64encode(value.encode())
     return base64.b64decode(encoded).decode()
 
-def json_roundtrip(value: str) -> dict[str, int]:
-    return json.loads(value)
-
 def mathy(x: float) -> float:
-    return math.atan2(x, 1.0) + math.pi + statistics.mean([x]) + datetime.utcnow().timestamp()
+    return math.atan2(x, 1.0) + math.pi + statistics.mean([x]) + datetime.now().timestamp()
 
 def rounding(x: float) -> int:
     return math.ceil(x) + math.trunc(x)
@@ -836,10 +835,9 @@ def truth(flags: list[bool]) -> bool:
     assert "format!(\"{:x}\", sha2::Sha256::digest(&" in source
     assert "base64::engine::general_purpose::STANDARD.encode" in source
     assert "base64::engine::general_purpose::STANDARD.decode" in source
-    assert "serde_json::from_str::<HashMap<String, i64>>" in source
     assert "std::f64::consts::PI" in source
     assert ".atan2(1.0)" in source
-    assert "chrono::Utc::now()" in source
+    assert "chrono::Local::now()" in source
     assert ".iter().copied().all(|value| value)" in source
     assert ".iter().copied().any(|value| value)" in source
 

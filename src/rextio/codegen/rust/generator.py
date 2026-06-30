@@ -1283,13 +1283,11 @@ class _FunctionRenderer:
             }[expr.function]
             return self.render_logging_macro(macro, expr.args)
         if expr.function == "datetime.datetime.now.isoformat" and not expr.args:
-            return "chrono::Local::now().to_rfc3339()"
+            return self.render_naive_isoformat("chrono::Local::now().naive_local()")
         if expr.function == "datetime.datetime.utcnow.isoformat" and not expr.args:
-            return "chrono::Utc::now().to_rfc3339()"
+            return self.render_naive_isoformat("chrono::Utc::now().naive_utc()")
         if expr.function == "datetime.datetime.now.timestamp" and not expr.args:
             return self.render_chrono_timestamp("chrono::Local::now()")
-        if expr.function == "datetime.datetime.utcnow.timestamp" and not expr.args:
-            return self.render_chrono_timestamp("chrono::Utc::now()")
         if expr.function == "time.time" and not expr.args:
             return (
                 "std::time::SystemTime::now()"
@@ -1311,11 +1309,6 @@ class _FunctionRenderer:
             return (
                 "base64::engine::general_purpose::STANDARD"
                 f".decode({source})"
-                f"{self.map_err_to_error()}"
-            )
-        if expr.function == "json.dumps" and len(expr.args) == 1:
-            return (
-                f"serde_json::to_string(&{strip_wrapping_parens(self.render_call_arg(expr.args[0]))})"
                 f"{self.map_err_to_error()}"
             )
         rust_name = self.native_names_by_qualname.get(expr.function)
@@ -1430,12 +1423,37 @@ class _FunctionRenderer:
             ]
         )
 
+    def render_naive_isoformat(self, naive_expr: str) -> str:
+        # CPython's datetime.now()/utcnow() are *naive*, so .isoformat() has NO
+        # timezone offset (unlike chrono's to_rfc3339, which always appends one)
+        # and emits the fractional part only when the microsecond is non-zero,
+        # always as exactly 6 digits otherwise. Truncate the nanosecond clock to
+        # microseconds (matching CPython's microsecond resolution) and format the
+        # value explicitly rather than relying on chrono's offset-aware/variable
+        # precision formatter.
+        dt = self.next_temp("__rextio_dt")
+        micros = self.next_temp("__rextio_us")
+        base = self.next_temp("__rextio_iso")
+        return "\n".join(
+            [
+                "{",
+                f"    let {dt} = {naive_expr};",
+                f"    let {micros} = chrono::Timelike::nanosecond(&{dt}) / 1000;",
+                f'    let {base} = {dt}.format("%Y-%m-%dT%H:%M:%S").to_string();',
+                f'    if {micros} == 0 {{ {base} }} else {{ format!("{{}}.{{:06}}", {base}, {micros}) }}',
+                "}",
+            ]
+        )
+
     def render_chrono_timestamp(self, now_expr: str) -> str:
+        # CPython datetime.now().timestamp() has microsecond resolution; truncate
+        # the nanosecond clock to microseconds so the f64 matches CPython rather
+        # than carrying extra sub-microsecond precision.
         return "\n".join(
             [
                 "{",
                 f"    let value = {now_expr};",
-                "    value.timestamp() as f64 + value.timestamp_subsec_nanos() as f64 / 1_000_000_000.0",
+                "    value.timestamp() as f64 + value.timestamp_subsec_micros() as f64 / 1_000_000.0",
                 "}",
             ]
         )
@@ -1461,17 +1479,6 @@ class _FunctionRenderer:
         return is_copy_rust_type(self.infer_expr_type(expr))
 
     def render_expr_with_expected(self, expr: ExprIR, expected_type: RxtType | None) -> str:
-        if (
-            isinstance(expr, CallIR)
-            and expr.function == "json.loads"
-            and len(expr.args) == 1
-            and expected_type is not None
-        ):
-            source = strip_wrapping_parens(self.render_call_arg(expr.args[0]))
-            return (
-                f"serde_json::from_str::<{rust_type(expected_type)}>(&{source})"
-                f"{self.map_err_to_error()}"
-            )
         if isinstance(expected_type, RxtOptional):
             if isinstance(expr, LiteralIR) and expr.value is None:
                 return "None"
@@ -1661,8 +1668,6 @@ class _FunctionRenderer:
             return RxtStr()
         if expr.function in {"base64.b64encode", "base64.b64decode"}:
             return RxtBytes()
-        if expr.function == "json.dumps":
-            return RxtStr()
         return self.native_return_types.get(expr.function)
 
     def render_format_macro(
