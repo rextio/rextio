@@ -1878,9 +1878,23 @@ def _infer_call_type(
             return None
         arg_type = infer_arg(node.args[0])
         item_type = _list_item_type(arg_type)
-        if item_type in {"int", "float", "bool", "str"}:
+        if item_type == "float":
+            # Floats have no total order, so native sorting cannot match CPython
+            # on NaN: CPython's `<`-based sort returns a (meaninglessly-ordered)
+            # list without error, while a native total-order sort has no faithful
+            # equivalent and could only raise. Keep float sorting on the Python
+            # fallback so behavior matches exactly. (int/bool/str are totally
+            # ordered and sort natively.)
+            _add_unsupported_syntax(
+                function,
+                node,
+                "sorted(list[float]) is not supported in native functions because "
+                "NaN ordering cannot match CPython; keep it on the Python fallback",
+            )
+            return None
+        if item_type in {"int", "bool", "str"}:
             return arg_type
-        _add_unsupported_syntax(function, node, f"sorted requires list[int|float|bool|str], got {arg_type}")
+        _add_unsupported_syntax(function, node, f"sorted requires list[int|bool|str], got {arg_type}")
         return None
     if target == "reversed":
         if not _require_arg_count("reversed", node, function, {1}):

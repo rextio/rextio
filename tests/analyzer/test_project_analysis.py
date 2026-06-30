@@ -435,6 +435,32 @@ def in_range(x: int, n: int) -> bool:
     assert "app.between" not in accepted
 
 
+def test_rejects_native_sorted_of_floats(tmp_path: Path) -> None:
+    # sorted(list[float]) cannot match CPython on NaN (floats have no total
+    # order), so it is kept on the Python fallback; sorted(list[int]) is totally
+    # ordered and stays native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def sort_floats(xs: list[float]) -> list[float]:
+    return sorted(xs)
+
+@rextio.native
+def sort_ints(xs: list[int]) -> list[int]:
+    return sorted(xs)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [f.qualname for f in analysis.rejected_native_functions] == ["app.sort_floats"]
+    assert [f.qualname for f in analysis.accepted_native_functions] == ["app.sort_ints"]
+
+
 def test_rejects_invalid_native_marker_arguments(tmp_path: Path) -> None:
     write_module(
         tmp_path,

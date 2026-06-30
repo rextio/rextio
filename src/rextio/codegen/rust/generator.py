@@ -1361,21 +1361,11 @@ class _FunctionRenderer:
         raise RustCodegenError(f"unsupported call during Rust codegen: {expr.function}")
 
     def render_sorted(self, expr: ExprIR) -> str:
+        # `sorted` is only admitted for totally-ordered item types (int/bool/str);
+        # `list[float]` is rejected to the Python fallback by the analyzer because
+        # NaN ordering cannot match CPython, so `.sort()` (which requires `Ord`)
+        # is always valid here.
         source = strip_wrapping_parens(self.render_call_arg(expr))
-        expr_type = self.infer_expr_type(expr)
-        if isinstance(expr_type, RxtList) and isinstance(expr_type.item_type, RxtFloat):
-            return "\n".join(
-                [
-                    "{",
-                    f"    let mut values = {source};",
-                    "    if values.iter().any(|value| value.is_nan()) {",
-                    f"        return Err({self.error_new(rust_string_literal('sorted() does not support NaN float values in native functions'))});",
-                    "    }",
-                    "    values.sort_by(|left, right| left.partial_cmp(right).expect(\"NaN was checked before sorting\"));",
-                    "    values",
-                    "}",
-                ]
-            )
         return "\n".join(
             [
                 "{",
