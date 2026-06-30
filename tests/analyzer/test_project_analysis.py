@@ -2703,8 +2703,11 @@ def bump_index(xs: list[int], i: int, v: int) -> int:
 
     analysis = analyze_project(tmp_path)
 
-    # Subscript-assign and augmented-subscript on a parameter collection are not
-    # visible to the caller in native Rust either, so both must reject.
+    # Both reject with RXT010, by two different rules: `set_key` (`d["k"] = 1`)
+    # via the parameter-collection mutation check (it would not be visible to the
+    # caller in native Rust), and `bump_index` (`xs[i] += v`) via the separate
+    # "augmented assignment targets must be local names" check. Either way they
+    # stay on the Python fallback.
     assert {function.qualname for function in analysis.rejected_native_functions} == {
         "app.set_key",
         "app.bump_index",
