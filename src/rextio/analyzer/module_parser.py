@@ -131,6 +131,62 @@ def _collect_imports(
     return imports
 
 
+def _collect_module_assigned_names(tree: ast.Module) -> frozenset[str]:
+    """Names bound by a module-level assignment (for the shadow checker).
+
+    Descends into module-level control-flow bodies (a binding under `if`/`for`/
+    `while`/`with`/`try` still shadows at module scope) but not into nested
+    function or class bodies (those bind in their own scope). Handles tuple/list
+    unpacking and starred targets, augmented assignment, `with ... as`, and `for`
+    targets. A bare `AnnAssign` with no value (`len: int`) is *not* a binding, so
+    it is excluded (it must not be treated as a shadow).
+    """
+    names: set[str] = set()
+
+    def add_target(target: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            names.add(target.id)
+        elif isinstance(target, ast.Starred):
+            add_target(target.value)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                add_target(element)
+
+    def walk(statements: list[ast.stmt]) -> None:
+        for node in statements:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    add_target(target)
+            elif isinstance(node, ast.AnnAssign):
+                if node.value is not None:
+                    add_target(node.target)
+            elif isinstance(node, ast.AugAssign):
+                add_target(node.target)
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                add_target(node.target)
+                walk(node.body)
+                walk(node.orelse)
+            elif isinstance(node, (ast.While, ast.If)):
+                walk(node.body)
+                walk(node.orelse)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for with_item in node.items:
+                    if with_item.optional_vars is not None:
+                        add_target(with_item.optional_vars)
+                walk(node.body)
+            elif isinstance(node, ast.Try):
+                walk(node.body)
+                walk(node.orelse)
+                walk(node.finalbody)
+                for handler in node.handlers:
+                    walk(handler.body)
+
+    walk(tree.body)
+    return frozenset(names)
+
+
 def _collect_logger_names(tree: ast.Module, imports: dict[str, str]) -> tuple[str, ...]:
     names: set[str] = set()
     for node in tree.body:
@@ -193,22 +249,11 @@ def _collect_module_functions(
         for item in tree.body
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    # Every module-level assignment target name. A module global rebinds the
+    # Every name bound by a module-level assignment. A module global rebinds the
     # builtin/import/sibling of the same name for all functions in the module
     # (e.g. `len = 5` makes `len(xs)` a TypeError), so the shadow checker treats a
-    # bare call to such a name as shadowed.
-    module_assigned_names: frozenset[str] = frozenset(
-        target.id
-        for item in tree.body
-        for target in (
-            item.targets
-            if isinstance(item, ast.Assign)
-            else [item.target]
-            if isinstance(item, ast.AnnAssign)
-            else []
-        )
-        if isinstance(target, ast.Name)
-    )
+    # call to such a name as shadowed.
+    module_assigned_names = _collect_module_assigned_names(tree)
     for node in tree.body:
         if isinstance(node, ast.AsyncFunctionDef):
             marker = native_marker_for_function(node)

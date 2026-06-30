@@ -4172,3 +4172,80 @@ def length_of_str(s: str) -> int:
         "app.length_of_str",
     }
     assert analysis.rejected_native_functions == []
+
+
+def test_council25_module_shadow_covers_unpack_and_controlflow(tmp_path: Path) -> None:
+    # Council 25: the module-global shadow collector must descend into tuple/list
+    # unpacking and module-level control-flow bodies (a binding there still
+    # shadows the builtin), but must NOT treat a value-less `AnnAssign` (which
+    # binds nothing) as a shadow.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+import math
+
+sorted, other = (5, 0)
+
+if True:
+    abs = 7
+
+math = 5
+
+len: int
+
+@rextio.native
+def unpack_shadow(xs: list[int]) -> list[int]:
+    return sorted(xs)
+
+@rextio.native
+def controlflow_shadow(x: int) -> int:
+    return abs(x)
+
+@rextio.native
+def attr_shadow(x: float) -> float:
+    return math.sqrt(x)
+
+@rextio.native
+def annotation_only_ok(xs: list[int]) -> int:
+    return len(xs)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert {
+        "app.unpack_shadow",
+        "app.controlflow_shadow",
+        "app.attr_shadow",
+    } <= rejected
+    # `len: int` with no value binds nothing, so `len` is the builtin here.
+    assert "app.annotation_only_ok" in accepted
+
+
+def test_council25_accepts_i64_min_literal(tmp_path: Path) -> None:
+    # `-9223372036854775808` is i64::MIN — a valid native literal — even though
+    # its positive operand 2**63 exceeds i64::MAX. `-(2**63 + 1)` stays rejected.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def at_min() -> int:
+    return -9223372036854775808
+
+@rextio.native
+def below_min() -> int:
+    return -9223372036854775809
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert [f.qualname for f in analysis.accepted_native_functions] == ["app.at_min"]
+    assert [f.qualname for f in analysis.rejected_native_functions] == ["app.below_min"]

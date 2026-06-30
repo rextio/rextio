@@ -1452,3 +1452,34 @@ def maybe(c: bool) -> Optional[int]:
 
     assert "return Ok(None);" in source
     assert "return Ok(());" not in source
+
+
+def test_range_len_str_counts_code_points(tmp_path: Path) -> None:
+    # The inline `range(len(x))` loop bound must mirror the value-position `len`
+    # rule: a `str` counts code points (`.chars().count()`), a `bytes`/`list`
+    # uses the byte/element length (`.len()`).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def over_str(s: str) -> int:
+    n = 0
+    for _i in range(len(s)):
+        n += 1
+    return n
+
+@rextio.native
+def over_list(xs: list[int]) -> int:
+    n = 0
+    for _i in range(len(xs)):
+        n += 1
+    return n
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    assert "0..(s.chars().count() as i64)" in source
+    assert "0..(xs.len() as i64)" in source

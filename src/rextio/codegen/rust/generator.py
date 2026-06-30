@@ -606,7 +606,13 @@ class _FunctionRenderer:
             and expr.args[0].function == "len"
             and len(expr.args[0].args) == 1
         ):
-            return f"0..({self.render_expr(expr.args[0].args[0])}.len() as i64)"
+            # `range(len(x))` lowers the bound inline; mirror the value-position
+            # `len` rule so a `str` counts code points (`.chars().count()`), not
+            # the UTF-8 byte length `String::len` returns.
+            inner = expr.args[0].args[0]
+            if isinstance(self.infer_expr_type(inner), RxtStr):
+                return f"0..({self.render_expr(inner)}.chars().count() as i64)"
+            return f"0..({self.render_expr(inner)}.len() as i64)"
         if isinstance(expr, CallIR) and expr.function == "range" and len(expr.args) == 1:
             return f"0..{self.render_expr(expr.args[0])}"
         if isinstance(expr, CallIR) and expr.function == "range" and len(expr.args) == 2:

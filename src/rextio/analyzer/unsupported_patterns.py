@@ -1396,13 +1396,24 @@ class _SignatureInferencer:
         root = func
         while isinstance(root, (ast.Attribute, ast.Call)):
             root = root.value if isinstance(root, ast.Attribute) else root.func
-        if not (isinstance(root, ast.Name) and root.id in self.local_names):
+        if not isinstance(root, ast.Name):
             return False
-        return (
-            target in _RECEIVER_IGNORED_STDLIB_TARGETS
-            or root.id in self.function.imports
-            or root.id in self.function.logger_names
-        )
+        if root.id in self.local_names:
+            # A function-local binding shadows a same-named import / recognized
+            # stdlib module / module logger used as a receiver.
+            return (
+                target in _RECEIVER_IGNORED_STDLIB_TARGETS
+                or root.id in self.function.imports
+                or root.id in self.function.logger_names
+            )
+        if root.id in self.function.module_assigned_names:
+            # A module-level assignment shadows the receiver only when it rebinds an
+            # *imported* name (`import math` then `math = 5`). A module logger
+            # defined by `logger = getLogger()` is itself such an assignment and is
+            # registered as a logger name *because* of it, so it must not be treated
+            # as a shadow of itself.
+            return root.id in self.function.imports
+        return False
 
     def infer_call(self, node: ast.Call, expected: str | None) -> str | None:
         if self._is_shadowed_callable(node):
@@ -1823,6 +1834,26 @@ def _infer_expr_type(
         left = infer_child(node.left)
         right = infer_child(node.right)
         return _infer_binop_type(node.op, left, right, function, node)
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.USub)
+        and isinstance(node.operand, ast.Constant)
+        and isinstance(node.operand.value, int)
+        and not isinstance(node.operand.value, bool)
+    ):
+        # Python parses `-9223372036854775808` (i64::MIN) as a unary minus over the
+        # constant 2**63, which on its own exceeds i64::MAX. Range-check the
+        # *negated* value so the exact lower bound stays native while `-(2**63 + 1)`
+        # is still rejected.
+        negated = -node.operand.value
+        if not (_I64_MIN <= negated <= _I64_MAX):
+            _add_unsupported_syntax(
+                function,
+                node,
+                "integer literal is outside the supported i64 range in native functions",
+            )
+            return None
+        return "int"
     if isinstance(node, ast.UnaryOp):
         value_type = infer_child(node.operand)
         return _infer_unary_type(node.op, value_type, function, node)
@@ -2288,7 +2319,7 @@ def _infer_call_type(
             _add_unsupported_syntax(
                 function,
                 node,
-                f"len() requires a sized type (list/set/dict/tuple/str/bytes), got {arg_type}",
+                f"len() requires a sized type (list/set/dict/str/bytes), got {arg_type}",
             )
             return None
         return "int"
