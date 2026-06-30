@@ -2202,6 +2202,53 @@ def lower_it(s: str) -> str:
     assert "app.lower_it" not in rejected and diags["app.lower_it"] == set()
 
 
+def test_none_literal_positions_kept_off_native(tmp_path: Path) -> None:
+    # A bare native `None` literal has no inferable `Option<T>` type in these
+    # positions and would break the cargo build (E0282), so they are kept off the
+    # native path: `print`/`logging` of None, and `None <op> None`. None in an
+    # inferable position stays native: `return None` from `-> None` (-> `()`),
+    # `x == None` against an Optional operand, and an Optional return.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+from typing import Optional
+import rextio
+
+@rextio.native
+def print_none() -> None:
+    print(None)
+
+@rextio.native
+def cmp_none_none() -> bool:
+    return None == None
+
+@rextio.native
+def ret_none_unit(x: int) -> None:
+    return None
+
+@rextio.native
+def cmp_optional(x: Optional[int]) -> bool:
+    return x == None
+
+@rextio.native
+def ret_optional(flag: bool, x: int) -> Optional[int]:
+    if flag:
+        return x
+    return None
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    for name in ("app.print_none", "app.cmp_none_none"):
+        assert name in rejected, name
+    for name in ("app.ret_none_unit", "app.cmp_optional", "app.ret_optional"):
+        assert name in accepted, name
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,

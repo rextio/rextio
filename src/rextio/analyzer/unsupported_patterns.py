@@ -2076,7 +2076,19 @@ def _infer_effect_call_type(
         _add_unsupported_syntax(function, node, f"{target} requires at least one positional argument")
         return None
     for arg in node.args:
-        _infer_expr_type(arg, function, env)
+        arg_type = _infer_expr_type(arg, function, env)
+        if arg_type == "None" or (isinstance(arg, ast.Constant) and arg.value is None):
+            # A None argument has no faithful native print form: CPython prints
+            # "None", but a bare native `None` literal in a `{:?}`/`{}` position
+            # cannot infer `Option<T>` and fails to compile (E0282). Keep the
+            # function on the Python fallback rather than emit invalid Rust.
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"{target} of a None argument is not supported in native functions "
+                "(no faithful native format); kept on the Python fallback",
+            )
+            return None
     return "None"
 
 
@@ -2372,6 +2384,16 @@ def _validate_compare_types(
                 "identity-or-equality element comparison",
             )
             reported_float_container = True
+        if _is_none_literal(left_node) and _is_none_literal(comparator):
+            # `None <op> None` would emit a bare Rust `None` on both sides with no
+            # type to infer `Option<T>`, which fails to compile (E0282). It is a
+            # degenerate constant comparison, so keep it on the Python fallback.
+            _add_unsupported_syntax(
+                function,
+                node,
+                "comparing None against None is not supported in native functions; "
+                "kept on the Python fallback",
+            )
         if isinstance(op, (ast.Is, ast.IsNot)) and not (
             _is_none_literal(left_node) or _is_none_literal(comparator)
         ):

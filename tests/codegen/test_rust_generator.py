@@ -448,11 +448,23 @@ def echo(value: int | None) -> int | None:
     if value is None:
         return None
     return value
+
+@rextio.native
+def unit_ret(x: int) -> None:
+    if x > 0:
+        return None
+    return None
 """,
         encoding="utf-8",
     )
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+
+    # `return None` from a `-> None` function lowers to the unit `Ok(())`, not the
+    # invalid `Ok()` (the `()` literal must not be stripped to empty).
+    assert "fn app__unit_ret(x: i64) -> PyResult<()> {" in source
+    assert "return Ok(());" in source
+    assert "return Ok();" not in source
 
     assert "use std::collections::HashMap;" in source
     assert "fn app__first_value(pair: (i64, f64)) -> PyResult<i64> {" in source
