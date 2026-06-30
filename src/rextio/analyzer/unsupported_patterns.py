@@ -1222,9 +1222,16 @@ class _SignatureInferencer:
         arg_type = self.infer_expr(arg)
         target: str | None = None
         if isinstance(arg, ast.Call):
+            func = arg.func
+            if isinstance(func, ast.Name) and func.id in self.known:
+                # The callable name is bound to a local variable/parameter that
+                # shadows any imported or sibling function of the same name, so the
+                # call does not reach that function. Leave the argument unresolved
+                # (the conservative backstop keeps the caller on the fallback).
+                return None, None
             target = canonical_call_target(arg, self.function.imports, self.function.logger_names)
             if target is None:
-                target = dotted_name(arg.func)
+                target = dotted_name(func)
             if arg_type is None and target is not None:
                 arg_type = self.sibling_return_types.get(target)
         return arg_type, target

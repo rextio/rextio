@@ -2641,6 +2641,97 @@ def bad_caller() -> int:
     assert "pkg.main.bad_caller" in rejected
 
 
+def test_locally_shadowed_import_nested_call_kept_off_native(tmp_path: Path) -> None:
+    # When a local binding shadows an imported function of the same name, a nested
+    # call `take_int(make_int())` does not actually reach the imported function (in
+    # CPython the local shadows it). The argument must not be resolved to the
+    # imported callee's return type — doing so would silently lower a call to the
+    # wrong function. The caller is kept on the Python fallback.
+    write_module(
+        tmp_path,
+        "pkg/lib.py",
+        """
+import rextio
+
+@rextio.native
+def make_int() -> int:
+    return 1
+""",
+    )
+    write_module(
+        tmp_path,
+        "pkg/main.py",
+        """
+import rextio
+from pkg.lib import make_int
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def shadowed() -> int:
+    make_int = 2
+    return take_int(make_int())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert "pkg.main.shadowed" in rejected
+
+
+def test_nested_call_to_rejected_callee_kept_off_native(tmp_path: Path) -> None:
+    # A nested call argument whose callee is itself rejected (kept on the Python
+    # fallback) must not contribute a typed return value that keeps the outer caller
+    # native — the caller would then be lowered to call a function with no native
+    # implementation. The resolved return type is trusted only for accepted,
+    # non-shim callees; otherwise the caller falls back. Holds across modules and
+    # within a module.
+    write_module(
+        tmp_path,
+        "pkg/lib.py",
+        """
+import rextio
+
+@rextio.native
+def rejected_maker() -> int:
+    return eval("1")
+""",
+    )
+    write_module(
+        tmp_path,
+        "pkg/main.py",
+        """
+import rextio
+from pkg.lib import rejected_maker
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def cross_caller() -> int:
+    return take_int(rejected_maker())
+
+@rextio.native
+def same_rejected() -> int:
+    return eval("2")
+
+@rextio.native
+def same_caller() -> int:
+    return take_int(same_rejected())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert "pkg.main.cross_caller" in rejected
+    assert "pkg.main.same_caller" in rejected
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,

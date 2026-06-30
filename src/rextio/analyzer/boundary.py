@@ -226,18 +226,28 @@ def _native_arg_type_errors(
     arg_types = list(function.call_arg_types.get((call.line, call.column), call.arg_types))
     arg_targets = function.call_arg_targets.get((call.line, call.column), ())
 
-    # Resolve nested call arguments whose type the per-module inference could not
-    # determine (cross-module / imported callees) through the project resolver,
-    # which knows every function's resolved return type.
-    for index, arg_type in enumerate(arg_types):
-        if arg_type is not None or index >= len(arg_targets):
-            continue
+    # Resolve every nested call argument's type through the project resolver, which
+    # spans modules and is the authoritative source of acceptance. Only trust a
+    # resolved callee's return type when that callee is actually lowered to typed
+    # native code (accepted, and not a runtime-semantics shim); a rejected,
+    # fallback-only, or shim callee leaves the argument type unknown so the
+    # conservative backstop keeps the caller on the Python fallback. (The locally
+    # inferred type, when present, already agrees for accepted same-module callees.)
+    for index in range(len(arg_types)):
+        if index >= len(arg_targets):
+            break
         target = arg_targets[index]
         if target is None:
             continue
         resolved = resolver.resolve(module, target).function
-        if resolved is not None:
+        if (
+            resolved is not None
+            and (resolved.accepted or resolved.is_jit_candidate)
+            and not resolved.native_runtime_semantics
+        ):
             arg_types[index] = resolved.signature_return_type
+        else:
+            arg_types[index] = None
 
     if (
         dependency.positional_param_count is not None
