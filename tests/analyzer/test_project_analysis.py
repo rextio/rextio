@@ -2404,6 +2404,108 @@ def exact() -> int:
     assert "app.exact" in accepted
 
 
+def test_zero_parameter_callee_called_with_args_kept_off_native(tmp_path: Path) -> None:
+    # A genuinely zero-parameter native callee has an empty signature, but its
+    # lowered Rust inner function still has fixed (zero) arity. Calling it with an
+    # argument would emit `app__callee(1)` -> E0061. Arity is checked against the
+    # callee's true positional-parameter count (0), not the truthiness of the
+    # signature map, so the caller is kept off native; a correct no-arg call stays.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def callee() -> int:
+    return 1
+
+@rextio.native
+def bad_caller() -> int:
+    return callee(1)
+
+@rextio.native
+def good_caller() -> int:
+    return callee()
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.bad_caller" in rejected
+    assert "app.good_caller" in accepted
+    assert "app.callee" in accepted
+
+
+def test_keyword_only_parameter_callee_kept_off_native(tmp_path: Path) -> None:
+    # A keyword-only parameter cannot be supplied through the native calling
+    # convention (keyword call arguments are unsupported, and a positional argument
+    # for a keyword-only parameter would silently diverge from CPython's TypeError),
+    # so a native caller of such a function is kept on the Python fallback.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def kwonly(*, x: int) -> int:
+    return x
+
+@rextio.native
+def bad_caller() -> int:
+    return kwonly(1)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    assert "app.bad_caller" in rejected
+
+
+def test_nested_native_call_argument_type_is_resolved(tmp_path: Path) -> None:
+    # An argument that is itself a native call resolves to the callee's return type
+    # via the module return-type registry, so a mismatch (float result -> int param)
+    # is rejected while a matching nested call (int result -> int param) stays native.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def make_float() -> float:
+    return 1.5
+
+@rextio.native
+def make_int() -> int:
+    return 5
+
+@rextio.native
+def bad_caller() -> int:
+    return take_int(make_float())
+
+@rextio.native
+def good_caller() -> int:
+    return take_int(make_int())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "app.bad_caller" in rejected
+    assert "app.good_caller" in accepted
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,

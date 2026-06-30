@@ -109,10 +109,14 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
 )
 
 
-def validate_native_function(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+def validate_native_function(
+    node: ast.FunctionDef,
+    function: FunctionAnalysis,
+    return_types: dict[str, str] | None = None,
+) -> None:
     """Validate a function body against the supported subset, attaching diagnostics."""
     _validate_decorators(node, function)
-    _infer_missing_signature_from_context(node, function)
+    _infer_missing_signature_from_context(node, function, return_types)
     _validate_signature(node, function)
     _validate_body(node, function)
     _validate_identifiers(node, function)
@@ -904,15 +908,24 @@ def _return_type_name(node: ast.FunctionDef, function: FunctionAnalysis) -> str 
 def _infer_missing_signature_from_context(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
+    return_types: dict[str, str] | None = None,
 ) -> None:
-    inferencer = _SignatureInferencer(node, function)
+    inferencer = _SignatureInferencer(node, function, return_types)
     inferencer.infer()
 
 
 class _SignatureInferencer:
-    def __init__(self, node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+    def __init__(
+        self,
+        node: ast.FunctionDef,
+        function: FunctionAnalysis,
+        return_types: dict[str, str] | None = None,
+    ) -> None:
         self.node = node
         self.function = function
+        # name -> return type for sibling functions in the same module, used to
+        # resolve the type of a nested call argument (e.g. callee(producer())).
+        self.sibling_return_types = return_types or {}
         self.args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
         self.arg_names = {arg.arg for arg in self.args}
         self.known: dict[str, str] = {}
@@ -944,6 +957,13 @@ class _SignatureInferencer:
         self.function.signature_arg_types = {
             arg.arg: self.known[arg.arg] for arg in self.args if arg.arg in self.known
         }
+        # Persist the true positional arity and keyword-only presence from the AST,
+        # so the boundary pass validates call arity exactly (including zero-param
+        # callees) and rejects native callers of keyword-only-parameter functions.
+        self.function.positional_param_count = len(self.node.args.posonlyargs) + len(
+            self.node.args.args
+        )
+        self.function.has_keyword_only_params = bool(self.node.args.kwonlyargs)
         if self.node.returns is None and self.return_types:
             unique = set(self.return_types)
             if len(unique) == 1:
@@ -1179,9 +1199,27 @@ class _SignatureInferencer:
         # validate it against the callee signature, including non-literal arguments
         # whose type is only known here (with the local environment).
         self.function.call_arg_types[(node.lineno, node.col_offset)] = tuple(
-            self.infer_expr(arg) for arg in node.args
+            self._infer_call_arg(arg) for arg in node.args
         )
         return None
+
+    def _infer_call_arg(self, arg: ast.expr) -> str | None:
+        """Infer one call-argument's type, resolving nested sibling-call returns.
+
+        ``infer_expr`` returns ``None`` for a call to another user/native function
+        (no cross-function return type is known locally), so a nested call argument
+        like ``callee(producer())`` would otherwise be recorded as ``None`` and skip
+        the boundary type check. Resolve such arguments from the module's
+        return-type registry so the mismatch (or match) is seen.
+        """
+        arg_type = self.infer_expr(arg)
+        if arg_type is None and isinstance(arg, ast.Call):
+            target = canonical_call_target(arg, self.function.imports, self.function.logger_names)
+            if target is None:
+                target = dotted_name(arg.func)
+            if target is not None:
+                arg_type = self.sibling_return_types.get(target)
+        return arg_type
 
     def infer_string_method(self, node: ast.Call, expected: str | None, target: str) -> str | None:
         receiver = _call_receiver(node)

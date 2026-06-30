@@ -176,6 +176,15 @@ def _collect_module_functions(
     jit_hot_threshold: int,
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
+    # Module-level map of function name -> annotated return type, so the signature
+    # inferencer can resolve the type of a nested call argument (callee(producer())).
+    return_types: dict[str, str] = {
+        item.name: annotation_name(item.returns)
+        for item in tree.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and item.returns is not None
+        and is_supported_type(item.returns)
+    }
     for node in tree.body:
         if isinstance(node, ast.AsyncFunctionDef):
             marker = native_marker_for_function(node)
@@ -218,11 +227,12 @@ def _collect_module_functions(
         elif marker is not None and not _native_marker_applies(marker, target_language):
             function.is_native_candidate = False
         elif has_marker:
-            _classify_native_function(node, function)
+            _classify_native_function(node, function, return_types)
         elif native_marker == "auto" and _is_auto_native_candidate(
             node,
             function,
             target_language,
+            return_types,
         ):
             function.is_native_candidate = True
             function.accepted = True
@@ -231,6 +241,7 @@ def _collect_module_functions(
             function,
             target_language,
             jit_hot_threshold,
+            return_types,
         ):
             pass
         functions.append(function)
@@ -242,6 +253,7 @@ def _mark_jit_candidate(
     function: FunctionAnalysis,
     target_language: str,
     jit_hot_threshold: int,
+    return_types: dict[str, str] | None = None,
 ) -> bool:
     if node.decorator_list:
         return False
@@ -260,7 +272,7 @@ def _mark_jit_candidate(
         imports=dict(function.imports),
         logger_names=function.logger_names,
     )
-    validate_native_function(node, probe)
+    validate_native_function(node, probe, return_types)
     accepted, reason = is_cranelift_jit_candidate(node, probe)
     if not accepted:
         # Surface the specific case where an otherwise-eligible int helper is kept
@@ -272,6 +284,8 @@ def _mark_jit_candidate(
     function.inferred_arg_types = dict(probe.inferred_arg_types)
     function.signature_arg_types = dict(probe.signature_arg_types)
     function.call_arg_types = dict(probe.call_arg_types)
+    function.positional_param_count = probe.positional_param_count
+    function.has_keyword_only_params = probe.has_keyword_only_params
     function.inferred_return_type = probe.inferred_return_type
     function.native_target_language = target_language
     function.is_jit_candidate = True
@@ -284,6 +298,7 @@ def _is_auto_native_candidate(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
     target_language: str,
+    return_types: dict[str, str] | None = None,
 ) -> bool:
     if node.decorator_list:
         return False
@@ -302,11 +317,13 @@ def _is_auto_native_candidate(
         imports=dict(function.imports),
         logger_names=function.logger_names,
     )
-    validate_native_function(node, probe)
+    validate_native_function(node, probe, return_types)
     if probe.accepted:
         function.inferred_arg_types = dict(probe.inferred_arg_types)
         function.signature_arg_types = dict(probe.signature_arg_types)
         function.call_arg_types = dict(probe.call_arg_types)
+        function.positional_param_count = probe.positional_param_count
+        function.has_keyword_only_params = probe.has_keyword_only_params
         function.inferred_return_type = probe.inferred_return_type
         function.native_target_language = target_language
         return True
@@ -319,7 +336,11 @@ def _is_auto_native_candidate(
     return False
 
 
-def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+def _classify_native_function(
+    node: ast.FunctionDef,
+    function: FunctionAnalysis,
+    return_types: dict[str, str] | None = None,
+) -> None:
     probe = FunctionAnalysis(
         name=function.name,
         qualname=function.qualname,
@@ -335,10 +356,12 @@ def _classify_native_function(node: ast.FunctionDef, function: FunctionAnalysis)
         imports=dict(function.imports),
         logger_names=function.logger_names,
     )
-    validate_native_function(node, probe)
+    validate_native_function(node, probe, return_types)
     function.inferred_arg_types = dict(probe.inferred_arg_types)
     function.signature_arg_types = dict(probe.signature_arg_types)
     function.call_arg_types = dict(probe.call_arg_types)
+    function.positional_param_count = probe.positional_param_count
+    function.has_keyword_only_params = probe.has_keyword_only_params
     function.inferred_return_type = probe.inferred_return_type
     if probe.accepted:
         function.accepted = True

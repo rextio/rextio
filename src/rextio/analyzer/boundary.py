@@ -169,36 +169,69 @@ def _native_arg_type_errors(
 
     The lowered Rust inner function has a fixed positional arity and exact scalar
     parameter types with no implicit coercion and no default arguments, so a call
-    that CPython accepts can still emit Rust that fails ``cargo build``:
+    that CPython accepts can still emit Rust that fails ``cargo build`` (or, for
+    keyword-only parameters, silently diverge from CPython):
 
+    - a callee with keyword-only parameters cannot be called faithfully through the
+      native convention (keyword call arguments are unsupported, and a keyword-only
+      parameter supplied positionally diverges from CPython's ``TypeError``);
+    - too few or too many positional arguments vs the callee's positional arity
+      (including a genuine zero-parameter callee) -> E0061;
     - a scalar argument of a different type than the parameter (``g(1.2)`` where
-      ``g(x: int)``, or ``g(1)`` where ``g(x: float)``) -> E0308;
-    - too few arguments (an omitted default, ``g()`` where ``g(x: int = 1)``) or
-      too many arguments (``g(1, 2)`` where ``g(x: int)``) -> E0061.
+      ``g(x: int)``, or ``g(1)`` where ``g(x: float)``) -> E0308, or a scalar
+      argument whose type cannot be proven to match.
 
     The contract requires keeping such a caller on the Python fallback (RXT010)
-    rather than silently building broken native code.
+    rather than silently building broken or divergent native code.
 
     Argument types come from the caller's inferred ``call_arg_types`` (which covers
-    non-literal arguments such as known locals) when available, falling back to the
-    literal-only ``CallSite.arg_types``. Non-scalar parameters (``Optional[...]``,
-    ``list[...]``, etc.) and arguments whose type cannot be inferred are not type
-    checked. Arity is only checked when the callee's parameter types are known.
+    non-literal arguments such as known locals and resolved nested calls) when
+    available, falling back to the literal-only ``CallSite.arg_types``. Arity is
+    checked against ``positional_param_count`` (``None`` only for callees whose
+    signature was never captured, e.g. runtime-shim methods).
     """
-    param_types = list(dependency.signature_arg_types.values())
-    arg_types = function.call_arg_types.get((call.line, call.column), call.arg_types)
     diagnostics: list[Diagnostic] = []
 
-    if param_types and len(arg_types) != len(param_types):
+    if dependency.has_keyword_only_params:
+        diagnostics.append(
+            Diagnostic(
+                code="RXT010",
+                severity="error",
+                message=(
+                    f"native call to {dependency.qualname} targets a function with "
+                    "keyword-only parameters, which cannot be supplied through the native "
+                    "calling convention (keyword arguments are unsupported, and a "
+                    "positional argument for a keyword-only parameter diverges from CPython)"
+                ),
+                file_path=function.file_path,
+                line=call.line,
+                column=call.column,
+                function_name=function.qualname,
+                suggestion=(
+                    "Remove the keyword-only parameters from the native callee, or keep "
+                    "this caller on the Python fallback."
+                ),
+            )
+        )
+        return diagnostics
+
+    param_types = list(dependency.signature_arg_types.values())
+    arg_types = function.call_arg_types.get((call.line, call.column), call.arg_types)
+
+    if (
+        dependency.positional_param_count is not None
+        and len(arg_types) != dependency.positional_param_count
+    ):
         diagnostics.append(
             Diagnostic(
                 code="RXT010",
                 severity="error",
                 message=(
                     f"native call to {dependency.qualname} passes {len(arg_types)} "
-                    f"argument(s) but the native function takes {len(param_types)}; the "
-                    "lowered Rust function has a fixed arity with no default arguments, so "
-                    "this would emit native code that fails to compile"
+                    f"argument(s) but the native function takes "
+                    f"{dependency.positional_param_count}; the lowered Rust function has a "
+                    "fixed arity with no default arguments, so this would emit native code "
+                    "that fails to compile"
                 ),
                 file_path=function.file_path,
                 line=call.line,
@@ -213,20 +246,20 @@ def _native_arg_type_errors(
         return diagnostics
 
     for index, arg_type in enumerate(arg_types):
-        if arg_type is None or index >= len(param_types):
+        if index >= len(param_types):
             continue
         param_type = param_types[index]
         if param_type not in _SCALAR_PARAM_TYPES or arg_type == param_type:
             continue
+        actual = arg_type if arg_type is not None else "an undetermined type"
         diagnostics.append(
             Diagnostic(
                 code="RXT010",
                 severity="error",
                 message=(
                     f"native call argument {index + 1} to {dependency.qualname} has "
-                    f"type {arg_type} but the parameter is {param_type}; Rust has no "
-                    "implicit scalar coercion, so this would emit native code that fails "
-                    "to compile"
+                    f"{actual} but the parameter is {param_type}; Rust has no implicit "
+                    "scalar coercion, so this would emit native code that fails to compile"
                 ),
                 file_path=function.file_path,
                 line=call.line,

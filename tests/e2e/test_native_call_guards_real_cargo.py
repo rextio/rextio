@@ -16,13 +16,16 @@ def test_real_cargo_build_keeps_uncompilable_shapes_off_native(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Each of these shapes would emit Rust that fails ``cargo build`` if accepted
-    # natively: E0308 for a scalar call-argument type mismatch (literal float->int
-    # and a known float local -> int), E0061 for an arity mismatch (omitted default
-    # and an extra argument), and E0282 for a bare-None local and a None tuple item.
-    # The analyzer must keep their callers/owners on the Python fallback so the native
-    # module still builds, while type-matching callers, an exact-arity call, and an
-    # all-scalar tuple stay native and produce CPython-equivalent results.
+    # Each of these shapes would emit Rust that fails ``cargo build`` (or silently
+    # diverge) if accepted natively: E0308 for a scalar call-argument type mismatch
+    # (literal float->int, a known float local, and a nested float-returning call ->
+    # int), E0061 for an arity mismatch (omitted default, an extra argument, and a
+    # zero-parameter callee called with an argument), a keyword-only parameter
+    # supplied positionally (which would silently diverge from CPython's TypeError),
+    # and E0282 for a bare-None local and a None tuple item. The analyzer must keep
+    # their callers/owners on the Python fallback so the native module still builds,
+    # while type-matching callers (including a matching nested call), an exact-arity
+    # call, and an all-scalar tuple stay native with CPython-equivalent results.
     (tmp_path / "rextio.toml").write_text(
         """
 [rust]
@@ -64,6 +67,30 @@ def bad_too_many() -> int:
 
 def good_caller() -> int:
     return callee(1)
+
+
+def no_params() -> int:
+    return 7
+
+
+def bad_zero_param_arg() -> int:
+    return no_params(1)
+
+
+def kwonly(*, x: int) -> int:
+    return x
+
+
+def bad_kwonly_positional() -> int:
+    return kwonly(1)
+
+
+def make_float() -> float:
+    return 1.5
+
+
+def bad_nested_arg() -> int:
+    return callee(make_float())
 
 
 def bare_local() -> Optional[int]:

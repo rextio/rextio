@@ -98,6 +98,17 @@ class FunctionAnalysis:
     # also covers non-literal arguments (known locals/params, sub-expressions). The
     # boundary pass prefers it over the literal-only types when validating calls.
     call_arg_types: dict[tuple[int, int], tuple[str | None, ...]] = field(default_factory=dict)
+    # The number of positional parameters (positional-only + normal), or None when
+    # the signature was never captured (e.g. runtime-shim methods). The boundary
+    # pass uses this — not the truthiness/length of signature_arg_types — to check
+    # call arity, so a genuine zero-parameter callee (count 0, not None) is still
+    # validated against over-arity calls.
+    positional_param_count: int | None = None
+    # True when the callee declares any keyword-only parameters. Such a function
+    # cannot be faithfully called through the native calling convention (keyword
+    # call arguments are unsupported, and a keyword-only parameter supplied
+    # positionally diverges from CPython), so native callers are kept on fallback.
+    has_keyword_only_params: bool = False
     inferred_return_type: str | None = None
     native_target_language: str | None = None
     native_runtime_semantics: bool = False
