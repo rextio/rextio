@@ -98,11 +98,21 @@ class FunctionAnalysis:
     # also covers non-literal arguments (known locals/params, sub-expressions). The
     # boundary pass prefers it over the literal-only types when validating calls.
     call_arg_types: dict[tuple[int, int], tuple[str | None, ...]] = field(default_factory=dict)
+    # For each call (keyed by its (line, column)), the call target of any argument
+    # that is itself a call, positionally; None for non-call arguments. Lets the
+    # boundary pass resolve a nested call argument's return type through the project
+    # resolver (covering cross-module / imported callees the per-module inference
+    # registry cannot reach) when the locally-inferred type is unknown.
+    call_arg_targets: dict[tuple[int, int], tuple[str | None, ...]] = field(default_factory=dict)
     # The number of positional parameters (positional-only + normal), or None when
     # the signature was never captured (e.g. runtime-shim methods). The boundary
     # pass uses this — not the truthiness/length of signature_arg_types — to check
     # call arity, so a genuine zero-parameter callee (count 0, not None) is still
     # validated against over-arity calls.
+    # The resolved return type (annotated, else inferred), used by the boundary pass
+    # to resolve this function's return type when it appears as a nested call
+    # argument — including across modules, via the project resolver.
+    signature_return_type: str | None = None
     positional_param_count: int | None = None
     # True when the callee declares any keyword-only parameters. Such a function
     # cannot be faithfully called through the native calling convention (keyword

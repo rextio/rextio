@@ -2592,6 +2592,55 @@ def good_none_to_opt() -> int:
     assert "app.good_none_to_opt" in accepted
 
 
+def test_cross_module_nested_call_argument_is_resolved(tmp_path: Path) -> None:
+    # A nested call argument targeting a function imported from another module is
+    # resolved through the project resolver (which spans modules), so a matching
+    # cross-module nested call stays native while a mismatched one is rejected —
+    # closing the per-module registry's blind spot for imported callees.
+    write_module(
+        tmp_path,
+        "pkg/lib.py",
+        """
+import rextio
+
+@rextio.native
+def make_int() -> int:
+    return 1
+
+@rextio.native
+def make_float() -> float:
+    return 1.5
+""",
+    )
+    write_module(
+        tmp_path,
+        "pkg/main.py",
+        """
+import rextio
+from pkg.lib import make_int, make_float
+
+@rextio.native
+def take_int(x: int) -> int:
+    return x
+
+@rextio.native
+def good_caller() -> int:
+    return take_int(make_int())
+
+@rextio.native
+def bad_caller() -> int:
+    return take_int(make_float())
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    rejected = {f.qualname for f in analysis.rejected_native_functions}
+    accepted = {f.qualname for f in analysis.accepted_native_functions}
+    assert "pkg.main.good_caller" in accepted
+    assert "pkg.main.bad_caller" in rejected
+
+
 def test_rejects_unsupported_external_calls(tmp_path: Path) -> None:
     write_module(
         tmp_path,

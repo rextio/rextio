@@ -295,7 +295,9 @@ def _mark_jit_candidate(
         return False
     function.inferred_arg_types = dict(probe.inferred_arg_types)
     function.signature_arg_types = dict(probe.signature_arg_types)
+    function.signature_return_type = probe.signature_return_type
     function.call_arg_types = dict(probe.call_arg_types)
+    function.call_arg_targets = dict(probe.call_arg_targets)
     function.positional_param_count = probe.positional_param_count
     function.has_keyword_only_params = probe.has_keyword_only_params
     function.inferred_return_type = probe.inferred_return_type
@@ -333,7 +335,9 @@ def _is_auto_native_candidate(
     if probe.accepted:
         function.inferred_arg_types = dict(probe.inferred_arg_types)
         function.signature_arg_types = dict(probe.signature_arg_types)
+        function.signature_return_type = probe.signature_return_type
         function.call_arg_types = dict(probe.call_arg_types)
+        function.call_arg_targets = dict(probe.call_arg_targets)
         function.positional_param_count = probe.positional_param_count
         function.has_keyword_only_params = probe.has_keyword_only_params
         function.inferred_return_type = probe.inferred_return_type
@@ -371,7 +375,9 @@ def _classify_native_function(
     validate_native_function(node, probe, return_types)
     function.inferred_arg_types = dict(probe.inferred_arg_types)
     function.signature_arg_types = dict(probe.signature_arg_types)
+    function.signature_return_type = probe.signature_return_type
     function.call_arg_types = dict(probe.call_arg_types)
+    function.call_arg_targets = dict(probe.call_arg_targets)
     function.positional_param_count = probe.positional_param_count
     function.has_keyword_only_params = probe.has_keyword_only_params
     function.inferred_return_type = probe.inferred_return_type

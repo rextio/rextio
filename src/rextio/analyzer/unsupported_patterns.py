@@ -970,6 +970,10 @@ class _SignatureInferencer:
                 return_type = self.return_types[0]
                 if _is_supported_signature_type(return_type):
                     self.function.inferred_return_type = return_type
+        # Persist the resolved return type (annotated, else inferred) so the boundary
+        # pass can resolve this function's return type as a nested call argument even
+        # across modules, where the per-module inference registry cannot reach.
+        self.function.signature_return_type = _return_type_name(self.node, self.function)
 
     def visit_statements(self, statements: list[ast.stmt]) -> None:
         for statement in statements:
@@ -1198,28 +1202,32 @@ class _SignatureInferencer:
         # Record each positional argument's inferred type so the boundary pass can
         # validate it against the callee signature, including non-literal arguments
         # whose type is only known here (with the local environment).
-        self.function.call_arg_types[(node.lineno, node.col_offset)] = tuple(
-            self._infer_call_arg(arg) for arg in node.args
-        )
+        results = [self._infer_call_arg(arg) for arg in node.args]
+        key = (node.lineno, node.col_offset)
+        self.function.call_arg_types[key] = tuple(arg_type for arg_type, _ in results)
+        self.function.call_arg_targets[key] = tuple(target for _, target in results)
         return None
 
-    def _infer_call_arg(self, arg: ast.expr) -> str | None:
-        """Infer one call-argument's type, resolving nested sibling-call returns.
+    def _infer_call_arg(self, arg: ast.expr) -> tuple[str | None, str | None]:
+        """Infer one call-argument's type and its call target if it is a call.
 
         ``infer_expr`` returns ``None`` for a call to another user/native function
         (no cross-function return type is known locally), so a nested call argument
         like ``callee(producer())`` would otherwise be recorded as ``None`` and skip
         the boundary type check. Resolve such arguments from the module's
-        return-type registry so the mismatch (or match) is seen.
+        return-type registry when possible, and always record the call target so the
+        boundary pass can resolve cross-module / imported callees through the project
+        resolver. Returns ``(type, target)`` where ``target`` is None for non-calls.
         """
         arg_type = self.infer_expr(arg)
-        if arg_type is None and isinstance(arg, ast.Call):
+        target: str | None = None
+        if isinstance(arg, ast.Call):
             target = canonical_call_target(arg, self.function.imports, self.function.logger_names)
             if target is None:
                 target = dotted_name(arg.func)
-            if target is not None:
+            if arg_type is None and target is not None:
                 arg_type = self.sibling_return_types.get(target)
-        return arg_type
+        return arg_type, target
 
     def infer_string_method(self, node: ast.Call, expected: str | None, target: str) -> str | None:
         receiver = _call_receiver(node)

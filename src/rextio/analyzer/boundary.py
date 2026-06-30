@@ -103,7 +103,7 @@ def _boundary_errors(
         if native_jit_enabled and dependency is not None and dependency.is_jit_candidate:
             # JIT candidates are lowered to a typed native inner function just like
             # accepted native siblings, so the same call-compatibility check applies.
-            diagnostics.extend(_native_arg_type_errors(function, call, dependency))
+            diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
             continue
         if dependency is not None and not dependency.is_native_candidate:
             diagnostics.append(
@@ -137,7 +137,7 @@ def _boundary_errors(
             )
             continue
         if dependency is not None:
-            diagnostics.extend(_native_arg_type_errors(function, call, dependency))
+            diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
             continue
 
         decision = decision_for_target(module, resolved.resolved_target)
@@ -166,9 +166,11 @@ _CONTAINER_PARAM_PREFIXES = ("list[", "tuple[", "dict[", "set[", "frozenset[")
 
 
 def _native_arg_type_errors(
+    module: ModuleAnalysis,
     function: FunctionAnalysis,
     call: CallSite,
     dependency: FunctionAnalysis,
+    resolver: FunctionResolver,
 ) -> list[Diagnostic]:
     """Reject native→native calls that are not compatible with the callee signature.
 
@@ -221,7 +223,21 @@ def _native_arg_type_errors(
         return diagnostics
 
     param_types = list(dependency.signature_arg_types.values())
-    arg_types = function.call_arg_types.get((call.line, call.column), call.arg_types)
+    arg_types = list(function.call_arg_types.get((call.line, call.column), call.arg_types))
+    arg_targets = function.call_arg_targets.get((call.line, call.column), ())
+
+    # Resolve nested call arguments whose type the per-module inference could not
+    # determine (cross-module / imported callees) through the project resolver,
+    # which knows every function's resolved return type.
+    for index, arg_type in enumerate(arg_types):
+        if arg_type is not None or index >= len(arg_targets):
+            continue
+        target = arg_targets[index]
+        if target is None:
+            continue
+        resolved = resolver.resolve(module, target).function
+        if resolved is not None:
+            arg_types[index] = resolved.signature_return_type
 
     if (
         dependency.positional_param_count is not None
