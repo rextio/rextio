@@ -36,6 +36,7 @@ def apply_boundary_checks(
     analysis: ProjectAnalysis,
     boundary_warnings: bool = True,
     native_jit_enabled: bool = False,
+    delegate_fallback: bool = False,
 ) -> None:
     """Apply the native/fallback boundary policy, attaching RXT07x diagnostics."""
     resolver = FunctionResolver(analysis)
@@ -74,6 +75,7 @@ def apply_boundary_checks(
                     function,
                     resolver,
                     native_jit_enabled=native_jit_enabled,
+                    delegate_fallback=delegate_fallback,
                 )
                 if boundary_errors:
                     for diagnostic in boundary_errors:
@@ -85,11 +87,45 @@ def apply_boundary_checks(
         _add_python_loop_boundary_warnings(analysis, resolver)
 
 
+# Types a delegated call can serialize across the JSON wire protocol and type on
+# the Rust side. bytes/tuple/dict need a tagged encoding and are a follow-up.
+_DELEGATABLE_SCALARS = frozenset({"int", "float", "bool", "str", "None"})
+_DELEGATABLE_LISTS = frozenset({"list[int]", "list[float]", "list[bool]", "list[str]"})
+
+
+def _is_delegatable_type(type_name: str | None) -> bool:
+    return type_name in _DELEGATABLE_SCALARS or type_name in _DELEGATABLE_LISTS
+
+
+def _is_delegatable(
+    dependency: FunctionAnalysis,
+    function: FunctionAnalysis,
+    call: CallSite,
+) -> bool:
+    """Whether a fallback call can be faithfully delegated over the wire protocol.
+
+    Requires the callee's return type and every argument type to be JSON-wire
+    types the Rust client can serialize and the result can be typed from. When a
+    type is unknown the call is *not* delegated (it stays a rejection, keeping the
+    caller on the Python fallback), so delegation never guesses.
+    """
+    return_type = (
+        dependency.signature_return_type
+        or dependency.inferred_return_type
+        or dependency.annotated_return_type
+    )
+    if not _is_delegatable_type(return_type):
+        return False
+    arg_types = function.call_arg_types.get((call.line, call.column), call.arg_types)
+    return all(_is_delegatable_type(arg_type) for arg_type in arg_types)
+
+
 def _boundary_errors(
     module: ModuleAnalysis,
     function: FunctionAnalysis,
     resolver: FunctionResolver,
     native_jit_enabled: bool = False,
+    delegate_fallback: bool = False,
 ) -> list[Diagnostic]:
     if function.native_runtime_semantics:
         return []
@@ -104,6 +140,19 @@ def _boundary_errors(
             # JIT candidates are lowered to a typed native inner function just like
             # accepted native siblings, so the same call-compatibility check applies.
             diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
+            continue
+        if (
+            delegate_fallback
+            and dependency is not None
+            and (not dependency.is_native_candidate or not dependency.accepted)
+            and _is_delegatable(dependency, function, call)
+        ):
+            # Rust-executable delegate mode: a project function that lives on the
+            # Python fallback (unsupported subset, RXT070) or was rejected from
+            # native (RXT072) is not an error here — the generated binary calls it
+            # in the external CPython dispatcher instead. It runs real CPython, so
+            # the result is CPython-equivalent (not a silent miscompile).
+            function.delegated_call_targets.add(dependency.qualname)
             continue
         if dependency is not None and not dependency.is_native_candidate:
             diagnostics.append(

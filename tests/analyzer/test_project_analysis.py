@@ -4249,3 +4249,66 @@ def below_min() -> int:
 
     assert [f.qualname for f in analysis.accepted_native_functions] == ["app.at_min"]
     assert [f.qualname for f in analysis.rejected_native_functions] == ["app.below_min"]
+
+
+def test_delegate_fallback_mode_records_delegated_calls(tmp_path: Path) -> None:
+    # Rust-executable delegate mode: a direct-native function that calls a
+    # project function living on the Python fallback is accepted (not RXT070) and
+    # the callee is recorded for delegation to the external CPython dispatcher,
+    # provided the callee's return type and the argument types are wire-serializable.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+def slugify(text: str) -> str:
+    return text.lower()
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    x = slugify(argv[0])
+    return len(x)
+""",
+    )
+
+    normal = analyze_project(tmp_path, native_marker="decorator")
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+
+    def _main(analysis):
+        return next(f for m in analysis.modules for f in m.functions if f.name == "main")
+
+    # Without delegation the native->fallback call is rejected (RXT070).
+    assert not _main(normal).accepted
+    assert "RXT070" in {d.code for d in _main(normal).error_diagnostics}
+
+    # With delegation the caller is accepted and the callee is recorded.
+    assert _main(delegated).accepted
+    assert _main(delegated).delegated_call_targets == {"app.slugify"}
+
+
+def test_delegate_fallback_skips_untypeable_callee(tmp_path: Path) -> None:
+    # Delegation never guesses: a fallback callee without a wire-serializable
+    # return type stays a rejection (the caller remains on the Python fallback).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+def opaque(text):
+    return object()
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    opaque(argv[0])
+    return 0
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    assert not main.accepted
+    assert main.delegated_call_targets == set()
