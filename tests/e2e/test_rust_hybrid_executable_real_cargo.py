@@ -63,7 +63,7 @@ def main(argv: list[str]) -> int:
 
     # The runtime directory (dispatcher + project source) is shipped next to the binary.
     runtime = binary.parent / f"{binary.name}.runtime"
-    assert (runtime / "dispatcher.py").exists()
+    assert (runtime / "_rextio_dispatcher.py").exists()
     assert (runtime / "hb" / "app.py").exists()
 
     # Running it delegates slugify() to CPython and returns the slug's length.

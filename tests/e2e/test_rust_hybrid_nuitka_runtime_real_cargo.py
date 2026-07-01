@@ -52,4 +52,4 @@ def main(argv: list[str]) -> int:
         assert exit_code == 0
         assert executable["status"] == "built"
         binary = Path(executable["path"])
-        assert (binary.parent / f"{binary.name}.runtime" / "dispatcher").exists()
+        assert (binary.parent / f"{binary.name}.runtime" / "_rextio_dispatcher").exists()

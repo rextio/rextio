@@ -10,6 +10,8 @@ newline-delimited JSON wire protocol, and maps a Python exception back to a
 
 from __future__ import annotations
 
+from rextio.codegen.subprocess_dispatcher import DISPATCHER_STEM
+
 # The runtime directory (dispatcher + fallback Python tree) is placed next to the
 # executable as ``<exe>.runtime`` by the build; the client resolves it from the
 # executable's own path so the binary is relocatable.
@@ -23,14 +25,14 @@ def _rust_string_literal(value: str) -> str:
 
 # The Nuitka-compiled dispatcher is a self-contained executable shipped in the
 # runtime directory under this name; the binary launches it directly (no Python).
-NUITKA_DISPATCHER_NAME = "dispatcher"
+NUITKA_DISPATCHER_NAME = DISPATCHER_STEM
 
 
 def render_subprocess_client(python_command: str = "python3", *, nuitka_dispatcher: bool = False) -> str:
     """Return the Rust source for the ``__rextio_call_python`` IPC client.
 
     In the default (source) mode the binary launches ``python3`` on
-    ``<exe>.runtime/dispatcher.py``; ``python_command`` sets that interpreter (a
+    ``<exe>.runtime/_rextio_dispatcher.py``; ``python_command`` sets that interpreter (a
     bare name on ``PATH``, an absolute path, or a relative path resolved against
     the runtime directory) and ``REXTIO_PYTHON`` overrides it at run time. When
     ``nuitka_dispatcher`` is set the runtime ships a Nuitka-compiled, self-contained
@@ -46,7 +48,8 @@ def render_subprocess_client(python_command: str = "python3", *, nuitka_dispatch
             'let python = std::env::var("REXTIO_PYTHON")'
             '.unwrap_or_else(|_| "{PYTHON_COMMAND}".to_string());\n'
             '        let python_path = __rextio_resolve_python(&runtime_dir, &python);\n'
-            '        let mut child = Command::new(python_path).arg(runtime_dir.join("dispatcher.py"))'
+            '        let mut child = Command::new(python_path).arg(runtime_dir.join("'
+            + f'{DISPATCHER_STEM}.py"))'
         )
     return '''
 // ---- Rextio subprocess-hybrid IPC client ----------------------------------

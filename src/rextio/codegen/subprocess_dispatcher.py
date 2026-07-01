@@ -31,6 +31,12 @@ import json
 # Bump when the wire protocol changes so the Rust client and dispatcher agree.
 PROTOCOL_VERSION = 1
 
+# The generated dispatcher is shipped under this stem. The ``_rextio_`` prefix
+# keeps a project module named ``dispatcher`` from colliding with (and overwriting)
+# it when the project source is reconstructed into the runtime directory, and no
+# stdlib module can shadow it.
+DISPATCHER_STEM = "_rextio_dispatcher"
+
 
 def render_dispatcher_script(allowed_qualnames: list[str]) -> str:
     """Render the dispatcher program that serves the allow-listed qualnames."""

@@ -1626,10 +1626,10 @@ def test_subprocess_client_nuitka_mode_launches_compiled_dispatcher() -> None:
     source = render_subprocess_client("python3", nuitka_dispatcher=False)
     nuitka = render_subprocess_client("python3", nuitka_dispatcher=True)
 
-    # Source mode launches the interpreter on dispatcher.py; nuitka mode launches
-    # the self-contained compiled dispatcher directly (no interpreter).
-    assert 'arg(runtime_dir.join("dispatcher.py"))' in source
+    # Source mode launches the interpreter on the dispatcher script; nuitka mode
+    # launches the self-contained compiled dispatcher directly (no interpreter).
+    assert 'arg(runtime_dir.join("_rextio_dispatcher.py"))' in source
     assert "REXTIO_PYTHON" in source
-    assert 'Command::new(runtime_dir.join("dispatcher"))' in nuitka
+    assert 'Command::new(runtime_dir.join("_rextio_dispatcher"))' in nuitka
     assert "REXTIO_PYTHON" not in nuitka
-    assert 'arg(runtime_dir.join("dispatcher.py"))' not in nuitka
+    assert 'arg(runtime_dir.join("_rextio_dispatcher.py"))' not in nuitka

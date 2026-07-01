@@ -47,7 +47,7 @@ from rextio.codegen.rust.generator import (
 )
 from rextio.codegen.rust.generator import RustCodegenError
 from rextio.codegen.rust.subprocess_client import RUNTIME_DIR_SUFFIX
-from rextio.codegen.subprocess_dispatcher import render_dispatcher_script
+from rextio.codegen.subprocess_dispatcher import DISPATCHER_STEM, render_dispatcher_script
 from rextio.codegen.python_wrapper.wrapper_gen import render_wrapper_module
 from rextio.fallback.build_result import FallbackBuildResult, cpython_fallback_build_result
 from rextio.fallback.cpython import (
@@ -680,7 +680,7 @@ def _write_hybrid_runtime(
     if runtime_dir.exists():
         shutil.rmtree(runtime_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    (runtime_dir / "dispatcher.py").write_text(
+    (runtime_dir / f"{DISPATCHER_STEM}.py").write_text(
         render_dispatcher_script(sorted(allowed_qualnames)), encoding="utf-8"
     )
     for module in analysis.modules:
@@ -704,10 +704,11 @@ def _write_hybrid_runtime(
 def _build_nuitka_dispatcher(
     runtime_dir: Path, allowed_qualnames: set[str], timeout: float
 ) -> str | None:
-    """Compile ``dispatcher.py`` into a self-contained executable; return an error or None.
+    """Compile the dispatcher into a self-contained executable; return an error or None.
 
-    Produces `<runtime>/dispatcher` (Nuitka onefile) with the delegated fallback
-    modules bundled, so the hybrid binary needs no separate Python install.
+    Produces `<runtime>/{stem}` (Nuitka onefile, where ``stem`` is
+    ``DISPATCHER_STEM``) with the delegated fallback modules bundled, so the hybrid
+    binary needs no separate Python install.
     """
     nuitka = shutil.which("nuitka")
     if nuitka is None:
@@ -720,16 +721,16 @@ def _build_nuitka_dispatcher(
         nuitka,
         "--onefile",
         "--assume-yes-for-downloads",
-        "dispatcher.py",
+        f"{DISPATCHER_STEM}.py",
         f"--output-dir={runtime_dir}",
-        "--output-filename=dispatcher",
+        f"--output-filename={DISPATCHER_STEM}",
         "--remove-output",
         *(f"--include-module={module}" for module in modules),
     ]
     completed = run_build_tool(command, cwd=runtime_dir, timeout=timeout)
     if completed.returncode != 0:
         return f"Nuitka failed to compile the dispatcher (exit status {completed.returncode})."
-    if not (runtime_dir / "dispatcher").exists():
+    if not (runtime_dir / DISPATCHER_STEM).exists():
         return "Nuitka completed but the compiled dispatcher was not found."
     return None
 
