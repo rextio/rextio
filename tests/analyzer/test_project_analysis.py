@@ -4312,3 +4312,59 @@ def main(argv: list[str]) -> int:
     main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
     assert not main.accepted
     assert main.delegated_call_targets == set()
+
+
+def test_delegate_fallback_rejects_mutable_container_arg(tmp_path: Path) -> None:
+    # A mutable-container argument crosses the JSON wire by value, so a callee's
+    # in-place mutation would be silently lost. Such a call must NOT be delegated
+    # (the caller stays a rejection), never silently miscompiled.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+def sum_and_grow(xs: list[int]) -> int:
+    xs.append(0)
+    return sum(xs)
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    xs: list[int] = [1, 2, 3]
+    total = sum_and_grow(xs)
+    return len(xs) + total
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    assert not main.accepted
+    assert main.delegated_call_targets == set()
+
+
+def test_delegate_fallback_normalizes_typing_list_return(tmp_path: Path) -> None:
+    # A `typing.List[int]` / `List[int]` return annotation is normalized to the
+    # builtin `list[int]` wire type so the caller is not wrongly over-rejected.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+from typing import List
+
+@rextio.exempt
+def make_range(n: int) -> List[int]:
+    return list(range(n))
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    xs = make_range(3)
+    return len(xs)
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    assert main.accepted
+    assert main.delegated_call_targets == {"app.make_range"}

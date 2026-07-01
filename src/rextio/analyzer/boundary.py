@@ -92,9 +92,44 @@ def apply_boundary_checks(
 _DELEGATABLE_SCALARS = frozenset({"int", "float", "bool", "str", "None"})
 _DELEGATABLE_LISTS = frozenset({"list[int]", "list[float]", "list[bool]", "list[str]"})
 
+# Capitalized typing aliases (`List[int]`, `typing.List[int]`, ...) are not
+# normalized to the lowercase builtin form by annotation_name, so map them here
+# before membership checks — otherwise a common annotation shape is wrongly judged
+# non-delegatable, over-rejecting the caller and failing the rust-exe build.
+_TYPING_ALIASES = {
+    "List": "list",
+    "Dict": "dict",
+    "Set": "set",
+    "Tuple": "tuple",
+    "FrozenSet": "frozenset",
+}
 
-def _is_delegatable_type(type_name: str | None) -> bool:
-    return type_name in _DELEGATABLE_SCALARS or type_name in _DELEGATABLE_LISTS
+
+def _normalize_type_name(type_name: str | None) -> str | None:
+    if type_name is None:
+        return None
+    name = type_name.strip()
+    if name.startswith("typing."):
+        name = name[len("typing.") :]
+    head, sep, rest = name.partition("[")
+    head = _TYPING_ALIASES.get(head.strip(), head.strip())
+    if not sep:
+        return head
+    inner = rest[:-1] if rest.endswith("]") else rest
+    return f"{head}[{_normalize_type_name(inner)}]"
+
+
+def _is_delegatable_return_type(type_name: str | None) -> bool:
+    norm = _normalize_type_name(type_name)
+    return norm in _DELEGATABLE_SCALARS or norm in _DELEGATABLE_LISTS
+
+
+def _is_delegatable_arg_type(type_name: str | None) -> bool:
+    # A mutable-container argument (list/dict/set) cannot be delegated: the callee
+    # is a black box that may mutate it in place, but arguments cross the wire by
+    # value (a JSON copy), so any in-place mutation would be silently lost. Only
+    # immutable scalars are safe to pass as delegated-call arguments.
+    return _normalize_type_name(type_name) in _DELEGATABLE_SCALARS
 
 
 def _is_delegatable(
@@ -104,20 +139,22 @@ def _is_delegatable(
 ) -> bool:
     """Whether a fallback call can be faithfully delegated over the wire protocol.
 
-    Requires the callee's return type and every argument type to be JSON-wire
-    types the Rust client can serialize and the result can be typed from. When a
-    type is unknown the call is *not* delegated (it stays a rejection, keeping the
-    caller on the Python fallback), so delegation never guesses.
+    Requires the callee's return type to be a JSON-wire type the result can be
+    typed from, and every argument type to be an immutable scalar (mutable
+    containers cross the wire by value, so a callee's in-place mutation would be
+    silently lost). When a type is unknown the call is *not* delegated (it stays a
+    rejection, keeping the caller on the Python fallback), so delegation never
+    guesses and never silently drops a mutation.
     """
     return_type = (
         dependency.signature_return_type
         or dependency.inferred_return_type
         or dependency.annotated_return_type
     )
-    if not _is_delegatable_type(return_type):
+    if not _is_delegatable_return_type(return_type):
         return False
     arg_types = function.call_arg_types.get((call.line, call.column), call.arg_types)
-    return all(_is_delegatable_type(arg_type) for arg_type in arg_types)
+    return all(_is_delegatable_arg_type(arg_type) for arg_type in arg_types)
 
 
 def _boundary_errors(
