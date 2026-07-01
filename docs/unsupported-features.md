@@ -412,16 +412,30 @@ Cargo.
 
 When the entrypoint (or its native call graph) calls a project function that
 lives on the Python fallback — code outside the Rust subset that is "left as
-Python" — Rextio delegates that call to an **external CPython subprocess** rather
-than rejecting it. The build ships a `dist/<binary>.runtime/` directory (a
-generated dispatcher plus the project's Python source); the binary launches
-`python3` (overridable with `REXTIO_PYTHON`) once and forwards delegated calls
-over a JSON stdio protocol. The delegated function runs real CPython, so its
-result is CPython-equivalent (not a silent miscompile), and a raised Python
-exception is forwarded and printed CPython-style. A delegated call's argument and
-return types must be wire-serializable (`int`/`float`/`bool`/`str`/`None` and
-`list` of those); an unsupported type keeps the caller on the fallback. This
-"hybrid" binary is not standalone — it needs a Python interpreter (and the
+Python", i.e. a function that is not a native candidate (RXT070) or is rejected
+from the native subset (RXT072) — Rextio delegates that call to an **external
+CPython subprocess** rather than rejecting it. The build ships a
+`dist/<binary>.runtime/` directory (a generated dispatcher plus the project's
+Python source); the binary launches `python3` (overridable with `REXTIO_PYTHON`)
+once and forwards delegated calls over a JSON stdio protocol. The delegated
+function runs real CPython, so its result is CPython-equivalent (not a silent
+miscompile), and a raised Python exception is forwarded and printed CPython-style.
+
+A delegated call's **argument** types must be immutable scalars
+(`int`/`float`/`bool`/`str`/`None`): a `list`/`dict`/`set` argument is *not*
+delegated, because arguments cross the wire by value and a callee's in-place
+mutation of a container would be silently lost. The **return** type may also be a
+`list` of those scalars. A non-finite float (`NaN`/`Infinity`) is rejected on both
+directions rather than silently coerced to `null`/`None`. Any unsupported type
+keeps the caller on the fallback (never a guess). A function on the **RXT080
+runtime shim** (the PyO3 runtime-semantics path) is not delegated: a native entry
+that depends on one is rejected and not built, so delegation never silently
+changes shim semantics. A delegated function's own stdout/stderr is redirected to
+the binary's stderr so it cannot corrupt the wire protocol (which owns stdout).
+The runtime does not require `rextio` to be installed — the dispatcher supplies a
+minimal decorator stub when it is absent.
+
+This "hybrid" binary is not standalone — it needs a Python interpreter (and the
 project's dependencies) at runtime, and each delegated call crosses a process
 boundary. A binary whose entry graph is fully direct-native has no runtime
 directory and no Python dependency. Embedding libpython (in-process) is out of

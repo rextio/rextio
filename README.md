@@ -338,7 +338,13 @@ subprocess: the build ships a `dist/<name>.runtime/` directory (dispatcher +
 project source) that the binary drives over stdio, so hard-to-compile logic can
 be left as Python. Such a hybrid binary needs a Python interpreter at runtime; a
 binary whose call graph is fully direct-native is standalone with no Python
-dependency.
+dependency. Delegated-call arguments must be immutable scalars
+(`int`/`float`/`bool`/`str`/`None`); a `list`/`dict`/`set` argument is not
+delegated (it crosses the wire by value, so an in-place mutation would be lost),
+and a non-finite float (`NaN`/`Infinity`) is rejected rather than silently
+dropped. A delegated function's own stdout/stderr appears on the binary's stderr
+(the binary's stdout carries the wire protocol). A function on the RXT080 runtime
+shim is not delegated: an entry that depends on one is rejected, not built.
 
 `--executable-python` pins the interpreter the binary launches (a name on `PATH`,
 an absolute path, or a path relative to `<binary>.runtime` to bundle one).

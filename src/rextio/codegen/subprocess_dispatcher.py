@@ -1,10 +1,13 @@
 """The Python dispatcher for the Rust-``main`` executable's subprocess hybrid.
 
-Phase 2 of the native Rust executable backend lets the standalone binary call
-functions that are *not* direct-native (runtime-shim / Python fallback) by
-delegating them to an external CPython process. This module renders that
-dispatcher: a small, self-contained Python program shipped next to the binary
-that the binary launches once and talks to over stdio.
+Phase 2 of the native Rust executable backend lets the standalone binary call a
+project function left on the *Python fallback* -- one rejected from the native
+subset (RXT072) or never a native candidate (RXT070) -- by delegating it to an
+external CPython process. This module renders that dispatcher: a small,
+self-contained Python program shipped next to the binary that the binary launches
+once and talks to over stdio. (A runtime-shim function -- the RXT080 PyO3 path --
+is *not* delegated: a native entry that depends on one is rejected, not built, so
+delegation never silently changes shim semantics.)
 
 Wire protocol (newline-delimited JSON, one message per line):
 
@@ -12,11 +15,13 @@ Wire protocol (newline-delimited JSON, one message per line):
 * success  (dispatcher -> binary):  ``{"ok": <result>}``
 * error    (dispatcher -> binary):  ``{"error": {"type": "<Exc>", "message": "<str>"}}``
 
-Arguments and results are the JSON encodings of the Rextio-supported value types
-that JSON represents directly (``int``/``float``/``bool``/``str``/``None``/
-``list``/``dict``). ``bytes`` and ``tuple`` need a tagged encoding and are a
-follow-up. Only the functions in the generated allow-list may be called, so a
-corrupt or unexpected request cannot execute arbitrary code.
+Delegated arguments are immutable scalars (``int``/``float``/``bool``/``str``/
+``None``) -- a mutable container argument is not delegated because it crosses the
+wire by value and a callee's in-place mutation would be lost. Results may also be
+``list`` of those scalars. Non-finite floats and ``bytes``/``tuple``/``dict`` are
+not carried (the former is rejected on both sides; the latter need a tagged
+encoding and are a follow-up). Only the functions in the generated allow-list may
+be called, so a corrupt or unexpected request cannot execute arbitrary code.
 """
 
 from __future__ import annotations

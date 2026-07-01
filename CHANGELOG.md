@@ -44,8 +44,16 @@ Initial public MVP for Rextio as a local hybrid build tool.
   `dist/<binary>.runtime/`, driven over a JSON stdio protocol) instead of being
   rejected, so hard-to-compile-to-Rust logic can be "left as Python." The
   delegated function runs real CPython (result is CPython-equivalent, exceptions
-  forwarded CPython-style); wire types are scalars/`None`/`list` of those. A hybrid
-  binary needs a Python interpreter at runtime; a fully-direct-native binary
+  forwarded CPython-style). Delegated-call arguments must be immutable scalars
+  (`int`/`float`/`bool`/`str`/`None`) — a mutable-container argument is not
+  delegated because it crosses the wire by value and an in-place mutation would be
+  lost — and results may also be a `list` of those; non-finite floats are rejected
+  rather than silently dropped. A delegated function's stdout/stderr is redirected
+  to the binary's stderr so it cannot corrupt the wire protocol, the dispatcher
+  survives a delegated `SystemExit`/`KeyboardInterrupt` or non-serializable result
+  instead of dying, and it runs without `rextio` installed (a no-op decorator stub
+  is supplied when absent). RXT080 runtime-shim functions are not delegated. A
+  hybrid binary needs a Python interpreter at runtime; a fully-direct-native binary
   remains standalone. `--executable-python` (`[executable] python`,
   `REXTIO_EXECUTABLE_PYTHON`) pins the interpreter the binary launches (bare name,
   absolute path, or a path relative to `<binary>.runtime` to bundle one).
