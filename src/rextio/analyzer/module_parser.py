@@ -37,6 +37,7 @@ def parse_module(
     active_plugins: Iterable[RextioPlugin] = (),
     native_jit_enabled: bool = False,
     jit_hot_threshold: int = 25,
+    project_return_types: dict[str, str] | None = None,
 ) -> ModuleAnalysis:
     """Parse a module file into a ModuleAnalysis (functions, imports, top level)."""
     target_language = normalize_target_language(target_language)
@@ -79,6 +80,7 @@ def parse_module(
         target_language,
         native_jit_enabled,
         jit_hot_threshold,
+        project_return_types or {},
     )
     module.functions.extend(_collect_native_methods(tree, module, target_language))
     if native_top_level:
@@ -230,6 +232,7 @@ def _collect_module_functions(
     target_language: str,
     native_jit_enabled: bool,
     jit_hot_threshold: int,
+    project_return_types: dict[str, str],
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
     # Module-level map of function name -> annotated return type, so the signature
@@ -291,6 +294,7 @@ def _collect_module_functions(
             imports=dict(module.imports),
             logger_names=module.logger_names,
             module_assigned_names=module_assigned_names,
+            call_return_types={**project_return_types, **return_types},
         )
         if has_exempt:
             function.is_native_candidate = False
@@ -360,6 +364,7 @@ def _mark_jit_candidate(
         imports=dict(function.imports),
         logger_names=function.logger_names,
         module_assigned_names=function.module_assigned_names,
+        call_return_types=dict(function.call_return_types),
     )
     validate_native_function(node, probe, return_types, module_function_names)
     accepted, reason = is_cranelift_jit_candidate(node, probe)
@@ -409,6 +414,7 @@ def _is_auto_native_candidate(
         imports=dict(function.imports),
         logger_names=function.logger_names,
         module_assigned_names=function.module_assigned_names,
+        call_return_types=dict(function.call_return_types),
     )
     validate_native_function(node, probe, return_types, module_function_names)
     if probe.accepted:
@@ -452,6 +458,7 @@ def _classify_native_function(
         imports=dict(function.imports),
         logger_names=function.logger_names,
         module_assigned_names=function.module_assigned_names,
+        call_return_types=dict(function.call_return_types),
     )
     validate_native_function(node, probe, return_types, module_function_names)
     function.inferred_arg_types = dict(probe.inferred_arg_types)

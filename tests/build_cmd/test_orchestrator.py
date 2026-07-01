@@ -7,8 +7,12 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import rextio.build.orchestrator as orchestrator
+from rextio.analyzer.project_scanner import analyze_project
+from rextio.build.artifact_layout import ArtifactLayout
+from rextio.build.executable_builder import ExecutableBuildResult
 from rextio.cli.main import main
 from rextio.codegen.rust.generator import RustCodegenError
 
@@ -207,6 +211,83 @@ def compute(x: int) -> int:
     assert report["rejected_native_count"] == 1
     assert report["jit_candidate_count"] == 0
     assert "cranelift-jit" not in cargo_toml
+
+
+def test_rust_executable_delegate_analysis_disables_jit(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+def helper(x: float) -> float:
+    return x * 2.0
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    value = helper(1.0)
+    return len(argv)
+""",
+        encoding="utf-8",
+    )
+    captured_executable_analysis = None
+
+    def fake_build_hybrid_artifact(*args, **kwargs):
+        nonlocal captured_executable_analysis
+        captured_executable_analysis = kwargs["executable_analysis"]
+        layout = ArtifactLayout(tmp_path)
+        layout.reports_dir.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(
+            accepted_native_count=1,
+            rejected_native_count=0,
+            plan=SimpleNamespace(native=SimpleNamespace(jit_functions=[])),
+            layout=layout,
+            native_build=SimpleNamespace(status="skipped", message="ok", installed_path=None),
+            rust_crate_build=SimpleNamespace(
+                status="skipped",
+                message="ok",
+                crate_path=None,
+                artifact_path=None,
+            ),
+            fallback_build=SimpleNamespace(status="built", message="ok"),
+            executable_build=SimpleNamespace(status="skipped", message="ok", path=None),
+            wheel_build=SimpleNamespace(path=None),
+        )
+
+    monkeypatch.setattr("rextio.cli.build_cmd.build_hybrid_artifact", fake_build_hybrid_artifact)
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--jit",
+            "--executable-backend=rust",
+            "--entrypoint=app:main",
+        ]
+    )
+
+    capsys.readouterr()
+    assert exit_code == 0
+    assert captured_executable_analysis is not None
+    functions = {
+        function.name: function
+        for module in captured_executable_analysis.modules
+        for function in module.functions
+    }
+    assert not functions["helper"].is_jit_candidate
+    assert functions["main"].accepted
+    assert functions["main"].delegated_call_targets == {"app.helper"}
 
 
 def test_build_generates_rust_importable_crate_artifact(
@@ -957,6 +1038,174 @@ def add(a: int, b: int) -> int:
     assert data["native_build"]["tool"] == "codegen"
     assert (python_dir / "app.py").exists()
     assert (python_dir / "_fallback_app.py").exists()
+
+
+def test_rust_executable_hybrid_runtime_uses_entry_reachable_delegation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def fallback_label(value: str) -> str:
+    return value.lower()
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return len(argv)
+
+@rextio.native
+def unused(argv: list[str]) -> int:
+    label = fallback_label(argv[0])
+    return len(label)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    layout = ArtifactLayout(tmp_path)
+
+    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout):
+        dist_dir.mkdir(parents=True, exist_ok=True)
+        binary = dist_dir / binary_name
+        binary.write_text("fake binary", encoding="utf-8")
+        return ExecutableBuildResult(
+            status="built",
+            path=str(binary),
+            message="ok",
+            entrypoint=entrypoint,
+            backend="rust",
+        )
+
+    monkeypatch.setattr(orchestrator, "build_rust_executable", fake_build)
+
+    result = orchestrator._build_rust_executable_artifact(
+        layout,
+        analysis,
+        "app:main",
+        None,
+        None,
+        "source",
+        build_timeout=30,
+    )
+
+    assert result.status == "built"
+    cargo_toml = (layout.rust_bin_dir / "Cargo.toml").read_text(encoding="utf-8")
+    main_rs = (layout.rust_bin_src_dir / "main.rs").read_text(encoding="utf-8")
+    assert "serde_json" not in cargo_toml
+    assert "app__main" in main_rs
+    assert "app__unused" not in main_rs
+    assert not (layout.dist_dir / "app_main.runtime").exists()
+
+
+def test_rust_executable_nuitka_dispatcher_failure_cleans_outputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def slugify(value: str) -> str:
+    return value.lower()
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    label = slugify(argv[0])
+    return len(label)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    layout = ArtifactLayout(tmp_path)
+
+    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout):
+        dist_dir.mkdir(parents=True, exist_ok=True)
+        binary = dist_dir / binary_name
+        binary.write_text("fake binary", encoding="utf-8")
+        return ExecutableBuildResult(
+            status="built",
+            path=str(binary),
+            message="ok",
+            entrypoint=entrypoint,
+            backend="rust",
+        )
+
+    monkeypatch.setattr(orchestrator, "build_rust_executable", fake_build)
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_nuitka_dispatcher",
+        lambda runtime_dir, allowed_qualnames, timeout: "synthetic nuitka failure",
+    )
+
+    result = orchestrator._build_rust_executable_artifact(
+        layout,
+        analysis,
+        "app:main",
+        None,
+        None,
+        "nuitka",
+        build_timeout=30,
+    )
+
+    assert result.status == "failed"
+    assert "synthetic nuitka failure" in result.message
+    assert not (layout.dist_dir / "app_main").exists()
+    assert not (layout.dist_dir / "app_main.runtime").exists()
+
+
+def test_hybrid_runtime_rejects_dispatcher_module_collision(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "_rextio_dispatcher.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def slugify(value: str) -> str:
+    return value.lower()
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    label = slugify(argv[0])
+    return len(label)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    layout = ArtifactLayout(tmp_path)
+
+    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout):
+        dist_dir.mkdir(parents=True, exist_ok=True)
+        binary = dist_dir / binary_name
+        binary.write_text("fake binary", encoding="utf-8")
+        return ExecutableBuildResult(
+            status="built",
+            path=str(binary),
+            message="ok",
+            entrypoint=entrypoint,
+            backend="rust",
+        )
+
+    monkeypatch.setattr(orchestrator, "build_rust_executable", fake_build)
+
+    result = orchestrator._build_rust_executable_artifact(
+        layout,
+        analysis,
+        "_rextio_dispatcher:main",
+        None,
+        None,
+        "source",
+        build_timeout=30,
+    )
+
+    assert result.status == "failed"
+    assert "would overwrite generated dispatcher" in result.message
+    assert not (layout.dist_dir / "_rextio_dispatcher_main").exists()
+    assert not (layout.dist_dir / "_rextio_dispatcher_main.runtime").exists()
 
 
 def _fake_executable_nuitka(tmp_path: Path) -> Path:

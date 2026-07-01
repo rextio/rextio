@@ -4290,6 +4290,35 @@ def main(argv: list[str]) -> int:
     assert _main(delegated).delegated_call_targets == {"app.slugify"}
 
 
+def test_delegate_fallback_rejects_incompatible_delegated_return_use(tmp_path: Path) -> None:
+    # A delegated call's annotated return type must participate in the normal
+    # expression type checks. This rejects `str + int` at check time instead of
+    # accepting the native caller and later emitting Rust `String + integer`.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+def slugify(text: str) -> str:
+    return text.lower()
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    slug = slugify(argv[0])
+    return slug + 1
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+
+    assert not main.accepted
+    assert main.delegated_call_targets == set()
+    assert any("operator is not supported" in diagnostic.message for diagnostic in main.error_diagnostics)
+
+
 def test_delegate_fallback_skips_untypeable_callee(tmp_path: Path) -> None:
     # Delegation never guesses: a fallback callee without a wire-serializable
     # return type stays a rejection (the caller remains on the Python fallback).

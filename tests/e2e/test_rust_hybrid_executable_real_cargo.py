@@ -92,3 +92,50 @@ def main(argv: list[str]) -> int:
     )
     assert bad_python.returncode == 1, bad_python.stderr
     assert "dispatcher" in bad_python.stderr
+
+
+@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for the hybrid executable e2e")
+def test_rust_hybrid_executable_delegates_none_literal_argument(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "src" / "hb_none" / "app.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.exempt
+def is_missing(value: None) -> bool:
+    return value is None
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    if is_missing(None):
+        print("none-ok")
+        return 7
+    return 1
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--executable-backend=rust",
+            "--entrypoint=hb_none.app:main",
+        ]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+
+    report = json.loads((tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8"))
+    executable = report["executable_build"]
+    assert executable["status"] == "built", executable
+    binary = Path(executable["path"])
+    completed = subprocess.run([str(binary)], capture_output=True, text=True, timeout=60)
+
+    assert completed.stdout.strip() == "none-ok"
+    assert completed.returncode == 7

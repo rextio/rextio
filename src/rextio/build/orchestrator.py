@@ -8,7 +8,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from rextio.analyzer.models import ProjectAnalysis
+from rextio.analyzer.call_resolution import FunctionResolver
+from rextio.analyzer.models import FunctionAnalysis, ProjectAnalysis
 from rextio.ir.types import normalize_type_name
 from rextio.build.cargo_builder import (
     NativeBuildResult,
@@ -58,6 +59,7 @@ from rextio.fallback.cpython import (
     write_plain_cpython_module,
 )
 from rextio.fallback.nuitka import build_nuitka_fallback
+from rextio.ir.nodes import ModuleIR
 from rextio.ir.lowering import LoweringError, lower_project
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.partition.build_plan import BuildPlan, create_build_plan
@@ -675,6 +677,74 @@ def _delegated_return_types(analysis: ProjectAnalysis) -> dict[str, str]:
     return delegated
 
 
+def _entrypoint_reachable_native_graph(
+    analysis: ProjectAnalysis,
+    entry_qualname: str,
+) -> tuple[set[str], dict[str, str]]:
+    """Return direct-native functions and delegated callees reachable from entry."""
+    by_qualname = {
+        function.qualname: function
+        for module in analysis.modules
+        for function in module.functions
+    }
+    modules_by_name = {module.module_name: module for module in analysis.modules}
+    entry = by_qualname.get(entry_qualname)
+    if (
+        entry is None
+        or not entry.accepted
+        or entry.native_runtime_semantics
+        or entry.is_jit_candidate
+    ):
+        return set(), {}
+
+    resolver = FunctionResolver(analysis)
+    reachable: set[str] = set()
+    delegated: dict[str, str] = {}
+    stack = [entry]
+    while stack:
+        function = stack.pop()
+        if function.qualname in reachable:
+            continue
+        reachable.add(function.qualname)
+        module = modules_by_name.get(function.module_name)
+        if module is None:
+            continue
+        for call in function.calls:
+            resolved = resolver.resolve(module, call.target).function
+            if resolved is None:
+                continue
+            if resolved.qualname in function.delegated_call_targets:
+                return_type = _normalized_function_return_type(resolved)
+                if return_type is not None:
+                    delegated[resolved.qualname] = return_type
+                continue
+            if (
+                resolved.accepted
+                and not resolved.native_runtime_semantics
+                and not resolved.is_jit_candidate
+            ):
+                stack.append(resolved)
+    return reachable, delegated
+
+
+def _normalized_function_return_type(function: FunctionAnalysis) -> str | None:
+    return_type = (
+        function.signature_return_type
+        or function.inferred_return_type
+        or function.annotated_return_type
+    )
+    return normalize_type_name(return_type)
+
+
+def _filter_module_ir(module_ir: ModuleIR, reachable_qualnames: set[str]) -> ModuleIR:
+    """Keep only entry-reachable functions when generating a Rust executable."""
+    if not reachable_qualnames:
+        return module_ir
+    return ModuleIR(
+        [function for function in module_ir.functions if function.qualname in reachable_qualnames]
+    )
+
+
 def _write_hybrid_runtime(
     runtime_dir: Path, analysis: ProjectAnalysis, allowed_qualnames: set[str]
 ) -> None:
@@ -688,7 +758,8 @@ def _write_hybrid_runtime(
     if runtime_dir.exists():
         shutil.rmtree(runtime_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    (runtime_dir / f"{DISPATCHER_STEM}.py").write_text(
+    dispatcher_path = runtime_dir / f"{DISPATCHER_STEM}.py"
+    (dispatcher_path).write_text(
         render_dispatcher_script(sorted(allowed_qualnames)), encoding="utf-8"
     )
     for module in analysis.modules:
@@ -698,6 +769,11 @@ def _write_hybrid_runtime(
             target = runtime_dir.joinpath(*parts, "__init__.py")
         else:
             target = runtime_dir.joinpath(*parts).with_suffix(".py")
+        if target == dispatcher_path:
+            raise RustCodegenError(
+                f"hybrid runtime source collision: project module {module.module_name!r} "
+                f"would overwrite generated dispatcher {DISPATCHER_STEM}.py"
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         # Make every intermediate directory an importable package.
         package_dir = runtime_dir
@@ -763,10 +839,13 @@ def _build_rust_executable_artifact(
     Python runtime at all.
     """
     entry_qualname = _entrypoint_to_qualname(entrypoint)
-    delegated_return_types = _delegated_return_types(analysis)
+    reachable_qualnames, delegated_return_types = _entrypoint_reachable_native_graph(
+        analysis,
+        entry_qualname,
+    )
     nuitka_dispatcher = hybrid_runtime == "nuitka"
     try:
-        module_ir = lower_project(analysis)
+        module_ir = _filter_module_ir(lower_project(analysis), reachable_qualnames)
         main_rs = generate_rust_main_binary(
             module_ir,
             entry_qualname,
@@ -802,10 +881,21 @@ def _build_rust_executable_artifact(
         # Ship the dispatcher + project source as `<binary>.runtime` next to the
         # binary so the client can launch CPython for delegated calls.
         runtime_dir = layout.dist_dir / f"{binary_name}{RUNTIME_DIR_SUFFIX}"
-        _write_hybrid_runtime(runtime_dir, analysis, set(delegated_return_types))
+        try:
+            _write_hybrid_runtime(runtime_dir, analysis, set(delegated_return_types))
+        except RustCodegenError as exc:
+            _cleanup_rust_executable_outputs(result.path, runtime_dir)
+            return ExecutableBuildResult(
+                status="failed",
+                path=None,
+                message=f"RXT060 Executable build failed while packaging the dispatcher. Cause: {exc}",
+                entrypoint=entrypoint,
+                backend="rust",
+            )
         if nuitka_dispatcher:
             error = _build_nuitka_dispatcher(runtime_dir, set(delegated_return_types), build_timeout)
             if error is not None:
+                _cleanup_rust_executable_outputs(result.path, runtime_dir)
                 return ExecutableBuildResult(
                     status="failed",
                     path=None,
@@ -814,6 +904,16 @@ def _build_rust_executable_artifact(
                     backend="rust",
                 )
     return result
+
+
+def _cleanup_rust_executable_outputs(binary_path: str | None, runtime_dir: Path) -> None:
+    """Remove a copied binary and runtime directory after packaging failure."""
+    if binary_path is not None:
+        binary = Path(binary_path)
+        if binary.exists():
+            binary.unlink()
+    if runtime_dir.exists():
+        shutil.rmtree(runtime_dir)
 
 
 def _build_native_with_selected_tool(

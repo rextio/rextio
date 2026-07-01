@@ -5,7 +5,11 @@ import sys
 import zipfile
 from pathlib import Path
 
-from rextio.build.executable_builder import build_nuitka_executable, build_zipapp_executable
+from rextio.build.executable_builder import (
+    build_nuitka_executable,
+    build_rust_executable,
+    build_zipapp_executable,
+)
 
 
 def test_build_zipapp_executable_runs_entrypoint(tmp_path: Path) -> None:
@@ -79,6 +83,41 @@ def test_build_zipapp_executable_reports_missing_python_artifact(tmp_path: Path)
 
     assert result.status == "failed"
     assert "Python build artifact was missing" in result.message
+
+
+def test_build_rust_executable_accepts_windows_exe_suffix(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    crate_dir = tmp_path / "crate"
+    crate_dir.mkdir()
+    (crate_dir / "Cargo.toml").write_text("[package]\nname = \"demo\"\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cargo = bin_dir / "cargo"
+    cargo.write_text(
+        f"""#!{sys.executable}
+from pathlib import Path
+
+release = Path.cwd() / "target" / "release"
+release.mkdir(parents=True, exist_ok=True)
+(release / "demo-tool.exe").write_bytes(b"exe")
+""",
+        encoding="utf-8",
+    )
+    cargo.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    result = build_rust_executable(
+        crate_dir,
+        tmp_path / "dist",
+        "demo-tool",
+        "app:main",
+    )
+
+    assert result.status == "built"
+    assert Path(result.path or "") == tmp_path / "dist" / "demo-tool.exe"
+    assert (tmp_path / "dist" / "demo-tool.exe").read_bytes() == b"exe"
 
 
 def test_build_nuitka_standalone_executable_uses_nuitka(

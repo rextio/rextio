@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from rextio.build.subprocess_utils import generate_lockfile_offline_if_possible
 from rextio.cli.main import main
 
 
@@ -79,8 +80,10 @@ fn main() {
         encoding="utf-8",
     )
 
+    cargo = shutil.which("cargo") or "cargo"
+    generate_lockfile_offline_if_possible(cargo, consumer)
     completed = subprocess.run(
-        [shutil.which("cargo") or "cargo", "run", "--quiet"],
+        [cargo, "run", "--quiet"],
         cwd=consumer,
         check=False,
         capture_output=True,

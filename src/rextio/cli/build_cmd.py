@@ -130,7 +130,11 @@ def run(args: Namespace) -> int:
             native_top_level=config.policy.native_top_level,
             imports_config=config.imports,
             active_plugins=target_plan.plugins.active,
-            native_jit_enabled=config.jit.enabled,
+            # Rust-main codegen has no Cranelift/JIT lowering path. Analyze the
+            # executable graph without JIT so helper functions must pass the
+            # ordinary direct-Rust or delegation gates instead of being accepted
+            # as JIT-only helpers that the binary backend cannot emit.
+            native_jit_enabled=False,
             jit_hot_threshold=config.jit.hot_threshold,
             delegate_fallback=True,
         )

@@ -153,6 +153,13 @@ class FunctionAnalysis:
     # (see boundary.apply_boundary_checks); empty in every normal build, where a
     # native->fallback call is rejected (RXT070) as before.
     delegated_call_targets: set[str] = field(default_factory=set)
+    # User-call return types visible while validating this function body. Keys are
+    # the same call targets produced by `canonical_call_target`/`dotted_name`
+    # (bare same-module names and fully-qualified imported project functions).
+    # This lets operator/assignment checks type a user-defined call result before
+    # codegen, so invalid expressions are rejected instead of emitting Rust that
+    # fails to compile.
+    call_return_types: dict[str, str] = field(default_factory=dict)
 
     @property
     def error_diagnostics(self) -> list[Diagnostic]:

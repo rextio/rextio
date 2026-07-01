@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from rextio.build.subprocess_utils import generate_lockfile_offline_if_possible
 from rextio.codegen.rust.cargo import render_binary_cargo_toml
 from rextio.codegen.rust.subprocess_client import render_subprocess_client
 
@@ -38,9 +39,12 @@ def test_subprocess_client_compiles(tmp_path: Path) -> None:
         ]
     )
     (src / "main.rs").write_text(main_rs, encoding="utf-8")
+    cargo = shutil.which("cargo")
+    assert cargo is not None
+    generate_lockfile_offline_if_possible(cargo, tmp_path)
 
     completed = subprocess.run(
-        ["cargo", "build", "--release", "--manifest-path", str(tmp_path / "Cargo.toml")],
+        [cargo, "build", "--release", "--manifest-path", str(tmp_path / "Cargo.toml")],
         cwd=tmp_path,
         capture_output=True,
         text=True,

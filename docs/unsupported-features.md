@@ -410,6 +410,13 @@ returned `int` is the process exit code, and a returned error is printed
 CPython-style (`TypeName: message`) to stderr with a non-zero exit. Requires
 Cargo.
 
+Rextio's Rust binary entrypoint accepts only command-line arguments that can be
+represented as valid UTF-8 `str` values. If the OS supplies a non-Unicode
+argument, the binary prints `ValueError: command-line argument is not valid
+UTF-8` to stderr and exits with status 1. CPython on Unix can expose arbitrary
+argv bytes through `surrogateescape`; Rextio does not model surrogate-containing
+`str` values in the native Rust executable ABI for 0.1.0 alpha.
+
 When the entrypoint (or its native call graph) calls a project function that
 lives on the Python fallback — code outside the Rust subset that is "left as
 Python", i.e. a function that is not a native candidate (RXT070) or is rejected

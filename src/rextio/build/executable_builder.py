@@ -7,7 +7,11 @@ import shutil
 import stat
 import sys
 import zipapp
-from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
+from rextio.build.subprocess_utils import (
+    DEFAULT_BUILD_TIMEOUT_SECONDS,
+    generate_lockfile_offline_if_possible,
+    run_build_tool,
+)
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -76,6 +80,7 @@ def build_rust_executable(
         )
 
     command = [cargo, "build", "--release", "--manifest-path", str(crate_dir / "Cargo.toml")]
+    generate_lockfile_offline_if_possible(cargo, crate_dir, timeout=timeout)
     completed = run_build_tool(command, cwd=crate_dir, timeout=timeout)
     if completed.returncode != 0:
         return ExecutableBuildResult(
@@ -89,8 +94,8 @@ def build_rust_executable(
             stderr=_tail(completed.stderr),
         )
 
-    binary = crate_dir / "target" / "release" / binary_name
-    if not binary.exists():
+    binary = _find_cargo_binary(crate_dir, binary_name)
+    if binary is None:
         return ExecutableBuildResult(
             status="failed",
             path=None,
@@ -106,7 +111,7 @@ def build_rust_executable(
         )
 
     dist_dir.mkdir(parents=True, exist_ok=True)
-    destination = dist_dir / binary_name
+    destination = dist_dir / binary.name
     shutil.copy2(binary, destination)
     destination.chmod(destination.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -120,6 +125,16 @@ def build_rust_executable(
         stdout=_tail(completed.stdout),
         stderr=_tail(completed.stderr),
     )
+
+
+def _find_cargo_binary(crate_dir: Path, binary_name: str) -> Path | None:
+    """Return Cargo's release binary path, accepting the Windows ``.exe`` suffix."""
+    release_dir = crate_dir / "target" / "release"
+    for suffix in ("", ".exe"):
+        candidate = release_dir / f"{binary_name}{suffix}"
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def build_zipapp_executable(

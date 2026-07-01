@@ -221,16 +221,25 @@ def generate_rust_main_binary(
     a returned ``RextioError`` is printed CPython-style (``TypeName: message``) to
     stderr with a non-zero exit.
     """
+    entry = _resolve_main_entry(module_ir, entry_qualname)
     crate_source = generate_rust_crate_module(
         module_ir, delegated_return_types, python_command, nuitka_dispatcher
     )
-    entry = _resolve_main_entry(module_ir, entry_qualname)
     entry_name = rust_identifier(native_function_name(entry.qualname))
     main_fn = "\n".join(
         [
             "fn main() {",
             "    // Mirror Python `sys.argv`: the program path at index 0, then args.",
-            "    let argv: Vec<String> = std::env::args().collect();",
+            "    let argv: Vec<String> = match std::env::args_os()",
+            "        .map(|arg| arg.into_string())",
+            "        .collect::<Result<Vec<_>, _>>()",
+            "    {",
+            "        Ok(argv) => argv,",
+            "        Err(_) => {",
+            '            eprintln!("ValueError: command-line argument is not valid UTF-8");',
+            "            std::process::exit(1);",
+            "        }",
+            "    };",
             f"    match {entry_name}(argv) {{",
             "        Ok(code) => std::process::exit(code as i32),",
             "        Err(err) => {",
@@ -247,6 +256,24 @@ def generate_rust_main_binary(
 
 def _resolve_main_entry(module_ir: ModuleIR, entry_qualname: str) -> FunctionIR:
     """Return the entrypoint FunctionIR, or raise if it is missing or ill-typed."""
+    runtime_matches = [
+        function
+        for function in module_ir.functions
+        if function.qualname == entry_qualname and function.native_runtime_semantics
+    ]
+    if runtime_matches:
+        raise RustCodegenError(
+            f"Rust-main entrypoint '{entry_qualname}' cannot use Python runtime semantics (RXT080)"
+        )
+    jit_matches = [
+        function
+        for function in module_ir.functions
+        if function.qualname == entry_qualname and function.native_jit
+    ]
+    if jit_matches:
+        raise RustCodegenError(
+            f"Rust-main entrypoint '{entry_qualname}' cannot be an experimental JIT function"
+        )
     matches = [
         function
         for function in module_ir.functions
@@ -431,7 +458,10 @@ _CRATE_EXCEPTION_NAMES = {
 
 def _crate_exception_name(kind: str) -> str:
     """Return the CPython exception type name for a renderer error ``kind``."""
-    return _CRATE_EXCEPTION_NAMES.get(kind, "ValueError")
+    try:
+        return _CRATE_EXCEPTION_NAMES[kind]
+    except KeyError as exc:
+        raise RustCodegenError(f"unmapped crate error kind: {kind}") from exc
 
 
 def _render_importable_crate_module(
@@ -1212,6 +1242,8 @@ class _FunctionRenderer:
             return None
         if not isinstance(self.infer_expr_type(expr.value), RxtInt):
             return None
+        if isinstance(expr.value, LiteralIR) and expr.value.value == 2**63:
+            return "i64::MIN"
         value = strip_wrapping_parens(self.render_expr(expr.value))
         self.used_helpers.add("neg")
         return f"__rextio_checked_neg({value})?"
@@ -1471,11 +1503,19 @@ class _FunctionRenderer:
         runs in real CPython, so the value matches CPython.
         """
         lines: list[str] = []
-        arg_names: list[str] = []
+        json_values: list[str] = []
+        to_value = (
+            'serde_json::to_value(&{name})'
+            '.map_err(|e| RextioError::new("RuntimeError", e.to_string()))?'
+        )
         for arg in expr.args:
+            arg_type = self.infer_expr_type(arg)
+            if isinstance(arg_type, RxtNone):
+                json_values.append("serde_json::Value::Null")
+                continue
             name = self.next_temp("__rextio_darg")
             lines.append(f"let {name} = {strip_wrapping_parens(self.render_call_arg(arg))};")
-            if isinstance(self.infer_expr_type(arg), RxtFloat):
+            if isinstance(arg_type, RxtFloat):
                 # serde_json serializes a non-finite float to JSON null silently;
                 # guard it so a NaN/Inf argument is a clean error, never a silent
                 # None on the Python side of the wire. INVARIANT: delegation only
@@ -1483,14 +1523,10 @@ class _FunctionRenderer:
                 # generator can lower to a native `f64` is typed RxtFloat here too, so
                 # the guard covers every non-finite float that can actually reach the
                 # wire in the current subset (no native producer yields NaN/Inf yet).
-                arg_names.append(f"__rextio_finite({name})?")
+                json_values.append(to_value.format(name=f"__rextio_finite({name})?"))
             else:
-                arg_names.append(name)
-        to_value = (
-            'serde_json::to_value(&{name})'
-            '.map_err(|e| RextioError::new("RuntimeError", e.to_string()))?'
-        )
-        json_args = ", ".join(to_value.format(name=name) for name in arg_names)
+                json_values.append(to_value.format(name=name))
+        json_args = ", ".join(json_values)
         lines.append(
             f'let __rextio_dj = __rextio_call_python("{expr.function}", vec![{json_args}])?;'
         )

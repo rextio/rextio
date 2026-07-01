@@ -882,6 +882,10 @@ def modulo(a: int, b: int) -> int:
 @rextio.native
 def negate(a: int) -> int:
     return -a
+
+@rextio.native
+def min_literal() -> int:
+    return -9223372036854775808
 """,
         encoding="utf-8",
     )
@@ -897,6 +901,11 @@ def negate(a: int) -> int:
     # Unary negation is checked so `-i64::MIN` raises OverflowError, not a panic.
     assert "return Ok(__rextio_checked_neg(a)?);" in source
     assert "a.checked_neg().ok_or_else(" in source
+    # The literal spelling of i64::MIN is a unary minus over 2**63 in Python's AST;
+    # lower that exact literal directly instead of emitting an out-of-range positive
+    # i64 argument to the checked-neg helper.
+    assert "return Ok(i64::MIN);" in source
+    assert "__rextio_checked_neg(9223372036854775808" not in source
 
 
 def test_int_modulo_and_negation_checked_in_crate_mode(tmp_path: Path) -> None:
@@ -1544,7 +1553,8 @@ def bad_arg(n: int) -> int:
     assert "pub struct RextioError" in source
     assert "pyo3" not in source
     assert "fn main() {" in source
-    assert "let argv: Vec<String> = std::env::args().collect();" in source
+    assert "std::env::args_os()" in source
+    assert "command-line argument is not valid UTF-8" in source
     assert "match app__run(argv) {" in source
     assert "Ok(code) => std::process::exit(code as i32)," in source
     assert 'eprintln!("{}", err);' in source
@@ -1566,6 +1576,48 @@ def bad_arg(n: int) -> int:
     assert "pyo3" not in cargo
 
 
+def test_generate_rust_main_binary_rejects_runtime_or_jit_entry_clearly(
+    tmp_path: Path,
+) -> None:
+    import pytest
+
+    from rextio.codegen.rust.errors import RustCodegenError
+    from rextio.codegen.rust.generator import generate_rust_main_binary
+    from rextio.ir.nodes import BlockIR, FunctionIR, LiteralIR, ParamIR, ReturnIR
+    from rextio.ir.types import RxtInt, RxtList, RxtStr
+
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return getattr(argv, "value")
+""",
+        encoding="utf-8",
+    )
+    runtime_ir = lower_project(analyze_project(tmp_path, native_marker="decorator"))
+
+    with pytest.raises(RustCodegenError, match="cannot use Python runtime semantics"):
+        generate_rust_main_binary(runtime_ir, "app.main")
+
+    jit_ir = runtime_ir.__class__(
+        [
+            FunctionIR(
+                name="main",
+                qualname="app.main",
+                module_name="app",
+                params=[ParamIR("argv", RxtList(RxtStr()))],
+                return_type=RxtInt(),
+                body=BlockIR([ReturnIR(LiteralIR(0))]),
+                native_jit=True,
+            )
+        ]
+    )
+    with pytest.raises(RustCodegenError, match="cannot be an experimental JIT function"):
+        generate_rust_main_binary(jit_ir, "app.main")
+
+
 def test_delegated_call_lowers_to_ipc_client(tmp_path: Path) -> None:
     from rextio.codegen.rust.generator import generate_rust_main_binary
 
@@ -1577,10 +1629,16 @@ import rextio
 def slugify(text: str) -> str:
     return text.lower()
 
+@rextio.exempt
+def is_missing(value: None) -> bool:
+    return value is None
+
 @rextio.native
 def main(argv: list[str]) -> int:
     s = slugify(argv[0])
-    return len(s)
+    if is_missing(None):
+        return len(s)
+    return 0
 """,
         encoding="utf-8",
     )
@@ -1589,12 +1647,18 @@ def main(argv: list[str]) -> int:
 
     # No delegation info -> the delegated call has no lowering and codegen fails,
     # so the delegate map must be supplied (as the build does from the analysis).
-    source = generate_rust_main_binary(module_ir, "app.main", {"app.slugify": "str"})
+    source = generate_rust_main_binary(
+        module_ir,
+        "app.main",
+        {"app.slugify": "str", "app.is_missing": "bool"},
+    )
 
     # The IPC client is injected and the fallback call is delegated + typed.
     assert "fn __rextio_call_python(" in source
     assert '__rextio_call_python("app.slugify", vec![serde_json::to_value(' in source
     assert ".as_str().map(|s| s.to_string())" in source
+    assert '__rextio_call_python("app.is_missing", vec![serde_json::Value::Null])' in source
+    assert "let __rextio_darg_2 = None;" not in source
     # A normal (non-hybrid) binary must not carry the client.
     (tmp_path / "app.py").write_text(
         "import rextio\n\n@rextio.native\ndef main(argv: list[str]) -> int:\n    return len(argv)\n",
@@ -1656,3 +1720,13 @@ def test_convert_json_value_rejects_non_scalar_delegated_return() -> None:
     for container in ("list[int]", "list[str]", "dict[str, int]", "set[int]", "tuple[int, int]"):
         with pytest.raises(RustCodegenError, match="not supported"):
             renderer._convert_json_value("v", container, "q")
+
+
+def test_crate_exception_name_rejects_unmapped_kind() -> None:
+    import pytest
+
+    from rextio.codegen.rust.errors import RustCodegenError
+    from rextio.codegen.rust.generator import _crate_exception_name
+
+    with pytest.raises(RustCodegenError, match="unmapped crate error kind"):
+        _crate_exception_name("not-a-kind")
