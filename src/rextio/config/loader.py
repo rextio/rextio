@@ -249,7 +249,7 @@ def _validate_config_values(
         {"analyze", "fallback", "try-native"},
     )
     _require_value("jit", "backend", jit["backend"], {"cranelift"})
-    _require_value("executable", "backend", executable["backend"], {"zipapp", "nuitka"})
+    _require_value("executable", "backend", executable["backend"], {"zipapp", "nuitka", "rust"})
     _require_value("executable", "nuitka_mode", executable["nuitka_mode"], {"standalone", "onefile"})
     _require_value("policy", "native_marker", policy["native_marker"], {"auto", "decorator"})
     if policy["require_type_hints"] is not True:

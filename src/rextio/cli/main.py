@@ -146,7 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     build_parser_.add_argument(
         "--executable-backend",
-        choices=("zipapp", "nuitka"),
+        choices=("zipapp", "nuitka", "rust"),
         default=None,
         help=(
             "Executable artifact backend to use when an entrypoint is configured. "

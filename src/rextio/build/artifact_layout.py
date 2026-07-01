@@ -57,6 +57,16 @@ class ArtifactLayout:
         """The Rust-importable crate ``src`` directory."""
         return self.rust_crate_dir / "src"
 
+    @property
+    def rust_bin_dir(self) -> Path:
+        """The generated Rust executable (bin) crate directory."""
+        return self.generated_dir / "rust_bin"
+
+    @property
+    def rust_bin_src_dir(self) -> Path:
+        """The generated Rust executable crate ``src`` directory."""
+        return self.rust_bin_dir / "src"
+
     def target_dir(self, language: str) -> Path:
         """Return the generated project directory for a given target language."""
         return self.generated_dir / language

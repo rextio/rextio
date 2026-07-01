@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,12 +17,14 @@ from rextio.build.cargo_builder import (
 from rextio.build.executable_builder import (
     ExecutableBuildResult,
     build_nuitka_executable,
+    build_rust_executable,
     build_zipapp_executable,
     skipped_executable,
 )
 from rextio.build.maturin_builder import build_native_extension_with_maturin
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS
 from rextio.codegen.rust.cargo import (
+    render_binary_cargo_toml,
     render_cargo_config_toml,
     render_cargo_toml,
     render_importable_cargo_toml,
@@ -37,7 +40,11 @@ from rextio.build.wheel_builder import (
     build_artifact_wheel,
     skipped_wheel,
 )
-from rextio.codegen.rust.generator import generate_rust_crate_module, generate_rust_module
+from rextio.codegen.rust.generator import (
+    generate_rust_crate_module,
+    generate_rust_main_binary,
+    generate_rust_module,
+)
 from rextio.codegen.rust.generator import RustCodegenError
 from rextio.codegen.python_wrapper.wrapper_gen import render_wrapper_module
 from rextio.fallback.build_result import FallbackBuildResult, cpython_fallback_build_result
@@ -197,6 +204,7 @@ def build_hybrid_artifact(
         executable_name,
         executable_backend,
         nuitka_mode,
+        plan,
         build_timeout=build_timeout_seconds,
     )
 
@@ -553,11 +561,18 @@ def _build_executable_artifact(
     executable_name: str | None,
     executable_backend: str,
     nuitka_mode: str,
+    plan: BuildPlan,
     *,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> ExecutableBuildResult:
     if entrypoint is None:
         return skipped_executable("No executable entrypoint was requested.")
+    if executable_backend == "rust":
+        # The native Rust binary is self-contained (no Python), so it does not
+        # depend on the fallback packaging or the PyO3 extension build.
+        return _build_rust_executable_artifact(
+            layout, plan, entrypoint, executable_name, build_timeout=build_timeout
+        )
     if fallback_build.status != "built":
         return skipped_executable("Fallback packaging failed, so no executable was generated.")
     if native_build.status == "failed":
@@ -583,10 +598,65 @@ def _build_executable_artifact(
         path=None,
         message=(
             "RXT060 Executable build failed because the executable backend was unsupported. "
-            'Use "zipapp" or "nuitka".'
+            'Use "zipapp", "nuitka", or "rust".'
         ),
         entrypoint=entrypoint,
         backend=executable_backend,
+    )
+
+
+def _entrypoint_to_qualname(entrypoint: str) -> str:
+    """Map an executable entrypoint ``module:function`` to a Rextio qualname."""
+    return entrypoint.replace(":", ".", 1)
+
+
+def _rust_binary_name(executable_name: str | None, entry_qualname: str) -> str:
+    """Return a valid Cargo binary name for the executable."""
+    raw = executable_name or entry_qualname.replace(".", "_")
+    sanitized = re.sub(r"[^0-9A-Za-z_-]", "_", raw)
+    return sanitized or "rextio_app"
+
+
+def _build_rust_executable_artifact(
+    layout: ArtifactLayout,
+    plan: BuildPlan,
+    entrypoint: str,
+    executable_name: str | None,
+    *,
+    build_timeout: float,
+) -> ExecutableBuildResult:
+    """Generate and build the native Rust executable for the entrypoint.
+
+    The entrypoint must be an accepted direct-native ``def main(argv: list[str])
+    -> int``. Its call graph is fully direct-native by the boundary invariant (an
+    accepted direct-Rust function only calls other direct-Rust functions), so the
+    binary needs no Python runtime.
+    """
+    entry_qualname = _entrypoint_to_qualname(entrypoint)
+    try:
+        module_ir = lower_project(plan.analysis)
+        main_rs = generate_rust_main_binary(module_ir, entry_qualname)
+    except (RustCodegenError, LoweringError) as exc:
+        return ExecutableBuildResult(
+            status="failed",
+            path=None,
+            message=f"RXT060 Executable build failed while generating the Rust binary. Cause: {exc}",
+            entrypoint=entrypoint,
+            backend="rust",
+        )
+
+    binary_name = _rust_binary_name(executable_name, entry_qualname)
+    crate_dir = layout.rust_bin_dir
+    if crate_dir.exists():
+        shutil.rmtree(crate_dir)
+    layout.rust_bin_src_dir.mkdir(parents=True, exist_ok=True)
+    (crate_dir / "Cargo.toml").write_text(
+        render_binary_cargo_toml("rextio_generated_bin", binary_name), encoding="utf-8"
+    )
+    (layout.rust_bin_src_dir / "main.rs").write_text(main_rs, encoding="utf-8")
+
+    return build_rust_executable(
+        crate_dir, layout.dist_dir, binary_name, entrypoint, timeout=build_timeout
     )
 
 
