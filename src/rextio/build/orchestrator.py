@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
+from rextio.ir.types import normalize_type_name
 from rextio.build.cargo_builder import (
     NativeBuildResult,
     build_native_extension_with_cargo,
@@ -662,8 +663,12 @@ def _delegated_return_types(analysis: ProjectAnalysis) -> dict[str, str]:
                     or callee.inferred_return_type
                     or callee.annotated_return_type
                 )
-                if return_type is not None:
-                    delegated[target] = return_type
+                # Normalize `typing.List[int]`/`List[int]` to the builtin `list[int]`
+                # the codegen's `type_from_string` understands; otherwise an accepted
+                # typing-aliased return would crash Rust generation (RXT060).
+                normalized = normalize_type_name(return_type)
+                if normalized is not None:
+                    delegated[target] = normalized
     return delegated
 
 
@@ -730,7 +735,8 @@ def _build_nuitka_dispatcher(
     completed = run_build_tool(command, cwd=runtime_dir, timeout=timeout)
     if completed.returncode != 0:
         return f"Nuitka failed to compile the dispatcher (exit status {completed.returncode})."
-    if not (runtime_dir / DISPATCHER_STEM).exists():
+    # Nuitka appends the OS executable extension (`.exe` on Windows), so accept both.
+    if not any((runtime_dir / f"{DISPATCHER_STEM}{suffix}").exists() for suffix in ("", ".exe")):
         return "Nuitka completed but the compiled dispatcher was not found."
     return None
 

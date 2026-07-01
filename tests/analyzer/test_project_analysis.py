@@ -4368,3 +4368,9 @@ def main(argv: list[str]) -> int:
     main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
     assert main.accepted
     assert main.delegated_call_targets == {"app.make_range"}
+
+    # The return type handed to codegen must be normalized to the builtin `list[int]`
+    # form; the raw `List[int]` would crash Rust generation (type_from_string raises).
+    from rextio.build.orchestrator import _delegated_return_types
+
+    assert _delegated_return_types(delegated) == {"app.make_range": "list[int]"}

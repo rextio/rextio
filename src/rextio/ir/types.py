@@ -182,6 +182,38 @@ class RxtOptional(RxtType):
         }
 
 
+# Capitalized typing aliases (`List[int]`, `typing.List[int]`, ...) that are not
+# the lowercase builtin form. Normalizing them lets a `typing`-style annotation be
+# recognized as its builtin equivalent (e.g. by the delegation wire-type checks and
+# by `type_from_string` in codegen) instead of being mis-parsed or over-rejected.
+_TYPING_ALIASES = {
+    "List": "list",
+    "Dict": "dict",
+    "Set": "set",
+    "Tuple": "tuple",
+    "FrozenSet": "frozenset",
+}
+
+
+def normalize_type_name(type_name: str | None) -> str | None:
+    """Map capitalized/`typing.`-qualified aliases to the builtin form.
+
+    ``List[int]``/``typing.List[int]`` -> ``list[int]`` (recursively). A ``None``
+    input, a bare scalar, or an already-lowercase form is returned unchanged.
+    """
+    if type_name is None:
+        return None
+    name = type_name.strip()
+    if name.startswith("typing."):
+        name = name[len("typing.") :]
+    head, sep, rest = name.partition("[")
+    head = _TYPING_ALIASES.get(head.strip(), head.strip())
+    if not sep:
+        return head
+    inner = rest[:-1] if rest.endswith("]") else rest
+    return f"{head}[{normalize_type_name(inner)}]"
+
+
 def type_from_annotation(node: ast.AST | None) -> RxtType:
     """Resolve a type-annotation AST node into an ``RxtType``.
 

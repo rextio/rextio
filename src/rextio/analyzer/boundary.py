@@ -7,6 +7,7 @@ from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.import_policy import decision_for_target
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis, ProjectAnalysis
+from rextio.ir.types import normalize_type_name
 
 SUPPORTED_INTERNAL_CALLS = {
     "abs",
@@ -92,35 +93,10 @@ def apply_boundary_checks(
 _DELEGATABLE_SCALARS = frozenset({"int", "float", "bool", "str", "None"})
 _DELEGATABLE_LISTS = frozenset({"list[int]", "list[float]", "list[bool]", "list[str]"})
 
-# Capitalized typing aliases (`List[int]`, `typing.List[int]`, ...) are not
-# normalized to the lowercase builtin form by annotation_name, so map them here
-# before membership checks — otherwise a common annotation shape is wrongly judged
-# non-delegatable, over-rejecting the caller and failing the rust-exe build.
-_TYPING_ALIASES = {
-    "List": "list",
-    "Dict": "dict",
-    "Set": "set",
-    "Tuple": "tuple",
-    "FrozenSet": "frozenset",
-}
-
-
-def _normalize_type_name(type_name: str | None) -> str | None:
-    if type_name is None:
-        return None
-    name = type_name.strip()
-    if name.startswith("typing."):
-        name = name[len("typing.") :]
-    head, sep, rest = name.partition("[")
-    head = _TYPING_ALIASES.get(head.strip(), head.strip())
-    if not sep:
-        return head
-    inner = rest[:-1] if rest.endswith("]") else rest
-    return f"{head}[{_normalize_type_name(inner)}]"
-
-
 def _is_delegatable_return_type(type_name: str | None) -> bool:
-    norm = _normalize_type_name(type_name)
+    # Capitalized/`typing.`-qualified aliases (`List[int]`) are normalized to the
+    # builtin form so a common annotation shape is not wrongly judged non-delegatable.
+    norm = normalize_type_name(type_name)
     return norm in _DELEGATABLE_SCALARS or norm in _DELEGATABLE_LISTS
 
 
@@ -129,7 +105,7 @@ def _is_delegatable_arg_type(type_name: str | None) -> bool:
     # is a black box that may mutate it in place, but arguments cross the wire by
     # value (a JSON copy), so any in-place mutation would be silently lost. Only
     # immutable scalars are safe to pass as delegated-call arguments.
-    return _normalize_type_name(type_name) in _DELEGATABLE_SCALARS
+    return normalize_type_name(type_name) in _DELEGATABLE_SCALARS
 
 
 def _is_delegatable(
