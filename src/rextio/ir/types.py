@@ -200,6 +200,13 @@ def normalize_type_name(type_name: str | None) -> str | None:
 
     ``List[int]``/``typing.List[int]`` -> ``list[int]`` (recursively). A ``None``
     input, a bare scalar, or an already-lowercase form is returned unchanged.
+
+    Single-parameter generics only: the inner slot is normalized as one unit, so a
+    comma-separated parameter list (``Dict[str, List[int]]``) or a union
+    (``list[int] | None``) is *not* recursively normalized. That is safe for every
+    current caller because only immutable scalars are delegatable wire types, so a
+    multi-parameter or union annotation is rejected by the membership check
+    regardless of how it normalizes. Use ``type_from_annotation`` for a full parse.
     """
     if type_name is None:
         return None

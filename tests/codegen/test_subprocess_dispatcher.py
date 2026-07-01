@@ -102,18 +102,30 @@ def bail():
 
 def nonserial():
     return object()
+
+def recurse():
+    return recurse()  # RecursionError raised inside the delegated call
+
+def circular():
+    a = []
+    a.append(a)
+    return a  # json.dumps raises on the circular reference
 """,
         encoding="utf-8",
     )
     dispatcher = tmp_path / "dispatcher.py"
     dispatcher.write_text(
-        render_dispatcher_script(["fb.ok", "fb.talk", "fb.bail", "fb.nonserial"]),
+        render_dispatcher_script(
+            ["fb.ok", "fb.talk", "fb.bail", "fb.nonserial", "fb.recurse", "fb.circular"]
+        ),
         encoding="utf-8",
     )
     requests = [
         {"call": "fb.talk", "args": [5]},
         {"call": "fb.bail", "args": []},
         {"call": "fb.nonserial", "args": []},
+        {"call": "fb.recurse", "args": []},  # RecursionError from the call
+        {"call": "fb.circular", "args": []},  # serialization failure in json.dumps
         {"call": "fb.ok", "args": [10, 20]},
     ]
     completed = subprocess.run(
@@ -129,8 +141,10 @@ def nonserial():
     assert responses[0] == {"ok": 10}
     assert responses[1] == {"error": {"type": "SystemExit", "message": "3"}}
     assert responses[2]["error"]["type"] == "TypeError"
-    # The dispatcher survived both poison calls and still answers the last request.
-    assert responses[3] == {"ok": 30}
+    assert responses[3]["error"]["type"] == "RecursionError"  # call recursion -> error frame
+    assert "error" in responses[4]  # json.dumps failure -> error frame, not a crash
+    # The dispatcher survived every poison call and still answers the last request.
+    assert responses[5] == {"ok": 30}
     # Delegated stdout never reaches the protocol stream; it is on stderr.
     assert "delegated stdout" not in completed.stdout
     assert "delegated stdout" in completed.stderr
