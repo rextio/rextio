@@ -46,6 +46,7 @@ def run(args: Namespace) -> int:
                 ("executable", "name"): args.executable_name,
                 ("executable", "backend"): args.executable_backend,
                 ("executable", "python"): args.executable_python,
+                ("executable", "hybrid_runtime"): args.hybrid_runtime,
                 ("executable", "nuitka_mode"): args.nuitka_mode,
                 ("policy", "native_marker"): args.native_marker,
                 ("policy", "require_type_hints"): args.require_type_hints,
@@ -152,6 +153,7 @@ def run(args: Namespace) -> int:
         build_timeout_seconds=config.build.build_timeout_seconds,
         executable_analysis=executable_analysis,
         executable_python=config.executable.python,
+        executable_hybrid_runtime=config.executable.hybrid_runtime,
     )
     lines = ["Rextio build", f"  target language: {target_plan.spec.language}"]
     if target_plan.spec.version:

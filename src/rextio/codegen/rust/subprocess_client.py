@@ -21,16 +21,33 @@ def _rust_string_literal(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def render_subprocess_client(python_command: str = "python3") -> str:
+# The Nuitka-compiled dispatcher is a self-contained executable shipped in the
+# runtime directory under this name; the binary launches it directly (no Python).
+NUITKA_DISPATCHER_NAME = "dispatcher"
+
+
+def render_subprocess_client(python_command: str = "python3", *, nuitka_dispatcher: bool = False) -> str:
     """Return the Rust source for the ``__rextio_call_python`` IPC client.
 
-    ``python_command`` is the interpreter the binary launches by default: a bare
-    name (``python3``) resolved on ``PATH``, an absolute path, or a relative path
-    with a separator (resolved against the runtime directory, so a bundled
-    interpreter under ``<exe>.runtime`` works). ``REXTIO_PYTHON`` overrides it at
-    run time.
+    In the default (source) mode the binary launches ``python3`` on
+    ``<exe>.runtime/dispatcher.py``; ``python_command`` sets that interpreter (a
+    bare name on ``PATH``, an absolute path, or a relative path resolved against
+    the runtime directory) and ``REXTIO_PYTHON`` overrides it at run time. When
+    ``nuitka_dispatcher`` is set the runtime ships a Nuitka-compiled, self-contained
+    dispatcher executable instead, which the binary launches directly (no Python).
     """
     baked = _rust_string_literal(python_command)
+    if nuitka_dispatcher:
+        spawn_block = (
+            f'let mut child = Command::new(runtime_dir.join("{NUITKA_DISPATCHER_NAME}"))'
+        )
+    else:
+        spawn_block = (
+            'let python = std::env::var("REXTIO_PYTHON")'
+            '.unwrap_or_else(|_| "{PYTHON_COMMAND}".to_string());\n'
+            '        let python_path = __rextio_resolve_python(&runtime_dir, &python);\n'
+            '        let mut child = Command::new(python_path).arg(runtime_dir.join("dispatcher.py"))'
+        )
     return '''
 // ---- Rextio subprocess-hybrid IPC client ----------------------------------
 use std::io::{BufRead, BufReader, Write};
@@ -50,6 +67,7 @@ fn __rextio_runtime_dir() -> std::path::PathBuf {
     dir.join(format!("{}{RUNTIME_DIR_SUFFIX}", name))
 }
 
+#[allow(dead_code)]
 fn __rextio_resolve_python(runtime_dir: &std::path::Path, python: &str) -> std::path::PathBuf {
     let path = std::path::Path::new(python);
     // A relative path with a separator is resolved against the runtime directory
@@ -66,10 +84,7 @@ fn __rextio_bridge() -> &'static Mutex<RextioBridge> {
     static BRIDGE: OnceLock<Mutex<RextioBridge>> = OnceLock::new();
     BRIDGE.get_or_init(|| {
         let runtime_dir = __rextio_runtime_dir();
-        let python = std::env::var("REXTIO_PYTHON").unwrap_or_else(|_| "{PYTHON_COMMAND}".to_string());
-        let python_path = __rextio_resolve_python(&runtime_dir, &python);
-        let mut child = Command::new(python_path)
-            .arg(runtime_dir.join("dispatcher.py"))
+        {SPAWN_BLOCK}
             // The dispatcher imports the fallback modules from this directory.
             .current_dir(&runtime_dir)
             .stdin(Stdio::piped())
@@ -125,4 +140,4 @@ fn __rextio_call_python(
     Err(RextioError::new("RuntimeError", "malformed response from the Python dispatcher"))
 }
 // ---- end IPC client -------------------------------------------------------
-'''.replace("{RUNTIME_DIR_SUFFIX}", RUNTIME_DIR_SUFFIX).replace("{PYTHON_COMMAND}", baked)
+'''.replace("{SPAWN_BLOCK}", spawn_block).replace("{RUNTIME_DIR_SUFFIX}", RUNTIME_DIR_SUFFIX).replace("{PYTHON_COMMAND}", baked)

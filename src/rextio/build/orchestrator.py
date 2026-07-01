@@ -22,7 +22,7 @@ from rextio.build.executable_builder import (
     skipped_executable,
 )
 from rextio.build.maturin_builder import build_native_extension_with_maturin
-from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS
+from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 from rextio.codegen.rust.cargo import (
     render_binary_cargo_toml,
     render_cargo_config_toml,
@@ -171,6 +171,7 @@ def build_hybrid_artifact(
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     executable_analysis: ProjectAnalysis | None = None,
     executable_python: str | None = None,
+    executable_hybrid_runtime: str = "source",
 ) -> BuildResult:
     """Build the hybrid native+fallback artifact for a project.
 
@@ -219,6 +220,7 @@ def build_hybrid_artifact(
         plan,
         executable_analysis,
         executable_python,
+        executable_hybrid_runtime,
         build_timeout=build_timeout_seconds,
     )
 
@@ -578,6 +580,7 @@ def _build_executable_artifact(
     plan: BuildPlan,
     executable_analysis: ProjectAnalysis,
     executable_python: str | None,
+    executable_hybrid_runtime: str,
     *,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> ExecutableBuildResult:
@@ -593,6 +596,7 @@ def _build_executable_artifact(
             entrypoint,
             executable_name,
             executable_python,
+            executable_hybrid_runtime,
             build_timeout=build_timeout,
         )
     if fallback_build.status != "built":
@@ -697,12 +701,46 @@ def _write_hybrid_runtime(
         shutil.copy2(source_path, target)
 
 
+def _build_nuitka_dispatcher(
+    runtime_dir: Path, allowed_qualnames: set[str], timeout: float
+) -> str | None:
+    """Compile ``dispatcher.py`` into a self-contained executable; return an error or None.
+
+    Produces `<runtime>/dispatcher` (Nuitka onefile) with the delegated fallback
+    modules bundled, so the hybrid binary needs no separate Python install.
+    """
+    nuitka = shutil.which("nuitka")
+    if nuitka is None:
+        return (
+            "Nuitka is not installed but --hybrid-runtime=nuitka was requested. "
+            "Install Nuitka or use --hybrid-runtime=source."
+        )
+    modules = sorted({q.rpartition(".")[0] for q in allowed_qualnames if "." in q})
+    command = [
+        nuitka,
+        "--onefile",
+        "--assume-yes-for-downloads",
+        "dispatcher.py",
+        f"--output-dir={runtime_dir}",
+        "--output-filename=dispatcher",
+        "--remove-output",
+        *(f"--include-module={module}" for module in modules),
+    ]
+    completed = run_build_tool(command, cwd=runtime_dir, timeout=timeout)
+    if completed.returncode != 0:
+        return f"Nuitka failed to compile the dispatcher (exit status {completed.returncode})."
+    if not (runtime_dir / "dispatcher").exists():
+        return "Nuitka completed but the compiled dispatcher was not found."
+    return None
+
+
 def _build_rust_executable_artifact(
     layout: ArtifactLayout,
     analysis: ProjectAnalysis,
     entrypoint: str,
     executable_name: str | None,
     executable_python: str | None,
+    hybrid_runtime: str,
     *,
     build_timeout: float,
 ) -> ExecutableBuildResult:
@@ -716,10 +754,15 @@ def _build_rust_executable_artifact(
     """
     entry_qualname = _entrypoint_to_qualname(entrypoint)
     delegated_return_types = _delegated_return_types(analysis)
+    nuitka_dispatcher = hybrid_runtime == "nuitka"
     try:
         module_ir = lower_project(analysis)
         main_rs = generate_rust_main_binary(
-            module_ir, entry_qualname, delegated_return_types, executable_python or "python3"
+            module_ir,
+            entry_qualname,
+            delegated_return_types,
+            executable_python or "python3",
+            nuitka_dispatcher=nuitka_dispatcher,
         )
     except (RustCodegenError, LoweringError) as exc:
         return ExecutableBuildResult(
@@ -748,11 +791,18 @@ def _build_rust_executable_artifact(
     if result.status == "built" and hybrid:
         # Ship the dispatcher + project source as `<binary>.runtime` next to the
         # binary so the client can launch CPython for delegated calls.
-        _write_hybrid_runtime(
-            layout.dist_dir / f"{binary_name}{RUNTIME_DIR_SUFFIX}",
-            analysis,
-            set(delegated_return_types),
-        )
+        runtime_dir = layout.dist_dir / f"{binary_name}{RUNTIME_DIR_SUFFIX}"
+        _write_hybrid_runtime(runtime_dir, analysis, set(delegated_return_types))
+        if nuitka_dispatcher:
+            error = _build_nuitka_dispatcher(runtime_dir, set(delegated_return_types), build_timeout)
+            if error is not None:
+                return ExecutableBuildResult(
+                    status="failed",
+                    path=None,
+                    message=f"RXT060 Executable build failed while packaging the dispatcher. Cause: {error}",
+                    entrypoint=entrypoint,
+                    backend="rust",
+                )
     return result
 
 

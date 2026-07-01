@@ -168,6 +168,17 @@ def build_parser() -> argparse.ArgumentParser:
             "Overrides REXTIO_EXECUTABLE_PYTHON and [executable] python."
         ),
     )
+    build_parser_.add_argument(
+        "--hybrid-runtime",
+        choices=("source", "nuitka"),
+        default=None,
+        help=(
+            "How the rust backend ships delegated Python: 'source' (dispatcher + "
+            "project source, run with python) or 'nuitka' (a self-contained compiled "
+            "dispatcher, no separate Python install). Overrides REXTIO_HYBRID_RUNTIME "
+            "and [executable] hybrid_runtime."
+        ),
+    )
     _add_policy_options(build_parser_)
     _add_output_options(build_parser_)
     build_parser_.set_defaults(handler=build_cmd.run)

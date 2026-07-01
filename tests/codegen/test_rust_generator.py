@@ -1618,3 +1618,18 @@ def test_subprocess_client_bakes_configured_python_command() -> None:
     assert 'std::env::var("REXTIO_PYTHON")' in client
     # A path with a quote is escaped into a valid Rust literal.
     assert 'py\\"x' in render_subprocess_client('py"x')
+
+
+def test_subprocess_client_nuitka_mode_launches_compiled_dispatcher() -> None:
+    from rextio.codegen.rust.subprocess_client import render_subprocess_client
+
+    source = render_subprocess_client("python3", nuitka_dispatcher=False)
+    nuitka = render_subprocess_client("python3", nuitka_dispatcher=True)
+
+    # Source mode launches the interpreter on dispatcher.py; nuitka mode launches
+    # the self-contained compiled dispatcher directly (no interpreter).
+    assert 'arg(runtime_dir.join("dispatcher.py"))' in source
+    assert "REXTIO_PYTHON" in source
+    assert 'Command::new(runtime_dir.join("dispatcher"))' in nuitka
+    assert "REXTIO_PYTHON" not in nuitka
+    assert 'arg(runtime_dir.join("dispatcher.py"))' not in nuitka

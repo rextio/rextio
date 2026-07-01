@@ -44,6 +44,7 @@ DEFAULT_CONFIG: dict[str, dict[str, object]] = {
         "backend": "zipapp",
         "nuitka_mode": "standalone",
         "python": None,
+        "hybrid_runtime": "source",
     },
     "policy": {
         "native_marker": "auto",
