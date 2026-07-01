@@ -34,12 +34,16 @@ def render_dispatcher_script(allowed_qualnames: list[str]) -> str:
 """Rextio subprocess dispatcher (protocol v{PROTOCOL_VERSION}).
 
 Reads newline-delimited JSON call requests on stdin and writes newline-delimited
-JSON responses on stdout, one per request. Only the allow-listed functions may be
-invoked. See rextio.codegen.subprocess_dispatcher for the protocol.
+JSON responses on the wire stdout, one per request. Only the allow-listed
+functions may be invoked. See rextio.codegen.subprocess_dispatcher for the
+protocol. The wire owns the original stdout: anything a delegated function writes
+to stdout/stderr is redirected to this process's stderr so it can never corrupt
+the JSON frames the binary parses.
 """
 
 import importlib
 import json
+import os
 import sys
 
 PROTOCOL_VERSION = {PROTOCOL_VERSION}
@@ -61,13 +65,18 @@ def _handle(request):
     args = request.get("args", [])
     try:
         result = _resolve(qualname)(*args)
-    except Exception as exc:  # noqa: BLE001 -- forward any Python exception to the caller
+    except BaseException as exc:  # noqa: BLE001 -- forward ANY exception (incl. SystemExit/KeyboardInterrupt) to the caller instead of killing the long-lived dispatcher
         return {{"error": {{"type": type(exc).__name__, "message": str(exc)}}}}
     return {{"ok": result}}
 
 
 def main():
-    out = sys.stdout
+    # Reserve the original stdout for the wire protocol, then point fd 1 (and the
+    # Python-level stdout) at stderr so a delegated function's output cannot corrupt
+    # the JSON frames. Delegated output is therefore visible on the binary's stderr.
+    protocol = os.fdopen(os.dup(1), "w", buffering=1)
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -78,9 +87,18 @@ def main():
             response = {{"error": {{"type": "ValueError", "message": "invalid request: " + str(exc)}}}}
         else:
             response = _handle(request)
-        out.write(json.dumps(response))
-        out.write("\\n")
-        out.flush()
+        try:
+            # allow_nan=False keeps non-finite floats off the wire (strict JSON the
+            # Rust client can parse); a non-serializable result becomes an error
+            # frame instead of an unhandled exception that would kill the dispatcher.
+            frame = json.dumps(response, allow_nan=False)
+        except (ValueError, TypeError) as exc:
+            frame = json.dumps(
+                {{"error": {{"type": "TypeError", "message": "result is not JSON-serializable: " + str(exc)}}}}
+            )
+        protocol.write(frame)
+        protocol.write("\\n")
+        protocol.flush()
 
 
 if __name__ == "__main__":
