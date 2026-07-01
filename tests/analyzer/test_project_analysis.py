@@ -4401,15 +4401,18 @@ def main(argv: list[str]) -> int:
         "set[int]",
         "tuple[int, int]",
         "Optional[list[int]]",
+        "Optional[List[int]]",  # capitalized inner: exercises recursive normalization
+        "bytes",  # immutable but not a wire type; must stay rejected
     ],
 )
 def test_delegate_fallback_rejects_every_container_return_shape(
     tmp_path: Path, return_annotation: str
 ) -> None:
-    # No container/optional-container return shape may be delegated (they cross the
-    # wire by value, severing aliasing). Each keeps the caller on the Python fallback
-    # — a clean rejection, never a silent divergence. Pins the scalar-only contract
-    # against a future `normalize_type_name` change that could let a shape through.
+    # No container/optional-container/non-wire return shape may be delegated (a mutable
+    # container crosses the wire by value, severing aliasing; bytes has no wire type).
+    # Each keeps the caller on the Python fallback — a clean rejection, never a silent
+    # divergence. Pins the scalar-only contract against a future `normalize_type_name`
+    # or `_DELEGATABLE_SCALARS` change that could let a shape through.
     write_module(
         tmp_path,
         "app.py",
@@ -4431,4 +4434,7 @@ def main(argv: list[str]) -> int:
     delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
     main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
     assert not main.accepted
-    assert "app.produce" not in main.delegated_call_targets
+    # Nothing is delegated (the container-returning callee is not a wire type), and the
+    # caller is rejected with a boundary diagnostic rather than silently built.
+    assert main.delegated_call_targets == set()
+    assert any(d.code == "RXT010" for d in main.error_diagnostics)

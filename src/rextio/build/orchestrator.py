@@ -667,6 +667,8 @@ def _delegated_return_types(analysis: ProjectAnalysis) -> dict[str, str]:
                 # form the codegen understands. Delegated returns are immutable scalars
                 # only (the boundary check rejects containers), so this is defensive:
                 # it keeps the recorded type in the exact spelling that passed the gate.
+                # Keep it — if a future gate ever recorded an un-normalized alias, this
+                # is what stops it reaching `type_from_string` in codegen as a raw alias.
                 normalized = normalize_type_name(return_type)
                 if normalized is not None:
                     delegated[target] = normalized

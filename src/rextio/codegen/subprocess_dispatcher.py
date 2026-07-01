@@ -21,8 +21,8 @@ delegated in either direction: it crosses the wire by value (a JSON copy), which
 severs the aliasing CPython preserves -- a callee's in-place mutation of an
 argument, or the native caller's mutation of a returned container that aliased
 Python state, would silently diverge. Non-finite floats and ``bytes``/``tuple``/
-``dict``/``list`` are not carried (the former is rejected on both sides; the latter
-need a tagged, reference-preserving encoding and are a follow-up). Only the
+``dict``/``list``/``set`` are not carried (the former is rejected on both sides; the
+latter need a tagged, reference-preserving encoding and are a follow-up). Only the
 functions in the generated allow-list may be called, so a corrupt or unexpected
 request cannot execute arbitrary code.
 """

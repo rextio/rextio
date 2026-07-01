@@ -1634,3 +1634,25 @@ def test_subprocess_client_nuitka_mode_launches_compiled_dispatcher() -> None:
     assert 'format!("_rextio_dispatcher{}", std::env::consts::EXE_SUFFIX)' in nuitka
     assert "REXTIO_PYTHON" not in nuitka
     assert 'arg(runtime_dir.join("_rextio_dispatcher.py"))' not in nuitka
+
+
+def test_convert_json_value_rejects_non_scalar_delegated_return() -> None:
+    # Defense-in-depth: the analyzer only ever records scalar delegated return types,
+    # but codegen must also refuse a container so that a future analyzer-gate regression
+    # is a clean build failure, not a silent by-value `Vec` copy that severs aliasing.
+    import pytest
+
+    from rextio.codegen.rust.errors import RustCodegenError
+    from rextio.codegen.rust.generator import _FunctionRenderer
+
+    # `_convert_json_value` uses only its arguments (no instance state), so a bare
+    # instance is sufficient to exercise the type dispatch.
+    renderer = object.__new__(_FunctionRenderer)
+
+    for scalar in ("int", "float", "bool", "str", "None"):
+        # Every delegatable scalar still lowers to a Rust expression (none fall through).
+        assert renderer._convert_json_value("v", scalar, "q")
+
+    for container in ("list[int]", "list[str]", "dict[str, int]", "set[int]", "tuple[int, int]"):
+        with pytest.raises(RustCodegenError, match="not supported"):
+            renderer._convert_json_value("v", container, "q")
