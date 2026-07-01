@@ -80,3 +80,15 @@ def main(argv: list[str]) -> int:
     missing_arg = subprocess.run([str(binary)], capture_output=True, text=True, timeout=60)
     assert missing_arg.returncode == 1
     assert "IndexError" in missing_arg.stderr
+
+    # A bad interpreter surfaces a clean RextioError (exit 1) instead of a Rust
+    # panic (exit 101): the dispatcher launch failure is fallible, not `.expect()`.
+    bad_python = subprocess.run(
+        [str(binary), "Hello, Rextio World!"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**__import__("os").environ, "REXTIO_PYTHON": "/nonexistent/rextio-python"},
+    )
+    assert bad_python.returncode == 1, bad_python.stderr
+    assert "dispatcher" in bad_python.stderr

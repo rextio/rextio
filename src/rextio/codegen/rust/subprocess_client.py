@@ -60,11 +60,37 @@ struct RextioBridge {
     stdout: BufReader<ChildStdout>,
 }
 
-fn __rextio_runtime_dir() -> std::path::PathBuf {
-    let exe = std::env::current_exe().expect("Rextio: cannot resolve current executable path");
-    let dir = exe.parent().expect("Rextio: executable has no parent directory").to_path_buf();
-    let name = exe.file_name().expect("Rextio: executable has no file name").to_string_lossy().into_owned();
-    dir.join(format!("{}{RUNTIME_DIR_SUFFIX}", name))
+fn __rextio_runtime_dir() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("Rextio: cannot resolve current executable path: {}", e))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| "Rextio: executable has no parent directory".to_string())?
+        .to_path_buf();
+    let file = exe
+        .file_name()
+        .ok_or_else(|| "Rextio: executable has no file name".to_string())?
+        .to_string_lossy()
+        .into_owned();
+    // The build names the runtime dir after the binary without any `.exe`
+    // extension; strip it on Windows so `<name>.exe` still finds `<name>.runtime`.
+    #[cfg(windows)]
+    let name = file.strip_suffix(".exe").map(str::to_string).unwrap_or(file);
+    #[cfg(not(windows))]
+    let name = file;
+    Ok(dir.join(format!("{}{RUNTIME_DIR_SUFFIX}", name)))
+}
+
+#[allow(dead_code)]
+fn __rextio_finite(x: f64) -> Result<f64, RextioError> {
+    if x.is_finite() {
+        Ok(x)
+    } else {
+        Err(RextioError::new(
+            "ValueError",
+            "cannot delegate a non-finite float (NaN/Infinity) across the subprocess boundary",
+        ))
+    }
 }
 
 #[allow(dead_code)]
@@ -80,28 +106,40 @@ fn __rextio_resolve_python(runtime_dir: &std::path::Path, python: &str) -> std::
     }
 }
 
-fn __rextio_bridge() -> &'static Mutex<RextioBridge> {
-    static BRIDGE: OnceLock<Mutex<RextioBridge>> = OnceLock::new();
-    BRIDGE.get_or_init(|| {
-        let runtime_dir = __rextio_runtime_dir();
+fn __rextio_bridge() -> Result<&'static Mutex<RextioBridge>, RextioError> {
+    static BRIDGE: OnceLock<Result<Mutex<RextioBridge>, String>> = OnceLock::new();
+    let cell = BRIDGE.get_or_init(|| {
+        let runtime_dir = __rextio_runtime_dir()?;
         {SPAWN_BLOCK}
             // The dispatcher imports the fallback modules from this directory.
             .current_dir(&runtime_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
-            .expect("Rextio: failed to launch the Python dispatcher (is the interpreter available?)");
-        let stdin = child.stdin.take().expect("Rextio: dispatcher stdin unavailable");
-        let stdout = BufReader::new(child.stdout.take().expect("Rextio: dispatcher stdout unavailable"));
-        Mutex::new(RextioBridge { _child: child, stdin, stdout })
-    })
+            .map_err(|e| format!(
+                "Rextio: failed to launch the Python dispatcher ({}); is the interpreter available?", e
+            ))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "Rextio: dispatcher stdin unavailable".to_string())?;
+        let stdout = BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| "Rextio: dispatcher stdout unavailable".to_string())?,
+        );
+        Ok(Mutex::new(RextioBridge { _child: child, stdin, stdout }))
+    });
+    cell.as_ref()
+        .map_err(|e| RextioError::new("RuntimeError", e.as_str()))
 }
 
 fn __rextio_call_python(
     qualname: &str,
     args: Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, RextioError> {
-    let mut guard = __rextio_bridge()
+    let mut guard = __rextio_bridge()?
         .lock()
         .map_err(|_| RextioError::new("RuntimeError", "Rextio dispatcher mutex was poisoned"))?;
     let bridge = &mut *guard;

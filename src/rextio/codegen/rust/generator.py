@@ -1475,7 +1475,13 @@ class _FunctionRenderer:
         for arg in expr.args:
             name = self.next_temp("__rextio_darg")
             lines.append(f"let {name} = {strip_wrapping_parens(self.render_call_arg(arg))};")
-            arg_names.append(name)
+            if isinstance(self.infer_expr_type(arg), RxtFloat):
+                # serde_json serializes a non-finite float to JSON null silently;
+                # guard it so a NaN/Inf argument is a clean error, never a silent
+                # None on the Python side of the wire.
+                arg_names.append(f"__rextio_finite({name})?")
+            else:
+                arg_names.append(name)
         to_value = (
             'serde_json::to_value(&{name})'
             '.map_err(|e| RextioError::new("RuntimeError", e.to_string()))?'
