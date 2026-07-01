@@ -430,10 +430,20 @@ directions rather than silently coerced to `null`/`None`. Any unsupported type
 keeps the caller on the fallback (never a guess). A function on the **RXT080
 runtime shim** (the PyO3 runtime-semantics path) is not delegated: a native entry
 that depends on one is rejected and not built, so delegation never silently
-changes shim semantics. A delegated function's own stdout/stderr is redirected to
-the binary's stderr so it cannot corrupt the wire protocol (which owns stdout).
-The runtime does not require `rextio` to be installed — the dispatcher supplies a
-minimal decorator stub when it is absent.
+changes shim semantics. A `typing.List[int]` / `List[int]` return annotation is
+normalized to the builtin `list[int]` wire type. A delegated function's own
+stdout/stderr is redirected to the binary's stderr so it cannot corrupt the wire
+protocol (which owns stdout), and the long-lived dispatcher is hardened to survive
+any single request — a delegated `SystemExit`/`KeyboardInterrupt`, an exception
+whose `__str__` raises, and a non-serializable / non-finite / too-deep / too-large
+result all become an error frame rather than killing it. The runtime does not
+require `rextio` to be installed — the dispatcher supplies a minimal decorator stub
+when it is absent.
+
+Known limitation: a fallback callee annotated `-> None` is delegated for its side
+effects (called as a bare statement); using its result in a value position (for
+example `if callee() is None:`) is not supported and produces a clean build error
+rather than a native binary.
 
 This "hybrid" binary is not standalone — it needs a Python interpreter (and the
 project's dependencies) at runtime, and each delegated call crosses a process

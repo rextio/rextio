@@ -40,8 +40,11 @@ def render_subprocess_client(python_command: str = "python3", *, nuitka_dispatch
     """
     baked = _rust_string_literal(python_command)
     if nuitka_dispatcher:
+        # Nuitka appends the OS executable extension, so add `EXE_SUFFIX` (``.exe`` on
+        # Windows, empty elsewhere) to find the compiled dispatcher.
         spawn_block = (
-            f'let mut child = Command::new(runtime_dir.join("{NUITKA_DISPATCHER_NAME}"))'
+            f'let mut child = Command::new(runtime_dir.join('
+            f'format!("{NUITKA_DISPATCHER_NAME}{{}}", std::env::consts::EXE_SUFFIX)))'
         )
     else:
         spawn_block = (

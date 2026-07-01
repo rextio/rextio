@@ -1630,6 +1630,7 @@ def test_subprocess_client_nuitka_mode_launches_compiled_dispatcher() -> None:
     # launches the self-contained compiled dispatcher directly (no interpreter).
     assert 'arg(runtime_dir.join("_rextio_dispatcher.py"))' in source
     assert "REXTIO_PYTHON" in source
-    assert 'Command::new(runtime_dir.join("_rextio_dispatcher"))' in nuitka
+    # Nuitka mode launches the compiled dispatcher, adding EXE_SUFFIX for Windows.
+    assert 'format!("_rextio_dispatcher{}", std::env::consts::EXE_SUFFIX)' in nuitka
     assert "REXTIO_PYTHON" not in nuitka
     assert 'arg(runtime_dir.join("_rextio_dispatcher.py"))' not in nuitka

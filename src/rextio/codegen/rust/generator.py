@@ -1478,7 +1478,11 @@ class _FunctionRenderer:
             if isinstance(self.infer_expr_type(arg), RxtFloat):
                 # serde_json serializes a non-finite float to JSON null silently;
                 # guard it so a NaN/Inf argument is a clean error, never a silent
-                # None on the Python side of the wire.
+                # None on the Python side of the wire. INVARIANT: delegation only
+                # authorizes a float arg the analyzer typed `float`, and a value the
+                # generator can lower to a native `f64` is typed RxtFloat here too, so
+                # the guard covers every non-finite float that can actually reach the
+                # wire in the current subset (no native producer yields NaN/Inf yet).
                 arg_names.append(f"__rextio_finite({name})?")
             else:
                 arg_names.append(name)
