@@ -182,6 +182,70 @@ def generate_rust_crate_module(module_ir: ModuleIR) -> str:
     return _render_importable_crate_module(rendered, used_helpers)
 
 
+def generate_rust_main_binary(module_ir: ModuleIR, entry_qualname: str) -> str:
+    """Generate a Rust *binary* crate source for an executable build.
+
+    Reuses the Rust-importable crate module (no PyO3, `RextioError`-returning
+    functions) and appends a ``fn main`` that calls the entrypoint with the
+    process arguments and maps its result to an exit code. The entrypoint must be
+    an accepted direct-native function with the shape ``(list[str]) -> int``
+    (Python ``def main(argv: list[str]) -> int``): ``argv`` mirrors ``sys.argv``
+    (program path at index 0), the returned ``int`` is the process exit code, and
+    a returned ``RextioError`` is printed CPython-style (``TypeName: message``) to
+    stderr with a non-zero exit.
+    """
+    crate_source = generate_rust_crate_module(module_ir)
+    entry = _resolve_main_entry(module_ir, entry_qualname)
+    entry_name = rust_identifier(native_function_name(entry.qualname))
+    main_fn = "\n".join(
+        [
+            "fn main() {",
+            "    // Mirror Python `sys.argv`: the program path at index 0, then args.",
+            "    let argv: Vec<String> = std::env::args().collect();",
+            f"    match {entry_name}(argv) {{",
+            "        Ok(code) => std::process::exit(code as i32),",
+            "        Err(err) => {",
+            "            // `Display` renders `TypeName: message` (CPython-style).",
+            "            eprintln!(\"{}\", err);",
+            "            std::process::exit(1);",
+            "        }",
+            "    }",
+            "}",
+        ]
+    )
+    return f"{crate_source}\n{main_fn}\n"
+
+
+def _resolve_main_entry(module_ir: ModuleIR, entry_qualname: str) -> FunctionIR:
+    """Return the entrypoint FunctionIR, or raise if it is missing or ill-typed."""
+    matches = [
+        function
+        for function in module_ir.functions
+        if function.qualname == entry_qualname
+        and not function.native_runtime_semantics
+        and not function.native_jit
+    ]
+    if not matches:
+        raise RustCodegenError(
+            f"Rust-main entrypoint '{entry_qualname}' is not an accepted direct-native function"
+        )
+    entry = matches[0]
+    param_types = [param.type for param in entry.params]
+    if not (
+        len(param_types) == 1
+        and isinstance(param_types[0], RxtList)
+        and isinstance(param_types[0].item_type, RxtStr)
+    ):
+        raise RustCodegenError(
+            f"Rust-main entrypoint '{entry_qualname}' must take a single list[str] argument (argv)"
+        )
+    if not isinstance(entry.return_type, RxtInt):
+        raise RustCodegenError(
+            f"Rust-main entrypoint '{entry_qualname}' must return int (the process exit code)"
+        )
+    return entry
+
+
 def rust_identifier(value: str) -> str:
     """Return a valid Rust identifier for a name, escaping keywords as raw identifiers."""
     identifier = re.sub(r"[^0-9a-zA-Z_]", "_", value)

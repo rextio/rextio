@@ -1509,3 +1509,58 @@ def at(xs: list[int], i: int) -> int:
     assert 'write!(f, "{}: {}", self.kind, self.message)' in source
     assert 'RextioError::new("ZeroDivisionError", "integer modulo by zero")' in source
     assert 'RextioError::new("IndexError", "list index out of range")' in source
+
+
+def test_generate_rust_main_binary_emits_main_calling_entry(tmp_path: Path) -> None:
+    import pytest
+
+    from rextio.codegen.rust.cargo import render_binary_cargo_toml
+    from rextio.codegen.rust.errors import RustCodegenError
+    from rextio.codegen.rust.generator import generate_rust_main_binary
+
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def run(argv: list[str]) -> int:
+    print("hi")
+    return len(argv)
+
+@rextio.native
+def bad_ret(argv: list[str]) -> str:
+    return "x"
+
+@rextio.native
+def bad_arg(n: int) -> int:
+    return n
+""",
+        encoding="utf-8",
+    )
+    module_ir = lower_project(analyze_project(tmp_path))
+
+    source = generate_rust_main_binary(module_ir, "app.run")
+    # Reuses the crate module (RextioError, no PyO3) and appends a `fn main`.
+    assert "pub struct RextioError" in source
+    assert "pyo3" not in source
+    assert "fn main() {" in source
+    assert "let argv: Vec<String> = std::env::args().collect();" in source
+    assert "match app__run(argv) {" in source
+    assert "Ok(code) => std::process::exit(code as i32)," in source
+    assert 'eprintln!("{}", err);' in source
+    # Q1: the entrypoint's own body may print (lowered pyo3-free).
+    assert 'println!("{}", String::from("hi"));' in source
+
+    # Entry-signature validation.
+    with pytest.raises(RustCodegenError, match="must return int"):
+        generate_rust_main_binary(module_ir, "app.bad_ret")
+    with pytest.raises(RustCodegenError, match="single list.str. argument"):
+        generate_rust_main_binary(module_ir, "app.bad_arg")
+    with pytest.raises(RustCodegenError, match="not an accepted direct-native"):
+        generate_rust_main_binary(module_ir, "app.missing")
+
+    cargo = render_binary_cargo_toml("myapp_bin", "myapp")
+    assert "[[bin]]" in cargo
+    assert 'name = "myapp"' in cargo
+    assert 'path = "src/main.rs"' in cargo
+    assert "pyo3" not in cargo
