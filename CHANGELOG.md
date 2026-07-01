@@ -44,10 +44,11 @@ Initial public MVP for Rextio as a local hybrid build tool.
   `dist/<binary>.runtime/`, driven over a JSON stdio protocol) instead of being
   rejected, so hard-to-compile-to-Rust logic can be "left as Python." The
   delegated function runs real CPython (result is CPython-equivalent, exceptions
-  forwarded CPython-style). Delegated-call arguments must be immutable scalars
-  (`int`/`float`/`bool`/`str`/`None`) — a mutable-container argument is not
-  delegated because it crosses the wire by value and an in-place mutation would be
-  lost — and results may also be a `list` of those; non-finite floats are rejected
+  forwarded CPython-style). Delegated-call arguments and results must both be
+  immutable scalars (`int`/`float`/`bool`/`str`/`None`) — a mutable container
+  (`list`/`dict`/`set`) is not delegated in either direction because it crosses the
+  wire by value, which severs the aliasing CPython preserves (a mutated argument or
+  a mutated aliased return would diverge silently); non-finite floats are rejected
   rather than silently dropped. A delegated function's stdout/stderr is redirected
   to the binary's stderr so it cannot corrupt the wire protocol, the dispatcher
   survives a delegated `SystemExit`/`KeyboardInterrupt` or non-serializable result

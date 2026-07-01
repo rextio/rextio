@@ -4343,9 +4343,12 @@ def main(argv: list[str]) -> int:
     assert main.delegated_call_targets == set()
 
 
-def test_delegate_fallback_normalizes_typing_list_return(tmp_path: Path) -> None:
-    # A `typing.List[int]` / `List[int]` return annotation is normalized to the
-    # builtin `list[int]` wire type so the caller is not wrongly over-rejected.
+def test_delegate_fallback_rejects_mutable_container_return(tmp_path: Path) -> None:
+    # A delegated callee returning a mutable container (`list`/`dict`/`set`) is NOT
+    # delegated: the returned value may alias persistent Python state, so a native
+    # caller mutating its by-value copy would diverge from CPython silently. The
+    # caller is safely rejected (RXT070) rather than built. Covers both the builtin
+    # `list[int]` and the `typing.List[int]` alias form.
     write_module(
         tmp_path,
         "app.py",
@@ -4353,24 +4356,34 @@ def test_delegate_fallback_normalizes_typing_list_return(tmp_path: Path) -> None
 import rextio
 from typing import List
 
+_ITEMS: list[int] = []
+
 @rextio.exempt
-def make_range(n: int) -> List[int]:
-    return list(range(n))
+def get_items() -> List[int]:
+    return _ITEMS
+
+@rextio.exempt
+def item_count() -> int:
+    return len(_ITEMS)
 
 @rextio.native
 def main(argv: list[str]) -> int:
-    xs = make_range(3)
-    return len(xs)
+    xs: list[int] = get_items()
+    xs.append(1)
+    return item_count()
 """,
     )
 
     delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
     main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
-    assert main.accepted
-    assert main.delegated_call_targets == {"app.make_range"}
+    # The mutable-list-returning callee is not delegated, so the caller is rejected
+    # instead of silently mis-compiled (a native `xs.append(1)` on a by-value copy
+    # would leave the aliased Python global unchanged: CPython 1, hybrid 0).
+    assert not main.accepted
+    assert "app.get_items" not in main.delegated_call_targets
 
-    # The return type handed to codegen must be normalized to the builtin `list[int]`
-    # form; the raw `List[int]` would crash Rust generation (type_from_string raises).
+    # The scalar-returning callee remains delegatable; only the container return is
+    # what forces the rejection.
     from rextio.build.orchestrator import _delegated_return_types
 
-    assert _delegated_return_types(delegated) == {"app.make_range": "list[int]"}
+    assert "app.get_items" not in _delegated_return_types(delegated)

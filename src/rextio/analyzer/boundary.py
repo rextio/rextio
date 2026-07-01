@@ -89,15 +89,20 @@ def apply_boundary_checks(
 
 
 # Types a delegated call can serialize across the JSON wire protocol and type on
-# the Rust side. bytes/tuple/dict need a tagged encoding and are a follow-up.
+# the Rust side. Only immutable scalars: a mutable container crosses the wire by
+# value (a JSON copy), which severs the aliasing CPython would preserve, so it
+# cannot be delegated as an argument *or* a return without a silent divergence.
+# bytes/tuple/dict/list need a tagged, reference-preserving encoding and are a
+# follow-up. Capitalized/`typing.`-qualified aliases are normalized first.
 _DELEGATABLE_SCALARS = frozenset({"int", "float", "bool", "str", "None"})
-_DELEGATABLE_LISTS = frozenset({"list[int]", "list[float]", "list[bool]", "list[str]"})
+
 
 def _is_delegatable_return_type(type_name: str | None) -> bool:
-    # Capitalized/`typing.`-qualified aliases (`List[int]`) are normalized to the
-    # builtin form so a common annotation shape is not wrongly judged non-delegatable.
-    norm = normalize_type_name(type_name)
-    return norm in _DELEGATABLE_SCALARS or norm in _DELEGATABLE_LISTS
+    # A mutable-container *return* (list/dict/set) is not delegatable either: the
+    # returned value may alias persistent Python state, so if the native caller
+    # mutates its by-value copy the divergence from CPython is silent (the analyzer
+    # cannot prove the callee returned an unaliased fresh container). Scalars only.
+    return normalize_type_name(type_name) in _DELEGATABLE_SCALARS
 
 
 def _is_delegatable_arg_type(type_name: str | None) -> bool:

@@ -421,24 +421,25 @@ once and forwards delegated calls over a JSON stdio protocol. The delegated
 function runs real CPython, so its result is CPython-equivalent (not a silent
 miscompile), and a raised Python exception is forwarded and printed CPython-style.
 
-A delegated call's **argument** types must be immutable scalars
-(`int`/`float`/`bool`/`str`/`None`): a `list`/`dict`/`set` argument is *not*
-delegated, because arguments cross the wire by value and a callee's in-place
-mutation of a container would be silently lost. The **return** type may also be a
-`list` of those scalars. A non-finite float (`NaN`/`Infinity`) is rejected on both
-directions rather than silently coerced to `null`/`None`. Any unsupported type
-keeps the caller on the fallback (never a guess). A function on the **RXT080
-runtime shim** (the PyO3 runtime-semantics path) is not delegated: a native entry
-that depends on one is rejected and not built, so delegation never silently
-changes shim semantics. A `typing.List[int]` / `List[int]` return annotation is
-normalized to the builtin `list[int]` wire type. A delegated function's own
-stdout/stderr is redirected to the binary's stderr so it cannot corrupt the wire
-protocol (which owns stdout), and the long-lived dispatcher is hardened to survive
-any single request — a delegated `SystemExit`/`KeyboardInterrupt`, an exception
-whose `__str__` raises, and a non-serializable / non-finite / too-deep / too-large
-result all become an error frame rather than killing it. The runtime does not
-require `rextio` to be installed — the dispatcher supplies a minimal decorator stub
-when it is absent.
+A delegated call's **argument and return** types must both be immutable scalars
+(`int`/`float`/`bool`/`str`/`None`). A `list`/`dict`/`set` is *not* delegated in
+either direction, because it crosses the wire by value (a JSON copy) and that
+severs the aliasing CPython preserves: a callee's in-place mutation of a container
+**argument**, or the native caller's mutation of a **returned** container that
+aliased Python state, would silently diverge (the analyzer cannot prove a returned
+container is a fresh, unaliased value). A non-finite float (`NaN`/`Infinity`) is
+rejected in both directions rather than silently coerced to `null`/`None`. Any
+unsupported type keeps the caller on the fallback (never a guess). A function on
+the **RXT080 runtime shim** (the PyO3 runtime-semantics path) is not delegated: a
+native entry that depends on one is rejected and not built, so delegation never
+silently changes shim semantics. A delegated function's own stdout/stderr is
+redirected to the binary's stderr so it cannot corrupt the wire protocol (which
+owns stdout), and the long-lived dispatcher is hardened to survive any single
+request — a delegated `SystemExit`/`KeyboardInterrupt`, an exception whose
+`__str__` raises, and a non-serializable / non-finite / too-deep / too-large result
+all become an error frame rather than killing it. The runtime does not require
+`rextio` to be installed — the dispatcher supplies a minimal decorator stub when it
+is absent.
 
 Known limitation: a fallback callee annotated `-> None` is delegated for its side
 effects (called as a bare statement); using its result in a value position (for

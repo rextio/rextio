@@ -15,13 +15,16 @@ Wire protocol (newline-delimited JSON, one message per line):
 * success  (dispatcher -> binary):  ``{"ok": <result>}``
 * error    (dispatcher -> binary):  ``{"error": {"type": "<Exc>", "message": "<str>"}}``
 
-Delegated arguments are immutable scalars (``int``/``float``/``bool``/``str``/
-``None``) -- a mutable container argument is not delegated because it crosses the
-wire by value and a callee's in-place mutation would be lost. Results may also be
-``list`` of those scalars. Non-finite floats and ``bytes``/``tuple``/``dict`` are
-not carried (the former is rejected on both sides; the latter need a tagged
-encoding and are a follow-up). Only the functions in the generated allow-list may
-be called, so a corrupt or unexpected request cannot execute arbitrary code.
+Delegated arguments *and results* are immutable scalars (``int``/``float``/
+``bool``/``str``/``None``). A mutable container (``list``/``dict``/``set``) is not
+delegated in either direction: it crosses the wire by value (a JSON copy), which
+severs the aliasing CPython preserves -- a callee's in-place mutation of an
+argument, or the native caller's mutation of a returned container that aliased
+Python state, would silently diverge. Non-finite floats and ``bytes``/``tuple``/
+``dict``/``list`` are not carried (the former is rejected on both sides; the latter
+need a tagged, reference-preserving encoding and are a follow-up). Only the
+functions in the generated allow-list may be called, so a corrupt or unexpected
+request cannot execute arbitrary code.
 """
 
 from __future__ import annotations
