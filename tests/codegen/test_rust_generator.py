@@ -1564,3 +1564,43 @@ def bad_arg(n: int) -> int:
     assert 'name = "myapp"' in cargo
     assert 'path = "src/main.rs"' in cargo
     assert "pyo3" not in cargo
+
+
+def test_delegated_call_lowers_to_ipc_client(tmp_path: Path) -> None:
+    from rextio.codegen.rust.generator import generate_rust_main_binary
+
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def slugify(text: str) -> str:
+    return text.lower()
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    s = slugify(argv[0])
+    return len(s)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    module_ir = lower_project(analysis)
+
+    # No delegation info -> the delegated call has no lowering and codegen fails,
+    # so the delegate map must be supplied (as the build does from the analysis).
+    source = generate_rust_main_binary(module_ir, "app.main", {"app.slugify": "str"})
+
+    # The IPC client is injected and the fallback call is delegated + typed.
+    assert "fn __rextio_call_python(" in source
+    assert '__rextio_call_python("app.slugify", vec![serde_json::json!(' in source
+    assert ".as_str().map(|s| s.to_string())" in source
+    # A normal (non-hybrid) binary must not carry the client.
+    (tmp_path / "app.py").write_text(
+        "import rextio\n\n@rextio.native\ndef main(argv: list[str]) -> int:\n    return len(argv)\n",
+        encoding="utf-8",
+    )
+    plain = generate_rust_main_binary(
+        lower_project(analyze_project(tmp_path, native_marker="decorator")), "app.main"
+    )
+    assert "__rextio_call_python" not in plain
