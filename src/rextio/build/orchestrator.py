@@ -663,9 +663,10 @@ def _delegated_return_types(analysis: ProjectAnalysis) -> dict[str, str]:
                     or callee.inferred_return_type
                     or callee.annotated_return_type
                 )
-                # Normalize `typing.List[int]`/`List[int]` to the builtin `list[int]`
-                # the codegen's `type_from_string` understands; otherwise an accepted
-                # typing-aliased return would crash Rust generation (RXT060).
+                # Normalize any `typing.`-qualified/capitalized alias to the builtin
+                # form the codegen understands. Delegated returns are immutable scalars
+                # only (the boundary check rejects containers), so this is defensive:
+                # it keeps the recorded type in the exact spelling that passed the gate.
                 normalized = normalize_type_name(return_type)
                 if normalized is not None:
                     delegated[target] = normalized

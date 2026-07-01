@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.config.schema import ImportPackagePolicy, ImportsConfig
 from rextio.plugins.models import RextioPlugin
@@ -4344,11 +4346,12 @@ def main(argv: list[str]) -> int:
 
 
 def test_delegate_fallback_rejects_mutable_container_return(tmp_path: Path) -> None:
-    # A delegated callee returning a mutable container (`list`/`dict`/`set`) is NOT
-    # delegated: the returned value may alias persistent Python state, so a native
-    # caller mutating its by-value copy would diverge from CPython silently. The
-    # caller is safely rejected (RXT070) rather than built. Covers both the builtin
-    # `list[int]` and the `typing.List[int]` alias form.
+    # A delegated callee returning a mutable container is NOT delegated: the returned
+    # value may alias persistent Python state, so a native caller mutating its
+    # by-value copy would diverge from CPython silently. The caller is safely rejected
+    # (RXT070) rather than built. This pins the exact annotated-alias silent-miscompile
+    # repro from the round-4 council; the `typing.List[int]` return is normalized and
+    # then rejected (the builtin `list[int]` form is covered separately below).
     write_module(
         tmp_path,
         "app.py",
@@ -4387,3 +4390,45 @@ def main(argv: list[str]) -> int:
     from rextio.build.orchestrator import _delegated_return_types
 
     assert "app.get_items" not in _delegated_return_types(delegated)
+
+
+@pytest.mark.parametrize(
+    "return_annotation",
+    [
+        "list[int]",
+        "List[int]",
+        "dict[str, int]",
+        "set[int]",
+        "tuple[int, int]",
+        "Optional[list[int]]",
+    ],
+)
+def test_delegate_fallback_rejects_every_container_return_shape(
+    tmp_path: Path, return_annotation: str
+) -> None:
+    # No container/optional-container return shape may be delegated (they cross the
+    # wire by value, severing aliasing). Each keeps the caller on the Python fallback
+    # — a clean rejection, never a silent divergence. Pins the scalar-only contract
+    # against a future `normalize_type_name` change that could let a shape through.
+    write_module(
+        tmp_path,
+        "app.py",
+        f"""
+import rextio
+from typing import List, Optional
+
+@rextio.exempt
+def produce() -> {return_annotation}:
+    raise NotImplementedError
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    produce()
+    return 0
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    assert not main.accepted
+    assert "app.produce" not in main.delegated_call_targets

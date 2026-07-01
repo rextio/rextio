@@ -142,7 +142,7 @@ def circular():
     assert responses[1] == {"error": {"type": "SystemExit", "message": "3"}}
     assert responses[2]["error"]["type"] == "TypeError"
     assert responses[3]["error"]["type"] == "RecursionError"  # call recursion -> error frame
-    assert "error" in responses[4]  # json.dumps failure -> error frame, not a crash
+    assert responses[4]["error"]["type"] == "ValueError"  # json.dumps circular ref -> error frame
     # The dispatcher survived every poison call and still answers the last request.
     assert responses[5] == {"ok": 30}
     # Delegated stdout never reaches the protocol stream; it is on stderr.

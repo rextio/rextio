@@ -92,7 +92,7 @@ def apply_boundary_checks(
 # the Rust side. Only immutable scalars: a mutable container crosses the wire by
 # value (a JSON copy), which severs the aliasing CPython would preserve, so it
 # cannot be delegated as an argument *or* a return without a silent divergence.
-# bytes/tuple/dict/list need a tagged, reference-preserving encoding and are a
+# bytes/tuple/dict/list/set need a tagged, reference-preserving encoding and are a
 # follow-up. Capitalized/`typing.`-qualified aliases are normalized first.
 _DELEGATABLE_SCALARS = frozenset({"int", "float", "bool", "str", "None"})
 
@@ -120,12 +120,13 @@ def _is_delegatable(
 ) -> bool:
     """Whether a fallback call can be faithfully delegated over the wire protocol.
 
-    Requires the callee's return type to be a JSON-wire type the result can be
-    typed from, and every argument type to be an immutable scalar (mutable
-    containers cross the wire by value, so a callee's in-place mutation would be
-    silently lost). When a type is unknown the call is *not* delegated (it stays a
-    rejection, keeping the caller on the Python fallback), so delegation never
-    guesses and never silently drops a mutation.
+    Requires the callee's return type *and* every argument type to be an immutable
+    scalar. A mutable container crosses the wire by value (a JSON copy), which
+    severs the aliasing CPython preserves: a callee mutating a container argument,
+    or the native caller mutating a returned container that aliased Python state,
+    would diverge silently. When a type is unknown the call is *not* delegated (it
+    stays a rejection, keeping the caller on the Python fallback), so delegation
+    never guesses and never silently drops a mutation.
     """
     return_type = (
         dependency.signature_return_type

@@ -1513,19 +1513,10 @@ class _FunctionRenderer:
         if type_name == "None":
             # A None-returning delegated call is a statement; discard the result.
             return "()"
-        if type_name.startswith("list["):
-            item = type_name[len("list["):-1]
-            item_scalar = {"int": "as_i64", "float": "as_f64", "bool": "as_bool"}.get(item)
-            if item_scalar is not None:
-                convert = f"e.{item_scalar}().ok_or_else(|| {err})"
-            elif item == "str":
-                convert = f"e.as_str().map(|s| s.to_string()).ok_or_else(|| {err})"
-            else:
-                raise RustCodegenError(f"delegated call return type is not supported: {type_name}")
-            return (
-                f"{value_var}.as_array().ok_or_else(|| {err})?.iter()"
-                f".map(|e| {convert}).collect::<Result<Vec<_>, _>>()?"
-            )
+        # Only immutable scalars are delegatable wire types (the analyzer's
+        # `_is_delegatable_return_type` enforces this). Reject anything else here too,
+        # so if that gate ever regressed, a container return would be a clean build
+        # failure rather than a silent by-value copy that severs CPython aliasing.
         raise RustCodegenError(f"delegated call return type is not supported: {type_name}")
 
     def render_sorted(self, expr: ExprIR) -> str:
