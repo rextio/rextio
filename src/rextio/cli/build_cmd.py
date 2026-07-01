@@ -114,6 +114,25 @@ def run(args: Namespace) -> int:
             reporter.error(format_missing_tools(missing_tools))
             return 1
 
+    # The native Rust executable backend analyzes in delegate mode so the
+    # entrypoint can call project fallback functions through the external CPython
+    # dispatcher. This is a separate analysis, so it does not change the wheel /
+    # PyO3 native build (which keeps rejecting native->fallback calls).
+    executable_analysis = None
+    if config.executable.backend == "rust" and config.executable.entrypoint is not None:
+        executable_analysis = analyze_project(
+            project_root,
+            boundary_warnings=config.policy.boundary_warnings,
+            native_marker=config.policy.native_marker,
+            target_language=target_plan.spec.language,
+            native_top_level=config.policy.native_top_level,
+            imports_config=config.imports,
+            active_plugins=target_plan.plugins.active,
+            native_jit_enabled=config.jit.enabled,
+            jit_hot_threshold=config.jit.hot_threshold,
+            delegate_fallback=True,
+        )
+
     result = build_hybrid_artifact(
         project_root,
         analysis,
@@ -130,6 +149,7 @@ def run(args: Namespace) -> int:
         native_jit_enabled=config.jit.enabled,
         jit_hot_threshold=config.jit.hot_threshold,
         build_timeout_seconds=config.build.build_timeout_seconds,
+        executable_analysis=executable_analysis,
     )
     lines = ["Rextio build", f"  target language: {target_plan.spec.language}"]
     if target_plan.spec.version:

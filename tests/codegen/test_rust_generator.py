@@ -1593,7 +1593,7 @@ def main(argv: list[str]) -> int:
 
     # The IPC client is injected and the fallback call is delegated + typed.
     assert "fn __rextio_call_python(" in source
-    assert '__rextio_call_python("app.slugify", vec![serde_json::json!(' in source
+    assert '__rextio_call_python("app.slugify", vec![serde_json::to_value(' in source
     assert ".as_str().map(|s| s.to_string())" in source
     # A normal (non-hybrid) binary must not carry the client.
     (tmp_path / "app.py").write_text(

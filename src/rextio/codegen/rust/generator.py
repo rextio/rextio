@@ -69,6 +69,7 @@ from rextio.ir.nodes import (
     WhileIR,
 )
 from rextio.ir.types import (
+    type_from_string,
     RxtBool,
     RxtBytes,
     RxtDict,
@@ -1451,38 +1452,45 @@ class _FunctionRenderer:
     def _render_delegated_call(self, expr: CallIR) -> str:
         """Render a call delegated to the external CPython dispatcher (Phase 2).
 
-        Serializes the arguments to ``serde_json::Value``, sends the call through
-        ``__rextio_call_python``, and converts the JSON result to the callee's
-        Rust return type. Runs in real CPython, so the value matches CPython.
+        Binds each argument to a temporary, serializes them to ``serde_json::Value``
+        (``to_value`` rather than the ``json!`` macro, which would parse an argument
+        block as a JSON object), sends the call through ``__rextio_call_python``,
+        and converts the JSON result to the callee's Rust return type. The callee
+        runs in real CPython, so the value matches CPython.
         """
-        args = ", ".join(
-            f"serde_json::json!({strip_wrapping_parens(self.render_call_arg(arg))})"
-            for arg in expr.args
+        lines: list[str] = []
+        arg_names: list[str] = []
+        for arg in expr.args:
+            name = self.next_temp("__rextio_darg")
+            lines.append(f"let {name} = {strip_wrapping_parens(self.render_call_arg(arg))};")
+            arg_names.append(name)
+        to_value = (
+            'serde_json::to_value(&{name})'
+            '.map_err(|e| RextioError::new("RuntimeError", e.to_string()))?'
         )
-        value = f'__rextio_call_python("{expr.function}", vec![{args}])?'
-        return self._convert_json_value(value, self.delegated_return_types[expr.function], expr.function)
+        json_args = ", ".join(to_value.format(name=name) for name in arg_names)
+        lines.append(
+            f'let __rextio_dj = __rextio_call_python("{expr.function}", vec![{json_args}])?;'
+        )
+        conversion = self._convert_json_value(
+            "__rextio_dj", self.delegated_return_types[expr.function], expr.function
+        )
+        return "{ " + " ".join(lines) + " " + conversion + " }"
 
-    def _convert_json_value(self, value_expr: str, type_name: str, qualname: str) -> str:
-        """Rust expression converting a delegated call's JSON result to ``type_name``."""
+    def _convert_json_value(self, value_var: str, type_name: str, qualname: str) -> str:
+        """Rust expression converting the already-bound JSON ``value_var`` to a type."""
         err = (
             f'RextioError::new("TypeError", '
             f'"{qualname} returned a value not convertible to {type_name}")'
         )
-        scalar = {
-            "int": "as_i64",
-            "float": "as_f64",
-            "bool": "as_bool",
-        }.get(type_name)
+        scalar = {"int": "as_i64", "float": "as_f64", "bool": "as_bool"}.get(type_name)
         if scalar is not None:
-            return f"{{ let __rextio_j = {value_expr}; __rextio_j.{scalar}().ok_or_else(|| {err})? }}"
+            return f"{value_var}.{scalar}().ok_or_else(|| {err})?"
         if type_name == "str":
-            return (
-                f"{{ let __rextio_j = {value_expr}; "
-                f"__rextio_j.as_str().map(|s| s.to_string()).ok_or_else(|| {err})? }}"
-            )
+            return f"{value_var}.as_str().map(|s| s.to_string()).ok_or_else(|| {err})?"
         if type_name == "None":
             # A None-returning delegated call is a statement; discard the result.
-            return f"{{ {value_expr}; () }}"
+            return "()"
         if type_name.startswith("list["):
             item = type_name[len("list["):-1]
             item_scalar = {"int": "as_i64", "float": "as_f64", "bool": "as_bool"}.get(item)
@@ -1493,9 +1501,8 @@ class _FunctionRenderer:
             else:
                 raise RustCodegenError(f"delegated call return type is not supported: {type_name}")
             return (
-                f"{{ let __rextio_j = {value_expr}; "
-                f"__rextio_j.as_array().ok_or_else(|| {err})?.iter()"
-                f".map(|e| {convert}).collect::<Result<Vec<_>, _>>()? }}"
+                f"{value_var}.as_array().ok_or_else(|| {err})?.iter()"
+                f".map(|e| {convert}).collect::<Result<Vec<_>, _>>()?"
             )
         raise RustCodegenError(f"delegated call return type is not supported: {type_name}")
 
@@ -1834,6 +1841,11 @@ class _FunctionRenderer:
             return RxtStr()
         if expr.function == "base64.b64encode":
             return RxtBytes()
+        if expr.function in self.delegated_return_types:
+            # A delegated call's result type comes from the callee's annotation, so
+            # a local assigned from it is typed correctly (e.g. its `print` formats
+            # a `str` with `{}`, not Debug `{:?}`).
+            return type_from_string(self.delegated_return_types[expr.function])
         return self.native_return_types.get(expr.function)
 
     def render_format_macro(
