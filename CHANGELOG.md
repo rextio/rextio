@@ -32,6 +32,13 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Generated hybrid artifact wheel under `dist/`.
 - Zipapp executable artifact generation with `rextio build --entrypoint=module:function`.
 - Nuitka standalone/onefile executable artifact generation with `--executable-backend=nuitka`.
+- Native Rust binary executable generation with `--executable-backend=rust`: a
+  standalone native executable (no Python runtime) whose `main` calls a
+  direct-native `def main(argv: list[str]) -> int` entrypoint, mirrors `sys.argv`,
+  uses the returned `int` as the process exit code, and prints a returned error
+  CPython-style (`TypeName: message`) to stderr. The crate-mode `RextioError` now
+  carries the CPython exception type name so these binaries emit Python-style
+  diagnostics.
 - Mirrored build and analysis settings across CLI parameters, environment variables, and `rextio.toml`.
 - Target planning metadata for future Rust/Mojo/Julia backends and installed package plugins.
 - Experimental opt-in native-side Cranelift JIT for narrow scalar helper

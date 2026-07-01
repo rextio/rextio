@@ -401,6 +401,19 @@ Nuitka is installed and remains dependent on the local Nuitka toolchain. Rextio
 does not guarantee cross-platform packaging of arbitrary third-party
 dependencies in 0.1.0 alpha.
 
+Native Rust binary artifacts are supported with `--executable-backend=rust` (or
+`[executable] backend = "rust"`). Rextio generates a Cargo binary crate whose
+`main` calls the entrypoint and builds a standalone native executable in `dist/`
+with no Python runtime dependency. The entrypoint must be an accepted
+direct-native function shaped `def main(argv: list[str]) -> int`: `argv` mirrors
+`sys.argv` (the program path at index 0), the returned `int` is the process exit
+code, and a returned error is printed CPython-style (`TypeName: message`) to
+stderr with a non-zero exit. Because the binary contains no interpreter, the
+entrypoint and its entire call graph must be direct-native — a runtime-shim
+(`RXT080`) or Python-fallback dependency is not available to it. Requires Cargo.
+In 0.1.0 alpha this backend does not embed or invoke CPython for non-native code;
+mixing native and fallback code in one binary is out of scope.
+
 `native_backend = "mojo"` and `native_backend = "julia"` are accepted only as
 target-planning values. They allow Rextio to record target version,
 target-specific build options, and matching plugin metadata, but 0.1.0 alpha

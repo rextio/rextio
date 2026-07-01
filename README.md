@@ -33,6 +33,7 @@ Rextio can produce several artifacts from the same Python project:
 | `dist/*.whl` | Wheel containing fallback code and, when built, the native extension. |
 | `dist/<name>.pyz` | Optional zipapp executable for a configured Python entrypoint. |
 | `dist/<name>.dist/` or `dist/<name>` | Optional Nuitka standalone or onefile executable. |
+| `dist/<name>` | Optional standalone native Rust binary (`--executable-backend=rust`), no Python runtime. |
 | `dist/<crate>-rust-crate/` | Optional Rust library crate for Rust projects to import. |
 
 The generated Python wrappers try native code first and fall back to Python when
@@ -319,7 +320,19 @@ rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-
 
 Nuitka executable packaging is experimental and requires Nuitka to be installed.
 
-## Configuration
+Native Rust binary:
+
+```text
+rextio build . --entrypoint=myapp.cli:main --executable-backend=rust
+```
+
+This compiles a standalone native binary (`dist/<name>`) with no Python runtime
+dependency. The entrypoint must be an accepted direct-native
+`def main(argv: list[str]) -> int`: `argv` mirrors `sys.argv` (the program path
+at index 0), the returned `int` is the process exit code, and a raised error is
+printed CPython-style (`OverflowError: ...`) to stderr with a non-zero exit. The
+entrypoint and everything it calls must be direct-native (no runtime shim or
+Python fallback); requires Cargo.
 
 Build and analysis settings resolve in this order:
 

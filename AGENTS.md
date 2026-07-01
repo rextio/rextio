@@ -69,7 +69,9 @@ Do not implement these in 0.1.0 alpha unless explicitly requested:
 * JIT backends beyond the explicit experimental Cranelift native-side path
 * LLVM integration
 * MLIR
-* General-purpose executable packaging beyond zipapp and Nuitka
+* General-purpose executable packaging beyond zipapp, Nuitka, and the native
+  Rust binary (`--executable-backend=rust`, whose entrypoint and call graph must
+  be fully direct-native)
 * Third-party framework conversion
 * ORM conversion
 * Bundled third-party package plugin rules
