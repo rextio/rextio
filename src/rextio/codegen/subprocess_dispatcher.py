@@ -89,15 +89,22 @@ def _ensure_rextio():
     sys.modules["rextio"] = stub
 
 
-_ensure_rextio()
-
-
 def _resolve(qualname):
     module_name, _, func_name = qualname.rpartition(".")
     if not module_name:
         raise LookupError("call target must be a dotted qualname: " + repr(qualname))
     module = importlib.import_module(module_name)
     return getattr(module, func_name)
+
+
+def _exc_frame(exc):
+    # str(exc) runs a user-defined __str__, which may itself raise; never let that
+    # kill the dispatcher while it is building an error frame.
+    try:
+        message = str(exc)
+    except BaseException:  # noqa: BLE001 -- a __str__ that raises must not escape
+        message = "<exception message unavailable>"
+    return {{"error": {{"type": type(exc).__name__, "message": message}}}}
 
 
 def _handle(request):
@@ -108,8 +115,28 @@ def _handle(request):
     try:
         result = _resolve(qualname)(*args)
     except BaseException as exc:  # noqa: BLE001 -- forward ANY exception (incl. SystemExit/KeyboardInterrupt) to the caller instead of killing the long-lived dispatcher
-        return {{"error": {{"type": type(exc).__name__, "message": str(exc)}}}}
+        return _exc_frame(exc)
     return {{"ok": result}}
+
+
+def _serve(line):
+    # Turn one request line into a response frame. ANY failure -- malformed JSON, a
+    # non-dict request, a handler error, or a json.dumps failure (non-serializable
+    # result, a non-finite float under allow_nan=False, RecursionError on a deeply
+    # nested result, OverflowError on a huge int) -- becomes an error frame, never
+    # an unhandled exception that would kill the long-lived dispatcher.
+    try:
+        request = json.loads(line)
+    except ValueError as exc:
+        return json.dumps({{"error": {{"type": "ValueError", "message": "invalid request: " + str(exc)}}}})
+    try:
+        response = _handle(request)
+        return json.dumps(response, allow_nan=False)
+    except BaseException as exc:  # noqa: BLE001 -- a single request must never kill the loop
+        try:
+            return json.dumps(_exc_frame(exc))
+        except BaseException:  # noqa: BLE001 -- last-resort constant frame
+            return '{{"error": {{"type": "RuntimeError", "message": "unrecoverable dispatcher error"}}}}'
 
 
 def main():
@@ -119,25 +146,14 @@ def main():
     protocol = os.fdopen(os.dup(1), "w", buffering=1)
     os.dup2(2, 1)
     sys.stdout = sys.stderr
+    # Make rextio importable for the reconstructed modules AFTER the redirect, so a
+    # real rextio package's import-time output can never land on the protocol stream.
+    _ensure_rextio()
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
-        try:
-            request = json.loads(line)
-        except ValueError as exc:
-            response = {{"error": {{"type": "ValueError", "message": "invalid request: " + str(exc)}}}}
-        else:
-            response = _handle(request)
-        try:
-            # allow_nan=False keeps non-finite floats off the wire (strict JSON the
-            # Rust client can parse); a non-serializable result becomes an error
-            # frame instead of an unhandled exception that would kill the dispatcher.
-            frame = json.dumps(response, allow_nan=False)
-        except (ValueError, TypeError) as exc:
-            frame = json.dumps(
-                {{"error": {{"type": "TypeError", "message": "result is not JSON-serializable: " + str(exc)}}}}
-            )
+        frame = _serve(line)
         protocol.write(frame)
         protocol.write("\\n")
         protocol.flush()

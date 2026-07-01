@@ -136,6 +136,45 @@ def nonserial():
     assert "delegated stdout" in completed.stderr
 
 
+def test_dispatcher_survives_str_raising_exception_and_bad_request(tmp_path: Path) -> None:
+    # An exception whose __str__ itself raises, and a non-dict request, must each
+    # yield an error frame rather than killing the long-lived dispatcher.
+    (tmp_path / "fb.py").write_text(
+        """
+def ok(a, b):
+    return a + b
+
+class Bad(Exception):
+    def __str__(self):
+        raise RuntimeError("boom in __str__")
+
+def raise_bad():
+    raise Bad()
+""",
+        encoding="utf-8",
+    )
+    dispatcher = tmp_path / "dispatcher.py"
+    dispatcher.write_text(render_dispatcher_script(["fb.ok", "fb.raise_bad"]), encoding="utf-8")
+    stdin = (
+        json.dumps({"call": "fb.raise_bad", "args": []}) + "\n"
+        + json.dumps([1, 2, 3]) + "\n"  # a valid-JSON but non-dict request
+        + json.dumps({"call": "fb.ok", "args": [40, 2]}) + "\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, str(dispatcher)],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    assert responses[0]["error"]["type"] == "Bad"  # __str__ raising did not crash the dispatcher
+    assert responses[1]["error"]["type"] == "AttributeError"  # non-dict request handled
+    assert responses[2] == {"ok": 42}  # dispatcher still alive after both poison inputs
+
+
 def test_dispatcher_stubs_rextio_when_unavailable(tmp_path: Path) -> None:
     # The reconstructed project source imports rextio for its decorators; the
     # dispatcher must run even under a stripped interpreter with no rextio.
