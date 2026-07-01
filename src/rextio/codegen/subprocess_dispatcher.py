@@ -50,6 +50,37 @@ PROTOCOL_VERSION = {PROTOCOL_VERSION}
 _ALLOWED = frozenset({allowed_literal})
 
 
+def _ensure_rextio():
+    # The reconstructed project modules `import rextio` for its decorators. Prefer
+    # the real package when it is importable; otherwise install a minimal no-op stub
+    # so the modules still import under a stripped or bundled interpreter that has
+    # no rextio installed (the decorators are markers -- identity is faithful here).
+    try:
+        import rextio  # noqa: F401
+        return
+    except ImportError:
+        pass
+    import types
+
+    stub = types.ModuleType("rextio")
+
+    def _identity(*args, **kwargs):
+        if len(args) == 1 and not kwargs and callable(args[0]):
+            return args[0]
+
+        def _wrap(func):
+            return func
+
+        return _wrap
+
+    stub.native = _identity
+    stub.exempt = _identity
+    sys.modules["rextio"] = stub
+
+
+_ensure_rextio()
+
+
 def _resolve(qualname):
     module_name, _, func_name = qualname.rpartition(".")
     if not module_name:
