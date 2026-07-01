@@ -170,6 +170,7 @@ def build_hybrid_artifact(
     jit_hot_threshold: int = 25,
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     executable_analysis: ProjectAnalysis | None = None,
+    executable_python: str | None = None,
 ) -> BuildResult:
     """Build the hybrid native+fallback artifact for a project.
 
@@ -217,6 +218,7 @@ def build_hybrid_artifact(
         nuitka_mode,
         plan,
         executable_analysis,
+        executable_python,
         build_timeout=build_timeout_seconds,
     )
 
@@ -575,6 +577,7 @@ def _build_executable_artifact(
     nuitka_mode: str,
     plan: BuildPlan,
     executable_analysis: ProjectAnalysis,
+    executable_python: str | None,
     *,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> ExecutableBuildResult:
@@ -585,7 +588,12 @@ def _build_executable_artifact(
         # PyO3 extension build. It uses the delegate-mode analysis so the entry can
         # call project fallback functions through the external CPython dispatcher.
         return _build_rust_executable_artifact(
-            layout, executable_analysis, entrypoint, executable_name, build_timeout=build_timeout
+            layout,
+            executable_analysis,
+            entrypoint,
+            executable_name,
+            executable_python,
+            build_timeout=build_timeout,
         )
     if fallback_build.status != "built":
         return skipped_executable("Fallback packaging failed, so no executable was generated.")
@@ -694,6 +702,7 @@ def _build_rust_executable_artifact(
     analysis: ProjectAnalysis,
     entrypoint: str,
     executable_name: str | None,
+    executable_python: str | None,
     *,
     build_timeout: float,
 ) -> ExecutableBuildResult:
@@ -709,7 +718,9 @@ def _build_rust_executable_artifact(
     delegated_return_types = _delegated_return_types(analysis)
     try:
         module_ir = lower_project(analysis)
-        main_rs = generate_rust_main_binary(module_ir, entry_qualname, delegated_return_types)
+        main_rs = generate_rust_main_binary(
+            module_ir, entry_qualname, delegated_return_types, executable_python or "python3"
+        )
     except (RustCodegenError, LoweringError) as exc:
         return ExecutableBuildResult(
             status="failed",

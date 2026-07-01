@@ -40,7 +40,7 @@ CONFIG_KEYS = {
     "plugins": {"enabled"},
     "imports": {"default_external_policy", "packages"},
     "jit": {"enabled", "backend", "hot_threshold"},
-    "executable": {"entrypoint", "name", "backend", "nuitka_mode"},
+    "executable": {"entrypoint", "name", "backend", "nuitka_mode", "python"},
     "policy": {
         "native_marker",
         "require_type_hints",
@@ -73,6 +73,7 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_EXECUTABLE_NAME": ("executable", "name", "optional_string"),
     "REXTIO_EXECUTABLE_BACKEND": ("executable", "backend", "string"),
     "REXTIO_NUITKA_MODE": ("executable", "nuitka_mode", "string"),
+    "REXTIO_EXECUTABLE_PYTHON": ("executable", "python", "optional_string"),
     "REXTIO_NATIVE_MARKER": ("policy", "native_marker", "string"),
     "REXTIO_REQUIRE_TYPE_HINTS": ("policy", "require_type_hints", "boolean"),
     "REXTIO_ALLOW_DYNAMIC_FEATURES": ("policy", "allow_dynamic_features", "boolean"),
@@ -229,6 +230,7 @@ def _validate_config_values(
     _require_non_negative_int("jit", "hot_threshold", jit["hot_threshold"])
     _require_optional_string("executable", "entrypoint", executable["entrypoint"])
     _require_optional_string("executable", "name", executable["name"])
+    _require_optional_string("executable", "python", executable["python"])
     _require_string("executable", "backend", executable["backend"])
     _require_string("executable", "nuitka_mode", executable["nuitka_mode"])
     _require_string("policy", "native_marker", policy["native_marker"])

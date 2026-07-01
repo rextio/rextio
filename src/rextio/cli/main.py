@@ -159,6 +159,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Nuitka executable mode. Overrides REXTIO_NUITKA_MODE and [executable] nuitka_mode.",
     )
+    build_parser_.add_argument(
+        "--executable-python",
+        default=None,
+        help=(
+            "Interpreter the rust-backend binary launches for delegated CPython calls "
+            "(bare name, absolute path, or a path relative to <binary>.runtime). "
+            "Overrides REXTIO_EXECUTABLE_PYTHON and [executable] python."
+        ),
+    )
     _add_policy_options(build_parser_)
     _add_output_options(build_parser_)
     build_parser_.set_defaults(handler=build_cmd.run)

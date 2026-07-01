@@ -16,8 +16,21 @@ from __future__ import annotations
 RUNTIME_DIR_SUFFIX = ".runtime"
 
 
-def render_subprocess_client() -> str:
-    """Return the Rust source for the ``__rextio_call_python`` IPC client."""
+def _rust_string_literal(value: str) -> str:
+    """Escape a plain string (an interpreter path) for a Rust string literal."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def render_subprocess_client(python_command: str = "python3") -> str:
+    """Return the Rust source for the ``__rextio_call_python`` IPC client.
+
+    ``python_command`` is the interpreter the binary launches by default: a bare
+    name (``python3``) resolved on ``PATH``, an absolute path, or a relative path
+    with a separator (resolved against the runtime directory, so a bundled
+    interpreter under ``<exe>.runtime`` works). ``REXTIO_PYTHON`` overrides it at
+    run time.
+    """
+    baked = _rust_string_literal(python_command)
     return '''
 // ---- Rextio subprocess-hybrid IPC client ----------------------------------
 use std::io::{BufRead, BufReader, Write};
@@ -37,19 +50,32 @@ fn __rextio_runtime_dir() -> std::path::PathBuf {
     dir.join(format!("{}{RUNTIME_DIR_SUFFIX}", name))
 }
 
+fn __rextio_resolve_python(runtime_dir: &std::path::Path, python: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(python);
+    // A relative path with a separator is resolved against the runtime directory
+    // (a bundled interpreter shipped under `<exe>.runtime`); a bare name is a PATH
+    // lookup and an absolute path is used as-is.
+    if !path.is_absolute() && (python.contains('/') || python.contains('\\\\')) {
+        runtime_dir.join(path)
+    } else {
+        path.to_path_buf()
+    }
+}
+
 fn __rextio_bridge() -> &'static Mutex<RextioBridge> {
     static BRIDGE: OnceLock<Mutex<RextioBridge>> = OnceLock::new();
     BRIDGE.get_or_init(|| {
         let runtime_dir = __rextio_runtime_dir();
-        let python = std::env::var("REXTIO_PYTHON").unwrap_or_else(|_| "python3".to_string());
-        let mut child = Command::new(python)
+        let python = std::env::var("REXTIO_PYTHON").unwrap_or_else(|_| "{PYTHON_COMMAND}".to_string());
+        let python_path = __rextio_resolve_python(&runtime_dir, &python);
+        let mut child = Command::new(python_path)
             .arg(runtime_dir.join("dispatcher.py"))
             // The dispatcher imports the fallback modules from this directory.
             .current_dir(&runtime_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
-            .expect("Rextio: failed to launch the Python dispatcher (is python3 available?)");
+            .expect("Rextio: failed to launch the Python dispatcher (is the interpreter available?)");
         let stdin = child.stdin.take().expect("Rextio: dispatcher stdin unavailable");
         let stdout = BufReader::new(child.stdout.take().expect("Rextio: dispatcher stdout unavailable"));
         Mutex::new(RextioBridge { _child: child, stdin, stdout })
@@ -99,4 +125,4 @@ fn __rextio_call_python(
     Err(RextioError::new("RuntimeError", "malformed response from the Python dispatcher"))
 }
 // ---- end IPC client -------------------------------------------------------
-'''.replace("{RUNTIME_DIR_SUFFIX}", RUNTIME_DIR_SUFFIX)
+'''.replace("{RUNTIME_DIR_SUFFIX}", RUNTIME_DIR_SUFFIX).replace("{PYTHON_COMMAND}", baked)

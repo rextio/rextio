@@ -1604,3 +1604,17 @@ def main(argv: list[str]) -> int:
         lower_project(analyze_project(tmp_path, native_marker="decorator")), "app.main"
     )
     assert "__rextio_call_python" not in plain
+
+
+def test_subprocess_client_bakes_configured_python_command() -> None:
+    from rextio.codegen.rust.subprocess_client import render_subprocess_client
+
+    # The configured interpreter is baked as the default; REXTIO_PYTHON overrides
+    # it at run time, and a relative-with-separator path resolves against the
+    # runtime dir.
+    client = render_subprocess_client("/opt/py/bin/python3")
+    assert 'unwrap_or_else(|_| "/opt/py/bin/python3".to_string())' in client
+    assert "__rextio_resolve_python" in client
+    assert 'std::env::var("REXTIO_PYTHON")' in client
+    # A path with a quote is escaped into a valid Rust literal.
+    assert 'py\\"x' in render_subprocess_client('py"x')
