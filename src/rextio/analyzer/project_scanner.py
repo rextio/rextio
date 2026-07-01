@@ -87,8 +87,15 @@ def analyze_project(
     active_plugins: Iterable[RextioPlugin] = (),
     native_jit_enabled: bool = False,
     jit_hot_threshold: int = 25,
+    delegate_fallback: bool = False,
 ) -> ProjectAnalysis:
-    """Analyze a project directory and return its ProjectAnalysis."""
+    """Analyze a project directory and return its ProjectAnalysis.
+
+    When ``delegate_fallback`` is set (the Rust-executable delegate mode), a
+    direct-native function that calls a project function living on the Python
+    fallback records it as a delegated call instead of being rejected, so the
+    generated binary can invoke it through the external CPython dispatcher.
+    """
     root = Path(project_root).resolve()
     target_language = normalize_target_language(target_language)
     analysis = ProjectAnalysis(project_root=root)
@@ -113,6 +120,7 @@ def analyze_project(
         analysis,
         boundary_warnings=boundary_warnings,
         native_jit_enabled=native_jit_enabled,
+        delegate_fallback=delegate_fallback,
     )
     return analysis
 

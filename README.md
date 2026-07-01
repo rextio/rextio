@@ -326,13 +326,32 @@ Native Rust binary:
 rextio build . --entrypoint=myapp.cli:main --executable-backend=rust
 ```
 
-This compiles a standalone native binary (`dist/<name>`) with no Python runtime
-dependency. The entrypoint must be an accepted direct-native
-`def main(argv: list[str]) -> int`: `argv` mirrors `sys.argv` (the program path
-at index 0), the returned `int` is the process exit code, and a raised error is
-printed CPython-style (`OverflowError: ...`) to stderr with a non-zero exit. The
-entrypoint and everything it calls must be direct-native (no runtime shim or
-Python fallback); requires Cargo.
+This compiles a native binary (`dist/<name>`) whose `main` runs in Rust. The
+entrypoint must be an accepted direct-native `def main(argv: list[str]) -> int`:
+`argv` mirrors `sys.argv` (the program path at index 0), the returned `int` is the
+process exit code, and a raised error is printed CPython-style (`OverflowError:
+...`) to stderr with a non-zero exit. Requires Cargo.
+
+When the entrypoint calls a project function that stays on the Python fallback
+(code outside the Rust subset), Rextio delegates that call to an external CPython
+subprocess: the build ships a `dist/<name>.runtime/` directory (dispatcher +
+project source) that the binary drives over stdio, so hard-to-compile logic can
+be left as Python. Such a hybrid binary needs a Python interpreter at runtime; a
+binary whose call graph is fully direct-native is standalone with no Python
+dependency. Delegated-call arguments and results must both be immutable scalars
+(`int`/`float`/`bool`/`str`/`None`); a `list`/`dict`/`set` is not delegated in
+either direction (it crosses the wire by value, severing the aliasing CPython
+preserves, so a mutated argument or a mutated aliased return would diverge
+silently), and a non-finite float (`NaN`/`Infinity`) is rejected rather than
+silently dropped. A delegated function's own stdout/stderr appears on the binary's stderr
+(the binary's stdout carries the wire protocol). A function on the RXT080 runtime
+shim is not delegated: an entry that depends on one is rejected, not built.
+
+`--executable-python` pins the interpreter the binary launches (a name on `PATH`,
+an absolute path, or a path relative to `<binary>.runtime` to bundle one).
+`--hybrid-runtime=nuitka` instead compiles the delegated Python into a
+self-contained dispatcher executable shipped in the runtime directory, so the
+hybrid binary needs no separate Python install (requires Nuitka at build time).
 
 Build and analysis settings resolve in this order:
 

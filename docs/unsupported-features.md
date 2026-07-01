@@ -403,16 +403,68 @@ dependencies in 0.1.0 alpha.
 
 Native Rust binary artifacts are supported with `--executable-backend=rust` (or
 `[executable] backend = "rust"`). Rextio generates a Cargo binary crate whose
-`main` calls the entrypoint and builds a standalone native executable in `dist/`
-with no Python runtime dependency. The entrypoint must be an accepted
-direct-native function shaped `def main(argv: list[str]) -> int`: `argv` mirrors
-`sys.argv` (the program path at index 0), the returned `int` is the process exit
-code, and a returned error is printed CPython-style (`TypeName: message`) to
-stderr with a non-zero exit. Because the binary contains no interpreter, the
-entrypoint and its entire call graph must be direct-native — a runtime-shim
-(`RXT080`) or Python-fallback dependency is not available to it. Requires Cargo.
-In 0.1.0 alpha this backend does not embed or invoke CPython for non-native code;
-mixing native and fallback code in one binary is out of scope.
+`main` calls the entrypoint and builds a native executable in `dist/`. The
+entrypoint must be an accepted direct-native function shaped `def main(argv:
+list[str]) -> int`: `argv` mirrors `sys.argv` (the program path at index 0), the
+returned `int` is the process exit code, and a returned error is printed
+CPython-style (`TypeName: message`) to stderr with a non-zero exit. Requires
+Cargo.
+
+When the entrypoint (or its native call graph) calls a project function that
+lives on the Python fallback — code outside the Rust subset that is "left as
+Python", i.e. a function that is not a native candidate (RXT070) or is rejected
+from the native subset (RXT072) — Rextio delegates that call to an **external
+CPython subprocess** rather than rejecting it. The build ships a
+`dist/<binary>.runtime/` directory (a generated dispatcher plus the project's
+Python source); the binary launches `python3` (overridable with `REXTIO_PYTHON`)
+once and forwards delegated calls over a JSON stdio protocol. The delegated
+function runs real CPython, so its result is CPython-equivalent (not a silent
+miscompile), and a raised Python exception is forwarded and printed CPython-style.
+
+A delegated call's **argument and return** types must both be immutable scalars
+(`int`/`float`/`bool`/`str`/`None`). A `list`/`dict`/`set` is *not* delegated in
+either direction, because it crosses the wire by value (a JSON copy) and that
+severs the aliasing CPython preserves: a callee's in-place mutation of a container
+**argument**, or the native caller's mutation of a **returned** container that
+aliased Python state, would silently diverge (the analyzer cannot prove a returned
+container is a fresh, unaliased value). A non-finite float (`NaN`/`Infinity`) is
+rejected in both directions rather than silently coerced to `null`/`None`. Any
+unsupported type keeps the caller on the fallback (never a guess). A function on
+the **RXT080 runtime shim** (the PyO3 runtime-semantics path) is not delegated: a
+native entry that depends on one is rejected and not built, so delegation never
+silently changes shim semantics. A delegated function's own stdout/stderr is
+redirected to the binary's stderr so it cannot corrupt the wire protocol (which
+owns stdout), and the long-lived dispatcher is hardened to survive any single
+request — a delegated `SystemExit`/`KeyboardInterrupt`, an exception whose
+`__str__` raises, and a non-serializable / non-finite / too-deep / too-large result
+all become an error frame rather than killing it. The runtime does not require
+`rextio` to be installed — the dispatcher supplies a minimal decorator stub when it
+is absent.
+
+Known limitation: a fallback callee annotated `-> None` is delegated for its side
+effects (called as a bare statement); using its result in a value position (for
+example `if callee() is None:`) is not supported and produces a clean build error
+rather than a native binary.
+
+This "hybrid" binary is not standalone — it needs a Python interpreter (and the
+project's dependencies) at runtime, and each delegated call crosses a process
+boundary. A binary whose entry graph is fully direct-native has no runtime
+directory and no Python dependency. Embedding libpython (in-process) is out of
+scope; delegation is process-external only.
+
+Two options control the interpreter side:
+
+- `--executable-python` (`[executable] python`, `REXTIO_EXECUTABLE_PYTHON`) sets
+  the interpreter the binary launches — a bare name resolved on `PATH`, an
+  absolute path, or a path relative to `<binary>.runtime` (to bundle a specific
+  interpreter). `REXTIO_PYTHON` still overrides it at run time. Use this to keep
+  the binary off the system's default `python3`.
+- `--hybrid-runtime` (`[executable] hybrid_runtime`, `REXTIO_HYBRID_RUNTIME`;
+  `source` or `nuitka`, default `source`) chooses how the Python is shipped.
+  `nuitka` compiles the dispatcher into a self-contained onefile executable
+  (`<binary>.runtime/dispatcher`, with the delegated fallback modules bundled),
+  so the hybrid binary needs no separate Python install at runtime; the Rust
+  binary launches that executable directly. It requires Nuitka at build time.
 
 `native_backend = "mojo"` and `native_backend = "julia"` are accepted only as
 target-planning values. They allow Rextio to record target version,

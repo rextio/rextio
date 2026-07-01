@@ -1564,3 +1564,95 @@ def bad_arg(n: int) -> int:
     assert 'name = "myapp"' in cargo
     assert 'path = "src/main.rs"' in cargo
     assert "pyo3" not in cargo
+
+
+def test_delegated_call_lowers_to_ipc_client(tmp_path: Path) -> None:
+    from rextio.codegen.rust.generator import generate_rust_main_binary
+
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def slugify(text: str) -> str:
+    return text.lower()
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    s = slugify(argv[0])
+    return len(s)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    module_ir = lower_project(analysis)
+
+    # No delegation info -> the delegated call has no lowering and codegen fails,
+    # so the delegate map must be supplied (as the build does from the analysis).
+    source = generate_rust_main_binary(module_ir, "app.main", {"app.slugify": "str"})
+
+    # The IPC client is injected and the fallback call is delegated + typed.
+    assert "fn __rextio_call_python(" in source
+    assert '__rextio_call_python("app.slugify", vec![serde_json::to_value(' in source
+    assert ".as_str().map(|s| s.to_string())" in source
+    # A normal (non-hybrid) binary must not carry the client.
+    (tmp_path / "app.py").write_text(
+        "import rextio\n\n@rextio.native\ndef main(argv: list[str]) -> int:\n    return len(argv)\n",
+        encoding="utf-8",
+    )
+    plain = generate_rust_main_binary(
+        lower_project(analyze_project(tmp_path, native_marker="decorator")), "app.main"
+    )
+    assert "__rextio_call_python" not in plain
+
+
+def test_subprocess_client_bakes_configured_python_command() -> None:
+    from rextio.codegen.rust.subprocess_client import render_subprocess_client
+
+    # The configured interpreter is baked as the default; REXTIO_PYTHON overrides
+    # it at run time, and a relative-with-separator path resolves against the
+    # runtime dir.
+    client = render_subprocess_client("/opt/py/bin/python3")
+    assert 'unwrap_or_else(|_| "/opt/py/bin/python3".to_string())' in client
+    assert "__rextio_resolve_python" in client
+    assert 'std::env::var("REXTIO_PYTHON")' in client
+    # A path with a quote is escaped into a valid Rust literal.
+    assert 'py\\"x' in render_subprocess_client('py"x')
+
+
+def test_subprocess_client_nuitka_mode_launches_compiled_dispatcher() -> None:
+    from rextio.codegen.rust.subprocess_client import render_subprocess_client
+
+    source = render_subprocess_client("python3", nuitka_dispatcher=False)
+    nuitka = render_subprocess_client("python3", nuitka_dispatcher=True)
+
+    # Source mode launches the interpreter on the dispatcher script; nuitka mode
+    # launches the self-contained compiled dispatcher directly (no interpreter).
+    assert 'arg(runtime_dir.join("_rextio_dispatcher.py"))' in source
+    assert "REXTIO_PYTHON" in source
+    # Nuitka mode launches the compiled dispatcher, adding EXE_SUFFIX for Windows.
+    assert 'format!("_rextio_dispatcher{}", std::env::consts::EXE_SUFFIX)' in nuitka
+    assert "REXTIO_PYTHON" not in nuitka
+    assert 'arg(runtime_dir.join("_rextio_dispatcher.py"))' not in nuitka
+
+
+def test_convert_json_value_rejects_non_scalar_delegated_return() -> None:
+    # Defense-in-depth: the analyzer only ever records scalar delegated return types,
+    # but codegen must also refuse a container so that a future analyzer-gate regression
+    # is a clean build failure, not a silent by-value `Vec` copy that severs aliasing.
+    import pytest
+
+    from rextio.codegen.rust.errors import RustCodegenError
+    from rextio.codegen.rust.generator import _FunctionRenderer
+
+    # `_convert_json_value` uses only its arguments (no instance state), so a bare
+    # instance is sufficient to exercise the type dispatch.
+    renderer = object.__new__(_FunctionRenderer)
+
+    for scalar in ("int", "float", "bool", "str", "None"):
+        # Every delegatable scalar still lowers to a Rust expression (none fall through).
+        assert renderer._convert_json_value("v", scalar, "q")
+
+    for container in ("list[int]", "list[str]", "dict[str, int]", "set[int]", "tuple[int, int]"):
+        with pytest.raises(RustCodegenError, match="not supported"):
+            renderer._convert_json_value("v", container, "q")

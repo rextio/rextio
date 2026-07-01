@@ -7,6 +7,7 @@ from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.import_policy import decision_for_target
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis, ProjectAnalysis
+from rextio.ir.types import normalize_type_name
 
 SUPPORTED_INTERNAL_CALLS = {
     "abs",
@@ -36,6 +37,7 @@ def apply_boundary_checks(
     analysis: ProjectAnalysis,
     boundary_warnings: bool = True,
     native_jit_enabled: bool = False,
+    delegate_fallback: bool = False,
 ) -> None:
     """Apply the native/fallback boundary policy, attaching RXT07x diagnostics."""
     resolver = FunctionResolver(analysis)
@@ -74,6 +76,7 @@ def apply_boundary_checks(
                     function,
                     resolver,
                     native_jit_enabled=native_jit_enabled,
+                    delegate_fallback=delegate_fallback,
                 )
                 if boundary_errors:
                     for diagnostic in boundary_errors:
@@ -85,11 +88,63 @@ def apply_boundary_checks(
         _add_python_loop_boundary_warnings(analysis, resolver)
 
 
+# Types a delegated call can serialize across the JSON wire protocol and type on
+# the Rust side. Only immutable scalars: a mutable container crosses the wire by
+# value (a JSON copy), which severs the aliasing CPython would preserve, so it
+# cannot be delegated as an argument *or* a return without a silent divergence.
+# bytes/tuple/dict/list/set need a tagged, reference-preserving encoding and are a
+# follow-up. Capitalized/`typing.`-qualified aliases are normalized first.
+_DELEGATABLE_SCALARS = frozenset({"int", "float", "bool", "str", "None"})
+
+
+def _is_delegatable_return_type(type_name: str | None) -> bool:
+    # A mutable-container *return* (list/dict/set) is not delegatable either: the
+    # returned value may alias persistent Python state, so if the native caller
+    # mutates its by-value copy the divergence from CPython is silent (the analyzer
+    # cannot prove the callee returned an unaliased fresh container). Scalars only.
+    return normalize_type_name(type_name) in _DELEGATABLE_SCALARS
+
+
+def _is_delegatable_arg_type(type_name: str | None) -> bool:
+    # A mutable-container argument (list/dict/set) cannot be delegated: the callee
+    # is a black box that may mutate it in place, but arguments cross the wire by
+    # value (a JSON copy), so any in-place mutation would be silently lost. Only
+    # immutable scalars are safe to pass as delegated-call arguments.
+    return normalize_type_name(type_name) in _DELEGATABLE_SCALARS
+
+
+def _is_delegatable(
+    dependency: FunctionAnalysis,
+    function: FunctionAnalysis,
+    call: CallSite,
+) -> bool:
+    """Whether a fallback call can be faithfully delegated over the wire protocol.
+
+    Requires the callee's return type *and* every argument type to be an immutable
+    scalar. A mutable container crosses the wire by value (a JSON copy), which
+    severs the aliasing CPython preserves: a callee mutating a container argument,
+    or the native caller mutating a returned container that aliased Python state,
+    would diverge silently. When a type is unknown the call is *not* delegated (it
+    stays a rejection, keeping the caller on the Python fallback), so delegation
+    never guesses and never silently drops a mutation.
+    """
+    return_type = (
+        dependency.signature_return_type
+        or dependency.inferred_return_type
+        or dependency.annotated_return_type
+    )
+    if not _is_delegatable_return_type(return_type):
+        return False
+    arg_types = function.call_arg_types.get((call.line, call.column), call.arg_types)
+    return all(_is_delegatable_arg_type(arg_type) for arg_type in arg_types)
+
+
 def _boundary_errors(
     module: ModuleAnalysis,
     function: FunctionAnalysis,
     resolver: FunctionResolver,
     native_jit_enabled: bool = False,
+    delegate_fallback: bool = False,
 ) -> list[Diagnostic]:
     if function.native_runtime_semantics:
         return []
@@ -104,6 +159,19 @@ def _boundary_errors(
             # JIT candidates are lowered to a typed native inner function just like
             # accepted native siblings, so the same call-compatibility check applies.
             diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
+            continue
+        if (
+            delegate_fallback
+            and dependency is not None
+            and (not dependency.is_native_candidate or not dependency.accepted)
+            and _is_delegatable(dependency, function, call)
+        ):
+            # Rust-executable delegate mode: a project function that lives on the
+            # Python fallback (unsupported subset, RXT070) or was rejected from
+            # native (RXT072) is not an error here — the generated binary calls it
+            # in the external CPython dispatcher instead. It runs real CPython, so
+            # the result is CPython-equivalent (not a silent miscompile).
+            function.delegated_call_targets.add(dependency.qualname)
             continue
         if dependency is not None and not dependency.is_native_candidate:
             diagnostics.append(

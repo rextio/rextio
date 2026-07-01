@@ -120,6 +120,11 @@ class FunctionAnalysis:
     # positionally diverges from CPython), so native callers are kept on fallback.
     has_keyword_only_params: bool = False
     inferred_return_type: str | None = None
+    # The function's annotated return type name (``annotation_name(node.returns)``)
+    # captured for *every* function, including fallback/exempt ones the native
+    # analysis does not otherwise type. Used by the executable delegate mode to
+    # type a delegated call's result.
+    annotated_return_type: str | None = None
     native_target_language: str | None = None
     native_runtime_semantics: bool = False
     is_jit_candidate: bool = False
@@ -142,6 +147,12 @@ class FunctionAnalysis:
     # function of the same name for every function in the module, so a bare call
     # to that name would lower to the wrong callable. Used by the shadow checker.
     module_assigned_names: frozenset[str] = frozenset()
+    # Qualnames of project functions this (direct-native) function calls that live
+    # on the Python fallback and are delegated to the external CPython dispatcher
+    # instead of rejected. Only populated in the Rust-executable "delegate" mode
+    # (see boundary.apply_boundary_checks); empty in every normal build, where a
+    # native->fallback call is rejected (RXT070) as before.
+    delegated_call_targets: set[str] = field(default_factory=set)
 
     @property
     def error_diagnostics(self) -> list[Diagnostic]:

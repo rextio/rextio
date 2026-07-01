@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
+from rextio.ir.types import normalize_type_name
 from rextio.build.cargo_builder import (
     NativeBuildResult,
     build_native_extension_with_cargo,
@@ -22,7 +23,7 @@ from rextio.build.executable_builder import (
     skipped_executable,
 )
 from rextio.build.maturin_builder import build_native_extension_with_maturin
-from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS
+from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 from rextio.codegen.rust.cargo import (
     render_binary_cargo_toml,
     render_cargo_config_toml,
@@ -46,6 +47,8 @@ from rextio.codegen.rust.generator import (
     generate_rust_module,
 )
 from rextio.codegen.rust.generator import RustCodegenError
+from rextio.codegen.rust.subprocess_client import RUNTIME_DIR_SUFFIX
+from rextio.codegen.subprocess_dispatcher import DISPATCHER_STEM, render_dispatcher_script
 from rextio.codegen.python_wrapper.wrapper_gen import render_wrapper_module
 from rextio.fallback.build_result import FallbackBuildResult, cpython_fallback_build_result
 from rextio.fallback.cpython import (
@@ -167,8 +170,19 @@ def build_hybrid_artifact(
     native_jit_enabled: bool = False,
     jit_hot_threshold: int = 25,
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    executable_analysis: ProjectAnalysis | None = None,
+    executable_python: str | None = None,
+    executable_hybrid_runtime: str = "source",
 ) -> BuildResult:
-    """Build the hybrid native+fallback artifact for a project."""
+    """Build the hybrid native+fallback artifact for a project.
+
+    ``executable_analysis`` is the project analysis the ``rust`` executable
+    backend uses; it is analyzed in delegate mode so the entrypoint can call
+    project fallback functions through the external CPython dispatcher. It
+    defaults to ``analysis`` for the other backends, which do not delegate.
+    """
+    if executable_analysis is None:
+        executable_analysis = analysis
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
     plan = create_build_plan(analysis, fallback)
@@ -205,6 +219,9 @@ def build_hybrid_artifact(
         executable_backend,
         nuitka_mode,
         plan,
+        executable_analysis,
+        executable_python,
+        executable_hybrid_runtime,
         build_timeout=build_timeout_seconds,
     )
 
@@ -562,16 +579,26 @@ def _build_executable_artifact(
     executable_backend: str,
     nuitka_mode: str,
     plan: BuildPlan,
+    executable_analysis: ProjectAnalysis,
+    executable_python: str | None,
+    executable_hybrid_runtime: str,
     *,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> ExecutableBuildResult:
     if entrypoint is None:
         return skipped_executable("No executable entrypoint was requested.")
     if executable_backend == "rust":
-        # The native Rust binary is self-contained (no Python), so it does not
-        # depend on the fallback packaging or the PyO3 extension build.
+        # The native Rust binary does not depend on the fallback packaging or the
+        # PyO3 extension build. It uses the delegate-mode analysis so the entry can
+        # call project fallback functions through the external CPython dispatcher.
         return _build_rust_executable_artifact(
-            layout, plan, entrypoint, executable_name, build_timeout=build_timeout
+            layout,
+            executable_analysis,
+            entrypoint,
+            executable_name,
+            executable_python,
+            executable_hybrid_runtime,
+            build_timeout=build_timeout,
         )
     if fallback_build.status != "built":
         return skipped_executable("Fallback packaging failed, so no executable was generated.")
@@ -617,25 +644,136 @@ def _rust_binary_name(executable_name: str | None, entry_qualname: str) -> str:
     return sanitized or "rextio_app"
 
 
+def _delegated_return_types(analysis: ProjectAnalysis) -> dict[str, str]:
+    """Map every delegated callee's qualname to its return type across the project."""
+    by_qualname = {
+        function.qualname: function
+        for module in analysis.modules
+        for function in module.functions
+    }
+    delegated: dict[str, str] = {}
+    for module in analysis.modules:
+        for function in module.functions:
+            for target in function.delegated_call_targets:
+                callee = by_qualname.get(target)
+                if callee is None:
+                    continue
+                return_type = (
+                    callee.signature_return_type
+                    or callee.inferred_return_type
+                    or callee.annotated_return_type
+                )
+                # Normalize any `typing.`-qualified/capitalized alias to the builtin
+                # form the codegen understands. Delegated returns are immutable scalars
+                # only (the boundary check rejects containers), so this is defensive:
+                # it keeps the recorded type in the exact spelling that passed the gate.
+                # Keep it — if a future gate ever recorded an un-normalized alias, this
+                # is what stops it reaching `type_from_string` in codegen as a raw alias.
+                normalized = normalize_type_name(return_type)
+                if normalized is not None:
+                    delegated[target] = normalized
+    return delegated
+
+
+def _write_hybrid_runtime(
+    runtime_dir: Path, analysis: ProjectAnalysis, allowed_qualnames: set[str]
+) -> None:
+    """Write ``<binary>.runtime``: the dispatcher plus the project's Python source.
+
+    The dispatcher imports the project modules by qualname to execute a delegated
+    fallback function, so the original source tree is reconstructed here (with
+    ``__init__.py`` for packages). Requires a Python interpreter (and the project's
+    dependencies) at runtime.
+    """
+    if runtime_dir.exists():
+        shutil.rmtree(runtime_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / f"{DISPATCHER_STEM}.py").write_text(
+        render_dispatcher_script(sorted(allowed_qualnames)), encoding="utf-8"
+    )
+    for module in analysis.modules:
+        parts = module.module_name.split(".") if module.module_name else [Path(module.file_path).stem]
+        source_path = Path(module.file_path)
+        if source_path.name == "__init__.py":
+            target = runtime_dir.joinpath(*parts, "__init__.py")
+        else:
+            target = runtime_dir.joinpath(*parts).with_suffix(".py")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Make every intermediate directory an importable package.
+        package_dir = runtime_dir
+        for part in parts[:-1]:
+            package_dir = package_dir / part
+            init = package_dir / "__init__.py"
+            if not init.exists():
+                init.write_text("", encoding="utf-8")
+        shutil.copy2(source_path, target)
+
+
+def _build_nuitka_dispatcher(
+    runtime_dir: Path, allowed_qualnames: set[str], timeout: float
+) -> str | None:
+    """Compile the dispatcher into a self-contained executable; return an error or None.
+
+    Produces `<runtime>/{stem}` (Nuitka onefile, where ``stem`` is
+    ``DISPATCHER_STEM``) with the delegated fallback modules bundled, so the hybrid
+    binary needs no separate Python install.
+    """
+    nuitka = shutil.which("nuitka")
+    if nuitka is None:
+        return (
+            "Nuitka is not installed but --hybrid-runtime=nuitka was requested. "
+            "Install Nuitka or use --hybrid-runtime=source."
+        )
+    modules = sorted({q.rpartition(".")[0] for q in allowed_qualnames if "." in q})
+    command = [
+        nuitka,
+        "--onefile",
+        "--assume-yes-for-downloads",
+        f"{DISPATCHER_STEM}.py",
+        f"--output-dir={runtime_dir}",
+        f"--output-filename={DISPATCHER_STEM}",
+        "--remove-output",
+        *(f"--include-module={module}" for module in modules),
+    ]
+    completed = run_build_tool(command, cwd=runtime_dir, timeout=timeout)
+    if completed.returncode != 0:
+        return f"Nuitka failed to compile the dispatcher (exit status {completed.returncode})."
+    # Nuitka appends the OS executable extension (`.exe` on Windows), so accept both.
+    if not any((runtime_dir / f"{DISPATCHER_STEM}{suffix}").exists() for suffix in ("", ".exe")):
+        return "Nuitka completed but the compiled dispatcher was not found."
+    return None
+
+
 def _build_rust_executable_artifact(
     layout: ArtifactLayout,
-    plan: BuildPlan,
+    analysis: ProjectAnalysis,
     entrypoint: str,
     executable_name: str | None,
+    executable_python: str | None,
+    hybrid_runtime: str,
     *,
     build_timeout: float,
 ) -> ExecutableBuildResult:
     """Generate and build the native Rust executable for the entrypoint.
 
     The entrypoint must be an accepted direct-native ``def main(argv: list[str])
-    -> int``. Its call graph is fully direct-native by the boundary invariant (an
-    accepted direct-Rust function only calls other direct-Rust functions), so the
-    binary needs no Python runtime.
+    -> int``. Any call it (or its native call graph) makes to a project fallback
+    function is delegated to an external CPython dispatcher shipped next to the
+    binary as ``<binary>.runtime``; a binary with no delegated calls needs no
+    Python runtime at all.
     """
     entry_qualname = _entrypoint_to_qualname(entrypoint)
+    delegated_return_types = _delegated_return_types(analysis)
+    nuitka_dispatcher = hybrid_runtime == "nuitka"
     try:
-        module_ir = lower_project(plan.analysis)
-        main_rs = generate_rust_main_binary(module_ir, entry_qualname)
+        module_ir = lower_project(analysis)
+        main_rs = generate_rust_main_binary(
+            module_ir,
+            entry_qualname,
+            delegated_return_types,
+            executable_python or "python3",
+            nuitka_dispatcher=nuitka_dispatcher,
+        )
     except (RustCodegenError, LoweringError) as exc:
         return ExecutableBuildResult(
             status="failed",
@@ -646,18 +784,36 @@ def _build_rust_executable_artifact(
         )
 
     binary_name = _rust_binary_name(executable_name, entry_qualname)
+    hybrid = bool(delegated_return_types)
     crate_dir = layout.rust_bin_dir
     if crate_dir.exists():
         shutil.rmtree(crate_dir)
     layout.rust_bin_src_dir.mkdir(parents=True, exist_ok=True)
     (crate_dir / "Cargo.toml").write_text(
-        render_binary_cargo_toml("rextio_generated_bin", binary_name), encoding="utf-8"
+        render_binary_cargo_toml("rextio_generated_bin", binary_name, hybrid=hybrid),
+        encoding="utf-8",
     )
     (layout.rust_bin_src_dir / "main.rs").write_text(main_rs, encoding="utf-8")
 
-    return build_rust_executable(
+    result = build_rust_executable(
         crate_dir, layout.dist_dir, binary_name, entrypoint, timeout=build_timeout
     )
+    if result.status == "built" and hybrid:
+        # Ship the dispatcher + project source as `<binary>.runtime` next to the
+        # binary so the client can launch CPython for delegated calls.
+        runtime_dir = layout.dist_dir / f"{binary_name}{RUNTIME_DIR_SUFFIX}"
+        _write_hybrid_runtime(runtime_dir, analysis, set(delegated_return_types))
+        if nuitka_dispatcher:
+            error = _build_nuitka_dispatcher(runtime_dir, set(delegated_return_types), build_timeout)
+            if error is not None:
+                return ExecutableBuildResult(
+                    status="failed",
+                    path=None,
+                    message=f"RXT060 Executable build failed while packaging the dispatcher. Cause: {error}",
+                    entrypoint=entrypoint,
+                    backend="rust",
+                )
+    return result
 
 
 def _build_native_with_selected_tool(

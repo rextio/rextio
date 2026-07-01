@@ -86,6 +86,14 @@ class ExecutableConfig:
     name: str | None = None
     backend: str = "zipapp"
     nuitka_mode: str = "standalone"
+    # The interpreter the `rust` backend's binary launches for delegated CPython
+    # calls (bare name on PATH, absolute path, or a relative path resolved against
+    # `<binary>.runtime`). None -> the built-in default (`python3`).
+    python: str | None = None
+    # How the `rust` backend ships the delegated Python: "source" (dispatcher.py +
+    # project source, run with `python`) or "nuitka" (a self-contained compiled
+    # dispatcher executable, so no separate Python install is needed at runtime).
+    hybrid_runtime: str = "source"
 
 
 @dataclass(frozen=True)

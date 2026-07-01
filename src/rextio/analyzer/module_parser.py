@@ -284,6 +284,9 @@ def _collect_module_functions(
             calls=calls,
             inferred_arg_types=dict(stub_signature.arg_types),
             inferred_return_type=stub_signature.return_type,
+            annotated_return_type=(
+                annotation_name(node.returns) if node.returns is not None else None
+            ),
             native_target_language=_marker_target_language(marker, target_language),
             imports=dict(module.imports),
             logger_names=module.logger_names,

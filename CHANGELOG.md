@@ -33,12 +33,35 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Zipapp executable artifact generation with `rextio build --entrypoint=module:function`.
 - Nuitka standalone/onefile executable artifact generation with `--executable-backend=nuitka`.
 - Native Rust binary executable generation with `--executable-backend=rust`: a
-  standalone native executable (no Python runtime) whose `main` calls a
-  direct-native `def main(argv: list[str]) -> int` entrypoint, mirrors `sys.argv`,
-  uses the returned `int` as the process exit code, and prints a returned error
-  CPython-style (`TypeName: message`) to stderr. The crate-mode `RextioError` now
-  carries the CPython exception type name so these binaries emit Python-style
-  diagnostics.
+  native executable whose `main` calls a direct-native `def main(argv: list[str])
+  -> int` entrypoint, mirrors `sys.argv`, uses the returned `int` as the process
+  exit code, and prints a returned error CPython-style (`TypeName: message`) to
+  stderr. The crate-mode `RextioError` now carries the CPython exception type name
+  so these binaries emit Python-style diagnostics.
+- Subprocess hybrid for the Rust executable: a call the entrypoint makes to a
+  project function that stays on the Python fallback is delegated to an external
+  CPython process (a generated dispatcher + the project source shipped as
+  `dist/<binary>.runtime/`, driven over a JSON stdio protocol) instead of being
+  rejected, so hard-to-compile-to-Rust logic can be "left as Python." The
+  delegated function runs real CPython (result is CPython-equivalent, exceptions
+  forwarded CPython-style). Delegated-call arguments and results must both be
+  immutable scalars (`int`/`float`/`bool`/`str`/`None`) — a mutable container
+  (`list`/`dict`/`set`) is not delegated in either direction because it crosses the
+  wire by value, which severs the aliasing CPython preserves (a mutated argument or
+  a mutated aliased return would diverge silently); non-finite floats are rejected
+  rather than silently dropped. A delegated function's stdout/stderr is redirected
+  to the binary's stderr so it cannot corrupt the wire protocol, the dispatcher
+  survives a delegated `SystemExit`/`KeyboardInterrupt` or non-serializable result
+  instead of dying, and it runs without `rextio` installed (a no-op decorator stub
+  is supplied when absent). RXT080 runtime-shim functions are not delegated. A
+  hybrid binary needs a Python interpreter at runtime; a fully-direct-native binary
+  remains standalone. `--executable-python` (`[executable] python`,
+  `REXTIO_EXECUTABLE_PYTHON`) pins the interpreter the binary launches (bare name,
+  absolute path, or a path relative to `<binary>.runtime` to bundle one).
+  `--hybrid-runtime=nuitka` (`[executable] hybrid_runtime`, `REXTIO_HYBRID_RUNTIME`)
+  instead ships the delegated Python as a self-contained Nuitka-compiled dispatcher
+  executable, so no separate Python install is needed at runtime (requires Nuitka
+  at build time).
 - Mirrored build and analysis settings across CLI parameters, environment variables, and `rextio.toml`.
 - Target planning metadata for future Rust/Mojo/Julia backends and installed package plugins.
 - Experimental opt-in native-side Cranelift JIT for narrow scalar helper
