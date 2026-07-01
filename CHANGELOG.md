@@ -46,7 +46,13 @@ Initial public MVP for Rextio as a local hybrid build tool.
   delegated function runs real CPython (result is CPython-equivalent, exceptions
   forwarded CPython-style); wire types are scalars/`None`/`list` of those. A hybrid
   binary needs a Python interpreter at runtime; a fully-direct-native binary
-  remains standalone.
+  remains standalone. `--executable-python` (`[executable] python`,
+  `REXTIO_EXECUTABLE_PYTHON`) pins the interpreter the binary launches (bare name,
+  absolute path, or a path relative to `<binary>.runtime` to bundle one).
+  `--hybrid-runtime=nuitka` (`[executable] hybrid_runtime`, `REXTIO_HYBRID_RUNTIME`)
+  instead ships the delegated Python as a self-contained Nuitka-compiled dispatcher
+  executable, so no separate Python install is needed at runtime (requires Nuitka
+  at build time).
 - Mirrored build and analysis settings across CLI parameters, environment variables, and `rextio.toml`.
 - Target planning metadata for future Rust/Mojo/Julia backends and installed package plugins.
 - Experimental opt-in native-side Cranelift JIT for narrow scalar helper

@@ -427,6 +427,20 @@ boundary. A binary whose entry graph is fully direct-native has no runtime
 directory and no Python dependency. Embedding libpython (in-process) is out of
 scope; delegation is process-external only.
 
+Two options control the interpreter side:
+
+- `--executable-python` (`[executable] python`, `REXTIO_EXECUTABLE_PYTHON`) sets
+  the interpreter the binary launches — a bare name resolved on `PATH`, an
+  absolute path, or a path relative to `<binary>.runtime` (to bundle a specific
+  interpreter). `REXTIO_PYTHON` still overrides it at run time. Use this to keep
+  the binary off the system's default `python3`.
+- `--hybrid-runtime` (`[executable] hybrid_runtime`, `REXTIO_HYBRID_RUNTIME`;
+  `source` or `nuitka`, default `source`) chooses how the Python is shipped.
+  `nuitka` compiles the dispatcher into a self-contained onefile executable
+  (`<binary>.runtime/dispatcher`, with the delegated fallback modules bundled),
+  so the hybrid binary needs no separate Python install at runtime; the Rust
+  binary launches that executable directly. It requires Nuitka at build time.
+
 `native_backend = "mojo"` and `native_backend = "julia"` are accepted only as
 target-planning values. They allow Rextio to record target version,
 target-specific build options, and matching plugin metadata, but 0.1.0 alpha

@@ -340,6 +340,12 @@ be left as Python. Such a hybrid binary needs a Python interpreter at runtime; a
 binary whose call graph is fully direct-native is standalone with no Python
 dependency.
 
+`--executable-python` pins the interpreter the binary launches (a name on `PATH`,
+an absolute path, or a path relative to `<binary>.runtime` to bundle one).
+`--hybrid-runtime=nuitka` instead compiles the delegated Python into a
+self-contained dispatcher executable shipped in the runtime directory, so the
+hybrid binary needs no separate Python install (requires Nuitka at build time).
+
 Build and analysis settings resolve in this order:
 
 ```text
