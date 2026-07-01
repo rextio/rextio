@@ -915,7 +915,7 @@ def negate(a: int) -> int:
 
     assert "return Ok(__rextio_checked_rem(a, b)?);" in source
     assert "return Ok(__rextio_checked_neg(a)?);" in source
-    assert 'RextioError::new("integer modulo by zero")' in source
+    assert 'RextioError::new("ZeroDivisionError", "integer modulo by zero")' in source
     assert "fn __rextio_checked_neg(a: i64) -> Result<i64, RextioError> {" in source
 
 
@@ -1035,7 +1035,7 @@ def divide(a: float, b: float) -> float:
     source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
 
     assert "return Ok(__rextio_checked_fdiv(a, b)?);" in source
-    assert 'RextioError::new("float division by zero")' in source
+    assert 'RextioError::new("ZeroDivisionError", "float division by zero")' in source
 
 
 def test_math_floor_ceil_trunc_use_checked_conversion(tmp_path: Path) -> None:
@@ -1355,7 +1355,7 @@ def at(xs: list[int], i: int) -> int:
     assert "checked_add(" in source
     assert (
         ", _ => None })"
-        '.ok_or_else(|| RextioError::new("list index out of range"))? }'
+        '.ok_or_else(|| RextioError::new("IndexError", "list index out of range"))? }'
     ) in source
     assert "pyo3" not in source
 
@@ -1483,3 +1483,29 @@ def over_list(xs: list[int]) -> int:
 
     assert "0..(s.chars().count() as i64)" in source
     assert "0..(xs.len() as i64)" in source
+
+
+def test_crate_mode_rextio_error_carries_python_exception_kind(tmp_path: Path) -> None:
+    # Q3: a crate-mode RextioError carries the CPython exception type name so a
+    # consumer (e.g. a Rust-main binary) can print a Python-style `TypeName: msg`.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def div(a: int, b: int) -> int:
+    return a % b
+
+@rextio.native
+def at(xs: list[int], i: int) -> int:
+    return xs[i]
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
+
+    assert "kind: String," in source
+    assert 'write!(f, "{}: {}", self.kind, self.message)' in source
+    assert 'RextioError::new("ZeroDivisionError", "integer modulo by zero")' in source
+    assert 'RextioError::new("IndexError", "list index out of range")' in source

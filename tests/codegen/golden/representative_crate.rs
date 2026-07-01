@@ -9,12 +9,19 @@ use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RextioError {
+    // The CPython exception type name this error corresponds to (e.g.
+    // "OverflowError"), so a consumer can render a Python-style message.
+    kind: String,
     message: String,
 }
 
 impl RextioError {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+    pub fn new(kind: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { kind: kind.into(), message: message.into() }
+    }
+
+    pub fn kind(&self) -> &str {
+        &self.kind
     }
 
     pub fn message(&self) -> &str {
@@ -24,22 +31,23 @@ impl RextioError {
 
 impl std::fmt::Display for RextioError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
+        // CPython-style `TypeName: message`.
+        write!(f, "{}: {}", self.kind, self.message)
     }
 }
 
 impl std::error::Error for RextioError {}
 
 fn __rextio_checked_add(a: i64, b: i64) -> Result<i64, RextioError> {
-    a.checked_add(b).ok_or_else(|| RextioError::new("integer overflow"))
+    a.checked_add(b).ok_or_else(|| RextioError::new("OverflowError", "integer overflow"))
 }
 
 fn __rextio_checked_mul(a: i64, b: i64) -> Result<i64, RextioError> {
-    a.checked_mul(b).ok_or_else(|| RextioError::new("integer overflow"))
+    a.checked_mul(b).ok_or_else(|| RextioError::new("OverflowError", "integer overflow"))
 }
 
 pub fn app__at(xs: Vec<i64>, i: i64) -> Result<i64, RextioError> {
-    return Ok({ let __rextio_seq_1 = &xs; let __rextio_len_3 = __rextio_seq_1.len() as i64; let __rextio_index_2 = (i) as i64; let __rextio_index_2 = if __rextio_index_2 < 0 { __rextio_index_2.checked_add(__rextio_len_3) } else { Some(__rextio_index_2) }; (match __rextio_index_2 { Some(__rextio_bound_4) if __rextio_bound_4 >= 0 && __rextio_bound_4 < __rextio_len_3 => __rextio_seq_1.get(__rextio_bound_4 as usize).cloned(), _ => None }).ok_or_else(|| RextioError::new("list index out of range"))? });
+    return Ok({ let __rextio_seq_1 = &xs; let __rextio_len_3 = __rextio_seq_1.len() as i64; let __rextio_index_2 = (i) as i64; let __rextio_index_2 = if __rextio_index_2 < 0 { __rextio_index_2.checked_add(__rextio_len_3) } else { Some(__rextio_index_2) }; (match __rextio_index_2 { Some(__rextio_bound_4) if __rextio_bound_4 >= 0 && __rextio_bound_4 < __rextio_len_3 => __rextio_seq_1.get(__rextio_bound_4 as usize).cloned(), _ => None }).ok_or_else(|| RextioError::new("IndexError", "list index out of range"))? });
 }
 
 pub fn app__classify(n: i64) -> Result<String, RextioError> {
@@ -63,7 +71,7 @@ pub fn app__doubled(xs: Vec<i64>) -> Result<Vec<i64>, RextioError> {
 }
 
 pub fn app__lookup(scores: HashMap<String, i64>, key: String) -> Result<i64, RextioError> {
-    return Ok({ let __rextio_map_1 = &scores; let __rextio_key_2 = key; __rextio_map_1.get(&__rextio_key_2).cloned().ok_or_else(|| RextioError::new(format!("key not found: {:?}", __rextio_key_2)))? });
+    return Ok({ let __rextio_map_1 = &scores; let __rextio_key_2 = key; __rextio_map_1.get(&__rextio_key_2).cloned().ok_or_else(|| RextioError::new("KeyError", format!("key not found: {:?}", __rextio_key_2)))? });
 }
 
 pub fn app__total(xs: Vec<i64>) -> Result<i64, RextioError> {
