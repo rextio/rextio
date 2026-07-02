@@ -327,3 +327,33 @@ def test_nuitka_standalone_without_binary_is_a_failed_build(
 
     assert result.status == "failed"
     assert "not found" in result.message
+
+
+def test_pre_2_nuitka_fails_the_executable_build(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # The executable path enforces the same Nuitka >= 2.0 floor as the
+    # fallback path, before any real compilation is attempted.
+    python_dir = _python_app(tmp_path)
+    bin_dir = tmp_path / "old-nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then echo 1.9.7; exit 0; fi\n',
+        encoding="utf-8",
+    )
+    nuitka.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    result = build_nuitka_executable(
+        python_dir,
+        tmp_path / "dist",
+        entrypoint="demo_app.cli:main",
+        executable_name="demo-tool",
+        mode="standalone",
+    )
+
+    assert result.status == "failed"
+    assert "Nuitka 1.9.7 is too old" in (result.message or "")
+    assert ">= 2.0" in (result.message or "")

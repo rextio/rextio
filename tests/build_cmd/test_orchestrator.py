@@ -1466,3 +1466,29 @@ def test_build_rejects_pre_2_nuitka_before_analysis(
     assert exit_code == 1
     assert "Nuitka 1.9.7 is too old" in captured.err
     assert not (tmp_path / ".rextio").exists()
+
+
+def test_pre_2_nuitka_fails_the_hybrid_dispatcher(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # The hybrid-runtime dispatcher path enforces the Nuitka >= 2.0 floor too.
+    from rextio.build.orchestrator import _build_nuitka_dispatcher
+
+    bin_dir = tmp_path / "old-nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then echo 1.9.7; exit 0; fi\n',
+        encoding="utf-8",
+    )
+    nuitka.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+
+    error = _build_nuitka_dispatcher(runtime_dir, {"app.f"}, timeout=30.0)
+
+    assert error is not None
+    assert "Nuitka 1.9.7 is too old" in error
+    assert ">= 2.0" in error
