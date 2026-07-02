@@ -66,10 +66,11 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
             continue
         if name == "repr_str":
             # CPython str repr (container printing, %r, list.index
-            # messages): single-quoted unless
-            # the string contains a single quote and no double quote; escapes
-            # backslash, the chosen quote, and newline/carriage-return/tab.
-            # Other control characters pass through (adequate for messages).
+            # messages): single-quoted unless the string contains a single
+            # quote and no double quote; escapes backslash, the chosen quote,
+            # newline/carriage-return/tab, and - as \xNN - the remaining C0
+            # controls, DEL, the C1 range, and U+00A0. Non-printable
+            # characters ABOVE U+00A0 pass through (documented limitation).
             lines.extend(
                 [
                     'fn __rextio_repr_str(value: &str) -> String {',

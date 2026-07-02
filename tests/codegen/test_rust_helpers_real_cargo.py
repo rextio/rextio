@@ -82,8 +82,15 @@ def test_text_helpers_match_cpython(tmp_path: Path) -> None:
         ("sep\u2028next", "'sep\u2028next'"),
     ]
     fixed6_cases = [
-        1.5, 0.0, -0.0, 1e10, -2.25, 1e-8, 2.5e-7, 3.5e-7, 0.1234565,
-        0.1234575, 1.0000005, 123456.4999995, math.nan, math.inf, -math.inf,
+        1.5, 0.0, -0.0, 1e10, -2.25, 1e-8,
+        # Near-boundary values (not exact binary ties, but adjacent to the
+        # 6th-decimal rounding edge):
+        2.5e-7, 3.5e-7, 0.1234565, 0.1234575, 1.0000005, 123456.4999995,
+        # EXACT binary ties: odd multiples of 2^-7 terminate at the 7th
+        # decimal digit with a literal 5, so %f's 6-decimal rounding hits a
+        # true round-half-even case (probed: CPython and Rust agree).
+        0.0078125, 0.0234375, 0.0390625, 0.1171875,
+        math.nan, math.inf, -math.inf,
     ]
 
     repr_float_rows = "\n".join(
