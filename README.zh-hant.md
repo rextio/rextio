@@ -45,7 +45,7 @@ REXTIO_DISABLE_NATIVE=1
 | CPython | >= 3.11, < 3.14 | 分析器使用建置直譯器的 `ast`；產生的擴充固定 PyO3 0.22（最高支援 CPython 3.13）。wheel 帶有建置直譯器 minor 版本標籤。 |
 | Rust toolchain | MSRV 1.63（在最新 stable 上驗證） | 產生的 crate 使用 edition 2021 + PyO3 0.22。請透過 [rustup](https://rustup.rs) 安裝。 |
 | Nuitka（可選） | >= 2.0 | 僅用於 `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka`；更舊版本會被建置 preflight 拒絕。 |
-| Numba（可選，experimental） | 隨直譯器: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61 | Rextio 只識別 Numba 裝飾器；該套件是使用者專案的執行時依賴，而非 Rextio 的依賴。 |
+| Numba（可選，experimental） | 隨直譯器: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61 | Rextio 只識別 Numba 裝飾器；該套件是使用者專案的執行時依賴，而非 Rextio 的依賴。下限遵循 [Numba 版本支援表](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information)。 |
 
 ## 快速範例
 

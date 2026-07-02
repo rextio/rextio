@@ -59,9 +59,9 @@ and uses it whenever native is disabled or unavailable.
 | Component | Version | Notes |
 | --- | --- | --- |
 | CPython | >= 3.11, < 3.14 | The analyzer uses the build interpreter's `ast`; generated extensions pin PyO3 0.22, which supports up to CPython 3.13. Wheels are tagged for the build interpreter's minor version. |
-| Rust toolchain | MSRV 1.63 (tested on recent stable) | Generated crates use edition 2021 and PyO3 0.22. |
+| Rust toolchain | MSRV 1.63 (tested on recent stable) | Generated crates use edition 2021 and PyO3 0.22. Install via [rustup](https://rustup.rs). |
 | Nuitka (optional) | >= 2.0 | Only for the Nuitka fallback, Nuitka executables, and the hybrid runtime; the build preflight rejects older installs. |
-| Numba (optional, experimental) | matches your interpreter: >= 0.57 (3.11), >= 0.59 (3.12), >= 0.61 (3.13) | Rextio only recognizes Numba decorators; the package is a runtime dependency of the user project, not of Rextio. |
+| Numba (optional, experimental) | matches your interpreter: >= 0.57 (3.11), >= 0.59 (3.12), >= 0.61 (3.13) | Rextio only recognizes Numba decorators; the package is a runtime dependency of the user project, not of Rextio. Floors follow [Numba's version support table](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information). |
 
 ## Feature Stability
 
