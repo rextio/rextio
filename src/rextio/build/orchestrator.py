@@ -170,7 +170,6 @@ def build_hybrid_artifact(
     rust_importable: bool = False,
     rust_crate_name: str = "rextio_generated_rust",
     native_jit_enabled: bool = False,
-    jit_hot_threshold: int = 25,
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     executable_analysis: ProjectAnalysis | None = None,
     executable_python: str | None = None,
@@ -270,7 +269,6 @@ def generate_source_artifact(
     rust_importable: bool = False,
     rust_crate_name: str = "rextio_generated_rust",
     native_jit_enabled: bool = False,
-    jit_hot_threshold: int = 25,
 ) -> GenerateResult:
     """Generate native and Python source artifacts without compiling."""
     target_plan = target_plan or default_target_plan()

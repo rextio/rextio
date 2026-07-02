@@ -149,7 +149,6 @@ def lower_function(
             body=BlockIR(statements=[]),
             native_runtime_semantics=True,
             native_jit=native_jit,
-            jit_hot_threshold=function.jit_hot_threshold,
             runtime_fallback_module=_runtime_fallback_module(module),
             runtime_attr_path=(runtime_original_name(function.qualname),),
         )
@@ -166,7 +165,6 @@ def lower_function(
         return_type=_return_type(function, node),
         body=lower_block(node.body, module, resolver),
         native_jit=native_jit,
-        jit_hot_threshold=function.jit_hot_threshold,
     )
 
 

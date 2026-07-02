@@ -36,7 +36,6 @@ def parse_module(
     imports_config: ImportsConfig | None = None,
     active_plugins: Iterable[RextioPlugin] = (),
     native_jit_enabled: bool = False,
-    jit_hot_threshold: int = 25,
     project_return_types: dict[str, str] | None = None,
 ) -> ModuleAnalysis:
     """Parse a module file into a ModuleAnalysis (functions, imports, top level)."""
@@ -79,7 +78,6 @@ def parse_module(
         stub_signatures,
         target_language,
         native_jit_enabled,
-        jit_hot_threshold,
         project_return_types or {},
     )
     module.functions.extend(_collect_native_methods(tree, module, target_language))
@@ -231,7 +229,6 @@ def _collect_module_functions(
     stub_signatures: dict[str, StubSignature],
     target_language: str,
     native_jit_enabled: bool,
-    jit_hot_threshold: int,
     project_return_types: dict[str, str],
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
@@ -318,7 +315,6 @@ def _collect_module_functions(
             node,
             function,
             target_language,
-            jit_hot_threshold,
             return_types,
             module_function_names,
         ):
@@ -343,7 +339,6 @@ def _mark_jit_candidate(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
     target_language: str,
-    jit_hot_threshold: int,
     return_types: dict[str, str] | None = None,
     module_function_names: set[str] | None = None,
 ) -> bool:
@@ -380,7 +375,6 @@ def _mark_jit_candidate(
     function.inferred_return_type = probe.inferred_return_type
     function.native_target_language = target_language
     function.is_jit_candidate = True
-    function.jit_hot_threshold = jit_hot_threshold
     function.jit_reason = reason
     return True
 

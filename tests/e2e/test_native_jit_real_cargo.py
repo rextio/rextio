@@ -27,7 +27,6 @@ native_marker = "decorator"
 
 [jit]
 enabled = true
-hot_threshold = 1
 """,
         encoding="utf-8",
     )

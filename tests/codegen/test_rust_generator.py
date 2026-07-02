@@ -71,7 +71,6 @@ def compute(x: float) -> float:
         tmp_path,
         native_marker="decorator",
         native_jit_enabled=True,
-        jit_hot_threshold=2,
     )
     source = generate_rust_module(lower_project(analysis, include_jit=True))
 
@@ -108,7 +107,6 @@ def compute(x: int) -> int:
         tmp_path,
         native_marker="decorator",
         native_jit_enabled=True,
-        jit_hot_threshold=2,
     )
     source = generate_rust_module(lower_project(analysis, include_jit=True))
 
@@ -139,7 +137,7 @@ def compute(x: float) -> float:
     )
 
     analysis = analyze_project(
-        tmp_path, native_marker="decorator", native_jit_enabled=True, jit_hot_threshold=2
+        tmp_path, native_marker="decorator", native_jit_enabled=True
     )
     source = generate_rust_module(lower_project(analysis, include_jit=True))
 

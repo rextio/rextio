@@ -98,7 +98,6 @@ def test_rust_main_executable_with_jit_config_delegates_unmarked_helper(
         """
 [jit]
 enabled = true
-hot_threshold = 2
 
 [policy]
 native_marker = "decorator"

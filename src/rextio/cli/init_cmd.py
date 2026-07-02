@@ -47,8 +47,6 @@ default_external_policy = "fallback"
 
 [jit]
 enabled = false
-backend = "cranelift"
-hot_threshold = 25
 
 [executable]
 # entrypoint = "myapp.cli:main"

@@ -137,7 +137,6 @@ def compute(x: float) -> float:
             str(tmp_path),
             "--fallback=cpython",
             "--jit",
-            "--jit-hot-threshold=2",
         ]
     )
 
@@ -150,16 +149,16 @@ def compute(x: float) -> float:
     lib_rs = (rust_dir / "src" / "lib.rs").read_text(encoding="utf-8")
 
     assert exit_code == 0
-    assert "experimental JIT: enabled" in captured.out
-    assert "JIT backend: cranelift" in captured.out
-    assert "JIT hot threshold: 2" in captured.out
-    assert "experimental JIT candidates: 1" in captured.out
+    assert "experimental helper embedding: enabled" in captured.out
+    assert "embedding candidates: 1" in captured.out
     assert report["accepted_native_count"] == 1
     assert report["rejected_native_count"] == 0
     assert report["jit_candidate_count"] == 1
-    assert "cranelift-jit" in cargo_toml
-    assert "static __rextio_jit_app__helper_COMPILED" in lib_rs
-    assert "if calls >= 2" in lib_rs
+    # The embedded helper compiles as a plain internal native function: no
+    # Cranelift dependency or machinery, callable from native, not exported.
+    assert "cranelift" not in cargo_toml
+    assert "cranelift" not in lib_rs
+    assert "fn app__helper(" in lib_rs
     assert "wrap_pyfunction!(app__compute" in lib_rs
     assert "wrap_pyfunction!(app__helper" not in lib_rs
 
@@ -171,7 +170,6 @@ def test_build_no_jit_cli_option_overrides_environment(
     fake_cargo: Path,
 ) -> None:
     monkeypatch.setenv("REXTIO_JIT", "true")
-    monkeypatch.setenv("REXTIO_JIT_HOT_THRESHOLD", "2")
     (tmp_path / "rextio.toml").write_text(
         """
 [policy]
@@ -208,11 +206,11 @@ def compute(x: int) -> int:
     ).read_text(encoding="utf-8")
 
     assert exit_code == 0
-    assert "experimental JIT: disabled" in captured.out
+    assert "experimental helper embedding: disabled" in captured.out
     assert report["accepted_native_count"] == 1
     assert report["rejected_native_count"] == 1
     assert report["jit_candidate_count"] == 0
-    assert "cranelift-jit" not in cargo_toml
+    assert "cranelift" not in cargo_toml
 
 
 def test_rust_executable_delegate_analysis_disables_jit(

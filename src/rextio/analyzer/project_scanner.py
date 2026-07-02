@@ -88,7 +88,6 @@ def analyze_project(
     imports_config: ImportsConfig | None = None,
     active_plugins: Iterable[RextioPlugin] = (),
     native_jit_enabled: bool = False,
-    jit_hot_threshold: int = 25,
     delegate_fallback: bool = False,
 ) -> ProjectAnalysis:
     """Analyze a project directory and return its ProjectAnalysis.
@@ -115,7 +114,6 @@ def analyze_project(
             imports_config=imports_config,
             active_plugins=active_plugins,
             native_jit_enabled=native_jit_enabled,
-            jit_hot_threshold=jit_hot_threshold,
             project_return_types=project_return_types,
         )
         for path in files

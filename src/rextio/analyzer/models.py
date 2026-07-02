@@ -128,7 +128,6 @@ class FunctionAnalysis:
     native_target_language: str | None = None
     native_runtime_semantics: bool = False
     is_jit_candidate: bool = False
-    jit_hot_threshold: int | None = None
     jit_reason: str | None = None
     # Set when a function would otherwise be JIT-eligible but was kept on the
     # checked native path (e.g. overflow-prone int arithmetic the Cranelift path
@@ -206,7 +205,6 @@ class FunctionAnalysis:
             "native_target_language": self.native_target_language,
             "native_runtime_semantics": self.native_runtime_semantics,
             "is_jit_candidate": self.is_jit_candidate,
-            "jit_hot_threshold": self.jit_hot_threshold,
             "jit_reason": self.jit_reason,
             "inferred_arg_types": dict(sorted(self.inferred_arg_types.items())),
             "inferred_return_type": self.inferred_return_type,

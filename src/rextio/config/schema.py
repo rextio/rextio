@@ -71,11 +71,9 @@ class ImportsConfig:
 
 @dataclass(frozen=True)
 class JitConfig:
-    """The [jit] configuration section."""
+    """The [jit] configuration section (experimental scalar-helper embedding)."""
 
     enabled: bool = False
-    backend: str = "cranelift"
-    hot_threshold: int = 25
 
 
 @dataclass(frozen=True)

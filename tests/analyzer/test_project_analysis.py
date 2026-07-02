@@ -1176,7 +1176,6 @@ def helper(x: float) -> float:
         tmp_path,
         native_marker="decorator",
         native_jit_enabled=True,
-        jit_hot_threshold=2,
     )
 
     assert analysis.jit_candidates  # the helper is a JIT candidate
@@ -3414,12 +3413,10 @@ def compute(x: float) -> float:
         tmp_path,
         native_marker="decorator",
         native_jit_enabled=True,
-        jit_hot_threshold=2,
     )
 
     assert [function.qualname for function in analysis.accepted_native_functions] == ["app.compute"]
     assert [function.qualname for function in analysis.jit_candidates] == ["app.helper"]
-    assert analysis.jit_candidates[0].jit_hot_threshold == 2
     assert "embedded" in (analysis.jit_candidates[0].jit_reason or "")
 
 
@@ -3441,7 +3438,6 @@ def helper(x: int) -> int:
         tmp_path,
         native_marker="decorator",
         native_jit_enabled=True,
-        jit_hot_threshold=2,
     )
 
     assert [function.qualname for function in analysis.jit_candidates] == ["app.helper"]
@@ -3678,7 +3674,6 @@ def compute(a: float, b: float) -> float:
         tmp_path,
         native_marker="decorator",
         native_jit_enabled=True,
-        jit_hot_threshold=2,
     )
 
     # Both are embedding-eligible: embedded helpers lower through the checked

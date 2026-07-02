@@ -39,7 +39,7 @@ CONFIG_KEYS = {
     "target": {"version", "build_options"},
     "plugins": {"enabled"},
     "imports": {"default_external_policy", "packages"},
-    "jit": {"enabled", "backend", "hot_threshold"},
+    "jit": {"enabled"},
     "executable": {"entrypoint", "name", "backend", "nuitka_mode", "python", "hybrid_runtime"},
     "policy": {
         "native_marker",
@@ -67,8 +67,6 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY": ("imports", "default_external_policy", "string"),
     "REXTIO_IMPORTS_PACKAGES": ("imports", "packages", "package_policy_map"),
     "REXTIO_JIT": ("jit", "enabled", "boolean"),
-    "REXTIO_JIT_BACKEND": ("jit", "backend", "string"),
-    "REXTIO_JIT_HOT_THRESHOLD": ("jit", "hot_threshold", "integer"),
     "REXTIO_EXECUTABLE_ENTRYPOINT": ("executable", "entrypoint", "optional_string"),
     "REXTIO_EXECUTABLE_NAME": ("executable", "name", "optional_string"),
     "REXTIO_EXECUTABLE_BACKEND": ("executable", "backend", "string"),
@@ -227,8 +225,6 @@ def _validate_config_values(
     _require_string("imports", "default_external_policy", imports["default_external_policy"])
     _require_package_policy_map("imports", "packages", imports["packages"])
     _require_bool("jit", "enabled", jit["enabled"])
-    _require_string("jit", "backend", jit["backend"])
-    _require_non_negative_int("jit", "hot_threshold", jit["hot_threshold"])
     _require_optional_string("executable", "entrypoint", executable["entrypoint"])
     _require_optional_string("executable", "name", executable["name"])
     _require_optional_string("executable", "python", executable["python"])
@@ -252,7 +248,6 @@ def _validate_config_values(
         imports["default_external_policy"],
         {"analyze", "fallback", "try-native"},
     )
-    _require_value("jit", "backend", jit["backend"], {"cranelift"})
     _require_value("executable", "backend", executable["backend"], {"zipapp", "nuitka", "rust"})
     _require_value("executable", "nuitka_mode", executable["nuitka_mode"], {"standalone", "onefile"})
     _require_value("policy", "native_marker", policy["native_marker"], {"auto", "decorator"})
