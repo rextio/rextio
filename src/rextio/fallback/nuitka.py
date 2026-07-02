@@ -43,7 +43,9 @@ def build_nuitka_fallback(
     targets, accelerated = _nuitka_module_targets(python_dir)
     skipped_note = ""
     if accelerated:
-        names = ", ".join(sorted(path.relative_to(python_dir).as_posix() for path in accelerated))
+        names = ", ".join(
+            sorted(_display_module_path(path.relative_to(python_dir)) for path in accelerated)
+        )
         skipped_note = (
             f" Kept as plain Python for external accelerators (Nuitka-compiled "
             f"functions expose no bytecode, which tools like Numba require): {names}."
@@ -97,6 +99,21 @@ def build_nuitka_fallback(
     )
 
 
+def _display_module_path(relative: Path) -> str:
+    """Present a generated `_fallback_<stem>.py` under its source module name.
+
+    A mixed module (native + accelerated in one source file) generates a
+    public wrapper plus a `_fallback_<stem>.py` copy carrying the accelerated
+    code; the internal filename would leak generated-layout details into
+    user-facing messages.
+    """
+    name = relative.name
+    if name.startswith("_fallback_") and name.endswith(".py"):
+        original = f"{name[len('_fallback_'):-len('.py')]}.py"
+        return (relative.parent / original).as_posix() + " (fallback copy)"
+    return relative.as_posix()
+
+
 def _nuitka_module_targets(python_dir: Path) -> tuple[list[Path], list[Path]]:
     """Return (modules to compile, modules kept plain for external accelerators).
 
@@ -113,14 +130,17 @@ def _nuitka_module_targets(python_dir: Path) -> tuple[list[Path], list[Path]]:
         relative = path.relative_to(python_dir)
         if relative.parts and relative.parts[0] == "rextio":
             continue
-        if path.name == "__init__.py":
-            continue
         try:
             source = path.read_text(encoding="utf-8")
         except OSError:
             source = ""
         if source and external_accelerator_for_source(source, project_modules) is not None:
+            # Report accelerated `__init__.py` too: it was never a compile
+            # target (packages stay plain), but the user should see it in the
+            # kept-plain list like any other accelerated module.
             accelerated.append(path)
+            continue
+        if path.name == "__init__.py":
             continue
         targets.append(path)
     return targets, accelerated

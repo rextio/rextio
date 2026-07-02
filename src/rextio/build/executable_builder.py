@@ -380,7 +380,12 @@ def _externally_accelerated_modules(python_dir: Path) -> list[str]:
         except OSError:
             continue
         if external_accelerator_for_source(source, project_modules) is not None:
-            found.append(relative.as_posix())
+            name = relative.name
+            if name.startswith("_fallback_") and name.endswith(".py"):
+                original = f"{name[len('_fallback_'):-len('.py')]}.py"
+                found.append((relative.parent / original).as_posix() + " (fallback copy)")
+            else:
+                found.append(relative.as_posix())
     return found
 
 

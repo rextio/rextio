@@ -4,6 +4,41 @@
 
 Initial public MVP for Rextio as a local hybrid build tool.
 
+### Changed (council review round, 2026-07-02)
+
+- `print`/`logging` of `bool` and `float` are now textually CPython-exact
+  (`True`/`False`; shortest correctly-rounded float repr with CPython's
+  positional/scientific thresholds, `nan`/`inf`/`-0.0` spellings, and signed
+  two-digit exponents). Logging `%f` renders fixed six decimals and `%d` of a
+  float truncates through the guarded conversion. Both were previously
+  documented divergences; the docs list shrinks accordingly.
+- Iterating a `set` in a native function is now rejected to the Python
+  fallback with a dedicated diagnostic (Rust hash-set iteration order is
+  per-instance seeded and diverges from CPython's deterministic-within-process
+  order). Building a set from an ordered iterable and order-independent set
+  operations stay native.
+- New `RXT090` non-rejecting note marks direct-native functions relying on the
+  one remaining documented divergence (`bytes.decode()` raises `ValueError`
+  where CPython raises `UnicodeDecodeError`); `rextio check` lists the notes.
+- The wheel built from a Nuitka fallback tree now excludes `.py` sources
+  shadowed by their compiled extension and carries a platform tag instead of
+  `py3-none-any` (it contains platform binaries); accelerated modules keep
+  their `.py`.
+- `list.index` failure messages interpolate the needle repr exactly like
+  CPython ("5 is not in list", "'x' is not in list").
+- The external-accelerator source scan walks the whole module tree (deferred
+  imports in function bodies, nested functions, `except`/`finally` bodies,
+  `from numba import *` submodules) and all three Nuitka build paths now
+  recognize project-local modules (a local `numba.py` shim no longer skips or
+  blocks builds).
+- A Nuitka standalone build whose `.dist` directory lacks the launcher binary
+  is reported as failed instead of returning the directory as the artifact.
+- Documentation: stale Cranelift JIT content swept from `REXTIO.md`,
+  `SECURITY.md`, and the four translated READMEs (which also gained the Numba
+  sections); `set[float]` support claims corrected everywhere; the
+  `--executable-backend=rust` Python-free binary is no longer denied by
+  `docs/unsupported-features.md`.
+
 ### Added
 
 - CLI commands: `rextio init`, `rextio check`, `rextio build`, `rextio bench`, and `rextio clean`.
@@ -35,7 +70,8 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Native Rust binary executable generation with `--executable-backend=rust`: a
   native executable whose `main` calls a direct-native `def main(argv: list[str])
   -> int` entrypoint, mirrors `sys.argv`, uses the returned `int` as the process
-  exit code, and prints a returned error CPython-style (`TypeName: message`) to
+  exit code (converted to the platform's exit-status width, like CPython's
+  `sys.exit`), and prints a returned error CPython-style (`TypeName: message`) to
   stderr. The crate-mode `RextioError` now carries the CPython exception type name
   so these binaries emit Python-style diagnostics.
 - Subprocess hybrid for the Rust executable: a call the entrypoint makes to a

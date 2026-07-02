@@ -127,7 +127,7 @@ def fast(x: int) -> int:
     assert "_fallback_mixed.py" not in calls  # numba-bearing copy untouched
     assert (python_dir / "hb" / "mixed.so").exists()
     assert not (python_dir / "hb" / "_fallback_mixed.so").exists()
-    assert "hb/_fallback_mixed.py" in result.message
+    assert "hb/mixed.py (fallback copy)" in result.message
 
 def test_project_local_numba_module_is_compiled_normally(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
