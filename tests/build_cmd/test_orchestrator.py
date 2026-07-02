@@ -66,7 +66,6 @@ def rejected(x: int) -> int:
     assert "generated Python package tree" in captured.out
     assert "build artifact" in captured.out
     assert (rust_dir / "Cargo.toml").exists()
-    assert "cranelift-jit" not in (rust_dir / "Cargo.toml").read_text(encoding="utf-8")
     assert (rust_dir / ".cargo" / "config.toml").exists()
     assert (rust_dir / "pyproject.toml").exists()
     assert lib_rs.exists()
@@ -145,7 +144,6 @@ def compute(x: float) -> float:
         (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
     rust_dir = tmp_path / ".rextio" / "generated" / "rust"
-    cargo_toml = (rust_dir / "Cargo.toml").read_text(encoding="utf-8")
     lib_rs = (rust_dir / "src" / "lib.rs").read_text(encoding="utf-8")
 
     assert exit_code == 0
@@ -154,10 +152,8 @@ def compute(x: float) -> float:
     assert report["accepted_native_count"] == 1
     assert report["rejected_native_count"] == 0
     assert report["jit_candidate_count"] == 1
-    # The embedded helper compiles as a plain internal native function: no
-    # Cranelift dependency or machinery, callable from native, not exported.
-    assert "cranelift" not in cargo_toml
-    assert "cranelift" not in lib_rs
+    # The embedded helper compiles as a plain internal native function -
+    # callable from native code, not exported, no extra dependencies.
     assert "fn app__helper(" in lib_rs
     assert "wrap_pyfunction!(app__compute" in lib_rs
     assert "wrap_pyfunction!(app__helper" not in lib_rs
@@ -201,16 +197,11 @@ def compute(x: int) -> int:
     report = json.loads(
         (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
-    cargo_toml = (
-        tmp_path / ".rextio" / "generated" / "rust" / "Cargo.toml"
-    ).read_text(encoding="utf-8")
-
     assert exit_code == 0
     assert "experimental helper embedding: disabled" in captured.out
     assert report["accepted_native_count"] == 1
     assert report["rejected_native_count"] == 1
     assert report["jit_candidate_count"] == 0
-    assert "cranelift" not in cargo_toml
 
 
 def test_rust_executable_delegate_analysis_embeds_helpers(

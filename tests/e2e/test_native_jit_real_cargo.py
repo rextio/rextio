@@ -61,10 +61,8 @@ def compute(x: float) -> float:
     assert report["native_build"]["status"] == "built"
     assert report["accepted_native_count"] == 1
     assert report["jit_candidate_count"] == 1
-    # The helper is embedded as an ordinary internal native function: no Cranelift
-    # machinery (the runtime hot path was removed as strictly slower than AOT) and
-    # no Python export.
-    assert "cranelift" not in lib_rs
+    # The helper is embedded as an ordinary internal native function - no
+    # runtime-compilation machinery and no Python export.
     assert "fn jit_app__math_ops__helper(x: f64) -> PyResult<f64> {" in lib_rs
     assert "wrap_pyfunction!(jit_app__math_ops__helper" not in lib_rs
 

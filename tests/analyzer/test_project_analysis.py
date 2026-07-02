@@ -3422,9 +3422,7 @@ def compute(x: float) -> float:
 
 def test_integer_arithmetic_is_embedding_eligible(tmp_path: Path) -> None:
     # Embedded helpers lower through the ordinary checked native path, so int
-    # arithmetic raises OverflowError like any other native function. The old
-    # Cranelift hot path could not raise and therefore excluded int arithmetic
-    # entirely; with embedding that exclusion (and its diagnostic) is gone.
+    # arithmetic raises OverflowError like any other native function.
     write_module(
         tmp_path,
         "app.py",
@@ -3677,8 +3675,8 @@ def compute(a: float, b: float) -> float:
     )
 
     # Both are embedding-eligible: embedded helpers lower through the checked
-    # native path, so float `/` raises ZeroDivisionError like any native function
-    # (the former Cranelift fdiv exclusion is gone with the hot path).
+    # native path, so float `/` raises ZeroDivisionError like any native
+    # function.
     assert [function.qualname for function in analysis.jit_candidates] == ["app.fdiv", "app.fmul"]
 
 

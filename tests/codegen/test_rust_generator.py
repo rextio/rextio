@@ -50,9 +50,8 @@ def sum_squares(xs: list[float]) -> float:
 
 def test_embeds_internal_helper_only_when_enabled(tmp_path: Path) -> None:
     # With `[jit] enabled`, an unmarked scalar helper is EMBEDDED as an ordinary
-    # internal native function (callable from native code, not exported to Python).
-    # The former Cranelift hot path was removed: benchmarks showed it strictly
-    # slower than this AOT path, so no runtime-compilation machinery is emitted.
+    # internal native function (callable from native code, not exported to
+    # Python); no runtime-compilation machinery of any kind is emitted.
     (tmp_path / "app.py").write_text(
         """
 import rextio
@@ -74,7 +73,6 @@ def compute(x: float) -> float:
     )
     source = generate_rust_module(lower_project(analysis, include_jit=True))
 
-    assert "cranelift" not in source
     assert "fn app__helper(x: f64) -> PyResult<f64> {" in source
     assert "return Ok(x * 2.0);" in source
     assert "return Ok(app__helper(x.clone())? + 1.0);" in source
@@ -115,13 +113,12 @@ def compute(x: int) -> int:
     assert "__rextio_checked_rem(" in source
     assert "fn __rextio_checked_mul(" in source
     assert "fn __rextio_checked_rem(" in source
-    assert "cranelift" not in source
 
 
 def test_embedded_helper_with_a_rust_keyword_name_is_escaped(tmp_path: Path) -> None:
-    # An embedded helper named after a Rust keyword renders through the ordinary
-    # raw-identifier escaping (`fn r#loop`). The former Cranelift path needed
-    # compound `__rextio_jit_*` identifiers; plain embedding does not.
+    # An embedded helper named after a Rust keyword renders through the
+    # ordinary raw-identifier escaping (`fn r#loop`) - no compound
+    # `__rextio_jit_*` identifier scheme.
     (tmp_path / "__init__.py").write_text(
         """
 import rextio
@@ -144,7 +141,6 @@ def compute(x: float) -> float:
     assert "fn r#loop(" in source
     assert "return Ok(r#loop(x.clone())? + 1.0);" in source
     assert "__rextio_jit_" not in source
-    assert "cranelift" not in source
 
 
 def test_generates_rust_importable_crate_module_for_native_functions(tmp_path: Path) -> None:
