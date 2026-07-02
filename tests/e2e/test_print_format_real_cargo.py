@@ -70,3 +70,59 @@ def render(flag: bool, x: float) -> None:
             module.render(flag, value)
             captured = capfd.readouterr()
             assert captured.out == f"{flag} {value!r}\n", (flag, value)
+
+
+@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for native e2e")
+def test_native_list_index_failure_message_matches_cpython(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # CPython's message interpolates the needle repr: "5 is not in list",
+    # "'x' is not in list". The native message must match, including the
+    # exception type (ValueError).
+    (tmp_path / "rextio.toml").write_text(
+        """
+[rust]
+build_tool = "cargo"
+""",
+        encoding="utf-8",
+    )
+    source = tmp_path / "src" / "indexmsg_app" / "finder.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def find_int(xs: list[int], needle: int) -> int:
+    return xs.index(needle)
+
+@rextio.native
+def find_str(xs: list[str], needle: str) -> int:
+    return xs.index(needle)
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython"])
+    assert exit_code == 0
+
+    monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "build" / "python"))
+    importlib.invalidate_caches()
+    module = importlib.import_module("indexmsg_app.finder")
+
+    with pytest.raises(ValueError) as int_error:
+        module.find_int([1, 2], 5)
+    with pytest.raises(ValueError) as str_error:
+        module.find_str(["a"], "it's")
+
+    assert str(int_error.value) == str(_cpython_index_error([1, 2], 5))
+    assert str(str_error.value) == str(_cpython_index_error(["a"], "it's"))
+
+
+def _cpython_index_error(xs: list, needle: object) -> ValueError:
+    try:
+        xs.index(needle)
+    except ValueError as exc:
+        return exc
+    raise AssertionError("needle unexpectedly present")

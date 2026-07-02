@@ -13,7 +13,7 @@ from __future__ import annotations
 _CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
 _CHECKED_HELPER_ORDER = (
     "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i",
-    "mnonneg", "mpositive", "munit", "mlogbase", "repr_float",
+    "mnonneg", "mpositive", "munit", "mlogbase", "repr_float", "repr_str",
 )
 
 
@@ -49,6 +49,37 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
     lines: list[str] = []
     for name in _CHECKED_HELPER_ORDER:
         if name not in used:
+            continue
+        if name == "repr_str":
+            # CPython str repr for error-message parity: single-quoted unless
+            # the string contains a single quote and no double quote; escapes
+            # backslash, the chosen quote, and newline/carriage-return/tab.
+            # Other control characters pass through (adequate for messages).
+            lines.extend(
+                [
+                    'fn __rextio_repr_str(value: &str) -> String {',
+                    '    let quote = if value.contains(\'\\\'\') && !value.contains(\'"\') { \'"\' } else { \'\\\'\' };',
+                    '    let mut out = String::with_capacity(value.len() + 2);',
+                    '    out.push(quote);',
+                    '    for ch in value.chars() {',
+                    '        match ch {',
+                    '            \'\\\\\' => out.push_str("\\\\\\\\"),',
+                    '            \'\\n\' => out.push_str("\\\\n"),',
+                    '            \'\\r\' => out.push_str("\\\\r"),',
+                    '            \'\\t\' => out.push_str("\\\\t"),',
+                    '            c if c == quote => {',
+                    "                out.push('\\\\');",
+                    '                out.push(c);',
+                    '            }',
+                    '            c => out.push(c),',
+                    '        }',
+                    '    }',
+                    '    out.push(quote);',
+                    '    out',
+                    '}',
+                    '',
+                ]
+            )
             continue
         if name == "repr_float":
             # CPython float repr, for print/logging of floats: shortest

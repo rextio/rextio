@@ -1538,6 +1538,19 @@ class _FunctionRenderer:
             recv_tmp = self.next_temp("__rextio_recv")
             needle = strip_wrapping_parens(self.render_call_arg(expr.args[1]))
             needle_tmp = self.next_temp("__rextio_needle")
+            # CPython's failure message interpolates the needle's repr
+            # ("5 is not in list", "'x' is not in list"); float items are
+            # rejected upstream (NaN identity), so int/bool/str remain.
+            receiver_type = self.infer_expr_type(expr.args[0])
+            item_type = receiver_type.item_type if isinstance(receiver_type, RxtList) else None
+            if isinstance(item_type, RxtBool):
+                needle_repr = f'(if {needle_tmp} {{ "True" }} else {{ "False" }})'
+            elif isinstance(item_type, RxtStr):
+                self.used_helpers.add("repr_str")
+                needle_repr = f"__rextio_repr_str(&{needle_tmp})"
+            else:
+                needle_repr = needle_tmp
+            message = f'format!("{{}} is not in list", {needle_repr})'
             # `position` passes `Item` (`&T`), so the predicate compares `item`
             # (not `*item`) against `&needle`.
             return (
@@ -1545,7 +1558,7 @@ class _FunctionRenderer:
                 f"let {needle_tmp} = {needle}; "
                 f"{recv_tmp}.iter().position(|item| item == &{needle_tmp})"
                 ".map(|index| index as i64)"
-                f".ok_or_else(|| {self.error_new(rust_string_literal('list.index(x): x not in list'))})? }}"
+                f".ok_or_else(|| {self.error_new(message)})? }}"
             )
         raise RustCodegenError(f"unsupported list method during Rust codegen: {expr.function}")
 
