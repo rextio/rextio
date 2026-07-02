@@ -796,6 +796,23 @@ def _write_hybrid_runtime(
         shutil.copy2(source_path, target)
 
 
+def _externally_accelerated_delegates(
+    analysis: ProjectAnalysis, delegated_qualnames: set[str]
+) -> list[str]:
+    """Return delegated callees labeled with an external accelerator (e.g. numba)."""
+    by_qualname = {
+        function.qualname: function
+        for module in analysis.modules
+        for function in module.functions
+    }
+    return [
+        qualname
+        for qualname in delegated_qualnames
+        if (function := by_qualname.get(qualname)) is not None
+        and function.external_accelerator is not None
+    ]
+
+
 def _build_nuitka_dispatcher(
     runtime_dir: Path, allowed_qualnames: set[str], timeout: float
 ) -> str | None:
@@ -855,6 +872,24 @@ def _build_rust_executable_artifact(
         entry_qualname,
     )
     nuitka_dispatcher = hybrid_runtime == "nuitka"
+    if nuitka_dispatcher and delegated_return_types:
+        accelerated = _externally_accelerated_delegates(analysis, set(delegated_return_types))
+        if accelerated:
+            names = ", ".join(sorted(accelerated))
+            return ExecutableBuildResult(
+                status="failed",
+                path=None,
+                message=(
+                    "RXT060 Executable build failed: delegated function(s) "
+                    f"{names} use an external accelerator (e.g. Numba), which a "
+                    "Nuitka-compiled dispatcher cannot serve (compiled functions "
+                    "expose no bytecode for the accelerator and the accelerator "
+                    "package is not bundled). Use --hybrid-runtime=source, whose "
+                    "dispatcher runs real CPython with the project's environment."
+                ),
+                entrypoint=entrypoint,
+                backend="rust",
+            )
     try:
         module_ir = _filter_module_ir(lower_project(analysis, include_jit=True), reachable_qualnames)
         main_rs = generate_rust_main_binary(

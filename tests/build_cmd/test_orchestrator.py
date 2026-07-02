@@ -1326,3 +1326,57 @@ def test_native_build_failure_still_produces_a_fallback_wheel(tmp_path: Path) ->
     assert result.status == "built"
     assert result.path is not None
     assert result.path.endswith("-py3-none-any.whl")
+
+
+def test_hybrid_nuitka_runtime_rejects_delegated_accelerated_functions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # A Nuitka-compiled dispatcher cannot serve a delegated numba function (no
+    # bytecode for the accelerator, no accelerator bundled): the build must fail
+    # early with guidance toward --hybrid-runtime=source.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+from numba import njit
+
+@njit
+def scale(x: int) -> int:
+    return x * 2
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return scale(len(argv))
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    layout = ArtifactLayout(tmp_path)
+
+    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout):
+        dist_dir.mkdir(parents=True, exist_ok=True)
+        binary = dist_dir / binary_name
+        binary.write_text("fake binary", encoding="utf-8")
+        return ExecutableBuildResult(
+            status="built",
+            path=str(binary),
+            message="ok",
+            entrypoint=entrypoint,
+            backend="rust",
+        )
+
+    monkeypatch.setattr(orchestrator, "build_rust_executable", fake_build)
+
+    result = orchestrator._build_rust_executable_artifact(
+        layout,
+        analysis,
+        "app:main",
+        None,
+        None,
+        "nuitka",
+        build_timeout=30,
+    )
+
+    assert result.status == "failed"
+    assert "app.scale" in result.message
+    assert "--hybrid-runtime=source" in result.message
