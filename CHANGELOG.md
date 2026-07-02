@@ -4,56 +4,50 @@
 
 Initial public MVP for Rextio as a local hybrid build tool.
 
-### Changed (council review round, 2026-07-02)
+### Text and formatting fidelity
 
-- `print`/`logging` of `bool` and `float` are now textually CPython-exact
+- `print`/`logging` of `bool` and `float` are textually CPython-exact
   (`True`/`False`; shortest correctly-rounded float repr with CPython's
   positional/scientific thresholds, `nan`/`inf`/`-0.0` spellings, and signed
-  two-digit exponents). Logging `%f` renders fixed six decimals and `%d` of a
-  float truncates through the guarded conversion. Both were previously
-  documented divergences; the docs list shrinks accordingly.
-- Iterating a `set` in a native function is now rejected to the Python
-  fallback with a dedicated diagnostic (Rust hash-set iteration order is
-  per-instance seeded and diverges from CPython's deterministic-within-process
-  order). Building a set from an ordered iterable and order-independent set
+  two-digit exponents). Logging `%` conversions are validated per argument
+  type (`%d`/`%i`: int and bool; `%f`: float only, fixed six decimals with
+  the CPython `nan` spelling; count mismatches, unknown conversions, and
+  dynamic format strings with arguments fall back), and `%r` renders CPython
+  repr. Printable containers (list, fixed tuple, `Optional`, nested) compose
+  CPython repr recursively in `print`/logging; `print` of a `set` or `dict`
+  is rejected (native iteration order is not CPython's). `__rextio_repr_str`
+  escapes quotes, backslash, `\n`/`\r`/`\t`, C0/C1 controls, and U+00A0
+  exactly like CPython repr.
+- Iterating a `set` in a native function is rejected to the Python fallback
+  with a dedicated diagnostic (Rust hash-set iteration order is per-instance
+  seeded and diverges from CPython's deterministic-within-process order).
+  Building a set from an ordered iterable and order-independent set
   operations stay native.
-- New `RXT090` non-rejecting note marks direct-native functions relying on
-  the statically attributable documented divergence (`bytes.decode()` raises
+- `RXT090` non-rejecting note marks direct-native functions relying on the
+  statically attributable documented divergence (`bytes.decode()` raises
   `ValueError` where CPython raises `UnicodeDecodeError`); `rextio check`
   lists the notes. (The other documented divergence - repr of str values
   containing non-printables above U+00A0 - is value-dependent and cannot
   carry a per-function note.)
-- The wheel built from a Nuitka fallback tree now excludes `.py` sources
-  shadowed by their compiled extension and carries a platform tag instead of
-  `py3-none-any` (it contains platform binaries); accelerated modules keep
-  their `.py`.
 - `list.index` failure messages interpolate the needle repr exactly like
-  CPython ("5 is not in list", "'x' is not in list").
+  CPython ("5 is not in list", "'x' is not in list", "[3] is not in list").
+
+### Packaging and accelerator-scan behavior
+
+- The wheel built from a Nuitka fallback tree excludes `.py` sources
+  shadowed by their compiled extension module (import-loadable suffixes
+  only, so a same-stem ctypes `.dylib`/`.dll` payload keeps its Python
+  wrapper) and carries a platform tag rather than `py3-none-any`;
+  accelerated modules keep their `.py`.
 - The external-accelerator source scan walks the whole module tree (deferred
   imports in function bodies, nested functions, `except`/`finally` bodies,
-  `from numba import *` submodules) and all three Nuitka build paths now
-  recognize project-local modules (a local `numba.py` shim no longer skips or
+  `from numba import *` submodules), keeps accelerator-resolving import
+  bindings over scope-flattened collisions, and all three Nuitka build paths
+  recognize project-local modules (a local `numba.py` shim neither skips nor
   blocks builds).
-- A Nuitka standalone build whose `.dist` directory lacks the launcher binary
-  is reported as failed instead of returning the directory as the artifact.
-- Documentation: stale Cranelift JIT content swept from `REXTIO.md`,
-  `SECURITY.md`, and the four translated READMEs (which also gained the Numba
-  sections); `set[float]` support claims corrected everywhere; the
-  `--executable-backend=rust` Python-free binary is no longer denied by
-  `docs/unsupported-features.md`.
-- Logging `%` conversions are validated per argument type (`%d`/`%i`: int and
-  bool; `%f`: float only; count mismatches, unknown conversions, and dynamic
-  format strings with arguments fall back) - previously `%f` of a bool
-  emitted uncompilable Rust from an accepted function. `%r` renders CPython
-  repr. Printable containers (list, fixed tuple, `Optional`, nested) compose
-  CPython repr recursively in `print`/logging; `print` of a `set` or `dict`
-  is rejected (native iteration order is not CPython's). `__rextio_repr_str`
-  escapes C0/C1 control characters exactly like CPython repr.
-- The accelerator source scan keeps accelerator-resolving import bindings
-  over scope-flattened collisions (a nested `import local_numba as numba` no
-  longer hides a top-level `import numba`), and the wheel's source-shadow
-  rule only counts import-loadable suffixes (`.so`/`.pyd`) - a same-stem
-  ctypes `.dylib`/`.dll` payload no longer drops its Python wrapper.
+- A Nuitka standalone build whose `.dist` directory lacks the launcher
+  binary is reported as failed rather than returning the directory as the
+  artifact.
 
 ### Added
 
@@ -122,10 +116,8 @@ Initial public MVP for Rextio as a local hybrid build tool.
   function through the normal checked lowering (int overflow raises
   OverflowError; float `/` raises ZeroDivisionError), and in the Rust
   executable backend it compiles into the binary instead of being delegated
-  per call. (This began as a runtime Cranelift JIT; the hot path was removed
-  after benchmarks showed it strictly slower than the AOT path it fell back
-  to, and the `[jit] backend`/`[jit] hot_threshold` settings were removed
-  with it.)
+  per call. There is no JIT: everything compiles ahead of time, and the built
+  artifact contains no runtime compiler.
 - Numba coexists with the Nuitka fallback backend (experimental): modules using a recognized
   external accelerator are automatically kept as plain Python (skipped from
   per-module Nuitka compilation, so the importable `.py` retains the bytecode
@@ -151,8 +143,8 @@ Initial public MVP for Rextio as a local hybrid build tool.
   patterns including `math`, `all`/`any`, `sorted`/`reversed`, selected
   `str`/`bytes`/`list` methods, `time`/`datetime`, `hashlib.sha256`, and
   `base64.b64encode`. (`statistics.mean`/`fmean`, `json.dumps`/`json.loads`,
-  and `base64.b64decode` later moved to the fallback/runtime-shim path: their
-  CPython behavior has no faithful native equivalent.)
+  and `base64.b64decode` have no faithful native equivalent and stay on the
+  fallback/runtime-shim path.)
 - Conservative Python/Rust ownership handling for direct Rust lowering:
   generated clones for reused owned values and fallback diagnostics for mutable
   collection alias mutation.
@@ -207,8 +199,8 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Internal refactor (no behavior change): the two largest modules were split into
   cohesive units guarded by the golden-snapshot and contract suites —
   `codegen/rust/generator.py` shed its formatting helpers (`rust_format`),
-  checked-arithmetic emitter (`checked_arith`), shared error type (`errors`), and
-  Cranelift JIT helpers (`jit_codegen`); `analyzer/unsupported_patterns.py` shed
+  checked-arithmetic emitter (`checked_arith`), and shared error type
+  (`errors`); `analyzer/unsupported_patterns.py` shed
   its stateless type/AST predicates (`type_predicates`).
 - The supported-type capability matrix (scalar/list/dict/set item/key types) is
   now defined once in `rextio.capabilities` and shared by the analyzer and the
@@ -241,15 +233,6 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - `math.floor`/`ceil`/`trunc` now convert through a guarded float-to-int helper:
   a value outside i64 range raises `OverflowError` and `NaN` raises `ValueError`,
   instead of silently saturating to `i64::MIN`/`MAX` via an `as i64` cast.
-- (HISTORICAL - this runtime JIT was REMOVED before release; `[jit]` now
-  controls AOT scalar-helper embedding only, and no JIT compiler runs inside
-  the AOT artifact.) The experimental Cranelift JIT no longer accepts integer
-  helpers that contain overflow-prone arithmetic: the JIT path emits wrapping
-  instructions and cannot raise `OverflowError`, so such helpers stay on the
-  checked native path. Float scalar helpers remain JIT-eligible.
-  (Superseded: with the Cranelift hot path removed, embedded helpers lower
-  through the checked native path, so integer arithmetic and float division
-  are embedding-eligible again and raise correctly.)
 - Removed the unused `crates/rextio_runtime` helper crate; generated code inlines
   its bounds-checked access, so the crate was never wired into any build.
 - The Python runtime-semantics shim (`RXT080`) is now strictly opt-in. Only
