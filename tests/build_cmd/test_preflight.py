@@ -33,11 +33,17 @@ def test_non_rust_backend_does_not_require_cargo(monkeypatch: pytest.MonkeyPatch
     assert preflight.missing_build_tools(native_backend="mojo") == []
 
 
-def _fake_nuitka_printing(tmp_path, version_line: str) -> str:
+def _fake_nuitka_printing(
+    tmp_path, version_line: str, *, exit_code: int = 0, to_stderr: bool = False
+) -> str:
     import stat
 
     fake = tmp_path / "nuitka"
-    fake.write_text(f"#!/bin/sh\necho '{version_line}'\n", encoding="utf-8")
+    redirect = " >&2" if to_stderr else ""
+    fake.write_text(
+        f"#!/bin/sh\necho '{version_line}'{redirect}\nexit {exit_code}\n",
+        encoding="utf-8",
+    )
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
     return str(fake)
 
@@ -58,3 +64,23 @@ def test_nuitka_version_error_accepts_2_and_unparseable(tmp_path) -> None:
 
     assert nuitka_version_error(_fake_nuitka_printing(tmp_path, "2.4.8")) is None
     assert nuitka_version_error(_fake_nuitka_printing(tmp_path, "Nuitka something")) is None
+
+
+def test_nuitka_version_error_ignores_output_on_nonzero_exit(tmp_path) -> None:
+    # A broken install may still print something version-shaped; the probe
+    # treats a non-zero exit as undetermined and passes through.
+    from rextio.build.preflight import nuitka_version_error
+
+    assert nuitka_version_error(_fake_nuitka_printing(tmp_path, "1.9.7", exit_code=1)) is None
+
+
+def test_nuitka_version_error_reads_stderr_and_prefixed_lines(tmp_path) -> None:
+    # The version may arrive on stderr or behind a "Nuitka ..." prefix; both
+    # still enforce the floor.
+    from rextio.build.preflight import nuitka_version_error
+
+    stderr_error = nuitka_version_error(_fake_nuitka_printing(tmp_path, "1.9.7", to_stderr=True))
+    assert stderr_error is not None and "too old" in stderr_error
+    prefixed_error = nuitka_version_error(_fake_nuitka_printing(tmp_path, "Nuitka 1.9.7"))
+    assert prefixed_error is not None and "too old" in prefixed_error
+    assert nuitka_version_error(_fake_nuitka_printing(tmp_path, "Nuitka 2.4.8", to_stderr=True)) is None

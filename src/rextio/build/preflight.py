@@ -14,6 +14,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 
+# Any 2.x release is accepted; every 1.x release is rejected.
 MINIMUM_NUITKA_MAJOR = 2
 
 
@@ -77,9 +78,14 @@ def nuitka_version_error(nuitka: str) -> str | None:
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    output = (completed.stdout or "").strip()
+    if completed.returncode != 0:
+        # A broken install may still print something version-shaped;
+        # treat it as undetermined rather than trusting the output.
+        return None
+    output = (completed.stdout or "").strip() or (completed.stderr or "").strip()
     first_line = output.splitlines()[0].strip() if output else ""
-    match = re.match(r"(\d+)\.(\d+)", first_line)
+    # search, not match: tolerate a "Nuitka 1.9.7"-style prefix on the line.
+    match = re.search(r"(\d+)\.(\d+)", first_line)
     if match is None:
         return None
     if int(match.group(1)) < MINIMUM_NUITKA_MAJOR:
