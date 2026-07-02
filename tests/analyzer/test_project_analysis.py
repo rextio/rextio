@@ -4319,6 +4319,63 @@ def main(argv: list[str]) -> int:
     assert any("operator is not supported" in diagnostic.message for diagnostic in main.error_diagnostics)
 
 
+def test_delegate_fallback_types_pyi_stub_returns_across_modules(tmp_path: Path) -> None:
+    # A callee whose return type lives ONLY in a sibling `.pyi` stub must be typed
+    # at cross-module call sites too: a type-incompatible use of its result is a
+    # clean check-time rejection (previously it slipped past validation into a
+    # Rust `String + integer` compile failure), while a valid use stays accepted
+    # and delegated.
+    write_module(
+        tmp_path,
+        "helpers.py",
+        """
+import rextio
+
+@rextio.exempt
+def slugify(text):
+    return text.lower()
+""",
+    )
+    (tmp_path / "helpers.pyi").write_text(
+        "def slugify(text: str) -> str: ...\n", encoding="utf-8"
+    )
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+from helpers import slugify
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return slugify(argv[0]) + 1
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    assert not main.accepted
+    assert any("operator is not supported" in d.message for d in main.error_diagnostics)
+
+    # The same stub-typed callee used compatibly stays accepted and delegated.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+from helpers import slugify
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return len(slugify(argv[0]))
+""",
+    )
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    assert main.accepted
+    assert main.delegated_call_targets == {"helpers.slugify"}
+
+
 def test_delegate_fallback_skips_untypeable_callee(tmp_path: Path) -> None:
     # Delegation never guesses: a fallback callee without a wire-serializable
     # return type stays a rejection (the caller remains on the Python fallback).

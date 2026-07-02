@@ -130,22 +130,48 @@ def analyze_project(
 
 
 def _project_annotated_return_types(files: list[Path], project_root: Path) -> dict[str, str]:
-    """Collect supported top-level function return annotations by qualified name."""
+    """Collect supported top-level function return annotations by qualified name.
+
+    A sibling ``.pyi`` stub's return annotation overrides the source annotation,
+    mirroring the per-function resolution order used everywhere else
+    (``signature_return_type or inferred_return_type or annotated_return_type``,
+    where the stub return is the *inferred* type). Without the stub pass, a
+    callee typed only in a ``.pyi`` stayed untyped at cross-module call sites, so
+    a type-incompatible use of its result (e.g. ``stub_str_fn(x) + 1``) slipped
+    past validation into a Rust compile failure instead of a clean rejection.
+    """
     return_types: dict[str, str] = {}
     for path in files:
+        module_name = module_name_for_path(path, project_root)
+
+        def _qualname(name: str) -> str:
+            return f"{module_name}.{name}" if module_name else name
+
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError:
             continue
-        module_name = module_name_for_path(path, project_root)
         for item in tree.body:
             if (
                 isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and item.returns is not None
                 and is_supported_type(item.returns)
             ):
-                qualname = f"{module_name}.{item.name}" if module_name else item.name
-                return_types[qualname] = annotation_name(item.returns)
+                return_types[_qualname(item.name)] = annotation_name(item.returns)
+        stub_path = path.with_suffix(".pyi")
+        if not stub_path.exists():
+            continue
+        try:
+            stub_tree = ast.parse(stub_path.read_text(encoding="utf-8"), filename=str(stub_path))
+        except SyntaxError:
+            continue
+        for item in stub_tree.body:
+            if (
+                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and item.returns is not None
+                and is_supported_type(item.returns)
+            ):
+                return_types[_qualname(item.name)] = annotation_name(item.returns)
     return return_types
 
 
