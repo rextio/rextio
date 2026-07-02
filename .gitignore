@@ -22,6 +22,12 @@ uv.lock
 /build/
 /dist/
 
+# Compiled native extensions / shared libraries (never commit)
+*.so
+*.pyd
+*.dll
+*.dylib
+
 # Rextio generated artifacts
 .rextio/build/
 .rextio/generated/
@@ -32,6 +38,6 @@ uv.lock
 target/
 crates/*/Cargo.lock
 
-Agentic Coding generated artifacts
+# Agentic Coding generated artifacts
 .claude/
 .claude-octopus/
