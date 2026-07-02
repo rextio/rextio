@@ -9,6 +9,8 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import rextio.build.orchestrator as orchestrator
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.artifact_layout import ArtifactLayout
@@ -1203,9 +1205,78 @@ def main(argv: list[str]) -> int:
     )
 
     assert result.status == "failed"
-    assert "would overwrite generated dispatcher" in result.message
+    assert "conflicts with the generated dispatcher" in result.message
     assert not (layout.dist_dir / "_rextio_dispatcher_main").exists()
     assert not (layout.dist_dir / "_rextio_dispatcher_main.runtime").exists()
+
+
+def test_hybrid_runtime_rejects_dispatcher_package_collision(tmp_path: Path) -> None:
+    # The PACKAGE form (`_rextio_dispatcher/__init__.py`) does not overwrite the
+    # generated `_rextio_dispatcher.py` file, but Python's import machinery prefers
+    # the package over the sibling module of the same name, so it must be rejected
+    # just like the file form.
+    package = tmp_path / "_rextio_dispatcher"
+    package.mkdir()
+    (package / "__init__.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def slugify(value: str) -> str:
+    return value.lower()
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+from _rextio_dispatcher import slugify
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return len(slugify(argv[0]))
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+
+    with pytest.raises(RustCodegenError, match="conflicts with the generated dispatcher"):
+        orchestrator._write_hybrid_runtime(
+            tmp_path / "out.runtime", analysis, {"_rextio_dispatcher.slugify"}
+        )
+
+
+def test_entry_reachable_graph_captures_transitive_delegation(tmp_path: Path) -> None:
+    # `main -> process (accepted native) -> slugify (delegated)`: the reachable-graph
+    # walk must push the native hop and record the second-hop delegated callee, so
+    # codegen emits the IPC call and the dispatcher allow-list accepts it. A revert
+    # that dropped the native-hop traversal would orphan the delegated call.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def slugify(text: str) -> str:
+    return text.lower()
+
+@rextio.native
+def process(text: str) -> int:
+    s = slugify(text)
+    return len(s)
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return process(argv[0])
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+
+    reachable, delegated = orchestrator._entrypoint_reachable_native_graph(analysis, "app.main")
+
+    assert "app.main" in reachable
+    assert "app.process" in reachable  # the native intermediate hop is walked
+    assert delegated == {"app.slugify": "str"}  # the second-hop delegation is recorded
 
 
 def _fake_executable_nuitka(tmp_path: Path) -> Path:

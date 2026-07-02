@@ -4376,6 +4376,48 @@ def main(argv: list[str]) -> int:
     assert main.delegated_call_targets == {"helpers.slugify"}
 
 
+def test_cross_module_native_call_results_are_typed(tmp_path: Path) -> None:
+    # The project-wide return-type map must type CROSS-MODULE calls to accepted
+    # native functions too (the most common real-project shape): a compatible use
+    # stays accepted, and a type-incompatible use of the result is a check-time
+    # rejection rather than a Rust compile failure.
+    write_module(
+        tmp_path,
+        "utils.py",
+        """
+import rextio
+
+@rextio.native
+def bump(x: int) -> int:
+    return x + 1
+""",
+    )
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+from utils import bump
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return bump(len(argv))
+
+@rextio.native
+def broken(argv: list[str]) -> str:
+    return bump(len(argv)) + "!"
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    functions = {f.name: f for m in analysis.modules for f in m.functions}
+    assert functions["main"].accepted
+    assert not functions["broken"].accepted
+    assert any(
+        "operator is not supported" in d.message for d in functions["broken"].error_diagnostics
+    )
+
+
 def test_delegate_fallback_skips_untypeable_callee(tmp_path: Path) -> None:
     # Delegation never guesses: a fallback callee without a wire-serializable
     # return type stays a rejection (the caller remains on the Python fallback).

@@ -739,6 +739,10 @@ def _normalized_function_return_type(function: FunctionAnalysis) -> str | None:
 def _filter_module_ir(module_ir: ModuleIR, reachable_qualnames: set[str]) -> ModuleIR:
     """Keep only entry-reachable functions when generating a Rust executable."""
     if not reachable_qualnames:
+        # An empty set means the entry itself was not an accepted direct-native
+        # function. Pass the full IR through so `_resolve_main_entry` can name the
+        # REAL problem (missing entry / RXT080 shim / JIT) - filtering everything
+        # out here would degrade those diagnostics to a generic "missing entry".
         return module_ir
     return ModuleIR(
         [function for function in module_ir.functions if function.qualname in reachable_qualnames]
@@ -769,10 +773,14 @@ def _write_hybrid_runtime(
             target = runtime_dir.joinpath(*parts, "__init__.py")
         else:
             target = runtime_dir.joinpath(*parts).with_suffix(".py")
-        if target == dispatcher_path:
+        if target == dispatcher_path or parts[0] == DISPATCHER_STEM:
+            # Reject both the file form (`_rextio_dispatcher.py`, which would
+            # overwrite the generated script) and the package form
+            # (`_rextio_dispatcher/__init__.py`, which Python's import machinery
+            # would prefer over the sibling script of the same name).
             raise RustCodegenError(
                 f"hybrid runtime source collision: project module {module.module_name!r} "
-                f"would overwrite generated dispatcher {DISPATCHER_STEM}.py"
+                f"conflicts with the generated dispatcher {DISPATCHER_STEM!r}"
             )
         target.parent.mkdir(parents=True, exist_ok=True)
         # Make every intermediate directory an importable package.

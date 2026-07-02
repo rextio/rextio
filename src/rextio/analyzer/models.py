@@ -158,7 +158,10 @@ class FunctionAnalysis:
     # (bare same-module names and fully-qualified imported project functions).
     # This lets operator/assignment checks type a user-defined call result before
     # codegen, so invalid expressions are rejected instead of emitting Rust that
-    # fails to compile.
+    # fails to compile. INVARIANT: this map is a local-validator HINT only - the
+    # boundary check remains the authoritative gate for whether a call is legal
+    # (RXT070/RXT072/delegation), so typing a callee here can only ADD rejections,
+    # never admit a call the boundary would refuse.
     call_return_types: dict[str, str] = field(default_factory=dict)
 
     @property
