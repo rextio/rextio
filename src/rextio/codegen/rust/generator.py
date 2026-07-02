@@ -1845,15 +1845,18 @@ class _FunctionRenderer:
                         rendered = strip_wrapping_parens(self.render_call_arg(arg))
                         if spec == "f":
                             # Analyzer admits only float for %f (CPython %f of
-                            # a bool has no Rust cast, and a large int would
-                            # round through f64).
+                            # a bool has no Rust cast - E0606 - and a large int
+                            # would round through f64). The helper fixes the
+                            # non-finite spelling: CPython prints "nan" where
+                            # Rust {:.6} prints "NaN".
                             if not isinstance(arg_type, RxtFloat):
                                 raise RustCodegenError(
                                     f"%{spec} logging argument must be float, got "
                                     f"{arg_type!r} (analyzer gate out of sync)"
                                 )
-                            parts.append("{:.6}")
-                            rendered_args.append(rendered)
+                            self.used_helpers.add("fixed6")
+                            parts.append("{}")
+                            rendered_args.append(f"__rextio_fixed6({rendered})")
                         elif spec in {"d", "i"}:
                             # Analyzer admits int and bool ("%d" % True == "1").
                             if isinstance(arg_type, RxtBool):

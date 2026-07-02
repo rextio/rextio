@@ -1835,7 +1835,7 @@ def emit(flag: bool, x: float, n: int) -> None:
     assert 'if flag.clone() { "True" } else { "False" }' in code
     assert "__rextio_repr_float(x.clone())" in code
     assert "fn __rextio_repr_float" in code
-    assert "{:.6}" in code  # %f of float
+    assert "__rextio_fixed6(" in code  # %f of float (nan -> "nan")
     assert "((flag.clone()) as i64)" in code  # %d of bool -> 1/0
     assert 'println!("{} {} {}"' in code
 

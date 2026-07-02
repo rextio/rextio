@@ -13,7 +13,7 @@ from __future__ import annotations
 _CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
 _CHECKED_HELPER_ORDER = (
     "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i",
-    "mnonneg", "mpositive", "munit", "mlogbase", "repr_float", "repr_str",
+    "mnonneg", "mpositive", "munit", "mlogbase", "repr_float", "repr_str", "fixed6",
 )
 
 
@@ -49,6 +49,20 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
     lines: list[str] = []
     for name in _CHECKED_HELPER_ORDER:
         if name not in used:
+            continue
+        if name == "fixed6":
+            # CPython "%f" formatting: fixed six decimals, but non-finite
+            # spellings are lowercase ("nan"; Rust {:.6} prints "NaN").
+            # inf/-inf agree between the two.
+            lines.extend(
+                [
+                    "fn __rextio_fixed6(value: f64) -> String {",
+                    '    if value.is_nan() { return "nan".to_string(); }',
+                    '    format!("{:.6}", value)',
+                    "}",
+                    "",
+                ]
+            )
             continue
         if name == "repr_str":
             # CPython str repr for error-message parity: single-quoted unless
