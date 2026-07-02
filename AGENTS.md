@@ -760,9 +760,11 @@ Support inside native candidate functions:
 * limited `time.time()` lowering
 * limited `statistics.mean` and `statistics.fmean`
 * limited `str`/`bytes`/`list` method lowering
-* limited `hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`, and
-  `json.dumps/json.loads` lowering, with `json.loads` requiring an expected
-  supported target type
+* limited `hashlib.sha256(...).hexdigest()` and `base64.b64encode` lowering
+  (`base64.b64decode` stays on the Python fallback - CPython discards
+  non-alphabet characters the native decoder rejects - and
+  `json.dumps`/`json.loads` stay on the fallback entirely: serde is not
+  CPython-`json`-compatible)
 * simple `list`, fixed `tuple`, and fixed `dict` indexing such as `xs[i]`
   (`str` and `bytes` indexing is not supported)
 
@@ -1631,7 +1633,9 @@ Rust dependencies should be minimal:
 * base64 for limited Python `base64` lowering
 * chrono for limited `datetime` lowering
 * log for limited Python `logging` lowering
-* serde_json for limited `json` lowering
+* serde/serde_json only in the hybrid executable's binary crate (the
+  delegated-call wire protocol); generated extension crates never depend on
+  them and `json` lowering does not exist (fallback)
 * sha2 for limited `hashlib.sha256` lowering
 * optionally serde for helper structures later
 
