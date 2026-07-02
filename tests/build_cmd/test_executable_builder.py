@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import stat
 import subprocess
+
+import pytest
 import sys
 import zipfile
 from pathlib import Path
