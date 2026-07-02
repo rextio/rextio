@@ -116,7 +116,7 @@ Common build variants:
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit --jit-hot-threshold=25
+rextio build . --jit
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -244,29 +244,60 @@ dynamic attribute access. It reports `RXT080`.
 
 This path preserves behavior. It should not be treated as a Rust speedup path.
 
-## Experimental Native JIT
+## Experimental Scalar-Helper Embedding
 
-Rextio can optionally enable an experimental native-side JIT for a very narrow
-set of scalar helper regions. This is off by default.
+Rextio can optionally embed a very narrow set of unmarked scalar helpers as
+internal native functions. This is off by default.
 
-When enabled, Rextio may keep an AOT-incompatible but IR-compatible helper as an
-internal JIT region and generate Rust code that compiles that region with
-Cranelift after a hot-call threshold. The JIT runs inside the generated native
-module; Python does not call a separate JIT API directly.
+When enabled, an eligible unmarked helper (typed scalar arguments and return,
+a single arithmetic return expression) is compiled into the generated native
+artifact as an ordinary internal function - callable from native code, not
+exported to Python. Embedded helpers lower through the normal checked path, so
+integer overflow raises OverflowError and division by zero raises
+ZeroDivisionError exactly like any native function. In the Rust executable
+backend an embedded helper compiles into the binary instead of being delegated
+per call to the CPython dispatcher.
+
+The former runtime Cranelift JIT hot path was removed: benchmarks showed it
+strictly slower than this AOT path (the "cold" path was already the same
+expression compiled by rustc, so recompiling it at runtime only added
+overhead).
 
 ```toml
 [jit]
 enabled = true
-backend = "cranelift"
-hot_threshold = 25
 ```
 
 Equivalent command-line and environment controls are:
 
 ```text
-rextio build . --jit --jit-hot-threshold=25
-REXTIO_JIT=true REXTIO_JIT_HOT_THRESHOLD=25 rextio build .
+rextio build . --jit
+REXTIO_JIT=true rextio build .
 ```
+
+## Using Numba on Fallback Code
+
+Rextio recognizes Numba decorators (`numba.jit`, `numba.njit`,
+`numba.vectorize`, `numba.guvectorize`) as a supported external accelerator
+for Python fallback code - the same externally-supported-tool pattern as the
+Nuitka packaging backend. A decorated function stays on the Python fallback
+cleanly (no auto-discovery, no diagnostic noise) and is labeled
+`external_accelerator: numba` in reports; `rextio check` lists such functions.
+
+The contract boundary matters: an `@rextio.native` function has Rextio-verified,
+CPython-exact semantics, while a `@numba.*` function runs under **Numba's**
+semantics (for example, nopython-mode integer arithmetic wraps on overflow
+instead of raising) - that trade is the user's explicit opt-in, outside
+Rextio's native contract, exactly like `@rextio.exempt`. Combining
+`@rextio.native` with a numba decorator is rejected loudly.
+
+Compatibility: wheel and zipapp deployments work with numba installed as a
+project dependency; the Rust executable's source-mode hybrid runtime works
+(the dispatcher runs real CPython); Nuitka-compiled fallbacks and the
+Nuitka-mode hybrid runtime are NOT supported (Numba needs the original
+bytecode at runtime). Prefer `@rextio.native` for typed scalar code and Numba
+for NumPy/array kernels, and note that very small functions lose to
+call-boundary costs under any accelerator.
 
 Cranelift dependencies are added to generated Cargo projects only when JIT is
 enabled and JIT candidates are emitted. If JIT is disabled, candidates that
@@ -377,8 +408,6 @@ Common settings:
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
 | `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
-| `[jit] backend` | `--jit-backend` | `REXTIO_JIT_BACKEND` |
-| `[jit] hot_threshold` | `--jit-hot-threshold` | `REXTIO_JIT_HOT_THRESHOLD` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |

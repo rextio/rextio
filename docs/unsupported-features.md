@@ -301,20 +301,46 @@ default. The runtime environment variable overrides that embedded default. Set
 the threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable
 this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 
-## Experimental Native-Side JIT Boundary
+## Experimental Scalar-Helper Embedding Boundary
 
-Rextio 0.1.0 alpha includes an opt-in native-side JIT for a very narrow scalar
-helper subset. It is disabled by default and must be enabled with `[jit]
+Rextio 0.1.0 alpha includes opt-in embedding for a very narrow scalar helper
+subset. It is disabled by default and must be enabled with `[jit]
 enabled = true`, `--jit`, or `REXTIO_JIT=true`.
 
-The current JIT path is not a general Python JIT. It only covers internal
-Rextio IR regions with scalar `int` or `float` arguments and return values, a
-matching scalar signature, and a single arithmetic return expression. The
-generated Rust module uses Cranelift only after the configured hot threshold.
-Python code does not call a separate JIT API directly.
+Embedding is not a JIT. It covers unmarked functions with scalar `int` or
+`float` arguments and return values, a matching scalar signature, and a single
+arithmetic return expression; an eligible helper is compiled ahead of time as
+an ordinary internal native function (callable from native code, not exported
+to Python) through the normal checked lowering - integer overflow raises
+OverflowError, `%` keeps floored/zero-division semantics, and float `/` raises
+ZeroDivisionError. In the Rust executable backend an embedded helper compiles
+into the binary instead of being delegated per call to the CPython dispatcher.
+The former runtime Cranelift hot path was removed after benchmarks showed it
+strictly slower than this AOT path.
 
 Code outside this subset remains on the normal direct Rust, Python runtime shim,
 or CPython/Nuitka fallback path.
+
+## Numba as an External Fallback Accelerator
+
+Functions decorated with `numba.jit`, `numba.njit`, `numba.vectorize`, or
+`numba.guvectorize` (resolved through the module's imports, including aliases
+and call forms) stay on the Python fallback intentionally: they are excluded
+from auto-discovery and embedding without diagnostic noise, and reports label
+them `external_accelerator: numba`.
+
+Such a function runs under Numba's semantics, not Rextio's native contract -
+notably, Numba nopython-mode integer arithmetic uses fixed-width machine ints
+and wraps on overflow where Rextio native code raises OverflowError. That
+divergence is the user's explicit opt-in, the same philosophy as
+`@rextio.exempt`. Combining `@rextio.native` with a numba decorator is
+rejected (unsupported decorator on a native function).
+
+Compatibility: CPython wheel and zipapp deployments work with numba installed;
+the Rust executable's `source` hybrid runtime works (delegated calls run in
+real CPython, with numba's first-call compile latency inside the dispatcher);
+Nuitka-compiled fallbacks and the `nuitka` hybrid runtime do not work (Numba
+requires the original function bytecode at runtime).
 
 ## Accepted Native Semantic Divergences
 
