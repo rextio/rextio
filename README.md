@@ -204,7 +204,9 @@ Supported types include:
 - `list[T]` for supported item types, including `list[list[T]]`
 - fixed `tuple[...]`
 - fixed `dict[K, V]` where keys are supported scalar key types
-- limited `set[int]`, `set[float]`, `set[bool]`, and `set[str]`
+- limited `set[int]`, `set[bool]`, and `set[str]` (`set[float]` stays on the
+  Python fallback: NaN-identity dedup has no faithful Rust lowering; native
+  code also never *iterates* a set - hash order diverges from CPython)
 - `Optional[T]` and `T | None`
 
 Supported syntax includes:

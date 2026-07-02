@@ -668,9 +668,9 @@ list[list[T]]
 tuple[int, float]
 dict[K, V] where K is int, bool, or str and V is a supported fixed value type
 set[int]
-set[float]
 set[bool]
 set[str]
+set[float] (no native lowering - NaN identity - fallback/shim only)
 Optional[T]
 T | None
 ```
@@ -692,7 +692,7 @@ Python list[list[T]] -> Vec<Vec<T>>
 Python tuple[...]   -> Rust fixed tuple
 Python dict[K, V]   -> HashMap<K, V> for supported fixed K and V
 Python set[int]     -> HashSet<i64>
-Python set[float]   -> Vec<f64> internally, restored to Python set by wrappers
+Python set[float]   -> no native lowering (NaN identity); Python fallback or RXT080 shim
 Python set[bool]    -> HashSet<bool>
 Python set[str]     -> HashSet<String>
 Python Optional[T]  -> Option<T>
@@ -735,8 +735,9 @@ Support inside native candidate functions:
   iterables, including optional `if` clauses and multi-generator flattening
 * nested list comprehensions that produce `list[list[T]]`
 * limited dict comprehensions producing supported fixed `dict[K, V]` types
-* limited set comprehensions producing `set[int]`, `set[float]`, `set[bool]`,
-  or `set[str]`
+* limited set comprehensions producing `set[int]`, `set[bool]`, or `set[str]`
+  from an ordered iterable (set iteration itself is rejected: hash order
+  diverges from CPython)
 * assignment expressions inside comprehensions, with Python-style binding into
   the containing function scope and rejection when rebinding comprehension
   iteration variables

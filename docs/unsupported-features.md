@@ -60,9 +60,11 @@ Supported types:
 - fixed `dict[K, V]` where `K` is `int`, `bool`, or `str` and `V` is a
   supported fixed value type
 - `set[int]`
-- `set[float]`
 - `set[bool]`
 - `set[str]`
+- (`set[float]` is NOT natively lowered - CPython's NaN-identity dedup has no
+  faithful Rust equivalent - such functions stay on the Python fallback or the
+  runtime-semantics shim)
 - `Optional[T]` and `T | None` for supported `T`
 
 Supported syntax is intentionally small:
@@ -99,8 +101,9 @@ Supported syntax is intentionally small:
   iterables, including optional `if` clauses and multi-generator flattening
 - nested list comprehensions that produce `list[list[T]]`
 - limited dict comprehensions producing supported fixed `dict[K, V]` types
-- limited set comprehensions producing `set[int]`, `set[float]`, `set[bool]`,
-  or `set[str]`
+- limited set comprehensions producing `set[int]`, `set[bool]`, or `set[str]`
+  from an ordered iterable (`set[float]` has no native lowering - NaN identity -
+  and iterating a *set* as the comprehension source is rejected)
 - assignment expressions inside comprehensions; targets bind in the containing
   function scope and cannot rebind comprehension iteration variables
 - `Optional[T]` / `T | None` annotations, `None` returns, and `is None` /
