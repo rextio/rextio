@@ -735,9 +735,10 @@ Support inside native candidate functions:
   iterables, including optional `if` clauses and multi-generator flattening
 * nested list comprehensions that produce `list[list[T]]`
 * limited dict comprehensions producing supported fixed `dict[K, V]` types
-* limited set comprehensions producing `set[int]`, `set[bool]`, or `set[str]`
-  from an ordered iterable (set iteration itself is rejected: hash order
-  diverges from CPython)
+* limited set comprehensions producing `set[int]`, `set[bool]`, or `set[str]`;
+  the comprehension source must be a supported ordered iterable (list, range,
+  enumerate, zip) - iterating a set or dict as the source is rejected (hash
+  order diverges from CPython)
 * assignment expressions inside comprehensions, with Python-style binding into
   the containing function scope and rejection when rebinding comprehension
   iteration variables

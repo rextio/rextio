@@ -252,7 +252,9 @@ JIT と `backend`/`hot_threshold` 設定は、ベンチマークで AOT 経路�
 plain `.py` のまま残り、wheel は Nuitka でコンパイルされたモジュールの `.py`
 ソースを除外してプラットフォームタグを付けます。Nuitka *実行ファイル* と
 `--hybrid-runtime=nuitka` はアクセラレータ使用モジュールがあると案内付きで早期に
-失敗します（`--hybrid-runtime=source` を使用）。
+失敗します（`--hybrid-runtime=source` を使用）。ビルド時スキャンはレポートの
+ラベルより範囲が広く、`rextio check` のラベルは直線的な import のみを扱うため、
+ラベルのない関数のモジュールもビルドでは正しく plain のまま保持されることがあります。
 
 ## executable artifact
 
@@ -295,8 +297,6 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
 | `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
-| `[jit] backend` | `--jit-backend` | `REXTIO_JIT_BACKEND` |
-| `[jit] hot_threshold` | `--jit-hot-threshold` | `REXTIO_JIT_HOT_THRESHOLD` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |

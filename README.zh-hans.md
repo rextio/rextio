@@ -245,7 +245,9 @@ int overflow 会 wrap），在 Rextio 的 CPython 精确性契约之外 — 与 
 相同的 opt-in 哲学。`--fallback=nuitka` 自动共存：使用加速器的模块被排除在编译
 之外、保持为 plain `.py`；wheel 会排除已被 Nuitka 编译模块的 `.py` 源码并带上
 平台标签。Nuitka *可执行文件* 与 `--hybrid-runtime=nuitka` 在存在加速模块时会
-带指引提前失败（请改用 `--hybrid-runtime=source`）。
+带指引提前失败（请改用 `--hybrid-runtime=source`）。构建时扫描的覆盖面比
+报告标签更广：`rextio check` 标签只处理直线式 import，因此没有标签的函数
+所在模块在构建中仍可能被正确地保持为 plain。
 
 ## 可执行 artifact
 
@@ -287,8 +289,6 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
 | `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
-| `[jit] backend` | `--jit-backend` | `REXTIO_JIT_BACKEND` |
-| `[jit] hot_threshold` | `--jit-hot-threshold` | `REXTIO_JIT_HOT_THRESHOLD` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |

@@ -115,9 +115,12 @@ def find_str(xs: list[str], needle: str) -> int:
         module.find_int([1, 2], 5)
     with pytest.raises(ValueError) as str_error:
         module.find_str(["a"], "it's")
+    with pytest.raises(ValueError) as ctrl_error:
+        module.find_str(["a"], "ctl\x01\x1b")
 
     assert str(int_error.value) == str(_cpython_index_error([1, 2], 5))
     assert str(str_error.value) == str(_cpython_index_error(["a"], "it's"))
+    assert str(ctrl_error.value) == str(_cpython_index_error(["a"], "ctl\x01\x1b"))
 
 
 def _cpython_index_error(xs: list, needle: object) -> ValueError:

@@ -38,6 +38,19 @@ Initial public MVP for Rextio as a local hybrid build tool.
   sections); `set[float]` support claims corrected everywhere; the
   `--executable-backend=rust` Python-free binary is no longer denied by
   `docs/unsupported-features.md`.
+- Logging `%` conversions are validated per argument type (`%d`/`%i`: int and
+  bool; `%f`: float only; count mismatches, unknown conversions, and dynamic
+  format strings with arguments fall back) - previously `%f` of a bool
+  emitted uncompilable Rust from an accepted function. `%r` renders CPython
+  repr. Printable containers (list, fixed tuple, `Optional`, nested) compose
+  CPython repr recursively in `print`/logging; `print` of a `set` or `dict`
+  is rejected (native iteration order is not CPython's). `__rextio_repr_str`
+  escapes C0/C1 control characters exactly like CPython repr.
+- The accelerator source scan keeps accelerator-resolving import bindings
+  over scope-flattened collisions (a nested `import local_numba as numba` no
+  longer hides a top-level `import numba`), and the wheel's source-shadow
+  rule only counts import-loadable suffixes (`.so`/`.pyd`) - a same-stem
+  ctypes `.dylib`/`.dll` payload no longer drops its Python wrapper.
 
 ### Added
 

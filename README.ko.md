@@ -193,7 +193,9 @@ Rextio 0.1.0 alpha는 의도적으로 작은 subset만 지원합니다. 실제 R
 - 지원 item 타입의 `list[T]`, `list[list[T]]`
 - fixed `tuple[...]`
 - key/value가 지원 타입인 fixed `dict[K, V]`
-- 제한적 `set[int]`, `set[float]`, `set[bool]`, `set[str]`
+- 제한적 `set[int]`, `set[bool]`, `set[str]` (`set[float]`은 NaN identity 때문에
+  native lowering이 없어 Python fallback/shim에 남으며, set을 *순회*하는 코드는
+  해시 순서가 CPython과 달라 거부됩니다)
 - `Optional[T]`, `T | None`
 
 지원 문법:
@@ -258,7 +260,9 @@ enabled = true
 공존합니다: 가속기를 쓰는 모듈은 컴파일에서 제외되어 plain `.py`로 남고, wheel은
 Nuitka로 컴파일된 모듈의 `.py` 원본을 제외한 채 플랫폼 태그를 답니다. Nuitka
 *실행 파일*과 `--hybrid-runtime=nuitka`는 가속 모듈이 있으면 안내 메시지와 함께
-조기 실패합니다(`--hybrid-runtime=source` 사용).
+조기 실패합니다(`--hybrid-runtime=source` 사용). 빌드 타임 스캔은 리포트
+라벨보다 범위가 넓습니다: `rextio check` 라벨은 직선적 import만 다루므로,
+라벨이 없는 함수의 모듈도 빌드에서는 정확히 plain으로 유지될 수 있습니다.
 
 ## Rust에서 import 가능한 crate
 
@@ -334,8 +338,6 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
 | `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
-| `[jit] backend` | `--jit-backend` | `REXTIO_JIT_BACKEND` |
-| `[jit] hot_threshold` | `--jit-hot-threshold` | `REXTIO_JIT_HOT_THRESHOLD` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
