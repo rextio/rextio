@@ -162,102 +162,79 @@ Initial public MVP for Rextio as a local hybrid build tool.
   versioning policy (`docs/versioning.md`) documenting the SemVer pre-1.0 stance and
   what is stable versus experimental.
 
-### Changed
+### Semantics and safety guarantees
 
-- `@rextio.native` now validates its `target` against the supported languages
-  (rust/mojo/julia) and both `@rextio.native`/`@rextio.exempt` reject classes and
-  non-callables, surfacing typos and misuse at decoration time instead of silently.
-- Plugins are now explicitly metadata-only: the unused `RextioPlugin.rules` field
-  (which never affected lowering) is removed; a legacy `rules` key from an older
-  plugin is accepted and ignored so installed plugins keep loading.
-
-- Generated `str` literals are now escaped into always-valid Rust (non-ASCII is
-  emitted literally rather than as `\uXXXX`, which Rust rejects), fixing
-  uncompilable output for string constants containing non-ASCII characters;
-  escaping remains injection-safe. The same escaper is now the single funnel for
-  every Python-string-to-Rust-literal path — plain `str` constants, the
-  runtime-semantics shim's fallback module/attr names, logging format strings,
-  and the unbound-local error message (which embeds a possibly non-ASCII variable
-  name) — and lone surrogates, which a Python `str` can hold but Rust cannot
-  represent, are rejected with a clear diagnostic instead of producing
-  unencodable output.
-- External build tools (`cargo`/`maturin`/`nuitka`) are invoked through a shared
-  no-shell, bounded-timeout helper, so a hung toolchain fails the build with a
-  clear message instead of blocking indefinitely. On timeout the helper now
-  terminates the whole process tree (POSIX process-group / Windows
-  `CREATE_NEW_PROCESS_GROUP`), so child `rustc`/linker/`python` processes spawned
-  by the tool are not left running.
-- A native candidate's function name, parameters, and locals that collide with a
-  Rust keyword (`fn`, `match`, `type`, …) are now carried as raw identifiers
-  (`r#match`), so the function stays native instead of failing to compile. Only
-  the keywords a raw identifier cannot express (`crate`/`self`/`Self`/`super`) and
-  non-ASCII names are kept on the Python fallback path with `RXT011`. The
-  function's own name is validated too, closing a gap where a root-package
-  function named after a keyword emitted uncompilable Rust.
-- Added `SECURITY.md` (threat model + protections) and a `check-wheel-contents`
-  packaging gate in CI.
-- Internal refactor (no behavior change): the two largest modules were split into
-  cohesive units guarded by the golden-snapshot and contract suites —
-  `codegen/rust/generator.py` shed its formatting helpers (`rust_format`),
-  checked-arithmetic emitter (`checked_arith`), and shared error type
-  (`errors`); `analyzer/unsupported_patterns.py` shed
-  its stateless type/AST predicates (`type_predicates`).
-- The supported-type capability matrix (scalar/list/dict/set item/key types) is
-  now defined once in `rextio.capabilities` and shared by the analyzer and the
-  Rust backend, replacing duplicated constants that could drift apart. No
-  behavior change; a consistency test asserts every registered type has a Rust
+- `@rextio.native` validates its `target` against the supported languages
+  (rust/mojo/julia), and both `@rextio.native`/`@rextio.exempt` reject classes
+  and non-callables at decoration time, surfacing typos and misuse immediately.
+- Plugins are metadata-only; a legacy `rules` key in plugin metadata is
+  accepted and ignored so such plugins still load.
+- Generated `str` literals are escaped into always-valid Rust (non-ASCII is
+  emitted literally; escaping is injection-safe) through a single escaper that
+  funnels every Python-string-to-Rust-literal path — plain `str` constants,
+  the runtime-semantics shim's fallback module/attr names, logging format
+  strings, and error messages embedding variable names. Lone surrogates, which
+  a Python `str` can hold but Rust cannot represent, are rejected with a clear
+  diagnostic.
+- External build tools (`cargo`/`maturin`/`nuitka`) are invoked through a
+  shared no-shell, bounded-timeout helper: a hung toolchain fails the build
+  with a clear message, and on timeout the whole process tree is terminated
+  (POSIX process-group / Windows `CREATE_NEW_PROCESS_GROUP`) so child
+  `rustc`/linker/`python` processes are not left running.
+- A native candidate's function name, parameters, and locals that collide with
+  a Rust keyword (`fn`, `match`, `type`, …) are carried as raw identifiers
+  (`r#match`), so the function stays native. Only the keywords a raw
+  identifier cannot express (`crate`/`self`/`Self`/`super`) and non-ASCII
+  names are kept on the Python fallback path with `RXT011`.
+- `SECURITY.md` documents the threat model and protections; CI runs a
+  `check-wheel-contents` packaging gate.
+- The supported-type capability matrix (scalar/list/dict/set item/key types)
+  is defined once in `rextio.capabilities` and shared by the analyzer and the
+  Rust backend; a consistency test asserts every registered type has a Rust
   mapping.
-- Generated sequence indexing now preserves Python semantics: a negative index
-  counts from the end (`xs[-1]`), and an out-of-range index raises `IndexError`
-  instead of triggering an unchecked Rust panic.
+- Generated sequence indexing preserves Python semantics: a negative index
+  counts from the end (`xs[-1]`), and an out-of-range index raises
+  `IndexError` rather than triggering an unchecked Rust panic.
 - Generated integer `+`/`-`/`*`/`%`, unary negation, and the `abs`/`sum`
-  builtins now use checked arithmetic (`checked_add`/`checked_sub`/`checked_mul`/
-  `checked_rem`/`checked_neg`/`checked_abs` and a checked `sum` fold): an i64
-  overflow raises `OverflowError` (PyO3) / returns a `RextioError` (Rust-
-  importable crate) instead of silently wrapping or panicking, and a modulo by
-  zero raises `ZeroDivisionError`. Integer `%` also follows Python's floored
-  semantics (the result takes the divisor's sign, e.g. `-7 % 3 == 2`) rather
-  than Rust's truncated remainder. Python ints are arbitrary precision, so this
-  preserves Python semantics, and these are catchable `Exception`s (unlike the
-  uncatchable PyO3 `PanicException` a raw overflow panic produces). The
-  guarantee travels with the generated code, so it holds even when the Rust-
-  importable crate is consumed as a dependency (where a `[profile.release]`
-  setting would be ignored). Release builds also keep `overflow-checks = true`
-  as a safety-net backstop for any arithmetic not covered by the checked path;
-  it is not part of the catchable-exception contract.
-- Generated float division and modulo now preserve Python semantics: `x / 0.0`
-  and `x % 0.0` raise `ZeroDivisionError` (instead of Rust's silent `inf`/`NaN`),
-  and float `%` is floored (the result takes the divisor's sign, e.g.
-  `-7.0 % 3.0 == 2.0`) rather than Rust's truncated `fmod`. When the remainder is
-  exactly zero it takes the divisor's sign (`copysign(0.0, b)`), matching CPython.
-- `math.floor`/`ceil`/`trunc` now convert through a guarded float-to-int helper:
-  a value outside i64 range raises `OverflowError` and `NaN` raises `ValueError`,
-  instead of silently saturating to `i64::MIN`/`MAX` via an `as i64` cast.
-- Removed the unused `crates/rextio_runtime` helper crate; generated code inlines
-  its bounds-checked access, so the crate was never wired into any build.
-- The Python runtime-semantics shim (`RXT080`) is now strictly opt-in. Only
+  builtins use checked arithmetic: an i64 overflow raises `OverflowError`
+  (PyO3) / returns a `RextioError` (Rust-importable crate) instead of silently
+  wrapping or panicking, and a modulo by zero raises `ZeroDivisionError`.
+  Integer `%` follows Python's floored semantics (the result takes the
+  divisor's sign, e.g. `-7 % 3 == 2`) rather than Rust's truncated remainder.
+  These are catchable `Exception`s (unlike the uncatchable PyO3
+  `PanicException` a raw overflow panic produces), and the guarantee travels
+  with the generated code, so it holds even when the Rust-importable crate is
+  consumed as a dependency. Release builds also keep `overflow-checks = true`
+  as a safety-net backstop for any arithmetic outside the checked path; it is
+  not part of the catchable-exception contract.
+- Generated float division and modulo preserve Python semantics: `x / 0.0`
+  and `x % 0.0` raise `ZeroDivisionError` (instead of Rust's silent
+  `inf`/`NaN`), and float `%` is floored (the result takes the divisor's
+  sign); a remainder of exactly zero takes the divisor's sign
+  (`copysign(0.0, b)`), matching CPython.
+- `math.floor`/`ceil`/`trunc` convert through a guarded float-to-int helper: a
+  value outside i64 range raises `OverflowError` and `NaN` raises
+  `ValueError`, never silently saturating to `i64::MIN`/`MAX`.
+- The Python runtime-semantics shim (`RXT080`) is strictly opt-in: only
   functions explicitly marked `@rextio.native` are promoted to the shim.
   Auto-discovered (undecorated) functions are accepted only within the
-  direct-Rust subset, and an undecorated function that depends on a runtime-shim
-  native is now reported with `RXT074` and left on the Python fallback path.
-  - Migration: if a previously auto-accepted dynamic function (or a caller of a
-    runtime-shim native) regressed to Python fallback, add `@rextio.native` to
-    opt back into the runtime-semantics shim.
-- Hardened the native subset checker so a batch of patterns that were accepted as
-  direct-Rust but emitted wrong or uncompilable Rust are now kept off the
-  direct-native path (rejected to the Python fallback, or routed to the `RXT080`
-  runtime shim) — preserving the contract that an accepted function is either
-  CPython-equivalent or rejected, never silently mis-compiled. Newly rejected:
-  non-`bool` `if`/`while`/comprehension conditions; multiple assignment
-  (`a = b = ...`); integer literals outside the `i64` range; ordering
-  comparisons on `dict`/`set` operands (`==`/`!=` stay native); `len()` of a
-  fixed tuple; value-position `range(...)`; `str`/`bytes` indexing; a
-  value-position read of a name bound nowhere in the function (a module global, a
-  closure, or a name leaked from a nested block); and a call to a name shadowed
-  by a local binding or a module-level assignment (`len = 5` then `len(xs)`).
-  Two cases are now lowered faithfully instead of rejected: `len(str)` counts
-  Unicode code points (`.chars().count()`) rather than UTF-8 bytes, and a bare
-  `return` in an `Optional[T]` function emits `Ok(None)` rather than `Ok(())`.
+  direct-Rust subset, and an undecorated function that depends on a
+  runtime-shim native is reported with `RXT074` and left on the Python
+  fallback path.
+- The native subset checker keeps patterns it cannot lower faithfully off the
+  direct-native path (rejected to the Python fallback, or routed to the
+  `RXT080` runtime shim for marked functions) — an accepted function is either
+  CPython-equivalent or rejected, never silently mis-compiled. Among the
+  rejected patterns: non-`bool` `if`/`while`/comprehension conditions;
+  multiple assignment (`a = b = ...`); integer literals outside the `i64`
+  range; ordering comparisons on `dict`/`set` operands (`==`/`!=` stay
+  native); `len()` of a fixed tuple; value-position `range(...)`;
+  `str`/`bytes` indexing; a value-position read of a name bound nowhere in
+  the function (a module global, a closure, or a name leaked from a nested
+  block); and a call to a name shadowed by a local binding or a module-level
+  assignment (`len = 5` then `len(xs)`). `len(str)` counts Unicode code
+  points (`.chars().count()`) rather than UTF-8 bytes, and a bare `return` in
+  an `Optional[T]` function emits `None`.
 
 ### Notes
 
