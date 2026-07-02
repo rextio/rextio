@@ -90,7 +90,7 @@ def main(argv: list[str]) -> int:
 
 
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for the Rust executable e2e")
-def test_rust_main_executable_with_jit_config_delegates_unmarked_helper(
+def test_rust_main_executable_with_jit_config_embeds_unmarked_helper(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -139,6 +139,10 @@ def main(argv: list[str]) -> int:
     executable = report["executable_build"]
     assert executable["status"] == "built", executable
     binary = Path(executable["path"])
+
+    # The embedded helper is compiled INTO the binary: fully standalone (no
+    # `.runtime` delegation directory) and CPython-equivalent output.
+    assert not (binary.parent / f"{binary.name}.runtime").exists()
 
     completed = subprocess.run([str(binary), "arg"], capture_output=True, text=True, timeout=60)
     assert completed.returncode == 2

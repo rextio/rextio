@@ -519,7 +519,9 @@ def _generate_rust_crate_source(
             ),
         )
     try:
-        module_ir = lower_project(plan.analysis)
+        # Include embedded helpers: an exported native function may call one, and
+        # the crate must carry the callee it references.
+        module_ir = lower_project(plan.analysis, include_jit=True)
         rust_source = generate_rust_crate_module(module_ir)
     except (LoweringError, RustCodegenError) as exc:
         return NativeSourceResult(
@@ -716,11 +718,14 @@ def _entrypoint_reachable_native_graph(
                 if return_type is not None:
                     delegated[resolved.qualname] = return_type
                 continue
-            if (
-                resolved.accepted
-                and not resolved.native_runtime_semantics
-                and not resolved.is_jit_candidate
-            ):
+            if resolved.is_jit_candidate:
+                # An embedded helper is a plain crate function the caller invokes
+                # directly; keep it in the reachable set so the IR filter emits it.
+                # Its candidacy shape (a single scalar expression) has no calls of
+                # its own, so it is a leaf.
+                reachable.add(resolved.qualname)
+                continue
+            if resolved.accepted and not resolved.native_runtime_semantics:
                 stack.append(resolved)
     return reachable, delegated
 
@@ -851,7 +856,7 @@ def _build_rust_executable_artifact(
     )
     nuitka_dispatcher = hybrid_runtime == "nuitka"
     try:
-        module_ir = _filter_module_ir(lower_project(analysis), reachable_qualnames)
+        module_ir = _filter_module_ir(lower_project(analysis, include_jit=True), reachable_qualnames)
         main_rs = generate_rust_main_binary(
             module_ir,
             entry_qualname,

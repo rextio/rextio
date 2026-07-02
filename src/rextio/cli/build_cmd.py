@@ -127,11 +127,12 @@ def run(args: Namespace) -> int:
             native_top_level=config.policy.native_top_level,
             imports_config=config.imports,
             active_plugins=target_plan.plugins.active,
-            # Rust-main codegen has no Cranelift/JIT lowering path. Analyze the
-            # executable graph without JIT so helper functions must pass the
-            # ordinary direct-Rust or delegation gates instead of being accepted
-            # as JIT-only helpers that the binary backend cannot emit.
-            native_jit_enabled=False,
+            # Embedded helpers are ordinary direct-native crate functions now, so
+            # the executable graph honors the embedding opt-in: an eligible
+            # unmarked scalar helper compiles INTO the binary instead of being
+            # delegated per call over IPC (bench gate: embedding beats delegation
+            # by ~4-5 orders of magnitude per call).
+            native_jit_enabled=config.jit.enabled,
                 delegate_fallback=True,
         )
 

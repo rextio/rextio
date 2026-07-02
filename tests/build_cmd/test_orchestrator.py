@@ -213,7 +213,7 @@ def compute(x: int) -> int:
     assert "cranelift" not in cargo_toml
 
 
-def test_rust_executable_delegate_analysis_disables_jit(
+def test_rust_executable_delegate_analysis_embeds_helpers(
     tmp_path: Path,
     monkeypatch,
     capsys,
@@ -285,9 +285,12 @@ def main(argv: list[str]) -> int:
         for module in captured_executable_analysis.modules
         for function in module.functions
     }
-    assert not functions["helper"].is_jit_candidate
+    # With embedding enabled, the unmarked scalar helper compiles INTO the binary
+    # (an embedding candidate the native caller may use) instead of being
+    # delegated per call over IPC.
+    assert functions["helper"].is_jit_candidate
     assert functions["main"].accepted
-    assert functions["main"].delegated_call_targets == {"app.helper"}
+    assert functions["main"].delegated_call_targets == set()
 
 
 def test_build_generates_rust_importable_crate_artifact(
