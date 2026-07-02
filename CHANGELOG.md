@@ -82,7 +82,7 @@ Initial public MVP for Rextio as a local hybrid build tool.
   -> int` entrypoint, mirrors `sys.argv`, uses the returned `int` as the process
   exit code (converted to the platform's exit-status width, like CPython's
   `sys.exit`), and prints a returned error CPython-style (`TypeName: message`) to
-  stderr. The crate-mode `RextioError` now carries the CPython exception type name
+  stderr. The crate-mode `RextioError` carries the CPython exception type name
   so these binaries emit Python-style diagnostics.
 - Subprocess hybrid for the Rust executable: a call the entrypoint makes to a
   project function that stays on the Python fallback is delegated to an external
@@ -154,7 +154,7 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Example projects for pure math, application-shell scoring, fallback safety, and boundary diagnostics.
 - Focused end-to-end tests for build/import/runtime behavior, real Cargo builds, generated wheels, and Nuitka when installed.
 - Global CLI output options on every command: `--format text|json`, and mutually
-  exclusive `-v/--verbose` and `-q/--quiet`. All commands now emit their result on
+  exclusive `-v/--verbose` and `-q/--quiet`. All commands emit their result on
   stdout (text or JSON) while diagnostics and configuration errors go to stderr, so
   a `--format json` run produces clean machine-parseable stdout.
 - Project documentation and governance: a `CONTRIBUTING.md` guide, GitHub issue forms

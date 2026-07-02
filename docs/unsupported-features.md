@@ -392,17 +392,18 @@ also surfaced at build time as a per-function `RXT090` note (shown by
 this page alone — the one exception is the value-dependent repr limitation
 below, which depends on runtime string data rather than on the code being
 compiled and therefore cannot carry a per-function note.
-(`print`/`logging` of `bool` and `float` formerly appeared here; both are now
-lowered to CPython-exact text — `True`/`False` and shortest correctly-rounded
-float repr with CPython's thresholds, `nan`/`inf` spellings, and `e+NN`
-exponents. Printable containers — `list`, fixed tuples, `Optional` — compose
-their CPython repr recursively from the same pieces. `print`/`logging` of a
-`set` or `dict` is REJECTED to the fallback: their native iteration order is
-not CPython's, so no exact text exists. Logging `%` conversions are validated
-per argument type — `%d`/`%i` accept int and bool, `%f` accepts float only,
-`%s`/`%r` accept the printable types; every other combination, a
-placeholder/argument count mismatch, or a non-literal format string with
-arguments keeps the function on the Python fallback.)
+For context, the textual output paths themselves are CPython-exact and are
+NOT divergences: `print`/`logging` of `bool` and `float` render CPython text
+(`True`/`False`; shortest correctly-rounded float repr with CPython's
+thresholds, `nan`/`inf` spellings, and `e+NN` exponents), printable
+containers — `list`, fixed tuples, `Optional` — compose their CPython repr
+recursively from the same pieces, and `print`/`logging` of a `set` or `dict`
+is rejected to the fallback (their native iteration order is not CPython's,
+so no exact text exists). Logging `%` conversions are validated per argument
+type — `%d`/`%i` accept int and bool, `%f` accepts float only, `%s`/`%r`
+accept the printable types; every other combination, a placeholder/argument
+count mismatch, or a non-literal format string with arguments keeps the
+function on the Python fallback.
 
 - **`bytes.decode()` on invalid UTF-8.** The native path raises `ValueError`
   where CPython raises `UnicodeDecodeError`. `UnicodeDecodeError` is a subclass
