@@ -87,3 +87,24 @@ def test_nuitka_compiled_modules_ship_without_shadowed_py(tmp_path: Path) -> Non
     assert "hb/__init__.py" in names
     record = [name for name in names if name.endswith("RECORD")]
     assert record  # metadata still written
+
+def test_ctypes_payload_does_not_shadow_its_python_wrapper(tmp_path: Path) -> None:
+    # A .dylib/.dll next to a same-stem .py is a ctypes payload, not an
+    # importable extension module (EXTENSION_SUFFIXES only has .so/.pyd):
+    # the wrapper .py must stay in the wheel, while the platform tag still
+    # applies (the wheel carries platform-specific content).
+    python_dir = tmp_path / "python"
+    (python_dir / "pkg").mkdir(parents=True)
+    (python_dir / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (python_dir / "pkg" / "libfoo.py").write_text("# ctypes wrapper\n", encoding="utf-8")
+    (python_dir / "pkg" / "libfoo.native.dylib").write_bytes(b"payload")
+
+    result = build_artifact_wheel(tmp_path, python_dir, tmp_path / "dist")
+
+    assert result.status == "built"
+    assert result.path is not None
+    assert "py3-none-any" not in result.path
+    with zipfile.ZipFile(result.path) as archive:
+        names = set(archive.namelist())
+    assert "pkg/libfoo.py" in names  # wrapper survives
+    assert "pkg/libfoo.native.dylib" in names

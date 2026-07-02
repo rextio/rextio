@@ -129,7 +129,14 @@ def _has_native_extension(python_dir: Path) -> bool:
     return any(_is_native_extension(path.name) for path in python_dir.rglob("*") if path.is_file())
 
 
+# Platform-specific binary content: any of these in the tree means the wheel
+# must carry a platform tag instead of py3-none-any.
 _NATIVE_SUFFIXES = (".so", ".pyd", ".dll", ".dylib")
+# Suffixes Python's import system actually loads as extension MODULES
+# (importlib EXTENSION_SUFFIXES end in .so on POSIX and .pyd on Windows). A
+# .dylib/.dll next to a .py is a ctypes-style payload, NOT a module shadow -
+# dropping the .py for those would break the installed package.
+_EXTENSION_MODULE_SUFFIXES = (".so", ".pyd")
 
 
 def _is_native_extension(filename: str) -> bool:
@@ -137,17 +144,18 @@ def _is_native_extension(filename: str) -> bool:
 
 
 def _shadowed_by_compiled_sibling(path: Path) -> bool:
-    """Whether a compiled extension for the same module sits next to a .py file.
+    """Whether a compiled extension MODULE for the same module sits next to a .py.
 
     A valid extension filename for module `stem` is `stem.so`-style or
     `stem.<tag>.so`-style (dot right after the stem), so `plain2.so` does not
-    shadow `plain.py`.
+    shadow `plain.py`; only import-loadable suffixes count (see
+    `_EXTENSION_MODULE_SUFFIXES`).
     """
     if path.suffix != ".py":
         return False
     stem = path.stem
     for sibling in path.parent.iterdir():
-        if not sibling.is_file() or not _is_native_extension(sibling.name):
+        if not sibling.is_file() or not sibling.name.endswith(_EXTENSION_MODULE_SUFFIXES):
             continue
         if sibling.name.startswith(f"{stem}."):
             return True
