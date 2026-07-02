@@ -5056,3 +5056,28 @@ def f(xs: list[float]) -> float:
     function = next(f for m in analysis.modules for f in m.functions if f.name == "f")
     assert not function.accepted
     assert not function.native_runtime_semantics
+
+def test_shadowed_fidelity_import_is_not_shim_promoted(tmp_path: Path) -> None:
+    # `from statistics import mean` followed by a module-level def/assignment
+    # rebinds the name to PROJECT code: the stale import-map entry must not
+    # promote the marked caller to the RXT080 shim (the call resolves to the
+    # shadow at runtime, not to the stdlib).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+from statistics import mean
+
+def mean(xs):
+    return 0.0
+
+@rextio.native
+def f(xs: list[float]) -> float:
+    return mean(xs)
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions if f.name == "f")
+    assert not function.accepted
+    assert not function.native_runtime_semantics

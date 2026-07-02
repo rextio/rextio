@@ -485,7 +485,8 @@ def _classify_native_function(
             function.add_diagnostic(diagnostic)
         function.accepted = True
         return
-    if not _requires_runtime_semantics(node, function.imports):
+    module_bindings = set(function.module_assigned_names) | (module_function_names or set())
+    if not _requires_runtime_semantics(node, function.imports, module_bindings):
         for diagnostic in probe.diagnostics:
             function.add_diagnostic(diagnostic)
         function.accepted = False
@@ -508,6 +509,7 @@ def _classify_native_function(
 def _requires_runtime_semantics(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     imports: dict[str, str] | None = None,
+    module_bindings: frozenset[str] | set[str] = frozenset(),
 ) -> bool:
     # Used only on the explicit `@rextio.native` path (`_classify_native_function`).
     # Auto-discovered functions are never promoted to the runtime shim on the
@@ -542,10 +544,14 @@ def _requires_runtime_semantics(
             # (`from statistics import mean; mean(xs)`): the attribute form
             # already promotes via the unknown-attribute rule above, and the
             # import STYLE must not change the documented marked-function
-            # behavior (rejected vs RXT080 shim).
+            # behavior (rejected vs RXT080 shim). A module-level assignment or
+            # `def` shadowing the imported name rebinds it to PROJECT code, so
+            # the stale import-map entry must not promote (the call would
+            # resolve to the shadow at runtime, not to the stdlib).
             if (
                 target is not None
                 and "." not in target
+                and target not in module_bindings
                 and imports.get(target) in RUNTIME_FIDELITY_TARGETS
             ):
                 return True
