@@ -764,10 +764,10 @@ Support inside native candidate functions:
   auto-discovered ones stay on the Python fallback
 * limited `str`/`bytes`/`list` method lowering
 * limited `hashlib.sha256(...).hexdigest()` and `base64.b64encode` lowering
-  (`base64.b64decode` stays on the Python fallback - CPython discards
-  non-alphabet characters the native decoder rejects - and
-  `json.dumps`/`json.loads` stay on the fallback entirely: serde is not
-  CPython-`json`-compatible)
+  (`base64.b64decode` - CPython discards non-alphabet characters the native
+  decoder rejects - and `json.dumps`/`json.loads` - serde is not
+  CPython-`json`-compatible - never compile to direct Rust: marked functions
+  ride the RXT080 runtime shim, auto-discovered ones stay on the fallback)
 * simple `list`, fixed `tuple`, and fixed `dict` indexing such as `xs[i]`
   (`str` and `bytes` indexing is not supported)
 

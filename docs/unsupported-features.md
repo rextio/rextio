@@ -251,9 +251,11 @@ Native functions may call:
   `datetime.now().timestamp()`, `time.time()`, selected `str`/`bytes`/`list`
   methods, `hashlib.sha256(...).hexdigest()`, and `base64.b64encode(...)`
 
-> **Kept on the Python fallback for fidelity (0.1.0 alpha):** some stdlib calls
-> have no faithful native lowering and are rejected to fallback rather than
-> silently mis-compiled: `json.dumps`/`json.loads` (serde is not
+> **Kept off the direct native path for fidelity (0.1.0 alpha):** some stdlib
+> calls have no faithful native lowering and never compile to direct Rust —
+> an explicitly `@rextio.native` function using them rides the RXT080 runtime
+> shim (real CPython semantics) and an auto-discovered one stays on the plain
+> Python fallback: `json.dumps`/`json.loads` (serde is not
 > CPython-`json`-compatible), `statistics.mean`/`statistics.fmean` (naive native
 > summation diverges from CPython's exact/`math.fsum`), `base64.b64decode`
 > (CPython discards non-alphabet characters the native decoder rejects),
@@ -381,9 +383,12 @@ they differ from CPython in a narrow, documented way. These are accepted trade-
 offs for 0.1.0 alpha (the alternative being a Python fallback for a common
 operation or replicating a large amount of CPython runtime formatting). All
 other observed divergences are treated as bugs and either fixed or rejected to
-fallback. Every divergence remaining in this list is also surfaced at build
-time as a per-function `RXT090` note (shown by `rextio check` under "Native
-divergence notes"), so a build never relies on this page alone.
+fallback. Every STATICALLY ATTRIBUTABLE divergence remaining in this list is
+also surfaced at build time as a per-function `RXT090` note (shown by
+`rextio check` under "Native divergence notes"), so a build never relies on
+this page alone — the one exception is the value-dependent repr limitation
+below, which depends on runtime string data rather than on the code being
+compiled and therefore cannot carry a per-function note.
 (`print`/`logging` of `bool` and `float` formerly appeared here; both are now
 lowered to CPython-exact text — `True`/`False` and shortest correctly-rounded
 float repr with CPython's thresholds, `nan`/`inf` spellings, and `e+NN`
@@ -415,8 +420,10 @@ arguments keeps the function on the Python fallback.)
   compiled), so no per-function `RXT090` note is possible; printable text —
   the overwhelming case — is exact.
 
-Operations whose divergence could not be bounded this narrowly are kept on the
-Python fallback instead — for example `json.dumps`/`json.loads` (serde is not
+Operations whose divergence could not be bounded this narrowly are kept off
+the direct native path instead (RXT080 shim for explicitly marked functions,
+plain Python fallback otherwise) — for example `json.dumps`/`json.loads`
+(serde is not
 CPython-`json`-compatible), iterating a `set` (Rust hash-set iteration order
 diverges from CPython's, which is arbitrary but deterministic within a process;
 order-independent set operations like construction, `len`, and `==` stay
