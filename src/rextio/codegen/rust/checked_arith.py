@@ -65,7 +65,8 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
             )
             continue
         if name == "repr_str":
-            # CPython str repr for error-message parity: single-quoted unless
+            # CPython str repr (container printing, %r, list.index
+            # messages): single-quoted unless
             # the string contains a single quote and no double quote; escapes
             # backslash, the chosen quote, and newline/carriage-return/tab.
             # Other control characters pass through (adequate for messages).

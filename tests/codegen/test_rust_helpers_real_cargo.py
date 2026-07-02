@@ -70,10 +70,21 @@ def test_text_helpers_match_cpython(tmp_path: Path) -> None:
 
     str_cases = [
         "plain", "it's", 'say "hi"', "both ' and \"", "tab\there",
-        "line\nbreak", "back\\slash", "ctrl\x01x", "null\x00", "\x1b[31m",
-        "del\x7f", "c1\x85", "nbsp\xa0", "유니코드", "",
+        "line\nbreak", "cr\rhere", "back\\slash", "ctrl\x01x", "null\x00",
+        "\x1b[31m", "del\x7f", "c1\x85", "c1end\x9f", "nbsp\xa0",
+        "유니코드", "",
     ]
-    fixed6_cases = [1.5, 0.0, -0.0, 1e10, -2.25, 1e-8, math.nan, math.inf, -math.inf]
+    # Documented divergence pinned in the OTHER direction: characters above
+    # U+00A0 that CPython repr would escape pass through natively
+    # (docs/unsupported-features.md, accepted divergences). If this case ever
+    # starts matching CPython, the docs bullet must be removed.
+    divergent_str_cases = [
+        ("sep\u2028next", "'sep\u2028next'"),
+    ]
+    fixed6_cases = [
+        1.5, 0.0, -0.0, 1e10, -2.25, 1e-8, 2.5e-7, 3.5e-7, 0.1234565,
+        0.1234575, 1.0000005, 123456.4999995, math.nan, math.inf, -math.inf,
+    ]
 
     repr_float_rows = "\n".join(
         f'        ({_rust_f64_literal(v)}, {_rust_str_literal(repr(v))}),'
@@ -82,6 +93,10 @@ def test_text_helpers_match_cpython(tmp_path: Path) -> None:
     repr_str_rows = "\n".join(
         f'        ({_rust_str_literal(v)}, {_rust_str_literal(repr(v))}),'
         for v in str_cases
+    )
+    repr_str_rows += "\n" + "\n".join(
+        f'        ({_rust_str_literal(value)}, {_rust_str_literal(expected)}),'
+        for value, expected in divergent_str_cases
     )
     fixed6_rows = "\n".join(
         f'        ({_rust_f64_literal(v)}, {_rust_str_literal("%f" % v)}),'
