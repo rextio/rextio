@@ -10,6 +10,7 @@ from rextio.analyzer.native_marker import (
     project_module_names_for_tree,
 )
 from rextio.fallback.build_result import FallbackBuildResult
+from rextio.build.preflight import nuitka_version_error
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 
 
@@ -38,6 +39,13 @@ def build_nuitka_fallback(
             status="failed",
             backend="nuitka",
             message=f"RXT060 Build failed while preparing Nuitka fallback. {nuitka_unavailable_message()}",
+        )
+    version_error = nuitka_version_error(nuitka)
+    if version_error is not None:
+        return FallbackBuildResult(
+            status="failed",
+            backend="nuitka",
+            message=f"RXT060 Build failed while preparing Nuitka fallback. {version_error}",
         )
 
     targets, accelerated = _nuitka_module_targets(python_dir)

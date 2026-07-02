@@ -78,7 +78,9 @@ def test_all_modules_accelerated_still_reports_built(
     result = build_nuitka_fallback(python_dir)
 
     assert result.status == "built"
-    assert not log.exists()  # nuitka never invoked
+    # Only the version probe may touch nuitka - no --module compilation runs.
+    calls = log.read_text(encoding="utf-8") if log.exists() else ""
+    assert "--module" not in calls
     assert "Kept as plain Python for external accelerators" in result.message
 
 def test_mixed_module_wrapper_compiles_while_fallback_copy_stays_plain(
@@ -152,3 +154,26 @@ def test_project_local_numba_module_is_compiled_normally(
     assert "app.py" in calls
     assert "numba.py" in calls
     assert "Kept as plain Python" not in result.message
+
+
+def test_pre_2_nuitka_fails_the_fallback_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Nuitka integration is validated against the 2.x CLI; an older
+    # install fails up front with upgrade guidance instead of mid-build.
+    bin_dir = tmp_path / "old-nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 1.9.7; exit 0; fi\n", encoding="utf-8")
+    nuitka.chmod(nuitka.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    (python_dir / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+
+    result = build_nuitka_fallback(python_dir)
+
+    assert result.status == "failed"
+    assert "too old" in result.message
+    assert ">= 2.0" in result.message

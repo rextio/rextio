@@ -25,6 +25,7 @@ from rextio.build.executable_builder import (
     skipped_executable,
 )
 from rextio.build.maturin_builder import build_native_extension_with_maturin
+from rextio.build.preflight import nuitka_version_error
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 from rextio.codegen.rust.cargo import (
     render_binary_cargo_toml,
@@ -837,6 +838,9 @@ def _build_nuitka_dispatcher(
             "Nuitka is not installed but --hybrid-runtime=nuitka was requested. "
             "Install Nuitka or use --hybrid-runtime=source."
         )
+    version_error = nuitka_version_error(nuitka)
+    if version_error is not None:
+        return version_error
     modules = sorted({q.rpartition(".")[0] for q in allowed_qualnames if "." in q})
     command = [
         nuitka,

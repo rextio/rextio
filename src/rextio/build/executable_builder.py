@@ -7,6 +7,7 @@ import shutil
 import stat
 import sys
 import zipapp
+from rextio.build.preflight import nuitka_version_error
 from rextio.analyzer.native_marker import (
     external_accelerator_for_source,
     project_module_names_for_tree,
@@ -253,6 +254,15 @@ def build_nuitka_executable(
                 "RXT060 Executable build failed because Nuitka is not installed. "
                 "Install Nuitka or use --executable-backend=zipapp."
             ),
+            entrypoint=entrypoint,
+            backend="nuitka",
+        )
+    version_error = nuitka_version_error(nuitka)
+    if version_error is not None:
+        return ExecutableBuildResult(
+            status="failed",
+            path=None,
+            message=f"RXT060 Executable build failed. {version_error}",
             entrypoint=entrypoint,
             backend="nuitka",
         )
