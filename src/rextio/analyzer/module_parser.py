@@ -247,6 +247,10 @@ def _collect_fidelity_shim_names(tree: ast.Module) -> frozenset[str]:
             bind_walrus_targets(child)
 
     def bind_match_captures(pattern: ast.AST) -> None:
+        # Captures live on MatchAs/MatchStar `.name` and MatchMapping `.rest`;
+        # the recursion also passes through expression nodes (mapping keys,
+        # MatchValue values), which carry no `.name`/`.rest` str attributes -
+        # their walruses are collected by the statement-level pre-scan.
         name = getattr(pattern, "name", None)
         if isinstance(name, str):
             bind_other(name)
@@ -291,7 +295,7 @@ def _collect_fidelity_shim_names(tree: ast.Module) -> frozenset[str]:
             elif isinstance(node, ast.While):
                 walk(node.body)
                 walk(node.orelse)
-            elif isinstance(node, ast.Try):
+            elif isinstance(node, (ast.Try, ast.TryStar)):
                 walk(node.body)
                 for handler in node.handlers:
                     if handler.name is not None:

@@ -5117,6 +5117,20 @@ def f(xs: list[float]) -> float:
     [
         ("walrus", "from statistics import mean\n\n(mean := len)\n"),
         ("relative-import", "from statistics import mean\nfrom .helpers import mean\n"),
+        ("relative-star", "from statistics import mean\nfrom .helpers import *\n"),
+        ("decorator-walrus", "from statistics import mean\n\n@(mean := staticmethod)\nclass C:\n    pass\n"),
+        (
+            "match-capture",
+            "from statistics import mean\n\nmatch 1:\n    case mean:\n        pass\n",
+        ),
+        (
+            "except-as",
+            "from statistics import mean\ntry:\n    pass\nexcept ImportError as mean:\n    pass\n",
+        ),
+        (
+            "trystar-handler-def",
+            "from statistics import mean\ntry:\n    pass\nexcept* ValueError:\n    def mean(xs):\n        return 0.0\n",
+        ),
     ],
 )
 def test_exotic_rebinders_block_fidelity_shim(shape: str, prelude: str, tmp_path: Path) -> None:
