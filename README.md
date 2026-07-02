@@ -281,8 +281,12 @@ Rextio recognizes Numba decorators (`numba.jit`, `numba.njit`,
 `numba.vectorize`, `numba.guvectorize`) as a supported external accelerator
 for Python fallback code - the same externally-supported-tool pattern as the
 Nuitka packaging backend. A decorated function stays on the Python fallback
-cleanly (no auto-discovery, no diagnostic noise) and is labeled
+cleanly (excluded from auto-discovery and helper embedding) and is labeled
 `external_accelerator: numba` in reports; `rextio check` lists such functions.
+Recognition resolves through the module's imports (attribute, from-import,
+alias, and call forms; `numba.cuda.jit` included) - a star import
+(`from numba import *`) is not resolvable and such functions are simply
+unlabeled.
 
 The contract boundary matters: an `@rextio.native` function has Rextio-verified,
 CPython-exact semantics, while a `@numba.*` function runs under **Numba's**
@@ -299,9 +303,9 @@ bytecode at runtime). Prefer `@rextio.native` for typed scalar code and Numba
 for NumPy/array kernels, and note that very small functions lose to
 call-boundary costs under any accelerator.
 
-Cranelift dependencies are added to generated Cargo projects only when JIT is
-enabled and JIT candidates are emitted. If JIT is disabled, candidates that
-would require native-to-fallback helper calls stay on the normal fallback path.
+Generated Cargo projects never contain Cranelift dependencies. When embedding
+is disabled, would-be candidates stay on the normal fallback path (and their
+native callers are gated by the ordinary boundary rules).
 
 ## Rust-Importable Crate
 

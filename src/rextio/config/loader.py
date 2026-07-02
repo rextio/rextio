@@ -50,6 +50,15 @@ CONFIG_KEYS = {
     },
 }
 
+# Environment variables whose settings were REMOVED (the Cranelift hot path and
+# its knobs are gone; helper embedding has no backend or threshold). Rejected
+# loudly - unlike a simply-unknown variable - so a stale export cannot silently
+# stop meaning anything, mirroring how removed toml keys are rejected.
+REMOVED_ENVIRONMENT_VARIABLES = {
+    "REXTIO_JIT_BACKEND": "the Cranelift backend was removed; helper embedding has no backend choice",
+    "REXTIO_JIT_HOT_THRESHOLD": "embedding is ahead-of-time; there is no hot threshold",
+}
+
 ENVIRONMENT_OVERRIDES = {
     "REXTIO_NATIVE_BACKEND": ("build", "native_backend", "string"),
     "REXTIO_TARGET_LANGUAGE": ("build", "native_backend", "string"),
@@ -379,6 +388,11 @@ def _apply_environment_overrides(
         "executable": executable,
         "policy": policy,
     }
+    for env_name, reason in REMOVED_ENVIRONMENT_VARIABLES.items():
+        if environ.get(env_name):
+            raise ConfigError(
+                f"environment variable {env_name} was removed: {reason}. Unset it."
+            )
     for env_name, (section, key, kind) in ENVIRONMENT_OVERRIDES.items():
         raw_value = environ.get(env_name)
         if raw_value is None or raw_value == "":

@@ -577,8 +577,8 @@ Behavior:
 * Invoke maturin or Cargo as needed.
 * Optionally generate and compile a Rust-importable library crate for accepted
   direct Rust functions.
-* Optionally emit internal Cranelift JIT regions only when experimental native
-  JIT is enabled.
+* Optionally embed eligible unmarked scalar helpers as internal native
+  functions when experimental embedding is enabled.
 * Copy fallback Python modules.
 * Generate import-compatible wrappers.
 * Embed the default runtime boundary fallback threshold in generated wrappers.
@@ -1632,9 +1632,9 @@ Rust dependencies should be minimal:
 * sha2 for limited `hashlib.sha256` lowering
 * optionally serde for helper structures later
 
-Do not add LLVM, Tokio, Axum, or framework dependencies in 0.1.0 alpha. The
-only allowed Cranelift usage is conditional dependency emission in generated
-Rust projects when experimental native-side JIT is explicitly enabled.
+Do not add LLVM, Cranelift, Tokio, Axum, or framework dependencies in 0.1.0
+alpha. Generated Rust projects must not contain Cranelift dependencies (the
+former runtime JIT hot path was removed; helper embedding is plain AOT).
 
 ---
 
@@ -1699,8 +1699,9 @@ Do not claim framework migration.
 
 Do not claim full runtime boundary-cost optimization.
 
-Do not claim production-ready JIT. The experimental Cranelift path is opt-in,
-native-side only, and limited to narrow scalar Rextio IR helper regions.
+Do not claim any runtime JIT. Scalar-helper embedding is opt-in, AOT,
+native-side only, and limited to narrow scalar Rextio IR helper regions;
+Numba is the supported external accelerator for fallback code.
 
 ---
 
@@ -1807,7 +1808,7 @@ The architecture may leave extension points for these, but do not implement them
 * framework-aware profiling
 * general-purpose JIT metadata
 * production JIT
-* JIT backends beyond experimental Cranelift
+* runtime JIT compilation of any kind (helper embedding is AOT)
 * enterprise/on-prem platform
 
 Keep 0.1.0 alpha focused.

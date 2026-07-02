@@ -214,5 +214,5 @@ Initial public MVP for Rextio as a local hybrid build tool.
 0.1.0 alpha is intentionally narrow. It does not provide full Python
 compatibility, bundled third-party package support, framework migration,
 general-purpose Python JIT behavior, or full runtime boundary-cost optimization.
-The Cranelift path is experimental, opt-in, native-side only, and limited to
-small scalar helper regions.
+Scalar-helper embedding is experimental, opt-in, AOT, native-side only, and
+limited to small scalar helper regions; there is no runtime JIT.
