@@ -190,9 +190,37 @@ def _collect_fidelity_shim_names(tree: ast.Module) -> frozenset[str]:
 
     def bind_walrus_targets(node: ast.AST) -> None:
         # A module-level walrus (`(mean := ...)`, `if (mean := ...):`) binds at
-        # module scope. Recurse without entering nested function/class bodies,
-        # whose walruses bind in their own scope.
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+        # module scope - including inside a module-level comprehension (PEP
+        # 572 leaks the target to the containing scope). Recurse without
+        # entering nested function/class BODIES, whose walruses bind in their
+        # own scope - but a def/class HEADER (decorators, base list, keyword
+        # arguments, parameter defaults, annotations, the return annotation)
+        # is evaluated at module scope and can rebind there.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            header_exprs: list[ast.AST] = list(getattr(node, "decorator_list", []))
+            if isinstance(node, ast.ClassDef):
+                header_exprs.extend(node.bases)
+                header_exprs.extend(keyword.value for keyword in node.keywords)
+            else:
+                arguments = node.args
+                header_exprs.extend(default for default in arguments.defaults)
+                header_exprs.extend(
+                    default for default in arguments.kw_defaults if default is not None
+                )
+                if not isinstance(node, ast.Lambda):
+                    for argument in (
+                        *arguments.posonlyargs,
+                        *arguments.args,
+                        *arguments.kwonlyargs,
+                        *((arguments.vararg,) if arguments.vararg else ()),
+                        *((arguments.kwarg,) if arguments.kwarg else ()),
+                    ):
+                        if argument.annotation is not None:
+                            header_exprs.append(argument.annotation)
+                    if node.returns is not None:
+                        header_exprs.append(node.returns)
+            for expr in header_exprs:
+                bind_walrus_targets(expr)
             return
         if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
             bind_other(node.target.id)
