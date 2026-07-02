@@ -80,3 +80,51 @@ def test_all_modules_accelerated_still_reports_built(
     assert result.status == "built"
     assert not log.exists()  # nuitka never invoked
     assert "Kept as plain Python for external accelerators" in result.message
+
+def test_mixed_module_wrapper_compiles_while_fallback_copy_stays_plain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Mirrors the generated layout for a source module holding BOTH a native
+    # function and a numba function: the public module becomes a plain wrapper
+    # (no numba import) and the original source moves to `_fallback_<stem>.py`.
+    # The wrapper must compile; the fallback copy (bearing the numba decorator)
+    # must stay plain so the accelerated function keeps real bytecode.
+    python_dir = tmp_path / "python"
+    (python_dir / "hb").mkdir(parents=True)
+    (python_dir / "hb" / "__init__.py").write_text("", encoding="utf-8")
+    (python_dir / "hb" / "mixed.py").write_text(
+        """
+from hb._fallback_mixed import total
+
+def fast(x):
+    return x + 1
+""",
+        encoding="utf-8",
+    )
+    (python_dir / "hb" / "_fallback_mixed.py").write_text(
+        """
+from numba import njit
+
+@njit
+def total(n: int) -> int:
+    acc = 0
+    for i in range(n):
+        acc += i
+    return acc
+
+def fast(x: int) -> int:
+    return x + 1
+""",
+        encoding="utf-8",
+    )
+    log = _fake_nuitka(tmp_path, monkeypatch)
+
+    result = build_nuitka_fallback(python_dir)
+
+    assert result.status == "built"
+    calls = log.read_text(encoding="utf-8")
+    assert "mixed.py" in calls  # wrapper compiled
+    assert "_fallback_mixed.py" not in calls  # numba-bearing copy untouched
+    assert (python_dir / "hb" / "mixed.so").exists()
+    assert not (python_dir / "hb" / "_fallback_mixed.so").exists()
+    assert "hb/_fallback_mixed.py" in result.message

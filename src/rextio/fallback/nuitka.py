@@ -40,7 +40,7 @@ def build_nuitka_fallback(
     targets, accelerated = _nuitka_module_targets(python_dir)
     skipped_note = ""
     if accelerated:
-        names = ", ".join(sorted(str(path.relative_to(python_dir)) for path in accelerated))
+        names = ", ".join(sorted(path.relative_to(python_dir).as_posix() for path in accelerated))
         skipped_note = (
             f" Kept as plain Python for external accelerators (Nuitka-compiled "
             f"functions expose no bytecode, which tools like Numba require): {names}."
@@ -97,7 +97,7 @@ def build_nuitka_fallback(
 def _nuitka_module_targets(python_dir: Path) -> tuple[list[Path], list[Path]]:
     """Return (modules to compile, modules kept plain for external accelerators).
 
-    A module whose top-level functions carry a recognized external-accelerator
+    A module whose functions carry a recognized external-accelerator
     decorator (e.g. ``@numba.njit``) must stay plain Python: Nuitka-compiled
     functions expose no real bytecode, which those tools need at runtime.
     Skipping compilation is lossless here - the ``.py`` stays in the tree and

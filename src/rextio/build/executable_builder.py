@@ -376,7 +376,7 @@ def _externally_accelerated_modules(python_dir: Path) -> list[str]:
         except OSError:
             continue
         if external_accelerator_for_source(source) is not None:
-            found.append(str(relative))
+            found.append(relative.as_posix())
     return found
 
 
