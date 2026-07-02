@@ -758,7 +758,10 @@ Support inside native candidate functions:
 * limited `datetime.datetime.now/utcnow().isoformat()` and timestamp lowering
   to Rust `chrono` formatting/time values
 * limited `time.time()` lowering
-* limited `statistics.mean` and `statistics.fmean`
+* `statistics.mean`/`statistics.fmean` have NO direct native lowering
+  (naive native summation diverges from CPython's exact/`math.fsum`
+  behavior); marked functions using them ride the RXT080 shim and
+  auto-discovered ones stay on the Python fallback
 * limited `str`/`bytes`/`list` method lowering
 * limited `hashlib.sha256(...).hexdigest()` and `base64.b64encode` lowering
   (`base64.b64decode` stays on the Python fallback - CPython discards

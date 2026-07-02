@@ -405,6 +405,15 @@ arguments keeps the function on the Python fallback.)
   `py` token is available), since the inner native function has no `py` token.
   Valid UTF-8 decodes identically. Direct-native functions lowering
   `bytes.decode()` carry an `RXT090` note.
+- **repr of `str` VALUES containing non-printable characters above U+00A0.**
+  Native repr text (container printing, `%r`, `list.index` messages) escapes
+  quotes, backslashes, `\n`/`\r`/`\t`, the C0/C1 controls, DEL, and U+00A0
+  exactly like CPython, but characters such as U+2028 LINE SEPARATOR pass
+  through where CPython would escape them — exact classification needs
+  Unicode category tables Rust's standard library does not carry. This is
+  data-dependent (a property of runtime string VALUES, not of the code being
+  compiled), so no per-function `RXT090` note is possible; printable text —
+  the overwhelming case — is exact.
 
 Operations whose divergence could not be bounded this narrowly are kept on the
 Python fallback instead — for example `json.dumps`/`json.loads` (serde is not

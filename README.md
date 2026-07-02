@@ -227,7 +227,10 @@ Supported builtin and standard-library lowering includes limited forms of:
 - selected `math` functions and constants
 - selected `str`, `bytes`, and `list` methods
 - `print`, `logging.debug/info/warning/error`
-- `datetime`, `time`, `statistics`, `hashlib.sha256`, `base64`, and `json`
+- `datetime`, `time`, `hashlib.sha256`, and `base64.b64encode`
+  (`statistics.mean`/`fmean`, `json.dumps`/`json.loads`, and
+  `base64.b64decode` stay on the Python fallback or the runtime shim -
+  their CPython behavior has no faithful native equivalent)
 
 Unsupported or ambiguous code stays on fallback or is exposed through a Python
 runtime semantics shim where supported. See
