@@ -48,6 +48,15 @@ Set `REXTIO_DEBUG_NATIVE=1` to raise the full traceback (instead of warning and
 falling back) when a built native module fails to load — useful when debugging an
 ABI mismatch or a wrapper/codegen name mismatch.
 
+## Requirements
+
+| Component | Version | Notes |
+| --- | --- | --- |
+| CPython | >= 3.11, < 3.14 | The analyzer uses the build interpreter's `ast`; generated extensions pin PyO3 0.22, which supports up to CPython 3.13. Wheels are tagged for the build interpreter's minor version. |
+| Rust toolchain | MSRV 1.63 (tested on recent stable) | Generated crates use edition 2021 and PyO3 0.22. Install via [rustup](https://rustup.rs). |
+| Nuitka (optional) | >= 2.0 | Only for `--fallback=nuitka`, `--executable-backend=nuitka`, or `--hybrid-runtime=nuitka`; the build preflight rejects older installs. |
+| Numba (optional, experimental) | matches your interpreter: >= 0.57 (3.11), >= 0.59 (3.12), >= 0.61 (3.13) | Rextio only recognizes Numba decorators — the package itself is a runtime dependency of YOUR project, not of Rextio. |
+
 ## Quick Example
 
 Start with normal Python:

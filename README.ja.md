@@ -38,6 +38,15 @@ Native コンパイルは最適化であり、Python fallback の動作が正し
 REXTIO_DISABLE_NATIVE=1
 ```
 
+## 要件
+
+| コンポーネント | バージョン | 備考 |
+| --- | --- | --- |
+| CPython | >= 3.11, < 3.14 | アナライザはビルドインタプリタの `ast` を使用し、生成拡張は PyO3 0.22（CPython 3.13 まで対応）を固定します。wheel はビルドインタプリタの minor バージョンタグを持ちます。 |
+| Rust toolchain | MSRV 1.63（最新 stable で検証） | 生成 crate は edition 2021 + PyO3 0.22 を使用します。[rustup](https://rustup.rs) でインストールしてください。 |
+| Nuitka（任意） | >= 2.0 | `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka` 専用で、より古いバージョンはビルド preflight が拒否します。 |
+| Numba（任意・experimental） | インタプリタに応じて: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61 | Rextio は Numba デコレータを認識するだけで、パッケージ自体は Rextio ではなくユーザープロジェクトのランタイム依存です。 |
+
 ## クイック例
 
 ```python

@@ -41,6 +41,15 @@ Rextio는 같은 Python 프로젝트에서 여러 산출물을 만들 수 있습
 REXTIO_DISABLE_NATIVE=1
 ```
 
+## 요구 사항
+
+| 구성요소 | 버전 | 비고 |
+| --- | --- | --- |
+| CPython | >= 3.11, < 3.14 | 분석기는 빌드 인터프리터의 `ast`를 사용하고, 생성 확장은 PyO3 0.22(CPython 3.13까지 지원)를 고정합니다. wheel은 빌드 인터프리터의 minor 버전 태그를 답니다. |
+| Rust toolchain | MSRV 1.63 (최신 stable에서 검증) | 생성 crate는 edition 2021 + PyO3 0.22를 사용합니다. [rustup](https://rustup.rs)으로 설치하세요. |
+| Nuitka (선택) | >= 2.0 | `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka` 전용이며, 더 오래된 버전은 빌드 preflight가 거부합니다. |
+| Numba (선택, experimental) | 인터프리터에 맞춰: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61 | Rextio는 Numba 데코레이터를 인식만 하며, 패키지 자체는 Rextio가 아닌 사용자 프로젝트의 런타임 의존성입니다. |
+
 ## 빠른 예시
 
 일반 Python 코드에서 시작합니다.
