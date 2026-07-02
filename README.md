@@ -302,7 +302,10 @@ project dependency; the Rust executable's source-mode hybrid runtime works
 (the dispatcher runs real CPython). The `--fallback=nuitka` backend now
 coexists automatically: modules using a recognized external accelerator are
 kept as plain Python (the `.py` stays imported) while the rest of the tree is
-Nuitka-compiled, and the build report lists them. A Nuitka *executable*
+Nuitka-compiled, and the build report lists them. The generated wheel ships a
+Nuitka-compiled module as its extension only - the shadowed `.py` source is
+excluded (dead weight that would also expose the source) - and carries a
+platform-specific tag; accelerated modules keep their `.py`. A Nuitka *executable*
 (`--executable-backend=nuitka`) and the `--hybrid-runtime=nuitka` dispatcher
 cannot serve accelerated functions (compiled functions expose no bytecode and
 the accelerator is not bundled) - those builds fail early with guidance

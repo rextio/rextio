@@ -60,6 +60,13 @@ def build_artifact_wheel(
     records: list[tuple[str, str, int]] = []
     with zipfile.ZipFile(wheel_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(item for item in python_dir.rglob("*") if item.is_file()):
+            if _shadowed_by_compiled_sibling(path):
+                # A Nuitka-compiled extension of the same module sits next to
+                # this source file; the import system prefers the extension, so
+                # the .py would be dead weight that also exposes the source.
+                # (Modules kept plain for external accelerators have no
+                # compiled sibling and ship their .py as before.)
+                continue
             relative = path.relative_to(python_dir).as_posix()
             data = path.read_bytes()
             _write_bytes(archive, relative, data)
@@ -112,11 +119,39 @@ def _wheel_tag(python_dir: Path) -> str:
 
 
 def _has_native_extension(python_dir: Path) -> bool:
+    """Whether the tree carries ANY platform-specific extension module.
+
+    Both the PyO3 extension (`_rextio_native*`) and Nuitka-compiled fallback
+    modules count: a wheel containing either must carry a platform tag, not
+    `py3-none-any` (pip would otherwise install it on platforms where the
+    binaries cannot load).
+    """
     return any(_is_native_extension(path.name) for path in python_dir.rglob("*") if path.is_file())
 
 
+_NATIVE_SUFFIXES = (".so", ".pyd", ".dll", ".dylib")
+
+
 def _is_native_extension(filename: str) -> bool:
-    return filename.startswith("_rextio_native") and filename.endswith((".so", ".pyd", ".dll", ".dylib"))
+    return filename.endswith(_NATIVE_SUFFIXES)
+
+
+def _shadowed_by_compiled_sibling(path: Path) -> bool:
+    """Whether a compiled extension for the same module sits next to a .py file.
+
+    A valid extension filename for module `stem` is `stem.so`-style or
+    `stem.<tag>.so`-style (dot right after the stem), so `plain2.so` does not
+    shadow `plain.py`.
+    """
+    if path.suffix != ".py":
+        return False
+    stem = path.stem
+    for sibling in path.parent.iterdir():
+        if not sibling.is_file() or not _is_native_extension(sibling.name):
+            continue
+        if sibling.name.startswith(f"{stem}."):
+            return True
+    return False
 
 
 def _write_bytes(archive: zipfile.ZipFile, relative: str, data: bytes) -> None:

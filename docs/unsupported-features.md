@@ -347,7 +347,13 @@ functions carry a recognized accelerator decorator are skipped from
 Nuitka compilation and stay plain Python in the tree (Nuitka-compiled
 functions expose no real bytecode, which the accelerator lifts at first call);
 the build result names the modules kept plain, and the deployment environment
-must still have the accelerator installed. The build-time scan resolves the
+must still have the accelerator installed. The wheel built from a Nuitka
+fallback tree excludes a `.py` whose compiled sibling extension exists (the
+import system prefers the extension; shipping both bloats the wheel and
+exposes the source) and is tagged with the build platform instead of
+`py3-none-any`; modules kept plain for accelerators ship their `.py` as
+before. A zipapp keeps every `.py`: extension modules cannot be imported from
+inside a zip archive, so the sources are what actually runs there. The build-time scan resolves the
 decorator through the module's imports, including the optional-dependency
 guard (`try: from numba import njit`), `from numba import *`, conditional
 top-level imports, and methods inside class bodies; a decorator that only
