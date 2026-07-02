@@ -11,6 +11,8 @@ def render_cargo_toml(package_name: str = "rextio_generated_native") -> str:
 name = "{package_name}"
 version = "0.1.0"
 edition = "2021"
+# Documented MSRV (PyO3 0.22 floor); cargo enforces it at build time.
+rust-version = "1.63"
 
 [lib]
 name = "_rextio_native"
@@ -39,6 +41,8 @@ def render_importable_cargo_toml(package_name: str = "rextio_generated_rust") ->
 name = "{package_name}"
 version = "0.1.0"
 edition = "2021"
+# Documented MSRV (PyO3 0.22 floor); cargo enforces it at build time.
+rust-version = "1.63"
 
 [lib]
 name = "{package_name.replace("-", "_")}"
@@ -78,6 +82,8 @@ def render_binary_cargo_toml(
 name = "{package_name}"
 version = "0.1.0"
 edition = "2021"
+# Documented MSRV (PyO3 0.22 floor); cargo enforces it at build time.
+rust-version = "1.63"
 
 [[bin]]
 name = "{binary_name}"
