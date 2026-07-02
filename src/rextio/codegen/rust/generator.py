@@ -116,7 +116,7 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
                     return_types_by_qualname,
                     mode="pyo3",
                     used_helpers=used_helpers,
-                    # An embedded helper (former JIT candidate) compiles as a plain
+                    # An embedded helper compiles as a plain
                     # internal function: callable from native code, not exported.
                     pyo3_exported=not function.native_jit,
                 )
@@ -155,7 +155,7 @@ def generate_rust_crate_module(
     direct_functions = [
         function
         for function in module_ir.functions
-        # Embedded helpers (former JIT candidates) are ordinary direct functions in
+        # Embedded helpers are ordinary direct functions in
         # crate mode; only runtime-shim functions have no crate lowering.
         if not function.native_runtime_semantics
     ]
