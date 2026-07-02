@@ -62,7 +62,7 @@ ambitions behind explicit opt-ins. Treat the surface in these tiers:
 | Tier | Features | Notes |
 | --- | --- | --- |
 | **Stable (core)** | Typed-function discovery, supported-subset checks, Rust/PyO3 AOT codegen, Cargo/maturin build, CPython fallback packaging, boundary policy | The path the alpha is meant to be judged on. |
-| **Experimental (opt-in)** | Cranelift JIT (`--jit`/`REXTIO_JIT`/`[jit]`), Nuitka fallback and Nuitka executables, runtime-semantics shim (`RXT080`), Rust-importable crate | Behind flags/markers; behaviour and diagnostics may change before the first non-alpha release. |
+| **Experimental (opt-in)** | Scalar-helper embedding (`--jit`/`REXTIO_JIT`/`[jit] enabled`), Numba external accelerator recognition + Nuitka coexistence, Nuitka fallback and Nuitka executables, runtime-semantics shim (`RXT080`), Rust-importable crate | Behind flags/markers; behaviour and diagnostics may change before the first non-alpha release. |
 | **Planned (not implemented)** | `mojo`/`julia` native targets, installed-package plugins beyond metadata | Target metadata can be recorded for planning, but only Rust codegen is implemented. |
 
 Stability of diagnostic codes (`RXT…`) is tracked in
@@ -76,7 +76,7 @@ rextio init --project-root demo
 rextio check demo
 rextio generate demo --fallback=cpython
 rextio build demo --fallback=cpython
-rextio build demo --fallback=cpython --jit --jit-hot-threshold=25
+rextio build demo --fallback=cpython --jit
 rextio build demo --fallback=cpython --rust-importable --rust-crate-name=demo_native
 rextio build demo --fallback=cpython --entrypoint=demo_app.cli:main
 rextio bench demo_app.compute --project-root demo
@@ -205,8 +205,6 @@ flag and environment variable. Common examples:
 --default-external-policy / REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY / [imports] default_external_policy
 --package-import-policy / REXTIO_IMPORTS_PACKAGES / [imports.packages]
 --jit / REXTIO_JIT / [jit] enabled
---jit-backend / REXTIO_JIT_BACKEND / [jit] backend
---jit-hot-threshold / REXTIO_JIT_HOT_THRESHOLD / [jit] hot_threshold
 --rust-importable / REXTIO_RUST_IMPORTABLE / [rust] importable
 --rust-crate-name / REXTIO_RUST_CRATE_NAME / [rust] crate_name
 --native-marker / REXTIO_NATIVE_MARKER / [policy] native_marker
@@ -247,40 +245,31 @@ reports. It does not authorize silent conversion of arbitrary third-party source
 if no safe direct lowering exists, Rextio keeps the native candidate on
 CPython/Nuitka fallback and reports the boundary reason.
 
-## Experimental Native-Side JIT
+## Experimental Scalar-Helper Embedding (`[jit]`)
 
-JIT is an explicit opt-in in 0.1.0 alpha:
+Embedding is an explicit opt-in in 0.1.0 alpha:
 
 ```toml
 [jit]
 enabled = true
-backend = "cranelift"
-hot_threshold = 25
 ```
 
-The same controls are available as `--jit` / `--no-jit`,
-`--jit-backend=cranelift`, `--jit-hot-threshold=N`, or through
-`REXTIO_JIT`, `REXTIO_JIT_BACKEND`, and `REXTIO_JIT_HOT_THRESHOLD`.
+The same control is available as `--jit` / `--no-jit` or `REXTIO_JIT`. (The
+former runtime Cranelift JIT - with its `backend` and `hot_threshold` knobs -
+was removed after benchmarks showed it strictly slower than the AOT path it
+fell back to; the removed environment variables now fail loudly with a
+migration message.)
 
-The implemented model is a native runtime Tier-2 path:
-
-```text
-AOT: Rextio IR -> Rust -> rustc/LLVM
-JIT: Rextio IR -> Cranelift, inside the generated native module
-```
-
-Python code does not call a separate JIT API. Instead, an accepted AOT native
-function may call an internal helper region that Rextio can represent as simple
-typed scalar IR but does not export as a PyO3 function. Generated Rust runs an
-interpreter-equivalent expression until the hot threshold is reached, then
-compiles the helper with Cranelift and caches the native function pointer.
-
-The current JIT subset is deliberately narrow: scalar `int` or `float`
-arguments and return values, matching argument/return scalar type, and a single
-arithmetic return expression. Cranelift dependencies are emitted into generated
-Cargo projects only when JIT is enabled and at least one JIT region is included.
-With JIT disabled, the same native-to-fallback helper call is rejected by the
-normal boundary rules and the caller stays on Python fallback.
+With embedding enabled, an unmarked typed scalar helper (single arithmetic
+return expression) called from an accepted native function is compiled as an
+internal native function - lowered through the normal checked path (overflow
+raises OverflowError, float division by zero raises ZeroDivisionError) and not
+exported as a PyO3 function. In the Rust executable backend the same helpers
+compile into the binary instead of being delegated per call. There is no
+runtime compilation and generated Cargo projects contain no Cranelift
+dependencies. With embedding disabled, the same native-to-helper call is
+rejected by the normal boundary rules and the caller stays on Python
+fallback.
 
 ## Release Verification
 

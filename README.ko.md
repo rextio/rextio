@@ -108,7 +108,7 @@ rextio clean path/to/project
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit --jit-hot-threshold=25
+rextio build . --jit
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -231,23 +231,34 @@ Rextio 0.1.0 alpha는 의도적으로 작은 subset만 지원합니다. 실제 R
 
 이 경로는 동작 보존용입니다. Rust speedup 경로로 보면 안 됩니다.
 
-## 실험적 native JIT
+## 실험적 scalar helper 내장(embedding)
 
-Rextio는 아주 좁은 scalar helper region에 대해 native-side JIT를 실험적으로 켤 수 있습니다.
-기본값은 꺼짐입니다.
+Rextio는 아주 좁은 scalar helper(타입이 확정된 단일 산술 return 식의 unmarked 함수)를
+native 함수 내부에 AOT로 내장할 수 있습니다. 기본값은 꺼짐입니다.
 
 ```toml
 [jit]
 enabled = true
-backend = "cranelift"
-hot_threshold = 25
 ```
 
-동일한 설정은 `rextio build . --jit --jit-hot-threshold=25`,
-`REXTIO_JIT=true`, `REXTIO_JIT_BACKEND`, `REXTIO_JIT_HOT_THRESHOLD`로도 지정할 수
-있습니다. JIT는 생성된 native module 내부에서만 동작하며, Python이 별도 JIT API를 직접
-호출하지 않습니다. Cranelift dependency는 JIT가 켜지고 JIT 후보가 생성될 때만 generated
-Cargo project에 추가됩니다.
+동일한 설정은 `rextio build . --jit` 또는 `REXTIO_JIT=true`로도 지정할 수 있습니다.
+내장된 helper는 일반 checked 경로로 컴파일되어 overflow는 OverflowError를,
+0으로 나누기는 ZeroDivisionError를 정상적으로 raise하며, PyO3 함수로 export되지
+않습니다. 런타임 컴파일은 없습니다. (과거의 Cranelift 런타임 JIT와 `backend`/
+`hot_threshold` 설정은 벤치마크 결과 AOT 경로보다 항상 느려 제거되었고, 제거된
+환경변수는 마이그레이션 안내와 함께 즉시 오류를 냅니다.)
+
+## Numba 외부 가속기
+
+`numba.jit`/`njit`/`vectorize`/`guvectorize`/`cuda.jit` 데코레이터가 붙은 함수는
+의도적으로 Python fallback에 남고(진단 소음 없음) 리포트에
+`external_accelerator: numba`로 표시됩니다. 이런 함수는 Numba의 시맨틱(예: nopython
+모드 int overflow는 wrap)으로 실행되며 Rextio의 CPython-정확 계약 밖입니다 —
+`@rextio.exempt`와 같은 opt-in 철학입니다. `--fallback=nuitka`는 자동으로
+공존합니다: 가속기를 쓰는 모듈은 컴파일에서 제외되어 plain `.py`로 남고, wheel은
+Nuitka로 컴파일된 모듈의 `.py` 원본을 제외한 채 플랫폼 태그를 답니다. Nuitka
+*실행 파일*과 `--hybrid-runtime=nuitka`는 가속 모듈이 있으면 안내 메시지와 함께
+조기 실패합니다(`--hybrid-runtime=source` 사용).
 
 ## Rust에서 import 가능한 crate
 

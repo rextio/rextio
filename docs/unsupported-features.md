@@ -441,8 +441,11 @@ Zipapp executable artifacts are supported through
 `rextio build --entrypoint=module:function`. They still require a compatible
 Python interpreter on the target machine. Native extension modules are not
 loaded directly from inside the zipapp, so generated wrappers use Python fallback
-when `_rextio_native` is unavailable. Python-free standalone binaries without
-Nuitka remain out of scope for 0.1.0 alpha.
+when `_rextio_native` is unavailable. A Python-free standalone binary IS
+available without Nuitka through `--executable-backend=rust` when the
+entrypoint's call graph is fully direct-native; with delegated fallback calls
+it ships a `<binary>.runtime` dispatcher that needs CPython (or a
+Nuitka-compiled dispatcher via `--hybrid-runtime=nuitka`).
 
 Rust-importable crate artifacts are supported with
 `rextio build --rust-importable --rust-crate-name=name`. They are normal Cargo

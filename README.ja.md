@@ -100,7 +100,7 @@ executable packaging は実行しません。`rextio build` は生成、コン�
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit --jit-hot-threshold=25
+rextio build . --jit
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -223,23 +223,36 @@ fn main() -> Result<(), my_native::RextioError> {
 この crate は typed Rust に直接 lowering された関数だけを export します。fallback-only 関数と
 runtime semantics shim は Python-facing path のままです。
 
-## Experimental native JIT
+## Experimental scalar helper 埋め込み（embedding）
 
-Rextio はごく狭い scalar helper region に対して experimental native-side JIT を有効化できます。
-デフォルトでは無効です。
+Rextio はごく狭い scalar helper（型が確定した単一算術 return 式の unmarked 関数）を
+native 関数内に AOT で埋め込めます。デフォルトでは無効です。
 
 ```toml
 [jit]
 enabled = true
-backend = "cranelift"
-hot_threshold = 25
 ```
 
-同じ設定は `rextio build . --jit --jit-hot-threshold=25`、
-`REXTIO_JIT=true`、`REXTIO_JIT_BACKEND`、`REXTIO_JIT_HOT_THRESHOLD` でも指定できます。
-JIT は生成された native module 内部でのみ動作し、Python が別の JIT API を直接呼ぶことは
-ありません。Cranelift dependency は JIT が有効で JIT 候補が生成される場合だけ generated
-Cargo project に追加されます。
+同じ設定は `rextio build . --jit` または `REXTIO_JIT=true` でも指定できます。
+埋め込まれた helper は通常の checked 経路でコンパイルされ、overflow は
+OverflowError を、ゼロ除算は ZeroDivisionError を正しく raise し、PyO3 関数として
+export されません。ランタイムコンパイルはありません。（かつての Cranelift ランタイム
+JIT と `backend`/`hot_threshold` 設定は、ベンチマークで AOT 経路より常に遅いことが
+判明したため削除されました。削除された環境変数は移行メッセージ付きで即座に
+エラーになります。）
+
+## Numba 外部アクセラレータ
+
+`numba.jit`/`njit`/`vectorize`/`guvectorize`/`cuda.jit` デコレータ付きの関数は
+意図的に Python fallback に残り（診断ノイズなし）、レポートに
+`external_accelerator: numba` と表示されます。これらの関数は Numba のセマンティクス
+（例: nopython モードの int overflow は wrap）で実行され、Rextio の CPython 正確性
+契約の外にあります — `@rextio.exempt` と同じ opt-in 哲学です。`--fallback=nuitka`
+は自動的に共存します: アクセラレータを使うモジュールはコンパイルから除外され
+plain `.py` のまま残り、wheel は Nuitka でコンパイルされたモジュールの `.py`
+ソースを除外してプラットフォームタグを付けます。Nuitka *実行ファイル* と
+`--hybrid-runtime=nuitka` はアクセラレータ使用モジュールがあると案内付きで早期に
+失敗します（`--hybrid-runtime=source` を使用）。
 
 ## executable artifact
 

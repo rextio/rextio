@@ -99,7 +99,7 @@ executable 封裝。`rextio build` 會執行產生、編譯和封裝。
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit --jit-hot-threshold=25
+rextio build . --jit
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -220,21 +220,32 @@ fn main() -> Result<(), my_native::RextioError> {
 該 crate 只 export 直接 lowering 到 typed Rust 的函式。fallback-only 函式和 runtime
 semantics shim 仍是 Python-facing 路徑。
 
-## 實驗性 native JIT
+## 實驗性 scalar helper 內嵌（embedding）
 
-Rextio 可以為非常窄的 scalar helper region 啟用實驗性的 native-side JIT。預設關閉。
+Rextio 可以把非常窄的 scalar helper（型別確定、單一算術 return 運算式的 unmarked
+函式）以 AOT 方式內嵌進 native 函式。預設關閉。
 
 ```toml
 [jit]
 enabled = true
-backend = "cranelift"
-hot_threshold = 25
 ```
 
-同樣的設定也可以透過 `rextio build . --jit --jit-hot-threshold=25`、
-`REXTIO_JIT=true`、`REXTIO_JIT_BACKEND`、`REXTIO_JIT_HOT_THRESHOLD` 指定。JIT 只在
-產生的 native module 內部執行，Python 不會直接呼叫單獨的 JIT API。只有在 JIT 開啟且產生
-JIT 候選時，Cranelift dependency 才會加入 generated Cargo project。
+同樣的設定也可以透過 `rextio build . --jit` 或 `REXTIO_JIT=true` 指定。內嵌的
+helper 走正常的 checked 路徑編譯：overflow 正確地 raise OverflowError，除以零
+raise ZeroDivisionError，且不會作為 PyO3 函式匯出。不存在執行時編譯。（過去的
+Cranelift 執行時 JIT 及其 `backend`/`hot_threshold` 設定經基準測試證明始終慢於
+AOT 路徑，已被移除；被移除的環境變數會立即報錯並給出遷移提示。）
+
+## Numba 外部加速器
+
+帶有 `numba.jit`/`njit`/`vectorize`/`guvectorize`/`cuda.jit` 裝飾器的函式會刻意
+留在 Python fallback（無診斷噪音），並在報告中標記為
+`external_accelerator: numba`。這類函式依 Numba 的語義執行（例如 nopython 模式
+int overflow 會 wrap），在 Rextio 的 CPython 精確性契約之外 — 與 `@rextio.exempt`
+相同的 opt-in 哲學。`--fallback=nuitka` 自動共存：使用加速器的模組被排除在編譯
+之外、保持為 plain `.py`；wheel 會排除已被 Nuitka 編譯模組的 `.py` 原始碼並帶上
+平台標籤。Nuitka *執行檔* 與 `--hybrid-runtime=nuitka` 在存在加速模組時會帶指引
+提前失敗（請改用 `--hybrid-runtime=source`）。
 
 ## 可執行 artifact
 
