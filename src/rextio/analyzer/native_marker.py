@@ -146,3 +146,38 @@ def external_accelerator_for_function(
         if tool is not None:
             return tool
     return None
+
+
+def external_accelerator_for_source(source: str) -> str | None:
+    """Return the external accelerator a module's top-level functions use, or None.
+
+    A lightweight, self-contained scan for build backends that only have the
+    generated source text (no project analysis): top-level absolute imports are
+    collected and each top-level function's decorators are resolved through
+    them. Used to keep externally-accelerated modules OUT of Nuitka compilation
+    (the tool needs the original bytecode at runtime). Without project context a
+    project-local module named ``numba`` would also match here - that is the
+    safe direction (the module merely stays uncompiled plain Python).
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    imports: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                visible = alias.asname or alias.name.split(".", 1)[0]
+                imports[visible] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            for alias in node.names:
+                visible = alias.asname or alias.name
+                imports[visible] = f"{node.module}.{alias.name}"
+    if not imports:
+        return None
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            tool = external_accelerator_for_function(node, imports)
+            if tool is not None:
+                return tool
+    return None

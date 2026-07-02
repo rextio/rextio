@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from rextio.analyzer.native_marker import external_accelerator_for_source
 from rextio.fallback.build_result import FallbackBuildResult
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 
@@ -36,12 +37,19 @@ def build_nuitka_fallback(
             message=f"RXT060 Build failed while preparing Nuitka fallback. {nuitka_unavailable_message()}",
         )
 
-    targets = _nuitka_module_targets(python_dir)
+    targets, accelerated = _nuitka_module_targets(python_dir)
+    skipped_note = ""
+    if accelerated:
+        names = ", ".join(sorted(str(path.relative_to(python_dir)) for path in accelerated))
+        skipped_note = (
+            f" Kept as plain Python for external accelerators (Nuitka-compiled "
+            f"functions expose no bytecode, which tools like Numba require): {names}."
+        )
     if not targets:
         return FallbackBuildResult(
             status="built",
             backend="nuitka",
-            message="No Python fallback modules required Nuitka compilation.",
+            message="No Python fallback modules required Nuitka compilation." + skipped_note,
         )
 
     commands: list[list[str]] = []
@@ -78,7 +86,7 @@ def build_nuitka_fallback(
     return FallbackBuildResult(
         status="built",
         backend="nuitka",
-        message="Python fallback modules compiled with Nuitka.",
+        message="Python fallback modules compiled with Nuitka." + skipped_note,
         command=commands,
         compiled_artifacts=sorted(set(compiled_artifacts)),
         stdout="\n".join(part for part in stdout_parts if part),
@@ -86,16 +94,32 @@ def build_nuitka_fallback(
     )
 
 
-def _nuitka_module_targets(python_dir: Path) -> list[Path]:
+def _nuitka_module_targets(python_dir: Path) -> tuple[list[Path], list[Path]]:
+    """Return (modules to compile, modules kept plain for external accelerators).
+
+    A module whose top-level functions carry a recognized external-accelerator
+    decorator (e.g. ``@numba.njit``) must stay plain Python: Nuitka-compiled
+    functions expose no real bytecode, which those tools need at runtime.
+    Skipping compilation is lossless here - the ``.py`` stays in the tree and
+    keeps being imported (a compiled sibling would otherwise shadow it).
+    """
     targets: list[Path] = []
+    accelerated: list[Path] = []
     for path in sorted(python_dir.rglob("*.py")):
         relative = path.relative_to(python_dir)
         if relative.parts and relative.parts[0] == "rextio":
             continue
         if path.name == "__init__.py":
             continue
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            source = ""
+        if source and external_accelerator_for_source(source) is not None:
+            accelerated.append(path)
+            continue
         targets.append(path)
-    return targets
+    return targets, accelerated
 
 
 def _compiled_outputs_for(source: Path) -> list[Path]:
