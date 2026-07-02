@@ -1670,6 +1670,49 @@ def main(argv: list[str]) -> int:
     assert "__rextio_call_python" not in plain
 
 
+def test_delegated_none_typed_argument_expression_is_still_executed(tmp_path: Path) -> None:
+    # A NON-literal `None`-typed argument (a delegated `-> None` call) must be
+    # evaluated for its side effects and then serialized (unit -> JSON null); only
+    # a literal `None` may skip evaluation. Short-circuiting the expression to
+    # `Value::Null` silently elided the callee - a silent semantic divergence
+    # (CPython runs `mark()`; the binary did not).
+    from rextio.codegen.rust.generator import generate_rust_main_binary
+
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def mark() -> None:
+    print("side effect")
+
+@rextio.exempt
+def helper(value: None) -> int:
+    return 7
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    x = helper(mark())
+    return x
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    source = generate_rust_main_binary(
+        lower_project(analysis),
+        "app.main",
+        {"app.helper": "int", "app.mark": "None"},
+    )
+
+    # The inner delegated call is bound to a temp (executed), and its unit value is
+    # serialized - never replaced by a bare `Value::Null` skip.
+    mark_call = '__rextio_call_python("app.mark", vec![])'
+    helper_call = '__rextio_call_python("app.helper"'
+    assert mark_call in source
+    assert source.index(mark_call) < source.index(helper_call)
+    assert f"{helper_call}, vec![serde_json::Value::Null])" not in source
+
+
 def test_subprocess_client_bakes_configured_python_command() -> None:
     from rextio.codegen.rust.subprocess_client import render_subprocess_client
 

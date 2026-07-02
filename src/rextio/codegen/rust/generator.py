@@ -1510,11 +1510,20 @@ class _FunctionRenderer:
         )
         for arg in expr.args:
             arg_type = self.infer_expr_type(arg)
-            if isinstance(arg_type, RxtNone):
+            if isinstance(arg, LiteralIR) and arg.value is None:
+                # Only a literal `None` may skip evaluation: it has no effects and no
+                # typed Rust rendering (a bare `let x = None;` would not infer).
                 json_values.append("serde_json::Value::Null")
                 continue
             name = self.next_temp("__rextio_darg")
             lines.append(f"let {name} = {strip_wrapping_parens(self.render_call_arg(arg))};")
+            if isinstance(arg_type, RxtNone):
+                # A non-literal `None`-typed argument (e.g. a delegated `-> None`
+                # call) must still be EXECUTED for its side effects; the bound unit
+                # value then serializes to JSON null (`to_value(&()) == Null`).
+                # Short-circuiting it to `Value::Null` silently elided the callee.
+                json_values.append(to_value.format(name=name))
+                continue
             if isinstance(arg_type, RxtFloat):
                 # serde_json serializes a non-finite float to JSON null silently;
                 # guard it so a NaN/Inf argument is a clean error, never a silent

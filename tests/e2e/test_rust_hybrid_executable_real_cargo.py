@@ -139,3 +139,62 @@ def main(argv: list[str]) -> int:
 
     assert completed.stdout.strip() == "none-ok"
     assert completed.returncode == 7
+
+
+@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for the hybrid executable e2e")
+def test_rust_hybrid_executable_runs_side_effecting_none_argument(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A delegated `-> None` call used as an ARGUMENT must be executed for its side
+    # effects (CPython runs `mark()` before calling `helper`); the earlier literal
+    # short-circuit silently elided it. Delegated output lands on the binary's
+    # stderr (the wire protocol owns stdout).
+    (tmp_path / "rextio.toml").write_text(
+        """
+[rust]
+build_tool = "cargo"
+""",
+        encoding="utf-8",
+    )
+    source = tmp_path / "src" / "hb_fx" / "app.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.exempt
+def mark() -> None:
+    print("SIDE_EFFECT_RAN")
+
+@rextio.exempt
+def helper(value: None) -> int:
+    return 7
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    x = helper(mark())
+    return x
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--executable-backend=rust",
+            "--entrypoint=hb_fx.app:main",
+        ]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+
+    report = json.loads((tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8"))
+    executable = report["executable_build"]
+    assert executable["status"] == "built", executable
+    completed = subprocess.run([executable["path"]], capture_output=True, text=True, timeout=60)
+
+    assert completed.returncode == 7
+    assert "SIDE_EFFECT_RAN" in completed.stderr
