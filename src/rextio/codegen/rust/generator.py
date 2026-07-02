@@ -1539,26 +1539,16 @@ class _FunctionRenderer:
             needle = strip_wrapping_parens(self.render_call_arg(expr.args[1]))
             needle_tmp = self.next_temp("__rextio_needle")
             # CPython's failure message interpolates the needle's repr
-            # ("5 is not in list", "'x' is not in list"). float items never
-            # reach this direct lowering: a marked function using
-            # list[float].index is promoted to the RXT080 shim and an
-            # auto-discovered one is quietly rejected (the count/index NaN
-            # identity guard), so int/bool/str remain - enforce that
-            # explicitly instead of falling through.
+            # ("5 is not in list", "'x' is not in list", "[2] is not in
+            # list"). float items never reach this direct lowering (marked ->
+            # RXT080 shim, auto -> quiet rejection via the count/index NaN
+            # identity guard); every other supported item type composes its
+            # repr through the shared composer - including container needles
+            # like list[list[int]].index, which previously raised here on an
+            # ACCEPTED function.
             receiver_type = self.infer_expr_type(expr.args[0])
             item_type = receiver_type.item_type if isinstance(receiver_type, RxtList) else None
-            if isinstance(item_type, RxtBool):
-                needle_repr = f'(if {needle_tmp} {{ "True" }} else {{ "False" }})'
-            elif isinstance(item_type, RxtStr):
-                self.used_helpers.add("repr_str")
-                needle_repr = f"__rextio_repr_str(&{needle_tmp})"
-            elif isinstance(item_type, RxtInt) or item_type is None:
-                needle_repr = needle_tmp
-            else:
-                raise RustCodegenError(
-                    f"list.index needle type {item_type!r} has no CPython-exact "
-                    "failure-message lowering (analyzer gate out of sync)"
-                )
+            needle_repr = self.render_repr_arg(item_type, needle_tmp)
             message = f'format!("{{}} is not in list", {needle_repr})'
             # `position` passes `Item` (`&T`), so the predicate compares `item`
             # (not `*item`) against `&needle`.

@@ -100,6 +100,10 @@ def find_int(xs: list[int], needle: int) -> int:
 @rextio.native
 def find_str(xs: list[str], needle: str) -> int:
     return xs.index(needle)
+
+@rextio.native
+def find_nested(xs: list[list[int]], needle: list[int]) -> int:
+    return xs.index(needle)
 """,
         encoding="utf-8",
     )
@@ -118,9 +122,13 @@ def find_str(xs: list[str], needle: str) -> int:
     with pytest.raises(ValueError) as ctrl_error:
         module.find_str(["a"], "ctl\x01\x1b")
 
+    with pytest.raises(ValueError) as nested_error:
+        module.find_nested([[1, 2]], [3])
+
     assert str(int_error.value) == str(_cpython_index_error([1, 2], 5))
     assert str(str_error.value) == str(_cpython_index_error(["a"], "it's"))
     assert str(ctrl_error.value) == str(_cpython_index_error(["a"], "ctl\x01\x1b"))
+    assert str(nested_error.value) == str(_cpython_index_error([[1, 2]], [3]))
 
 
 def _cpython_index_error(xs: list, needle: object) -> ValueError:
