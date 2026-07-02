@@ -24,8 +24,8 @@ fn rextio_call_python_runtime(
     attr_path: &[&str],
     args: &Bound<'_, PyTuple>,
     kwargs: Option<&Bound<'_, PyDict>>,
-) -> PyResult<PyObject> {
-    let module = PyModule::import_bound(py, module_name)?;
+) -> PyResult<Py<PyAny>> {
+    let module = PyModule::import(py, module_name)?;
     let mut target = module.getattr(attr_path[0])?;
     for attr in &attr_path[1..] {
         target = target.getattr(*attr)?;

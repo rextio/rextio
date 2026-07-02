@@ -34,7 +34,7 @@ def rust_type(rxt_type: RxtType) -> str:
     if isinstance(rxt_type, RxtNone):
         return "()"
     if isinstance(rxt_type, RxtPyObject):
-        return "PyObject"
+        return "Py<PyAny>"
     if isinstance(rxt_type, RxtList):
         return f"Vec<{rust_type(rxt_type.item_type)}>"
     if isinstance(rxt_type, RxtSet):

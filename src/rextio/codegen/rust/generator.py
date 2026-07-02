@@ -321,7 +321,7 @@ def _render_runtime_semantics_function(function: FunctionIR) -> str:
             "    py: Python<'_>,",
             "    args: &Bound<'_, PyTuple>,",
             "    kwargs: Option<&Bound<'_, PyDict>>,",
-            ") -> PyResult<PyObject> {",
+            ") -> PyResult<Py<PyAny>> {",
             "    rextio_call_python_runtime(",
             "        py,",
             f"        {rust_string_literal(function.runtime_fallback_module)},",
@@ -619,7 +619,7 @@ class _FunctionRenderer:
             for position, handler in enumerate(statement.handlers):
                 pyo3_exception = BUILTIN_EXCEPTION_TO_PYO3[handler.exception]
                 guard = (
-                    f"Python::with_gil(|py| {err}.is_instance_of::<{pyo3_exception}>(py))"
+                    f"Python::attach(|py| {err}.is_instance_of::<{pyo3_exception}>(py))"
                 )
                 keyword = "if" if position == 0 else "} else if"
                 lines.append(f"{_indent(indent + 3)}{keyword} {guard} {{")
