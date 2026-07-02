@@ -129,6 +129,10 @@ class FunctionAnalysis:
     native_runtime_semantics: bool = False
     is_jit_candidate: bool = False
     jit_reason: str | None = None
+    # Set when a recognized external accelerator decorator (e.g. numba.njit) keeps
+    # this function on the Python fallback intentionally: it is compiled by that
+    # tool under THAT tool's semantics, outside Rextio's native contract.
+    external_accelerator: str | None = None
     # Set when a function would otherwise be JIT-eligible but was kept on the
     # checked native path (e.g. overflow-prone int arithmetic the Cranelift path
     # cannot make raise OverflowError). Surfaced by `rextio check`, not
@@ -206,6 +210,7 @@ class FunctionAnalysis:
             "native_runtime_semantics": self.native_runtime_semantics,
             "is_jit_candidate": self.is_jit_candidate,
             "jit_reason": self.jit_reason,
+            "external_accelerator": self.external_accelerator,
             "inferred_arg_types": dict(sorted(self.inferred_arg_types.items())),
             "inferred_return_type": self.inferred_return_type,
             "calls": [call.to_dict() for call in self.calls],

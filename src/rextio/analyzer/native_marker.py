@@ -96,3 +96,45 @@ def has_native_marker(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
 def has_exempt_marker(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """Report whether the function carries an @rextio.exempt marker."""
     return any(is_exempt_decorator(decorator) for decorator in node.decorator_list)
+
+
+# Decorators from external accelerator packages Rextio recognizes as "this
+# function intentionally stays on the Python fallback and is compiled by an
+# external tool". Keys are fully-resolved dotted names (module import map
+# applied), values name the tool for report labeling. The function's semantics
+# are then the TOOL's contract (e.g. Numba nopython int arithmetic wraps on
+# overflow), not Rextio's CPython-exact native contract - the same opt-out
+# philosophy as @rextio.exempt.
+_EXTERNAL_ACCELERATOR_QUALNAMES = {
+    "numba.jit": "numba",
+    "numba.njit": "numba",
+    "numba.vectorize": "numba",
+    "numba.guvectorize": "numba",
+}
+
+
+def external_accelerator_for_function(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    imports: dict[str, str],
+) -> str | None:
+    """Return the external accelerator a decorator applies, or None.
+
+    Resolves the decorator through the module's import map so ``@numba.njit``,
+    ``from numba import njit`` + ``@njit``, aliases, and the call forms
+    (``@njit(cache=True)``) are all recognized precisely - a user-defined
+    decorator that merely shares a bare name is not.
+    """
+    for decorator in node.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        name = dotted_name(target)
+        if name is None:
+            continue
+        head, _, rest = name.partition(".")
+        resolved_head = imports.get(head)
+        if resolved_head is None:
+            continue
+        resolved = f"{resolved_head}.{rest}" if rest else resolved_head
+        tool = _EXTERNAL_ACCELERATOR_QUALNAMES.get(resolved)
+        if tool is not None:
+            return tool
+    return None

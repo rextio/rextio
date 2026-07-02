@@ -15,6 +15,7 @@ from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis
 from rextio.analyzer.native_marker import (
     NativeMarker,
     dotted_name,
+    external_accelerator_for_function,
     has_exempt_marker,
     native_marker_for_function,
 )
@@ -293,6 +294,7 @@ def _collect_module_functions(
             module_assigned_names=module_assigned_names,
             call_return_types={**project_return_types, **return_types},
         )
+        function.external_accelerator = external_accelerator_for_function(node, module.imports)
         if has_exempt:
             function.is_native_candidate = False
             function.native_target_language = None
@@ -302,6 +304,15 @@ def _collect_module_functions(
             function.is_native_candidate = False
         elif has_marker:
             _classify_native_function(node, function, return_types, module_function_names)
+        elif function.external_accelerator is not None:
+            # A recognized external-accelerator decorator (e.g. @numba.njit) keeps
+            # the function on the Python fallback intentionally: no auto-discovery,
+            # no embedding candidacy, and no RXT010 decorator noise - the external
+            # tool compiles it under its own contract. (An explicit @rextio.native
+            # marker above still wins and is rejected loudly for the unsupported
+            # decorator, surfacing the conflict.)
+            function.is_native_candidate = False
+            function.native_target_language = None
         elif native_marker == "auto" and _is_auto_native_candidate(
             node,
             function,

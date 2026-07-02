@@ -67,6 +67,20 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
             if function.jit_reason:
                 lines.append(f"    reason: {function.jit_reason}")
 
+    external_accelerated = sorted(
+        (
+            function
+            for module in analysis.modules
+            for function in module.functions
+            if function.external_accelerator is not None
+        ),
+        key=lambda function: function.qualname,
+    )
+    if external_accelerated:
+        lines.extend(["", "External-accelerated fallback functions:"])
+        for function in external_accelerated:
+            lines.append(f"  [{function.external_accelerator}] {function.qualname}")
+
     if external_imports:
         lines.extend(["", "Import policies:"])
         for package, policy, origin, reason in external_imports:

@@ -4558,3 +4558,118 @@ def main(argv: list[str]) -> int:
     # caller is rejected with a boundary diagnostic rather than silently built.
     assert main.delegated_call_targets == set()
     assert any(d.code == "RXT010" for d in main.error_diagnostics)
+
+
+def test_numba_decorated_function_is_clean_external_fallback(tmp_path: Path) -> None:
+    # A recognized numba decorator keeps the function on the Python fallback with
+    # no auto-discovery and no RXT010 decorator noise, labeled for the report; a
+    # plain typed sibling is still auto-discovered. All forms resolve through the
+    # module's import map: attribute, from-import, alias, and call decorators.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import numba
+from numba import njit
+from numba import vectorize as vec
+
+@numba.jit
+def a(x: int) -> int:
+    return x + 1
+
+@njit(cache=True)
+def b(x: int) -> int:
+    return x + 2
+
+@vec
+def c(x: float) -> float:
+    return x * 2.0
+
+def plain(x: int) -> int:
+    return x + 3
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="auto")
+    functions = {f.name: f for m in analysis.modules for f in m.functions}
+
+    for name in ("a", "b", "c"):
+        function = functions[name]
+        assert function.external_accelerator == "numba"
+        assert not function.is_native_candidate
+        assert function.error_diagnostics == []
+    assert functions["plain"].accepted
+    assert functions["plain"].external_accelerator is None
+
+
+def test_user_decorator_sharing_a_numba_name_is_not_mislabeled(tmp_path: Path) -> None:
+    # Recognition is import-resolved: a user-defined decorator merely NAMED `njit`
+    # is not treated as an external accelerator.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+def njit(func):
+    return func
+
+@njit
+def helper(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="auto")
+    helper = next(f for m in analysis.modules for f in m.functions if f.name == "helper")
+    assert helper.external_accelerator is None
+
+
+def test_numba_function_remains_delegatable_in_exe_mode(tmp_path: Path) -> None:
+    # In the rust-exe delegate mode a numba-decorated fallback function with wire
+    # types is delegated like any other fallback callee (the dispatcher simply
+    # calls the numba dispatcher object in real CPython).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+from numba import njit
+
+@njit
+def scale(x: int) -> int:
+    return x * 2
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return scale(len(argv))
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    assert main.accepted
+    assert main.delegated_call_targets == {"app.scale"}
+
+
+def test_native_marker_with_numba_decorator_is_rejected_loudly(tmp_path: Path) -> None:
+    # An explicit @rextio.native combined with a numba decorator is a genuine
+    # conflict: the native path must reject the unknown decorator rather than
+    # silently compiling a function whose runtime object is a numba dispatcher.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+import numba
+
+@rextio.native
+@numba.njit
+def helper(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    helper = next(f for m in analysis.modules for f in m.functions if f.name == "helper")
+    assert not helper.accepted
+    assert helper.external_accelerator == "numba"
+    assert any("decorator" in d.message for d in helper.error_diagnostics)
