@@ -398,8 +398,9 @@ def _find_nuitka_executable(dist_dir: Path, name: str, mode: str) -> Path | None
         candidate = standalone_dir / f"{name}{suffix}"
         if candidate.is_file():
             return candidate
-    if standalone_dir.is_dir():
-        return standalone_dir
+    # A `.dist` directory without the launcher binary inside is a partial
+    # build, not a success: returning the directory here made the caller
+    # report status="built" with a path no one can execute.
     return None
 
 
