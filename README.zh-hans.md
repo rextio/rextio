@@ -42,10 +42,10 @@ REXTIO_DISABLE_NATIVE=1
 
 | 组件 | 版本 | 说明 |
 | --- | --- | --- |
-| CPython | >= 3.11, < 3.14 | 分析器使用构建解释器的 `ast`；生成的扩展固定 PyO3 0.22（最高支持 CPython 3.13）。wheel 带有构建解释器 minor 版本标签。 |
-| Rust toolchain | MSRV 1.63（在最新 stable 上验证） | 生成的 crate 使用 edition 2021 + PyO3 0.22。请通过 [rustup](https://rustup.rs) 安装。 |
+| CPython | >= 3.11（在 3.11-3.14 上验证） | 分析器使用构建解释器的 `ast`；生成的扩展固定 PyO3 0.29（最高支持 CPython 3.14）。更新的解释器可能可用，但未经验证。wheel 带有构建解释器 minor 版本标签。 |
+| Rust toolchain | MSRV 1.83（在最新 stable 上验证） | 生成的 crate 使用 edition 2021 + PyO3 0.29。请通过 [rustup](https://rustup.rs) 安装。 |
 | Nuitka（可选） | >= 2.0 | 仅用于 `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka`；更旧版本会被构建 preflight 拒绝。 |
-| Numba（可选，experimental） | 随解释器: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61 | Rextio 只识别 Numba 装饰器；该包是用户项目的运行时依赖，而非 Rextio 的依赖。下限遵循 [Numba 版本支持表](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information)。 |
+| Numba（可选，experimental） | 随解释器: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61, 3.14→>=0.63 | Rextio 只识别 Numba 装饰器；该包是用户项目的运行时依赖，而非 Rextio 的依赖。下限遵循 [Numba 版本支持表](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information)。 |
 
 ## 快速示例
 
