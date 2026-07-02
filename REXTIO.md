@@ -117,10 +117,11 @@ include trigonometric, logarithmic, rounding, finite/NaN checks, and
 `math.pi`/`math.e`. Common side-effect and standard-library lowering is limited
 to `print(...)`, `logging.debug/info/warning/error(...)`, module logger
 variables assigned from `logging.getLogger(...)`, `datetime`/`time` timestamp
-calls, `statistics.mean/fmean`, selected `str`/`bytes`/`list` methods, and
-constrained `hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`,
-and `json.dumps/json.loads` patterns. `json.loads` requires an expected
-supported target type. Empty list literals must
+calls, selected `str`/`bytes`/`list` methods, and constrained
+`hashlib.sha256(...).hexdigest()` and `base64.b64encode` patterns.
+`statistics.mean`/`fmean`, `json.dumps`/`json.loads`, and `base64.b64decode`
+have no direct native lowering: explicitly marked functions using them ride
+the RXT080 runtime shim and auto-discovered ones stay on the Python fallback. Empty list literals must
 use a supported local annotation such as `out: list[int] = []`. `enumerate` and
 `zip` are supported only as batch loop or comprehension iterables over list
 variables. Empty dict literals require a supported fixed `dict[K, V]`

@@ -182,7 +182,9 @@ accepted native helper 调用。
 
 有限降低的 builtin/标准库包括 `len`、`abs`、`min`、`max`、`sum`、`all`、`any`、
 `sorted`、`reversed`、部分 `math`、部分 `str`/`bytes`/`list` method、`print`、`logging`、
-`datetime`、`time`、`statistics`、`hashlib.sha256`、`base64`、`json`。
+`datetime`、`time`、`hashlib.sha256`、`base64.b64encode`。
+（`statistics.mean`/`fmean`、`json.dumps`/`json.loads`、`base64.b64decode`
+没有与 CPython 精确一致的 native 实现，保留在 Python fallback 或 runtime shim。）
 
 不支持或语义不明确的代码会留在 fallback，或在支持时通过 Python runtime semantics shim
 保留行为。详细边界见 [0.1.0 alpha 不支持的功能](docs/unsupported-features.md)。

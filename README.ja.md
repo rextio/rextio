@@ -183,8 +183,10 @@ indexing、accepted native helper call です。
 
 lowering できる builtin/standard-library の範囲には `len`、`abs`、`min`、`max`、
 `sum`、`all`、`any`、`sorted`、`reversed`、一部 `math`、一部 `str`/`bytes`/`list`
-method、`print`、`logging`、`datetime`、`time`、`statistics`、`hashlib.sha256`、
-`base64`、`json` が含まれます。
+method、`print`、`logging`、`datetime`、`time`、`hashlib.sha256`、
+`base64.b64encode` が含まれます。（`statistics.mean`/`fmean`、
+`json.dumps`/`json.loads`、`base64.b64decode` は CPython と正確に一致する
+native 実装がないため、Python fallback または runtime shim に残ります。）
 
 未対応または意味が曖昧なコードは fallback に残るか、対応している場合は Python runtime
 semantics shim で挙動を保ちます。詳しい境界は

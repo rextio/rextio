@@ -215,7 +215,10 @@ Rextio 0.1.0 alpha는 의도적으로 작은 subset만 지원합니다. 실제 R
 - 일부 `math` 함수와 상수
 - 일부 `str`, `bytes`, `list` method
 - `print`, `logging.debug/info/warning/error`
-- `datetime`, `time`, `statistics`, `hashlib.sha256`, `base64`, `json`
+- `datetime`, `time`, `hashlib.sha256`, `base64.b64encode`
+  (`statistics.mean`/`fmean`, `json.dumps`/`json.loads`, `base64.b64decode`는
+  CPython과 정확히 같은 native 구현이 없어 Python fallback 또는 runtime shim에
+  남습니다)
 
 지원하지 않거나 모호한 코드는 fallback에 남거나, 지원되는 경우 Python runtime semantics shim을
 통해 보존됩니다. 자세한 경계는

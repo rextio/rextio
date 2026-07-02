@@ -182,7 +182,9 @@ accepted native helper 呼叫。
 
 有限 lowering 的 builtin/標準函式庫包括 `len`、`abs`、`min`、`max`、`sum`、`all`、
 `any`、`sorted`、`reversed`、部分 `math`、部分 `str`/`bytes`/`list` method、`print`、
-`logging`、`datetime`、`time`、`statistics`、`hashlib.sha256`、`base64`、`json`。
+`logging`、`datetime`、`time`、`hashlib.sha256`、`base64.b64encode`。
+（`statistics.mean`/`fmean`、`json.dumps`/`json.loads`、`base64.b64decode`
+沒有與 CPython 精確一致的 native 實作，保留在 Python fallback 或 runtime shim。）
 
 不支援或語意不明確的程式碼會留在 fallback，或在支援時透過 Python runtime semantics shim
 保留行為。詳細邊界見 [0.1.0 alpha 不支援的功能](docs/unsupported-features.md)。

@@ -146,8 +146,10 @@ Initial public MVP for Rextio as a local hybrid build tool.
   async functions, generators, and dynamic attribute access.
 - Limited direct Rust lowering for expanded builtin and standard-library
   patterns including `math`, `all`/`any`, `sorted`/`reversed`, selected
-  `str`/`bytes`/`list` methods, `statistics`, `time`/`datetime`,
-  `hashlib.sha256`, `base64`, and `json`.
+  `str`/`bytes`/`list` methods, `time`/`datetime`, `hashlib.sha256`, and
+  `base64.b64encode`. (`statistics.mean`/`fmean`, `json.dumps`/`json.loads`,
+  and `base64.b64decode` later moved to the fallback/runtime-shim path: their
+  CPython behavior has no faithful native equivalent.)
 - Conservative Python/Rust ownership handling for direct Rust lowering:
   generated clones for reused owned values and fallback diagnostics for mutable
   collection alias mutation.
