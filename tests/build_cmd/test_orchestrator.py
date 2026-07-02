@@ -1439,3 +1439,30 @@ def main(argv: list[str]) -> int:
     assert result.status == "failed"
     assert "kernels" in result.message
     assert "--hybrid-runtime=source" in result.message
+
+
+def test_build_rejects_pre_2_nuitka_before_analysis(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # The CLI-level gate fires before project analysis: no reports are written.
+    bin_dir = tmp_path / "old-nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then echo 1.9.7; exit 0; fi\n',
+        encoding="utf-8",
+    )
+    nuitka.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    (tmp_path / "app.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8"
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=nuitka"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Nuitka 1.9.7 is too old" in captured.err
+    assert not (tmp_path / ".rextio").exists()

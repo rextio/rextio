@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
-from rextio.build.preflight import format_missing_tools, missing_build_tools
+from rextio.build.preflight import format_missing_tools, missing_build_tools, nuitka_version_error
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
 from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
-from rextio.fallback.nuitka import nuitka_available, nuitka_unavailable_message
+from rextio.fallback.nuitka import nuitka_unavailable_message
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
@@ -68,10 +69,18 @@ def run(args: Namespace) -> int:
         )
         return 1
 
-    if fallback == "nuitka" and not nuitka_available():
-        reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
-        reporter.error(nuitka_unavailable_message())
-        return 1
+    if fallback == "nuitka":
+        nuitka = shutil.which("nuitka")
+        if nuitka is None:
+            reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
+            reporter.error(nuitka_unavailable_message())
+            return 1
+        # Fail before the (potentially slow) project analysis, not mid-build.
+        version_error = nuitka_version_error(nuitka)
+        if version_error is not None:
+            reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
+            reporter.error(version_error)
+            return 1
 
     analysis = analyze_project(
         project_root,
