@@ -5112,3 +5112,34 @@ def f(xs: list[float]) -> float:
     function = next(f for m in analysis.modules for f in m.functions if f.name == "f")
     assert function.accepted
     assert function.native_runtime_semantics
+
+@pytest.mark.parametrize(
+    ("shape", "prelude"),
+    [
+        ("walrus", "from statistics import mean\n\n(mean := len)\n"),
+        ("relative-import", "from statistics import mean\nfrom .helpers import mean\n"),
+    ],
+)
+def test_exotic_rebinders_block_fidelity_shim(shape: str, prelude: str, tmp_path: Path) -> None:
+    # Any module-level rebinding of a fidelity name - a walrus or a relative
+    # import (project code) - overrides the earlier stdlib import; the marked
+    # caller must reject loudly instead of shim-promoting off the stale
+    # binding.
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "helpers.py").write_text("def mean(xs):\n    return 0.0\n", encoding="utf-8")
+    (pkg / "app.py").write_text(
+        f"""
+import rextio
+{prelude}
+@rextio.native
+def f(xs: list[float]) -> float:
+    return mean(xs)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions if f.name == "f")
+    assert not function.native_runtime_semantics, shape
+    assert not function.accepted, shape

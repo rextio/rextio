@@ -149,12 +149,22 @@ def _collect_fidelity_shim_names(tree: ast.Module) -> frozenset[str]:
     import rejects loudly like any project-code call. For conditional bodies
     the last binder in SOURCE ORDER is used - a deterministic approximation;
     when it guesses "project code" the result is a loud rejection, never a
-    silent mis-compile.
+    silent mis-compile. (A from-import that only exists inside control flow
+    can enter this set while staying absent from the module's import map; the
+    validation probe then accepts the call unresolved and the boundary pass
+    rejects it with RXT030 before this set is ever consulted - the star-import
+    case follows the same sequencing.)
     """
     final: dict[str, str | None] = {}
 
     def bind_import_from(node: ast.ImportFrom) -> None:
         if not node.module or node.level != 0:
+            # A relative (or module-less) import still REBINDS its names at
+            # module scope - to project code - so it must override an earlier
+            # fidelity binding rather than being invisible.
+            for alias in node.names:
+                if alias.name != "*":
+                    bind_other(alias.asname or alias.name)
             return
         for alias in node.names:
             if alias.name == "*":
@@ -178,8 +188,30 @@ def _collect_fidelity_shim_names(tree: ast.Module) -> frozenset[str]:
         elif isinstance(target, ast.Starred):
             add_target(target.value)
 
+    def bind_walrus_targets(node: ast.AST) -> None:
+        # A module-level walrus (`(mean := ...)`, `if (mean := ...):`) binds at
+        # module scope. Recurse without entering nested function/class bodies,
+        # whose walruses bind in their own scope.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            return
+        if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            bind_other(node.target.id)
+        for child in ast.iter_child_nodes(node):
+            bind_walrus_targets(child)
+
+    def bind_match_captures(pattern: ast.AST) -> None:
+        name = getattr(pattern, "name", None)
+        if isinstance(name, str):
+            bind_other(name)
+        rest = getattr(pattern, "rest", None)
+        if isinstance(rest, str):
+            bind_other(rest)
+        for child in ast.iter_child_nodes(pattern):
+            bind_match_captures(child)
+
     def walk(statements: list[ast.stmt]) -> None:
         for node in statements:
+            bind_walrus_targets(node)
             if isinstance(node, ast.ImportFrom):
                 bind_import_from(node)
             elif isinstance(node, ast.Import):
@@ -215,9 +247,18 @@ def _collect_fidelity_shim_names(tree: ast.Module) -> frozenset[str]:
             elif isinstance(node, ast.Try):
                 walk(node.body)
                 for handler in node.handlers:
+                    if handler.name is not None:
+                        # `except E as name` binds (and later unbinds) the
+                        # name at module scope - either way it is no longer
+                        # the fidelity import.
+                        bind_other(handler.name)
                     walk(handler.body)
                 walk(node.orelse)
                 walk(node.finalbody)
+            elif isinstance(node, ast.Match):
+                for case in node.cases:
+                    bind_match_captures(case.pattern)
+                    walk(case.body)
 
     walk(tree.body)
     return frozenset(
