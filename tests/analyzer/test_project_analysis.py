@@ -4868,3 +4868,71 @@ def dec(b: bytes) -> str:
     assert function.accepted
     assert function.native_runtime_semantics
     assert not [d for d in function.diagnostics if d.code == "RXT090"]
+
+@pytest.mark.parametrize(
+    ("shape", "source"),
+    [
+        (
+            "local_import_nested",
+            """
+def run(values):
+    from numba import njit
+
+    @njit
+    def inner(x):
+        return x * 2
+
+    return inner(values)
+""",
+        ),
+        (
+            "star_import_cuda",
+            """
+from numba import *
+
+@cuda.jit
+def f(x: int) -> int:
+    return x
+""",
+        ),
+        (
+            "except_handler_import",
+            """
+try:
+    import fast_numba as numba
+except ImportError:
+    import numba
+
+@numba.njit
+def f(x: int) -> int:
+    return x
+""",
+        ),
+    ],
+)
+def test_source_scan_walks_the_whole_tree(shape: str, source: str) -> None:
+    # A deferred import inside a function body decorating a NESTED function,
+    # `from numba import *` resolving the `cuda` submodule, and an import in
+    # an except handler are all knowable at build time; missing them meant a
+    # Nuitka-compiled module whose accelerated function dies at first call.
+    from rextio.analyzer.native_marker import external_accelerator_for_source
+
+    assert external_accelerator_for_source(source) == "numba", shape
+
+
+def test_source_scan_ignores_project_local_numba_module() -> None:
+    # The generated tree always contains every project module, so a top-level
+    # `numba` name in the tree means the import resolves to the user's own
+    # code: the build scans must not skip/block such modules (the analyzer
+    # already had this guard; the build scans lacked it).
+    from rextio.analyzer.native_marker import external_accelerator_for_source
+
+    source = """
+import numba
+
+@numba.njit
+def f(x: int) -> int:
+    return x
+"""
+    assert external_accelerator_for_source(source, frozenset({"numba"})) is None
+    assert external_accelerator_for_source(source, frozenset({"app"})) == "numba"

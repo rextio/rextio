@@ -353,13 +353,18 @@ import system prefers the extension; shipping both bloats the wheel and
 exposes the source) and is tagged with the build platform instead of
 `py3-none-any`; modules kept plain for accelerators ship their `.py` as
 before. A zipapp keeps every `.py`: extension modules cannot be imported from
-inside a zip archive, so the sources are what actually runs there. The build-time scan resolves the
-decorator through the module's imports, including the optional-dependency
-guard (`try: from numba import njit`), `from numba import *`, conditional
-top-level imports, and methods inside class bodies; a decorator that only
-resolves to numba dynamically (e.g. re-exported through another project
-module, or applied via a local factory) is not detected, and such a module
-would be compiled and fail at the accelerated function's first call. A Nuitka
+inside a zip archive, so the sources are what actually runs there. The same build-time scan drives all
+three Nuitka paths (fallback skip, executable early failure, hybrid-runtime
+early failure). It walks the module's whole tree: imports anywhere (top
+level, `try`/`if` guards, `except`/`finally` handlers, deferred imports
+inside function bodies), `from numba import *` (including the `cuda`
+submodule), and every function definition (top level, class methods, nested
+functions); an import resolving to one of the project's own top-level module
+names (e.g. a local `numba.py` shim) is recognized as the user's code and
+never skips or blocks a build. A decorator that only resolves to numba
+dynamically (re-exported through another project module, or applied via a
+local decorator factory) is still not detected, and such a module would be
+compiled and fail at the accelerated function's first call. A Nuitka
 *executable* (`--executable-backend=nuitka`) cannot serve accelerated
 functions (no bytecode, accelerator not bundled); the build fails early with
 an actionable message (deploy as wheel/zipapp) instead of failing at the

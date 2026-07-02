@@ -286,9 +286,11 @@ Nuitka packaging backend. A decorated function stays on the Python fallback
 cleanly (excluded from auto-discovery and helper embedding) and is labeled
 `external_accelerator: numba` in reports; `rextio check` lists such functions.
 Recognition resolves through the module's imports (attribute, from-import,
-alias, and call forms; `numba.cuda.jit` included) - a star import
-(`from numba import *`) is not resolvable and such functions are simply
-unlabeled.
+alias, and call forms; `numba.cuda.jit` included). Report labels in
+`rextio check` cover straight-line imports only; the Nuitka build-time scan
+is broader (star imports, optional-dependency guards, deferred imports
+inside functions), so a module can be correctly kept plain by the build even
+when its functions carry no label.
 
 The contract boundary matters: an `@rextio.native` function has Rextio-verified,
 CPython-exact semantics, while a `@numba.*` function runs under **Numba's**

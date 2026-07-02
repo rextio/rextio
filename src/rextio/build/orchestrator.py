@@ -808,12 +808,16 @@ def _externally_accelerated_runtime_modules(analysis: ProjectAnalysis) -> list[s
     safe direction, and ``--hybrid-runtime=source`` is the escape hatch.
     """
     accelerated: list[str] = []
+    project_modules = frozenset(
+        (module.module_name or Path(module.file_path).stem).split(".", 1)[0]
+        for module in analysis.modules
+    )
     for module in analysis.modules:
         try:
             source = Path(module.file_path).read_text(encoding="utf-8")
         except OSError:
             continue
-        if external_accelerator_for_source(source) is not None:
+        if external_accelerator_for_source(source, project_modules) is not None:
             accelerated.append(module.module_name or Path(module.file_path).stem)
     return sorted(accelerated)
 

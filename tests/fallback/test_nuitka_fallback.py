@@ -128,3 +128,27 @@ def fast(x: int) -> int:
     assert (python_dir / "hb" / "mixed.so").exists()
     assert not (python_dir / "hb" / "_fallback_mixed.so").exists()
     assert "hb/_fallback_mixed.py" in result.message
+
+def test_project_local_numba_module_is_compiled_normally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A project that SHIPS its own `numba.py` shim is not using the external
+    # accelerator: nothing may be skipped, and both modules compile.
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    (python_dir / "numba.py").write_text(
+        "def njit(func):\n    return func\n", encoding="utf-8"
+    )
+    (python_dir / "app.py").write_text(
+        "import numba\n\n@numba.njit\ndef f(x: int) -> int:\n    return x\n",
+        encoding="utf-8",
+    )
+    log = _fake_nuitka(tmp_path, monkeypatch)
+
+    result = build_nuitka_fallback(python_dir)
+
+    assert result.status == "built"
+    calls = log.read_text(encoding="utf-8")
+    assert "app.py" in calls
+    assert "numba.py" in calls
+    assert "Kept as plain Python" not in result.message

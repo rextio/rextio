@@ -5,7 +5,10 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from rextio.analyzer.native_marker import external_accelerator_for_source
+from rextio.analyzer.native_marker import (
+    external_accelerator_for_source,
+    project_module_names_for_tree,
+)
 from rextio.fallback.build_result import FallbackBuildResult
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 
@@ -105,6 +108,7 @@ def _nuitka_module_targets(python_dir: Path) -> tuple[list[Path], list[Path]]:
     """
     targets: list[Path] = []
     accelerated: list[Path] = []
+    project_modules = project_module_names_for_tree(python_dir)
     for path in sorted(python_dir.rglob("*.py")):
         relative = path.relative_to(python_dir)
         if relative.parts and relative.parts[0] == "rextio":
@@ -115,7 +119,7 @@ def _nuitka_module_targets(python_dir: Path) -> tuple[list[Path], list[Path]]:
             source = path.read_text(encoding="utf-8")
         except OSError:
             source = ""
-        if source and external_accelerator_for_source(source) is not None:
+        if source and external_accelerator_for_source(source, project_modules) is not None:
             accelerated.append(path)
             continue
         targets.append(path)

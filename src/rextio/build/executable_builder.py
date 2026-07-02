@@ -7,7 +7,10 @@ import shutil
 import stat
 import sys
 import zipapp
-from rextio.analyzer.native_marker import external_accelerator_for_source
+from rextio.analyzer.native_marker import (
+    external_accelerator_for_source,
+    project_module_names_for_tree,
+)
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 from dataclasses import dataclass
 from pathlib import Path
@@ -367,6 +370,7 @@ def _externally_accelerated_modules(python_dir: Path) -> list[str]:
     guidance instead of producing a binary that dies at the first call.
     """
     found: list[str] = []
+    project_modules = project_module_names_for_tree(python_dir)
     for path in sorted(python_dir.rglob("*.py")):
         relative = path.relative_to(python_dir)
         if relative.parts and relative.parts[0] == "rextio":
@@ -375,7 +379,7 @@ def _externally_accelerated_modules(python_dir: Path) -> list[str]:
             source = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        if external_accelerator_for_source(source) is not None:
+        if external_accelerator_for_source(source, project_modules) is not None:
             found.append(relative.as_posix())
     return found
 
