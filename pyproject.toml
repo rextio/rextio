@@ -7,7 +7,7 @@ name = "rextio"
 dynamic = ["version"]
 description = "Alpha hybrid build tooling for typed Python functions."
 readme = "PYPI.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
@@ -23,6 +23,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Build Tools",
   "Topic :: Software Development :: Code Generators",
 ]
