@@ -75,6 +75,9 @@ import sys
 from pathlib import Path
 
 args = sys.argv[1:]
+if "--version" in args:
+    print("2.4.8")
+    sys.exit(0)
 source = Path(args[args.index("--module") + 1])
 output_arg = next(arg for arg in args if arg == "--output-dir" or arg.startswith("--output-dir="))
 if output_arg == "--output-dir":

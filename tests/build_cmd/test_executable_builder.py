@@ -236,6 +236,9 @@ import sys
 from pathlib import Path
 
 args = sys.argv[1:]
+if "--version" in args:
+    print("2.4.8")
+    sys.exit(0)
 out = Path(next(arg.split("=", 1)[1] for arg in args if arg.startswith("--output-dir=")))
 name = next(arg.split("=", 1)[1] for arg in args if arg.startswith("--output-filename="))
 out.mkdir(parents=True, exist_ok=True)
