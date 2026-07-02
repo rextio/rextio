@@ -253,7 +253,9 @@ This path preserves behavior. It should not be treated as a Rust speedup path.
 ## Experimental Scalar-Helper Embedding
 
 Rextio can optionally embed a very narrow set of unmarked scalar helpers as
-internal native functions. This is off by default.
+internal native functions. This is off by default. Despite the `[jit]`
+config-key name (kept for compatibility), this is NOT a JIT: everything
+compiles ahead of time and no JIT compiler runs inside the built artifact.
 
 When enabled, an eligible unmarked helper (typed scalar arguments and return,
 a single arithmetic return expression) is compiled into the generated native

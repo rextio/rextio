@@ -248,7 +248,9 @@ CPython/Nuitka fallback and reports the boundary reason.
 
 ## Experimental Scalar-Helper Embedding (`[jit]`)
 
-Embedding is an explicit opt-in in 0.1.0 alpha:
+Embedding is an explicit opt-in in 0.1.0 alpha. Despite the `[jit]` key name
+(kept for compatibility), this is NOT a JIT: everything compiles ahead of
+time and no JIT compiler runs inside the built artifact.
 
 ```toml
 [jit]

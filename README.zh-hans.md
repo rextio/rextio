@@ -232,7 +232,9 @@ Rextio 可以把非常窄的 scalar helper（类型确定、单一算术 return 
 enabled = true
 ```
 
-同样的设置也可以通过 `rextio build . --jit` 或 `REXTIO_JIT=true` 指定。内嵌的
+同样的设置也可以通过 `rextio build . --jit` 或 `REXTIO_JIT=true` 指定。
+（`[jit]` 这个键名只是为兼容而保留，此功能并非 JIT —— 全部编译在构建时（AOT）
+完成，构建产物内部不存在任何运行时 JIT 编译器。）内嵌的
 helper 走正常的 checked 路径编译：overflow 正确地 raise OverflowError，除零
 raise ZeroDivisionError，且不会作为 PyO3 函数导出。不存在运行时编译。（过去的
 Cranelift 运行时 JIT 及其 `backend`/`hot_threshold` 配置经基准测试证明始终慢于

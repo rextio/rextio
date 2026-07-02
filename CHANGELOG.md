@@ -241,10 +241,12 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - `math.floor`/`ceil`/`trunc` now convert through a guarded float-to-int helper:
   a value outside i64 range raises `OverflowError` and `NaN` raises `ValueError`,
   instead of silently saturating to `i64::MIN`/`MAX` via an `as i64` cast.
-- The experimental Cranelift JIT no longer accepts integer helpers that contain
-  overflow-prone arithmetic: the JIT path emits wrapping instructions and cannot
-  raise `OverflowError`, so such helpers stay on the checked native path. Float
-  scalar helpers remain JIT-eligible.
+- (HISTORICAL - this runtime JIT was REMOVED before release; `[jit]` now
+  controls AOT scalar-helper embedding only, and no JIT compiler runs inside
+  the AOT artifact.) The experimental Cranelift JIT no longer accepts integer
+  helpers that contain overflow-prone arithmetic: the JIT path emits wrapping
+  instructions and cannot raise `OverflowError`, so such helpers stay on the
+  checked native path. Float scalar helpers remain JIT-eligible.
   (Superseded: with the Cranelift hot path removed, embedded helpers lower
   through the checked native path, so integer arithmetic and float division
   are embedding-eligible again and raise correctly.)
