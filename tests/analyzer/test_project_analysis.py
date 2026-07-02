@@ -4936,3 +4936,35 @@ def f(x: int) -> int:
 """
     assert external_accelerator_for_source(source, frozenset({"numba"})) is None
     assert external_accelerator_for_source(source, frozenset({"app"})) == "numba"
+
+def test_source_scan_accelerator_binding_survives_scope_collisions() -> None:
+    # The whole-tree walk flattens scopes: a nested `import local_numba as
+    # numba` must not overwrite the top-level `import numba` binding that a
+    # top-level @numba.njit resolves through - dropping it is UNDER-detection
+    # (compiled module, first-call death), the unsafe direction.
+    from rextio.analyzer.native_marker import external_accelerator_for_source
+
+    source = """
+import numba
+
+@numba.njit
+def kernel(x: int) -> int:
+    return x * 2
+
+def unrelated():
+    import local_numba as numba
+    return numba.helper()
+"""
+    assert external_accelerator_for_source(source, frozenset({"local_numba"})) == "numba"
+    assert external_accelerator_for_source(source) == "numba"
+
+
+def test_project_local_namespace_package_numba_is_recognized(tmp_path: Path) -> None:
+    # A local `numba/` NAMESPACE package (no __init__.py) is still project
+    # code; the tree-name derivation must include it.
+    from rextio.analyzer.native_marker import project_module_names_for_tree
+
+    (tmp_path / "numba").mkdir()
+    (tmp_path / "numba" / "shim.py").write_text("def njit(f):\n    return f\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text("import numba\n", encoding="utf-8")
+    assert "numba" in project_module_names_for_tree(tmp_path)

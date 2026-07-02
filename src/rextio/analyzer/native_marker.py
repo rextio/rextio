@@ -174,12 +174,33 @@ def external_accelerator_for_source(
     except SyntaxError:
         return None
 
+    def resolves_to_accelerator(dotted: str) -> bool:
+        return any(
+            qualname == dotted or qualname.startswith(f"{dotted}.")
+            for qualname in _EXTERNAL_ACCELERATOR_QUALNAMES
+        )
+
     imports: dict[str, str] = {}
+
+    def bind(visible: str, target: str) -> None:
+        # The walk flattens scopes, so two bindings of one name can collide
+        # (top-level `import numba` vs a nested `import local_numba as
+        # numba`). Never let a non-accelerator binding overwrite an
+        # accelerator-resolving one: dropping the accelerator binding is
+        # UNDER-detection (a Nuitka-compiled module whose accelerated
+        # function dies at first call), while the reverse is at most an
+        # over-skip - the safe direction. This also makes the result
+        # independent of ast.walk's traversal order.
+        current = imports.get(visible)
+        if current is not None and resolves_to_accelerator(current) and not resolves_to_accelerator(target):
+            return
+        imports[visible] = target
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 visible = alias.asname or alias.name.split(".", 1)[0]
-                imports[visible] = alias.name
+                bind(visible, alias.name)
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             for alias in node.names:
                 if alias.name == "*":
@@ -190,10 +211,10 @@ def external_accelerator_for_source(
                         prefix = f"{node.module}."
                         if qualname.startswith(prefix):
                             visible = qualname[len(prefix):].split(".", 1)[0]
-                            imports[visible] = f"{node.module}.{visible}"
+                            bind(visible, f"{node.module}.{visible}")
                     continue
                 visible = alias.asname or alias.name
-                imports[visible] = f"{node.module}.{alias.name}"
+                bind(visible, f"{node.module}.{alias.name}")
     if not imports:
         return None
 
@@ -217,6 +238,10 @@ def project_module_names_for_tree(python_dir: Path) -> frozenset[str]:
     for entry in python_dir.iterdir():
         if entry.is_file() and entry.suffix == ".py":
             names.add(entry.stem)
-        elif entry.is_dir() and (entry / "__init__.py").exists():
+        elif entry.is_dir():
+            # Count every package directory, including NAMESPACE packages
+            # (no __init__.py): a local `numba/` namespace package is still
+            # the user's code and must not be mistaken for the external
+            # accelerator.
             names.add(entry.name)
     return frozenset(names)
