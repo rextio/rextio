@@ -486,7 +486,7 @@ def _generate_native_source(
             message=str(exc),
         )
 
-    _write_rust_project(layout, rust_source, include_jit=bool(plan.native.jit_functions and native_jit_enabled))
+    _write_rust_project(layout, rust_source)
     return NativeSourceResult(
         status="generated",
         message="Generated Rust source for accepted native functions.",
@@ -976,10 +976,10 @@ def _build_native_with_selected_tool(
     )
 
 
-def _write_rust_project(layout: ArtifactLayout, rust_source: str, *, include_jit: bool = False) -> None:
+def _write_rust_project(layout: ArtifactLayout, rust_source: str) -> None:
     layout.rust_src_dir.mkdir(parents=True, exist_ok=True)
     (layout.rust_dir / "Cargo.toml").write_text(
-        render_cargo_toml(include_jit=include_jit),
+        render_cargo_toml(),
         encoding="utf-8",
     )
     (layout.rust_dir / "pyproject.toml").write_text(render_pyproject_toml(), encoding="utf-8")

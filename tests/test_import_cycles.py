@@ -1,7 +1,7 @@
 """Import-cycle regression guard for the decomposed modules (mod-proposal P0-5).
 
 The generator and analyzer were split into smaller modules with care to avoid
-import cycles (e.g. `RustCodegenError` lives in `errors` so `jit_codegen` can
+import cycles (e.g. `RustCodegenError` lives in `errors` so codegen submodules can
 raise it without importing `generator`; `type_predicates` depends only on
 `native_marker`/`capabilities`). A future deeper split could silently reintroduce
 a cycle that only fails at runtime depending on import order.
@@ -22,7 +22,6 @@ _MODULES = [
     "rextio.codegen.rust.errors",
     "rextio.codegen.rust.rust_format",
     "rextio.codegen.rust.checked_arith",
-    "rextio.codegen.rust.jit_codegen",
     "rextio.codegen.rust.generator",
     "rextio.analyzer.type_predicates",
     "rextio.analyzer.native_marker",
