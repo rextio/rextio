@@ -248,3 +248,38 @@ target.chmod(0o755)
     )
     nuitka.chmod(0o755)
     return nuitka
+
+
+def test_nuitka_executable_fails_early_for_externally_accelerated_modules(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # A Nuitka executable cannot serve numba-decorated functions (compiled
+    # functions expose no bytecode and the accelerator is not bundled); the
+    # build must fail at build time with guidance, not at the first call.
+    import stat
+
+    bin_dir = tmp_path / "fake-nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    nuitka.chmod(nuitka.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (python_dir / "app" / "cli.py").write_text(
+        "def main():\n    return 0\n", encoding="utf-8"
+    )
+    (python_dir / "app" / "kernels.py").write_text(
+        "from numba import njit\n\n@njit\ndef f(x: int) -> int:\n    return x\n",
+        encoding="utf-8",
+    )
+
+    result = build_nuitka_executable(python_dir, tmp_path / "dist", "app.cli:main")
+
+    assert result.status == "failed"
+    assert "external" in result.message and "accelerator" in result.message
+    assert "app/kernels.py" in result.message
+    assert not (tmp_path / "dist").exists() or not any((tmp_path / "dist").iterdir())

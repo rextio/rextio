@@ -338,9 +338,27 @@ rejected (unsupported decorator on a native function).
 
 Compatibility: CPython wheel and zipapp deployments work with numba installed;
 the Rust executable's `source` hybrid runtime works (delegated calls run in
-real CPython, with numba's first-call compile latency inside the dispatcher);
-Nuitka-compiled fallbacks and the `nuitka` hybrid runtime do not work (Numba
-requires the original function bytecode at runtime).
+real CPython, with numba's first-call compile latency inside the dispatcher).
+The `--fallback=nuitka` backend coexists automatically: modules whose
+functions carry a recognized accelerator decorator are skipped from
+Nuitka compilation and stay plain Python in the tree (Nuitka-compiled
+functions expose no real bytecode, which the accelerator lifts at first call);
+the build result names the modules kept plain, and the deployment environment
+must still have the accelerator installed. The build-time scan resolves the
+decorator through the module's imports, including the optional-dependency
+guard (`try: from numba import njit`), `from numba import *`, conditional
+top-level imports, and methods inside class bodies; a decorator that only
+resolves to numba dynamically (e.g. re-exported through another project
+module, or applied via a local factory) is not detected, and such a module
+would be compiled and fail at the accelerated function's first call. A Nuitka
+*executable* (`--executable-backend=nuitka`) cannot serve accelerated
+functions (no bytecode, accelerator not bundled); the build fails early with
+an actionable message (deploy as wheel/zipapp) instead of failing at the
+first call. The `nuitka` hybrid-runtime dispatcher likewise fails early when
+*any* project module uses an accelerator — every project module ships in the
+hybrid runtime and Nuitka follows imports into it, so even an accelerated
+module that is never delegated directly would be compiled into the
+dispatcher; use `--hybrid-runtime=source` instead.
 
 ## Accepted Native Semantic Divergences
 

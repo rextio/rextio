@@ -7,6 +7,7 @@ import shutil
 import stat
 import sys
 import zipapp
+from rextio.analyzer.native_marker import external_accelerator_for_source
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 from dataclasses import dataclass
 from pathlib import Path
@@ -253,6 +254,25 @@ def build_nuitka_executable(
             backend="nuitka",
         )
 
+    accelerated = _externally_accelerated_modules(python_dir)
+    if accelerated:
+        names = ", ".join(sorted(accelerated))
+        return ExecutableBuildResult(
+            status="failed",
+            path=None,
+            message=(
+                "RXT060 Executable build failed: the project uses an external "
+                f"accelerator (e.g. Numba) in {names}, and a Nuitka-compiled "
+                "executable cannot serve those functions (compiled functions "
+                "expose no bytecode, which the accelerator requires at runtime, "
+                "and the accelerator package is not bundled). Deploy such "
+                "projects as a wheel/zipapp with the accelerator installed, or "
+                "remove the accelerator decorators for a Nuitka executable."
+            ),
+            entrypoint=entrypoint,
+            backend="nuitka",
+        )
+
     name = _executable_name(executable_name, entrypoint)
     launcher = _write_nuitka_launcher(python_dir, entrypoint)
     dist_dir.mkdir(parents=True, exist_ok=True)
@@ -336,6 +356,28 @@ def _write_nuitka_launcher(python_dir: Path, entrypoint: str) -> Path:
         encoding="utf-8",
     )
     return launcher
+
+
+def _externally_accelerated_modules(python_dir: Path) -> list[str]:
+    """Relative paths of fallback modules using a recognized external accelerator.
+
+    Such modules cannot ride inside a Nuitka-compiled executable: compiled
+    functions expose no bytecode (which e.g. Numba lifts at first call), and the
+    accelerator package itself is not bundled - so the build fails early with
+    guidance instead of producing a binary that dies at the first call.
+    """
+    found: list[str] = []
+    for path in sorted(python_dir.rglob("*.py")):
+        relative = path.relative_to(python_dir)
+        if relative.parts and relative.parts[0] == "rextio":
+            continue
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if external_accelerator_for_source(source) is not None:
+            found.append(relative.as_posix())
+    return found
 
 
 def _find_nuitka_executable(dist_dir: Path, name: str, mode: str) -> Path | None:

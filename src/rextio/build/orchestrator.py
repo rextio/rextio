@@ -10,6 +10,7 @@ from pathlib import Path
 
 from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.models import FunctionAnalysis, ProjectAnalysis
+from rextio.analyzer.native_marker import external_accelerator_for_source
 from rextio.ir.types import normalize_type_name
 from rextio.build.cargo_builder import (
     NativeBuildResult,
@@ -796,6 +797,27 @@ def _write_hybrid_runtime(
         shutil.copy2(source_path, target)
 
 
+def _externally_accelerated_runtime_modules(analysis: ProjectAnalysis) -> list[str]:
+    """Return project modules using an external accelerator (e.g. numba).
+
+    The hybrid runtime copies EVERY project module next to the dispatcher, and a
+    Nuitka onefile dispatcher follows imports from the delegated modules into
+    their siblings — so a delegated-qualname check alone would miss a plain
+    delegated function that transitively imports an accelerated module. Scan the
+    whole tree instead: over-rejecting an unreachable accelerated module is the
+    safe direction, and ``--hybrid-runtime=source`` is the escape hatch.
+    """
+    accelerated: list[str] = []
+    for module in analysis.modules:
+        try:
+            source = Path(module.file_path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if external_accelerator_for_source(source) is not None:
+            accelerated.append(module.module_name or Path(module.file_path).stem)
+    return sorted(accelerated)
+
+
 def _build_nuitka_dispatcher(
     runtime_dir: Path, allowed_qualnames: set[str], timeout: float
 ) -> str | None:
@@ -855,6 +877,27 @@ def _build_rust_executable_artifact(
         entry_qualname,
     )
     nuitka_dispatcher = hybrid_runtime == "nuitka"
+    if nuitka_dispatcher and delegated_return_types:
+        accelerated = _externally_accelerated_runtime_modules(analysis)
+        if accelerated:
+            names = ", ".join(accelerated)
+            return ExecutableBuildResult(
+                status="failed",
+                path=None,
+                message=(
+                    "RXT060 Executable build failed: project module(s) "
+                    f"{names} use an external accelerator (e.g. Numba), which a "
+                    "Nuitka-compiled dispatcher cannot serve (compiled functions "
+                    "expose no bytecode for the accelerator and the accelerator "
+                    "package is not bundled). Every project module ships in the "
+                    "hybrid runtime and Nuitka follows imports into it, so this "
+                    "applies even when no accelerated function is delegated "
+                    "directly. Use --hybrid-runtime=source, whose dispatcher "
+                    "runs real CPython with the project's environment."
+                ),
+                entrypoint=entrypoint,
+                backend="rust",
+            )
     try:
         module_ir = _filter_module_ir(lower_project(analysis, include_jit=True), reachable_qualnames)
         main_rs = generate_rust_main_binary(
