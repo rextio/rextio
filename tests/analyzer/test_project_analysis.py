@@ -4801,6 +4801,9 @@ def f(xs: set[int]) -> list[int]:
     function = next(f for m in analysis.modules for f in m.functions)
     assert not function.accepted, shape
     assert any("iterating a set" in d.message for d in function.error_diagnostics), shape
+    # Exactly ONE diagnostic: the dedicated message must not be followed by
+    # the generic iterable rejection or name-scope cascades.
+    assert len(function.error_diagnostics) == 1, [d.message for d in function.error_diagnostics]
 
 
 def test_building_a_set_from_a_list_stays_native(tmp_path: Path) -> None:
@@ -4968,3 +4971,34 @@ def test_project_local_namespace_package_numba_is_recognized(tmp_path: Path) -> 
     (tmp_path / "numba" / "shim.py").write_text("def njit(f):\n    return f\n", encoding="utf-8")
     (tmp_path / "app.py").write_text("import numba\n", encoding="utf-8")
     assert "numba" in project_module_names_for_tree(tmp_path)
+
+@pytest.mark.parametrize(
+    ("shape", "body"),
+    [
+        ("enumerate", "    total = 0\n    for i, x in enumerate(xs):\n        total = total + i\n    return total\n"),
+        ("zip", "    total = 0\n    for a, b in zip(xs, xs):\n        total = total + a + b\n    return total\n"),
+    ],
+)
+def test_enumerate_and_zip_over_sets_explain_the_real_reason(
+    shape: str, body: str, tmp_path: Path
+) -> None:
+    # enumerate/zip over a set previously reported the generic "supports list
+    # variables only" message; the user must see the actual reason (set
+    # iteration order divergence), and exactly once.
+    write_module(
+        tmp_path,
+        "app.py",
+        f"""
+import rextio
+
+@rextio.native
+def f(xs: set[int]) -> int:
+{body}""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert not function.accepted, shape
+    messages = [d.message for d in function.error_diagnostics]
+    # Every diagnostic is the dedicated set message (one per offending
+    # argument) - no generic "list only" or name-scope cascade noise.
+    assert messages and all("iterating a set" in m for m in messages), messages

@@ -1638,6 +1638,10 @@ class _SignatureInferencer:
         if _is_list_type(iterable_type):
             item_type = _list_item_type(iterable_type)
             return [item_type] if item_type is not None else []
+        # Set item typing stays here for INFERENCE only: the validation pass
+        # (`_iter_item_type`) rejects native set iteration regardless, so this
+        # never admits a set-iterating function - it just keeps local type
+        # inference coherent while the rejection diagnostic is produced.
         if _is_set_type(iterable_type):
             item_type = _set_item_type(iterable_type)
             return [item_type] if item_type is not None else []
@@ -2738,6 +2742,8 @@ def _infer_bytes_method_type(
         # Emitted here for every candidate that lowers decode; the project
         # scanner strips the note from functions that do not end up on the
         # direct native path (rejected or shim functions run real CPython).
+        if any(d.code == "RXT090" for d in function.diagnostics):
+            return "str"
         function.add_diagnostic(
             Diagnostic(
                 code="RXT090",
@@ -3044,6 +3050,16 @@ def _validate_compare_types(
         left_node = comparator
 
 
+def _add_set_iteration_rejection(function: FunctionAnalysis, node: ast.AST) -> None:
+    _add_unsupported_syntax(
+        function,
+        node,
+        "iterating a set is not supported in native functions (Rust hash-set "
+        "iteration order diverges from CPython's); iterate a list instead or "
+        "keep the function on the Python fallback",
+    )
+
+
 def _iter_item_type(
     node: ast.AST, iterable_type: str | None, function: FunctionAnalysis
 ) -> str | None:
@@ -3055,15 +3071,11 @@ def _iter_item_type(
         # uses a per-instance random seed (two calls with the same elements can
         # iterate differently). No faithful lowering exists, so reject to the
         # Python fallback. Order-independent set operations (len, membership,
-        # add, ==) stay native.
-        _add_unsupported_syntax(
-            function,
-            node,
-            "iterating a set is not supported in native functions (Rust hash-set "
-            "iteration order diverges from CPython's); iterate a list instead or "
-            "keep the function on the Python fallback",
-        )
-        return None
+        # add, ==) stay native. Return the item type anyway so the loop target
+        # binds and the rejection is reported ONCE (not followed by the
+        # generic iterable message and name-scope cascades).
+        _add_set_iteration_rejection(function, node)
+        return _set_item_type(iterable_type)
     if isinstance(node, ast.Call) and dotted_name(node.func) == "range":
         return "int"
     return None
@@ -3076,7 +3088,10 @@ def _iter_unpack_types(
 ) -> list[str]:
     if isinstance(node, ast.Call) and _is_enumerate_call(node):
         _validate_enumerate_call(node, function, env)
-        item_type = _list_item_type(_infer_expr_type(node.args[0], function, env))
+        iterable_type = _infer_expr_type(node.args[0], function, env)
+        # A set-typed source was already rejected with the dedicated message;
+        # still bind the targets so no generic/name-scope cascade follows.
+        item_type = _list_item_type(iterable_type) or _set_item_type(iterable_type)
         return ["int", item_type] if item_type is not None else []
     if isinstance(node, ast.Call) and _is_zip_call(node):
         item_types = _validate_zip_call(node, function, env)
@@ -3148,7 +3163,11 @@ def _validate_enumerate_call(
             "enumerate currently supports list variables only",
         )
         return
-    item_type = _list_item_type(_infer_expr_type(node.args[0], function, env))
+    iterable_type = _infer_expr_type(node.args[0], function, env)
+    if _is_set_type(iterable_type):
+        _add_set_iteration_rejection(function, node.args[0])
+        return
+    item_type = _list_item_type(iterable_type)
     if item_type is None:
         _add_unsupported_syntax(
             function,
@@ -3169,7 +3188,16 @@ def _validate_zip_call(
         if not isinstance(arg, ast.Name):
             _add_unsupported_syntax(function, arg, "zip currently supports list variables only")
             continue
-        item_type = _list_item_type(_infer_expr_type(arg, function, env))
+        iterable_type = _infer_expr_type(arg, function, env)
+        if _is_set_type(iterable_type):
+            # Rejected with the dedicated message; keep the item type so the
+            # loop targets still bind (no generic/name-scope cascade).
+            _add_set_iteration_rejection(function, arg)
+            item = _set_item_type(iterable_type)
+            if item is not None:
+                item_types.append(item)
+            continue
+        item_type = _list_item_type(iterable_type)
         if item_type is None:
             _add_unsupported_syntax(
                 function,
