@@ -1378,5 +1378,70 @@ def main(argv: list[str]) -> int:
     )
 
     assert result.status == "failed"
-    assert "app.scale" in result.message
+    assert "project module(s) app use" in result.message
+    assert "--hybrid-runtime=source" in result.message
+
+
+def test_hybrid_nuitka_runtime_rejects_transitively_accelerated_modules(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # The delegated function is PLAIN, but it imports a sibling module that uses
+    # numba. Every project module ships in the hybrid runtime and Nuitka follows
+    # imports from the delegated module into the sibling, so the compiled
+    # dispatcher would still break the accelerated function at first call: the
+    # guard must scan the whole runtime tree, not just delegated qualnames.
+    (tmp_path / "kernels.py").write_text(
+        """
+from numba import njit
+
+@njit
+def scale(x: int) -> int:
+    return x * 2
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+import kernels
+
+def lookup(x: int) -> int:
+    return kernels.scale(x) + 1
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return lookup(len(argv))
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    layout = ArtifactLayout(tmp_path)
+
+    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout):
+        dist_dir.mkdir(parents=True, exist_ok=True)
+        binary = dist_dir / binary_name
+        binary.write_text("fake binary", encoding="utf-8")
+        return ExecutableBuildResult(
+            status="built",
+            path=str(binary),
+            message="ok",
+            entrypoint=entrypoint,
+            backend="rust",
+        )
+
+    monkeypatch.setattr(orchestrator, "build_rust_executable", fake_build)
+
+    result = orchestrator._build_rust_executable_artifact(
+        layout,
+        analysis,
+        "app:main",
+        None,
+        None,
+        "nuitka",
+        build_timeout=30,
+    )
+
+    assert result.status == "failed"
+    assert "kernels" in result.message
     assert "--hybrid-runtime=source" in result.message
