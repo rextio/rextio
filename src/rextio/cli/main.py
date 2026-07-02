@@ -406,21 +406,10 @@ def _add_jit_options(parser: argparse.ArgumentParser) -> None:
         "--jit",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Enable experimental native-side JIT. Overrides REXTIO_JIT and [jit] enabled.",
-    )
-    parser.add_argument(
-        "--jit-backend",
-        choices=("cranelift",),
-        default=None,
-        help="Experimental JIT backend. Overrides REXTIO_JIT_BACKEND and [jit] backend.",
-    )
-    parser.add_argument(
-        "--jit-hot-threshold",
-        type=_non_negative_int,
-        default=None,
         help=(
-            "Calls before an experimental JIT candidate is compiled. "
-            "Overrides REXTIO_JIT_HOT_THRESHOLD and [jit] hot_threshold."
+            "Enable experimental scalar-helper embedding: eligible unmarked typed "
+            "scalar helpers are compiled as internal native functions. "
+            "Overrides REXTIO_JIT and [jit] enabled."
         ),
     )
 

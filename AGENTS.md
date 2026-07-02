@@ -47,9 +47,10 @@ Python source
 18. Rextio can optionally convert a narrow, supported subset of module top-level
     initialization logic to a Rust native initializer while preserving Python
     fallback import behavior.
-19. Rextio can optionally enable an experimental native-side Cranelift JIT for
-    narrow Rextio IR scalar helper regions when `[jit] enabled = true`,
-    `--jit`, or `REXTIO_JIT=true` is set.
+19. Rextio can optionally embed narrow unmarked scalar helpers as internal
+    native functions (experimental) when `[jit] enabled = true`, `--jit`, or
+    `REXTIO_JIT=true` is set. Numba decorators are recognized as a supported
+    external accelerator for fallback code.
 
 The 0.1.0 alpha release must feel like a usable hybrid compiler/build tool, not merely a static analyzer.
 
@@ -66,7 +67,7 @@ Do not implement these in 0.1.0 alpha unless explicitly requested:
 * Full runtime boundary-cost model
 * Runtime-weighted native/fallback optimization
 * General-purpose Python JIT
-* JIT backends beyond the explicit experimental Cranelift native-side path
+* Runtime JIT compilation (the former Cranelift native-side hot path was removed; scalar-helper embedding is AOT)
 * LLVM integration
 * MLIR
 * General-purpose executable packaging beyond zipapp, Nuitka, and the native
@@ -387,8 +388,6 @@ default_external_policy = "fallback"
 
 [jit]
 enabled = false
-backend = "cranelift"
-hot_threshold = 25
 
 [executable]
 # entrypoint = "myapp.cli:main"
@@ -468,8 +467,6 @@ rextio build --fallback=nuitka
 rextio build --fallback-threshold=1000
 rextio build --jit
 rextio build --no-jit
-rextio build --jit-backend=cranelift
-rextio build --jit-hot-threshold=25
 rextio build --rust-binding=pyo3
 rextio build --rust-build-tool=maturin
 rextio build --rust-importable
@@ -500,8 +497,6 @@ REXTIO_PLUGINS_ENABLED
 REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY
 REXTIO_IMPORTS_PACKAGES
 REXTIO_JIT
-REXTIO_JIT_BACKEND
-REXTIO_JIT_HOT_THRESHOLD
 REXTIO_FALLBACK_BACKEND
 REXTIO_BOUNDARY_FALLBACK_THRESHOLD
 REXTIO_BUILD_TIMEOUT
@@ -551,24 +546,23 @@ candidate from direct Rust lowering with `RXT030`. If the call is inside a loop,
 the diagnostic should suggest function-level fallback, adding a plugin, or
 refactoring to a batch API to avoid repeated Python/Rust boundary crossings.
 
-Experimental native-side JIT must stay opt-in:
+Experimental scalar-helper embedding must stay opt-in:
 
 * Default `[jit] enabled = false`.
 * `--jit`, `REXTIO_JIT=true`, or `[jit] enabled = true` may enable it.
 * `--no-jit` must override environment and `rextio.toml` settings.
-* Only `backend = "cranelift"` is supported.
-* The current JIT subset is limited to internal scalar `int`/`float` helper
-  regions that Rextio can represent as IR and that have a single arithmetic
-  return expression.
-* JIT regions are not exported as PyO3 functions. They are called only from
-  generated native Rust code.
-* Generated Rust should run an interpreter-equivalent expression first, count
-  calls, and compile the Cranelift function only after `[jit] hot_threshold` /
-  `--jit-hot-threshold` / `REXTIO_JIT_HOT_THRESHOLD` is reached.
-* If JIT is disabled, Cranelift dependencies must not be emitted into generated
-  Cargo projects.
-* If a region falls outside the JIT subset, use normal boundary rejection or
-  fallback behavior. Do not build a CPython-hosted JIT API.
+* The embedding subset is limited to unmarked scalar `int`/`float` helpers
+  that Rextio can represent as IR and that have a single arithmetic return
+  expression.
+* Embedded helpers are not exported as PyO3 functions. They are called only
+  from generated native Rust code, and they lower through the normal checked
+  path (overflow raises OverflowError; there is no runtime compilation - the
+  former Cranelift hot path was removed after benchmarks showed it strictly
+  slower than the AOT lowering).
+* Generated Cargo projects must not contain Cranelift dependencies.
+* If a helper falls outside the embedding subset, use normal boundary
+  rejection or fallback behavior. Do not build a CPython-hosted JIT API;
+  Numba is the supported external accelerator for fallback code.
 
 Behavior:
 
@@ -583,8 +577,8 @@ Behavior:
 * Invoke maturin or Cargo as needed.
 * Optionally generate and compile a Rust-importable library crate for accepted
   direct Rust functions.
-* Optionally emit internal Cranelift JIT regions only when experimental native
-  JIT is enabled.
+* Optionally embed eligible unmarked scalar helpers as internal native
+  functions when experimental embedding is enabled.
 * Copy fallback Python modules.
 * Generate import-compatible wrappers.
 * Embed the default runtime boundary fallback threshold in generated wrappers.
@@ -1638,9 +1632,9 @@ Rust dependencies should be minimal:
 * sha2 for limited `hashlib.sha256` lowering
 * optionally serde for helper structures later
 
-Do not add LLVM, Tokio, Axum, or framework dependencies in 0.1.0 alpha. The
-only allowed Cranelift usage is conditional dependency emission in generated
-Rust projects when experimental native-side JIT is explicitly enabled.
+Do not add LLVM, Cranelift, Tokio, Axum, or framework dependencies in 0.1.0
+alpha. Generated Rust projects must not contain Cranelift dependencies (the
+former runtime JIT hot path was removed; helper embedding is plain AOT).
 
 ---
 
@@ -1705,8 +1699,9 @@ Do not claim framework migration.
 
 Do not claim full runtime boundary-cost optimization.
 
-Do not claim production-ready JIT. The experimental Cranelift path is opt-in,
-native-side only, and limited to narrow scalar Rextio IR helper regions.
+Do not claim any runtime JIT. Scalar-helper embedding is opt-in, AOT,
+native-side only, and limited to narrow scalar Rextio IR helper regions;
+Numba is the supported external accelerator for fallback code.
 
 ---
 
@@ -1813,7 +1808,7 @@ The architecture may leave extension points for these, but do not implement them
 * framework-aware profiling
 * general-purpose JIT metadata
 * production JIT
-* JIT backends beyond experimental Cranelift
+* runtime JIT compilation of any kind (helper embedding is AOT)
 * enterprise/on-prem platform
 
 Keep 0.1.0 alpha focused.

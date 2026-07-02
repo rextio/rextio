@@ -12,9 +12,6 @@ from rextio.codegen.rust.checked_arith import (
 )
 from rextio.codegen.rust.errors import RustCodegenError
 from rextio.codegen.rust.keywords import RUST_RAWABLE_KEYWORDS
-from rextio.codegen.rust.jit_codegen import jit_prelude as _jit_prelude
-from rextio.codegen.rust.jit_codegen import jit_pointer_type as _jit_pointer_type
-from rextio.codegen.rust.jit_codegen import render_cranelift_expr as _render_cranelift_expr
 from rextio.codegen.rust.subprocess_client import render_subprocess_client
 from rextio.codegen.rust.pyo3 import render_pyo3_module
 from rextio.codegen.rust.rust_format import (
@@ -110,15 +107,6 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
         (
             names_by_qualname[function.qualname],
             (
-                _render_jit_function(
-                    function,
-                    names_by_qualname[function.qualname],
-                    names_by_qualname,
-                    names_by_module_and_name,
-                    return_types_by_qualname,
-                )
-                if function.native_jit
-                else
                 _render_runtime_semantics_function(function)
                 if function.native_runtime_semantics
                 else _render_function(
@@ -128,6 +116,9 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
                     return_types_by_qualname,
                     mode="pyo3",
                     used_helpers=used_helpers,
+                    # An embedded helper (former JIT candidate) compiles as a plain
+                    # internal function: callable from native code, not exported.
+                    pyo3_exported=not function.native_jit,
                 )
             ),
         )
@@ -139,8 +130,6 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
         if not function.native_jit
     ]
     prelude: list[str] = []
-    if any(function.native_jit for function in module_ir.functions):
-        prelude.extend(_jit_prelude())
     prelude.extend(_checked_arith_helpers(used_helpers, "pyo3"))
     return render_pyo3_module(
         rendered,
@@ -166,7 +155,9 @@ def generate_rust_crate_module(
     direct_functions = [
         function
         for function in module_ir.functions
-        if not function.native_runtime_semantics and not function.native_jit
+        # Embedded helpers (former JIT candidates) are ordinary direct functions in
+        # crate mode; only runtime-shim functions have no crate lowering.
+        if not function.native_runtime_semantics
     ]
     if not direct_functions:
         raise RustCodegenError("no direct Rust native functions are available for a Rust-importable crate")
@@ -272,7 +263,7 @@ def _resolve_main_entry(module_ir: ModuleIR, entry_qualname: str) -> FunctionIR:
     ]
     if jit_matches:
         raise RustCodegenError(
-            f"Rust-main entrypoint '{entry_qualname}' cannot be an experimental JIT function"
+            f"Rust-main entrypoint '{entry_qualname}' cannot be an embedded helper function"
         )
     matches = [
         function
@@ -338,108 +329,6 @@ def _render_runtime_semantics_function(function: FunctionIR) -> str:
             "        args,",
             "        kwargs,",
             "    )",
-            "}",
-        ]
-    )
-
-
-def _render_jit_function(
-    function: FunctionIR,
-    rust_name: str,
-    native_names_by_qualname: dict[str, str],
-    native_names_by_module_and_name: dict[tuple[str, str], str],
-    native_return_types: dict[str, RxtType],
-) -> str:
-    if len(function.body.statements) != 1 or not isinstance(function.body.statements[0], ReturnIR):
-        raise RustCodegenError(f"JIT function must contain a single return statement: {function.qualname}")
-    return_statement = function.body.statements[0]
-    if return_statement.value is None:
-        raise RustCodegenError(f"JIT function must return a value: {function.qualname}")
-    return_type = rust_type(function.return_type)
-    if return_type not in {"i64", "f64"}:
-        raise RustCodegenError(f"JIT function return type is not supported: {function.qualname}")
-    param_types = [rust_type(param.type) for param in function.params]
-    if any(param_type != return_type for param_type in param_types):
-        raise RustCodegenError(
-            f"JIT function parameters must match the return type in 0.1.0 alpha: {function.qualname}"
-        )
-    threshold = function.jit_hot_threshold if function.jit_hot_threshold is not None else 25
-    pointer_type = _jit_pointer_type(return_type, len(function.params))
-    interpreter = _FunctionRenderer(
-        function,
-        native_names_by_qualname,
-        native_names_by_module_and_name,
-        native_return_types,
-        mode="pyo3",
-    )
-    interpreter_expr = strip_expr_if_safe(
-        return_statement.value,
-        interpreter.render_expr_with_expected(return_statement.value, function.return_type),
-    )
-    # ``rust_name`` may be a raw identifier (``r#fn``) for a keyword function name.
-    # That is valid as the standalone ``fn`` name, but the derived type/static/helper
-    # identifiers are *compound* and a raw-identifier prefix cannot appear
-    # mid-identifier, so build those from the unescaped base. They are also namespaced
-    # under ``__rextio_jit_`` so they can never collide with a user function that
-    # happens to be named like one of the helpers (e.g. a real ``compile_foo``).
-    base = rust_name.removeprefix("r#")
-    helper = f"__rextio_jit_{base}"
-    compile_name = f"{helper}_compile"
-    signature_params = ", ".join(
-        f"{rust_identifier(param.name)}: {rust_type(param.type)}" for param in function.params
-    )
-    pointer_args = ", ".join(rust_identifier(param.name) for param in function.params)
-    cranelift_type = "types::I64" if return_type == "i64" else "types::F64"
-    jit_lines, jit_value = _render_cranelift_expr(
-        return_statement.value,
-        {param.name: index for index, param in enumerate(function.params)},
-        return_type,
-    )
-    name_literal = rust_string_literal(base)
-    return "\n".join(
-        [
-            f"type {helper}_JitFn = {pointer_type};",
-            "",
-            f"static {helper}_HOT_COUNT: AtomicUsize = AtomicUsize::new(0);",
-            f"static {helper}_COMPILED: OnceLock<Result<{helper}_JitFn, String>> = OnceLock::new();",
-            "",
-            f"fn {rust_name}({signature_params}) -> PyResult<{return_type}> {{",
-            f"    let calls = {helper}_HOT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;",
-            f"    if calls >= {threshold} {{",
-            f"        if let Ok(compiled) = {helper}_COMPILED.get_or_init({compile_name}) {{",
-            f"            return Ok(unsafe {{ compiled({pointer_args}) }});",
-            "        }",
-            "    }",
-            f"    Ok({interpreter_expr})",
-            "}",
-            "",
-            f"fn {compile_name}() -> Result<{helper}_JitFn, String> {{",
-            "    let jit_builder = JITBuilder::new(cranelift_module::default_libcall_names())",
-            "        .map_err(|err| err.to_string())?;",
-            "    let mut module = JITModule::new(jit_builder);",
-            "    let mut ctx = module.make_context();",
-            *[
-                f"    ctx.func.signature.params.push(AbiParam::new({cranelift_type}));"
-                for _param in function.params
-            ],
-            f"    ctx.func.signature.returns.push(AbiParam::new({cranelift_type}));",
-            "    let mut builder_context = FunctionBuilderContext::new();",
-            "    let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);",
-            "    let block = builder.create_block();",
-            "    builder.append_block_params_for_function_params(block);",
-            "    builder.switch_to_block(block);",
-            "    builder.seal_block(block);",
-            *[f"    {line}" for line in jit_lines],
-            f"    builder.ins().return_(&[{jit_value}]);",
-            "    builder.finalize();",
-            f"    let id = module.declare_function({name_literal}, Linkage::Export, &ctx.func.signature)",
-            "        .map_err(|err| err.to_string())?;",
-            "    module.define_function(id, &mut ctx).map_err(|err| err.to_string())?;",
-            "    module.clear_context(&mut ctx);",
-            "    module.finalize_definitions().map_err(|err| err.to_string())?;",
-            "    let module = Box::leak(Box::new(module));",
-            "    let code = module.get_finalized_function(id);",
-            f"    Ok(unsafe {{ std::mem::transmute::<*const u8, {helper}_JitFn>(code) }})",
             "}",
         ]
     )
@@ -537,8 +426,12 @@ class _FunctionRenderer:
         mode: str,
         used_helpers: set[str] | None = None,
         delegated_return_types: dict[str, str] | None = None,
+        pyo3_exported: bool = True,
     ) -> None:
         self.function = function
+        # Whether the pyo3-mode function is registered with the module. Embedded
+        # helpers are internal-only: no `#[pyfunction]` wrapper is generated.
+        self.pyo3_exported = pyo3_exported
         self.native_names_by_qualname = native_names_by_qualname
         self.native_names = native_names
         self.native_return_types = native_return_types
@@ -566,7 +459,7 @@ class _FunctionRenderer:
         rust_name = rust_identifier(native_function_name(self.function.qualname))
         if self.mode == "pyo3":
             lines = [
-                "#[pyfunction]",
+                *(["#[pyfunction]"] if self.pyo3_exported else []),
                 f"fn {rust_name}({params}) -> PyResult<{return_type}> {{",
             ]
         else:
@@ -1966,6 +1859,7 @@ def _render_function(
     mode: str,
     used_helpers: set[str] | None = None,
     delegated_return_types: dict[str, str] | None = None,
+    pyo3_exported: bool = True,
 ) -> str:
     return _FunctionRenderer(
         function,
@@ -1975,6 +1869,7 @@ def _render_function(
         mode,
         used_helpers=used_helpers,
         delegated_return_types=delegated_return_types,
+        pyo3_exported=pyo3_exported,
     ).render()
 
 

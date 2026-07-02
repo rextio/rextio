@@ -35,8 +35,6 @@ DEFAULT_CONFIG: dict[str, dict[str, object]] = {
     },
     "jit": {
         "enabled": False,
-        "backend": "cranelift",
-        "hot_threshold": 25,
     },
     "executable": {
         "entrypoint": None,

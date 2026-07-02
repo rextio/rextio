@@ -64,9 +64,23 @@ Initial public MVP for Rextio as a local hybrid build tool.
   at build time).
 - Mirrored build and analysis settings across CLI parameters, environment variables, and `rextio.toml`.
 - Target planning metadata for future Rust/Mojo/Julia backends and installed package plugins.
-- Experimental opt-in native-side Cranelift JIT for narrow scalar helper
-  regions represented in Rextio IR, with `--jit`, `REXTIO_JIT`, and `[jit]`
-  configuration controls.
+- Experimental opt-in scalar-helper embedding for narrow unmarked helpers
+  represented in Rextio IR, with `--jit`, `REXTIO_JIT`, and `[jit] enabled`
+  controls: an eligible helper compiles ahead of time as an internal native
+  function through the normal checked lowering (int overflow raises
+  OverflowError; float `/` raises ZeroDivisionError), and in the Rust
+  executable backend it compiles into the binary instead of being delegated
+  per call. (This began as a runtime Cranelift JIT; the hot path was removed
+  after benchmarks showed it strictly slower than the AOT path it fell back
+  to, and the `[jit] backend`/`[jit] hot_threshold` settings were removed
+  with it.)
+- Numba (`numba.jit`/`njit`/`vectorize`/`guvectorize`) is recognized as a
+  supported external accelerator for Python fallback code: decorated
+  functions stay on the fallback cleanly (no auto-discovery, no diagnostic
+  noise), are labeled `external_accelerator: numba` in reports and
+  `rextio check` output, and run under Numba's own semantics (documented,
+  including the nopython int-overflow wrap divergence). Not compatible with
+  Nuitka-compiled fallbacks.
 - Python runtime semantics native shim (`RXT080`) for compatibility coverage of
   object behavior, marked instance methods, exceptions, context managers,
   async functions, generators, and dynamic attribute access.
@@ -166,6 +180,9 @@ Initial public MVP for Rextio as a local hybrid build tool.
   overflow-prone arithmetic: the JIT path emits wrapping instructions and cannot
   raise `OverflowError`, so such helpers stay on the checked native path. Float
   scalar helpers remain JIT-eligible.
+  (Superseded: with the Cranelift hot path removed, embedded helpers lower
+  through the checked native path, so integer arithmetic and float division
+  are embedding-eligible again and raise correctly.)
 - Removed the unused `crates/rextio_runtime` helper crate; generated code inlines
   its bounds-checked access, so the crate was never wired into any build.
 - The Python runtime-semantics shim (`RXT080`) is now strictly opt-in. Only
@@ -197,5 +214,5 @@ Initial public MVP for Rextio as a local hybrid build tool.
 0.1.0 alpha is intentionally narrow. It does not provide full Python
 compatibility, bundled third-party package support, framework migration,
 general-purpose Python JIT behavior, or full runtime boundary-cost optimization.
-The Cranelift path is experimental, opt-in, native-side only, and limited to
-small scalar helper regions.
+Scalar-helper embedding is experimental, opt-in, AOT, native-side only, and
+limited to small scalar helper regions; there is no runtime JIT.

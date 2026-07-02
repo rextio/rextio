@@ -61,21 +61,25 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
                 lines.append(f"    suggestion: {diagnostic.suggestion}")
 
     if jit_candidates:
-        lines.extend(["", "Experimental JIT candidates:"])
+        lines.extend(["", "Embedding candidates (experimental):"])
         for function in jit_candidates:
             lines.append(f"  [jit] {function.qualname}")
             if function.jit_reason:
                 lines.append(f"    reason: {function.jit_reason}")
-            if function.jit_hot_threshold is not None:
-                lines.append(f"    hot threshold: {function.jit_hot_threshold}")
 
-    jit_skipped = analysis.jit_skipped
-    if jit_skipped:
-        lines.extend(["", "Experimental JIT skipped (kept on checked native path):"])
-        for function in jit_skipped:
-            lines.append(f"  [native] {function.qualname}")
-            if function.jit_skipped_reason:
-                lines.append(f"    reason: {function.jit_skipped_reason}")
+    external_accelerated = sorted(
+        (
+            function
+            for module in analysis.modules
+            for function in module.functions
+            if function.external_accelerator is not None
+        ),
+        key=lambda function: function.qualname,
+    )
+    if external_accelerated:
+        lines.extend(["", "External-accelerated fallback functions:"])
+        for function in external_accelerated:
+            lines.append(f"  [{function.external_accelerator}] {function.qualname}")
 
     if external_imports:
         lines.extend(["", "Import policies:"])
@@ -116,8 +120,6 @@ def run(args: Namespace) -> int:
                 ("imports", "default_external_policy"): args.default_external_policy,
                 ("imports", "packages"): package_policy_overrides(args.package_import_policy),
                 ("jit", "enabled"): args.jit,
-                ("jit", "backend"): args.jit_backend,
-                ("jit", "hot_threshold"): args.jit_hot_threshold,
                 ("policy", "native_marker"): args.native_marker,
                 ("policy", "require_type_hints"): args.require_type_hints,
                 ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
@@ -138,7 +140,6 @@ def run(args: Namespace) -> int:
         imports_config=config.imports,
         active_plugins=target_plan.plugins.active,
         native_jit_enabled=config.jit.enabled,
-        jit_hot_threshold=config.jit.hot_threshold,
     )
     if not getattr(args, "no_report", False):
         write_check_report(project_root, analysis)

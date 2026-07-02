@@ -10,11 +10,12 @@ from pathlib import Path
 from rextio.analyzer.common_calls import canonical_call_target, is_logging_get_logger_call
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.import_policy import classify_import_policies
-from rextio.analyzer.jit import is_cranelift_jit_candidate
+from rextio.analyzer.jit import is_embedding_candidate
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis
 from rextio.analyzer.native_marker import (
     NativeMarker,
     dotted_name,
+    external_accelerator_for_function,
     has_exempt_marker,
     native_marker_for_function,
 )
@@ -36,7 +37,6 @@ def parse_module(
     imports_config: ImportsConfig | None = None,
     active_plugins: Iterable[RextioPlugin] = (),
     native_jit_enabled: bool = False,
-    jit_hot_threshold: int = 25,
     project_return_types: dict[str, str] | None = None,
 ) -> ModuleAnalysis:
     """Parse a module file into a ModuleAnalysis (functions, imports, top level)."""
@@ -79,8 +79,8 @@ def parse_module(
         stub_signatures,
         target_language,
         native_jit_enabled,
-        jit_hot_threshold,
         project_return_types or {},
+        project_modules or set(),
     )
     module.functions.extend(_collect_native_methods(tree, module, target_language))
     if native_top_level:
@@ -231,8 +231,8 @@ def _collect_module_functions(
     stub_signatures: dict[str, StubSignature],
     target_language: str,
     native_jit_enabled: bool,
-    jit_hot_threshold: int,
     project_return_types: dict[str, str],
+    project_modules: set[str],
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
     # Module-level map of function name -> annotated return type, so the signature
@@ -296,6 +296,9 @@ def _collect_module_functions(
             module_assigned_names=module_assigned_names,
             call_return_types={**project_return_types, **return_types},
         )
+        function.external_accelerator = external_accelerator_for_function(
+            node, module.imports, project_modules
+        )
         if has_exempt:
             function.is_native_candidate = False
             function.native_target_language = None
@@ -305,6 +308,15 @@ def _collect_module_functions(
             function.is_native_candidate = False
         elif has_marker:
             _classify_native_function(node, function, return_types, module_function_names)
+        elif function.external_accelerator is not None:
+            # A recognized external-accelerator decorator (e.g. @numba.njit) keeps
+            # the function on the Python fallback intentionally: no auto-discovery,
+            # no embedding candidacy, and no RXT010 decorator noise - the external
+            # tool compiles it under its own contract. (An explicit @rextio.native
+            # marker above still wins and is rejected loudly for the unsupported
+            # decorator, surfacing the conflict.)
+            function.is_native_candidate = False
+            function.native_target_language = None
         elif native_marker == "auto" and _is_auto_native_candidate(
             node,
             function,
@@ -318,7 +330,6 @@ def _collect_module_functions(
             node,
             function,
             target_language,
-            jit_hot_threshold,
             return_types,
             module_function_names,
         ):
@@ -343,7 +354,6 @@ def _mark_jit_candidate(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
     target_language: str,
-    jit_hot_threshold: int,
     return_types: dict[str, str] | None = None,
     module_function_names: set[str] | None = None,
 ) -> bool:
@@ -367,13 +377,8 @@ def _mark_jit_candidate(
         call_return_types=dict(function.call_return_types),
     )
     validate_native_function(node, probe, return_types, module_function_names)
-    accepted, reason = is_cranelift_jit_candidate(node, probe)
+    accepted, reason = is_embedding_candidate(node, probe)
     if not accepted:
-        # Surface the specific case where an otherwise-eligible int helper is kept
-        # on the checked native path because the Cranelift JIT cannot raise
-        # OverflowError (council M1 follow-up: make the fallback observable).
-        if "overflow-prone arithmetic" in reason:
-            function.jit_skipped_reason = reason
         return False
     function.inferred_arg_types = dict(probe.inferred_arg_types)
     function.signature_arg_types = dict(probe.signature_arg_types)
@@ -385,7 +390,6 @@ def _mark_jit_candidate(
     function.inferred_return_type = probe.inferred_return_type
     function.native_target_language = target_language
     function.is_jit_candidate = True
-    function.jit_hot_threshold = jit_hot_threshold
     function.jit_reason = reason
     return True
 

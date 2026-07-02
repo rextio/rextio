@@ -40,8 +40,6 @@ def run(args: Namespace) -> int:
                 ("imports", "default_external_policy"): args.default_external_policy,
                 ("imports", "packages"): package_policy_overrides(args.package_import_policy),
                 ("jit", "enabled"): args.jit,
-                ("jit", "backend"): args.jit_backend,
-                ("jit", "hot_threshold"): args.jit_hot_threshold,
                 ("executable", "entrypoint"): args.entrypoint,
                 ("executable", "name"): args.executable_name,
                 ("executable", "backend"): args.executable_backend,
@@ -84,7 +82,6 @@ def run(args: Namespace) -> int:
         imports_config=config.imports,
         active_plugins=target_plan.plugins.active,
         native_jit_enabled=config.jit.enabled,
-        jit_hot_threshold=config.jit.hot_threshold,
     )
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:
@@ -130,13 +127,13 @@ def run(args: Namespace) -> int:
             native_top_level=config.policy.native_top_level,
             imports_config=config.imports,
             active_plugins=target_plan.plugins.active,
-            # Rust-main codegen has no Cranelift/JIT lowering path. Analyze the
-            # executable graph without JIT so helper functions must pass the
-            # ordinary direct-Rust or delegation gates instead of being accepted
-            # as JIT-only helpers that the binary backend cannot emit.
-            native_jit_enabled=False,
-            jit_hot_threshold=config.jit.hot_threshold,
-            delegate_fallback=True,
+            # Embedded helpers are ordinary direct-native crate functions now, so
+            # the executable graph honors the embedding opt-in: an eligible
+            # unmarked scalar helper compiles INTO the binary instead of being
+            # delegated per call over IPC (bench gate: embedding beats delegation
+            # by ~4-5 orders of magnitude per call).
+            native_jit_enabled=config.jit.enabled,
+                delegate_fallback=True,
         )
 
     result = build_hybrid_artifact(
@@ -153,7 +150,6 @@ def run(args: Namespace) -> int:
         rust_importable=config.rust.importable,
         rust_crate_name=config.rust.crate_name,
         native_jit_enabled=config.jit.enabled,
-        jit_hot_threshold=config.jit.hot_threshold,
         build_timeout_seconds=config.build.build_timeout_seconds,
         executable_analysis=executable_analysis,
         executable_python=config.executable.python,
@@ -165,14 +161,11 @@ def run(args: Namespace) -> int:
     lines.append(f"  active plugins: {len(target_plan.plugins.active)}")
     lines.append(f"  fallback: {fallback}")
     lines.append(f"  boundary fallback threshold: {config.build.fallback_threshold}")
-    lines.append(f"  experimental JIT: {'enabled' if config.jit.enabled else 'disabled'}")
-    if config.jit.enabled:
-        lines.append(f"  JIT backend: {config.jit.backend}")
-        lines.append(f"  JIT hot threshold: {config.jit.hot_threshold}")
+    lines.append(f"  experimental helper embedding: {'enabled' if config.jit.enabled else 'disabled'}")
     lines.append(f"  rust build tool: {config.rust.build_tool}")
     lines.append(f"  accepted native functions: {result.accepted_native_count}")
     lines.append(f"  rejected native functions: {result.rejected_native_count}")
-    lines.append(f"  experimental JIT candidates: {len(result.plan.native.jit_functions)}")
+    lines.append(f"  embedding candidates: {len(result.plan.native.jit_functions)}")
     if target_plan.spec.language == "rust":
         lines.append(f"  generated Rust project: {result.layout.rust_dir}")
     else:

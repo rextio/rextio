@@ -128,13 +128,15 @@ class FunctionAnalysis:
     native_target_language: str | None = None
     native_runtime_semantics: bool = False
     is_jit_candidate: bool = False
-    jit_hot_threshold: int | None = None
     jit_reason: str | None = None
+    # Set when a recognized external accelerator decorator (e.g. numba.njit) keeps
+    # this function on the Python fallback intentionally: it is compiled by that
+    # tool under THAT tool's semantics, outside Rextio's native contract.
+    external_accelerator: str | None = None
     # Set when a function would otherwise be JIT-eligible but was kept on the
     # checked native path (e.g. overflow-prone int arithmetic the Cranelift path
     # cannot make raise OverflowError). Surfaced by `rextio check`, not
     # serialized, so it is purely diagnostic.
-    jit_skipped_reason: str | None = None
     imports: dict[str, str] = field(default_factory=dict)
     logger_names: tuple[str, ...] = ()
     # All names bound anywhere in the function body (params, assignments, loop
@@ -207,8 +209,8 @@ class FunctionAnalysis:
             "native_target_language": self.native_target_language,
             "native_runtime_semantics": self.native_runtime_semantics,
             "is_jit_candidate": self.is_jit_candidate,
-            "jit_hot_threshold": self.jit_hot_threshold,
             "jit_reason": self.jit_reason,
+            "external_accelerator": self.external_accelerator,
             "inferred_arg_types": dict(sorted(self.inferred_arg_types.items())),
             "inferred_return_type": self.inferred_return_type,
             "calls": [call.to_dict() for call in self.calls],
@@ -216,8 +218,6 @@ class FunctionAnalysis:
         }
         # Only present for functions kept off the JIT for overflow safety, so the
         # common case keeps a stable report shape.
-        if self.jit_skipped_reason is not None:
-            data["jit_skipped_reason"] = self.jit_skipped_reason
         return data
 
 
@@ -349,19 +349,6 @@ class ProjectAnalysis:
                 for module in self.modules
                 for function in module.functions
                 if function.is_jit_candidate
-            ],
-            key=lambda function: function.qualname,
-        )
-
-    @property
-    def jit_skipped(self) -> list[FunctionAnalysis]:
-        """Functions kept off the JIT and on the checked native path (diagnostic)."""
-        return sorted(
-            [
-                function
-                for module in self.modules
-                for function in module.functions
-                if function.jit_skipped_reason is not None
             ],
             key=lambda function: function.qualname,
         )

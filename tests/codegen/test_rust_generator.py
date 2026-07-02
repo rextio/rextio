@@ -48,7 +48,11 @@ def sum_squares(xs: list[float]) -> float:
     assert "m.add_function(wrap_pyfunction!(app__sum_squares, m)?)?;" in source
 
 
-def test_generates_internal_cranelift_jit_helper_only_when_enabled(tmp_path: Path) -> None:
+def test_embeds_internal_helper_only_when_enabled(tmp_path: Path) -> None:
+    # With `[jit] enabled`, an unmarked scalar helper is EMBEDDED as an ordinary
+    # internal native function (callable from native code, not exported to Python).
+    # The former Cranelift hot path was removed: benchmarks showed it strictly
+    # slower than this AOT path, so no runtime-compilation machinery is emitted.
     (tmp_path / "app.py").write_text(
         """
 import rextio
@@ -67,26 +71,57 @@ def compute(x: float) -> float:
         tmp_path,
         native_marker="decorator",
         native_jit_enabled=True,
-        jit_hot_threshold=2,
     )
     source = generate_rust_module(lower_project(analysis, include_jit=True))
 
-    assert "use cranelift_jit::{JITBuilder, JITModule};" in source
+    assert "cranelift" not in source
     assert "fn app__helper(x: f64) -> PyResult<f64> {" in source
-    assert "static __rextio_jit_app__helper_COMPILED" in source
-    assert "if calls >= 2" in source
-    assert "return Ok(unsafe { compiled(x) });" in source
+    assert "return Ok(x * 2.0);" in source
     assert "return Ok(app__helper(x.clone())? + 1.0);" in source
     assert "m.add_function(wrap_pyfunction!(app__compute, m)?)?;" in source
+    # The embedded helper is internal-only: no export, no #[pyfunction] wrapper.
     assert "m.add_function(wrap_pyfunction!(app__helper, m)?)?;" not in source
+    assert "#[pyfunction]\nfn app__helper" not in source
 
 
-def test_jit_helper_with_a_rust_keyword_name_uses_escaped_and_plain_forms(tmp_path: Path) -> None:
-    # A root-package JIT helper named after a Rust keyword emits `fn r#loop` (escaped
-    # standalone name) but its derived type/static/compile identifiers use the plain
-    # base under the `__rextio_jit_` namespace (`__rextio_jit_loop_JitFn`,
-    # `__rextio_jit_loop_compile`) — a raw prefix cannot appear mid-identifier and the
-    # namespace prevents collisions with user functions.
+def test_embedded_int_helper_uses_checked_arithmetic(tmp_path: Path) -> None:
+    # An embedded int helper lowers through the ordinary checked path: overflow
+    # raises OverflowError and `%` keeps floored/zero-division semantics. The
+    # helper's checked-helper usage must register in the module's shared
+    # `used_helpers` set so the helper functions are actually emitted.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+def wrap(x: int) -> int:
+    return x * 3 % 7
+
+@rextio.native
+def compute(x: int) -> int:
+    return wrap(x) + 1
+""",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        native_jit_enabled=True,
+    )
+    source = generate_rust_module(lower_project(analysis, include_jit=True))
+
+    assert "fn app__wrap(x: i64) -> PyResult<i64> {" in source
+    assert "__rextio_checked_mul(" in source
+    assert "__rextio_checked_rem(" in source
+    assert "fn __rextio_checked_mul(" in source
+    assert "fn __rextio_checked_rem(" in source
+    assert "cranelift" not in source
+
+
+def test_embedded_helper_with_a_rust_keyword_name_is_escaped(tmp_path: Path) -> None:
+    # An embedded helper named after a Rust keyword renders through the ordinary
+    # raw-identifier escaping (`fn r#loop`). The former Cranelift path needed
+    # compound `__rextio_jit_*` identifiers; plain embedding does not.
     (tmp_path / "__init__.py").write_text(
         """
 import rextio
@@ -102,15 +137,14 @@ def compute(x: float) -> float:
     )
 
     analysis = analyze_project(
-        tmp_path, native_marker="decorator", native_jit_enabled=True, jit_hot_threshold=2
+        tmp_path, native_marker="decorator", native_jit_enabled=True
     )
     source = generate_rust_module(lower_project(analysis, include_jit=True))
 
     assert "fn r#loop(" in source
-    assert "fn __rextio_jit_loop_compile()" in source
-    assert "type __rextio_jit_loop_JitFn" in source
-    assert "__rextio_jit_r#" not in source
-    assert "r#loop_JitFn" not in source
+    assert "return Ok(r#loop(x.clone())? + 1.0);" in source
+    assert "__rextio_jit_" not in source
+    assert "cranelift" not in source
 
 
 def test_generates_rust_importable_crate_module_for_native_functions(tmp_path: Path) -> None:
@@ -1614,7 +1648,7 @@ def main(argv: list[str]) -> int:
             )
         ]
     )
-    with pytest.raises(RustCodegenError, match="cannot be an experimental JIT function"):
+    with pytest.raises(RustCodegenError, match="cannot be an embedded helper function"):
         generate_rust_main_binary(jit_ir, "app.main")
 
 

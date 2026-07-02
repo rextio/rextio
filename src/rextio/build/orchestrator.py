@@ -170,7 +170,6 @@ def build_hybrid_artifact(
     rust_importable: bool = False,
     rust_crate_name: str = "rextio_generated_rust",
     native_jit_enabled: bool = False,
-    jit_hot_threshold: int = 25,
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     executable_analysis: ProjectAnalysis | None = None,
     executable_python: str | None = None,
@@ -270,7 +269,6 @@ def generate_source_artifact(
     rust_importable: bool = False,
     rust_crate_name: str = "rextio_generated_rust",
     native_jit_enabled: bool = False,
-    jit_hot_threshold: int = 25,
 ) -> GenerateResult:
     """Generate native and Python source artifacts without compiling."""
     target_plan = target_plan or default_target_plan()
@@ -486,7 +484,7 @@ def _generate_native_source(
             message=str(exc),
         )
 
-    _write_rust_project(layout, rust_source, include_jit=bool(plan.native.jit_functions and native_jit_enabled))
+    _write_rust_project(layout, rust_source)
     return NativeSourceResult(
         status="generated",
         message="Generated Rust source for accepted native functions.",
@@ -521,7 +519,9 @@ def _generate_rust_crate_source(
             ),
         )
     try:
-        module_ir = lower_project(plan.analysis)
+        # Include embedded helpers: an exported native function may call one, and
+        # the crate must carry the callee it references.
+        module_ir = lower_project(plan.analysis, include_jit=True)
         rust_source = generate_rust_crate_module(module_ir)
     except (LoweringError, RustCodegenError) as exc:
         return NativeSourceResult(
@@ -718,11 +718,14 @@ def _entrypoint_reachable_native_graph(
                 if return_type is not None:
                     delegated[resolved.qualname] = return_type
                 continue
-            if (
-                resolved.accepted
-                and not resolved.native_runtime_semantics
-                and not resolved.is_jit_candidate
-            ):
+            if resolved.is_jit_candidate:
+                # An embedded helper is a plain crate function the caller invokes
+                # directly; keep it in the reachable set so the IR filter emits it.
+                # Its candidacy shape (a single scalar expression) has no calls of
+                # its own, so it is a leaf.
+                reachable.add(resolved.qualname)
+                continue
+            if resolved.accepted and not resolved.native_runtime_semantics:
                 stack.append(resolved)
     return reachable, delegated
 
@@ -853,7 +856,7 @@ def _build_rust_executable_artifact(
     )
     nuitka_dispatcher = hybrid_runtime == "nuitka"
     try:
-        module_ir = _filter_module_ir(lower_project(analysis), reachable_qualnames)
+        module_ir = _filter_module_ir(lower_project(analysis, include_jit=True), reachable_qualnames)
         main_rs = generate_rust_main_binary(
             module_ir,
             entry_qualname,
@@ -976,10 +979,10 @@ def _build_native_with_selected_tool(
     )
 
 
-def _write_rust_project(layout: ArtifactLayout, rust_source: str, *, include_jit: bool = False) -> None:
+def _write_rust_project(layout: ArtifactLayout, rust_source: str) -> None:
     layout.rust_src_dir.mkdir(parents=True, exist_ok=True)
     (layout.rust_dir / "Cargo.toml").write_text(
-        render_cargo_toml(include_jit=include_jit),
+        render_cargo_toml(),
         encoding="utf-8",
     )
     (layout.rust_dir / "pyproject.toml").write_text(render_pyproject_toml(), encoding="utf-8")

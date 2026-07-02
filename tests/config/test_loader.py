@@ -118,8 +118,6 @@ def test_load_config_reads_jit_options(tmp_path: Path) -> None:
         """
 [jit]
 enabled = true
-backend = "cranelift"
-hot_threshold = 3
 """,
         encoding="utf-8",
     )
@@ -127,8 +125,6 @@ hot_threshold = 3
     config = load_config(tmp_path)
 
     assert config.jit.enabled is True
-    assert config.jit.backend == "cranelift"
-    assert config.jit.hot_threshold == 3
 
 
 def test_load_config_applies_environment_overrides(tmp_path: Path) -> None:
@@ -160,8 +156,6 @@ boundary_warnings = true
             "REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY": "try-native",
             "REXTIO_IMPORTS_PACKAGES": "safe_pkg=try-native,legacy_pkg=fallback",
             "REXTIO_JIT": "true",
-            "REXTIO_JIT_BACKEND": "cranelift",
-            "REXTIO_JIT_HOT_THRESHOLD": "2",
             "REXTIO_EXECUTABLE_ENTRYPOINT": "demo.cli:main",
             "REXTIO_EXECUTABLE_NAME": "demo-env",
             "REXTIO_EXECUTABLE_BACKEND": "nuitka",
@@ -185,8 +179,6 @@ boundary_warnings = true
     assert config.imports.packages["safe_pkg"].policy == "try-native"
     assert config.imports.packages["legacy_pkg"].policy == "fallback"
     assert config.jit.enabled is True
-    assert config.jit.backend == "cranelift"
-    assert config.jit.hot_threshold == 2
     assert config.executable.entrypoint == "demo.cli:main"
     assert config.executable.name == "demo-env"
     assert config.executable.backend == "nuitka"
@@ -281,7 +273,6 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
             ("imports", "default_external_policy"): "analyze",
             ("imports", "packages"): {"safe_pkg": {"policy": "try-native", "max_depth": 1}},
             ("jit", "enabled"): True,
-            ("jit", "hot_threshold"): 4,
             ("policy", "native_marker"): "decorator",
             ("policy", "native_top_level"): True,
         },
@@ -299,7 +290,6 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
     assert config.imports.packages["safe_pkg"].policy == "try-native"
     assert config.imports.packages["safe_pkg"].max_depth == 1
     assert config.jit.enabled is True
-    assert config.jit.hot_threshold == 4
     assert config.policy.native_marker == "decorator"
     assert config.policy.native_top_level is True
 
@@ -353,16 +343,18 @@ def test_load_config_rejects_import_plugin_policy_without_plugin(tmp_path: Path)
         load_config(tmp_path)
 
 
-def test_load_config_rejects_unknown_jit_backend(tmp_path: Path) -> None:
+def test_load_config_rejects_removed_jit_keys(tmp_path: Path) -> None:
+    # `backend`/`hot_threshold` were removed with the Cranelift hot path; they are
+    # now unknown [jit] keys and must be rejected rather than silently ignored.
     (tmp_path / "rextio.toml").write_text(
         """
 [jit]
-backend = "llvm"
+hot_threshold = 25
 """,
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match=r"jit.*backend"):
+    with pytest.raises(ConfigError, match=r"jit"):
         load_config(tmp_path)
 
 
@@ -428,3 +420,15 @@ native_marker = "always"
 
     with pytest.raises(ConfigError, match=r"native_marker"):
         load_config(tmp_path)
+
+
+def test_load_config_rejects_removed_jit_environment_variables(tmp_path: Path) -> None:
+    # The Cranelift knobs were removed with the hot path; a stale export must fail
+    # loudly (mirroring removed toml keys) instead of silently meaning nothing.
+    (tmp_path / "rextio.toml").write_text("", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=r"REXTIO_JIT_HOT_THRESHOLD was removed"):
+        load_config(tmp_path, environ={"REXTIO_JIT_HOT_THRESHOLD": "25"})
+
+    with pytest.raises(ConfigError, match=r"REXTIO_JIT_BACKEND was removed"):
+        load_config(tmp_path, environ={"REXTIO_JIT_BACKEND": "cranelift"})

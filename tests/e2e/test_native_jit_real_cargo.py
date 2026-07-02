@@ -12,7 +12,7 @@ from rextio.cli.main import main
 
 
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for native e2e")
-def test_native_side_jit_compiles_cranelift_region_when_enabled(
+def test_embedded_helper_compiles_and_runs_when_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -27,7 +27,6 @@ native_marker = "decorator"
 
 [jit]
 enabled = true
-hot_threshold = 1
 """,
         encoding="utf-8",
     )
@@ -62,7 +61,11 @@ def compute(x: float) -> float:
     assert report["native_build"]["status"] == "built"
     assert report["accepted_native_count"] == 1
     assert report["jit_candidate_count"] == 1
-    assert "static __rextio_jit_jit_app__math_ops__helper_COMPILED" in lib_rs
+    # The helper is embedded as an ordinary internal native function: no Cranelift
+    # machinery (the runtime hot path was removed as strictly slower than AOT) and
+    # no Python export.
+    assert "cranelift" not in lib_rs
+    assert "fn jit_app__math_ops__helper(x: f64) -> PyResult<f64> {" in lib_rs
     assert "wrap_pyfunction!(jit_app__math_ops__helper" not in lib_rs
 
     monkeypatch.syspath_prepend(str(build_python))

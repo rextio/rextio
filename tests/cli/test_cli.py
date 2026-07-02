@@ -144,7 +144,6 @@ def test_init_creates_default_project_files(tmp_path: Path, capsys) -> None:
     assert 'default_external_policy = "fallback"' in config_text
     assert "[jit]" in config_text
     assert "enabled = false" in config_text
-    assert 'backend = "cranelift"' in config_text
 
 
 def test_check_json_outputs_structured_analysis(tmp_path: Path, capsys) -> None:
