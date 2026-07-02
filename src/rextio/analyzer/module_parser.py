@@ -157,17 +157,36 @@ def _collect_fidelity_shim_names(tree: ast.Module) -> frozenset[str]:
     """
     final: dict[str, str | None] = {}
 
+    def clear_fidelity_bindings() -> None:
+        # A star import with unknown exports can rebind ANY name - including
+        # a fidelity name bound earlier. Keeping the stale binding would be
+        # the unsafe direction for this collector, so drop every current
+        # fidelity binding (a later fidelity import re-registers).
+        for name, target in list(final.items()):
+            if target in RUNTIME_FIDELITY_TARGETS:
+                final[name] = None
+
     def bind_import_from(node: ast.ImportFrom) -> None:
         if not node.module or node.level != 0:
             # A relative (or module-less) import still REBINDS its names at
             # module scope - to project code - so it must override an earlier
             # fidelity binding rather than being invisible.
             for alias in node.names:
-                if alias.name != "*":
+                if alias.name == "*":
+                    clear_fidelity_bindings()
+                else:
                     bind_other(alias.asname or alias.name)
             return
         for alias in node.names:
             if alias.name == "*":
+                fidelity_module = any(
+                    qualname.rpartition(".")[0] == node.module
+                    for qualname in RUNTIME_FIDELITY_TARGETS
+                )
+                if not fidelity_module:
+                    # Unknown exports: the star may rebind fidelity names.
+                    clear_fidelity_bindings()
+                    continue
                 for qualname in RUNTIME_FIDELITY_TARGETS:
                     module, _, attr = qualname.rpartition(".")
                     if module == node.module:
