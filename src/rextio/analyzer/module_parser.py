@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from rextio.analyzer.common_calls import canonical_call_target, is_logging_get_logger_call
+from rextio.analyzer.common_calls import RUNTIME_FIDELITY_TARGETS
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.import_policy import classify_import_policies
 from rextio.analyzer.jit import is_embedding_candidate
@@ -484,7 +485,7 @@ def _classify_native_function(
             function.add_diagnostic(diagnostic)
         function.accepted = True
         return
-    if not _requires_runtime_semantics(node):
+    if not _requires_runtime_semantics(node, function.imports):
         for diagnostic in probe.diagnostics:
             function.add_diagnostic(diagnostic)
         function.accepted = False
@@ -504,12 +505,16 @@ def _classify_native_function(
     _add_runtime_semantics_warning(function, node)
 
 
-def _requires_runtime_semantics(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+def _requires_runtime_semantics(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    imports: dict[str, str] | None = None,
+) -> bool:
     # Used only on the explicit `@rextio.native` path (`_classify_native_function`).
     # Auto-discovered functions are never promoted to the runtime shim on the
     # strength of this check alone (see `_is_auto_native_candidate`).
     if isinstance(node, ast.AsyncFunctionDef):
         return True
+    imports = imports or {}
     body_nodes = (child for statement in node.body for child in ast.walk(statement))
     for child in body_nodes:
         if isinstance(
@@ -532,6 +537,17 @@ def _requires_runtime_semantics(node: ast.FunctionDef | ast.AsyncFunctionDef) ->
         if isinstance(child, ast.Call):
             target = dotted_name(child.func)
             if target in {"getattr", "setattr", "hasattr"}:
+                return True
+            # A fidelity-kept stdlib call spelled as a bare from-import name
+            # (`from statistics import mean; mean(xs)`): the attribute form
+            # already promotes via the unknown-attribute rule above, and the
+            # import STYLE must not change the documented marked-function
+            # behavior (rejected vs RXT080 shim).
+            if (
+                target is not None
+                and "." not in target
+                and imports.get(target) in RUNTIME_FIDELITY_TARGETS
+            ):
                 return True
     return False
 

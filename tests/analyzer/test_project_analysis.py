@@ -5002,3 +5002,59 @@ def f(xs: set[int]) -> int:
     # Every diagnostic is the dedicated set message (one per offending
     # argument) - no generic "list only" or name-scope cascade noise.
     assert messages and all("iterating a set" in m for m in messages), messages
+
+@pytest.mark.parametrize(
+    "body_import",
+    [
+        ("from statistics import mean", "mean(xs)"),
+        ("from statistics import mean as avg", "avg(xs)"),
+        ("from json import dumps", "float(len(dumps(xs)))"),
+    ],
+    ids=["from-import", "aliased", "json-dumps"],
+)
+def test_fidelity_calls_shim_regardless_of_import_form(
+    body_import: tuple[str, str], tmp_path: Path
+) -> None:
+    # `statistics.mean` (attribute form) rides the RXT080 shim for marked
+    # functions; the bare from-import spelling used to be REJECTED instead -
+    # import style must not change the documented behavior.
+    import_line, call = body_import
+    write_module(
+        tmp_path,
+        "app.py",
+        f"""
+import rextio
+{import_line}
+
+@rextio.native
+def f(xs: list[float]) -> float:
+    return {call}
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert function.accepted
+    assert function.native_runtime_semantics
+
+
+def test_local_function_named_mean_is_not_shim_promoted(tmp_path: Path) -> None:
+    # A project-local `mean` does not resolve through imports to the fidelity
+    # list: the marked caller is rejected loudly, not silently shimmed.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def mean(xs):
+    return 0.0
+
+@rextio.native
+def f(xs: list[float]) -> float:
+    return mean(xs)
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions if f.name == "f")
+    assert not function.accepted
+    assert not function.native_runtime_semantics
