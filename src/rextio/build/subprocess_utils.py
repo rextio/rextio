@@ -37,7 +37,6 @@ __all__ = [
     "DEFAULT_BUILD_TIMEOUT_SECONDS",
     "MAX_BUILD_TIMEOUT_SECONDS",
     "TIMEOUT_EXIT_CODE",
-    "generate_lockfile_offline_if_possible",
     "run_build_tool",
 ]
 
@@ -112,29 +111,6 @@ def run_build_tool(
             return subprocess.CompletedProcess(
                 command, returncode=TIMEOUT_EXIT_CODE, stdout=stdout, stderr=stderr
             )
-
-
-def generate_lockfile_offline_if_possible(
-    cargo: str,
-    crate_dir: Path,
-    *,
-    timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
-) -> None:
-    """Create ``Cargo.lock`` from the local cache when possible, falling back silently."""
-    lockfile = crate_dir / "Cargo.lock"
-    if lockfile.exists():
-        return
-    run_build_tool(
-        [
-            cargo,
-            "generate-lockfile",
-            "--offline",
-            "--manifest-path",
-            str(crate_dir / "Cargo.toml"),
-        ],
-        cwd=crate_dir,
-        timeout=timeout,
-    )
 
 
 def _start_process(command: list[str], cwd: Path | str) -> subprocess.Popen[str]:
