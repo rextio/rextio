@@ -4774,3 +4774,49 @@ def helper(x: int) -> int:
     return x + 1
 """
     assert external_accelerator_for_source(source) is None
+
+@pytest.mark.parametrize(
+    ("shape", "body"),
+    [
+        ("for_loop", "    out: list[int] = []\n    for x in xs:\n        out.append(x)\n    return out\n"),
+        ("comprehension", "    return [x for x in xs]\n"),
+    ],
+)
+def test_set_iteration_is_rejected_to_fallback(shape: str, body: str, tmp_path: Path) -> None:
+    # Iterating a set is order-observable: CPython's order is deterministic
+    # within a process while Rust's HashSet seeds per instance (same call, same
+    # elements, different order). No faithful lowering exists, so the function
+    # must be rejected loudly instead of silently mis-compiling the order.
+    write_module(
+        tmp_path,
+        "app.py",
+        f"""
+import rextio
+
+@rextio.native
+def f(xs: set[int]) -> list[int]:
+{body}""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert not function.accepted, shape
+    assert any("iterating a set" in d.message for d in function.error_diagnostics), shape
+
+
+def test_building_a_set_from_a_list_stays_native(tmp_path: Path) -> None:
+    # Constructing a set (from an ordered iterable) observes no set order;
+    # only iteration OUT of a set is rejected.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def f(xs: list[int]) -> set[int]:
+    return {x for x in xs if x > 0}
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert function.accepted

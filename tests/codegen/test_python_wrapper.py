@@ -54,7 +54,7 @@ def test_wrapper_wraps_native_set_return_as_python_set(tmp_path: Path) -> None:
 import rextio
 
 @rextio.native
-def unique(values: set[int]) -> set[int]:
+def unique(values: list[int]) -> set[int]:
     return {value for value in values}
 """,
         encoding="utf-8",
@@ -64,7 +64,7 @@ def unique(values: set[int]) -> set[int]:
 
     wrapper = render_wrapper_module(module)
 
-    assert "def unique(values: set[int]) -> set[int]:" in wrapper
+    assert "def unique(values: list[int]) -> set[int]:" in wrapper
     assert "return _fallback_unique(values)" in wrapper
     assert "return set(_native_unique(values))" in wrapper
 

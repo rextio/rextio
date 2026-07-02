@@ -390,7 +390,10 @@ fallback.
 
 Operations whose divergence could not be bounded this narrowly are kept on the
 Python fallback instead — for example `json.dumps`/`json.loads` (serde is not
-CPython-`json`-compatible), `set[float]` / `sorted(list[float])` (NaN identity),
+CPython-`json`-compatible), iterating a `set` (Rust hash-set iteration order
+diverges from CPython's, which is arbitrary but deterministic within a process;
+order-independent set operations like construction, `len`, and `==` stay
+native), `set[float]` / `sorted(list[float])` (NaN identity),
 `statistics.mean`/`statistics.fmean` (naive native summation diverges from
 CPython's exact/`math.fsum`), `base64.b64decode` (CPython silently discards
 non-alphabet characters), `str.strip` (Rust `trim()` differs from CPython's

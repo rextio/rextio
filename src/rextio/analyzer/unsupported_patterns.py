@@ -636,7 +636,7 @@ def _validate_statement_types(
                 iterable_type = None
             else:
                 iterable_type = _infer_expr_type(node.iter, function, env)
-            item_type = _iter_item_type(node.iter, iterable_type)
+            item_type = _iter_item_type(node.iter, iterable_type, function)
             _bind_loop_target_types(
                 node.target,
                 [item_type] if item_type is not None else [],
@@ -893,7 +893,7 @@ def _validate_mutable_ownership_in_statements(
                     if _is_range_call(statement.iter)
                     else _infer_expr_type(statement.iter, function, env)
                 )
-                item_type = _iter_item_type(statement.iter, iterable_type)
+                item_type = _iter_item_type(statement.iter, iterable_type, function)
                 _bind_loop_target_types(
                     statement.target,
                     [item_type] if item_type is not None else [],
@@ -2202,7 +2202,7 @@ def _comprehension_iter_item_types(
         iterable_type: str | None = None
     else:
         iterable_type = _infer_expr_type(node, function, env)
-    item_type = _iter_item_type(node, iterable_type)
+    item_type = _iter_item_type(node, iterable_type, function)
     return [item_type] if item_type is not None else []
 
 
@@ -2920,11 +2920,26 @@ def _validate_compare_types(
         left_node = comparator
 
 
-def _iter_item_type(node: ast.AST, iterable_type: str | None) -> str | None:
+def _iter_item_type(
+    node: ast.AST, iterable_type: str | None, function: FunctionAnalysis
+) -> str | None:
     if _is_list_type(iterable_type):
         return _list_item_type(iterable_type)
     if _is_set_type(iterable_type):
-        return _set_item_type(iterable_type)
+        # Iterating a set is order-observable: CPython's iteration order is
+        # arbitrary but deterministic within a process, while Rust's HashSet
+        # uses a per-instance random seed (two calls with the same elements can
+        # iterate differently). No faithful lowering exists, so reject to the
+        # Python fallback. Order-independent set operations (len, membership,
+        # add, ==) stay native.
+        _add_unsupported_syntax(
+            function,
+            node,
+            "iterating a set is not supported in native functions (Rust hash-set "
+            "iteration order diverges from CPython's); iterate a list instead or "
+            "keep the function on the Python fallback",
+        )
+        return None
     if isinstance(node, ast.Call) and dotted_name(node.func) == "range":
         return "int"
     return None
