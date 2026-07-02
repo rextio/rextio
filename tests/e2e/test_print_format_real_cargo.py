@@ -155,6 +155,10 @@ import rextio
 @rextio.native
 def show(words: list[str], flags: list[bool], values: list[float], nested: list[list[int]], pair: tuple[int, str], opt: int | None) -> None:
     print(words, flags, values, nested, pair, opt)
+
+@rextio.native
+def show_opt_str(x: str | None) -> None:
+    print(x)
 """,
         encoding="utf-8",
     )
@@ -176,3 +180,10 @@ def show(words: list[str], flags: list[bool], values: list[float], nested: list[
         captured = capfd.readouterr()
         expected = f"{words} {flags} {values} {nested} {pair} {opt}\n"
         assert captured.out == expected, (words, flags, values, nested, pair, opt)
+
+    # print of a top-level Optional[str] uses str() semantics: bare payload,
+    # not the repr-quoted form (an Optional IS its payload at runtime).
+    for value in ("hi", "it's", None, ""):
+        module.show_opt_str(value)
+        captured = capfd.readouterr()
+        assert captured.out == f"{value}\n", value

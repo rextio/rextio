@@ -1903,7 +1903,24 @@ class _FunctionRenderer:
         rendered = strip_wrapping_parens(self.render_call_arg(expr))
         if isinstance(expr_type, (RxtInt, RxtStr)) or expr_type is None:
             return rendered
-        if isinstance(expr_type, (RxtBool, RxtFloat, RxtList, RxtTuple, RxtOptional)):
+        if isinstance(expr_type, RxtOptional):
+            # str() semantics: at runtime an Optional IS its payload (or
+            # None), so a str payload prints BARE - only under repr (%r,
+            # nested-in-container) is it quoted. Every other payload type has
+            # str() == repr().
+            payload = self.next_temp("__rextio_some")
+            if isinstance(expr_type.item_type, RxtStr):
+                inner = f"{payload}.clone()"
+            else:
+                inner = self.render_container_repr_leaf(
+                    expr_type.item_type, payload, by_ref=True
+                )
+            return (
+                f"(match &({rendered}) {{ "
+                f'None => "None".to_string(), '
+                f"Some({payload}) => {inner} }})"
+            )
+        if isinstance(expr_type, (RxtBool, RxtFloat, RxtList, RxtTuple)):
             return self.render_repr_arg(expr_type, rendered)
         raise RustCodegenError(
             f"print/logging argument type {expr_type!r} has no CPython-exact "
