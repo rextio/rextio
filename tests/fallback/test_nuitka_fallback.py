@@ -16,6 +16,8 @@ def _fake_nuitka(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     nuitka = bin_dir / "nuitka"
     nuitka.write_text(
         "#!/bin/sh\n"
+        "# Answer the preflight version probe without logging or touching files.\n"
+        'if [ "$1" = --version ]; then echo 2.4.8; exit 0; fi\n'
         f'echo "$@" >> "{log}"\n'
         "# second argv entry is the --module target path\n"
         'target="$2"\n'
@@ -78,9 +80,7 @@ def test_all_modules_accelerated_still_reports_built(
     result = build_nuitka_fallback(python_dir)
 
     assert result.status == "built"
-    # Only the version probe may touch nuitka - no --module compilation runs.
-    calls = log.read_text(encoding="utf-8") if log.exists() else ""
-    assert "--module" not in calls
+    assert not log.exists()  # no compilation was invoked
     assert "Kept as plain Python for external accelerators" in result.message
 
 def test_mixed_module_wrapper_compiles_while_fallback_copy_stays_plain(
