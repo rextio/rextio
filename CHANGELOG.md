@@ -17,9 +17,12 @@ Initial public MVP for Rextio as a local hybrid build tool.
   per-instance seeded and diverges from CPython's deterministic-within-process
   order). Building a set from an ordered iterable and order-independent set
   operations stay native.
-- New `RXT090` non-rejecting note marks direct-native functions relying on the
-  one remaining documented divergence (`bytes.decode()` raises `ValueError`
-  where CPython raises `UnicodeDecodeError`); `rextio check` lists the notes.
+- New `RXT090` non-rejecting note marks direct-native functions relying on
+  the statically attributable documented divergence (`bytes.decode()` raises
+  `ValueError` where CPython raises `UnicodeDecodeError`); `rextio check`
+  lists the notes. (The other documented divergence - repr of str values
+  containing non-printables above U+00A0 - is value-dependent and cannot
+  carry a per-function note.)
 - The wheel built from a Nuitka fallback tree now excludes `.py` sources
   shadowed by their compiled extension and carries a platform tag instead of
   `py3-none-any` (it contains platform binaries); accelerated modules keep

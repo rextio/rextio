@@ -229,8 +229,9 @@ Supported builtin and standard-library lowering includes limited forms of:
 - `print`, `logging.debug/info/warning/error`
 - `datetime`, `time`, `hashlib.sha256`, and `base64.b64encode`
   (`statistics.mean`/`fmean`, `json.dumps`/`json.loads`, and
-  `base64.b64decode` stay on the Python fallback or the runtime shim -
-  their CPython behavior has no faithful native equivalent)
+  `base64.b64decode` have no faithful direct-native equivalent: explicitly
+  marked functions using them ride the RXT080 runtime shim, auto-discovered
+  ones stay on the Python fallback)
 
 Unsupported or ambiguous code stays on fallback or is exposed through a Python
 runtime semantics shim where supported. See
