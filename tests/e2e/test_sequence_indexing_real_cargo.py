@@ -97,9 +97,9 @@ def index_str(xs: list[str], y: str) -> int:
         with pytest.raises(IndexError):
             module.at([], bad)
 
-    # Closure-composition cases that previously failed to compile (B3): a `?`-bearing
-    # sequence index embedded inside a dict KeyError closure / list.count predicate /
-    # another index, now hoisted out of the closure.
+    # Closure-composition cases (B3): a `?`-bearing sequence index embedded
+    # inside a dict KeyError closure / list.count predicate / another index
+    # must be hoisted out of the closure to compile.
     assert module.lookup({1: 1.5, 2: 2.5}, [2, 1], 0) == 2.5  # scores[keys[0]] = scores[2]
     assert module.lookup({1: 1.5, 2: 2.5}, [2, 1], -1) == 1.5  # scores[keys[-1]] = scores[1]
     assert module.count_seq([1, 2, 2, 3], [2], 0) == 2  # xs.count(ys[0]) = count of 2

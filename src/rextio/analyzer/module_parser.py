@@ -249,8 +249,8 @@ def _collect_fidelity_shim_names(tree: ast.Module) -> frozenset[str]:
                 for handler in node.handlers:
                     if handler.name is not None:
                         # `except E as name` binds (and later unbinds) the
-                        # name at module scope - either way it is no longer
-                        # the fidelity import.
+                        # name at module scope - either way the name does not
+                        # denote the fidelity import.
                         bind_other(handler.name)
                     walk(handler.body)
                 walk(node.orelse)

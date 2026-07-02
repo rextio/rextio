@@ -4312,9 +4312,8 @@ def main(argv: list[str]) -> int:
 def test_delegate_fallback_types_pyi_stub_returns_across_modules(tmp_path: Path) -> None:
     # A callee whose return type lives ONLY in a sibling `.pyi` stub must be typed
     # at cross-module call sites too: a type-incompatible use of its result is a
-    # clean check-time rejection (previously it slipped past validation into a
-    # Rust `String + integer` compile failure), while a valid use stays accepted
-    # and delegated.
+    # clean check-time rejection (never a Rust `String + integer` compile
+    # failure), while a valid use stays accepted and delegated.
     write_module(
         tmp_path,
         "helpers.py",
@@ -4980,9 +4979,9 @@ def test_project_local_namespace_package_numba_is_recognized(tmp_path: Path) -> 
 def test_enumerate_and_zip_over_sets_explain_the_real_reason(
     shape: str, body: str, tmp_path: Path
 ) -> None:
-    # enumerate/zip over a set previously reported the generic "supports list
-    # variables only" message; the user must see the actual reason (set
-    # iteration order divergence), and exactly once.
+    # enumerate/zip over a set must report the actual reason (set iteration
+    # order divergence) - never the generic "supports list variables only"
+    # message - and exactly once.
     write_module(
         tmp_path,
         "app.py",
@@ -5014,7 +5013,7 @@ def test_fidelity_calls_shim_regardless_of_import_form(
     body_import: tuple[str, str], tmp_path: Path
 ) -> None:
     # `statistics.mean` (attribute form) rides the RXT080 shim for marked
-    # functions; the bare from-import spelling used to be REJECTED instead -
+    # functions; every bare from-import spelling must behave identically -
     # import style must not change the documented behavior.
     import_line, call = body_import
     write_module(

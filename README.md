@@ -305,7 +305,7 @@ Rextio's native contract, exactly like `@rextio.exempt`. Combining
 
 Compatibility: wheel and zipapp deployments work with numba installed as a
 project dependency; the Rust executable's source-mode hybrid runtime works
-(the dispatcher runs real CPython). The `--fallback=nuitka` backend now
+(the dispatcher runs real CPython). The `--fallback=nuitka` backend
 coexists automatically: modules using a recognized external accelerator are
 kept as plain Python (the `.py` stays imported) while the rest of the tree is
 Nuitka-compiled, and the build report lists them. The generated wheel ships a

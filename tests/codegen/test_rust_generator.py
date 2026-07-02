@@ -1836,9 +1836,9 @@ def emit(flag: bool, x: float, n: int) -> None:
     assert 'println!("{} {} {}"' in code
 
 def test_logging_percent_matrix_rejects_inexact_combinations(tmp_path: Path) -> None:
-    # %f of a bool previously emitted `bool as f64` (uncompilable Rust) from an
-    # ACCEPTED function; %d of a float and %f of an int have no CPython-exact
-    # native text either. All such combinations must leave the direct path.
+    # %f of a bool would need `bool as f64` (invalid Rust, E0606); %d of a
+    # float and %f of an int have no CPython-exact native text either. All
+    # such combinations must leave the direct path.
     source = tmp_path / "app.py"
     source.write_text(
         """
@@ -1872,9 +1872,9 @@ def bad_count(n: int) -> None:
 
 
 def test_print_of_containers_composes_cpython_repr(tmp_path: Path) -> None:
-    # print(list[str]) previously rendered Rust Debug (["a"] with double
-    # quotes); containers now compose CPython repr recursively, and
-    # order-observable containers (set/dict) are rejected.
+    # Containers compose CPython repr recursively (list[str] must quote like
+    # ['a'], never Rust Debug's ["a"]), and order-observable containers
+    # (set/dict) are rejected.
     source = tmp_path / "app.py"
     source.write_text(
         """

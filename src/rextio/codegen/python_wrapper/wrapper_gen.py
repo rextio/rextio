@@ -236,8 +236,8 @@ def _call_args(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
 
 def _native_call_args(function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     # All natively-supported argument types pass through the PyO3 boundary as-is.
-    # (set[float] used to be lowered to a Vec and needed a `list(...)` conversion
-    # here, but it is no longer native -- it stays on the Python fallback -- so no
+    # (set[float] has no native lowering -- it stays on the Python fallback
+    # or the runtime shim -- so no
     # element-type-specific conversion is required.)
     args = [arg.arg for arg in [*node.args.posonlyargs, *node.args.args]]
     if node.args.vararg is not None:

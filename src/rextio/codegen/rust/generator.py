@@ -1544,8 +1544,7 @@ class _FunctionRenderer:
             # RXT080 shim, auto -> quiet rejection via the count/index NaN
             # identity guard); every other supported item type composes its
             # repr through the shared composer - including container needles
-            # like list[list[int]].index, which previously raised here on an
-            # ACCEPTED function.
+            # like list[list[int]].index.
             receiver_type = self.infer_expr_type(expr.args[0])
             item_type = receiver_type.item_type if isinstance(receiver_type, RxtList) else None
             needle_repr = self.render_repr_arg(item_type, needle_tmp)

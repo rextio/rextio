@@ -66,7 +66,7 @@ def test_main_surfaces_plugin_rules_deprecation(
     assert exit_code == 0
     assert shown, "no DeprecationWarning was shown — the CLI filter failed to unhide it"
     # The plugin `rules` deprecation was shown despite the ignore baseline.
-    assert any("no longer used" in message and "legacy-plugin" in message for message in shown)
+    assert any("is ignored" in message and "legacy-plugin" in message for message in shown)
 
 
 def test_deprecation_filter_is_idempotent_and_scoped() -> None:

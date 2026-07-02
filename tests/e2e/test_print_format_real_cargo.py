@@ -16,10 +16,10 @@ def test_native_print_of_bool_and_float_matches_cpython(
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    # print of bool/float was a documented divergence (true/false, NaN, 1e16);
-    # both are now lowered to CPython-exact text (True/False and
-    # __rextio_repr_float's shortest correctly-rounded repr). Rust's println!
-    # writes to the OS-level stdout, so capture with capfd, not capsys.
+    # print of bool/float is lowered to CPython-exact text (True/False and
+    # __rextio_repr_float's shortest correctly-rounded repr - never Rust's
+    # true/false or NaN spellings). Rust's println! writes to the OS-level
+    # stdout, so capture with capfd, not capsys.
     (tmp_path / "rextio.toml").write_text(
         """
 [rust]
