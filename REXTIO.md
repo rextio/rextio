@@ -248,20 +248,16 @@ CPython/Nuitka fallback and reports the boundary reason.
 
 ## Experimental Scalar-Helper Embedding (`[jit]`)
 
-Embedding is an explicit opt-in in 0.1.0 alpha. Despite the `[jit]` key name
-(kept for compatibility), this is NOT a JIT: everything compiles ahead of
-time and no JIT compiler runs inside the built artifact.
+Embedding is an explicit opt-in in 0.1.0 alpha. Despite the `[jit]` key
+name, this is NOT a JIT: everything compiles ahead of time and no JIT
+compiler exists or runs inside the built artifact.
 
 ```toml
 [jit]
 enabled = true
 ```
 
-The same control is available as `--jit` / `--no-jit` or `REXTIO_JIT`. (The
-former runtime Cranelift JIT - with its `backend` and `hot_threshold` knobs -
-was removed after benchmarks showed it strictly slower than the AOT path it
-fell back to; the removed environment variables now fail loudly with a
-migration message.)
+The same control is available as `--jit` / `--no-jit` or `REXTIO_JIT`.
 
 With embedding enabled, an unmarked typed scalar helper (single arithmetic
 return expression) called from an accepted native function is compiled as an
@@ -269,8 +265,8 @@ internal native function - lowered through the normal checked path (overflow
 raises OverflowError, float division by zero raises ZeroDivisionError) and not
 exported as a PyO3 function. In the Rust executable backend the same helpers
 compile into the binary instead of being delegated per call. There is no
-runtime compilation and generated Cargo projects contain no Cranelift
-dependencies. With embedding disabled, the same native-to-helper call is
+runtime compilation, and embedding adds no crate dependencies to generated
+Cargo projects. With embedding disabled, the same native-to-helper call is
 rejected by the normal boundary rules and the caller stays on Python
 fallback.
 

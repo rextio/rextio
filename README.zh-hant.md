@@ -233,12 +233,10 @@ enabled = true
 ```
 
 同樣的設定也可以透過 `rextio build . --jit` 或 `REXTIO_JIT=true` 指定。
-（`[jit]` 這個鍵名只是為相容而保留，此功能並非 JIT —— 全部編譯在建置時（AOT）
+（與 `[jit]` 這個鍵名不同，此功能並非 JIT —— 全部編譯在建置時（AOT）
 完成，建置產物內部不存在任何執行時 JIT 編譯器。）內嵌的
 helper 走正常的 checked 路徑編譯：overflow 正確地 raise OverflowError，除以零
-raise ZeroDivisionError，且不會作為 PyO3 函式匯出。不存在執行時編譯。（過去的
-Cranelift 執行時 JIT 及其 `backend`/`hot_threshold` 設定經基準測試證明始終慢於
-AOT 路徑，已被移除；被移除的環境變數會立即報錯並給出遷移提示。）
+raise ZeroDivisionError，且不會作為 PyO3 函式匯出。不存在執行時編譯。
 
 ## Numba 外部加速器（experimental）
 

@@ -320,8 +320,7 @@ to Python) through the normal checked lowering - integer overflow raises
 OverflowError, `%` keeps floored/zero-division semantics, and float `/` raises
 ZeroDivisionError. In the Rust executable backend an embedded helper compiles
 into the binary instead of being delegated per call to the CPython dispatcher.
-The former runtime Cranelift hot path was removed after benchmarks showed it
-strictly slower than this AOT path.
+There is no runtime compilation.
 
 Code outside this subset remains on the normal direct Rust, Python runtime shim,
 or CPython/Nuitka fallback path.

@@ -50,8 +50,8 @@ Python source
 19. Rextio can optionally embed narrow unmarked scalar helpers as internal
     native functions (experimental) when `[jit] enabled = true`, `--jit`, or
     `REXTIO_JIT=true` is set. Despite the `[jit]` key name this is AOT
-    embedding only - the former runtime Cranelift JIT was removed and no JIT
-    compiler runs inside the built artifact. Numba decorators are recognized as an
+    embedding only - no JIT compiler exists or runs inside the built
+    artifact. Numba decorators are recognized as an
     external accelerator for fallback code (experimental in 0.1.0 alpha).
 
 The 0.1.0 alpha release must feel like a usable hybrid compiler/build tool, not merely a static analyzer.
@@ -69,7 +69,7 @@ Do not implement these in 0.1.0 alpha unless explicitly requested:
 * Full runtime boundary-cost model
 * Runtime-weighted native/fallback optimization
 * General-purpose Python JIT
-* Runtime JIT compilation (the former Cranelift native-side hot path was removed; scalar-helper embedding is AOT)
+* Runtime JIT compilation (scalar-helper embedding is strictly AOT)
 * LLVM integration
 * MLIR
 * General-purpose executable packaging beyond zipapp, Nuitka, and the native
@@ -558,10 +558,8 @@ Experimental scalar-helper embedding must stay opt-in:
   expression.
 * Embedded helpers are not exported as PyO3 functions. They are called only
   from generated native Rust code, and they lower through the normal checked
-  path (overflow raises OverflowError; there is no runtime compilation - the
-  former Cranelift hot path was removed after benchmarks showed it strictly
-  slower than the AOT lowering).
-* Generated Cargo projects must not contain Cranelift dependencies.
+  path (overflow raises OverflowError; there is no runtime compilation).
+* Embedding must not add crate dependencies to generated Cargo projects.
 * If a helper falls outside the embedding subset, use normal boundary
   rejection or fallback behavior. Do not build a CPython-hosted JIT API;
   Numba is the external accelerator for fallback code (experimental).
@@ -1644,9 +1642,9 @@ Rust dependencies should be minimal:
 * sha2 for limited `hashlib.sha256` lowering
 * optionally serde for helper structures later
 
-Do not add LLVM, Cranelift, Tokio, Axum, or framework dependencies in 0.1.0
-alpha. Generated Rust projects must not contain Cranelift dependencies (the
-former runtime JIT hot path was removed; helper embedding is plain AOT).
+Do not add LLVM, JIT-backend, Tokio, Axum, or framework dependencies in
+0.1.0 alpha. Helper embedding is plain AOT and adds no dependencies to
+generated Rust projects.
 
 ---
 

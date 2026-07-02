@@ -247,14 +247,12 @@ enabled = true
 ```
 
 동일한 설정은 `rextio build . --jit` 또는 `REXTIO_JIT=true`로도 지정할 수 있습니다.
-(`[jit]`라는 키 이름은 호환성을 위해 유지된 것일 뿐, 이 기능은 JIT이 아닙니다 —
+(`[jit]`라는 키 이름과 달리 이 기능은 JIT이 아닙니다 —
 모든 컴파일은 빌드 시점(AOT)에 끝나며, 빌드 산출물 안에서 동작하는 JIT 컴파일러는
 존재하지 않습니다.)
 내장된 helper는 일반 checked 경로로 컴파일되어 overflow는 OverflowError를,
 0으로 나누기는 ZeroDivisionError를 정상적으로 raise하며, PyO3 함수로 export되지
-않습니다. 런타임 컴파일은 없습니다. (과거의 Cranelift 런타임 JIT와 `backend`/
-`hot_threshold` 설정은 벤치마크 결과 AOT 경로보다 항상 느려 제거되었고, 제거된
-환경변수는 마이그레이션 안내와 함께 즉시 오류를 냅니다.)
+않습니다. 런타임 컴파일은 없습니다.
 
 ## Numba 외부 가속기 (experimental)
 

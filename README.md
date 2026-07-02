@@ -254,8 +254,8 @@ This path preserves behavior. It should not be treated as a Rust speedup path.
 
 Rextio can optionally embed a very narrow set of unmarked scalar helpers as
 internal native functions. This is off by default. Despite the `[jit]`
-config-key name (kept for compatibility), this is NOT a JIT: everything
-compiles ahead of time and no JIT compiler runs inside the built artifact.
+config-key name, this is NOT a JIT: everything compiles ahead of time and
+no JIT compiler exists or runs inside the built artifact.
 
 When enabled, an eligible unmarked helper (typed scalar arguments and return,
 a single arithmetic return expression) is compiled into the generated native
@@ -265,11 +265,6 @@ integer overflow raises OverflowError and division by zero raises
 ZeroDivisionError exactly like any native function. In the Rust executable
 backend an embedded helper compiles into the binary instead of being delegated
 per call to the CPython dispatcher.
-
-The former runtime Cranelift JIT hot path was removed: benchmarks showed it
-strictly slower than this AOT path (the "cold" path was already the same
-expression compiled by rustc, so recompiling it at runtime only added
-overhead).
 
 ```toml
 [jit]
@@ -324,9 +319,9 @@ instead of dying at the first call. Prefer `@rextio.native` for typed scalar
 code and Numba for NumPy/array kernels, and note that very small functions
 lose to call-boundary costs under any accelerator.
 
-Generated Cargo projects never contain Cranelift dependencies. When embedding
-is disabled, would-be candidates stay on the normal fallback path (and their
-native callers are gated by the ordinary boundary rules).
+Embedding adds no crate dependencies to generated Cargo projects. When
+embedding is disabled, would-be candidates stay on the normal fallback path
+(and their native callers are gated by the ordinary boundary rules).
 
 ## Rust-Importable Crate
 

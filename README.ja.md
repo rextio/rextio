@@ -236,15 +236,12 @@ enabled = true
 ```
 
 同じ設定は `rextio build . --jit` または `REXTIO_JIT=true` でも指定できます。
-（`[jit]` というキー名は互換性のために残されているだけで、この機能は JIT では
+（`[jit]` というキー名に反して、この機能は JIT では
 ありません — すべてのコンパイルはビルド時（AOT）に完了し、ビルド成果物の中で
 動作する JIT コンパイラは存在しません。）
 埋め込まれた helper は通常の checked 経路でコンパイルされ、overflow は
 OverflowError を、ゼロ除算は ZeroDivisionError を正しく raise し、PyO3 関数として
-export されません。ランタイムコンパイルはありません。（かつての Cranelift ランタイム
-JIT と `backend`/`hot_threshold` 設定は、ベンチマークで AOT 経路より常に遅いことが
-判明したため削除されました。削除された環境変数は移行メッセージ付きで即座に
-エラーになります。）
+export されません。ランタイムコンパイルはありません。
 
 ## Numba 外部アクセラレータ（experimental）
 
