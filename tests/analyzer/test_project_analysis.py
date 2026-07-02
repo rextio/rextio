@@ -5057,20 +5057,51 @@ def f(xs: list[float]) -> float:
     assert not function.accepted
     assert not function.native_runtime_semantics
 
-def test_shadowed_fidelity_import_is_not_shim_promoted(tmp_path: Path) -> None:
-    # `from statistics import mean` followed by a module-level def/assignment
-    # rebinds the name to PROJECT code: the stale import-map entry must not
-    # promote the marked caller to the RXT080 shim (the call resolves to the
-    # shadow at runtime, not to the stdlib).
+@pytest.mark.parametrize(
+    ("shape", "prelude"),
+    [
+        ("def-shadow", "from statistics import mean\n\ndef mean(xs):\n    return 0.0\n"),
+        ("class-shadow", "from statistics import mean\n\nclass mean:\n    pass\n"),
+        ("assign-shadow", "from statistics import mean\n\nmean = len\n"),
+    ],
+)
+def test_shadowed_fidelity_import_is_not_shim_promoted(
+    shape: str, prelude: str, tmp_path: Path
+) -> None:
+    # A module-level def/class/assignment AFTER `from statistics import mean`
+    # rebinds the name to PROJECT code: the marked caller must reject loudly
+    # (the call resolves to the shadow at runtime, not to the stdlib).
+    write_module(
+        tmp_path,
+        "app.py",
+        f"""
+import rextio
+{prelude}
+@rextio.native
+def f(xs: list[float]) -> float:
+    return mean(xs)
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions if f.name == "f")
+    assert not function.accepted, shape
+    assert not function.native_runtime_semantics, shape
+
+
+def test_reimport_after_def_restores_fidelity_shim(tmp_path: Path) -> None:
+    # The binder ORDER decides: `def mean` followed by a re-import of the
+    # stdlib name means the runtime binding IS statistics.mean, so the marked
+    # caller rides the RXT080 shim exactly like an unshadowed from-import.
     write_module(
         tmp_path,
         "app.py",
         """
 import rextio
-from statistics import mean
 
 def mean(xs):
     return 0.0
+
+from statistics import mean
 
 @rextio.native
 def f(xs: list[float]) -> float:
@@ -5079,5 +5110,5 @@ def f(xs: list[float]) -> float:
     )
     analysis = analyze_project(tmp_path, native_marker="decorator")
     function = next(f for m in analysis.modules for f in m.functions if f.name == "f")
-    assert not function.accepted
-    assert not function.native_runtime_semantics
+    assert function.accepted
+    assert function.native_runtime_semantics

@@ -134,6 +134,99 @@ def _collect_imports(
     return imports
 
 
+def _collect_fidelity_shim_names(tree: ast.Module) -> frozenset[str]:
+    """Return bare names whose FINAL module-level binder is a fidelity import.
+
+    Walks the module body in source order (descending into control-flow
+    bodies the way `_collect_module_assigned_names` does) and records, for
+    each top-level name, the last statement that binds it: an import, a
+    `def`/`class`, an assignment, a loop/with target, or a `del`. A bare call
+    to one of these names promotes a marked function to the RXT080 shim ONLY
+    when the last binder is a `from`-import resolving into
+    `RUNTIME_FIDELITY_TARGETS` - so `def mean` followed by
+    `from statistics import mean` promotes (the runtime binding IS the
+    stdlib), while the reverse order, a class, or an assignment shadowing the
+    import rejects loudly like any project-code call. For conditional bodies
+    the last binder in SOURCE ORDER is used - a deterministic approximation;
+    when it guesses "project code" the result is a loud rejection, never a
+    silent mis-compile.
+    """
+    final: dict[str, str | None] = {}
+
+    def bind_import_from(node: ast.ImportFrom) -> None:
+        if not node.module or node.level != 0:
+            return
+        for alias in node.names:
+            if alias.name == "*":
+                for qualname in RUNTIME_FIDELITY_TARGETS:
+                    module, _, attr = qualname.rpartition(".")
+                    if module == node.module:
+                        final[attr] = qualname
+                continue
+            visible = alias.asname or alias.name
+            final[visible] = f"{node.module}.{alias.name}"
+
+    def bind_other(name: str) -> None:
+        final[name] = None
+
+    def add_target(target: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            bind_other(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                add_target(element)
+        elif isinstance(target, ast.Starred):
+            add_target(target.value)
+
+    def walk(statements: list[ast.stmt]) -> None:
+        for node in statements:
+            if isinstance(node, ast.ImportFrom):
+                bind_import_from(node)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    bind_other(alias.asname or alias.name.split(".", 1)[0])
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bind_other(node.name)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    add_target(target)
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                add_target(node.target)
+            elif isinstance(node, ast.AugAssign):
+                add_target(node.target)
+            elif isinstance(node, ast.Delete):
+                for target in node.targets:
+                    add_target(target)
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                add_target(node.target)
+                walk(node.body)
+                walk(node.orelse)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        add_target(item.optional_vars)
+                walk(node.body)
+            elif isinstance(node, ast.If):
+                walk(node.body)
+                walk(node.orelse)
+            elif isinstance(node, ast.While):
+                walk(node.body)
+                walk(node.orelse)
+            elif isinstance(node, ast.Try):
+                walk(node.body)
+                for handler in node.handlers:
+                    walk(handler.body)
+                walk(node.orelse)
+                walk(node.finalbody)
+
+    walk(tree.body)
+    return frozenset(
+        name
+        for name, target in final.items()
+        if target in RUNTIME_FIDELITY_TARGETS
+    )
+
+
 def _collect_module_assigned_names(tree: ast.Module) -> frozenset[str]:
     """Names bound by a module-level assignment (for the shadow checker).
 
@@ -258,6 +351,7 @@ def _collect_module_functions(
     # (e.g. `len = 5` makes `len(xs)` a TypeError), so the shadow checker treats a
     # call to such a name as shadowed.
     module_assigned_names = _collect_module_assigned_names(tree)
+    fidelity_shim_names = _collect_fidelity_shim_names(tree)
     for node in tree.body:
         if isinstance(node, ast.AsyncFunctionDef):
             marker = native_marker_for_function(node)
@@ -308,7 +402,9 @@ def _collect_module_functions(
         elif marker is not None and not _native_marker_applies(marker, target_language):
             function.is_native_candidate = False
         elif has_marker:
-            _classify_native_function(node, function, return_types, module_function_names)
+            _classify_native_function(
+                node, function, return_types, module_function_names, fidelity_shim_names
+            )
         elif function.external_accelerator is not None:
             # A recognized external-accelerator decorator (e.g. @numba.njit) keeps
             # the function on the Python fallback intentionally: no auto-discovery,
@@ -451,6 +547,7 @@ def _classify_native_function(
     function: FunctionAnalysis,
     return_types: dict[str, str] | None = None,
     module_function_names: set[str] | None = None,
+    fidelity_shim_names: frozenset[str] = frozenset(),
 ) -> None:
     probe = FunctionAnalysis(
         name=function.name,
@@ -485,8 +582,7 @@ def _classify_native_function(
             function.add_diagnostic(diagnostic)
         function.accepted = True
         return
-    module_bindings = set(function.module_assigned_names) | (module_function_names or set())
-    if not _requires_runtime_semantics(node, function.imports, module_bindings):
+    if not _requires_runtime_semantics(node, fidelity_shim_names):
         for diagnostic in probe.diagnostics:
             function.add_diagnostic(diagnostic)
         function.accepted = False
@@ -508,15 +604,13 @@ def _classify_native_function(
 
 def _requires_runtime_semantics(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
-    imports: dict[str, str] | None = None,
-    module_bindings: frozenset[str] | set[str] = frozenset(),
+    fidelity_shim_names: frozenset[str] = frozenset(),
 ) -> bool:
     # Used only on the explicit `@rextio.native` path (`_classify_native_function`).
     # Auto-discovered functions are never promoted to the runtime shim on the
     # strength of this check alone (see `_is_auto_native_candidate`).
     if isinstance(node, ast.AsyncFunctionDef):
         return True
-    imports = imports or {}
     body_nodes = (child for statement in node.body for child in ast.walk(statement))
     for child in body_nodes:
         if isinstance(
@@ -544,16 +638,11 @@ def _requires_runtime_semantics(
             # (`from statistics import mean; mean(xs)`): the attribute form
             # already promotes via the unknown-attribute rule above, and the
             # import STYLE must not change the documented marked-function
-            # behavior (rejected vs RXT080 shim). A module-level assignment or
-            # `def` shadowing the imported name rebinds it to PROJECT code, so
-            # the stale import-map entry must not promote (the call would
-            # resolve to the shadow at runtime, not to the stdlib).
-            if (
-                target is not None
-                and "." not in target
-                and target not in module_bindings
-                and imports.get(target) in RUNTIME_FIDELITY_TARGETS
-            ):
+            # behavior (rejected vs RXT080 shim). `fidelity_shim_names` holds
+            # names whose FINAL module-level binder is such an import (order-
+            # aware: a def/class/assignment shadowing the import - in either
+            # order - rebinds the name to project code and rejects loudly).
+            if target is not None and target in fidelity_shim_names:
                 return True
     return False
 
