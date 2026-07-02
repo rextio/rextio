@@ -124,7 +124,26 @@ def analyze_project(
         native_jit_enabled=native_jit_enabled,
         delegate_fallback=delegate_fallback,
     )
+    _strip_divergence_notes_from_non_native(analysis)
     return analysis
+
+
+def _strip_divergence_notes_from_non_native(analysis: ProjectAnalysis) -> None:
+    """Drop RXT090 divergence notes from functions not on the direct native path.
+
+    The notes are emitted during body validation, before acceptance is decided;
+    a function that ends up rejected or on the runtime-semantics shim executes
+    real CPython, so the noted divergence cannot occur there.
+    """
+    for module in analysis.modules:
+        for function in module.functions:
+            direct_native = function.accepted and not function.native_runtime_semantics
+            if not direct_native:
+                function.diagnostics = [
+                    diagnostic
+                    for diagnostic in function.diagnostics
+                    if diagnostic.code != "RXT090"
+                ]
 
 
 def _project_annotated_return_types(files: list[Path], project_root: Path) -> dict[str, str]:

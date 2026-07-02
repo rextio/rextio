@@ -431,6 +431,10 @@ def _is_auto_native_candidate(
         function.has_keyword_only_params = probe.has_keyword_only_params
         function.inferred_return_type = probe.inferred_return_type
         function.native_target_language = target_language
+        # Carry the probe's non-error diagnostics (e.g. RXT090 divergence
+        # notes); an accepted probe has no errors.
+        for diagnostic in probe.diagnostics:
+            function.add_diagnostic(diagnostic)
         return True
     # Auto-discovered (undecorated) functions are accepted only when they fall
     # within the direct-Rust subset. The Python runtime-semantics shim (RXT080)
@@ -474,6 +478,10 @@ def _classify_native_function(
     function.has_keyword_only_params = probe.has_keyword_only_params
     function.inferred_return_type = probe.inferred_return_type
     if probe.accepted:
+        # Carry the probe's non-error diagnostics (e.g. RXT090 divergence
+        # notes) onto the real function; an accepted probe has no errors.
+        for diagnostic in probe.diagnostics:
+            function.add_diagnostic(diagnostic)
         function.accepted = True
         return
     if not _requires_runtime_semantics(node):

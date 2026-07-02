@@ -4820,3 +4820,51 @@ def f(xs: list[int]) -> set[int]:
     analysis = analyze_project(tmp_path, native_marker="decorator")
     function = next(f for m in analysis.modules for f in m.functions)
     assert function.accepted
+
+def test_bytes_decode_direct_native_carries_divergence_note(tmp_path: Path) -> None:
+    # bytes.decode() on the direct native path raises ValueError where CPython
+    # raises UnicodeDecodeError (documented divergence): the function must
+    # carry a non-rejecting RXT090 note so the divergence is visible at build
+    # time, not only in the docs.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def dec(b: bytes) -> str:
+    return b.decode()
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert function.accepted
+    notes = [d for d in function.diagnostics if d.code == "RXT090"]
+    assert len(notes) == 1
+    assert notes[0].severity == "warning"
+    assert "UnicodeDecodeError" in notes[0].message
+
+
+def test_divergence_note_stripped_from_shim_and_fallback_functions(tmp_path: Path) -> None:
+    # A shim (or rejected) function executes real CPython, so the decode
+    # divergence cannot occur there and the note must not survive.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def dec(b: bytes) -> str:
+    try:
+        return b.decode()
+    except UnicodeDecodeError:
+        return "bad"
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert function.accepted
+    assert function.native_runtime_semantics
+    assert not [d for d in function.diagnostics if d.code == "RXT090"]

@@ -41,6 +41,11 @@ _CODES: tuple[DiagnosticCode, ...] = (
     DiagnosticCode("RXT073", "Native function call inside a Python loop may erase the speedup"),
     DiagnosticCode("RXT074", "Auto-discovered function depends on a runtime-shim native"),
     DiagnosticCode("RXT080", "Function uses the Python runtime-semantics shim", "experimental"),
+    DiagnosticCode(
+        "RXT090",
+        "Native semantic divergence note (documented, non-rejecting)",
+        "experimental",
+    ),
 )
 
 DIAGNOSTIC_CODES: dict[str, DiagnosticCode] = {entry.code: entry for entry in _CODES}

@@ -370,7 +370,10 @@ they differ from CPython in a narrow, documented way. These are accepted trade-
 offs for 0.1.0 alpha (the alternative being a Python fallback for a common
 operation or replicating a large amount of CPython runtime formatting). All
 other observed divergences are treated as bugs and either fixed or rejected to
-fallback. (`print`/`logging` of `bool` and `float`
+fallback. Every divergence remaining in this list is also surfaced at build
+time as a per-function `RXT090` note (shown by `rextio check` under "Native
+divergence notes"), so a build never relies on this page alone.
+(`print`/`logging` of `bool` and `float`
 formerly appeared here; both are now lowered to CPython-exact text —
 `True`/`False` and shortest correctly-rounded float repr with CPython's
 thresholds, `nan`/`inf` spellings, and `e+NN` exponents.)
@@ -382,7 +385,8 @@ thresholds, `nan`/`inf` spellings, and `e+NN` exponents.)
   `UnicodeDecodeError` is feasible but DEFERRED for alpha — it would require
   threading the decode-position data through to the wrapper boundary (where the
   `py` token is available), since the inner native function has no `py` token.
-  Valid UTF-8 decodes identically.
+  Valid UTF-8 decodes identically. Direct-native functions lowering
+  `bytes.decode()` carry an `RXT090` note.
 
 Operations whose divergence could not be bounded this narrowly are kept on the
 Python fallback instead — for example `json.dumps`/`json.loads` (serde is not

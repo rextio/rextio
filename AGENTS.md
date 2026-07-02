@@ -1153,6 +1153,7 @@ RXT072 Native dependency rejected, so caller must fall back
 RXT073 Native function call inside Python loop may erase speedup
 RXT074 Undecorated function depends on a runtime-shim native; mark it @rextio.native to opt in
 RXT080 Native function uses Python runtime semantics shim
+RXT090 Native semantic divergence note (documented, non-rejecting warning)
 ```
 
 Diagnostics must be deterministic and testable.

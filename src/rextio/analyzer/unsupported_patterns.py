@@ -2636,6 +2636,33 @@ def _infer_bytes_method_type(
     if target == "bytes.decode":
         if not _require_arg_count(target, node, function, {0}):
             return None
+        # Divergence note (RXT090): the native path raises ValueError on
+        # invalid UTF-8 where CPython raises UnicodeDecodeError (its subclass).
+        # Emitted here for every candidate that lowers decode; the project
+        # scanner strips the note from functions that do not end up on the
+        # direct native path (rejected or shim functions run real CPython).
+        function.add_diagnostic(
+            Diagnostic(
+                code="RXT090",
+                severity="warning",
+                message=(
+                    "native semantic divergence note: bytes.decode() on invalid "
+                    "UTF-8 raises ValueError natively where CPython raises "
+                    "UnicodeDecodeError (a ValueError subclass, so `except "
+                    "ValueError` behaves identically; `except UnicodeDecodeError` "
+                    "does not match the native error)"
+                ),
+                file_path=function.file_path,
+                line=getattr(node, "lineno", function.line),
+                column=getattr(node, "col_offset", function.column),
+                function_name=function.qualname,
+                suggestion=(
+                    "Documented in docs/unsupported-features.md under Accepted "
+                    "Native Semantic Divergences; keep the function on the Python "
+                    "fallback if the exact exception type matters."
+                ),
+            )
+        )
         return "str"
     return None
 
