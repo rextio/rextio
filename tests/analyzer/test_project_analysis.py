@@ -4673,3 +4673,27 @@ def helper(x: int) -> int:
     assert not helper.accepted
     assert helper.external_accelerator == "numba"
     assert any("decorator" in d.message for d in helper.error_diagnostics)
+
+
+def test_project_local_numba_module_is_not_mislabeled(tmp_path: Path) -> None:
+    # A PROJECT-LOCAL module named `numba` is the user's code: resolving
+    # `@numba.njit` through it must not label the function as the external
+    # Numba accelerator (recognition consults the project's module names).
+    (tmp_path / "numba.py").write_text(
+        "def njit(func):\n    return func\n", encoding="utf-8"
+    )
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import numba
+
+@numba.njit
+def helper(x: int) -> int:
+    return x + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="auto")
+    helper = next(f for m in analysis.modules for f in m.functions if f.name == "helper")
+    assert helper.external_accelerator is None

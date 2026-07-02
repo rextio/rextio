@@ -110,20 +110,26 @@ _EXTERNAL_ACCELERATOR_QUALNAMES = {
     "numba.njit": "numba",
     "numba.vectorize": "numba",
     "numba.guvectorize": "numba",
+    "numba.cuda.jit": "numba",
 }
 
 
 def external_accelerator_for_function(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     imports: dict[str, str],
+    project_modules: set[str] | None = None,
 ) -> str | None:
     """Return the external accelerator a decorator applies, or None.
 
     Resolves the decorator through the module's import map so ``@numba.njit``,
     ``from numba import njit`` + ``@njit``, aliases, and the call forms
     (``@njit(cache=True)``) are all recognized precisely - a user-defined
-    decorator that merely shares a bare name is not.
+    decorator that merely shares a bare name is not, and neither is a
+    PROJECT-LOCAL module that happens to be named ``numba`` (``project_modules``
+    holds the project's own top-level module names; an import resolving into one
+    of them is the user's code, not the external package).
     """
+    project_modules = project_modules or set()
     for decorator in node.decorator_list:
         target = decorator.func if isinstance(decorator, ast.Call) else decorator
         name = dotted_name(target)
@@ -132,6 +138,8 @@ def external_accelerator_for_function(
         head, _, rest = name.partition(".")
         resolved_head = imports.get(head)
         if resolved_head is None:
+            continue
+        if resolved_head.split(".", 1)[0] in project_modules:
             continue
         resolved = f"{resolved_head}.{rest}" if rest else resolved_head
         tool = _EXTERNAL_ACCELERATOR_QUALNAMES.get(resolved)

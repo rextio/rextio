@@ -80,6 +80,7 @@ def parse_module(
         target_language,
         native_jit_enabled,
         project_return_types or {},
+        project_modules or set(),
     )
     module.functions.extend(_collect_native_methods(tree, module, target_language))
     if native_top_level:
@@ -231,6 +232,7 @@ def _collect_module_functions(
     target_language: str,
     native_jit_enabled: bool,
     project_return_types: dict[str, str],
+    project_modules: set[str],
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
     # Module-level map of function name -> annotated return type, so the signature
@@ -294,7 +296,9 @@ def _collect_module_functions(
             module_assigned_names=module_assigned_names,
             call_return_types={**project_return_types, **return_types},
         )
-        function.external_accelerator = external_accelerator_for_function(node, module.imports)
+        function.external_accelerator = external_accelerator_for_function(
+            node, module.imports, project_modules
+        )
         if has_exempt:
             function.is_native_candidate = False
             function.native_target_language = None
