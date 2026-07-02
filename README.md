@@ -297,11 +297,16 @@ Rextio's native contract, exactly like `@rextio.exempt`. Combining
 
 Compatibility: wheel and zipapp deployments work with numba installed as a
 project dependency; the Rust executable's source-mode hybrid runtime works
-(the dispatcher runs real CPython); Nuitka-compiled fallbacks and the
-Nuitka-mode hybrid runtime are NOT supported (Numba needs the original
-bytecode at runtime). Prefer `@rextio.native` for typed scalar code and Numba
-for NumPy/array kernels, and note that very small functions lose to
-call-boundary costs under any accelerator.
+(the dispatcher runs real CPython). The `--fallback=nuitka` backend now
+coexists automatically: modules using a recognized external accelerator are
+kept as plain Python (the `.py` stays imported) while the rest of the tree is
+Nuitka-compiled, and the build report lists them. A Nuitka *executable*
+(`--executable-backend=nuitka`) and the `--hybrid-runtime=nuitka` dispatcher
+cannot serve accelerated functions (compiled functions expose no bytecode and
+the accelerator is not bundled) - those builds fail early with guidance
+instead of dying at the first call. Prefer `@rextio.native` for typed scalar
+code and Numba for NumPy/array kernels, and note that very small functions
+lose to call-boundary costs under any accelerator.
 
 Generated Cargo projects never contain Cranelift dependencies. When embedding
 is disabled, would-be candidates stay on the normal fallback path (and their

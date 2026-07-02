@@ -74,6 +74,13 @@ Initial public MVP for Rextio as a local hybrid build tool.
   after benchmarks showed it strictly slower than the AOT path it fell back
   to, and the `[jit] backend`/`[jit] hot_threshold` settings were removed
   with it.)
+- Numba coexists with the Nuitka fallback backend: modules using a recognized
+  external accelerator are automatically kept as plain Python (skipped from
+  per-module Nuitka compilation, so the importable `.py` retains the bytecode
+  the accelerator needs), and the build result lists them. Nuitka *executable*
+  builds and the `nuitka` hybrid-runtime dispatcher fail early with guidance
+  when accelerated functions are present (they cannot be served from compiled
+  code), instead of producing a binary that fails at the first call.
 - Numba (`numba.jit`/`njit`/`vectorize`/`guvectorize`) is recognized as a
   supported external accelerator for Python fallback code: decorated
   functions stay on the fallback cleanly (no auto-discovery, no diagnostic

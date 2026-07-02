@@ -338,9 +338,17 @@ rejected (unsupported decorator on a native function).
 
 Compatibility: CPython wheel and zipapp deployments work with numba installed;
 the Rust executable's `source` hybrid runtime works (delegated calls run in
-real CPython, with numba's first-call compile latency inside the dispatcher);
-Nuitka-compiled fallbacks and the `nuitka` hybrid runtime do not work (Numba
-requires the original function bytecode at runtime).
+real CPython, with numba's first-call compile latency inside the dispatcher).
+The `--fallback=nuitka` backend coexists automatically: modules whose
+top-level functions carry a recognized accelerator decorator are skipped from
+Nuitka compilation and stay plain Python in the tree (Nuitka-compiled
+functions expose no real bytecode, which the accelerator lifts at first call);
+the build result names the modules kept plain, and the deployment environment
+must still have the accelerator installed. A Nuitka *executable*
+(`--executable-backend=nuitka`) and the `nuitka` hybrid-runtime dispatcher
+cannot serve accelerated functions (no bytecode, accelerator not bundled);
+those builds fail early with an actionable message (deploy as wheel/zipapp,
+or use `--hybrid-runtime=source`) instead of failing at the first call.
 
 ## Accepted Native Semantic Divergences
 
