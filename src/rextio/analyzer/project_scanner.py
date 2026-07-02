@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Iterable
 from fnmatch import fnmatch
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 from rextio.analyzer.boundary import apply_boundary_checks
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.module_parser import module_name_for_path, parse_module
+from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.config.schema import ImportsConfig
 from rextio.plugins.models import RextioPlugin
 from rextio.targets.models import normalize_target_language
@@ -87,13 +89,21 @@ def analyze_project(
     active_plugins: Iterable[RextioPlugin] = (),
     native_jit_enabled: bool = False,
     jit_hot_threshold: int = 25,
+    delegate_fallback: bool = False,
 ) -> ProjectAnalysis:
-    """Analyze a project directory and return its ProjectAnalysis."""
+    """Analyze a project directory and return its ProjectAnalysis.
+
+    When ``delegate_fallback`` is set (the Rust-executable delegate mode), a
+    direct-native function that calls a project function living on the Python
+    fallback records it as a delegated call instead of being rejected, so the
+    generated binary can invoke it through the external CPython dispatcher.
+    """
     root = Path(project_root).resolve()
     target_language = normalize_target_language(target_language)
     analysis = ProjectAnalysis(project_root=root)
     files = scan_python_files(root)
     project_modules = _project_module_names(files, root)
+    project_return_types = _project_annotated_return_types(files, root)
     analysis.modules = [
         parse_module(
             path,
@@ -106,6 +116,7 @@ def analyze_project(
             active_plugins=active_plugins,
             native_jit_enabled=native_jit_enabled,
             jit_hot_threshold=jit_hot_threshold,
+            project_return_types=project_return_types,
         )
         for path in files
     ]
@@ -113,8 +124,55 @@ def analyze_project(
         analysis,
         boundary_warnings=boundary_warnings,
         native_jit_enabled=native_jit_enabled,
+        delegate_fallback=delegate_fallback,
     )
     return analysis
+
+
+def _project_annotated_return_types(files: list[Path], project_root: Path) -> dict[str, str]:
+    """Collect supported top-level function return annotations by qualified name.
+
+    A sibling ``.pyi`` stub's return annotation overrides the source annotation,
+    mirroring the per-function resolution order used everywhere else
+    (``signature_return_type or inferred_return_type or annotated_return_type``,
+    where the stub return is the *inferred* type). Without the stub pass, a
+    callee typed only in a ``.pyi`` stayed untyped at cross-module call sites, so
+    a type-incompatible use of its result (e.g. ``stub_str_fn(x) + 1``) slipped
+    past validation into a Rust compile failure instead of a clean rejection.
+    """
+    return_types: dict[str, str] = {}
+    for path in files:
+        module_name = module_name_for_path(path, project_root)
+
+        def _qualname(name: str) -> str:
+            return f"{module_name}.{name}" if module_name else name
+
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:
+            continue
+        for item in tree.body:
+            if (
+                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and item.returns is not None
+                and is_supported_type(item.returns)
+            ):
+                return_types[_qualname(item.name)] = annotation_name(item.returns)
+        stub_path = path.with_suffix(".pyi")
+        if not stub_path.exists():
+            continue
+        try:
+            stub_tree = ast.parse(stub_path.read_text(encoding="utf-8"), filename=str(stub_path))
+        except SyntaxError:
+            continue
+        for item in stub_tree.body:
+            if (
+                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and item.returns is not None
+                and is_supported_type(item.returns)
+            ):
+                return_types[_qualname(item.name)] = annotation_name(item.returns)
+    return return_types
 
 
 def _project_module_names(files: list[Path], project_root: Path) -> set[str]:

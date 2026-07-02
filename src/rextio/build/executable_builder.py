@@ -1,9 +1,10 @@
-"""Building executable artifacts (zipapp / Nuitka)."""
+"""Building executable artifacts (zipapp / Nuitka / native Rust binary)."""
 
 from __future__ import annotations
 
 import re
 import shutil
+import stat
 import sys
 import zipapp
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
@@ -45,6 +46,90 @@ def skipped_executable(message: str) -> ExecutableBuildResult:
         path=None,
         message=message,
     )
+
+
+def build_rust_executable(
+    crate_dir: Path,
+    dist_dir: Path,
+    binary_name: str,
+    entrypoint: str,
+    *,
+    timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+) -> ExecutableBuildResult:
+    """Compile the generated Rust bin crate and copy the binary into ``dist``.
+
+    The crate (``Cargo.toml`` + ``src/main.rs``) is expected to already be
+    written into ``crate_dir`` by the caller. This is a standalone native binary
+    with no Python dependency.
+    """
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        return ExecutableBuildResult(
+            status="failed",
+            path=None,
+            message=(
+                "RXT060 Executable build failed while compiling the Rust binary. "
+                "Cause: cargo was not found. Suggestion: install Rust and Cargo, then rerun rextio build."
+            ),
+            entrypoint=entrypoint,
+            backend="rust",
+        )
+
+    command = [cargo, "build", "--release", "--manifest-path", str(crate_dir / "Cargo.toml")]
+    completed = run_build_tool(command, cwd=crate_dir, timeout=timeout)
+    if completed.returncode != 0:
+        return ExecutableBuildResult(
+            status="failed",
+            path=None,
+            message="RXT060 Executable build failed while compiling the Rust binary.",
+            entrypoint=entrypoint,
+            backend="rust",
+            command=command,
+            stdout=_tail(completed.stdout),
+            stderr=_tail(completed.stderr),
+        )
+
+    binary = _find_cargo_binary(crate_dir, binary_name)
+    if binary is None:
+        return ExecutableBuildResult(
+            status="failed",
+            path=None,
+            message=(
+                "RXT060 Executable build failed after Cargo completed. "
+                f"Cause: the compiled binary '{binary_name}' was not found in target/release."
+            ),
+            entrypoint=entrypoint,
+            backend="rust",
+            command=command,
+            stdout=_tail(completed.stdout),
+            stderr=_tail(completed.stderr),
+        )
+
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    destination = dist_dir / binary.name
+    shutil.copy2(binary, destination)
+    destination.chmod(destination.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    return ExecutableBuildResult(
+        status="built",
+        path=str(destination),
+        message="Generated native Rust executable artifact.",
+        entrypoint=entrypoint,
+        backend="rust",
+        command=command,
+        stdout=_tail(completed.stdout),
+        stderr=_tail(completed.stderr),
+    )
+
+
+def _find_cargo_binary(crate_dir: Path, binary_name: str) -> Path | None:
+    """Return Cargo's release binary path, accepting the Windows ``.exe`` suffix."""
+    release_dir = crate_dir / "target" / "release"
+    for suffix in ("", ".exe"):
+        candidate = release_dir / f"{binary_name}{suffix}"
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def build_zipapp_executable(

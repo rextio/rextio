@@ -29,7 +29,7 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
     def overflow_err_msg(message: str) -> str:
         if mode == "pyo3":
             return f'pyo3::exceptions::PyOverflowError::new_err("{message}")'
-        return f'RextioError::new("{message}")'
+        return f'RextioError::new("OverflowError", "{message}")'
 
     def overflow_err() -> str:
         return overflow_err_msg("integer overflow")
@@ -37,12 +37,12 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
     def zero_div_err(message: str) -> str:
         if mode == "pyo3":
             return f'pyo3::exceptions::PyZeroDivisionError::new_err("{message}")'
-        return f'RextioError::new("{message}")'
+        return f'RextioError::new("ZeroDivisionError", "{message}")'
 
     def value_err(message: str) -> str:
         if mode == "pyo3":
             return f'pyo3::exceptions::PyValueError::new_err("{message}")'
-        return f'RextioError::new("{message}")'
+        return f'RextioError::new("ValueError", "{message}")'
 
     ret = "PyResult<i64>" if mode == "pyo3" else "Result<i64, RextioError>"
     fret = "PyResult<f64>" if mode == "pyo3" else "Result<f64, RextioError>"

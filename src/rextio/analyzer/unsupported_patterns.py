@@ -1149,7 +1149,7 @@ class _SignatureInferencer:
         self.function = function
         # name -> return type for sibling functions in the same module, used to
         # resolve the type of a nested call argument (e.g. callee(producer())).
-        self.sibling_return_types = return_types or {}
+        self.sibling_return_types = {**function.call_return_types, **(return_types or {})}
         # Every same-module function name (regardless of return-type annotation), used
         # — together with imports and supported builtins — to detect a call whose
         # callee name is shadowed by a local binding (so it does not reach the
@@ -1520,7 +1520,7 @@ class _SignatureInferencer:
         key = (node.lineno, node.col_offset)
         self.function.call_arg_types[key] = tuple(arg_type for arg_type, _ in results)
         self.function.call_arg_targets[key] = tuple(target for _, target in results)
-        return None
+        return self.sibling_return_types.get(target) if target is not None else None
 
     def _infer_call_arg(self, arg: ast.expr) -> tuple[str | None, str | None]:
         """Infer one call-argument's type and its call target if it is a call.
@@ -2536,7 +2536,7 @@ def _infer_call_type(
         return None
     if _is_append_call(node):
         return _infer_append_call_type(node, function, env)
-    return None
+    return function.call_return_types.get(target) if target is not None else None
 
 
 def _infer_effect_call_type(

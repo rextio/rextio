@@ -44,9 +44,11 @@ jobs:
       - name: No residual rextio_runtime references
         # The dead helper crate was removed (mod-proposal P2-3); its only allowed
         # mention is the CHANGELOG note. Fail if a source/template reference
-        # regresses. (`git grep` exit 1 == no match == success.)
+        # regresses. Word-bounded so identifiers that merely CONTAIN the string
+        # (e.g. the generated `__rextio_runtime_dir` IPC helper) do not trip it.
+        # (`git grep` exit 1 == no match == success.)
         run: |
-          if git grep -n "rextio_runtime" -- ':!CHANGELOG.md' ':!.github/workflows/ci.yml'; then
+          if git grep -nE '(^|[^_[:alnum:]])rextio_runtime($|[^_[:alnum:]])' -- ':!CHANGELOG.md' ':!.github/workflows/ci.yml'; then
             echo "::error::unexpected rextio_runtime reference (crate was removed)"
             exit 1
           fi

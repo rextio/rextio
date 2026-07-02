@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.config.schema import ImportPackagePolicy, ImportsConfig
 from rextio.plugins.models import RextioPlugin
@@ -4249,3 +4251,318 @@ def below_min() -> int:
 
     assert [f.qualname for f in analysis.accepted_native_functions] == ["app.at_min"]
     assert [f.qualname for f in analysis.rejected_native_functions] == ["app.below_min"]
+
+
+def test_delegate_fallback_mode_records_delegated_calls(tmp_path: Path) -> None:
+    # Rust-executable delegate mode: a direct-native function that calls a
+    # project function living on the Python fallback is accepted (not RXT070) and
+    # the callee is recorded for delegation to the external CPython dispatcher,
+    # provided the callee's return type and the argument types are wire-serializable.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+def slugify(text: str) -> str:
+    return text.lower()
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    x = slugify(argv[0])
+    return len(x)
+""",
+    )
+
+    normal = analyze_project(tmp_path, native_marker="decorator")
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+
+    def _main(analysis):
+        return next(f for m in analysis.modules for f in m.functions if f.name == "main")
+
+    # Without delegation the native->fallback call is rejected (RXT070).
+    assert not _main(normal).accepted
+    assert "RXT070" in {d.code for d in _main(normal).error_diagnostics}
+
+    # With delegation the caller is accepted and the callee is recorded.
+    assert _main(delegated).accepted
+    assert _main(delegated).delegated_call_targets == {"app.slugify"}
+
+
+def test_delegate_fallback_rejects_incompatible_delegated_return_use(tmp_path: Path) -> None:
+    # A delegated call's annotated return type must participate in the normal
+    # expression type checks. This rejects `str + int` at check time instead of
+    # accepting the native caller and later emitting Rust `String + integer`.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+def slugify(text: str) -> str:
+    return text.lower()
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    slug = slugify(argv[0])
+    return slug + 1
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+
+    assert not main.accepted
+    assert main.delegated_call_targets == set()
+    assert any("operator is not supported" in diagnostic.message for diagnostic in main.error_diagnostics)
+
+
+def test_delegate_fallback_types_pyi_stub_returns_across_modules(tmp_path: Path) -> None:
+    # A callee whose return type lives ONLY in a sibling `.pyi` stub must be typed
+    # at cross-module call sites too: a type-incompatible use of its result is a
+    # clean check-time rejection (previously it slipped past validation into a
+    # Rust `String + integer` compile failure), while a valid use stays accepted
+    # and delegated.
+    write_module(
+        tmp_path,
+        "helpers.py",
+        """
+import rextio
+
+@rextio.exempt
+def slugify(text):
+    return text.lower()
+""",
+    )
+    (tmp_path / "helpers.pyi").write_text(
+        "def slugify(text: str) -> str: ...\n", encoding="utf-8"
+    )
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+from helpers import slugify
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return slugify(argv[0]) + 1
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    assert not main.accepted
+    assert any("operator is not supported" in d.message for d in main.error_diagnostics)
+
+    # The same stub-typed callee used compatibly stays accepted and delegated.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+from helpers import slugify
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return len(slugify(argv[0]))
+""",
+    )
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    assert main.accepted
+    assert main.delegated_call_targets == {"helpers.slugify"}
+
+
+def test_cross_module_native_call_results_are_typed(tmp_path: Path) -> None:
+    # The project-wide return-type map must type CROSS-MODULE calls to accepted
+    # native functions too (the most common real-project shape): a compatible use
+    # stays accepted, and a type-incompatible use of the result is a check-time
+    # rejection rather than a Rust compile failure.
+    write_module(
+        tmp_path,
+        "utils.py",
+        """
+import rextio
+
+@rextio.native
+def bump(x: int) -> int:
+    return x + 1
+""",
+    )
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+from utils import bump
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return bump(len(argv))
+
+@rextio.native
+def broken(argv: list[str]) -> str:
+    return bump(len(argv)) + "!"
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    functions = {f.name: f for m in analysis.modules for f in m.functions}
+    assert functions["main"].accepted
+    assert not functions["broken"].accepted
+    assert any(
+        "operator is not supported" in d.message for d in functions["broken"].error_diagnostics
+    )
+
+
+def test_delegate_fallback_skips_untypeable_callee(tmp_path: Path) -> None:
+    # Delegation never guesses: a fallback callee without a wire-serializable
+    # return type stays a rejection (the caller remains on the Python fallback).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+def opaque(text):
+    return object()
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    opaque(argv[0])
+    return 0
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    assert not main.accepted
+    assert main.delegated_call_targets == set()
+
+
+def test_delegate_fallback_rejects_mutable_container_arg(tmp_path: Path) -> None:
+    # A mutable-container argument crosses the JSON wire by value, so a callee's
+    # in-place mutation would be silently lost. Such a call must NOT be delegated
+    # (the caller stays a rejection), never silently miscompiled.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+def sum_and_grow(xs: list[int]) -> int:
+    xs.append(0)
+    return sum(xs)
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    xs: list[int] = [1, 2, 3]
+    total = sum_and_grow(xs)
+    return len(xs) + total
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    assert not main.accepted
+    assert main.delegated_call_targets == set()
+
+
+def test_delegate_fallback_rejects_mutable_container_return(tmp_path: Path) -> None:
+    # A delegated callee returning a mutable container is NOT delegated: the returned
+    # value may alias persistent Python state, so a native caller mutating its
+    # by-value copy would diverge from CPython silently. The caller is safely rejected
+    # (RXT070) rather than built. This pins the exact annotated-alias silent-miscompile
+    # repro from the round-4 council; the `typing.List[int]` return is normalized and
+    # then rejected (the builtin `list[int]` form is covered separately below).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+from typing import List
+
+_ITEMS: list[int] = []
+
+@rextio.exempt
+def get_items() -> List[int]:
+    return _ITEMS
+
+@rextio.exempt
+def item_count() -> int:
+    return len(_ITEMS)
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    xs: list[int] = get_items()
+    xs.append(1)
+    return item_count()
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    # The mutable-list-returning callee is not delegated, so the caller is rejected
+    # instead of silently mis-compiled (a native `xs.append(1)` on a by-value copy
+    # would leave the aliased Python global unchanged: CPython 1, hybrid 0).
+    assert not main.accepted
+    assert "app.get_items" not in main.delegated_call_targets
+
+    # The scalar-returning callee remains delegatable; only the container return is
+    # what forces the rejection.
+    from rextio.build.orchestrator import _delegated_return_types
+
+    assert "app.get_items" not in _delegated_return_types(delegated)
+
+
+@pytest.mark.parametrize(
+    "return_annotation",
+    [
+        "list[int]",
+        "List[int]",
+        "dict[str, int]",
+        "set[int]",
+        "tuple[int, int]",
+        "Optional[list[int]]",
+        "Optional[List[int]]",  # capitalized inner: exercises recursive normalization
+        "bytes",  # immutable but not a wire type; must stay rejected
+    ],
+)
+def test_delegate_fallback_rejects_every_container_return_shape(
+    tmp_path: Path, return_annotation: str
+) -> None:
+    # No container/optional-container/non-wire return shape may be delegated (a mutable
+    # container crosses the wire by value, severing aliasing; bytes has no wire type).
+    # Each keeps the caller on the Python fallback — a clean rejection, never a silent
+    # divergence. Pins the scalar-only contract against a future `normalize_type_name`
+    # or `_DELEGATABLE_SCALARS` change that could let a shape through.
+    write_module(
+        tmp_path,
+        "app.py",
+        f"""
+import rextio
+from typing import List, Optional
+
+@rextio.exempt
+def produce() -> {return_annotation}:
+    raise NotImplementedError
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    produce()
+    return 0
+""",
+    )
+
+    delegated = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    main = next(f for m in delegated.modules for f in m.functions if f.name == "main")
+    assert not main.accepted
+    # Nothing is delegated (the container-returning callee is not a wire type), and the
+    # caller is rejected with a boundary diagnostic rather than silently built.
+    assert main.delegated_call_targets == set()
+    assert any(d.code == "RXT010" for d in main.error_diagnostics)

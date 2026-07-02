@@ -49,6 +49,10 @@ def negate(a: int) -> int:
     return -a
 
 @rextio.native
+def min_literal() -> int:
+    return -9223372036854775808
+
+@rextio.native
 def magnitude(a: int) -> int:
     return abs(a)
 
@@ -83,6 +87,7 @@ def scaled_total(xs: list[int]) -> int:
     assert module.accumulate([1, 2, 3]) == 6
     assert module.modulo(7, 3) == 1
     assert module.negate(5) == -5
+    assert module.min_literal() == -(2**63)
     assert module.magnitude(-5) == 5
     assert module.total([1, 2, 3]) == 6
     assert module.scaled_total([1, 2, 3]) == 14

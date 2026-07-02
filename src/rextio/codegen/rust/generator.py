@@ -15,6 +15,7 @@ from rextio.codegen.rust.keywords import RUST_RAWABLE_KEYWORDS
 from rextio.codegen.rust.jit_codegen import jit_prelude as _jit_prelude
 from rextio.codegen.rust.jit_codegen import jit_pointer_type as _jit_pointer_type
 from rextio.codegen.rust.jit_codegen import render_cranelift_expr as _render_cranelift_expr
+from rextio.codegen.rust.subprocess_client import render_subprocess_client
 from rextio.codegen.rust.pyo3 import render_pyo3_module
 from rextio.codegen.rust.rust_format import (
     block_always_returns as _block_always_returns,
@@ -68,6 +69,7 @@ from rextio.ir.nodes import (
     WhileIR,
 )
 from rextio.ir.types import (
+    type_from_string,
     RxtBool,
     RxtBytes,
     RxtDict,
@@ -147,8 +149,20 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
     )
 
 
-def generate_rust_crate_module(module_ir: ModuleIR) -> str:
-    """Generate the Rust-importable crate source for a lowered module."""
+def generate_rust_crate_module(
+    module_ir: ModuleIR,
+    delegated_return_types: dict[str, str] | None = None,
+    python_command: str = "python3",
+    nuitka_dispatcher: bool = False,
+) -> str:
+    """Generate the Rust-importable crate source for a lowered module.
+
+    ``delegated_return_types`` maps the qualname of each fallback function the
+    generated code delegates to the external CPython dispatcher to its return
+    type; when non-empty the IPC client is appended and its calls are lowered to
+    ``__rextio_call_python``.
+    """
+    delegated_return_types = delegated_return_types or {}
     direct_functions = [
         function
         for function in module_ir.functions
@@ -176,10 +190,116 @@ def generate_rust_crate_module(module_ir: ModuleIR) -> str:
             return_types_by_qualname,
             mode="crate",
             used_helpers=used_helpers,
+            delegated_return_types=delegated_return_types,
         )
         for function in direct_functions
     ]
-    return _render_importable_crate_module(rendered, used_helpers)
+    return _render_importable_crate_module(
+        rendered,
+        used_helpers,
+        include_ipc_client=bool(delegated_return_types),
+        python_command=python_command,
+        nuitka_dispatcher=nuitka_dispatcher,
+    )
+
+
+def generate_rust_main_binary(
+    module_ir: ModuleIR,
+    entry_qualname: str,
+    delegated_return_types: dict[str, str] | None = None,
+    python_command: str = "python3",
+    nuitka_dispatcher: bool = False,
+) -> str:
+    """Generate a Rust *binary* crate source for an executable build.
+
+    Reuses the Rust-importable crate module (no PyO3, `RextioError`-returning
+    functions) and appends a ``fn main`` that calls the entrypoint with the
+    process arguments and maps its result to an exit code. The entrypoint must be
+    an accepted direct-native function with the shape ``(list[str]) -> int``
+    (Python ``def main(argv: list[str]) -> int``): ``argv`` mirrors ``sys.argv``
+    (program path at index 0), the returned ``int`` is the process exit code, and
+    a returned ``RextioError`` is printed CPython-style (``TypeName: message``) to
+    stderr with a non-zero exit.
+    """
+    entry = _resolve_main_entry(module_ir, entry_qualname)
+    crate_source = generate_rust_crate_module(
+        module_ir, delegated_return_types, python_command, nuitka_dispatcher
+    )
+    entry_name = rust_identifier(native_function_name(entry.qualname))
+    main_fn = "\n".join(
+        [
+            "fn main() {",
+            "    // Mirror Python `sys.argv`: the program path at index 0, then args.",
+            "    let argv: Vec<String> = match std::env::args_os()",
+            "        .map(|arg| arg.into_string())",
+            "        .collect::<Result<Vec<_>, _>>()",
+            "    {",
+            "        Ok(argv) => argv,",
+            "        Err(_) => {",
+            '            eprintln!("ValueError: command-line argument is not valid UTF-8");',
+            "            std::process::exit(1);",
+            "        }",
+            "    };",
+            f"    match {entry_name}(argv) {{",
+            "        Ok(code) => std::process::exit(code as i32),",
+            "        Err(err) => {",
+            "            // `Display` renders `TypeName: message` (CPython-style).",
+            "            eprintln!(\"{}\", err);",
+            "            std::process::exit(1);",
+            "        }",
+            "    }",
+            "}",
+        ]
+    )
+    return f"{crate_source}\n{main_fn}\n"
+
+
+def _resolve_main_entry(module_ir: ModuleIR, entry_qualname: str) -> FunctionIR:
+    """Return the entrypoint FunctionIR, or raise if it is missing or ill-typed."""
+    runtime_matches = [
+        function
+        for function in module_ir.functions
+        if function.qualname == entry_qualname and function.native_runtime_semantics
+    ]
+    if runtime_matches:
+        raise RustCodegenError(
+            f"Rust-main entrypoint '{entry_qualname}' cannot use Python runtime semantics (RXT080)"
+        )
+    jit_matches = [
+        function
+        for function in module_ir.functions
+        if function.qualname == entry_qualname and function.native_jit
+    ]
+    if jit_matches:
+        raise RustCodegenError(
+            f"Rust-main entrypoint '{entry_qualname}' cannot be an experimental JIT function"
+        )
+    matches = [
+        function
+        for function in module_ir.functions
+        if function.qualname == entry_qualname
+        and not function.native_runtime_semantics
+        and not function.native_jit
+    ]
+    if not matches:
+        raise RustCodegenError(
+            f"Rust-main entrypoint '{entry_qualname}' is not an accepted direct-native function"
+        )
+    entry = matches[0]
+    param_types = [param.type for param in entry.params]
+    if not (
+        len(param_types) == 1
+        and isinstance(param_types[0], RxtList)
+        and isinstance(param_types[0].item_type, RxtStr)
+    ):
+        raise RustCodegenError(
+            f"Rust-main entrypoint '{entry_qualname}' must take a single list[str] argument (argv)"
+        )
+    if not isinstance(entry.return_type, RxtInt):
+        raise RustCodegenError(
+            f"Rust-main entrypoint '{entry_qualname}' must return int (the process exit code)"
+        )
+    return entry
 
 
 def rust_identifier(value: str) -> str:
@@ -325,7 +445,33 @@ def _render_jit_function(
     )
 
 
-def _render_importable_crate_module(function_sources: list[str], used_helpers: set[str]) -> str:
+# Map the renderer's internal error ``kind`` to the CPython exception type name a
+# crate-mode ``RextioError`` carries (so a consumer can print a Python-style
+# ``TypeName: message``). pyo3 mode uses the ``Py*`` exception types directly.
+_CRATE_EXCEPTION_NAMES = {
+    "key": "KeyError",
+    "runtime": "RuntimeError",
+    "unbound": "UnboundLocalError",
+    "value": "ValueError",
+}
+
+
+def _crate_exception_name(kind: str) -> str:
+    """Return the CPython exception type name for a renderer error ``kind``."""
+    try:
+        return _CRATE_EXCEPTION_NAMES[kind]
+    except KeyError as exc:
+        raise RustCodegenError(f"unmapped crate error kind: {kind}") from exc
+
+
+def _render_importable_crate_module(
+    function_sources: list[str],
+    used_helpers: set[str],
+    *,
+    include_ipc_client: bool = False,
+    python_command: str = "python3",
+    nuitka_dispatcher: bool = False,
+) -> str:
     lines = [
         "// Generated by Rextio. Do not edit manually.",
         "",
@@ -341,12 +487,19 @@ def _render_importable_crate_module(function_sources: list[str], used_helpers: s
         "",
         "#[derive(Debug, Clone, PartialEq, Eq)]",
         "pub struct RextioError {",
+        "    // The CPython exception type name this error corresponds to (e.g.",
+        "    // \"OverflowError\"), so a consumer can render a Python-style message.",
+        "    kind: String,",
         "    message: String,",
         "}",
         "",
         "impl RextioError {",
-        "    pub fn new(message: impl Into<String>) -> Self {",
-        "        Self { message: message.into() }",
+        "    pub fn new(kind: impl Into<String>, message: impl Into<String>) -> Self {",
+        "        Self { kind: kind.into(), message: message.into() }",
+        "    }",
+        "",
+        "    pub fn kind(&self) -> &str {",
+        "        &self.kind",
         "    }",
         "",
         "    pub fn message(&self) -> &str {",
@@ -356,7 +509,8 @@ def _render_importable_crate_module(function_sources: list[str], used_helpers: s
         "",
         "impl std::fmt::Display for RextioError {",
         "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {",
-        "        write!(f, \"{}\", self.message)",
+        "        // CPython-style `TypeName: message`.",
+        "        write!(f, \"{}: {}\", self.kind, self.message)",
         "    }",
         "}",
         "",
@@ -364,6 +518,9 @@ def _render_importable_crate_module(function_sources: list[str], used_helpers: s
         "",
     ]
     lines.extend(_checked_arith_helpers(used_helpers, "crate"))
+    if include_ipc_client:
+        lines.append(render_subprocess_client(python_command, nuitka_dispatcher=nuitka_dispatcher))
+        lines.append("")
     for function_source in function_sources:
         lines.append(function_source)
         lines.append("")
@@ -379,12 +536,16 @@ class _FunctionRenderer:
         native_return_types: dict[str, RxtType],
         mode: str,
         used_helpers: set[str] | None = None,
+        delegated_return_types: dict[str, str] | None = None,
     ) -> None:
         self.function = function
         self.native_names_by_qualname = native_names_by_qualname
         self.native_names = native_names
         self.native_return_types = native_return_types
         self.mode = mode
+        # qualname -> return-type name for calls delegated to the CPython
+        # dispatcher (executable delegate mode); empty in every normal build.
+        self.delegated_return_types = delegated_return_types or {}
         self.declared = {param.name for param in function.params}
         self.variable_types = {param.name: param.type for param in function.params}
         self.maybe_bound_types: dict[str, RxtType] = {}
@@ -840,7 +1001,7 @@ class _FunctionRenderer:
                 "value": "PyValueError",
             }.get(kind, "PyValueError")
             return f"pyo3::exceptions::{exception}::new_err({message})"
-        return f"RextioError::new({message})"
+        return f'RextioError::new("{_crate_exception_name(kind)}", {message})'
 
     def error_from_to_string(self, value: str, *, kind: str = "value") -> str:
         return self.error_new(f"{value}.to_string()", kind=kind)
@@ -852,7 +1013,9 @@ class _FunctionRenderer:
                 "value": "PyValueError",
             }.get(kind, "PyValueError")
             return f".map_err(|err| pyo3::exceptions::{exception}::new_err(err.to_string()))?"
-        return ".map_err(|err| RextioError::new(err.to_string()))?"
+        return (
+            f'.map_err(|err| RextioError::new("{_crate_exception_name(kind)}", err.to_string()))?'
+        )
 
     def next_temp(self, prefix: str) -> str:
         self.temp_index += 1
@@ -1033,13 +1196,13 @@ class _FunctionRenderer:
         """Mode-aware constructor expression for a Python ``IndexError``."""
         if self.mode == "pyo3":
             return 'pyo3::exceptions::PyIndexError::new_err("list index out of range")'
-        return 'RextioError::new("list index out of range")'
+        return 'RextioError::new("IndexError", "list index out of range")'
 
     def _key_error_expr(self, key: str) -> str:
         """Mode-aware constructor expression for a Python ``KeyError``."""
         if self.mode == "pyo3":
             return f"pyo3::exceptions::PyKeyError::new_err({key}.clone())"
-        return f'RextioError::new(format!("key not found: {{:?}}", {key}))'
+        return f'RextioError::new("KeyError", format!("key not found: {{:?}}", {key}))'
 
     def render_checked_int_binop(self, expr: BinaryOpIR) -> str | None:
         """Render an i64 ``+``/``-``/``*``/``%`` as checked arithmetic, or ``None``.
@@ -1079,6 +1242,8 @@ class _FunctionRenderer:
             return None
         if not isinstance(self.infer_expr_type(expr.value), RxtInt):
             return None
+        if isinstance(expr.value, LiteralIR) and expr.value.value == 2**63:
+            return "i64::MIN"
         value = strip_wrapping_parens(self.render_expr(expr.value))
         self.used_helpers.add("neg")
         return f"__rextio_checked_neg({value})?"
@@ -1324,7 +1489,80 @@ class _FunctionRenderer:
         if rust_name is not None:
             args = ", ".join(self.render_call_arg(arg) for arg in expr.args)
             return f"{rust_name}({args})?"
+        if expr.function in self.delegated_return_types:
+            return self._render_delegated_call(expr)
         raise RustCodegenError(f"unsupported call during Rust codegen: {expr.function}")
+
+    def _render_delegated_call(self, expr: CallIR) -> str:
+        """Render a call delegated to the external CPython dispatcher (Phase 2).
+
+        Binds each argument to a temporary, serializes them to ``serde_json::Value``
+        (``to_value`` rather than the ``json!`` macro, which would parse an argument
+        block as a JSON object), sends the call through ``__rextio_call_python``,
+        and converts the JSON result to the callee's Rust return type. The callee
+        runs in real CPython, so the value matches CPython.
+        """
+        lines: list[str] = []
+        json_values: list[str] = []
+        to_value = (
+            'serde_json::to_value(&{name})'
+            '.map_err(|e| RextioError::new("RuntimeError", e.to_string()))?'
+        )
+        for arg in expr.args:
+            arg_type = self.infer_expr_type(arg)
+            if isinstance(arg, LiteralIR) and arg.value is None:
+                # Only a literal `None` may skip evaluation: it has no effects and no
+                # typed Rust rendering (a bare `let x = None;` would not infer).
+                json_values.append("serde_json::Value::Null")
+                continue
+            name = self.next_temp("__rextio_darg")
+            lines.append(f"let {name} = {strip_wrapping_parens(self.render_call_arg(arg))};")
+            if isinstance(arg_type, RxtNone):
+                # A non-literal `None`-typed argument (e.g. a delegated `-> None`
+                # call) must still be EXECUTED for its side effects; the bound unit
+                # value then serializes to JSON null (`to_value(&()) == Null`).
+                # Short-circuiting it to `Value::Null` silently elided the callee.
+                json_values.append(to_value.format(name=name))
+                continue
+            if isinstance(arg_type, RxtFloat):
+                # serde_json serializes a non-finite float to JSON null silently;
+                # guard it so a NaN/Inf argument is a clean error, never a silent
+                # None on the Python side of the wire. INVARIANT: delegation only
+                # authorizes a float arg the analyzer typed `float`, and a value the
+                # generator can lower to a native `f64` is typed RxtFloat here too, so
+                # the guard covers every non-finite float that can actually reach the
+                # wire in the current subset (no native producer yields NaN/Inf yet).
+                json_values.append(to_value.format(name=f"__rextio_finite({name})?"))
+            else:
+                json_values.append(to_value.format(name=name))
+        json_args = ", ".join(json_values)
+        lines.append(
+            f'let __rextio_dj = __rextio_call_python("{expr.function}", vec![{json_args}])?;'
+        )
+        conversion = self._convert_json_value(
+            "__rextio_dj", self.delegated_return_types[expr.function], expr.function
+        )
+        return "{ " + " ".join(lines) + " " + conversion + " }"
+
+    def _convert_json_value(self, value_var: str, type_name: str, qualname: str) -> str:
+        """Rust expression converting the already-bound JSON ``value_var`` to a type."""
+        err = (
+            f'RextioError::new("TypeError", '
+            f'"{qualname} returned a value not convertible to {type_name}")'
+        )
+        scalar = {"int": "as_i64", "float": "as_f64", "bool": "as_bool"}.get(type_name)
+        if scalar is not None:
+            return f"{value_var}.{scalar}().ok_or_else(|| {err})?"
+        if type_name == "str":
+            return f"{value_var}.as_str().map(|s| s.to_string()).ok_or_else(|| {err})?"
+        if type_name == "None":
+            # A None-returning delegated call is a statement; discard the result.
+            return "()"
+        # Only immutable scalars are delegatable wire types (the analyzer's
+        # `_is_delegatable_return_type` enforces this). Reject anything else here too,
+        # so if that gate ever regressed, a container return would be a clean build
+        # failure rather than a silent by-value copy that severs CPython aliasing.
+        raise RustCodegenError(f"delegated call return type is not supported: {type_name}")
 
     def render_sorted(self, expr: ExprIR) -> str:
         # `sorted` is only admitted for totally-ordered item types (int/bool/str);
@@ -1661,6 +1899,11 @@ class _FunctionRenderer:
             return RxtStr()
         if expr.function == "base64.b64encode":
             return RxtBytes()
+        if expr.function in self.delegated_return_types:
+            # A delegated call's result type comes from the callee's annotation, so
+            # a local assigned from it is typed correctly (e.g. its `print` formats
+            # a `str` with `{}`, not Debug `{:?}`).
+            return type_from_string(self.delegated_return_types[expr.function])
         return self.native_return_types.get(expr.function)
 
     def render_format_macro(
@@ -1722,6 +1965,7 @@ def _render_function(
     native_return_types: dict[str, RxtType],
     mode: str,
     used_helpers: set[str] | None = None,
+    delegated_return_types: dict[str, str] | None = None,
 ) -> str:
     return _FunctionRenderer(
         function,
@@ -1730,6 +1974,7 @@ def _render_function(
         native_return_types,
         mode,
         used_helpers=used_helpers,
+        delegated_return_types=delegated_return_types,
     ).render()
 
 

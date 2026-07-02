@@ -69,7 +69,11 @@ Do not implement these in 0.1.0 alpha unless explicitly requested:
 * JIT backends beyond the explicit experimental Cranelift native-side path
 * LLVM integration
 * MLIR
-* General-purpose executable packaging beyond zipapp and Nuitka
+* General-purpose executable packaging beyond zipapp, Nuitka, and the native
+  Rust binary (`--executable-backend=rust`; its entrypoint is a direct-native
+  `def main(argv: list[str]) -> int`, and a call it makes to a project fallback
+  function is delegated to an external CPython subprocess rather than embedding
+  libpython in-process)
 * Third-party framework conversion
 * ORM conversion
 * Bundled third-party package plugin rules

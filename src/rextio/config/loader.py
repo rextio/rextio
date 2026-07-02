@@ -40,7 +40,7 @@ CONFIG_KEYS = {
     "plugins": {"enabled"},
     "imports": {"default_external_policy", "packages"},
     "jit": {"enabled", "backend", "hot_threshold"},
-    "executable": {"entrypoint", "name", "backend", "nuitka_mode"},
+    "executable": {"entrypoint", "name", "backend", "nuitka_mode", "python", "hybrid_runtime"},
     "policy": {
         "native_marker",
         "require_type_hints",
@@ -73,6 +73,8 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_EXECUTABLE_NAME": ("executable", "name", "optional_string"),
     "REXTIO_EXECUTABLE_BACKEND": ("executable", "backend", "string"),
     "REXTIO_NUITKA_MODE": ("executable", "nuitka_mode", "string"),
+    "REXTIO_EXECUTABLE_PYTHON": ("executable", "python", "optional_string"),
+    "REXTIO_HYBRID_RUNTIME": ("executable", "hybrid_runtime", "string"),
     "REXTIO_NATIVE_MARKER": ("policy", "native_marker", "string"),
     "REXTIO_REQUIRE_TYPE_HINTS": ("policy", "require_type_hints", "boolean"),
     "REXTIO_ALLOW_DYNAMIC_FEATURES": ("policy", "allow_dynamic_features", "boolean"),
@@ -229,6 +231,8 @@ def _validate_config_values(
     _require_non_negative_int("jit", "hot_threshold", jit["hot_threshold"])
     _require_optional_string("executable", "entrypoint", executable["entrypoint"])
     _require_optional_string("executable", "name", executable["name"])
+    _require_optional_string("executable", "python", executable["python"])
+    _require_value("executable", "hybrid_runtime", executable["hybrid_runtime"], {"source", "nuitka"})
     _require_string("executable", "backend", executable["backend"])
     _require_string("executable", "nuitka_mode", executable["nuitka_mode"])
     _require_string("policy", "native_marker", policy["native_marker"])
@@ -249,7 +253,7 @@ def _validate_config_values(
         {"analyze", "fallback", "try-native"},
     )
     _require_value("jit", "backend", jit["backend"], {"cranelift"})
-    _require_value("executable", "backend", executable["backend"], {"zipapp", "nuitka"})
+    _require_value("executable", "backend", executable["backend"], {"zipapp", "nuitka", "rust"})
     _require_value("executable", "nuitka_mode", executable["nuitka_mode"], {"standalone", "onefile"})
     _require_value("policy", "native_marker", policy["native_marker"], {"auto", "decorator"})
     if policy["require_type_hints"] is not True:

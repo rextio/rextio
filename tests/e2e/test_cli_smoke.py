@@ -7,6 +7,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -20,7 +22,12 @@ def test_editable_install_cli_smoke(
     python = _venv_bin(venv_dir, "python")
     rextio = _venv_bin(venv_dir, "rextio")
 
-    _run([str(python), "-m", "pip", "install", "-e", str(REPO_ROOT)], env=env)
+    try:
+        _run([str(python), "-m", "pip", "install", "-e", str(REPO_ROOT)], env=env)
+    except subprocess.CalledProcessError as exc:
+        if _is_offline_build_dependency_failure(exc):
+            pytest.skip("editable install needs setuptools build dependency, unavailable offline")
+        raise
 
     project_root = tmp_path / "smoke_project"
     _run([str(rextio), "init", "--project-root", str(project_root)], env=env)
@@ -130,4 +137,12 @@ def _run(command: list[str], env: dict[str, str]) -> subprocess.CompletedProcess
         check=True,
         capture_output=True,
         text=True,
+    )
+
+
+def _is_offline_build_dependency_failure(exc: subprocess.CalledProcessError) -> bool:
+    stderr = exc.stderr or ""
+    return (
+        "Could not find a version that satisfies the requirement setuptools" in stderr
+        and "Failed to establish a new connection" in stderr
     )

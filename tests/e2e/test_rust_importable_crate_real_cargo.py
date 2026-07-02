@@ -79,8 +79,9 @@ fn main() {
         encoding="utf-8",
     )
 
+    cargo = shutil.which("cargo") or "cargo"
     completed = subprocess.run(
-        [shutil.which("cargo") or "cargo", "run", "--quiet"],
+        [cargo, "run", "--quiet"],
         cwd=consumer,
         check=False,
         capture_output=True,
