@@ -152,9 +152,11 @@ def external_accelerator_for_source(source: str) -> str | None:
     """Return the external accelerator a module's top-level functions use, or None.
 
     A lightweight, self-contained scan for build backends that only have the
-    generated source text (no project analysis): top-level absolute imports are
-    collected and each top-level function's decorators are resolved through
-    them. Used to keep externally-accelerated modules OUT of Nuitka compilation
+    generated source text (no project analysis): absolute imports are collected
+    from the module top level and from top-level ``try``/``if`` bodies (the
+    optional-dependency guard pattern), ``from numba import *`` exposes the
+    known entry points, and functions are scanned at the top level and inside
+    class bodies. Used to keep externally-accelerated modules OUT of Nuitka compilation
     (the tool needs the original bytecode at runtime). Without project context a
     project-local module named ``numba`` would also match here - that is the
     safe direction (the module merely stays uncompiled plain Python).
@@ -163,21 +165,54 @@ def external_accelerator_for_source(source: str) -> str | None:
         tree = ast.parse(source)
     except SyntaxError:
         return None
+
     imports: dict[str, str] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                visible = alias.asname or alias.name.split(".", 1)[0]
-                imports[visible] = alias.name
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            for alias in node.names:
-                visible = alias.asname or alias.name
-                imports[visible] = f"{node.module}.{alias.name}"
+
+    def collect_imports(statements: list[ast.stmt]) -> None:
+        for node in statements:
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    visible = alias.asname or alias.name.split(".", 1)[0]
+                    imports[visible] = alias.name
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                for alias in node.names:
+                    if alias.name == "*":
+                        # `from numba import *`: make the known accelerator
+                        # entry points visible under their bare names.
+                        for qualname in _EXTERNAL_ACCELERATOR_QUALNAMES:
+                            module, _, attr = qualname.rpartition(".")
+                            if module == node.module:
+                                imports[attr] = qualname
+                        continue
+                    visible = alias.asname or alias.name
+                    imports[visible] = f"{node.module}.{alias.name}"
+            elif isinstance(node, ast.Try):
+                # The common optional-dependency guard:
+                # `try: from numba import njit / except ImportError: stub`.
+                # If numba is absent at runtime the stubbed function is plain
+                # (compiling would be harmless), but if it IS present the
+                # compiled module breaks - so treat the guarded import as
+                # present (the skip is the safe direction either way).
+                collect_imports(node.body)
+            elif isinstance(node, ast.If):
+                collect_imports(node.body)
+                collect_imports(node.orelse)
+
+    collect_imports(tree.body)
     if not imports:
         return None
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            tool = external_accelerator_for_function(node, imports)
-            if tool is not None:
-                return tool
-    return None
+
+    def scan_functions(statements: list[ast.stmt]) -> str | None:
+        for node in statements:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                tool = external_accelerator_for_function(node, imports)
+                if tool is not None:
+                    return tool
+            elif isinstance(node, ast.ClassDef):
+                # Accelerated methods (incl. stacked @staticmethod @njit).
+                tool = scan_functions(node.body)
+                if tool is not None:
+                    return tool
+        return None
+
+    return scan_functions(tree.body)

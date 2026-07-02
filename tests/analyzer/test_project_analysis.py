@@ -4697,3 +4697,80 @@ def helper(x: int) -> int:
     analysis = analyze_project(tmp_path, native_marker="auto")
     helper = next(f for m in analysis.modules for f in m.functions if f.name == "helper")
     assert helper.external_accelerator is None
+
+@pytest.mark.parametrize(
+    ("shape", "source"),
+    [
+        (
+            "guarded_import",
+            """
+try:
+    from numba import njit
+except ImportError:
+    def njit(func):
+        return func
+
+@njit
+def helper(x: int) -> int:
+    return x + 1
+""",
+        ),
+        (
+            "star_import",
+            """
+from numba import *
+
+@njit
+def helper(x: int) -> int:
+    return x + 1
+""",
+        ),
+        (
+            "class_method",
+            """
+import numba
+
+class Kernels:
+    @staticmethod
+    @numba.njit
+    def helper(x: int) -> int:
+        return x + 1
+""",
+        ),
+        (
+            "conditional_import",
+            """
+if True:
+    import numba
+
+@numba.njit
+def helper(x: int) -> int:
+    return x + 1
+""",
+        ),
+    ],
+)
+def test_source_scan_detects_indirect_numba_shapes(shape: str, source: str) -> None:
+    # The build backends only have the generated source text: the scan must see
+    # through the common optional-dependency guard (`try: from numba import
+    # njit`), `from numba import *`, class-contained methods, and conditional
+    # imports - otherwise Nuitka compiles the module and the accelerated
+    # function dies at first call despite the failure being knowable here.
+    from rextio.analyzer.native_marker import external_accelerator_for_source
+
+    assert external_accelerator_for_source(source) == "numba", shape
+
+
+def test_source_scan_ignores_local_decorator_without_numba_import() -> None:
+    # A bare local `njit` stub with no numba import anywhere is user code.
+    from rextio.analyzer.native_marker import external_accelerator_for_source
+
+    source = """
+def njit(func):
+    return func
+
+@njit
+def helper(x: int) -> int:
+    return x + 1
+"""
+    assert external_accelerator_for_source(source) is None
