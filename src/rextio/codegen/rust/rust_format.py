@@ -78,10 +78,19 @@ def render_literal(value: object) -> str:
     return repr(value)
 
 
-def python_logging_format_to_rust(value: str) -> tuple[str, int] | None:
-    """Translate a printf-style logging format into a Rust format string + arg count, or None."""
-    output: list[str] = []
-    placeholders = 0
+def python_logging_format_segments(value: str) -> tuple[list[str], list[str]] | None:
+    """Split a printf-style logging format into literal segments + specifiers.
+
+    Returns ``(segments, specifiers)`` where ``segments`` has exactly one more
+    element than ``specifiers`` and the original string is
+    ``segments[0] + %spec[0] + segments[1] + ...``. Segment text is already
+    escaped for use inside a Rust format string (`{`/`}` doubled). Returns
+    ``None`` for conversions outside the supported ``%s %d %i %f %r`` set, so
+    the caller can fall back to print-style rendering.
+    """
+    segments: list[str] = []
+    specifiers: list[str] = []
+    current: list[str] = []
     index = 0
     while index < len(value):
         char = value[index]
@@ -90,28 +99,25 @@ def python_logging_format_to_rust(value: str) -> tuple[str, int] | None:
                 return None
             specifier = value[index + 1]
             if specifier == "%":
-                output.append("%")
+                current.append("%")
                 index += 2
                 continue
-            if specifier in {"s", "d", "i", "f"}:
-                output.append("{}")
-                placeholders += 1
-                index += 2
-                continue
-            if specifier == "r":
-                output.append("{:?}")
-                placeholders += 1
+            if specifier in {"s", "d", "i", "f", "r"}:
+                segments.append("".join(current))
+                current = []
+                specifiers.append(specifier)
                 index += 2
                 continue
             return None
         if char == "{":
-            output.append("{{")
+            current.append("{{")
         elif char == "}":
-            output.append("}}")
+            current.append("}}")
         else:
-            output.append(char)
+            current.append(char)
         index += 1
-    return "".join(output), placeholders
+    segments.append("".join(current))
+    return segments, specifiers
 
 
 def strip_wrapping_parens(value: str) -> str:

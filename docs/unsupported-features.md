@@ -370,18 +370,11 @@ they differ from CPython in a narrow, documented way. These are accepted trade-
 offs for 0.1.0 alpha (the alternative being a Python fallback for a common
 operation or replicating a large amount of CPython runtime formatting). All
 other observed divergences are treated as bugs and either fixed or rejected to
-fallback.
+fallback. (`print`/`logging` of `bool` and `float`
+formerly appeared here; both are now lowered to CPython-exact text —
+`True`/`False` and shortest correctly-rounded float repr with CPython's
+thresholds, `nan`/`inf` spellings, and `e+NN` exponents.)
 
-- **`print` / `logging` of a `float`.** A float is formatted with Rust's `{:?}`
-  (Debug), which matches CPython's `float` repr for the common cases (`print(1.0)`
-  writes `1.0`, and large/small magnitudes use scientific notation), but still
-  differs on two narrow points: the NaN spelling (`NaN` vs CPython `nan`) and the
-  exponent format (`1e16` / `1e-5` vs CPython `1e+16` / `1e-05`). Computed values
-  are unaffected — only the textual stdout/log output can differ. int and str
-  format identically.
-- **`print` / `logging` of a `bool`.** Rust prints `true`/`false` where CPython
-  prints `True`/`False`. Same class as the float case: only the textual output
-  differs, and the boolean value itself is unaffected.
 - **`bytes.decode()` on invalid UTF-8.** The native path raises `ValueError`
   where CPython raises `UnicodeDecodeError`. `UnicodeDecodeError` is a subclass
   of `ValueError`, so `except ValueError` still catches it; only code that

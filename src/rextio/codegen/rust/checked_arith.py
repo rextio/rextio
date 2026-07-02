@@ -13,7 +13,7 @@ from __future__ import annotations
 _CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
 _CHECKED_HELPER_ORDER = (
     "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i",
-    "mnonneg", "mpositive", "munit", "mlogbase",
+    "mnonneg", "mpositive", "munit", "mlogbase", "repr_float",
 )
 
 
@@ -49,6 +49,68 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
     lines: list[str] = []
     for name in _CHECKED_HELPER_ORDER:
         if name not in used:
+            continue
+        if name == "repr_float":
+            # CPython float repr, for print/logging of floats: shortest
+            # roundtrip digits (Rust {:?} provides them), positional form for
+            # -4 <= decimal exponent < 16, otherwise scientific with a signed
+            # >=2-digit exponent, and lowercase nan/inf spellings. This is what
+            # str()/repr() of a float produce in CPython.
+            lines.extend(
+                [
+                    "fn __rextio_repr_float(value: f64) -> String {",
+                    '    if value.is_nan() { return "nan".to_string(); }',
+                    "    if value.is_infinite() {",
+                    '        return if value > 0.0 { "inf".to_string() } else { "-inf".to_string() };',
+                    "    }",
+                    "    if value == 0.0 {",
+                    '        return if value.is_sign_negative() { "-0.0".to_string() } else { "0.0".to_string() };',
+                    "    }",
+                    "    let magnitude = value.abs();",
+                    "    // Shortest correctly-rounded digits, CPython's repr rule: the",
+                    "    // smallest precision whose round-half-even rendering parses back",
+                    "    // to the same f64. (Rust's {:?} also emits shortest-roundtrip",
+                    "    // digits, but its tie-breaking can pick a different last digit",
+                    "    // than CPython's - found by fuzzing - so derive the digits the",
+                    "    // same way CPython does instead.)",
+                    "    let mut sig = String::new();",
+                    "    let mut e10: i32 = 0;",
+                    "    for precision in 0..=17 {",
+                    '        let candidate = format!("{:.*e}", precision, magnitude);',
+                    "        if candidate.parse::<f64>() == Ok(magnitude) {",
+                    "            let (mantissa, exp) = candidate.split_once('e').expect(\"exp form\");",
+                    "            e10 = exp.parse::<i32>().expect(\"exp digits\");",
+                    "            let digits: String = mantissa.chars().filter(|c| *c != '.').collect();",
+                    "            let trimmed = digits.trim_end_matches('0');",
+                    '            sig = if trimmed.is_empty() { "0".to_string() } else { trimmed.to_string() };',
+                    "            break;",
+                    "        }",
+                    "    }",
+                    "    let sig = sig.as_str();",
+                    '    let sign = if value < 0.0 { "-" } else { "" };',
+                    "    if (-4..16).contains(&e10) {",
+                    "        if e10 >= 0 {",
+                    "            let int_len = (e10 + 1) as usize;",
+                    "            if sig.len() > int_len {",
+                    '                format!("{}{}.{}", sign, &sig[..int_len], &sig[int_len..])',
+                    "            } else {",
+                    '                format!("{}{}{}.0", sign, sig, "0".repeat(int_len - sig.len()))',
+                    "            }",
+                    "        } else {",
+                    '            format!("{}0.{}{}", sign, "0".repeat((-e10 - 1) as usize), sig)',
+                    "        }",
+                    "    } else {",
+                    "        let mantissa_out = if sig.len() > 1 {",
+                    '            format!("{}.{}", &sig[..1], &sig[1..])',
+                    "        } else {",
+                    "            sig.to_string()",
+                    "        };",
+                    '        format!("{}{}e{}{:02}", sign, mantissa_out, if e10 < 0 { "-" } else { "+" }, e10.abs())',
+                    "    }",
+                    "}",
+                    "",
+                ]
+            )
             continue
         fn = f"__rextio_checked_{name}"
         if name in _CHECKED_BINOP_METHOD:

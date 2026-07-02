@@ -1807,3 +1807,34 @@ def test_crate_exception_name_rejects_unmapped_kind() -> None:
 
     with pytest.raises(RustCodegenError, match="unmapped crate error kind"):
         _crate_exception_name("not-a-kind")
+
+def test_print_and_logging_format_bool_and_float_like_cpython(tmp_path: Path) -> None:
+    # print/logging of bool and float must be textually CPython-exact: bools
+    # render True/False (Rust Display gives true/false) and floats go through
+    # __rextio_repr_float (shortest correctly-rounded digits, CPython repr
+    # thresholds, lowercase nan, e+NN exponents). %f is fixed six decimals and
+    # %d of a float truncates through the guarded f2i conversion.
+    source = tmp_path / "app.py"
+    source.write_text(
+        """
+import rextio
+import logging
+
+logger = logging.getLogger(__name__)
+
+@rextio.native
+def emit(flag: bool, x: float, n: int) -> None:
+    print(flag, x, n)
+    logger.info("f=%s x=%s pct=%f d=%d", flag, x, x, x)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    code = generate_rust_module(lower_project(analysis))
+
+    assert 'if flag.clone() { "True" } else { "False" }' in code
+    assert "__rextio_repr_float(x.clone())" in code
+    assert "fn __rextio_repr_float" in code
+    assert "{:.6}" in code  # %f
+    assert "__rextio_checked_f2i((x.clone()).trunc())?" in code  # %d of float
+    assert 'println!("{} {} {}"' in code

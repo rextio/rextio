@@ -19,7 +19,7 @@ from rextio.codegen.rust.rust_format import (
 )
 from rextio.codegen.rust.rust_format import (
     default_return,
-    python_logging_format_to_rust,
+    python_logging_format_segments,
     render_literal,
     rust_string_literal,
     strip_expr_if_safe,
@@ -1811,10 +1811,7 @@ class _FunctionRenderer:
                 return f"{macro}()"
             return f"{macro}(\"\")"
         placeholders = " ".join(self.format_placeholder(arg) for arg in args)
-        rendered_args = ", ".join(
-            strip_wrapping_parens(self.render_call_arg(arg))
-            for arg in args
-        )
+        rendered_args = ", ".join(self.render_format_arg(arg) for arg in args)
         return f"{macro}({rust_string_literal(placeholders)}, {rendered_args})"
 
     def render_logging_macro(self, macro: str, args: list[ExprIR]) -> str:
@@ -1823,30 +1820,74 @@ class _FunctionRenderer:
             and isinstance(args[0], LiteralIR)
             and isinstance(args[0].value, str)
         ):
-            converted = python_logging_format_to_rust(args[0].value)
+            converted = python_logging_format_segments(args[0].value)
             if converted is not None:
-                format_string, placeholder_count = converted
-                if placeholder_count == len(args) - 1:
-                    rendered_args = ", ".join(
-                        strip_wrapping_parens(self.render_call_arg(arg))
-                        for arg in args[1:]
-                    )
-                    return f"{macro}({rust_string_literal(format_string)}, {rendered_args})"
+                segments, specifiers = converted
+                if len(specifiers) == len(args) - 1:
+                    parts: list[str] = [segments[0]]
+                    rendered_args: list[str] = []
+                    for spec, arg, segment in zip(
+                        specifiers, args[1:], segments[1:], strict=True
+                    ):
+                        arg_type = self.infer_expr_type(arg)
+                        if spec == "f":
+                            # CPython %f is fixed six decimals; ints promote.
+                            parts.append("{:.6}")
+                            rendered = strip_wrapping_parens(self.render_call_arg(arg))
+                            if isinstance(arg_type, RxtFloat):
+                                rendered_args.append(rendered)
+                            else:
+                                rendered_args.append(f"(({rendered}) as f64)")
+                        elif spec in {"d", "i"} and isinstance(arg_type, RxtFloat):
+                            # CPython %d truncates a float toward zero; guard the
+                            # conversion so an out-of-i64-range value raises
+                            # instead of silently saturating.
+                            self.used_helpers.add("f2i")
+                            rendered = strip_wrapping_parens(self.render_call_arg(arg))
+                            rendered_args.append(
+                                f"__rextio_checked_f2i(({rendered}).trunc())?"
+                            )
+                            parts.append("{}")
+                        elif spec == "r" and not isinstance(
+                            arg_type, (RxtBool, RxtFloat)
+                        ):
+                            parts.append("{:?}")
+                            rendered_args.append(
+                                strip_wrapping_parens(self.render_call_arg(arg))
+                            )
+                        else:
+                            # %s / %d of the matching scalar, and %r of
+                            # bool/float (repr == str for those two).
+                            parts.append(self.format_placeholder(arg))
+                            rendered_args.append(self.render_format_arg(arg))
+                        parts.append(segment)
+                    format_string = "".join(parts)
+                    joined = ", ".join(rendered_args)
+                    return f"{macro}({rust_string_literal(format_string)}, {joined})"
         return self.render_format_macro(macro, args, allow_empty=False)
+
+    def render_format_arg(self, expr: ExprIR) -> str:
+        """Render a print/logging argument with CPython textual semantics.
+
+        A bool must print `True`/`False` (Rust Display gives `true`/`false`)
+        and a float must print CPython's repr (lowercase `nan`, `e+NN`
+        exponents, `.0` suffix) - both are wrapped here so the placeholder can
+        stay `{}`.
+        """
+        expr_type = self.infer_expr_type(expr)
+        rendered = self.render_call_arg(expr)
+        if isinstance(expr_type, RxtBool):
+            return f'(if {rendered} {{ "True" }} else {{ "False" }})'
+        if isinstance(expr_type, RxtFloat):
+            self.used_helpers.add("repr_float")
+            return f"__rextio_repr_float({strip_wrapping_parens(rendered)})"
+        return strip_wrapping_parens(rendered)
 
     def format_placeholder(self, expr: ExprIR) -> str:
         expr_type = self.infer_expr_type(expr)
-        # KNOWN LIMITATION (documented in docs/unsupported-features.md, "Accepted
-        # Native Semantic Divergences"): the textual print/log form of some scalars
-        # differs from CPython. A float uses Rust Debug (`{:?}`), which matches
-        # CPython's float repr for the common cases (`1.0` -> "1.0", scientific
-        # notation for large/small magnitudes) but still differs on NaN casing
-        # ("NaN" vs "nan") and the exponent format ("1e16"/"1e-5" vs the CPython
-        # "1e+16"/"1e-05"). A bool prints lowercase ("true"/"false") where CPython
-        # prints "True"/"False". int and str format identically to CPython.
-        if isinstance(expr_type, RxtFloat):
-            return "{:?}"
-        if isinstance(expr_type, (RxtInt, RxtBool, RxtStr)):
+        # bool and float args are wrapped by `render_format_arg` into CPython
+        # textual form (True/False, repr_float), so they use plain `{}` here.
+        if isinstance(expr_type, (RxtInt, RxtBool, RxtStr, RxtFloat)):
             return "{}"
         return "{:?}"
 
