@@ -1900,7 +1900,14 @@ class _FunctionRenderer:
             # str() semantics: at runtime an Optional IS its payload (or
             # None), so a str payload prints BARE - only under repr (%r,
             # nested-in-container) is it quoted. Every other payload type has
-            # str() == repr().
+            # str() == repr(). A nested Optional payload is rejected by the
+            # analyzer in both spellings (Optional[Optional[str]] and
+            # `str | None | None`); guard the invariant explicitly.
+            if isinstance(expr_type.item_type, RxtOptional):
+                raise RustCodegenError(
+                    "nested Optional has no native text lowering "
+                    "(analyzer gate out of sync)"
+                )
             payload = self.next_temp("__rextio_some")
             if isinstance(expr_type.item_type, RxtStr):
                 inner = f"{payload}.clone()"
