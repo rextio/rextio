@@ -126,3 +126,50 @@ def _cpython_index_error(xs: list, needle: object) -> ValueError:
     except ValueError as exc:
         return exc
     raise AssertionError("needle unexpectedly present")
+
+
+@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for native e2e")
+def test_native_print_of_containers_matches_cpython(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # Containers compose CPython repr recursively (quoted strings, True/False,
+    # float repr, nested lists, tuples, Optional None).
+    (tmp_path / "rextio.toml").write_text(
+        """
+[rust]
+build_tool = "cargo"
+""",
+        encoding="utf-8",
+    )
+    source = tmp_path / "src" / "containerfmt_app" / "render.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def show(words: list[str], flags: list[bool], values: list[float], nested: list[list[int]], pair: tuple[int, str], opt: int | None) -> None:
+    print(words, flags, values, nested, pair, opt)
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython"])
+    assert exit_code == 0
+
+    monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "build" / "python"))
+    importlib.invalidate_caches()
+    module = importlib.import_module("containerfmt_app.render")
+
+    cases = [
+        (["a", "it's", 'say "hi"', ""], [True, False], [1.0, 1e16, -0.0], [[1, 2], []], (7, "x"), None),
+        ([], [], [], [], (0, ""), 5),
+    ]
+    capfd.readouterr()
+    for words, flags, values, nested, pair, opt in cases:
+        module.show(words, flags, values, nested, pair, opt)
+        captured = capfd.readouterr()
+        expected = f"{words} {flags} {values} {nested} {pair} {opt}\n"
+        assert captured.out == expected, (words, flags, values, nested, pair, opt)

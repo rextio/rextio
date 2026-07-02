@@ -19,7 +19,6 @@ from rextio.codegen.rust.rust_format import (
 )
 from rextio.codegen.rust.rust_format import (
     default_return,
-    python_logging_format_segments,
     render_literal,
     rust_string_literal,
     strip_expr_if_safe,
@@ -29,6 +28,7 @@ from rextio.codegen.rust.rust_format import (
     indent as _indent,
 )
 from rextio.codegen.rust.type_map import rust_type
+from rextio.analyzer.logging_format import python_logging_format_segments
 from rextio.ir.nodes import (
     AppendIR,
     AssignIR,
@@ -1843,34 +1843,37 @@ class _FunctionRenderer:
                         specifiers, args[1:], segments[1:], strict=True
                     ):
                         arg_type = self.infer_expr_type(arg)
+                        rendered = strip_wrapping_parens(self.render_call_arg(arg))
                         if spec == "f":
-                            # CPython %f is fixed six decimals; ints promote.
+                            # Analyzer admits only float for %f (CPython %f of
+                            # a bool has no Rust cast, and a large int would
+                            # round through f64).
+                            if not isinstance(arg_type, RxtFloat):
+                                raise RustCodegenError(
+                                    f"%{spec} logging argument must be float, got "
+                                    f"{arg_type!r} (analyzer gate out of sync)"
+                                )
                             parts.append("{:.6}")
-                            rendered = strip_wrapping_parens(self.render_call_arg(arg))
-                            if isinstance(arg_type, RxtFloat):
+                            rendered_args.append(rendered)
+                        elif spec in {"d", "i"}:
+                            # Analyzer admits int and bool ("%d" % True == "1").
+                            if isinstance(arg_type, RxtBool):
+                                rendered_args.append(f"(({rendered}) as i64)")
+                            elif isinstance(arg_type, RxtInt):
                                 rendered_args.append(rendered)
                             else:
-                                rendered_args.append(f"(({rendered}) as f64)")
-                        elif spec in {"d", "i"} and isinstance(arg_type, RxtFloat):
-                            # CPython %d truncates a float toward zero; guard the
-                            # conversion so an out-of-i64-range value raises
-                            # instead of silently saturating.
-                            self.used_helpers.add("f2i")
-                            rendered = strip_wrapping_parens(self.render_call_arg(arg))
-                            rendered_args.append(
-                                f"__rextio_checked_f2i(({rendered}).trunc())?"
-                            )
+                                raise RustCodegenError(
+                                    f"%{spec} logging argument must be int or bool, "
+                                    f"got {arg_type!r} (analyzer gate out of sync)"
+                                )
                             parts.append("{}")
-                        elif spec == "r" and not isinstance(
-                            arg_type, (RxtBool, RxtFloat)
-                        ):
-                            parts.append("{:?}")
-                            rendered_args.append(
-                                strip_wrapping_parens(self.render_call_arg(arg))
-                            )
+                        elif spec == "r":
+                            # CPython repr semantics: quoted strings, True/False,
+                            # float repr, and recursively composed containers.
+                            parts.append("{}")
+                            rendered_args.append(self.render_repr_arg(arg_type, rendered))
                         else:
-                            # %s / %d of the matching scalar, and %r of
-                            # bool/float (repr == str for those two).
+                            # %s: str() semantics (same as print).
                             parts.append(self.format_placeholder(arg))
                             rendered_args.append(self.render_format_arg(arg))
                         parts.append(segment)
@@ -1880,29 +1883,120 @@ class _FunctionRenderer:
         return self.render_format_macro(macro, args, allow_empty=False)
 
     def render_format_arg(self, expr: ExprIR) -> str:
-        """Render a print/logging argument with CPython textual semantics.
+        """Render a print/logging argument with CPython str() semantics.
 
-        A bool must print `True`/`False` (Rust Display gives `true`/`false`)
-        and a float must print CPython's repr (lowercase `nan`, `e+NN`
-        exponents, `.0` suffix) - both are wrapped here so the placeholder can
-        stay `{}`.
+        A bool prints `True`/`False` (Rust Display gives `true`/`false`), a
+        float prints CPython's repr (lowercase `nan`, `e+NN` exponents, `.0`
+        suffix), containers compose their CPython repr recursively; str and
+        int pass through (identical text).
         """
         expr_type = self.infer_expr_type(expr)
-        rendered = self.render_call_arg(expr)
+        rendered = strip_wrapping_parens(self.render_call_arg(expr))
+        if isinstance(expr_type, (RxtInt, RxtStr)) or expr_type is None:
+            return rendered
+        if isinstance(expr_type, (RxtBool, RxtFloat, RxtList, RxtTuple, RxtOptional)):
+            return self.render_repr_arg(expr_type, rendered)
+        raise RustCodegenError(
+            f"print/logging argument type {expr_type!r} has no CPython-exact "
+            "native text form (analyzer gate out of sync)"
+        )
+
+    def render_repr_arg(self, expr_type: RxtType | None, rendered: str) -> str:
+        """Return a Rust String expression producing CPython repr() text for a value.
+
+        str() and repr() agree for every type here except str itself (print of
+        a bare str has no quotes; a str inside a container or under %r is
+        quoted), which `render_format_arg` handles by passing bare str args
+        through directly.
+        """
+        if isinstance(expr_type, RxtInt) or expr_type is None:
+            return rendered
         if isinstance(expr_type, RxtBool):
             return f'(if {rendered} {{ "True" }} else {{ "False" }})'
         if isinstance(expr_type, RxtFloat):
             self.used_helpers.add("repr_float")
-            return f"__rextio_repr_float({strip_wrapping_parens(rendered)})"
-        return strip_wrapping_parens(rendered)
+            return f"__rextio_repr_float({rendered})"
+        if isinstance(expr_type, RxtStr):
+            self.used_helpers.add("repr_str")
+            return f"__rextio_repr_str(&{rendered})"
+        if isinstance(expr_type, (RxtList, RxtTuple, RxtOptional)):
+            return self.render_container_repr(expr_type, rendered, by_ref=False)
+        raise RustCodegenError(
+            f"repr of type {expr_type!r} has no CPython-exact native lowering "
+            "(analyzer gate out of sync)"
+        )
+
+    def render_container_repr(self, expr_type: RxtType, value: str, *, by_ref: bool) -> str:
+        """Compose CPython repr text for list/tuple/Optional values recursively.
+
+        ``by_ref`` marks ``value`` as a reference (loop items, Option payloads)
+        so scalar leaves deref and string leaves borrow correctly. Ordered
+        containers only: set/dict never reach codegen (order-observable,
+        rejected by the analyzer).
+        """
+        if isinstance(expr_type, RxtList):
+            item = self.next_temp("__rextio_item")
+            parts = self.next_temp("__rextio_parts")
+            inner = self.render_container_repr_leaf(expr_type.item_type, item, by_ref=True)
+            return (
+                f"{{ let mut {parts}: Vec<String> = Vec::new(); "
+                f"for {item} in ({value}).iter() {{ {parts}.push({inner}); }} "
+                f'format!("[{{}}]", {parts}.join(", ")) }}'
+            )
+        if isinstance(expr_type, RxtTuple):
+            source = value if not by_ref else f"(*{value})"
+            fields = [
+                self.render_container_repr_leaf(
+                    item_type, f"({source}).{index}", by_ref=False
+                )
+                for index, item_type in enumerate(expr_type.item_types)
+            ]
+            if len(fields) == 1:
+                return f'format!("({{}},)", {fields[0]})'
+            placeholders = ", ".join("{}" for _ in fields)
+            return f'format!("({placeholders})", {", ".join(fields)})'
+        if isinstance(expr_type, RxtOptional):
+            payload = self.next_temp("__rextio_some")
+            inner = self.render_container_repr_leaf(
+                expr_type.item_type, payload, by_ref=True
+            )
+            return (
+                f"(match &({value}) {{ "
+                f"None => \"None\".to_string(), "
+                f"Some({payload}) => {inner} }})"
+            )
+        raise RustCodegenError(
+            f"container repr of type {expr_type!r} is not composable "
+            "(analyzer gate out of sync)"
+        )
+
+    def render_container_repr_leaf(self, expr_type: RxtType, value: str, *, by_ref: bool) -> str:
+        if isinstance(expr_type, RxtInt):
+            deref = f"(*{value})" if by_ref else value
+            return f'format!("{{}}", {deref})'
+        if isinstance(expr_type, RxtBool):
+            deref = f"(*{value})" if by_ref else value
+            return f'(if {deref} {{ "True" }} else {{ "False" }}).to_string()'
+        if isinstance(expr_type, RxtFloat):
+            self.used_helpers.add("repr_float")
+            deref = f"(*{value})" if by_ref else value
+            return f"__rextio_repr_float({deref})"
+        if isinstance(expr_type, RxtStr):
+            self.used_helpers.add("repr_str")
+            borrow = value if by_ref else f"&{value}"
+            return f"__rextio_repr_str({borrow})"
+        if isinstance(expr_type, (RxtList, RxtTuple, RxtOptional)):
+            return self.render_container_repr(expr_type, value, by_ref=by_ref)
+        raise RustCodegenError(
+            f"container element type {expr_type!r} has no CPython-exact repr "
+            "(analyzer gate out of sync)"
+        )
 
     def format_placeholder(self, expr: ExprIR) -> str:
-        expr_type = self.infer_expr_type(expr)
-        # bool and float args are wrapped by `render_format_arg` into CPython
-        # textual form (True/False, repr_float), so they use plain `{}` here.
-        if isinstance(expr_type, (RxtInt, RxtBool, RxtStr, RxtFloat)):
-            return "{}"
-        return "{:?}"
+        # Every accepted print/logging argument renders through
+        # `render_format_arg` into CPython-exact text, so the placeholder is
+        # always plain Display.
+        return "{}"
 
 
 def _render_function(

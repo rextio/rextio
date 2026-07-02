@@ -384,10 +384,17 @@ other observed divergences are treated as bugs and either fixed or rejected to
 fallback. Every divergence remaining in this list is also surfaced at build
 time as a per-function `RXT090` note (shown by `rextio check` under "Native
 divergence notes"), so a build never relies on this page alone.
-(`print`/`logging` of `bool` and `float`
-formerly appeared here; both are now lowered to CPython-exact text —
-`True`/`False` and shortest correctly-rounded float repr with CPython's
-thresholds, `nan`/`inf` spellings, and `e+NN` exponents.)
+(`print`/`logging` of `bool` and `float` formerly appeared here; both are now
+lowered to CPython-exact text — `True`/`False` and shortest correctly-rounded
+float repr with CPython's thresholds, `nan`/`inf` spellings, and `e+NN`
+exponents. Printable containers — `list`, fixed tuples, `Optional` — compose
+their CPython repr recursively from the same pieces. `print`/`logging` of a
+`set` or `dict` is REJECTED to the fallback: their native iteration order is
+not CPython's, so no exact text exists. Logging `%` conversions are validated
+per argument type — `%d`/`%i` accept int and bool, `%f` accepts float only,
+`%s`/`%r` accept the printable types; every other combination, a
+placeholder/argument count mismatch, or a non-literal format string with
+arguments keeps the function on the Python fallback.)
 
 - **`bytes.decode()` on invalid UTF-8.** The native path raises `ValueError`
   where CPython raises `UnicodeDecodeError`. `UnicodeDecodeError` is a subclass
