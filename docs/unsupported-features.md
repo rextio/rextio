@@ -326,7 +326,11 @@ strictly slower than this AOT path.
 Code outside this subset remains on the normal direct Rust, Python runtime shim,
 or CPython/Nuitka fallback path.
 
-## Numba as an External Fallback Accelerator
+## Numba as an External Fallback Accelerator (experimental)
+
+Numba support is EXPERIMENTAL in 0.1.0 alpha: recognition, report labels,
+and the Nuitka-coexistence behavior may change before the first non-alpha
+release.
 
 Functions decorated with `numba.jit`, `numba.njit`, `numba.vectorize`, or
 `numba.guvectorize` (resolved through the module's imports, including aliases

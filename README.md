@@ -283,10 +283,13 @@ rextio build . --jit
 REXTIO_JIT=true rextio build .
 ```
 
-## Using Numba on Fallback Code
+## Using Numba on Fallback Code (experimental)
 
-Rextio recognizes Numba decorators (`numba.jit`, `numba.njit`,
-`numba.vectorize`, `numba.guvectorize`) as a supported external accelerator
+Numba support is EXPERIMENTAL in 0.1.0 alpha: recognition, reporting, and
+the Nuitka-coexistence behavior may change before the first non-alpha
+release. Rextio recognizes Numba decorators (`numba.jit`, `numba.njit`,
+`numba.vectorize`, `numba.guvectorize`) as an external accelerator
+(experimental)
 for Python fallback code - the same externally-supported-tool pattern as the
 Nuitka packaging backend. A decorated function stays on the Python fallback
 cleanly (excluded from auto-discovery and helper embedding) and is labeled

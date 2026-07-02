@@ -246,7 +246,11 @@ JIT と `backend`/`hot_threshold` 設定は、ベンチマークで AOT 経路�
 判明したため削除されました。削除された環境変数は移行メッセージ付きで即座に
 エラーになります。）
 
-## Numba 外部アクセラレータ
+## Numba 外部アクセラレータ（experimental）
+
+0.1.0 alpha における Numba サポートは実験的（experimental）機能です:
+認識・レポート・Nuitka 共存の挙動は最初の non-alpha リリース前に変わる
+可能性があります。
 
 `numba.jit`/`njit`/`vectorize`/`guvectorize`/`cuda.jit` デコレータ付きの関数は
 意図的に Python fallback に残り（診断ノイズなし）、レポートに

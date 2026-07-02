@@ -51,8 +51,8 @@ Python source
     native functions (experimental) when `[jit] enabled = true`, `--jit`, or
     `REXTIO_JIT=true` is set. Despite the `[jit]` key name this is AOT
     embedding only - the former runtime Cranelift JIT was removed and no JIT
-    compiler runs inside the built artifact. Numba decorators are recognized as a supported
-    external accelerator for fallback code.
+    compiler runs inside the built artifact. Numba decorators are recognized as an
+    external accelerator for fallback code (experimental in 0.1.0 alpha).
 
 The 0.1.0 alpha release must feel like a usable hybrid compiler/build tool, not merely a static analyzer.
 
@@ -564,7 +564,7 @@ Experimental scalar-helper embedding must stay opt-in:
 * Generated Cargo projects must not contain Cranelift dependencies.
 * If a helper falls outside the embedding subset, use normal boundary
   rejection or fallback behavior. Do not build a CPython-hosted JIT API;
-  Numba is the supported external accelerator for fallback code.
+  Numba is the external accelerator for fallback code (experimental).
 
 Behavior:
 
@@ -1713,7 +1713,7 @@ Do not claim full runtime boundary-cost optimization.
 
 Do not claim any runtime JIT. Scalar-helper embedding is opt-in, AOT,
 native-side only, and limited to narrow scalar Rextio IR helper regions;
-Numba is the supported external accelerator for fallback code.
+Numba is the external accelerator for fallback code (experimental).
 
 ---
 

@@ -240,7 +240,10 @@ raise ZeroDivisionError，且不会作为 PyO3 函数导出。不存在运行时
 Cranelift 运行时 JIT 及其 `backend`/`hot_threshold` 配置经基准测试证明始终慢于
 AOT 路径，已被移除；被移除的环境变量会立即报错并给出迁移提示。）
 
-## Numba 外部加速器
+## Numba 外部加速器（experimental）
+
+0.1.0 alpha 中的 Numba 支持是实验性（experimental）功能：识别、报告与
+Nuitka 共存行为在首个 non-alpha 版本之前可能发生变化。
 
 带有 `numba.jit`/`njit`/`vectorize`/`guvectorize`/`cuda.jit` 装饰器的函数会有意
 留在 Python fallback（无诊断噪音），并在报告中标记为

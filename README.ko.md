@@ -256,7 +256,10 @@ enabled = true
 `hot_threshold` 설정은 벤치마크 결과 AOT 경로보다 항상 느려 제거되었고, 제거된
 환경변수는 마이그레이션 안내와 함께 즉시 오류를 냅니다.)
 
-## Numba 외부 가속기
+## Numba 외부 가속기 (experimental)
+
+0.1.0 alpha에서 Numba 지원은 실험적(experimental) 기능입니다: 인식·리포트·
+Nuitka 공존 동작은 첫 non-alpha 릴리스 전에 바뀔 수 있습니다.
 
 `numba.jit`/`njit`/`vectorize`/`guvectorize`/`cuda.jit` 데코레이터가 붙은 함수는
 의도적으로 Python fallback에 남고(진단 소음 없음) 리포트에
