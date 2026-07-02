@@ -85,6 +85,41 @@ def compute(x: float) -> float:
     assert "#[pyfunction]\nfn app__helper" not in source
 
 
+def test_embedded_int_helper_uses_checked_arithmetic(tmp_path: Path) -> None:
+    # An embedded int helper lowers through the ordinary checked path: overflow
+    # raises OverflowError and `%` keeps floored/zero-division semantics. The
+    # helper's checked-helper usage must register in the module's shared
+    # `used_helpers` set so the helper functions are actually emitted.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+def wrap(x: int) -> int:
+    return x * 3 % 7
+
+@rextio.native
+def compute(x: int) -> int:
+    return wrap(x) + 1
+""",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        native_jit_enabled=True,
+        jit_hot_threshold=2,
+    )
+    source = generate_rust_module(lower_project(analysis, include_jit=True))
+
+    assert "fn app__wrap(x: i64) -> PyResult<i64> {" in source
+    assert "__rextio_checked_mul(" in source
+    assert "__rextio_checked_rem(" in source
+    assert "fn __rextio_checked_mul(" in source
+    assert "fn __rextio_checked_rem(" in source
+    assert "cranelift" not in source
+
+
 def test_embedded_helper_with_a_rust_keyword_name_is_escaped(tmp_path: Path) -> None:
     # An embedded helper named after a Rust keyword renders through the ordinary
     # raw-identifier escaping (`fn r#loop`). The former Cranelift path needed

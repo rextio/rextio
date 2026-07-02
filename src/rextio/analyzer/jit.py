@@ -1,4 +1,11 @@
-"""Eligibility check for the experimental Cranelift scalar JIT."""
+"""Eligibility check for the experimental scalar-helper native embedding.
+
+With `[jit] enabled`, an unmarked typed scalar helper is embedded as an ordinary
+internal native function (the former Cranelift hot path was removed after
+benchmarks showed it strictly slower than this AOT path). Embedded int
+arithmetic goes through the normal checked lowering, so overflow raises
+OverflowError like any other native function.
+"""
 
 from __future__ import annotations
 
@@ -8,58 +15,32 @@ from rextio.analyzer.models import FunctionAnalysis
 from rextio.analyzer.type_collector import annotation_name
 from rextio.capabilities import NUMERIC_TYPES
 
-# The experimental scalar JIT currently supports exactly the numeric scalars.
+# The experimental scalar embedding currently supports exactly the numeric scalars.
 JIT_SCALAR_TYPES = NUMERIC_TYPES
 
 
-def is_cranelift_jit_candidate(
+def is_embedding_candidate(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
 ) -> tuple[bool, str]:
-    """Report whether a typed scalar function is eligible for the experimental Cranelift JIT, with a reason."""
+    """Report whether a typed scalar function is eligible for native embedding, with a reason."""
     if function.error_diagnostics:
         return False, "native subset validation failed"
     signature_types = _signature_types(node, function)
     if signature_types is None:
-        return False, "JIT candidates require resolved scalar annotations"
+        return False, "embedding candidates require resolved scalar annotations"
     arg_types, return_type = signature_types
     if return_type not in JIT_SCALAR_TYPES:
-        return False, "JIT candidates currently require int or float return types"
+        return False, "embedding candidates currently require int or float return types"
     if any(arg_type not in JIT_SCALAR_TYPES for arg_type in arg_types.values()):
-        return False, "JIT candidates currently require int or float arguments"
+        return False, "embedding candidates currently require int or float arguments"
     if any(arg_type != return_type for arg_type in arg_types.values()):
-        return False, "JIT candidates currently require arguments to match the return type"
+        return False, "embedding candidates currently require arguments to match the return type"
     if len(node.body) != 1 or not isinstance(node.body[0], ast.Return) or node.body[0].value is None:
-        return False, "JIT candidates currently require a single return expression"
+        return False, "embedding candidates currently require a single return expression"
     if not _is_supported_expr(node.body[0].value, set(arg_types), return_type):
-        return False, "JIT candidates currently support only scalar arithmetic expressions"
-    if return_type == "int" and _has_overflow_prone_int_arithmetic(node.body[0].value):
-        # The Cranelift path lowers i64 `+`/`-`/`*` to wrapping `iadd`/`isub`/`imul`
-        # and cannot raise `OverflowError`, so it would silently wrap where the
-        # regular native path now raises (Python ints are arbitrary precision).
-        # Keep such functions on the checked native path instead of JIT-compiling.
-        return False, (
-            "integer JIT disabled for overflow-prone arithmetic: the Cranelift "
-            "path cannot raise OverflowError, so the helper stays on the checked "
-            "native path"
-        )
-    return True, "typed scalar helper can be compiled by the experimental Cranelift JIT"
-
-
-def _has_overflow_prone_int_arithmetic(node: ast.AST) -> bool:
-    """Report whether the expression contains i64 arithmetic that can overflow.
-
-    Addition, subtraction, multiplication, modulo and unary negation on a
-    fixed-width i64 can overflow (or, for modulo, divide by zero); the
-    experimental Cranelift JIT lowers them to wrapping/trapping instructions
-    that cannot raise a Python exception, so any such node disqualifies an
-    ``int`` helper from JIT.
-    """
-    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Mod)):
-        return True
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-        return True
-    return any(_has_overflow_prone_int_arithmetic(child) for child in ast.iter_child_nodes(node))
+        return False, "embedding candidates currently support only scalar arithmetic expressions"
+    return True, "typed scalar helper can be embedded as an internal native function"
 
 
 def _signature_types(
@@ -99,14 +80,15 @@ def _is_supported_expr(node: ast.AST, names: set[str], return_type: str) -> bool
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         return _is_supported_expr(node.operand, names, return_type)
     if isinstance(node, ast.BinOp):
-        if return_type == "int" and not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
+        # Embedded helpers lower through the ordinary checked native path, so the
+        # full checked operator set is safe: int overflow raises OverflowError,
+        # `%` handles floored semantics and division-by-zero, and float `/`
+        # raises ZeroDivisionError. (The former Cranelift path had to exclude
+        # int arithmetic and float `/` because its raw instructions wrapped or
+        # returned inf/NaN instead of raising.)
+        if return_type == "int" and not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Mod)):
             return False
-        # Float `/` is excluded: the Cranelift path lowers it to a raw `fdiv`
-        # that returns inf/NaN on division by zero, whereas the checked native
-        # path raises ZeroDivisionError. Allowing it would make a JIT candidate
-        # change results once it crosses the hot threshold (silent mis-compile),
-        # so float division stays on the checked native path.
-        if return_type == "float" and not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
+        if return_type == "float" and not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
             return False
         return (
             _is_supported_expr(node.left, names, return_type)

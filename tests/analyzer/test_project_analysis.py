@@ -1159,11 +1159,10 @@ def caller(x: float) -> float:
 
 
 def test_requires_native_build_ignores_jit_only_projects(tmp_path: Path) -> None:
-    # JIT enabled, decorator-only, with an unmarked scalar helper: the helper is a
-    # JIT *candidate* but not an accepted native function, so no native artifact is
-    # produced and the build must not demand the Rust toolchain. A float helper is
-    # used because int arithmetic is no longer JIT-eligible (it would silently wrap
-    # rather than raise OverflowError on the Cranelift path).
+    # Embedding enabled, decorator-only, with an unmarked scalar helper: the helper
+    # is an embedding *candidate* but there is no accepted native function to embed
+    # it into, so no native artifact is produced and the build must not demand the
+    # Rust toolchain.
     write_module(
         tmp_path,
         "app.py",
@@ -3421,14 +3420,14 @@ def compute(x: float) -> float:
     assert [function.qualname for function in analysis.accepted_native_functions] == ["app.compute"]
     assert [function.qualname for function in analysis.jit_candidates] == ["app.helper"]
     assert analysis.jit_candidates[0].jit_hot_threshold == 2
-    assert "Cranelift JIT" in (analysis.jit_candidates[0].jit_reason or "")
+    assert "embedded" in (analysis.jit_candidates[0].jit_reason or "")
 
 
-def test_integer_arithmetic_is_not_jit_eligible(tmp_path: Path) -> None:
-    # The Cranelift path lowers i64 `+`/`-`/`*` to wrapping instructions and
-    # cannot raise OverflowError, so an int helper with overflow-prone arithmetic
-    # must stay on the checked native path rather than being JIT-compiled. The
-    # fallback is recorded as a diagnostic (council M1 follow-up).
+def test_integer_arithmetic_is_embedding_eligible(tmp_path: Path) -> None:
+    # Embedded helpers lower through the ordinary checked native path, so int
+    # arithmetic raises OverflowError like any other native function. The old
+    # Cranelift hot path could not raise and therefore excluded int arithmetic
+    # entirely; with embedding that exclusion (and its diagnostic) is gone.
     write_module(
         tmp_path,
         "app.py",
@@ -3445,10 +3444,7 @@ def helper(x: int) -> int:
         jit_hot_threshold=2,
     )
 
-    assert analysis.jit_candidates == []
-    skipped = analysis.jit_skipped
-    assert [function.qualname for function in skipped] == ["app.helper"]
-    assert "overflow-prone arithmetic" in (skipped[0].jit_skipped_reason or "")
+    assert [function.qualname for function in analysis.jit_candidates] == ["app.helper"]
 
 
 def test_project_scanner_respects_rextioignore(tmp_path: Path) -> None:
@@ -3685,9 +3681,10 @@ def compute(a: float, b: float) -> float:
         jit_hot_threshold=2,
     )
 
-    # Float multiply is JIT-eligible; float division stays on the checked
-    # native path (raw Cranelift fdiv returns inf/NaN on divide-by-zero).
-    assert [function.qualname for function in analysis.jit_candidates] == ["app.fmul"]
+    # Both are embedding-eligible: embedded helpers lower through the checked
+    # native path, so float `/` raises ZeroDivisionError like any native function
+    # (the former Cranelift fdiv exclusion is gone with the hot path).
+    assert [function.qualname for function in analysis.jit_candidates] == ["app.fdiv", "app.fmul"]
 
 
 def test_rejects_len_on_scalar(tmp_path: Path) -> None:

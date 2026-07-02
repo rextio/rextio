@@ -10,7 +10,7 @@ from pathlib import Path
 from rextio.analyzer.common_calls import canonical_call_target, is_logging_get_logger_call
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.import_policy import classify_import_policies
-from rextio.analyzer.jit import is_cranelift_jit_candidate
+from rextio.analyzer.jit import is_embedding_candidate
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis
 from rextio.analyzer.native_marker import (
     NativeMarker,
@@ -367,13 +367,8 @@ def _mark_jit_candidate(
         call_return_types=dict(function.call_return_types),
     )
     validate_native_function(node, probe, return_types, module_function_names)
-    accepted, reason = is_cranelift_jit_candidate(node, probe)
+    accepted, reason = is_embedding_candidate(node, probe)
     if not accepted:
-        # Surface the specific case where an otherwise-eligible int helper is kept
-        # on the checked native path because the Cranelift JIT cannot raise
-        # OverflowError (council M1 follow-up: make the fallback observable).
-        if "overflow-prone arithmetic" in reason:
-            function.jit_skipped_reason = reason
         return False
     function.inferred_arg_types = dict(probe.inferred_arg_types)
     function.signature_arg_types = dict(probe.signature_arg_types)

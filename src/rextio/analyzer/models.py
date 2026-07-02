@@ -134,7 +134,6 @@ class FunctionAnalysis:
     # checked native path (e.g. overflow-prone int arithmetic the Cranelift path
     # cannot make raise OverflowError). Surfaced by `rextio check`, not
     # serialized, so it is purely diagnostic.
-    jit_skipped_reason: str | None = None
     imports: dict[str, str] = field(default_factory=dict)
     logger_names: tuple[str, ...] = ()
     # All names bound anywhere in the function body (params, assignments, loop
@@ -216,8 +215,6 @@ class FunctionAnalysis:
         }
         # Only present for functions kept off the JIT for overflow safety, so the
         # common case keeps a stable report shape.
-        if self.jit_skipped_reason is not None:
-            data["jit_skipped_reason"] = self.jit_skipped_reason
         return data
 
 
@@ -349,19 +346,6 @@ class ProjectAnalysis:
                 for module in self.modules
                 for function in module.functions
                 if function.is_jit_candidate
-            ],
-            key=lambda function: function.qualname,
-        )
-
-    @property
-    def jit_skipped(self) -> list[FunctionAnalysis]:
-        """Functions kept off the JIT and on the checked native path (diagnostic)."""
-        return sorted(
-            [
-                function
-                for module in self.modules
-                for function in module.functions
-                if function.jit_skipped_reason is not None
             ],
             key=lambda function: function.qualname,
         )
