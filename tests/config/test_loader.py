@@ -422,3 +422,17 @@ native_marker = "always"
         load_config(tmp_path)
 
 
+
+
+def test_load_config_ignores_unknown_environment_variables(tmp_path: Path) -> None:
+    # An unrecognized REXTIO_* variable (including a typo) is silently
+    # ignored, like any junk environment variable - only the names in
+    # ENVIRONMENT_OVERRIDES are consulted.
+    (tmp_path / "rextio.toml").write_text("", encoding="utf-8")
+
+    config = load_config(
+        tmp_path,
+        environ={"REXTIO_TOTALLY_UNKNOWN": "1", "REXTIO_JTI": "true"},
+    )
+
+    assert config.jit.enabled is False
