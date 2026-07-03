@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
-from rextio.build.toolchain import resolve_tool, rust_environment
+from rextio.build.toolchain import resolve_tool, rust_environment, rust_pin_error
 from rextio.config.schema import ToolchainConfig
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,8 +61,16 @@ def build_importable_rust_crate(
             ),
         )
 
+    env = rust_environment(toolchain)
+    pin_error = rust_pin_error(toolchain, "cargo", env)
+    if pin_error is not None:
+        return RustCrateBuildResult(
+            status="failed",
+            message=f"RXT060 Build failed while compiling Rust-importable crate. Cause: {pin_error}",
+        )
+
     command = [cargo, "build", "--release", "--manifest-path", str(crate_dir / "Cargo.toml")]
-    completed = run_build_tool(command, cwd=crate_dir, timeout=timeout, env=rust_environment(toolchain))
+    completed = run_build_tool(command, cwd=crate_dir, timeout=timeout, env=env)
     if completed.returncode != 0:
         return RustCrateBuildResult(
             status="failed",

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rextio.build.cargo_builder import NativeBuildResult
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
-from rextio.build.toolchain import cargo_environment, resolve_tool
+from rextio.build.toolchain import cargo_environment, resolve_tool, rust_pin_error
 from rextio.config.schema import ToolchainConfig
 
 
@@ -37,6 +37,19 @@ def build_native_extension_with_maturin(
             ),
         )
 
+    env = cargo_environment(toolchain)
+    for pinned_tool in ("maturin", "cargo"):
+        pin_error = rust_pin_error(toolchain, pinned_tool, env)
+        if pin_error is not None:
+            return NativeBuildResult(
+                status="failed",
+                tool="maturin",
+                message=(
+                    "RXT060 Build failed while compiling generated Rust module "
+                    f"with maturin. Cause: {pin_error}"
+                ),
+            )
+
     wheels_dir = rust_dir / "target" / "wheels"
     wheels_dir.mkdir(parents=True, exist_ok=True)
     command = [
@@ -48,7 +61,7 @@ def build_native_extension_with_maturin(
         "--out",
         str(wheels_dir),
     ]
-    completed = run_build_tool(command, cwd=rust_dir, timeout=timeout, env=cargo_environment(toolchain))
+    completed = run_build_tool(command, cwd=rust_dir, timeout=timeout, env=env)
     if completed.returncode != 0:
         return NativeBuildResult(
             status="failed",

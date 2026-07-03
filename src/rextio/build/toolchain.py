@@ -146,6 +146,31 @@ def cargo_environment(toolchain: ToolchainConfig) -> dict[str, str]:
     return env
 
 
+def rust_pin_error(
+    toolchain: ToolchainConfig | None,
+    tool: str,
+    env: dict[str, str] | None = None,
+) -> str | None:
+    """Strict pin check for a cargo/maturin invocation at its point of use.
+
+    Mirrors the Nuitka rule: the CLI gate gives fail-fast UX, but every
+    builder that actually runs the tool re-verifies so no build shape (or
+    programmatic caller) can slip past a pin. Pinned + unresolvable is an
+    error.
+    """
+    toolchain = toolchain or ToolchainConfig()
+    pin = getattr(toolchain, f"{tool}_version")
+    if pin is None:
+        return None
+    path, resolve_error = resolve_tool(tool, getattr(toolchain, tool))
+    if path is None:
+        return resolve_error or (
+            f"{tool} is pinned to {pin!r} but could not be resolved; a pin is "
+            "strict for a tool this build uses. Install it or drop the pin."
+        )
+    return check_version_pin(tool, [path], pin, env)
+
+
 def probe_version(command: list[str], env: dict[str, str] | None = None) -> str | None:
     """Best-effort `<tool> --version` probe; None when undeterminable.
 

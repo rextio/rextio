@@ -8,7 +8,7 @@ import stat
 import sys
 import zipapp
 from rextio.build.preflight import nuitka_toolchain_error
-from rextio.build.toolchain import resolve_nuitka_command, resolve_tool, rust_environment
+from rextio.build.toolchain import resolve_nuitka_command, resolve_tool, rust_environment, rust_pin_error
 from rextio.config.schema import ToolchainConfig
 from rextio.analyzer.native_marker import (
     external_accelerator_for_source,
@@ -85,8 +85,19 @@ def build_rust_executable(
             backend="rust",
         )
 
+    env = rust_environment(toolchain)
+    pin_error = rust_pin_error(toolchain, "cargo", env)
+    if pin_error is not None:
+        return ExecutableBuildResult(
+            status="failed",
+            path=None,
+            message=f"RXT060 Executable build failed while compiling the Rust binary. Cause: {pin_error}",
+            entrypoint=entrypoint,
+            backend="rust",
+        )
+
     command = [cargo, "build", "--release", "--manifest-path", str(crate_dir / "Cargo.toml")]
-    completed = run_build_tool(command, cwd=crate_dir, timeout=timeout, env=rust_environment(toolchain))
+    completed = run_build_tool(command, cwd=crate_dir, timeout=timeout, env=env)
     if completed.returncode != 0:
         return ExecutableBuildResult(
             status="failed",

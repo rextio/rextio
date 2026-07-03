@@ -7,7 +7,7 @@ import subprocess
 import sys
 import sysconfig
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
-from rextio.build.toolchain import cargo_environment, resolve_tool
+from rextio.build.toolchain import cargo_environment, resolve_tool, rust_pin_error
 from rextio.config.schema import ToolchainConfig
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,6 +66,13 @@ def build_native_extension_with_cargo(
             ),
         )
     env = cargo_environment(toolchain)
+    pin_error = rust_pin_error(toolchain, "cargo", env)
+    if pin_error is not None:
+        return NativeBuildResult(
+            status="failed",
+            tool="cargo",
+            message=f"RXT060 Build failed while compiling generated Rust module. Cause: {pin_error}",
+        )
 
     command = _cargo_build_command(cargo, rust_dir, offline=False)
     completed = _run_cargo(command, rust_dir, timeout=timeout, env=env)

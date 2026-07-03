@@ -1750,3 +1750,42 @@ def test_nuitka_pin_is_enforced_at_the_hybrid_dispatcher(
 
     assert error is not None
     assert "does not satisfy" in error
+
+
+def test_cargo_pin_holds_on_the_delegate_only_rust_executable(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    # Council-51 counterexample: an exempt helper leaves the MAIN analysis
+    # with zero accepted natives (requires_native_build() is False), yet the
+    # rust executable backend still compiles a bin crate with cargo. The pin
+    # must hold at the point of use even though the CLI native-build gate
+    # never ran.
+    monkeypatch.setenv("PATH", str(fake_cargo.parent))
+    (tmp_path / "app.py").write_text(
+        "import rextio\n"
+        "\n"
+        "@rextio.exempt\n"
+        "def helper(x: int) -> int:\n"
+        "    return x + 1\n"
+        "\n"
+        "def main(argv: list[str]) -> int:\n"
+        "    return helper(2)\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--executable-backend=rust",
+            "--entrypoint=app:main",
+            "--cargo-version=99.9",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "99.9" in captured.err
