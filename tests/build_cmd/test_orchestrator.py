@@ -1721,3 +1721,32 @@ def test_cargo_pin_is_not_probed_for_pure_python_builds(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "1.85" not in captured.err
+
+
+def test_nuitka_pin_is_enforced_at_the_hybrid_dispatcher(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # The hybrid path is deliberately not pre-gated, so the pin must hold at
+    # the point of real use.
+    from rextio.build.orchestrator import _build_nuitka_dispatcher
+    from rextio.config.schema import ToolchainConfig
+
+    bin_dir = tmp_path / "nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then echo 2.4.8; exit 0; fi\n',
+        encoding="utf-8",
+    )
+    nuitka.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+
+    error = _build_nuitka_dispatcher(
+        runtime_dir, {"app.f"}, 30.0, ToolchainConfig(nuitka_version="2.6")
+    )
+
+    assert error is not None
+    assert "does not satisfy" in error

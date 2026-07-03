@@ -13,7 +13,9 @@ import re
 import subprocess
 from dataclasses import dataclass
 
-from rextio.build.toolchain import resolve_tool
+from pathlib import Path
+
+from rextio.build.toolchain import check_version_pin, resolve_tool
 from rextio.config.schema import ToolchainConfig
 
 # Any 2.x release is accepted; every 1.x release is rejected.
@@ -67,16 +69,34 @@ def format_missing_tools(missing: list[MissingTool]) -> str:
     return "\n".join(lines)
 
 
-def nuitka_version_error(nuitka: str | list[str]) -> str | None:
+def nuitka_toolchain_error(command: list[str], toolchain: ToolchainConfig | None) -> str | None:
+    """Run every Nuitka toolchain check that applies at a point of use.
+
+    The >= 2.0 floor is best-effort; an explicit [toolchain] nuitka_version
+    pin is strict. Shared by the CLI gate and all three Nuitka invocation
+    sites (fallback builder, executable builder, hybrid dispatcher) so no
+    path can drift out of the contract.
+    """
+    floor_error = nuitka_version_error(command)
+    if floor_error is not None:
+        return floor_error
+    return check_version_pin(
+        "Nuitka", command, (toolchain or ToolchainConfig()).nuitka_version
+    )
+
+
+def nuitka_version_error(command: list[str]) -> str | None:
     """Return an actionable error when the installed Nuitka predates 2.0.
 
-    ``nuitka`` is the executable path or an argument-list prefix (e.g.
-    ``[python, "-m", "nuitka"]``). Rextio's Nuitka integration is validated
-    against the 2.x CLI (module, standalone, and onefile modes). The probe is
-    best-effort: if the version cannot be determined, the build proceeds and
-    the real invocation surfaces any incompatibility.
+    ``command`` is the invocation prefix from ``resolve_nuitka_command``
+    (e.g. ``[path]`` or ``[python, "-m", "nuitka"]``). Rextio's Nuitka
+    integration is validated against the 2.x CLI (module, standalone, and
+    onefile modes). The probe is best-effort: if the version cannot be
+    determined, the build proceeds and the real invocation surfaces any
+    incompatibility.
     """
-    command = [nuitka] if isinstance(nuitka, str) else list(nuitka)
+    if isinstance(command, (str, Path)):  # defensive: a bare path is one arg
+        command = [str(command)]
     try:
         completed = subprocess.run(
             [*command, "--version"],

@@ -9,7 +9,7 @@ from rextio.analyzer.native_marker import (
     project_module_names_for_tree,
 )
 from rextio.fallback.build_result import FallbackBuildResult
-from rextio.build.preflight import nuitka_version_error
+from rextio.build.preflight import nuitka_toolchain_error
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 from rextio.build.toolchain import resolve_nuitka_command
 from rextio.config.schema import ToolchainConfig
@@ -40,7 +40,7 @@ def build_nuitka_fallback(
                 f"{resolve_error or nuitka_unavailable_message()}"
             ),
         )
-    version_error = nuitka_version_error(nuitka_command)
+    version_error = nuitka_toolchain_error(nuitka_command, toolchain)
     if version_error is not None:
         return FallbackBuildResult(
             status="failed",

@@ -10,7 +10,11 @@ from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
-from rextio.build.preflight import format_missing_tools, missing_build_tools, nuitka_version_error
+from rextio.build.preflight import (
+    format_missing_tools,
+    missing_build_tools,
+    nuitka_toolchain_error,
+)
 from rextio.build.toolchain import (
     check_version_pin,
     python_version_mismatch,
@@ -189,9 +193,7 @@ def run(args: Namespace) -> int:
             # Fail before the (potentially slow) project analysis, not mid-build.
             # The builders re-probe later so they stay correct for non-CLI callers;
             # the extra `nuitka --version` is a deliberate, negligible cost.
-            version_error = nuitka_version_error(nuitka_command) or check_version_pin(
-                "Nuitka", nuitka_command, config.toolchain.nuitka_version
-            )
+            version_error = nuitka_toolchain_error(nuitka_command, config.toolchain)
             if version_error is not None:
                 reporter.error("RXT060 Build failed while preparing the Nuitka toolchain.")
                 reporter.error(version_error)

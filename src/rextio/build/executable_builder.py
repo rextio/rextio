@@ -7,7 +7,7 @@ import shutil
 import stat
 import sys
 import zipapp
-from rextio.build.preflight import nuitka_version_error
+from rextio.build.preflight import nuitka_toolchain_error
 from rextio.build.toolchain import cargo_environment, resolve_nuitka_command, resolve_tool
 from rextio.config.schema import ToolchainConfig
 from rextio.analyzer.native_marker import (
@@ -265,7 +265,7 @@ def build_nuitka_executable(
             entrypoint=entrypoint,
             backend="nuitka",
         )
-    version_error = nuitka_version_error(nuitka_command)
+    version_error = nuitka_toolchain_error(nuitka_command, toolchain)
     if version_error is not None:
         return ExecutableBuildResult(
             status="failed",
