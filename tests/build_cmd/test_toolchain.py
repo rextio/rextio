@@ -207,3 +207,18 @@ def test_non_executable_file_does_not_mask_its_exe_sibling(tmp_path: Path) -> No
 
     path, error = resolve_tool("cargo", str(plain))
     assert error is None and path == str(exe)
+
+
+def test_cargo_environment_binds_maturin_to_the_configured_cargo(tmp_path: Path) -> None:
+    cargo = _script(tmp_path / "toolchain" / "bin" / "cargo", "echo cargo 1.85.0")
+    env = cargo_environment(ToolchainConfig(cargo=str(tmp_path / "toolchain")))
+    assert env["CARGO"] == str(cargo)
+    assert "CARGO" not in cargo_environment(ToolchainConfig())
+
+
+def test_version_probe_runs_under_the_supplied_environment(tmp_path: Path) -> None:
+    from rextio.build.toolchain import probe_version
+
+    shim = _script(tmp_path / "cargo", 'echo "cargo ${FAKE_CHANNEL:-0.0.0}"')
+    assert probe_version([str(shim)]) == "0.0.0"
+    assert probe_version([str(shim)], {"FAKE_CHANNEL": "1.83.0"}) == "1.83.0"

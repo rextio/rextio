@@ -132,23 +132,34 @@ def cargo_environment(toolchain: ToolchainConfig) -> dict[str, str]:
 
     Extends :func:`rust_environment` with PYO3_PYTHON so the PyO3 build
     targets the configured interpreter instead of whatever `python3` is
-    first on PATH.
+    first on PATH, and with CARGO so maturin (which discovers cargo itself)
+    runs the configured cargo rather than the first one on PATH.
     """
     env = rust_environment(toolchain)
+    if toolchain.cargo is not None:
+        cargo, _error = resolve_tool("cargo", toolchain.cargo)
+        if cargo is not None:
+            env["CARGO"] = cargo
     python, _error = resolve_python(toolchain)
     if python is not None:
         env["PYO3_PYTHON"] = python
     return env
 
 
-def probe_version(command: list[str]) -> str | None:
-    """Best-effort `<tool> --version` probe; None when undeterminable."""
+def probe_version(command: list[str], env: dict[str, str] | None = None) -> str | None:
+    """Best-effort `<tool> --version` probe; None when undeterminable.
+
+    ``env`` entries overlay os.environ for the probe - version checks must
+    run under the same environment the real invocation will use (a rustup
+    shim reports a different version depending on RUSTUP_TOOLCHAIN).
+    """
     try:
         completed = subprocess.run(
             [*command, "--version"],
             capture_output=True,
             text=True,
             timeout=30,
+            env={**os.environ, **env} if env else None,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -160,16 +171,22 @@ def probe_version(command: list[str]) -> str | None:
     return match.group(0) if match is not None else None
 
 
-def check_version_pin(display: str, command: list[str], pin: str | None) -> str | None:
+def check_version_pin(
+    display: str,
+    command: list[str],
+    pin: str | None,
+    env: dict[str, str] | None = None,
+) -> str | None:
     """Verify an explicit version pin against the resolved tool.
 
     Unlike the best-effort floors, an explicit pin is strict: a tool whose
     version cannot be determined fails the check. Pins verify only - they
-    never install or select a tool.
+    never install or select a tool. ``env`` must be the environment the real
+    invocation will run under so the verified version is the used version.
     """
     if pin is None:
         return None
-    reported = probe_version(command)
+    reported = probe_version(command, env)
     if reported is None:
         return (
             f"{display} version could not be determined, but [toolchain] pins it "

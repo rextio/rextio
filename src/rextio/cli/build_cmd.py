@@ -16,6 +16,7 @@ from rextio.build.preflight import (
     nuitka_toolchain_error,
 )
 from rextio.build.toolchain import (
+    cargo_environment,
     check_version_pin,
     python_version_mismatch,
     resolve_nuitka_command,
@@ -90,7 +91,9 @@ def _rust_toolchain_error(config: RextioConfig, build_tool: str) -> str | None:
                 f"{tool} is pinned to {pin!r} but could not be resolved; a pin "
                 "is strict for a tool this build uses. Install it or drop the pin."
             )
-        pin_error = check_version_pin(tool, [path], pin)
+        # Probe under the same environment the build will use: a rustup shim
+        # reports a different cargo version depending on RUSTUP_TOOLCHAIN.
+        pin_error = check_version_pin(tool, [path], pin, cargo_environment(toolchain))
         if pin_error is not None:
             return pin_error
     return None
