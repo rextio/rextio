@@ -1,0 +1,5 @@
+# sdist policy: ship the installable package and its top-level metadata only.
+# The test suite is developed and run from the repository (setuptools' default
+# template would otherwise drag in a single stray tests/test_*.py file, which
+# reads as a misleading one-test suite to downstream packagers).
+prune tests
