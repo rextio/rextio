@@ -47,7 +47,7 @@ Rextio는 같은 Python 프로젝트에서 여러 산출물을 만들 수 있습
 넘으면 Python으로 fallback합니다.
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 빌드된 native 모듈이 로드에 실패할 때 경고 후 fallback하는 대신 전체
@@ -136,7 +136,7 @@ wheel 빌드, 실행파일 패키징은 실행하지 않습니다.
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit
+rextio build . --embed-helpers
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -194,11 +194,20 @@ Rextio는 native 컴파일을 보수적으로 유지합니다:
 
 - direct Rust native 함수는 수락된 native 함수, 지원되는 builtin, 지원되는
   표준 라이브러리 함수만 호출할 수 있습니다.
-- fallback 전용 코드를 호출하는 native 함수는 native 컴파일에서 거부됩니다.
+- fallback 전용 코드를 호출하는 native 함수는 거부됩니다 — 단, 호출자가
+  명시적으로 마킹돼 있고 callee의 시그니처가 처음부터 끝까지 불변 스칼라
+  (`int`/`float`/`bool`/`str`/`None`)라면 그 호출은 in-process 스칼라
+  boundary call(`RXT075`)이 됩니다. callee는 인터프리터에서 계속 실행되므로
+  값과 예외가 CPython-정확하고 monkeypatch도 반영됩니다. 스칼라는 값으로
+  건너가므로 인자의 identity(`is`)는 보존되지 않습니다(`None`/`bool`
+  싱글턴은 보존됩니다). 컨테이너는 경계를 넘지 않으며, comprehension 본문을
+  포함한 native 루프 안의 boundary call은 호출자를 fallback에
+  남깁니다(`RXT076`).
 - Python fallback 코드는 native 함수를 호출할 수 있습니다.
 - native 함수를 반복 호출하는 Python 루프는 boundary 경고를 냅니다.
-- 생성된 wrapper는 Python→native wrapper 교차가 반복되면 그 함수를 다시
-  fallback으로 전환할 수 있습니다.
+- 생성된 wrapper는 경계 교차가 반복되면 그 함수를 다시 fallback으로
+  전환할 수 있습니다 — Python→native wrapper 진입과 native 스칼라 boundary
+  call이 같은 함수별 threshold에 함께 계상됩니다.
 - Python/Rust의 소유권 차이는 명시적으로 다룹니다. 소유 값의 읽기 전용
   재사용은 필요 시 Rust clone으로 낮추고, 가변 컬렉션의 alias mutation은
   Python fallback에 남습니다.
@@ -270,9 +279,8 @@ semantics shim으로 노출됩니다. 자세한 경계는
 ## 실험적 scalar helper 내장(embedding)
 
 Rextio는 마킹되지 않은 아주 좁은 범위의 스칼라 helper를 내부 native 함수로
-선택적으로 내장할 수 있습니다. 기본값은 꺼짐입니다. 설정 키 이름이
-`[jit]`이지만 이것은 JIT가 아닙니다: 모든 것은 미리 컴파일되고, 빌드된
-artifact 안에 JIT 컴파일러는 존재하지도 실행되지도 않습니다.
+선택적으로 내장할 수 있습니다 — 다른 모든 것과 마찬가지로 미리(ahead-of-
+time) 컴파일됩니다. 기본값은 꺼짐입니다.
 
 활성화하면 적격인 비마킹 helper(스칼라 인자와 반환 타입, 단일 산술 반환
 식)가 생성 native artifact의 평범한 내부 함수로 컴파일됩니다 — native
@@ -283,15 +291,15 @@ backend에서 내장 helper는 호출마다 CPython dispatcher로 위임되는 �
 바이너리 안으로 컴파일됩니다.
 
 ```toml
-[jit]
+[embedding]
 enabled = true
 ```
 
 동등한 CLI/환경변수 제어:
 
 ```text
-rextio build . --jit
-REXTIO_JIT=true rextio build .
+rextio build . --embed-helpers
+REXTIO_EMBED_HELPERS=true rextio build .
 ```
 
 ## Numba 외부 가속기 (experimental)
@@ -332,8 +340,11 @@ CPython-정확 의미론을 갖지만, `@numba.*` 함수는 **Numba의** 의미�
 유의하세요.
 
 내장(embedding)은 생성 Cargo 프로젝트에 crate 의존성을 추가하지 않습니다.
-내장이 꺼져 있으면 후보였을 함수는 일반 fallback 경로에 남습니다(그리고
-그 native 호출자는 평범한 boundary 규칙의 지배를 받습니다).
+내장이 꺼져 있어도 적격 helper 호출은 런타임 스칼라 boundary call로 여전히
+동작합니다 — 내장은 호출마다의 인터프리터 왕복을 제거하는 빠른 경로입니다.
+boundary call과 달리 내장된 helper는 빌드 시점에 native 산출물로 컴파일된
+사본이므로, helper의 런타임 교체(monkeypatch)는 native 호출자에게 보이지
+않습니다.
 
 ## Rust에서 import 가능한 crate
 
@@ -360,7 +371,8 @@ fn main() -> Result<(), my_native::RextioError> {
 ```
 
 이 crate로는 직접 타입 Rust로 낮춰진 함수만 export됩니다. fallback 전용
-함수와 runtime semantics shim은 Python 쪽 경로로 남습니다.
+함수, runtime semantics shim, 그리고 스칼라 boundary call을 쓰는 함수
+(둘 다 인터프리터가 필요)는 Python 쪽 경로로 남습니다.
 
 ## 실행 artifact
 
@@ -443,7 +455,7 @@ CLI 파라미터 > 환경변수 > rextio.toml > 내장 기본값
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
-| `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
+| `[embedding] enabled` | `--embed-helpers` / `--no-embed-helpers` | `REXTIO_EMBED_HELPERS` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |

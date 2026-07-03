@@ -13,8 +13,8 @@ _warned_modes: set[str] = set()
 def env_truthy(name: str) -> bool:
     """Report whether an environment variable holds a truthy value.
 
-    Accepts ``1``/``true``/``yes``/``on`` (case-insensitive) so the flag is not
-    a footgun for users who set ``REXTIO_DISABLE_NATIVE=true``.
+    Accepts ``1``/``true``/``yes``/``on`` (case-insensitive) so boolean flags
+    are not a footgun for users who write ``=true``.
     """
     value = os.environ.get(name)
     return value is not None and value.strip().lower() in _TRUTHY
@@ -22,12 +22,12 @@ def env_truthy(name: str) -> bool:
 
 def native_disabled() -> bool:
     """Report whether native execution is disabled via the environment."""
-    return env_truthy("REXTIO_DISABLE_NATIVE") or native_mode() == "fallback"
+    return native_mode() == "fallback"
 
 
 def native_required() -> bool:
     """Report whether native execution is required via the environment."""
-    return not env_truthy("REXTIO_DISABLE_NATIVE") and native_mode() == "native"
+    return native_mode() == "native"
 
 
 def native_mode() -> str:

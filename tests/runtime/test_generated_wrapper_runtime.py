@@ -169,7 +169,7 @@ def add(a: int, b: int) -> int:
     native_module = ModuleType("_rextio_native")
     native_module.demo_disable__scoring__add = lambda a, b: 999
     monkeypatch.setitem(sys.modules, "_rextio_native", native_module)
-    monkeypatch.setenv("REXTIO_DISABLE_NATIVE", "1")
+    monkeypatch.setenv("REXTIO_NATIVE_MODE", "fallback")
 
     assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
     monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "generated" / "python"))

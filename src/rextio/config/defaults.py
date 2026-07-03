@@ -33,7 +33,7 @@ DEFAULT_CONFIG: dict[str, dict[str, object]] = {
         "default_external_policy": "fallback",
         "packages": {},
     },
-    "jit": {
+    "embedding": {
         "enabled": False,
     },
     "executable": {

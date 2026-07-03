@@ -87,7 +87,7 @@ def analyze_project(
     native_top_level: bool = False,
     imports_config: ImportsConfig | None = None,
     active_plugins: Iterable[RextioPlugin] = (),
-    native_jit_enabled: bool = False,
+    embedding_enabled: bool = False,
     delegate_fallback: bool = False,
 ) -> ProjectAnalysis:
     """Analyze a project directory and return its ProjectAnalysis.
@@ -113,7 +113,7 @@ def analyze_project(
             project_modules=project_modules,
             imports_config=imports_config,
             active_plugins=active_plugins,
-            native_jit_enabled=native_jit_enabled,
+            embedding_enabled=embedding_enabled,
             project_return_types=project_return_types,
         )
         for path in files
@@ -121,7 +121,7 @@ def analyze_project(
     apply_boundary_checks(
         analysis,
         boundary_warnings=boundary_warnings,
-        native_jit_enabled=native_jit_enabled,
+        embedding_enabled=embedding_enabled,
         delegate_fallback=delegate_fallback,
     )
     _strip_divergence_notes_from_non_native(analysis)

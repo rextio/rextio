@@ -87,7 +87,7 @@ def add(a: int, b: int) -> int:
     _create_venv(artifact_venv, env)
     artifact_python = _venv_bin(artifact_venv, "python")
     _run([str(artifact_python), "-m", "pip", "install", str(wheels[0])], env=env)
-    artifact_env = {**env, "REXTIO_DISABLE_NATIVE": "1"}
+    artifact_env = {**env, "REXTIO_NATIVE_MODE": "fallback"}
     _run(
         [
             str(artifact_python),

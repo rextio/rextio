@@ -39,12 +39,12 @@ import rextio
 def add(a: int, b: int) -> int:
     return a + b
 
-def helper(x: int) -> int:
-    return x + 1
+def helper(xs: list[int]) -> int:
+    return xs[0] + 1
 
 @rextio.native
-def rejected(x: int) -> int:
-    return helper(x)
+def rejected(xs: list[int]) -> int:
+    return helper(xs)
 """,
         encoding="utf-8",
     )
@@ -104,7 +104,7 @@ def rejected(x: int) -> int:
     assert any(name.endswith(".dist-info/RECORD") for name in names)
 
 
-def test_build_enables_experimental_jit_only_when_requested(
+def test_build_enables_experimental_embedding_only_when_requested(
     tmp_path: Path,
     capsys,
     fake_cargo: Path,
@@ -135,7 +135,7 @@ def compute(x: float) -> float:
             "build",
             str(tmp_path),
             "--fallback=cpython",
-            "--jit",
+            "--embed-helpers",
         ]
     )
 
@@ -151,7 +151,7 @@ def compute(x: float) -> float:
     assert "embedding candidates: 1" in captured.out
     assert report["accepted_native_count"] == 1
     assert report["rejected_native_count"] == 0
-    assert report["jit_candidate_count"] == 1
+    assert report["embedding_candidate_count"] == 1
     # The embedded helper compiles as a plain internal native function -
     # callable from native code, not exported, no extra dependencies.
     assert "fn app__helper(" in lib_rs
@@ -159,13 +159,13 @@ def compute(x: float) -> float:
     assert "wrap_pyfunction!(app__helper" not in lib_rs
 
 
-def test_build_no_jit_cli_option_overrides_environment(
+def test_build_no_embed_helpers_cli_option_overrides_environment(
     tmp_path: Path,
     monkeypatch,
     capsys,
     fake_cargo: Path,
 ) -> None:
-    monkeypatch.setenv("REXTIO_JIT", "true")
+    monkeypatch.setenv("REXTIO_EMBED_HELPERS", "true")
     (tmp_path / "rextio.toml").write_text(
         """
 [policy]
@@ -191,7 +191,7 @@ def compute(x: int) -> int:
         encoding="utf-8",
     )
 
-    exit_code = main(["build", str(tmp_path), "--fallback=cpython", "--no-jit"])
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython", "--no-embed-helpers"])
 
     captured = capsys.readouterr()
     report = json.loads(
@@ -199,9 +199,11 @@ def compute(x: int) -> int:
     )
     assert exit_code == 0
     assert "experimental helper embedding: disabled" in captured.out
-    assert report["accepted_native_count"] == 1
-    assert report["rejected_native_count"] == 1
-    assert report["jit_candidate_count"] == 0
+    # With embedding disabled the helper is not embedded, but the marked
+    # caller survives natively through the scalar boundary-call path.
+    assert report["accepted_native_count"] == 2
+    assert report["rejected_native_count"] == 0
+    assert report["embedding_candidate_count"] == 0
 
 
 def test_rust_executable_delegate_analysis_embeds_helpers(
@@ -241,7 +243,7 @@ def main(argv: list[str]) -> int:
         return SimpleNamespace(
             accepted_native_count=1,
             rejected_native_count=0,
-            plan=SimpleNamespace(native=SimpleNamespace(jit_functions=[])),
+            plan=SimpleNamespace(native=SimpleNamespace(embedded_functions=[])),
             layout=layout,
             native_build=SimpleNamespace(status="skipped", message="ok", installed_path=None),
             rust_crate_build=SimpleNamespace(
@@ -262,7 +264,7 @@ def main(argv: list[str]) -> int:
             "build",
             str(tmp_path),
             "--fallback=cpython",
-            "--jit",
+            "--embed-helpers",
             "--executable-backend=rust",
             "--entrypoint=app:main",
         ]
@@ -279,7 +281,7 @@ def main(argv: list[str]) -> int:
     # With embedding enabled, the unmarked scalar helper compiles INTO the binary
     # (an embedding candidate the native caller may use) instead of being
     # delegated per call over IPC.
-    assert functions["helper"].is_jit_candidate
+    assert functions["helper"].is_embedding_candidate
     assert functions["main"].accepted
     assert functions["main"].delegated_call_targets == set()
 
@@ -1014,7 +1016,7 @@ def add(a: int, b: int) -> int:
         encoding="utf-8",
     )
 
-    def fail_codegen(_module_ir):
+    def fail_codegen(_module_ir, **_kwargs):
         raise RustCodegenError("synthetic codegen failure")
 
     monkeypatch.setattr(orchestrator, "generate_rust_module", fail_codegen)

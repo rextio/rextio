@@ -115,7 +115,7 @@ class GenerateResult:
             "plan": self.plan.to_dict(),
             "accepted_native_count": self.accepted_native_count,
             "rejected_native_count": self.rejected_native_count,
-            "jit_candidate_count": len(self.plan.native.jit_functions),
+            "embedding_candidate_count": len(self.plan.native.embedded_functions),
             "native_source": self.native_source.to_dict(),
             "rust_crate_source": self.rust_crate_source.to_dict(),
         }
@@ -151,7 +151,7 @@ class BuildResult:
             "plan": self.plan.to_dict(),
             "accepted_native_count": self.accepted_native_count,
             "rejected_native_count": self.rejected_native_count,
-            "jit_candidate_count": len(self.plan.native.jit_functions),
+            "embedding_candidate_count": len(self.plan.native.embedded_functions),
             "native_build": self.native_build.to_dict(),
             "fallback_build": self.fallback_build.to_dict(),
             "wheel_build": self.wheel_build.to_dict(),
@@ -173,7 +173,7 @@ def build_hybrid_artifact(
     target_plan: TargetPlan | None = None,
     rust_importable: bool = False,
     rust_crate_name: str = "rextio_generated_rust",
-    native_jit_enabled: bool = False,
+    embedding_enabled: bool = False,
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     executable_analysis: ProjectAnalysis | None = None,
     executable_python: str | None = None,
@@ -203,7 +203,7 @@ def build_hybrid_artifact(
         layout,
         build_tool,
         target_plan,
-        native_jit_enabled=native_jit_enabled,
+        embedding_enabled=embedding_enabled,
         build_timeout=build_timeout_seconds,
         toolchain=toolchain,
     )
@@ -279,7 +279,7 @@ def generate_source_artifact(
     target_plan: TargetPlan | None = None,
     rust_importable: bool = False,
     rust_crate_name: str = "rextio_generated_rust",
-    native_jit_enabled: bool = False,
+    embedding_enabled: bool = False,
 ) -> GenerateResult:
     """Generate native and Python source artifacts without compiling."""
     target_plan = target_plan or default_target_plan()
@@ -293,7 +293,7 @@ def generate_source_artifact(
         plan,
         layout,
         target_plan,
-        native_jit_enabled=native_jit_enabled,
+        embedding_enabled=embedding_enabled,
     )
     rust_crate_source = _generate_rust_crate_source(
         plan,
@@ -400,7 +400,7 @@ def _generate_and_build_native(
     build_tool: str,
     target_plan: TargetPlan,
     *,
-    native_jit_enabled: bool,
+    embedding_enabled: bool,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
 ) -> NativeBuildResult:
@@ -410,7 +410,7 @@ def _generate_and_build_native(
         plan,
         layout,
         target_plan,
-        native_jit_enabled=native_jit_enabled,
+        embedding_enabled=embedding_enabled,
     )
     if native_source.status == "failed":
         return NativeBuildResult(
@@ -473,7 +473,7 @@ def _generate_native_source(
     layout: ArtifactLayout,
     target_plan: TargetPlan,
     *,
-    native_jit_enabled: bool = False,
+    embedding_enabled: bool = False,
 ) -> NativeSourceResult:
     if not plan.native.has_native_artifacts:
         return NativeSourceResult(
@@ -489,8 +489,11 @@ def _generate_native_source(
             ),
         )
     try:
-        module_ir = lower_project(plan.analysis, include_jit=native_jit_enabled)
-        rust_source = generate_rust_module(module_ir)
+        module_ir = lower_project(plan.analysis, include_embedding=embedding_enabled)
+        rust_source = generate_rust_module(
+            module_ir,
+            boundary_call_return_types=_boundary_call_return_types(plan.analysis),
+        )
     except (LoweringError, RustCodegenError) as exc:
         return NativeSourceResult(
             status="failed",
@@ -534,7 +537,7 @@ def _generate_rust_crate_source(
     try:
         # Include embedded helpers: an exported native function may call one, and
         # the crate must carry the callee it references.
-        module_ir = lower_project(plan.analysis, include_jit=True)
+        module_ir = lower_project(plan.analysis, include_embedding=True)
         rust_source = generate_rust_crate_module(module_ir)
     except (LoweringError, RustCodegenError) as exc:
         return NativeSourceResult(
@@ -669,6 +672,15 @@ def _rust_binary_name(executable_name: str | None, entry_qualname: str) -> str:
 
 def _delegated_return_types(analysis: ProjectAnalysis) -> dict[str, str]:
     """Map every delegated callee's qualname to its return type across the project."""
+    return _scalar_callee_return_types(analysis, "delegated_call_targets")
+
+
+def _boundary_call_return_types(analysis: ProjectAnalysis) -> dict[str, str]:
+    """Map every boundary-called callee's qualname to its return type."""
+    return _scalar_callee_return_types(analysis, "boundary_call_targets")
+
+
+def _scalar_callee_return_types(analysis: ProjectAnalysis, targets_attr: str) -> dict[str, str]:
     by_qualname = {
         function.qualname: function
         for module in analysis.modules
@@ -677,7 +689,7 @@ def _delegated_return_types(analysis: ProjectAnalysis) -> dict[str, str]:
     delegated: dict[str, str] = {}
     for module in analysis.modules:
         for function in module.functions:
-            for target in function.delegated_call_targets:
+            for target in getattr(function, targets_attr):
                 callee = by_qualname.get(target)
                 if callee is None:
                     continue
@@ -714,7 +726,7 @@ def _entrypoint_reachable_native_graph(
         entry is None
         or not entry.accepted
         or entry.native_runtime_semantics
-        or entry.is_jit_candidate
+        or entry.is_embedding_candidate
     ):
         return set(), {}
 
@@ -739,7 +751,7 @@ def _entrypoint_reachable_native_graph(
                 if return_type is not None:
                     delegated[resolved.qualname] = return_type
                 continue
-            if resolved.is_jit_candidate:
+            if resolved.is_embedding_candidate:
                 # An embedded helper is a plain crate function the caller invokes
                 # directly; keep it in the reachable set so the IR filter emits it.
                 # Its candidacy shape (a single scalar expression) has no calls of
@@ -765,7 +777,7 @@ def _filter_module_ir(module_ir: ModuleIR, reachable_qualnames: set[str]) -> Mod
     if not reachable_qualnames:
         # An empty set means the entry itself was not an accepted direct-native
         # function. Pass the full IR through so `_resolve_main_entry` can name the
-        # REAL problem (missing entry / RXT080 shim / JIT) - filtering everything
+        # REAL problem (missing entry / RXT080 shim / embedding) - filtering everything
         # out here would degrade those diagnostics to a generic "missing entry".
         return module_ir
     return ModuleIR(
@@ -957,7 +969,7 @@ def _build_rust_executable_artifact(
                 backend="rust",
             )
     try:
-        module_ir = _filter_module_ir(lower_project(analysis, include_jit=True), reachable_qualnames)
+        module_ir = _filter_module_ir(lower_project(analysis, include_embedding=True), reachable_qualnames)
         main_rs = generate_rust_main_binary(
             module_ir,
             entry_qualname,

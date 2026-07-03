@@ -47,7 +47,7 @@ Rextio は同じ Python プロジェクトから複数の成果物を作れま�
 fallback します。
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 ビルド済み native モジュールのロード失敗時に、警告して fallback する
@@ -136,7 +136,7 @@ Nuitka、wheel ビルド、実行ファイルのパッケージングは実行�
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit
+rextio build . --embed-helpers
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -194,12 +194,20 @@ Rextio は native コンパイルを保守的に保ちます:
 
 - direct Rust native 関数が呼べるのは、受理された native 関数、サポート
   される builtin、サポートされる標準ライブラリ関数だけです。
-- fallback 専用コードを呼ぶ native 関数は native コンパイルから拒否
-  されます。
+- fallback 専用コードを呼ぶ native 関数は拒否されます — ただし呼び出し側が
+  明示的にマークされ、callee のシグネチャが端から端まで不変スカラー
+  （`int`/`float`/`bool`/`str`/`None`）なら、その呼び出しは in-process の
+  スカラー boundary call（`RXT075`）になります。callee はインタプリタで
+  実行され続けるため、値と例外は CPython-正確で monkeypatch も反映
+  されます。スカラーは値で境界を越えるため、引数の identity（`is`）は
+  保存されません（`None`/`bool` のシングルトンは保存されます）。コンテナは
+  境界を越えず、内包表記本体を含む native ループ内の boundary call は
+  呼び出し側を fallback に残します（`RXT076`）。
 - Python fallback コードは native 関数を呼べます。
 - native 関数を繰り返し呼ぶ Python ループは boundary 警告を出します。
-- 生成された wrapper は、Python→native の wrapper 横断が繰り返されると
-  その関数を fallback へ戻すことがあります。
+- 生成された wrapper は、境界横断が繰り返されるとその関数を fallback へ
+  戻すことがあります — Python→native の wrapper 進入と native スカラー
+  boundary call は同じ関数別しきい値に合算されます。
 - Python/Rust の所有権の違いは明示的に扱います。所有値の読み取り専用の
   再利用は必要に応じて Rust の clone で下ろし、可変コレクションの alias
   変更は Python fallback に残します。
@@ -272,9 +280,8 @@ runtime semantics shim として公開されます。詳細な境界は
 ## Experimental scalar helper 埋め込み（embedding）
 
 Rextio は、マークされていないごく狭い範囲のスカラーヘルパーを内部 native
-関数として任意で埋め込めます。デフォルトはオフです。設定キー名は `[jit]`
-ですが、これは JIT ではありません: すべて事前にコンパイルされ、ビルド
-された artifact 内に JIT コンパイラは存在せず実行もされません。
+関数として任意で埋め込めます — 他のすべてと同じく事前（ahead-of-time）に
+コンパイルされます。デフォルトはオフです。
 
 有効化すると、適格な未マークヘルパー（スカラー引数と戻り値、単一の算術
 return 式）が生成 native artifact の普通の内部関数としてコンパイルされます
@@ -286,15 +293,15 @@ OverflowError を、ゼロ除算は ZeroDivisionError を他の native 関数と
 されます。
 
 ```toml
-[jit]
+[embedding]
 enabled = true
 ```
 
 同等の CLI / 環境変数:
 
 ```text
-rextio build . --jit
-REXTIO_JIT=true rextio build .
+rextio build . --embed-helpers
+REXTIO_EMBED_HELPERS=true rextio build .
 ```
 
 ## Numba 外部アクセラレータ（experimental）
@@ -338,8 +345,11 @@ runtime も動作します（dispatcher が本物の CPython を実行）。
 コストに負ける点に注意してください。
 
 埋め込みは生成 Cargo プロジェクトに crate 依存を追加しません。埋め込みが
-無効のとき、候補になり得た関数は通常の fallback 経路に残ります（その
-native 呼び出し元は通常の boundary 規則に従います）。
+無効でも、適格なヘルパー呼び出しは実行時のスカラー boundary call で動作
+します — 埋め込みは呼び出しごとのインタプリタ往復を除去する高速経路です。
+boundary call と異なり、埋め込まれたヘルパーはビルド時に native 成果物へ
+コンパイルされたコピーなので、ヘルパーの実行時差し替え（monkeypatch）は
+native 呼び出し側からは見えません。
 
 ## Rust-importable crate
 
@@ -366,8 +376,9 @@ fn main() -> Result<(), my_native::RextioError> {
 ```
 
 この crate から export されるのは、直接型付き Rust へ下ろされた関数だけ
-です。fallback 専用関数と runtime semantics shim は Python 側の経路に
-残ります。
+です。fallback 専用関数、runtime semantics shim、そしてスカラー boundary
+call を使う関数（いずれもインタプリタが必要）は Python 側の経路に残り
+ます。
 
 ## executable artifact
 
@@ -454,7 +465,7 @@ CLI パラメータ > 環境変数 > rextio.toml > 組み込みデフォルト
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
-| `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
+| `[embedding] enabled` | `--embed-helpers` / `--no-embed-helpers` | `REXTIO_EMBED_HELPERS` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |

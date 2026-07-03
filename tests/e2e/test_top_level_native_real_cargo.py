@@ -76,7 +76,7 @@ def read_total() -> int:
     assert "top_app._native_top_level_fallback_state" in sys.modules
     assert "top_app._fallback_state" not in sys.modules
 
-    monkeypatch.setenv("REXTIO_DISABLE_NATIVE", "1")
+    monkeypatch.setenv("REXTIO_NATIVE_MODE", "fallback")
     _drop_modules()
     fallback_state = importlib.import_module("top_app.state")
     assert fallback_state.i == 5

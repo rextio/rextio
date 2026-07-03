@@ -16,12 +16,12 @@ import rextio
 def add(a: int, b: int) -> int:
     return a + b
 
-def helper(x: int) -> int:
-    return x + 1
+def helper(xs: list[int]) -> int:
+    return xs[0] + 1
 
 @rextio.native
-def rejected(x: int) -> int:
-    return helper(x)
+def rejected(xs: list[int]) -> int:
+    return helper(xs)
 """,
         encoding="utf-8",
     )

@@ -32,6 +32,26 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - `list.index` failure messages interpolate the needle repr exactly like
   CPython ("5 is not in list", "'x' is not in list", "[3] is not in list").
 
+### Scalar boundary calls
+
+- An explicitly marked native function may call a fallback-only project
+  function whose signature is immutable scalars end to end: the call is an
+  in-process boundary call (`RXT075`, informational) executed by the host
+  interpreter, so values and exceptions are CPython-exact and runtime
+  replacement of the callee (monkeypatching) is honored by the native path.
+  Scalars cross by value: argument identity (`is`) is not preserved
+  (`None`/`bool` singletons are). Containers never cross; a boundary call
+  inside a native loop - including comprehension bodies and while-loop
+  tests - keeps the caller on the Python fallback (`RXT076`), while a call
+  in a for-loop iterable (evaluated once) stays an accepted `RXT075`;
+  auto-discovered candidates are
+  excluded (marker-only). Every crossing counts against the caller's
+  boundary-fallback threshold (one native call performing `k` boundary calls
+  adds `k + 1` crossings), so a chattering native demotes itself to the
+  Python fallback at run time. The importable Rust crate does not export
+  boundary-calling functions or their transitive native callers (they need
+  the interpreter), and the rust-executable delegate mode is unchanged.
+
 ### Toolchain selection and version pins
 
 - A `[toolchain]` configuration section (CLI flag > `REXTIO_*` variable >
@@ -85,7 +105,7 @@ Initial public MVP for Rextio as a local hybrid build tool.
   direct-Rust functions as a path dependency.
 - CPython fallback packaging and generated wrappers that preserve fallback behavior.
 - Experimental Nuitka fallback packaging with clear unavailable-tool reporting.
-- Runtime controls: `REXTIO_DISABLE_NATIVE=1` and `REXTIO_NATIVE_MODE`.
+- Runtime control: `REXTIO_NATIVE_MODE=auto|native|fallback` (one switch for disable/require/default).
 - Runtime boundary fallback threshold for repeated Python-to-native wrapper crossings.
 - `--fallback-threshold` for embedding a generated-code default threshold in `rextio build` and `rextio generate`.
 - Configurable external build-tool timeout via `--build-timeout`,
@@ -128,7 +148,7 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Mirrored build and analysis settings across CLI parameters, environment variables, and `rextio.toml`.
 - Target planning metadata for future Rust/Mojo/Julia backends and installed package plugins.
 - Experimental opt-in scalar-helper embedding for narrow unmarked helpers
-  represented in Rextio IR, with `--jit`, `REXTIO_JIT`, and `[jit] enabled`
+  represented in Rextio IR, with `--embed-helpers`, `REXTIO_EMBED_HELPERS`, and `[embedding] enabled`
   controls: an eligible helper compiles ahead of time as an internal native
   function through the normal checked lowering (int overflow raises
   OverflowError; float `/` raises ZeroDivisionError), and in the Rust

@@ -2,7 +2,7 @@
 
 The dataclasses the analyzer produces — per-function, per-top-level, per-module, and
 whole-project — plus the diagnostic-accumulation helpers and the derived views
-(accepted/rejected candidates, JIT candidates, aggregated diagnostics) the CLI and
+(accepted/rejected candidates, embedding candidates, aggregated diagnostics) the CLI and
 lowering consume. Every model serializes to a plain dict via ``to_dict`` for the
 ``rextio check`` JSON report.
 """
@@ -127,8 +127,8 @@ class FunctionAnalysis:
     annotated_return_type: str | None = None
     native_target_language: str | None = None
     native_runtime_semantics: bool = False
-    is_jit_candidate: bool = False
-    jit_reason: str | None = None
+    is_embedding_candidate: bool = False
+    embedding_reason: str | None = None
     # Set when a recognized external accelerator decorator (e.g. numba.njit) keeps
     # this function on the Python fallback intentionally: it is compiled by that
     # tool under THAT tool's semantics, outside Rextio's native contract.
@@ -153,6 +153,9 @@ class FunctionAnalysis:
     # (see boundary.apply_boundary_checks); empty in every normal build, where a
     # native->fallback call is rejected (RXT070) as before.
     delegated_call_targets: set[str] = field(default_factory=set)
+    # Fallback functions this native function calls in-process through the
+    # scalar boundary-call path (explicitly marked callers only).
+    boundary_call_targets: set[str] = field(default_factory=set)
     # User-call return types visible while validating this function body. Keys are
     # the same call targets produced by `canonical_call_target`/`dotted_name`
     # (bare same-module names and fully-qualified imported project functions).
@@ -206,15 +209,16 @@ class FunctionAnalysis:
             "explicitly_marked": self.explicitly_marked,
             "native_target_language": self.native_target_language,
             "native_runtime_semantics": self.native_runtime_semantics,
-            "is_jit_candidate": self.is_jit_candidate,
-            "jit_reason": self.jit_reason,
+            "is_embedding_candidate": self.is_embedding_candidate,
+            "boundary_call_targets": sorted(self.boundary_call_targets),
+            "embedding_reason": self.embedding_reason,
             "external_accelerator": self.external_accelerator,
             "inferred_arg_types": dict(sorted(self.inferred_arg_types.items())),
             "inferred_return_type": self.inferred_return_type,
             "calls": [call.to_dict() for call in self.calls],
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
-        # Only present for functions kept off the JIT for overflow safety, so the
+        # Only present for functions kept off embedding for overflow safety, so the
         # common case keeps a stable report shape.
         return data
 
@@ -339,14 +343,14 @@ class ProjectAnalysis:
         )
 
     @property
-    def jit_candidates(self) -> list[FunctionAnalysis]:
-        """The functions eligible for the experimental native JIT."""
+    def embedding_candidates(self) -> list[FunctionAnalysis]:
+        """The functions eligible for the experimental scalar-helper embedding."""
         return sorted(
             [
                 function
                 for module in self.modules
                 for function in module.functions
-                if function.is_jit_candidate
+                if function.is_embedding_candidate
             ],
             key=lambda function: function.qualname,
         )
@@ -376,10 +380,10 @@ class ProjectAnalysis:
 
         Single source of truth for "does this build need the Rust toolchain". It
         mirrors the build plan's ``has_native_artifacts``: only an *accepted*
-        native function or top level produces a native module. JIT candidates are
-        deliberately excluded — a JIT helper is compiled into the native module
+        native function or top level produces a native module. embedding candidates are
+        deliberately excluded — an embedding helper is compiled into the native module
         only when an accepted native function already exists (so it is covered),
-        and a project with JIT candidates but no accepted native produces no
+        and a project with embedding candidates but no accepted native produces no
         native artifact and must still build its pure-Python fallback.
         """
         return bool(
@@ -454,7 +458,7 @@ class ProjectAnalysis:
             "native_candidates": [function.qualname for function in self.native_candidates],
             "accepted_native": [function.qualname for function in self.accepted_native_functions],
             "rejected_native": [function.qualname for function in self.rejected_native_functions],
-            "jit_candidates": [function.qualname for function in self.jit_candidates],
+            "embedding_candidates": [function.qualname for function in self.embedding_candidates],
             "native_top_levels": [top_level.qualname for top_level in self.native_top_levels],
             "accepted_native_top_levels": [
                 top_level.qualname for top_level in self.accepted_native_top_levels

@@ -70,8 +70,8 @@ class ImportsConfig:
 
 
 @dataclass(frozen=True)
-class JitConfig:
-    """The [jit] configuration section (experimental scalar-helper embedding)."""
+class EmbeddingConfig:
+    """The [embedding] configuration section (experimental scalar-helper embedding)."""
 
     enabled: bool = False
 
@@ -145,7 +145,7 @@ class RextioConfig:
     target: TargetConfig = TargetConfig()
     plugins: PluginConfig = PluginConfig()
     imports: ImportsConfig = ImportsConfig()
-    jit: JitConfig = JitConfig()
+    embedding: EmbeddingConfig = EmbeddingConfig()
     executable: ExecutableConfig = ExecutableConfig()
     toolchain: ToolchainConfig = ToolchainConfig()
     policy: PolicyConfig = PolicyConfig()

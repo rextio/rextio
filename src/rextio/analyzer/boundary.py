@@ -30,13 +30,15 @@ BOUNDARY_DIAGNOSTIC_MESSAGES = {
     "RXT072": "Native dependency rejected, so caller must fall back.",
     "RXT073": "Native function call inside Python loop may erase speedup.",
     "RXT074": "Undecorated function depends on a runtime-shim native; mark it @rextio.native to opt in.",
+    "RXT075": "Native function performs a scalar boundary call to the Python fallback.",
+    "RXT076": "Scalar boundary call inside a native loop keeps the caller on fallback.",
 }
 
 
 def apply_boundary_checks(
     analysis: ProjectAnalysis,
     boundary_warnings: bool = True,
-    native_jit_enabled: bool = False,
+    embedding_enabled: bool = False,
     delegate_fallback: bool = False,
 ) -> None:
     """Apply the native/fallback boundary policy, attaching RXT07x diagnostics."""
@@ -75,7 +77,7 @@ def apply_boundary_checks(
                     module,
                     function,
                     resolver,
-                    native_jit_enabled=native_jit_enabled,
+                    embedding_enabled=embedding_enabled,
                     delegate_fallback=delegate_fallback,
                 )
                 if boundary_errors:
@@ -118,15 +120,19 @@ def _is_delegatable(
     function: FunctionAnalysis,
     call: CallSite,
 ) -> bool:
-    """Whether a fallback call can be faithfully delegated over the wire protocol.
+    """Whether a fallback call can faithfully cross an interpreter-mediated boundary.
 
-    Requires the callee's return type *and* every argument type to be an immutable
-    scalar. A mutable container crosses the wire by value (a JSON copy), which
-    severs the aliasing CPython preserves: a callee mutating a container argument,
-    or the native caller mutating a returned container that aliased Python state,
-    would diverge silently. When a type is unknown the call is *not* delegated (it
-    stays a rejection, keeping the caller on the Python fallback), so delegation
-    never guesses and never silently drops a mutation.
+    Gates BOTH crossing mechanisms: dispatcher delegation over the IPC wire
+    protocol (values cross as a JSON copy) and in-process scalar boundary
+    calls (RXT075; values re-enter the interpreter from the native caller's
+    extracted copies). Requires the callee's return type *and* every argument
+    type to be an immutable scalar. A mutable container crosses either
+    boundary by value, which severs the aliasing CPython preserves: a callee
+    mutating a container argument, or the native caller mutating a returned
+    container that aliased Python state, would diverge silently. When a type
+    is unknown the call does *not* cross (it stays a rejection, keeping the
+    caller on the Python fallback), so neither mechanism guesses and neither
+    silently drops a mutation.
     """
     return_type = (
         dependency.signature_return_type
@@ -143,7 +149,7 @@ def _boundary_errors(
     module: ModuleAnalysis,
     function: FunctionAnalysis,
     resolver: FunctionResolver,
-    native_jit_enabled: bool = False,
+    embedding_enabled: bool = False,
     delegate_fallback: bool = False,
 ) -> list[Diagnostic]:
     if function.native_runtime_semantics:
@@ -155,8 +161,8 @@ def _boundary_errors(
         if target in SUPPORTED_INTERNAL_CALLS or target.endswith(".append"):
             continue
         dependency = resolved.function
-        if native_jit_enabled and dependency is not None and dependency.is_jit_candidate:
-            # JIT candidates are lowered to a typed native inner function just like
+        if embedding_enabled and dependency is not None and dependency.is_embedding_candidate:
+            # embedding candidates are lowered to a typed native inner function just like
             # accepted native siblings, so the same call-compatibility check applies.
             diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
             continue
@@ -172,6 +178,71 @@ def _boundary_errors(
             # in the external CPython dispatcher instead. It runs real CPython, so
             # the result is CPython-equivalent (not a silent miscompile).
             function.delegated_call_targets.add(dependency.qualname)
+            continue
+        if (
+            not delegate_fallback
+            and function.explicitly_marked
+            and dependency is not None
+            and (not dependency.is_native_candidate or not dependency.accepted)
+            and _is_delegatable(dependency, function, call)
+        ):
+            # In-process scalar boundary call: the callee stays on the Python
+            # fallback and the generated native code calls it through the
+            # interpreter at run time. Real CPython executes the callee, so the
+            # result is CPython-equivalent; only immutable scalars may cross
+            # (the same rule as dispatcher delegation - containers would sever
+            # aliasing). Explicitly marked callers only: an auto-discovered
+            # candidate never silently acquires interpreter calls (the same
+            # conservatism as the RXT080 marker rule).
+            if call.in_loop:
+                # Frequency is not statically boundable, but position is: a
+                # per-iteration interpreter round-trip predictably erases the
+                # native speedup, so a loop-positioned boundary call keeps the
+                # caller on the Python fallback instead.
+                diagnostics.append(
+                    Diagnostic(
+                        code="RXT076",
+                        severity="error",
+                        message=(
+                            "scalar boundary call inside a native loop: "
+                            f"{resolved.resolved_target}"
+                        ),
+                        file_path=function.file_path,
+                        line=call.line,
+                        column=call.column,
+                        function_name=function.qualname,
+                        suggestion=(
+                            "Hoist the call out of the loop, mark the callee "
+                            "@rextio.native if it fits the supported subset, or "
+                            "enable [embedding] if the callee is an eligible "
+                            "unmarked scalar helper (@rextio.exempt callees "
+                            "never embed)."
+                        ),
+                    )
+                )
+                continue
+            function.boundary_call_targets.add(dependency.qualname)
+            function.add_diagnostic(
+                Diagnostic(
+                    code="RXT075",
+                    severity="info",
+                    message=(
+                        "native function performs a scalar boundary call to the "
+                        f"Python fallback: {resolved.resolved_target}"
+                    ),
+                    file_path=function.file_path,
+                    line=call.line,
+                    column=call.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "Each call crosses the native/Python boundary at run time "
+                        "and counts toward the boundary-fallback threshold. Scalars "
+                        "cross by value: the callee observes equal values, not the "
+                        "caller's original objects, so identity checks (`is`) on "
+                        "arguments are not preserved (None/bool singletons are)."
+                    ),
+                )
+            )
             continue
         if dependency is not None and not dependency.is_native_candidate:
             diagnostics.append(
@@ -314,7 +385,7 @@ def _native_arg_type_errors(
             # discarding it, which would falsely reject e.g. take_int(len(xs)).
             continue
         if resolved.accepted and not resolved.native_runtime_semantics:
-            # `accepted` (no error diagnostics) covers a valid JIT candidate too; a
+            # `accepted` (no error diagnostics) covers a valid embedding candidate too; a
             # rejected one is not accepted and must not be trusted.
             arg_types[index] = resolved.signature_return_type
         else:

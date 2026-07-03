@@ -36,7 +36,7 @@ assignments, augmented assignments, supported expressions, and `if`/`while`
 blocks that update variables assigned before the block. Assigned module
 variables must share one supported value type so the initializer can return
 `dict[str, T]`. Rextio still keeps a full original fallback module for
-`REXTIO_DISABLE_NATIVE=1` and native import failures.
+`REXTIO_NATIVE_MODE=fallback` and native import failures.
 
 If a source function has no annotations and no `.pyi` signature, Rextio only
 compiles it when constants, arithmetic, comparisons, `if` tests, loops,
@@ -270,9 +270,15 @@ Rextio promotes the caller to the runtime shim path and emits `RXT080`.
 
 Native functions must not call:
 
-- fallback-only user functions (`RXT070`)
-- exempt user functions (`RXT070`)
-- rejected native candidates (`RXT072`)
+- fallback-only, exempt, or rejected project functions with a
+  non-scalar signature (`RXT070`/`RXT072`) - when the signature is immutable
+  scalars end to end, an EXPLICITLY MARKED caller makes an in-process scalar
+  boundary call instead (`RXT075`, informational; the callee keeps running in
+  the host interpreter, and scalars cross by value - argument identity `is`
+  is not preserved, though the `None`/`bool` singletons are), unless the call
+  sits inside a native loop or comprehension body
+  (`RXT076`, rejected: a per-iteration interpreter round-trip erases the
+  speedup)
 - unsupported external packages or unresolved functions (`RXT030`)
 - I/O, network, database, or ORM functions
 
@@ -309,10 +315,11 @@ this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 ## Experimental Scalar-Helper Embedding Boundary
 
 Rextio 0.1.0 alpha includes opt-in embedding for a very narrow scalar helper
-subset. It is disabled by default and must be enabled with `[jit]
-enabled = true`, `--jit`, or `REXTIO_JIT=true`.
+subset. It is disabled by default and must be enabled with `[embedding]
+enabled = true`, `--embed-helpers`, or `REXTIO_EMBED_HELPERS=true`.
 
-Embedding is not a JIT. It covers unmarked functions with scalar `int` or
+Embedding compiles ahead of time (it is not a JIT). It covers unmarked
+functions with scalar `int` or
 `float` arguments and return values, a matching scalar signature, and a single
 arithmetic return expression; an eligible helper is compiled ahead of time as
 an ordinary internal native function (callable from native code, not exported
@@ -321,6 +328,12 @@ OverflowError, `%` keeps floored/zero-division semantics, and float `/` raises
 ZeroDivisionError. In the Rust executable backend an embedded helper compiles
 into the binary instead of being delegated per call to the CPython dispatcher.
 There is no runtime compilation.
+
+Because an embedded helper is a compiled copy fixed at build time, runtime
+replacement of the helper (monkeypatching the module attribute) is NOT
+visible to native callers - unlike a scalar boundary call, which resolves
+its target per call and honors monkeypatching. Test suites that patch a
+helper should run with embedding disabled or patch at a different seam.
 
 Code outside this subset remains on the normal direct Rust, Python runtime shim,
 or CPython/Nuitka fallback path.

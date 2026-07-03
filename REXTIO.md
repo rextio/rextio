@@ -15,7 +15,7 @@ Python source
 ```
 
 Native compilation is an optimization. Fallback Python behavior must remain
-available, including when `REXTIO_DISABLE_NATIVE=1` is set.
+available, including when `REXTIO_NATIVE_MODE=fallback` is set.
 
 At a product level, Rextio gives a Python project four practical outputs:
 
@@ -71,7 +71,7 @@ ambitions behind explicit opt-ins. Treat the surface in these tiers:
 | Tier | Features | Notes |
 | --- | --- | --- |
 | **Stable (core)** | Typed-function discovery, supported-subset checks, Rust/PyO3 AOT codegen, Cargo/maturin build, CPython fallback packaging, boundary policy | The path the alpha is meant to be judged on. |
-| **Experimental (opt-in)** | Scalar-helper embedding (`--jit`/`REXTIO_JIT`/`[jit] enabled`), Numba external accelerator recognition + Nuitka coexistence, Nuitka fallback and Nuitka executables, runtime-semantics shim (`RXT080`), Rust-importable crate, `[toolchain]` selection + version pins | Behind flags/markers; behaviour and diagnostics may change before the first non-alpha release. |
+| **Experimental (opt-in)** | Scalar-helper embedding (`--embed-helpers`/`REXTIO_EMBED_HELPERS`/`[embedding] enabled`), Numba external accelerator recognition + Nuitka coexistence, Nuitka fallback and Nuitka executables, runtime-semantics shim (`RXT080`), Rust-importable crate, `[toolchain]` selection + version pins | Behind flags/markers; behaviour and diagnostics may change before the first non-alpha release. |
 | **Planned (not implemented)** | `mojo`/`julia` native targets, installed-package plugins beyond metadata | Target metadata can be recorded for planning, but only Rust codegen is implemented. |
 
 Stability of diagnostic codes (`RXT…`) is tracked in
@@ -85,7 +85,7 @@ rextio init --project-root demo
 rextio check demo
 rextio generate demo --fallback=cpython
 rextio build demo --fallback=cpython
-rextio build demo --fallback=cpython --jit
+rextio build demo --fallback=cpython --embed-helpers
 rextio build demo --fallback=cpython --rust-importable --rust-crate-name=demo_native
 rextio build demo --fallback=cpython --entrypoint=demo_app.cli:main
 rextio bench demo_app.compute --project-root demo
@@ -214,7 +214,7 @@ flag and environment variable. Common examples:
 --enable-plugin / REXTIO_PLUGINS_ENABLED / [plugins] enabled
 --default-external-policy / REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY / [imports] default_external_policy
 --package-import-policy / REXTIO_IMPORTS_PACKAGES / [imports.packages]
---jit / REXTIO_JIT / [jit] enabled
+--embed-helpers / REXTIO_EMBED_HELPERS / [embedding] enabled
 --rust-importable / REXTIO_RUST_IMPORTABLE / [rust] importable
 --rust-crate-name / REXTIO_RUST_CRATE_NAME / [rust] crate_name
 --native-marker / REXTIO_NATIVE_MARKER / [policy] native_marker
@@ -303,18 +303,18 @@ reports. It does not authorize silent conversion of arbitrary third-party source
 if no safe direct lowering exists, Rextio keeps the native candidate on
 CPython/Nuitka fallback and reports the boundary reason.
 
-## Experimental Scalar-Helper Embedding (`[jit]`)
+## Experimental Scalar-Helper Embedding (`[embedding]`)
 
-Embedding is an explicit opt-in in 0.1.0 alpha. Despite the `[jit]` key
-name, this is NOT a JIT: everything compiles ahead of time and no JIT
-compiler exists or runs inside the built artifact.
+Embedding is an explicit opt-in in 0.1.0 alpha, compiled ahead of time like
+everything else Rextio builds.
 
 ```toml
-[jit]
+[embedding]
 enabled = true
 ```
 
-The same control is available as `--jit` / `--no-jit` or `REXTIO_JIT`.
+The same control is available as `--embed-helpers` / `--no-embed-helpers` or
+`REXTIO_EMBED_HELPERS`.
 
 With embedding enabled, an unmarked typed scalar helper (single arithmetic
 return expression) called from an accepted native function is compiled as an
@@ -346,7 +346,7 @@ PYTHONPATH=src pytest -m needs_nuitka tests/e2e
 
 The editable-install smoke also installs the generated artifact wheel into a
 fresh virtual environment and imports the generated package with
-`REXTIO_DISABLE_NATIVE=1`, so release checks cover the packaged fallback path as
+`REXTIO_NATIVE_MODE=fallback`, so release checks cover the packaged fallback path as
 well as the build directory path.
 
 `rextio build --entrypoint=module:function` generates a zipapp executable under
@@ -370,9 +370,24 @@ must be installed for this backend.
 ## Boundary Safety
 
 Native functions may call accepted native functions and supported builtins.
-They may not call fallback-only functions, rejected native candidates, or
-unresolved external package calls. Those cases produce deterministic diagnostics
-such as `RXT070`, `RXT072`, and `RXT030`.
+An explicitly marked native function may also call a fallback-only project
+function whose signature is immutable scalars end to end
+(`int`/`float`/`bool`/`str`/`None`): the call becomes an in-process *scalar
+boundary call* (`RXT075`, informational) - the callee keeps running in the
+host interpreter, so its result and any raised exception are CPython-exact by
+construction, and the target is resolved per call (runtime replacement of the
+module attribute is honored). Two caveats: scalars cross by *value*, so the
+callee observes equal values rather than the caller's original objects - an
+identity check (`is`) on an argument is not preserved (the `None`/`bool`
+singletons are) - and a callee exception's traceback includes the runtime
+dispatch hook's frames. Containers never cross the boundary (a by-value
+copy would sever the aliasing CPython preserves), a boundary call inside a
+native loop keeps the caller on the Python fallback (`RXT076` - a
+per-iteration interpreter round-trip predictably erases the speedup), and
+auto-discovered candidates never acquire boundary calls (marker-only, the
+same conservatism as the runtime-shim rule). Everything else - container
+signatures, unresolved external package calls, rejected dependencies -
+produces deterministic diagnostics such as `RXT070`, `RXT072`, and `RXT030`.
 
 If a direct-Rust native function calls a runtime-semantics native function,
 Rextio promotes the caller to the same runtime shim path and reports `RXT080`.
@@ -383,8 +398,11 @@ Rextio emits `RXT073` with the suggestion to move the loop into a native batch
 function. Supported batch loop shapes include `for x in xs`,
 `for i, x in enumerate(xs)`, and `for x, y in zip(xs, ys)`.
 
-Generated wrappers also keep a per-function runtime crossing count. After a
-function's Python-to-native wrapper calls exceed
+Generated wrappers also keep a per-function runtime crossing count, and every
+native scalar boundary call counts one crossing against its caller too - one
+native call that performs `k` boundary calls therefore adds `k + 1` crossings
+(one wrapper entry plus `k` dispatches). After
+a function's total crossings exceed
 `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` (`1000` by default), later calls use the
 generated Python fallback path for that function. `rextio generate` and
 `rextio build` accept `--fallback-threshold=N`, and projects can set

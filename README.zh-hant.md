@@ -44,7 +44,7 @@ Rextio 可以從同一個 Python 專案產出多種 artifact:
 被分析拒絕、或超過設定的 boundary threshold 時回落到 Python。
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 設定 `REXTIO_DEBUG_NATIVE=1` 可以在建置出的 native 模組載入失敗時拋出
@@ -132,7 +132,7 @@ Nuitka、wheel 建置或可執行檔打包。
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit
+rextio build . --embed-helpers
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -190,11 +190,18 @@ Rextio 讓 native 編譯保持保守:
 
 - direct Rust native 函式只能呼叫被接受的 native 函式、受支援的 builtin
   和受支援的標準函式庫函式。
-- 呼叫僅 fallback 程式碼的 native 函式會被拒絕進行 native 編譯。
+- 呼叫僅 fallback 程式碼的 native 函式會被拒絕 — 除非呼叫者被顯式標記且
+  callee 的簽名從頭到尾都是不可變純量（`int`/`float`/`bool`/`str`/`None`）:
+  該呼叫將成為 in-process 純量 boundary call（`RXT075`）。callee 繼續在
+  直譯器中執行，因此值與例外都 CPython-精確，monkeypatch 也被尊重；純量
+  按值跨越邊界，因此引數的 identity（`is`）不被保留（`None`/`bool`
+  單例除外）；容器絕不跨越邊界，native 迴圈（包括推導式主體）內的
+  boundary call 會讓呼叫者留在 fallback（`RXT076`）。
 - Python fallback 程式碼可以呼叫 native 函式。
 - 反覆呼叫 native 函式的 Python 迴圈會產生 boundary 警告。
-- 產生的 wrapper 可以在 Python→native 的 wrapper 穿越反覆發生後把該函式
-  切回 fallback。
+- 產生的 wrapper 可以在邊界穿越反覆發生後把該函式切回 fallback —
+  Python→native 的 wrapper 進入與 native 純量 boundary call 計入同一個
+  按函式閾值。
 - Python/Rust 的所有權差異被顯式處理。持有值的唯讀重用在需要時用 Rust
   clone 下沉，可變集合的別名修改則留在 Python fallback。
 
@@ -262,8 +269,7 @@ semantics shim 暴露。詳細邊界見
 ## 實驗性 scalar helper 內嵌（embedding）
 
 Rextio 可以選擇性地把一組非常窄的未標記純量 helper 作為內部 native 函式
-內嵌。預設關閉。雖然設定鍵名叫 `[jit]`，但這不是 JIT: 一切都提前編譯，
-建置出的 artifact 內不存在也不執行任何 JIT 編譯器。
+內嵌 — 與其他一切一樣提前（ahead-of-time）編譯。預設關閉。
 
 啟用後，合格的未標記 helper（純量參數與回傳值、單一算術 return 運算式）
 會被編譯成產生 native artifact 中的普通內部函式 — 可被 native 程式碼
@@ -273,15 +279,15 @@ Rextio 可以選擇性地把一組非常窄的未標記純量 helper 作為內�
 每次呼叫委託給 CPython dispatcher。
 
 ```toml
-[jit]
+[embedding]
 enabled = true
 ```
 
 等價的命令列與環境變數控制:
 
 ```text
-rextio build . --jit
-REXTIO_JIT=true rextio build .
+rextio build . --embed-helpers
+REXTIO_EMBED_HELPERS=true rextio build .
 ```
 
 ## Numba 外部加速器（experimental）
@@ -316,8 +322,11 @@ plain Python（`.py` 繼續被 import），樹的其餘部分用 Nuitka 編譯�
 在第一次呼叫。帶型別的純量程式碼優先用 `@rextio.native`，NumPy/陣列核心
 用 Numba，並注意非常小的函式在任何加速器下都會輸給呼叫邊界成本。
 
-內嵌不會給產生的 Cargo 專案增加 crate 依賴。內嵌關閉時，本可成為候選的
-函式留在常規 fallback 路徑（其 native 呼叫者受常規 boundary 規則約束）。
+內嵌不會給產生的 Cargo 專案增加 crate 依賴。內嵌關閉時，合格的 helper
+呼叫仍透過執行時純量 boundary call 運作 — 內嵌是移除每次呼叫直譯器往返
+的快速路徑。與 boundary call 不同，內嵌的 helper 是建置時編譯進 native
+成果物的副本，因此對 helper 的執行時替換（monkeypatch）對 native 呼叫方
+不可見。
 
 ## Rust-importable crate
 
@@ -343,8 +352,9 @@ fn main() -> Result<(), my_native::RextioError> {
 }
 ```
 
-只有直接下沉為帶型別 Rust 的函式透過該 crate 匯出。僅 fallback 的函式和
-runtime semantics shim 仍是面向 Python 的路徑。
+只有直接下沉為帶型別 Rust 的函式透過該 crate 匯出。僅 fallback 的函式、
+runtime semantics shim、以及使用純量 boundary call 的函式（都需要直譯器）
+仍是面向 Python 的路徑。
 
 ## 可執行 artifact
 
@@ -423,7 +433,7 @@ CLI 參數 > 環境變數 > rextio.toml > 內建預設值
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
-| `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
+| `[embedding] enabled` | `--embed-helpers` / `--no-embed-helpers` | `REXTIO_EMBED_HELPERS` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |

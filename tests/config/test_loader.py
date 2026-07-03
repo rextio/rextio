@@ -113,10 +113,10 @@ default_external_policy = "analyze"
     assert config.imports.packages["known_pkg"].plugin == "known-rust"
 
 
-def test_load_config_reads_jit_options(tmp_path: Path) -> None:
+def test_load_config_reads_embedding_options(tmp_path: Path) -> None:
     (tmp_path / "rextio.toml").write_text(
         """
-[jit]
+[embedding]
 enabled = true
 """,
         encoding="utf-8",
@@ -124,7 +124,7 @@ enabled = true
 
     config = load_config(tmp_path)
 
-    assert config.jit.enabled is True
+    assert config.embedding.enabled is True
 
 
 def test_load_config_applies_environment_overrides(tmp_path: Path) -> None:
@@ -155,7 +155,7 @@ boundary_warnings = true
             "REXTIO_PLUGINS_ENABLED": "numpy-julia",
             "REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY": "try-native",
             "REXTIO_IMPORTS_PACKAGES": "safe_pkg=try-native,legacy_pkg=fallback",
-            "REXTIO_JIT": "true",
+            "REXTIO_EMBED_HELPERS": "true",
             "REXTIO_EXECUTABLE_ENTRYPOINT": "demo.cli:main",
             "REXTIO_EXECUTABLE_NAME": "demo-env",
             "REXTIO_EXECUTABLE_BACKEND": "nuitka",
@@ -178,7 +178,7 @@ boundary_warnings = true
     assert config.imports.default_external_policy == "try-native"
     assert config.imports.packages["safe_pkg"].policy == "try-native"
     assert config.imports.packages["legacy_pkg"].policy == "fallback"
-    assert config.jit.enabled is True
+    assert config.embedding.enabled is True
     assert config.executable.entrypoint == "demo.cli:main"
     assert config.executable.name == "demo-env"
     assert config.executable.backend == "nuitka"
@@ -272,7 +272,7 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
             ("plugins", "enabled"): ("numpy-mojo",),
             ("imports", "default_external_policy"): "analyze",
             ("imports", "packages"): {"safe_pkg": {"policy": "try-native", "max_depth": 1}},
-            ("jit", "enabled"): True,
+            ("embedding", "enabled"): True,
             ("policy", "native_marker"): "decorator",
             ("policy", "native_top_level"): True,
         },
@@ -289,7 +289,7 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
     assert config.imports.default_external_policy == "analyze"
     assert config.imports.packages["safe_pkg"].policy == "try-native"
     assert config.imports.packages["safe_pkg"].max_depth == 1
-    assert config.jit.enabled is True
+    assert config.embedding.enabled is True
     assert config.policy.native_marker == "decorator"
     assert config.policy.native_top_level is True
 
@@ -343,18 +343,18 @@ def test_load_config_rejects_import_plugin_policy_without_plugin(tmp_path: Path)
         load_config(tmp_path)
 
 
-def test_load_config_rejects_unknown_jit_keys(tmp_path: Path) -> None:
-    # [jit] accepts only `enabled`; an unknown key must be rejected rather
+def test_load_config_rejects_unknown_embedding_keys(tmp_path: Path) -> None:
+    # [embedding] accepts only `enabled`; an unknown key must be rejected rather
     # than silently ignored.
     (tmp_path / "rextio.toml").write_text(
         """
-[jit]
+[embedding]
 bogus_option = 25
 """,
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match=r"jit"):
+    with pytest.raises(ConfigError, match=r"embedding"):
         load_config(tmp_path)
 
 
@@ -435,7 +435,7 @@ def test_load_config_ignores_unknown_environment_variables(tmp_path: Path) -> No
         environ={"REXTIO_TOTALLY_UNKNOWN": "1", "REXTIO_JTI": "true"},
     )
 
-    assert config.jit.enabled is False
+    assert config.embedding.enabled is False
 
 
 def test_toolchain_section_loads_from_toml_env_and_overrides(tmp_path):

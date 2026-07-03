@@ -106,6 +106,10 @@ def has_exempt_marker(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
 # are then the TOOL's contract (e.g. Numba nopython int arithmetic wraps on
 # overflow), not Rextio's CPython-exact native contract - the same opt-out
 # philosophy as @rextio.exempt.
+#
+# These keys are EXTERNAL API names owned by the accelerator packages. They
+# must never be swept up in Rextio-internal renames (e.g. the jit->embedding
+# surface rename): `numba.jit` is Numba's decorator, not Rextio's.
 _EXTERNAL_ACCELERATOR_QUALNAMES = {
     "numba.jit": "numba",
     "numba.njit": "numba",

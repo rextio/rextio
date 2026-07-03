@@ -142,7 +142,7 @@ def test_init_creates_default_project_files(tmp_path: Path, capsys) -> None:
     config_text = (tmp_path / "rextio.toml").read_text(encoding="utf-8")
     assert 'native_marker = "auto"' in config_text
     assert 'default_external_policy = "fallback"' in config_text
-    assert "[jit]" in config_text
+    assert "[embedding]" in config_text
     assert "enabled = false" in config_text
 
 

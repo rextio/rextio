@@ -1,6 +1,6 @@
 """Eligibility check for the experimental scalar-helper native embedding.
 
-With `[jit] enabled`, an unmarked typed scalar helper is embedded as an
+With `[embedding] enabled`, an unmarked typed scalar helper is embedded as an
 ordinary internal native function, compiled ahead of time. Embedded int
 arithmetic goes through the normal checked lowering, so overflow raises
 OverflowError like any other native function.
@@ -15,7 +15,7 @@ from rextio.analyzer.type_collector import annotation_name
 from rextio.capabilities import NUMERIC_TYPES
 
 # The experimental scalar embedding currently supports exactly the numeric scalars.
-JIT_SCALAR_TYPES = NUMERIC_TYPES
+EMBEDDING_SCALAR_TYPES = NUMERIC_TYPES
 
 
 def is_embedding_candidate(
@@ -29,9 +29,9 @@ def is_embedding_candidate(
     if signature_types is None:
         return False, "embedding candidates require resolved scalar annotations"
     arg_types, return_type = signature_types
-    if return_type not in JIT_SCALAR_TYPES:
+    if return_type not in EMBEDDING_SCALAR_TYPES:
         return False, "embedding candidates currently require int or float return types"
-    if any(arg_type not in JIT_SCALAR_TYPES for arg_type in arg_types.values()):
+    if any(arg_type not in EMBEDDING_SCALAR_TYPES for arg_type in arg_types.values()):
         return False, "embedding candidates currently require int or float arguments"
     if any(arg_type != return_type for arg_type in arg_types.values()):
         return False, "embedding candidates currently require arguments to match the return type"
@@ -39,6 +39,8 @@ def is_embedding_candidate(
         return False, "embedding candidates currently require a single return expression"
     if not _is_supported_expr(node.body[0].value, set(arg_types), return_type):
         return False, "embedding candidates currently support only scalar arithmetic expressions"
+    # This exact wording is asserted by tests and surfaces in reports as
+    # embedding_reason - change it deliberately, not in passing.
     return True, "typed scalar helper can be embedded as an internal native function"
 
 

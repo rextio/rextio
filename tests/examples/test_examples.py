@@ -62,6 +62,10 @@ def test_boundary_demo_shows_rejection_and_warning() -> None:
     assert "boundary_demo.pipeline.sum_squares" in [
         function.qualname for function in analysis.accepted_native_functions
     ]
+    assert "boundary_demo.pipeline.compute_boundary" in [
+        function.qualname for function in analysis.accepted_native_functions
+    ]
+    assert "RXT075" in diagnostics
     assert [function.qualname for function in analysis.rejected_native_functions] == [
         "boundary_demo.pipeline.compute_rejected"
     ]
@@ -172,5 +176,8 @@ def _check_boundary_demo_artifact() -> None:
 
     assert module.square(4.0) == 16.0
     assert module.sum_squares([2.0, 3.0]) == 13.0
-    assert module.compute_rejected(5.0) == 15.0
+    # Native with an in-process boundary call into the exempt helper.
+    assert module.compute_boundary(5.0) == 15.0
+    # Rejected to the Python fallback (container-signature callee).
+    assert module.compute_rejected([2.0, 4.0]) == 3.0
     assert module.process_all([2.0, 3.0]) == [4.0, 9.0]

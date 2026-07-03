@@ -49,7 +49,7 @@ def sum_squares(xs: list[float]) -> float:
 
 
 def test_embeds_internal_helper_only_when_enabled(tmp_path: Path) -> None:
-    # With `[jit] enabled`, an unmarked scalar helper is EMBEDDED as an ordinary
+    # With `[embedding] enabled`, an unmarked scalar helper is EMBEDDED as an ordinary
     # internal native function (callable from native code, not exported to
     # Python); no runtime-compilation machinery of any kind is emitted.
     (tmp_path / "app.py").write_text(
@@ -69,9 +69,9 @@ def compute(x: float) -> float:
     analysis = analyze_project(
         tmp_path,
         native_marker="decorator",
-        native_jit_enabled=True,
+        embedding_enabled=True,
     )
-    source = generate_rust_module(lower_project(analysis, include_jit=True))
+    source = generate_rust_module(lower_project(analysis, include_embedding=True))
 
     assert "fn app__helper(x: f64) -> PyResult<f64> {" in source
     assert "return Ok(x * 2.0);" in source
@@ -104,9 +104,9 @@ def compute(x: int) -> int:
     analysis = analyze_project(
         tmp_path,
         native_marker="decorator",
-        native_jit_enabled=True,
+        embedding_enabled=True,
     )
-    source = generate_rust_module(lower_project(analysis, include_jit=True))
+    source = generate_rust_module(lower_project(analysis, include_embedding=True))
 
     assert "fn app__wrap(x: i64) -> PyResult<i64> {" in source
     assert "__rextio_checked_mul(" in source
@@ -118,7 +118,7 @@ def compute(x: int) -> int:
 def test_embedded_helper_with_a_rust_keyword_name_is_escaped(tmp_path: Path) -> None:
     # An embedded helper named after a Rust keyword renders through the
     # ordinary raw-identifier escaping (`fn r#loop`) - no compound
-    # `__rextio_jit_*` identifier scheme.
+    # `__rextio_embedding_*` identifier scheme.
     (tmp_path / "__init__.py").write_text(
         """
 import rextio
@@ -134,13 +134,13 @@ def compute(x: float) -> float:
     )
 
     analysis = analyze_project(
-        tmp_path, native_marker="decorator", native_jit_enabled=True
+        tmp_path, native_marker="decorator", embedding_enabled=True
     )
-    source = generate_rust_module(lower_project(analysis, include_jit=True))
+    source = generate_rust_module(lower_project(analysis, include_embedding=True))
 
     assert "fn r#loop(" in source
     assert "return Ok(r#loop(x.clone())? + 1.0);" in source
-    assert "__rextio_jit_" not in source
+    assert "__rextio_embedding_" not in source
 
 
 def test_generates_rust_importable_crate_module_for_native_functions(tmp_path: Path) -> None:
@@ -1399,6 +1399,82 @@ def at(xs: list[int], i: int) -> int:
     assert "pyo3" not in source
 
 
+def test_boundary_call_in_for_header_keeps_wrapping_parens(tmp_path: Path) -> None:
+    # A bare block in a for-header range bound (`for i in 0..{ .. }`) is
+    # parsed by rustc as the loop body; the boundary-call block must stay
+    # parenthesized there. Pins the council-54 fix against a future
+    # strip_wrapping_parens regression.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def bump(x: int) -> int:
+    return x + 1
+
+@rextio.native
+def total(n: int) -> int:
+    out = 0
+    for i in range(bump(n)):
+        out += i
+    return out
+""",
+        encoding="utf-8",
+    )
+
+    # Deliberate coupling to the build layer's private helper: it is the
+    # production wiring that feeds boundary_call_return_types to the
+    # generator (same pattern as the golden-snapshot harness), and
+    # re-deriving the mapping here would drift from it.
+    from rextio.build.orchestrator import _boundary_call_return_types
+
+    analysis = analyze_project(tmp_path)
+    source = generate_rust_module(
+        lower_project(analysis),
+        boundary_call_return_types=_boundary_call_return_types(analysis),
+    )
+
+    # The negative assertion is the regression signal (a stripped paren
+    # renders exactly `0..{ `); the positive one only confirms the paren
+    # still hugs the range bound, so it stays whitespace-agnostic.
+    assert "0..({" in source
+    assert "0..{ " not in source
+
+
+def test_crate_mode_excludes_boundary_calling_functions_transitively(tmp_path: Path) -> None:
+    # A boundary-calling function has no pure-Rust crate form, and neither
+    # does any native function that calls it: keeping the caller would render
+    # a call to a function the crate never emits (undefined symbol).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def bump(x: int) -> int:
+    return x + 1
+
+@rextio.native
+def b(x: int) -> int:
+    return bump(x) * 2
+
+@rextio.native
+def a(x: int) -> int:
+    return b(x) + 1
+
+@rextio.native
+def pure(x: int) -> int:
+    return x * 3
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
+
+    assert "fn app__pure" in source
+    assert "app__a" not in source
+    assert "app__b" not in source
+
+
 def test_domain_error_prone_math_is_guarded(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """
@@ -1606,7 +1682,7 @@ def bad_arg(n: int) -> int:
     assert "pyo3" not in cargo
 
 
-def test_generate_rust_main_binary_rejects_runtime_or_jit_entry_clearly(
+def test_generate_rust_main_binary_rejects_runtime_or_embedded_entry_clearly(
     tmp_path: Path,
 ) -> None:
     import pytest
@@ -1631,7 +1707,7 @@ def main(argv: list[str]) -> int:
     with pytest.raises(RustCodegenError, match="cannot use Python runtime semantics"):
         generate_rust_main_binary(runtime_ir, "app.main")
 
-    jit_ir = runtime_ir.__class__(
+    embedded_ir = runtime_ir.__class__(
         [
             FunctionIR(
                 name="main",
@@ -1640,12 +1716,12 @@ def main(argv: list[str]) -> int:
                 params=[ParamIR("argv", RxtList(RxtStr()))],
                 return_type=RxtInt(),
                 body=BlockIR([ReturnIR(LiteralIR(0))]),
-                native_jit=True,
+                embedded=True,
             )
         ]
     )
     with pytest.raises(RustCodegenError, match="cannot be an embedded helper function"):
-        generate_rust_main_binary(jit_ir, "app.main")
+        generate_rust_main_binary(embedded_ir, "app.main")
 
 
 def test_delegated_call_lowers_to_ipc_client(tmp_path: Path) -> None:

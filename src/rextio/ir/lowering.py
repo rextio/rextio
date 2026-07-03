@@ -80,23 +80,23 @@ class LoweringError(RuntimeError):
     """Raised when an accepted analysis result cannot be lowered to IR."""
 
 
-def lower_project(analysis: ProjectAnalysis, include_jit: bool = False) -> ModuleIR:
-    """Lower every accepted native function (and JIT candidate, if included) to a module IR."""
+def lower_project(analysis: ProjectAnalysis, include_embedding: bool = False) -> ModuleIR:
+    """Lower every accepted native function (and embedding candidate, if included) to a module IR."""
     functions: list[FunctionIR] = []
     nodes_by_file: dict[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]] = {}
     module_trees_by_file: dict[str, ast.Module] = {}
     resolver = FunctionResolver(analysis)
     for function in analysis.accepted_native_functions:
         functions.append(_lower_analysis_function(function, analysis, nodes_by_file, resolver))
-    if include_jit:
-        for function in analysis.jit_candidates:
+    if include_embedding:
+        for function in analysis.embedding_candidates:
             functions.append(
                 _lower_analysis_function(
                     function,
                     analysis,
                     nodes_by_file,
                     resolver,
-                    native_jit=True,
+                    embedded=True,
                 )
             )
     for top_level in analysis.accepted_native_top_levels:
@@ -117,17 +117,17 @@ def _lower_analysis_function(
     nodes_by_file: dict[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]],
     resolver: FunctionResolver,
     *,
-    native_jit: bool = False,
+    embedded: bool = False,
 ) -> FunctionIR:
     nodes = nodes_by_file.setdefault(function.file_path, _function_nodes(Path(function.file_path)))
     node = nodes.get(_function_node_key(function))
     if node is None:
-        kind = "JIT candidate" if native_jit else "accepted native function"
+        kind = "embedding candidate" if embedded else "accepted native function"
         raise LoweringError(f"{kind} was not found: {function.qualname}")
     module = analysis.module_for_function(function)
     if module is None:
         raise LoweringError(f"module was not found for function: {function.qualname}")
-    return lower_function(function, node, module, resolver, native_jit=native_jit)
+    return lower_function(function, node, module, resolver, embedded=embedded)
 
 
 def lower_function(
@@ -136,7 +136,7 @@ def lower_function(
     module: ModuleAnalysis,
     resolver: FunctionResolver,
     *,
-    native_jit: bool = False,
+    embedded: bool = False,
 ) -> FunctionIR:
     """Lower a single analyzed native function (signature + body) to a ``FunctionIR``."""
     if function.native_runtime_semantics:
@@ -148,7 +148,7 @@ def lower_function(
             return_type=RxtPyObject(),
             body=BlockIR(statements=[]),
             native_runtime_semantics=True,
-            native_jit=native_jit,
+            embedded=embedded,
             runtime_fallback_module=_runtime_fallback_module(module),
             runtime_attr_path=(runtime_original_name(function.qualname),),
         )
@@ -164,7 +164,8 @@ def lower_function(
         params=params,
         return_type=_return_type(function, node),
         body=lower_block(node.body, module, resolver),
-        native_jit=native_jit,
+        embedded=embedded,
+        has_boundary_calls=bool(function.boundary_call_targets),
     )
 
 

@@ -69,6 +69,14 @@ def safe_mod(a: int, b: int) -> int:
     except ZeroDivisionError:
         out = -1
     return out
+
+@rextio.exempt
+def offset(x: int) -> int:
+    return x + 7
+
+@rextio.native
+def shifted(x: int) -> int:
+    return offset(x) * 2
 """
 
 
@@ -102,8 +110,12 @@ def _assert_golden(name: str, generated: str) -> None:
 
 
 def test_pyo3_module_matches_golden(tmp_path: Path) -> None:
+    from rextio.build.orchestrator import _boundary_call_return_types
+
+    analysis = analyze_project(_write_project(tmp_path, _SOURCE_PYO3_ONLY))
     source = generate_rust_module(
-        lower_project(analyze_project(_write_project(tmp_path, _SOURCE_PYO3_ONLY)))
+        lower_project(analysis),
+        boundary_call_return_types=_boundary_call_return_types(analysis),
     )
     _assert_golden("representative_pyo3.rs", source)
 

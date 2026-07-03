@@ -48,8 +48,8 @@ Python source
     initialization logic to a Rust native initializer while preserving Python
     fallback import behavior.
 19. Rextio can optionally embed narrow unmarked scalar helpers as internal
-    native functions (experimental) when `[jit] enabled = true`, `--jit`, or
-    `REXTIO_JIT=true` is set. Despite the `[jit]` key name this is AOT
+    native functions (experimental) when `[embedding] enabled = true`, `--embed-helpers`, or
+    `REXTIO_EMBED_HELPERS=true` is set. This is AOT
     embedding only - no JIT compiler exists or runs inside the built
     artifact. Numba decorators are recognized as an
     external accelerator for fallback code (experimental in 0.1.0 alpha).
@@ -120,7 +120,7 @@ If a native module is missing, fails to load, or is disabled, the generated pack
 Required runtime switch:
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 When this variable is set, the package must use fallback implementations.
@@ -388,7 +388,7 @@ default_external_policy = "fallback"
 # "legacy_dynamic_pkg" = "fallback"
 # "known_pkg" = { policy = "plugin", plugin = "known-rust" }
 
-[jit]
+[embedding]
 enabled = false
 
 [executable]
@@ -467,8 +467,8 @@ rextio build --package-import-policy some_pure_python_pkg=try-native
 rextio build --fallback=cpython
 rextio build --fallback=nuitka
 rextio build --fallback-threshold=1000
-rextio build --jit
-rextio build --no-jit
+rextio build --embed-helpers
+rextio build --no-embed-helpers
 rextio build --rust-binding=pyo3
 rextio build --rust-build-tool=maturin
 rextio build --rust-importable
@@ -498,7 +498,7 @@ REXTIO_TARGET_BUILD_OPTIONS
 REXTIO_PLUGINS_ENABLED
 REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY
 REXTIO_IMPORTS_PACKAGES
-REXTIO_JIT
+REXTIO_EMBED_HELPERS
 REXTIO_FALLBACK_BACKEND
 REXTIO_BOUNDARY_FALLBACK_THRESHOLD
 REXTIO_BUILD_TIMEOUT
@@ -550,9 +550,9 @@ refactoring to a batch API to avoid repeated Python/Rust boundary crossings.
 
 Experimental scalar-helper embedding must stay opt-in:
 
-* Default `[jit] enabled = false`.
-* `--jit`, `REXTIO_JIT=true`, or `[jit] enabled = true` may enable it.
-* `--no-jit` must override environment and `rextio.toml` settings.
+* Default `[embedding] enabled = false`.
+* `--embed-helpers`, `REXTIO_EMBED_HELPERS=true`, or `[embedding] enabled = true` may enable it.
+* `--no-embed-helpers` must override environment and `rextio.toml` settings.
 * The embedding subset is limited to unmarked scalar `int`/`float` helpers
   that Rextio can represent as IR and that have a single arithmetic return
   expression.
@@ -1354,7 +1354,7 @@ Install Nuitka or run: rextio build --fallback=cpython
 Support at least:
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 Support runtime boundary fallback controls:
@@ -1436,7 +1436,7 @@ Shows fallback safety.
 Must demonstrate:
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 and native import failure fallback.

@@ -45,7 +45,7 @@ default_external_policy = "fallback"
 # "some_pkg" = {{ policy = "try-native", max_depth = 1 }}
 # "known_pkg" = {{ policy = "plugin", plugin = "known-rust" }}
 
-[jit]
+[embedding]
 enabled = false
 
 [executable]
