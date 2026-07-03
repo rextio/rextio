@@ -1399,6 +1399,41 @@ def at(xs: list[int], i: int) -> int:
     assert "pyo3" not in source
 
 
+def test_boundary_call_in_for_header_keeps_wrapping_parens(tmp_path: Path) -> None:
+    # A bare block in a for-header range bound (`for i in 0..{ .. }`) is
+    # parsed by rustc as the loop body; the boundary-call block must stay
+    # parenthesized there. Pins the council-54 fix against a future
+    # strip_wrapping_parens regression.
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def bump(x: int) -> int:
+    return x + 1
+
+@rextio.native
+def total(n: int) -> int:
+    out = 0
+    for i in range(bump(n)):
+        out += i
+    return out
+""",
+        encoding="utf-8",
+    )
+
+    from rextio.build.orchestrator import _boundary_call_return_types
+
+    analysis = analyze_project(tmp_path)
+    source = generate_rust_module(
+        lower_project(analysis),
+        boundary_call_return_types=_boundary_call_return_types(analysis),
+    )
+
+    assert "0..({ " in source
+    assert "0..{ " not in source
+
+
 def test_crate_mode_excludes_boundary_calling_functions_transitively(tmp_path: Path) -> None:
     # A boundary-calling function has no pure-Rust crate form, and neither
     # does any native function that calls it: keeping the caller would render
