@@ -69,18 +69,30 @@ def run(args: Namespace) -> int:
         )
         return 1
 
-    if fallback == "nuitka":
+    nuitka_requested = fallback == "nuitka"
+    if config.executable.entrypoint is not None:
+        if config.executable.backend == "nuitka":
+            nuitka_requested = True
+        elif config.executable.backend == "rust" and config.executable.hybrid_runtime == "nuitka":
+            nuitka_requested = True
+    if nuitka_requested:
         nuitka = shutil.which("nuitka")
         if nuitka is None:
-            reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
-            reporter.error(nuitka_unavailable_message())
-            return 1
-        # Fail before the (potentially slow) project analysis, not mid-build.
-        version_error = nuitka_version_error(nuitka)
-        if version_error is not None:
-            reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
-            reporter.error(version_error)
-            return 1
+            if fallback == "nuitka":
+                reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
+                reporter.error(nuitka_unavailable_message())
+                return 1
+            # Executable/hybrid paths keep their existing missing-tool handling
+            # (reported by the builder with path-specific guidance).
+        else:
+            # Fail before the (potentially slow) project analysis, not mid-build.
+            # The builders re-probe later so they stay correct for non-CLI callers;
+            # the extra `nuitka --version` is a deliberate, negligible cost.
+            version_error = nuitka_version_error(nuitka)
+            if version_error is not None:
+                reporter.error("RXT060 Build failed while preparing the Nuitka toolchain.")
+                reporter.error(version_error)
+                return 1
 
     analysis = analyze_project(
         project_root,

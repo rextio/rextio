@@ -1492,3 +1492,70 @@ def test_pre_2_nuitka_fails_the_hybrid_dispatcher(
     assert error is not None
     assert "Nuitka 1.9.7 is too old" in error
     assert ">= 2.0" in error
+
+
+def _old_nuitka_on_path(tmp_path: Path, monkeypatch) -> None:
+    bin_dir = tmp_path / "old-nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then echo 1.9.7; exit 0; fi\n',
+        encoding="utf-8",
+    )
+    nuitka.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+
+def test_build_rejects_pre_2_nuitka_for_executable_backend_before_analysis(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # --executable-backend=nuitka fails as fast as --fallback=nuitka does.
+    _old_nuitka_on_path(tmp_path, monkeypatch)
+    (tmp_path / "app.py").write_text(
+        "def main() -> int:\n    return 0\n", encoding="utf-8"
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--entrypoint=app:main",
+            "--executable-backend=nuitka",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Nuitka 1.9.7 is too old" in captured.err
+    assert not (tmp_path / ".rextio").exists()
+
+
+def test_build_rejects_pre_2_nuitka_for_hybrid_runtime_before_analysis(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # --hybrid-runtime=nuitka (rust executable) fails before analysis too.
+    _old_nuitka_on_path(tmp_path, monkeypatch)
+    (tmp_path / "app.py").write_text(
+        "def main() -> int:\n    return 0\n", encoding="utf-8"
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--entrypoint=app:main",
+            "--executable-backend=rust",
+            "--hybrid-runtime=nuitka",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Nuitka 1.9.7 is too old" in captured.err
+    assert not (tmp_path / ".rextio").exists()
