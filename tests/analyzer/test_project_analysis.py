@@ -4651,6 +4651,23 @@ def main(argv: list[str]) -> int:
     assert any(d.code == "RXT010" for d in main.error_diagnostics)
 
 
+def test_external_accelerator_qualnames_pin_numba_public_api() -> None:
+    # Council-53 regression guard: these keys are EXTERNAL API names owned by
+    # Numba. A Rextio-internal surface rename (the jit->embedding sweep was
+    # the incident) must never rewrite them - fixtures alone could not catch
+    # that because a blanket rename edits fixtures in lockstep, so this test
+    # pins the literal dictionary.
+    from rextio.analyzer.native_marker import _EXTERNAL_ACCELERATOR_QUALNAMES
+
+    assert _EXTERNAL_ACCELERATOR_QUALNAMES == {
+        "numba.jit": "numba",
+        "numba.njit": "numba",
+        "numba.vectorize": "numba",
+        "numba.guvectorize": "numba",
+        "numba.cuda.jit": "numba",
+    }
+
+
 def test_numba_decorated_function_is_clean_external_fallback(tmp_path: Path) -> None:
     # A recognized numba decorator keeps the function on the Python fallback with
     # no auto-discovery and no RXT010 decorator noise, labeled for the report; a
