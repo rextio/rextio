@@ -47,7 +47,7 @@ REXTIO_DISABLE_NATIVE=1
 | --- | --- | --- |
 | CPython | >= 3.11 (3.11-3.14에서 검증) | 분석기는 빌드 인터프리터의 `ast`를 사용하고, 생성 확장은 PyO3 0.29(CPython 3.14까지 지원)를 고정합니다. 더 새로운 인터프리터는 동작할 수 있으나 검증되지 않았습니다. wheel은 빌드 인터프리터의 minor 버전 태그를 답니다. |
 | Rust toolchain | MSRV 1.83 (최신 stable에서 검증) | 생성 crate는 edition 2021 + PyO3 0.29를 사용합니다. [rustup](https://rustup.rs)으로 설치하세요. |
-| Nuitka (선택) | >= 2.0 | `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka` 전용이며, 더 오래된 버전은 빌드 preflight가 거부합니다. |
+| Nuitka (선택) | >= 2.0 | `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka` 전용입니다. 앞의 두 경로는 빌드 preflight가 선제 거부하고, hybrid runtime은 위임된 fallback 호출이 실제로 Nuitka dispatcher를 필요로 할 때 검사합니다. |
 | Numba (선택, experimental) | 인터프리터에 맞춰: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61, 3.14→>=0.63 | Rextio는 Numba 데코레이터를 인식만 하며, 패키지 자체는 Rextio가 아닌 사용자 프로젝트의 런타임 의존성입니다. 하한은 [Numba 버전 지원 표](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information)를 따릅니다. |
 
 ## 빠른 예시
