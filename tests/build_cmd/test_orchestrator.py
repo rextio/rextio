@@ -1475,15 +1475,7 @@ def test_pre_2_nuitka_fails_the_hybrid_dispatcher(
     # The hybrid-runtime dispatcher path enforces the Nuitka >= 2.0 floor too.
     from rextio.build.orchestrator import _build_nuitka_dispatcher
 
-    bin_dir = tmp_path / "old-nuitka-bin"
-    bin_dir.mkdir()
-    nuitka = bin_dir / "nuitka"
-    nuitka.write_text(
-        '#!/bin/sh\nif [ "$1" = --version ]; then echo 1.9.7; exit 0; fi\n',
-        encoding="utf-8",
-    )
-    nuitka.chmod(0o755)
-    monkeypatch.setenv("PATH", str(bin_dir))
+    _old_nuitka_on_path(tmp_path, monkeypatch)
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
 
@@ -1529,6 +1521,7 @@ def test_build_rejects_pre_2_nuitka_for_executable_backend_before_analysis(
 
     captured = capsys.readouterr()
     assert exit_code == 1
+    assert "RXT060 Build failed while preparing the Nuitka toolchain." in captured.err
     assert "Nuitka 1.9.7 is too old" in captured.err
     assert not (tmp_path / ".rextio").exists()
 
@@ -1562,6 +1555,27 @@ def test_hybrid_runtime_with_old_nuitka_is_not_gated_before_analysis(
             "--hybrid-runtime=nuitka",
         ]
     )
+
+    captured = capsys.readouterr()
+    assert "Nuitka 1.9.7 is too old" not in captured.err
+    assert (tmp_path / ".rextio").exists()  # analysis ran
+
+
+def test_nuitka_backend_without_entrypoint_is_not_gated(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # Without an entrypoint the executable is skipped entirely, so an old
+    # Nuitka must not fire the version gate on a plain cpython-fallback build.
+    _old_nuitka_on_path(tmp_path, monkeypatch)
+    # Untyped on purpose: no native candidates, so the build needs no cargo
+    # and the only way to fail early would be the (unwanted) version gate.
+    (tmp_path / "app.py").write_text(
+        "def add(a, b):\n    return a + b\n", encoding="utf-8"
+    )
+
+    main(["build", str(tmp_path), "--fallback=cpython", "--executable-backend=nuitka"])
 
     captured = capsys.readouterr()
     assert "Nuitka 1.9.7 is too old" not in captured.err
