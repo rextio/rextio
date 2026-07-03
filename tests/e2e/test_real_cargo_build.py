@@ -57,8 +57,11 @@ def rejected(x: int) -> int:
     report = json.loads(build_report.read_text(encoding="utf-8"))
 
     assert exit_code == 0
-    assert report["accepted_native_count"] == 1
-    assert report["rejected_native_count"] == 1
+    # `rejected` now survives natively through the scalar boundary call to
+    # the unmarked helper; the name is kept to pin that the OLD rejection no
+    # longer happens.
+    assert report["accepted_native_count"] == 2
+    assert report["rejected_native_count"] == 0
     assert report["native_build"]["tool"] == "cargo"
     assert report["native_build"]["status"] == "built"
     assert Path(report["native_build"]["installed_path"]).exists()
@@ -73,6 +76,7 @@ def rejected(x: int) -> int:
 
     module = importlib.import_module("e2e_app.math_ops")
     assert module.add(2, 3) == 5
+    # Runs natively with an in-process boundary call into `helper`.
     assert module.rejected(5) == 15
 
     monkeypatch.setattr(module, "_native_add", lambda a, b: a + b + 100)

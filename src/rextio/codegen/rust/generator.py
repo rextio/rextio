@@ -1472,13 +1472,25 @@ class _FunctionRenderer:
                 "not the importable Rust crate"
             )
         lines: list[str] = []
-        arg_names: list[str] = []
+        arg_exprs: list[str] = []
         for arg in expr.args:
+            arg_type = self.infer_expr_type(arg)
+            if isinstance(arg, LiteralIR) and arg.value is None:
+                # A literal None needs no evaluation and has no typed Rust
+                # rendering; pass the interpreter's None directly.
+                arg_exprs.append("py.None()")
+                continue
             name = self.next_temp("__rextio_barg")
             lines.append(f"let {name} = {strip_wrapping_parens(self.render_call_arg(arg))};")
-            arg_names.append(name)
-        if arg_names:
-            args_tuple = "(" + ", ".join(arg_names) + ",)"
+            if isinstance(arg_type, RxtNone):
+                # A non-literal None-typed argument (e.g. a None-returning
+                # call) must still be EVALUATED for its side effects; the
+                # bound unit value then crosses as Python None.
+                arg_exprs.append(f"{{ let _ = {name}; py.None() }}")
+                continue
+            arg_exprs.append(name)
+        if arg_exprs:
+            args_tuple = "(" + ", ".join(arg_exprs) + ",)"
         else:
             args_tuple = "PyTuple::empty(py)"
         return_type_name = self.boundary_call_return_types[expr.function]
