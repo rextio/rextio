@@ -244,7 +244,8 @@ verifies their versions:
   searched). Relative paths are resolved against the directory `rextio build`
   is invoked from; symlinks are preserved (a venv's `bin/python3` symlink
   stays the venv interpreter, keeping its packages visible to delegated
-  calls). The resolved file must be executable (on Windows this check is
+  calls), and `..` components are traversed by the OS in path order - a
+  path like `link/../tool` means what it means at the shell. The resolved file must be executable (on Windows this check is
   advisory - the OS decides at spawn time). A configured path that does not
   resolve fails the build up front (RXT060) - it never silently falls back
   to PATH. Unset tools resolve from PATH as before. When `[toolchain] cargo`
