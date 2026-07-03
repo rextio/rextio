@@ -30,6 +30,8 @@ BOUNDARY_DIAGNOSTIC_MESSAGES = {
     "RXT072": "Native dependency rejected, so caller must fall back.",
     "RXT073": "Native function call inside Python loop may erase speedup.",
     "RXT074": "Undecorated function depends on a runtime-shim native; mark it @rextio.native to opt in.",
+    "RXT075": "Native function performs a scalar boundary call to the Python fallback.",
+    "RXT076": "Scalar boundary call inside a native loop keeps the caller on fallback.",
 }
 
 
@@ -172,6 +174,66 @@ def _boundary_errors(
             # in the external CPython dispatcher instead. It runs real CPython, so
             # the result is CPython-equivalent (not a silent miscompile).
             function.delegated_call_targets.add(dependency.qualname)
+            continue
+        if (
+            not delegate_fallback
+            and function.explicitly_marked
+            and dependency is not None
+            and (not dependency.is_native_candidate or not dependency.accepted)
+            and _is_delegatable(dependency, function, call)
+        ):
+            # In-process scalar boundary call: the callee stays on the Python
+            # fallback and the generated native code calls it through the
+            # interpreter at run time. Real CPython executes the callee, so the
+            # result is CPython-equivalent; only immutable scalars may cross
+            # (the same rule as dispatcher delegation - containers would sever
+            # aliasing). Explicitly marked callers only: an auto-discovered
+            # candidate never silently acquires interpreter calls (the same
+            # conservatism as the RXT080 marker rule).
+            if call.in_loop:
+                # Frequency is not statically boundable, but position is: a
+                # per-iteration interpreter round-trip predictably erases the
+                # native speedup, so a loop-positioned boundary call keeps the
+                # caller on the Python fallback instead.
+                diagnostics.append(
+                    Diagnostic(
+                        code="RXT076",
+                        severity="error",
+                        message=(
+                            "scalar boundary call inside a native loop: "
+                            f"{resolved.resolved_target}"
+                        ),
+                        file_path=function.file_path,
+                        line=call.line,
+                        column=call.column,
+                        function_name=function.qualname,
+                        suggestion=(
+                            "Hoist the call out of the loop, mark the callee "
+                            "@rextio.native if it fits the supported subset, or "
+                            "enable [jit] scalar-helper embedding when eligible."
+                        ),
+                    )
+                )
+                continue
+            function.boundary_call_targets.add(dependency.qualname)
+            function.add_diagnostic(
+                Diagnostic(
+                    code="RXT075",
+                    severity="info",
+                    message=(
+                        "native function performs a scalar boundary call to the "
+                        f"Python fallback: {resolved.resolved_target}"
+                    ),
+                    file_path=function.file_path,
+                    line=call.line,
+                    column=call.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "Each call crosses the native/Python boundary at run time "
+                        "and counts toward the boundary-fallback threshold."
+                    ),
+                )
+            )
             continue
         if dependency is not None and not dependency.is_native_candidate:
             diagnostics.append(

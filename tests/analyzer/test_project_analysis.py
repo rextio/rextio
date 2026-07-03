@@ -858,9 +858,11 @@ def keep_python(x: int) -> int:
     assert analysis.diagnostics == []
 
 
-def test_native_call_to_exempt_function_is_rejected_as_fallback_boundary(
+def test_native_call_to_exempt_scalar_function_becomes_boundary_call(
     tmp_path: Path,
 ) -> None:
+    # The exempt promise is "this function runs as Python" - a boundary call
+    # keeps exactly that promise while the marked caller stays native.
     write_module(
         tmp_path,
         "app.py",
@@ -879,11 +881,41 @@ def compute(x: float) -> float:
 
     analysis = analyze_project(tmp_path)
 
+    assert "RXT075" in {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert analysis.rejected_native_functions == []
+    compute = next(f for m in analysis.modules for f in m.functions if f.name == "compute")
+    assert compute.accepted
+    assert compute.boundary_call_targets == {"app.helper"}
+    assert "app.helper" not in [function.qualname for function in analysis.native_candidates]
+
+
+def test_native_call_to_exempt_container_function_stays_rejected(
+    tmp_path: Path,
+) -> None:
+    # A mutable-container argument cannot cross the boundary (aliasing would
+    # sever), so the caller keeps the RXT070 rejection.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+def helper(xs: list[float]) -> float:
+    return xs[0]
+
+@rextio.native
+def compute(xs: list[float]) -> float:
+    return helper(xs)
+""",
+    )
+
+    analysis = analyze_project(tmp_path)
+
     assert "RXT070" in {diagnostic.code for diagnostic in analysis.diagnostics}
     assert [function.qualname for function in analysis.rejected_native_functions] == [
         "app.compute"
     ]
-    assert "app.helper" not in [function.qualname for function in analysis.native_candidates]
 
 
 def test_decorator_policy_disables_auto_discovery(tmp_path: Path) -> None:
@@ -902,7 +934,7 @@ def add(a: int, b: int) -> int:
     assert analysis.diagnostics == []
 
 
-def test_rejects_cross_module_native_to_fallback_calls(tmp_path: Path) -> None:
+def test_cross_module_scalar_fallback_call_becomes_boundary_call(tmp_path: Path) -> None:
     write_module(
         tmp_path,
         "src/myapp/helpers.py",
@@ -922,6 +954,37 @@ from .helpers import adjust
 @rextio.native
 def score(x: float) -> float:
     return adjust(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert "RXT075" in {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert analysis.rejected_native_functions == []
+    score = next(f for m in analysis.modules for f in m.functions if f.name == "score")
+    assert score.boundary_call_targets == {"myapp.helpers.adjust"}
+
+
+def test_rejects_cross_module_native_to_fallback_calls(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "src/myapp/helpers.py",
+        """
+def adjust(xs: list[float]) -> float:
+    return xs[0] + 1.0
+""",
+    )
+    write_module(
+        tmp_path,
+        "src/myapp/scoring.py",
+        """
+import rextio
+
+from .helpers import adjust
+
+@rextio.native
+def score(xs: list[float]) -> float:
+    return adjust(xs)
 """,
     )
 
@@ -1940,7 +2003,7 @@ def keyword_bad(x: int) -> int:
     ]
 
 
-def test_rejects_native_to_fallback_calls(tmp_path: Path) -> None:
+def test_scalar_fallback_call_becomes_boundary_call(tmp_path: Path) -> None:
     write_module(
         tmp_path,
         "app.py",
@@ -1953,6 +2016,30 @@ def helper(x: float) -> float:
 @rextio.native
 def compute(x: float) -> float:
     return helper(x)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert "RXT075" in {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert analysis.rejected_native_functions == []
+    compute = next(f for m in analysis.modules for f in m.functions if f.name == "compute")
+    assert compute.accepted and compute.boundary_call_targets == {"app.helper"}
+
+
+def test_rejects_native_to_fallback_calls(tmp_path: Path) -> None:
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def helper(xs: list[float]) -> float:
+    return xs[0] * 2.0
+
+@rextio.native
+def compute(xs: list[float]) -> float:
+    return helper(xs)
 """,
     )
 
@@ -3388,9 +3475,12 @@ def compute(x: int) -> int:
 
     analysis = analyze_project(tmp_path, native_marker="decorator")
 
+    # With embedding disabled the helper is not embedded, but the marked
+    # caller survives through the run-time scalar boundary call instead.
     assert analysis.jit_candidates == []
-    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.compute"]
-    assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT070"
+    assert analysis.rejected_native_functions == []
+    compute = next(f for m in analysis.modules for f in m.functions if f.name == "compute")
+    assert compute.accepted and compute.boundary_call_targets == {"app.helper"}
 
 
 def test_jit_enabled_promotes_typed_scalar_helper_for_native_caller(tmp_path: Path) -> None:
@@ -3825,15 +3915,15 @@ def test_reports_all_boundary_errors_per_function(tmp_path: Path) -> None:
         """
 import rextio
 
-def helper_a(x: int) -> int:
-    return x
+def helper_a(xs: list[int]) -> int:
+    return xs[0]
 
-def helper_b(x: int) -> int:
-    return x
+def helper_b(xs: list[int]) -> int:
+    return xs[-1]
 
 @rextio.native
-def caller(x: int) -> int:
-    return helper_a(x) + helper_b(x)
+def caller(xs: list[int]) -> int:
+    return helper_a(xs) + helper_b(xs)
 """,
     )
 
@@ -4271,13 +4361,17 @@ def main(argv: list[str]) -> int:
     def _main(analysis):
         return next(f for m in analysis.modules for f in m.functions if f.name == "main")
 
-    # Without delegation the native->fallback call is rejected (RXT070).
-    assert not _main(normal).accepted
-    assert "RXT070" in {d.code for d in _main(normal).error_diagnostics}
+    # Without delegation the caller is accepted through the in-process scalar
+    # boundary-call path instead of being rejected.
+    assert _main(normal).accepted
+    assert _main(normal).boundary_call_targets == {"app.slugify"}
+    assert _main(normal).delegated_call_targets == set()
 
-    # With delegation the caller is accepted and the callee is recorded.
+    # With delegation the caller is accepted and the callee is recorded for
+    # the external dispatcher (delegation takes precedence over boundary calls).
     assert _main(delegated).accepted
     assert _main(delegated).delegated_call_targets == {"app.slugify"}
+    assert _main(delegated).boundary_call_targets == set()
 
 
 def test_delegate_fallback_rejects_incompatible_delegated_return_use(tmp_path: Path) -> None:
@@ -5156,3 +5250,82 @@ def f(xs: list[float]) -> float:
     function = next(f for m in analysis.modules for f in m.functions if f.name == "f")
     assert not function.native_runtime_semantics, shape
     assert not function.accepted, shape
+
+
+def test_boundary_call_inside_native_loop_is_rejected(tmp_path: Path) -> None:
+    # Frequency is not statically boundable, but position is: a per-iteration
+    # interpreter round-trip predictably erases the speedup.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def bump(x: int) -> int:
+    return x + 1
+
+@rextio.native
+def total(n: int) -> int:
+    out = 0
+    for i in range(n):
+        out += bump(i)
+    return out
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert "RXT076" in {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.total"]
+
+
+def test_auto_discovered_caller_gets_no_boundary_calls(tmp_path: Path) -> None:
+    # Only an explicit @rextio.native marker opts into run-time interpreter
+    # calls (the same conservatism as the RXT080 marker rule). An
+    # auto-discovered candidate keeps the plain rejection.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.exempt
+def helper(x: int) -> int:
+    return x + 1
+
+def compute(x: int) -> int:
+    return helper(x) * 2
+""",
+    )
+
+    analysis = analyze_project(tmp_path)  # auto discovery
+
+    compute = next(f for m in analysis.modules for f in m.functions if f.name == "compute")
+    assert not compute.accepted
+    assert compute.boundary_call_targets == set()
+
+
+def test_embedding_takes_precedence_over_boundary_calls(tmp_path: Path) -> None:
+    # With [jit] embedding enabled, an eligible scalar helper compiles into
+    # the native artifact (fast path); the boundary call is the slow default.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def helper(x: int) -> int:
+    return x * 2
+
+@rextio.native
+def compute(x: int) -> int:
+    return helper(x) + 1
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator", native_jit_enabled=True)
+
+    compute = next(f for m in analysis.modules for f in m.functions if f.name == "compute")
+    assert compute.accepted
+    assert compute.boundary_call_targets == set()
+    assert [f.qualname for f in analysis.jit_candidates] == ["app.helper"]

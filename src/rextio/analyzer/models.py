@@ -153,6 +153,9 @@ class FunctionAnalysis:
     # (see boundary.apply_boundary_checks); empty in every normal build, where a
     # native->fallback call is rejected (RXT070) as before.
     delegated_call_targets: set[str] = field(default_factory=set)
+    # Fallback functions this native function calls in-process through the
+    # scalar boundary-call path (explicitly marked callers only).
+    boundary_call_targets: set[str] = field(default_factory=set)
     # User-call return types visible while validating this function body. Keys are
     # the same call targets produced by `canonical_call_target`/`dotted_name`
     # (bare same-module names and fully-qualified imported project functions).
@@ -207,6 +210,7 @@ class FunctionAnalysis:
             "native_target_language": self.native_target_language,
             "native_runtime_semantics": self.native_runtime_semantics,
             "is_jit_candidate": self.is_jit_candidate,
+            "boundary_call_targets": sorted(self.boundary_call_targets),
             "jit_reason": self.jit_reason,
             "external_accelerator": self.external_accelerator,
             "inferred_arg_types": dict(sorted(self.inferred_arg_types.items())),
