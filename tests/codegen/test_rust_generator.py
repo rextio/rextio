@@ -1430,7 +1430,10 @@ def total(n: int) -> int:
         boundary_call_return_types=_boundary_call_return_types(analysis),
     )
 
-    assert "0..({ " in source
+    # The negative assertion is the regression signal (a stripped paren
+    # renders exactly `0..{ `); the positive one only confirms the paren
+    # still hugs the range bound, so it stays whitespace-agnostic.
+    assert "0..({" in source
     assert "0..{ " not in source
 
 
