@@ -82,6 +82,10 @@ def test_version_pins_are_strict_and_support_specifiers(tmp_path: Path) -> None:
     mismatch = check_version_pin("cargo", [str(cargo)], "1.84")
     assert mismatch is not None and "does not satisfy" in mismatch
 
+    # Explicit == is exact, unlike the bare prefix form.
+    exact_mismatch = check_version_pin("cargo", [str(cargo)], "==1.85")
+    assert exact_mismatch is not None and "does not satisfy" in exact_mismatch
+
     # An explicit pin is strict: unparseable output fails instead of passing.
     silent = _script(tmp_path / "silent", "exit 0")
     strict = check_version_pin("tool", [str(silent)], "1.0")

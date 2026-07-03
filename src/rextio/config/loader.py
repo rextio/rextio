@@ -24,6 +24,7 @@ from rextio.config.schema import (
     RustConfig,
     TargetConfig,
     ToolchainConfig,
+    VERSION_PIN_PATTERN,
 )
 
 
@@ -323,7 +324,7 @@ def _require_optional_version_pin(section: str, key: str, value: Any) -> None:
     _require_optional_string(section, key, value)
     if value is None:
         return
-    if not re.fullmatch(r"(==|>=)?\d+(\.\d+)*", value):
+    if not re.fullmatch(VERSION_PIN_PATTERN, value):
         raise ConfigError(
             f"[{section}].{key} must be a version pin like \"1.85\", \"==2.6.1\", "
             f"or \">=3.13\", got {value!r}"

@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from rextio.config.schema import ToolchainConfig
+from rextio.config.schema import ToolchainConfig, VERSION_PIN_PATTERN
 
 # Where a tool may live inside a configured home directory, searched in order:
 # the home itself first (a flat layout wins), then `bin/` (POSIX layouts and
@@ -223,12 +223,15 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 def _satisfies(version: tuple[int, ...], pin: str) -> bool:
-    match = re.fullmatch(r"(==|>=)?(\d+(?:\.\d+)*)", pin)
+    match = re.fullmatch(VERSION_PIN_PATTERN, pin)
     if match is None:  # config validation prevents this; stay defensive
         return False
-    operator = match.group(1) or "=="
+    operator = match.group(1)
     pinned = _version_tuple(match.group(2))
     if operator == ">=":
         return version >= pinned
-    # "==" and bare pins are prefix matches: "1.85" accepts every 1.85.x.
+    if operator == "==":
+        # Explicit == is exact: "==1.85" does not accept 1.85.1.
+        return version == pinned
+    # A bare pin is a prefix match: "1.85" accepts every 1.85.x.
     return version[: len(pinned)] == pinned

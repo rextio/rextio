@@ -94,6 +94,11 @@ class ExecutableConfig:
     hybrid_runtime: str = "source"
 
 
+# One pattern shared by config validation and the pin matcher so the two can
+# never drift: optional ==/>= operator followed by a dotted version.
+VERSION_PIN_PATTERN = r"(==|>=)?(\d+(?:\.\d+)*)"
+
+
 @dataclass(frozen=True)
 class ToolchainConfig:
     """The [toolchain] configuration section.
