@@ -393,10 +393,12 @@ def _add_toolchain_options(parser: argparse.ArgumentParser) -> None:
         "--python",
         default=None,
         help=(
-            "Path to the CPython interpreter (or its home directory) used as the "
-            "native-extension build target and the default delegated-call runtime. "
-            "Must match the build interpreter's minor version. Overrides "
-            "REXTIO_PYTHON and [toolchain] python."
+            "Path to the CPython interpreter (or a home directory; bin/ and "
+            "Scripts/ are searched) used as the native-extension build target "
+            "and the default delegated-call runtime. Must be CPython matching "
+            "the build interpreter's minor version. Overrides REXTIO_PYTHON "
+            "and [toolchain] python (build-time; a produced hybrid binary "
+            "honors REXTIO_RUNTIME_PYTHON at run time)."
         ),
     )
     parser.add_argument(

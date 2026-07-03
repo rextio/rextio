@@ -241,24 +241,30 @@ verifies their versions:
 
 - `cargo`, `maturin`, `nuitka`, and `python` accept either the tool binary
   itself or a home directory containing it (`bin/` and `Scripts/` are
-  searched). A configured path that does not resolve fails the build up front
-  (RXT060) - it never silently falls back to PATH. Unset tools resolve from
-  PATH as before.
+  searched). Relative paths are resolved against the directory `rextio build`
+  is invoked from, and the resolved file must be executable. A configured
+  path that does not resolve fails the build up front (RXT060) - it never
+  silently falls back to PATH. Unset tools resolve from PATH as before.
 - `python` selects the CPython the build targets end to end: the PyO3
   extension compiles against it (`PYO3_PYTHON`), Nuitka runs inside it
   (`python -m nuitka`) unless `nuitka` is set explicitly, and the hybrid rust
   binary launches it for delegated calls (explicit `[executable] python`
-  still wins; `REXTIO_RUNTIME_PYTHON` overrides at run time). It must share
-  the build interpreter's minor version - the analyzer semantics, wheel tag,
-  and Nuitka output are all bound to one interpreter.
+  still wins; `REXTIO_RUNTIME_PYTHON` overrides at run time). It must be a
+  CPython sharing the build interpreter's minor version - the analyzer
+  semantics, wheel tag, and Nuitka output are all bound to one interpreter,
+  and generated extensions target CPython only.
 - `rust_toolchain` names a rustup channel (`stable`, `1.83`, ...); it is
-  forwarded as `RUSTUP_TOOLCHAIN`, so a non-rustup cargo ignores it.
+  forwarded as `RUSTUP_TOOLCHAIN`, so a non-rustup cargo ignores it (pointing
+  `[toolchain] cargo` at a non-rustup binary makes this setting a no-op).
 - `*_version` values are verification pins: `"1.85"` accepts any 1.85.x,
   `"==2.6.1"` is exact, `">=3.13"` is a minimum. Pins verify only - they
   never install or select a tool (point the matching path setting at the
-  version you want). Unlike the best-effort floors, an explicit pin fails
-  the build when the tool's version cannot be determined. Pins cannot relax
-  hard floors (Nuitka >= 2.0 still applies).
+  version you want). A pin is enforced exactly when the build uses the tool:
+  the CPython pin on every build, cargo/maturin pins when native code is
+  compiled, and the Nuitka pin at every Nuitka invocation (including the
+  hybrid dispatcher). For a tool the build uses, a pin is strict - an
+  unresolvable tool or an undeterminable version fails the build. Pins
+  cannot relax hard floors (Nuitka >= 2.0 still applies).
 
 Rust is the only implemented native target in 0.1.0 alpha. `mojo` and `julia` can
 be selected as target languages so versioned plugin metadata can be modeled, but
