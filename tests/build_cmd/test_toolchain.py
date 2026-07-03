@@ -222,3 +222,25 @@ def test_version_probe_runs_under_the_supplied_environment(tmp_path: Path) -> No
     shim = _script(tmp_path / "cargo", 'echo "cargo ${FAKE_CHANNEL:-0.0.0}"')
     assert probe_version([str(shim)]) == "0.0.0"
     assert probe_version([str(shim)], {"FAKE_CHANNEL": "1.83.0"}) == "1.83.0"
+
+
+def test_pinned_missing_maturin_fails_strictly_instead_of_falling_back(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # The missing-maturin message is the orchestrator's cargo-fallback
+    # trigger; a pinned maturin must fail the strict-pin way so the fallback
+    # never fires with the pin unverified.
+    from rextio.build.maturin_builder import build_native_extension_with_maturin
+
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    (tmp_path / "empty-bin").mkdir()
+
+    result = build_native_extension_with_maturin(
+        tmp_path / "rust",
+        tmp_path / "python",
+        toolchain=ToolchainConfig(maturin_version="1.7"),
+    )
+
+    assert result.status == "failed"
+    assert "pinned" in result.message
+    assert "maturin was not found" not in result.message

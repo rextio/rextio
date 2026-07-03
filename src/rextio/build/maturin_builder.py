@@ -26,18 +26,12 @@ def build_native_extension_with_maturin(
 ) -> NativeBuildResult:
     """Build the native extension with maturin and return the result."""
     toolchain = toolchain or ToolchainConfig()
-    maturin, resolve_error = resolve_tool("maturin", toolchain.maturin)
-    if maturin is None:
-        return NativeBuildResult(
-            status="failed",
-            tool="maturin",
-            message=(
-                "RXT060 Build failed while compiling generated Rust module. "
-                f"Cause: {resolve_error or 'maturin was not found.'}"
-            ),
-        )
-
     env = cargo_environment(toolchain)
+    # Pins are judged BEFORE the missing-tool result: that result's
+    # "maturin was not found" phrase is the orchestrator's cargo-fallback
+    # trigger, and a pinned-but-missing maturin must fail strictly
+    # (rust_pin_error treats pinned + unresolvable as an error) instead of
+    # silently falling back to cargo with the pin unverified.
     for pinned_tool in ("maturin", "cargo"):
         pin_error = rust_pin_error(toolchain, pinned_tool, env)
         if pin_error is not None:
@@ -49,6 +43,17 @@ def build_native_extension_with_maturin(
                     f"with maturin. Cause: {pin_error}"
                 ),
             )
+
+    maturin, resolve_error = resolve_tool("maturin", toolchain.maturin)
+    if maturin is None:
+        return NativeBuildResult(
+            status="failed",
+            tool="maturin",
+            message=(
+                "RXT060 Build failed while compiling generated Rust module. "
+                f"Cause: {resolve_error or 'maturin was not found.'}"
+            ),
+        )
 
     wheels_dir = rust_dir / "target" / "wheels"
     wheels_dir.mkdir(parents=True, exist_ok=True)
