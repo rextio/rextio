@@ -252,7 +252,8 @@ def build_nuitka_executable(
             path=None,
             message=(
                 "RXT060 Executable build failed because Nuitka is not installed. "
-                "Install Nuitka or use --executable-backend=zipapp."
+                "Install Nuitka or use --executable-backend=zipapp or "
+                "--executable-backend=rust."
             ),
             entrypoint=entrypoint,
             backend="nuitka",
