@@ -548,6 +548,8 @@ def _build_fallback_backend(
     if fallback == "cpython":
         return cpython_fallback_build_result()
     if fallback == "nuitka":
+        # The CLI pre-gates the Nuitka version floor, so the builder's own
+        # probe is only reachable here for programmatic callers.
         return build_nuitka_fallback(layout.build_python_dir, timeout=build_timeout)
     return FallbackBuildResult(
         status="failed",

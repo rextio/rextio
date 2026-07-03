@@ -41,7 +41,8 @@ def render_importable_cargo_toml(package_name: str = "rextio_generated_rust") ->
 name = "{package_name}"
 version = "0.1.0"
 edition = "2021"
-# Uniform documented MSRV; the extension crate's floor is set by PyO3 0.29.
+# Uniform documented MSRV shared with the extension template (whose floor
+# is set by PyO3 0.29); this crate itself has no PyO3 dependency.
 rust-version = "1.83"
 
 [lib]
@@ -82,7 +83,8 @@ def render_binary_cargo_toml(
 name = "{package_name}"
 version = "0.1.0"
 edition = "2021"
-# Uniform documented MSRV; the extension crate's floor is set by PyO3 0.29.
+# Uniform documented MSRV shared with the extension template (whose floor
+# is set by PyO3 0.29); this crate itself has no PyO3 dependency.
 rust-version = "1.83"
 
 [[bin]]
