@@ -120,15 +120,19 @@ def _is_delegatable(
     function: FunctionAnalysis,
     call: CallSite,
 ) -> bool:
-    """Whether a fallback call can be faithfully delegated over the wire protocol.
+    """Whether a fallback call can faithfully cross an interpreter-mediated boundary.
 
-    Requires the callee's return type *and* every argument type to be an immutable
-    scalar. A mutable container crosses the wire by value (a JSON copy), which
-    severs the aliasing CPython preserves: a callee mutating a container argument,
-    or the native caller mutating a returned container that aliased Python state,
-    would diverge silently. When a type is unknown the call is *not* delegated (it
-    stays a rejection, keeping the caller on the Python fallback), so delegation
-    never guesses and never silently drops a mutation.
+    Gates BOTH crossing mechanisms: dispatcher delegation over the IPC wire
+    protocol (values cross as a JSON copy) and in-process scalar boundary
+    calls (RXT075; values re-enter the interpreter from the native caller's
+    extracted copies). Requires the callee's return type *and* every argument
+    type to be an immutable scalar. A mutable container crosses either
+    boundary by value, which severs the aliasing CPython preserves: a callee
+    mutating a container argument, or the native caller mutating a returned
+    container that aliased Python state, would diverge silently. When a type
+    is unknown the call does *not* cross (it stays a rejection, keeping the
+    caller on the Python fallback), so neither mechanism guesses and neither
+    silently drops a mutation.
     """
     return_type = (
         dependency.signature_return_type
@@ -210,7 +214,9 @@ def _boundary_errors(
                         suggestion=(
                             "Hoist the call out of the loop, mark the callee "
                             "@rextio.native if it fits the supported subset, or "
-                            "enable [embedding] scalar-helper embedding when eligible."
+                            "enable [embedding] if the callee is an eligible "
+                            "unmarked scalar helper (@rextio.exempt callees "
+                            "never embed)."
                         ),
                     )
                 )
@@ -230,7 +236,10 @@ def _boundary_errors(
                     function_name=function.qualname,
                     suggestion=(
                         "Each call crosses the native/Python boundary at run time "
-                        "and counts toward the boundary-fallback threshold."
+                        "and counts toward the boundary-fallback threshold. Scalars "
+                        "cross by value: the callee observes equal values, not the "
+                        "caller's original objects, so identity checks (`is`) on "
+                        "arguments are not preserved (None/bool singletons are)."
                     ),
                 )
             )

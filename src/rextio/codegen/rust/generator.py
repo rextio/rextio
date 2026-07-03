@@ -1564,6 +1564,11 @@ class _FunctionRenderer:
             'let __rextio_bval = __rextio_bhook.call1(('
             f'"{caller}", "{target}", {args_tuple}))?;'
         )
+        # Resolved per call: PyModule::import is a sys.modules hit after the
+        # first import, and per-call resolution is what keeps monkeypatched
+        # hook modules honored. If boundary calls ever show up hot in straight-
+        # line code, a GILOnceCell cache is the follow-up - never a build-time
+        # snapshot of the target function (that would break monkeypatching).
         prologue = (
             'let __rextio_bhook = PyModule::import(py, "rextio.runtime.boundary_call")?'
             '.getattr("boundary_call")?;'
@@ -1591,6 +1596,11 @@ class _FunctionRenderer:
             # the loop body).
             return "({ " + " ".join(lines) + " " + closure + " })"
         if return_type_name == "None":
+            # Deliberately stricter than CPython: a callee whose `-> None`
+            # annotation lies would otherwise make the native caller compute
+            # with None while the fallback computes with the real value - a
+            # SILENT divergence. Raising converts the annotation lie into a
+            # loud error instead.
             err = (
                 f'pyo3::exceptions::PyTypeError::new_err('
                 f'"{target} was expected to return None")'
