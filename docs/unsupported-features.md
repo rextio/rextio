@@ -427,6 +427,16 @@ function on the Python fallback.
   `py` token is available), since the inner native function has no `py` token.
   Valid UTF-8 decodes identically. Direct-native functions lowering
   `bytes.decode()` carry an `RXT090` note.
+- **`finally` that raises while an exception is pending.** In the restricted
+  native `try`/`except`/`finally` subset, if the `finally` body itself raises
+  while another exception is already propagating, the native path raises the
+  new exception WITHOUT `__context__` chaining — CPython preserves the pending
+  exception as the new exception's `__context__`. The raised exception's type
+  and message are identical; only the implicit-context chain (and the
+  "During handling of the above exception" traceback section) differs. Code
+  that inspects `e.__context__` should stay on the Python fallback.
+  Direct-native functions containing a `finally` block carry an `RXT090`
+  note.
 - **repr of `str` VALUES containing non-printable characters above U+00A0.**
   Native repr text (container printing, `%r`, `list.index` messages) escapes
   quotes, backslashes, `\n`/`\r`/`\t`, the C0/C1 controls, DEL, and U+00A0

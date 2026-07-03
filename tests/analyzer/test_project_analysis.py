@@ -3843,7 +3843,9 @@ def safe_mod(a: int, b: int) -> int:
         "app.safe_mod"
     ]
     assert not analysis.accepted_native_functions[0].native_runtime_semantics
-    assert analysis.diagnostics == []
+    # The finally block carries the documented __context__ divergence note;
+    # nothing else may be diagnosed.
+    assert [d.code for d in analysis.diagnostics] == ["RXT090"]
 
 
 def test_rejects_unsupported_try_shapes(tmp_path: Path) -> None:
@@ -4959,6 +4961,62 @@ def dec(b: bytes) -> str:
     assert len(notes) == 1
     assert notes[0].severity == "warning"
     assert "UnicodeDecodeError" in notes[0].message
+
+
+def test_native_finally_carries_context_divergence_note(tmp_path: Path) -> None:
+    # A direct-native `finally` that raises while an exception is pending
+    # drops `__context__` chaining (CPython preserves it). Statically
+    # attributable to the presence of the finally block, so it must surface
+    # as a non-rejecting RXT090 note per the documented divergence contract.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def fin(x: int) -> int:
+    out = 0
+    try:
+        out = 100 + x
+    finally:
+        out = out + 1
+    return out
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert function.accepted
+    assert not function.native_runtime_semantics
+    notes = [d for d in function.diagnostics if d.code == "RXT090"]
+    assert len(notes) == 1
+    assert notes[0].severity == "warning"
+    assert "__context__" in notes[0].message
+
+
+def test_native_try_without_finally_carries_no_context_note(tmp_path: Path) -> None:
+    # The divergence is a property of `finally` blocks only; a plain
+    # try/except in the native subset must not carry the note.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def guarded(x: int) -> int:
+    out = 0
+    try:
+        out = 100 + x
+    except OverflowError:
+        out = 0
+    return out
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert function.accepted
+    assert not [d for d in function.diagnostics if d.code == "RXT090"]
 
 
 def test_divergence_note_stripped_from_shim_and_fallback_functions(tmp_path: Path) -> None:

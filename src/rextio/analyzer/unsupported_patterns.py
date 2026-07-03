@@ -752,6 +752,46 @@ def _validate_try(
     for handler in node.handlers:
         _validate_statement_list_types(handler.body, function, env, return_type)
     _validate_statement_list_types(node.finalbody, function, env, return_type)
+    if node.finalbody:
+        _add_finally_context_divergence_note(node, function)
+
+
+_FINALLY_CONTEXT_NOTE = (
+    "native semantic divergence note: if a `finally` body raises while an "
+    "exception is already pending, the native path drops the pending "
+    "exception without `__context__` chaining (CPython preserves it as the "
+    "new exception's context; the raised exception itself is identical)"
+)
+
+
+def _add_finally_context_divergence_note(
+    node: ast.Try,
+    function: FunctionAnalysis,
+) -> None:
+    # Divergence note (RXT090): statically attributable to the presence of a
+    # `finally` block, so it must be surfaced per function like the
+    # bytes.decode note. The project scanner strips it from functions that do
+    # not end up on the direct native path.
+    if any(
+        d.code == "RXT090" and d.message == _FINALLY_CONTEXT_NOTE for d in function.diagnostics
+    ):
+        return
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT090",
+            severity="warning",
+            message=_FINALLY_CONTEXT_NOTE,
+            file_path=function.file_path,
+            line=getattr(node, "lineno", function.line),
+            column=getattr(node, "col_offset", function.column),
+            function_name=function.qualname,
+            suggestion=(
+                "Documented in docs/unsupported-features.md under Accepted "
+                "Native Semantic Divergences; keep the function on the Python "
+                "fallback if `__context__` chaining matters."
+            ),
+        )
+    )
 
 
 def _has_free_break_continue(node: ast.AST) -> bool:
