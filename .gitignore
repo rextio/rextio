@@ -42,3 +42,5 @@ crates/*/Cargo.lock
 # Agentic Coding generated artifacts
 .claude/
 .claude-octopus/
+.agents/
+.kilocode/
