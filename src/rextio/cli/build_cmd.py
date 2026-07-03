@@ -18,7 +18,7 @@ from rextio.build.preflight import (
 from rextio.build.toolchain import (
     cargo_environment,
     check_version_pin,
-    python_version_mismatch,
+    python_toolchain_error,
     resolve_nuitka_command,
     resolve_python,
     resolve_tool,
@@ -48,16 +48,16 @@ def _toolchain_preflight_error(config: RextioConfig) -> str | None:
     if toolchain.python is not None and python is None:
         return python_error
     if python is not None:
-        mismatch = python_version_mismatch(python)
-        if mismatch is not None:
-            return mismatch
-        pin_error = check_version_pin("CPython", [python], toolchain.python_version)
-        if pin_error is not None:
-            return pin_error
+        python_toolchain_issue = python_toolchain_error(python, toolchain.python_version)
+        if python_toolchain_issue is not None:
+            return python_toolchain_issue
     elif toolchain.python_version is not None:
-        pin_error = check_version_pin("CPython", [sys.executable], toolchain.python_version)
-        if pin_error is not None:
-            return pin_error
+        # No configured interpreter: the pin describes the build interpreter.
+        python_toolchain_issue = python_toolchain_error(
+            sys.executable, toolchain.python_version
+        )
+        if python_toolchain_issue is not None:
+            return python_toolchain_issue
     # Configured (not merely pinned) cargo/maturin paths must resolve even if
     # this build turns out not to need them - a broken explicit path is a
     # config error, not a skippable probe.

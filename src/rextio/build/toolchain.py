@@ -201,6 +201,8 @@ def check_version_pin(
     command: list[str],
     pin: str | None,
     env: dict[str, str] | None = None,
+    *,
+    reported: str | None = None,
 ) -> str | None:
     """Verify an explicit version pin against the resolved tool.
 
@@ -211,7 +213,8 @@ def check_version_pin(
     """
     if pin is None:
         return None
-    reported = probe_version(command, env)
+    if reported is None:
+        reported = probe_version(command, env)
     if reported is None:
         return (
             f"{display} version could not be determined, but [toolchain] pins it "
@@ -225,15 +228,12 @@ def check_version_pin(
     )
 
 
-def python_version_mismatch(python: str) -> str | None:
-    """Reject a configured interpreter that cannot stand in for the build's.
+def python_toolchain_error(python: str, pin: str | None) -> str | None:
+    """Run every CPython toolchain check from one interpreter probe.
 
-    The analyzer's semantics are defined against the interpreter running the
-    build, generated wheels are tagged for its minor version, and Nuitka
-    output binds to the interpreter it runs under - a different minor version
-    (or a non-CPython implementation: PyO3 extensions and cp-tagged wheels
-    target CPython only) would silently split those contracts. An explicitly
-    configured interpreter is strict: an unprobeable one is an error.
+    Coherence (CPython implementation, build-interpreter minor match) and the
+    explicit version pin all read the same `-c` probe, so the two can never
+    disagree about what the interpreter reports.
     """
     probe = _probe_python(python)
     if probe is None:
@@ -255,7 +255,20 @@ def python_version_mismatch(python: str) -> str | None:
             f"is running on {build[0]}.{build[1]}. Use a {build[0]}.{build[1]} "
             "interpreter (or run rextio under the configured one)."
         )
-    return None
+    return check_version_pin("CPython", [python], pin, reported=reported)
+
+
+def python_version_mismatch(python: str) -> str | None:
+    """Reject a configured interpreter that cannot stand in for the build's.
+
+    The analyzer's semantics are defined against the interpreter running the
+    build, generated wheels are tagged for its minor version, and Nuitka
+    output binds to the interpreter it runs under - a different minor version
+    (or a non-CPython implementation: PyO3 extensions and cp-tagged wheels
+    target CPython only) would silently split those contracts. An explicitly
+    configured interpreter is strict: an unprobeable one is an error.
+    """
+    return python_toolchain_error(python, None)
 
 
 def _probe_python(python: str) -> tuple[str, str] | None:

@@ -9,13 +9,9 @@ an opaque mid-build failure.
 
 from __future__ import annotations
 
-import re
-import subprocess
 from dataclasses import dataclass
 
-from pathlib import Path
-
-from rextio.build.toolchain import check_version_pin, resolve_tool
+from rextio.build.toolchain import check_version_pin, probe_version, resolve_tool
 from rextio.config.schema import ToolchainConfig
 
 # Any 2.x release is accepted; every 1.x release is rejected.
@@ -73,15 +69,21 @@ def nuitka_toolchain_error(command: list[str], toolchain: ToolchainConfig | None
     """Run every Nuitka toolchain check that applies at a point of use.
 
     The >= 2.0 floor is best-effort; an explicit [toolchain] nuitka_version
-    pin is strict. Shared by the CLI gate and all three Nuitka invocation
-    sites (fallback builder, executable builder, hybrid dispatcher) so no
-    path can drift out of the contract.
+    pin is strict. One `--version` probe feeds both checks. Shared by the
+    CLI gate and all three Nuitka invocation sites (fallback builder,
+    executable builder, hybrid dispatcher) so no path can drift out of the
+    contract.
     """
-    floor_error = nuitka_version_error(command)
+    command = [str(part) for part in command]
+    reported = probe_version(command)
+    floor_error = _nuitka_floor_error(reported)
     if floor_error is not None:
         return floor_error
     return check_version_pin(
-        "Nuitka", command, (toolchain or ToolchainConfig()).nuitka_version
+        "Nuitka",
+        command,
+        (toolchain or ToolchainConfig()).nuitka_version,
+        reported=reported,
     )
 
 
@@ -95,30 +97,15 @@ def nuitka_version_error(command: list[str]) -> str | None:
     determined, the build proceeds and the real invocation surfaces any
     incompatibility.
     """
-    if isinstance(command, (str, Path)):  # defensive: a bare path is one arg
-        command = [str(command)]
-    try:
-        completed = subprocess.run(
-            [*command, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    return _nuitka_floor_error(probe_version([str(part) for part in command]))
+
+
+def _nuitka_floor_error(reported: str | None) -> str | None:
+    if reported is None:
         return None
-    if completed.returncode != 0:
-        # A broken install may still print something version-shaped;
-        # treat it as undetermined rather than trusting the output.
-        return None
-    output = (completed.stdout or "").strip() or (completed.stderr or "").strip()
-    first_line = output.splitlines()[0].strip() if output else ""
-    # search, not match: tolerate a "Nuitka 1.9.7"-style prefix on the line.
-    match = re.search(r"(\d+)\.(\d+)", first_line)
-    if match is None:
-        return None
-    if int(match.group(1)) < MINIMUM_NUITKA_MAJOR:
+    if int(reported.split(".", 1)[0]) < MINIMUM_NUITKA_MAJOR:
         return (
-            f"Nuitka {first_line} is too old: Rextio requires Nuitka >= "
+            f"Nuitka {reported} is too old: Rextio requires Nuitka >= "
             f"{MINIMUM_NUITKA_MAJOR}.0. Upgrade with: pip install -U nuitka"
         )
     return None
