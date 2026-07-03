@@ -1495,7 +1495,10 @@ def _old_nuitka_on_path(tmp_path: Path, monkeypatch) -> None:
         encoding="utf-8",
     )
     nuitka.chmod(0o755)
-    monkeypatch.setenv("PATH", str(bin_dir))
+    # Prepend rather than replace: the fake still shadows any real nuitka by
+    # PATH order, while tools the build may legitimately need (python3 for
+    # env-shebang fakes, cargo) stay resolvable.
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
 
 
 def test_build_rejects_pre_2_nuitka_for_executable_backend_before_analysis(
@@ -1539,12 +1542,18 @@ def test_hybrid_runtime_with_old_nuitka_is_not_gated_before_analysis(
     # dispatcher builder enforces the floor at the point of real use
     # (see test_pre_2_nuitka_fails_the_hybrid_dispatcher).
     _old_nuitka_on_path(tmp_path, monkeypatch)
+    # Put the fake cargo ahead of any real one; the old-nuitka bin stays first.
     bin_dir = tmp_path / "old-nuitka-bin"
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{fake_cargo.parent}")
+    monkeypatch.setenv(
+        "PATH", f"{bin_dir}{os.pathsep}{fake_cargo.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+    )
     (tmp_path / "app.py").write_text(
         "def main() -> int:\n    return 0\n", encoding="utf-8"
     )
 
+    # The exit code is deliberately not pinned: this test proves only that
+    # the pre-analysis gate does not fire; the build may still fail later
+    # for unrelated reasons (the fake cargo emits no runnable binary).
     main(
         [
             "build",
@@ -1557,6 +1566,7 @@ def test_hybrid_runtime_with_old_nuitka_is_not_gated_before_analysis(
     )
 
     captured = capsys.readouterr()
+    assert "RXT060 Build failed while preparing the Nuitka toolchain." not in captured.err
     assert "Nuitka 1.9.7 is too old" not in captured.err
     assert (tmp_path / ".rextio").exists()  # analysis ran
 
@@ -1569,8 +1579,9 @@ def test_nuitka_backend_without_entrypoint_is_not_gated(
     # Without an entrypoint the executable is skipped entirely, so an old
     # Nuitka must not fire the version gate on a plain cpython-fallback build.
     _old_nuitka_on_path(tmp_path, monkeypatch)
-    # Untyped on purpose: no native candidates, so the build needs no cargo
-    # and the only way to fail early would be the (unwanted) version gate.
+    # Untyped on purpose: no native candidates, so requires_native_build()
+    # is False, the orchestrator skips the cargo build, and the only way to
+    # fail early would be the (unwanted) version gate.
     (tmp_path / "app.py").write_text(
         "def add(a, b):\n    return a + b\n", encoding="utf-8"
     )
