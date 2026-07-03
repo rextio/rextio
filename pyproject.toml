@@ -31,6 +31,9 @@ dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/rextio/rextio"
+Repository = "https://github.com/rextio/rextio"
+Issues = "https://github.com/rextio/rextio/issues"
+Changelog = "https://github.com/rextio/rextio/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 test = [

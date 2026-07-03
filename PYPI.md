@@ -2,6 +2,10 @@
 
 Rextio 0.1.0 is an alpha-stage local build tool for Python projects.
 
+```text
+pip install rextio
+```
+
 It analyzes typed Python code, compiles eligible hot-path functions to Rust
 native modules, and keeps unsupported or unsafe code on the Python fallback
 path. The goal is to let Python projects adopt Rust acceleration selectively

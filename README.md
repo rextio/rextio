@@ -84,10 +84,11 @@ def format_result(value: int) -> str:
     return f"score={value}"  # not in the direct Rust subset
 ```
 
-Build it:
+Build it (installed users; from a source checkout use
+`python -m pip install -e .` instead):
 
 ```text
-python -m pip install -e .
+python -m pip install rextio
 rextio check .
 rextio build . --fallback=cpython
 ```
@@ -245,6 +246,8 @@ Supported syntax includes:
 - `range(...)`, `enumerate(xs)`, and `zip(xs, ys)` in supported loop or
   comprehension forms
 - `break`, `continue`, `return`
+- a restricted experimental `try`/`except`/`finally` subset (built-in
+  exception handlers only; see [stability tiers](docs/stability.md))
 - list/dict/set comprehensions in supported forms
 - limited `list.append`, dict reads/writes, and indexing
 - calls to accepted native helper functions
@@ -451,6 +454,7 @@ Common settings:
 | `[build] native_backend` | `--native-backend` / `--target-language` | `REXTIO_TARGET_LANGUAGE` / `REXTIO_NATIVE_BACKEND` |
 | `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
 | `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
+| `[build] build_timeout_seconds` | `--build-timeout` | `REXTIO_BUILD_TIMEOUT` |
 | `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
 | `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
 | `[rust] importable` | `--rust-importable` / `--no-rust-importable` | `REXTIO_RUST_IMPORTABLE` |
