@@ -81,10 +81,11 @@ def format_result(value: int) -> str:
     return f"score={value}"  # 不在 direct Rust subset 內
 ```
 
-建置:
+建置（面向已安裝使用者；從原始碼檢出請改用
+`python -m pip install -e .`）:
 
 ```text
-python -m pip install -e .
+python -m pip install rextio
 rextio check .
 rextio build . --fallback=cpython
 ```
@@ -236,6 +237,8 @@ Rextio 0.1.0 alpha 刻意支援一個小的 subset。這是能提供真實 Rust 
 - `for x in xs`
 - 受支援的迴圈/推導式形式中的 `range(...)`、`enumerate(xs)`、`zip(xs, ys)`
 - `break`、`continue`、`return`
+- 受限的實驗性 `try`/`except`/`finally` 子集（僅限內建例外處理器；
+  參見[穩定性層級](docs/stability.md)）
 - 受支援形式的 list/dict/set 推導式
 - 受限的 `list.append`、dict 讀寫、索引
 - 呼叫被接受的 native 輔助函式
@@ -423,6 +426,7 @@ CLI 參數 > 環境變數 > rextio.toml > 內建預設值
 | `[build] native_backend` | `--native-backend` / `--target-language` | `REXTIO_TARGET_LANGUAGE` / `REXTIO_NATIVE_BACKEND` |
 | `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
 | `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
+| `[build] build_timeout_seconds` | `--build-timeout` | `REXTIO_BUILD_TIMEOUT` |
 | `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
 | `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
 | `[rust] importable` | `--rust-importable` / `--no-rust-importable` | `REXTIO_RUST_IMPORTABLE` |

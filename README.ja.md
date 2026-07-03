@@ -84,10 +84,11 @@ def format_result(value: int) -> str:
     return f"score={value}"  # direct Rust subset の外
 ```
 
-ビルドします:
+ビルドします（インストール済みユーザー向け。ソースチェックアウトでは
+`python -m pip install -e .` を代わりに使用）:
 
 ```text
-python -m pip install -e .
+python -m pip install rextio
 rextio check .
 rextio build . --fallback=cpython
 ```
@@ -244,6 +245,8 @@ Rust 高速化を提供できる経路です。
 - `for x in xs`
 - サポートされるループ/内包形式の `range(...)`、`enumerate(xs)`、`zip(xs, ys)`
 - `break`、`continue`、`return`
+- 制限付きの実験的 `try`/`except`/`finally` サブセット（組み込み例外
+  ハンドラのみ。[安定性ティア](docs/stability.md) を参照）
 - サポートされる形式の list/dict/set 内包表記
 - 限定的な `list.append`、dict の読み書き、インデックス参照
 - 受理された native ヘルパー関数の呼び出し
@@ -455,6 +458,7 @@ CLI パラメータ > 環境変数 > rextio.toml > 組み込みデフォルト
 | `[build] native_backend` | `--native-backend` / `--target-language` | `REXTIO_TARGET_LANGUAGE` / `REXTIO_NATIVE_BACKEND` |
 | `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
 | `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
+| `[build] build_timeout_seconds` | `--build-timeout` | `REXTIO_BUILD_TIMEOUT` |
 | `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
 | `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
 | `[rust] importable` | `--rust-importable` / `--no-rust-importable` | `REXTIO_RUST_IMPORTABLE` |

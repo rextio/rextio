@@ -84,10 +84,11 @@ def format_result(value: int) -> str:
     return f"score={value}"  # direct Rust subset 밖
 ```
 
-빌드합니다:
+빌드합니다(설치된 사용자 기준; 소스 체크아웃에서는
+`python -m pip install -e .`를 대신 사용):
 
 ```text
-python -m pip install -e .
+python -m pip install rextio
 rextio check .
 rextio build . --fallback=cpython
 ```
@@ -244,6 +245,8 @@ Rextio 0.1.0 alpha는 의도적으로 작은 subset을 지원합니다. 이것�
 - `for x in xs`
 - 지원되는 루프/컴프리헨션 형태의 `range(...)`, `enumerate(xs)`, `zip(xs, ys)`
 - `break`, `continue`, `return`
+- 제한된 실험적 `try`/`except`/`finally` 부분집합(내장 예외 핸들러만;
+  [안정성 계층](docs/stability.md) 참조)
 - 지원되는 형태의 list/dict/set 컴프리헨션
 - 제한적 `list.append`, dict 읽기/쓰기, 인덱싱
 - 수락된 native helper 함수 호출
@@ -445,6 +448,7 @@ CLI 파라미터 > 환경변수 > rextio.toml > 내장 기본값
 | `[build] native_backend` | `--native-backend` / `--target-language` | `REXTIO_TARGET_LANGUAGE` / `REXTIO_NATIVE_BACKEND` |
 | `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
 | `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
+| `[build] build_timeout_seconds` | `--build-timeout` | `REXTIO_BUILD_TIMEOUT` |
 | `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
 | `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
 | `[rust] importable` | `--rust-importable` / `--no-rust-importable` | `REXTIO_RUST_IMPORTABLE` |

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 alpha
+## 0.1.0 alpha — 2026-07-04
 
 Initial public MVP for Rextio as a local hybrid build tool.
 
@@ -93,6 +93,7 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Automatic native discovery for eligible typed module-level Python functions, with `@rextio.native` still supported and decorator-only mode available.
 - `@rextio.exempt` decorator for functions that must remain Python fallback.
 - Conservative 0.1.0 alpha subset checks for supported scalar/list types, simple control flow, indexing, and native-to-native calls.
+- Experimental restricted native `try`/`except`/`finally` subset (built-in exception handlers only; a `finally` block carries an `RXT090` note for the documented `__context__` divergence).
 - Deterministic diagnostics for unsupported syntax, dynamic Python features, external calls, and unsafe boundaries.
 - Static boundary policy:
   - reject native functions that call fallback-only functions;
