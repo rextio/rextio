@@ -8,6 +8,7 @@ from pathlib import Path
 
 from rextio.build.toolchain import (
     cargo_environment,
+    rust_environment,
     check_version_pin,
     python_version_mismatch,
     resolve_nuitka_command,
@@ -154,3 +155,31 @@ def test_resolve_python_error_mentions_both_names(tmp_path: Path) -> None:
     path, error = resolve_python(ToolchainConfig(python=str(empty)))
     assert path is None
     assert error is not None and "python3" in error and "python" in error
+
+
+def test_rust_environment_carries_only_the_rustup_channel(tmp_path: Path) -> None:
+    python = _script(tmp_path / "py" / "bin" / "python3", "echo Python 3.11.9")
+    toolchain = ToolchainConfig(rust_toolchain="1.83", python=str(tmp_path / "py"))
+    env = rust_environment(toolchain)
+    assert env == {"RUSTUP_TOOLCHAIN": "1.83"}
+    assert "PYO3_PYTHON" not in env
+    assert cargo_environment(toolchain)["PYO3_PYTHON"] == str(python)
+
+
+def test_unresolvable_configured_python_fails_the_rust_executable(tmp_path: Path) -> None:
+    from rextio.build.orchestrator import _build_rust_executable_artifact
+    from rextio.build.artifact_layout import ArtifactLayout
+
+    layout = ArtifactLayout(tmp_path)
+    result = _build_rust_executable_artifact(
+        layout,
+        None,  # analysis is unused before the python check fails
+        "app:main",
+        None,
+        None,
+        "source",
+        build_timeout=30.0,
+        toolchain=ToolchainConfig(python=str(tmp_path / "nowhere")),
+    )
+    assert result.status == "failed"
+    assert "python" in (result.message or "")

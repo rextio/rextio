@@ -107,16 +107,26 @@ def resolve_nuitka_command(toolchain: ToolchainConfig) -> tuple[list[str] | None
     return ([path] if path is not None else None), None
 
 
-def cargo_environment(toolchain: ToolchainConfig) -> dict[str, str]:
-    """Extra environment for cargo/maturin runs implied by the configuration.
+def rust_environment(toolchain: ToolchainConfig) -> dict[str, str]:
+    """Environment for pure-Rust cargo runs (the bin and importable crates).
 
-    RUSTUP_TOOLCHAIN selects the rustup channel (a non-rustup cargo ignores
-    it). PYO3_PYTHON makes the PyO3 build target the configured interpreter
-    instead of whatever `python3` is first on PATH.
+    RUSTUP_TOOLCHAIN selects the rustup channel; a non-rustup cargo ignores
+    the variable, so forwarding it is always safe.
     """
     env: dict[str, str] = {}
     if toolchain.rust_toolchain is not None:
         env["RUSTUP_TOOLCHAIN"] = toolchain.rust_toolchain
+    return env
+
+
+def cargo_environment(toolchain: ToolchainConfig) -> dict[str, str]:
+    """Environment for PyO3 extension builds (cargo or maturin).
+
+    Extends :func:`rust_environment` with PYO3_PYTHON so the PyO3 build
+    targets the configured interpreter instead of whatever `python3` is
+    first on PATH.
+    """
+    env = rust_environment(toolchain)
     python, _error = resolve_python(toolchain)
     if python is not None:
         env["PYO3_PYTHON"] = python

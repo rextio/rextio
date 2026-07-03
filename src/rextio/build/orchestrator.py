@@ -917,6 +917,18 @@ def _build_rust_executable_artifact(
     binary as ``<binary>.runtime``; a binary with no delegated calls needs no
     Python runtime at all.
     """
+    configured_python, python_error = resolve_python(toolchain or ToolchainConfig())
+    if (toolchain and toolchain.python is not None) and configured_python is None:
+        # Do not silently degrade to "python3": programmatic callers skip the
+        # CLI preflight, and a binary baked with the wrong interpreter fails
+        # far from the cause.
+        return ExecutableBuildResult(
+            status="failed",
+            path=None,
+            message=f"RXT060 Executable build failed. {python_error}",
+            entrypoint=entrypoint,
+            backend="rust",
+        )
     entry_qualname = _entrypoint_to_qualname(entrypoint)
     reachable_qualnames, delegated_return_types = _entrypoint_reachable_native_graph(
         analysis,

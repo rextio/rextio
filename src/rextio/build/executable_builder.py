@@ -8,7 +8,7 @@ import stat
 import sys
 import zipapp
 from rextio.build.preflight import nuitka_toolchain_error
-from rextio.build.toolchain import cargo_environment, resolve_nuitka_command, resolve_tool
+from rextio.build.toolchain import resolve_nuitka_command, resolve_tool, rust_environment
 from rextio.config.schema import ToolchainConfig
 from rextio.analyzer.native_marker import (
     external_accelerator_for_source,
@@ -86,7 +86,7 @@ def build_rust_executable(
         )
 
     command = [cargo, "build", "--release", "--manifest-path", str(crate_dir / "Cargo.toml")]
-    completed = run_build_tool(command, cwd=crate_dir, timeout=timeout, env=cargo_environment(toolchain))
+    completed = run_build_tool(command, cwd=crate_dir, timeout=timeout, env=rust_environment(toolchain))
     if completed.returncode != 0:
         return ExecutableBuildResult(
             status="failed",
