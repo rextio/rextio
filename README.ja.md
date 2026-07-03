@@ -199,7 +199,9 @@ Rextio は native コンパイルを保守的に保ちます:
   （`int`/`float`/`bool`/`str`/`None`）なら、その呼び出しは in-process の
   スカラー boundary call（`RXT075`）になります。callee はインタプリタで
   実行され続けるため、値と例外は CPython-正確で monkeypatch も反映
-  されます。コンテナは境界を越えず、native ループ内の boundary call は
+  されます。スカラーは値で境界を越えるため、引数の identity（`is`）は
+  保存されません（`None`/`bool` のシングルトンは保存されます）。コンテナは
+  境界を越えず、内包表記本体を含む native ループ内の boundary call は
   呼び出し側を fallback に残します（`RXT076`）。
 - Python fallback コードは native 関数を呼べます。
 - native 関数を繰り返し呼ぶ Python ループは boundary 警告を出します。
@@ -345,6 +347,9 @@ runtime も動作します（dispatcher が本物の CPython を実行）。
 埋め込みは生成 Cargo プロジェクトに crate 依存を追加しません。埋め込みが
 無効でも、適格なヘルパー呼び出しは実行時のスカラー boundary call で動作
 します — 埋め込みは呼び出しごとのインタプリタ往復を除去する高速経路です。
+boundary call と異なり、埋め込まれたヘルパーはビルド時に native 成果物へ
+コンパイルされたコピーなので、ヘルパーの実行時差し替え（monkeypatch）は
+native 呼び出し側からは見えません。
 
 ## Rust-importable crate
 

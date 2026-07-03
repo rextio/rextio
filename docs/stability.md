@@ -21,7 +21,7 @@ Tiers:
 | --- | --- | --- |
 | Direct-Rust codegen for the typed subset (PyO3) | Stable | Scalars, lists, simple control flow, indexing, native↔native calls. Anything outside the subset is rejected (`RXTxxx`) or kept on fallback. |
 | CPython fallback packaging + generated wrappers | Stable | Preserves Python semantics for everything not lowered to native. |
-| Scalar boundary calls (`RXT075`/`RXT076`) | Stable | A marked native may call a scalar-signature fallback function in-process; loop-positioned calls are rejected; crossings count toward the threshold. |
+| Scalar boundary calls (`RXT075`/`RXT076`) | Stable | A marked native may call a scalar-signature fallback function in-process; loop-positioned calls (including comprehension bodies) are rejected; crossings count toward the threshold. Scalars cross by value (argument identity `is` is not preserved; `None`/`bool` singletons are), and a callee exception's traceback includes the runtime hook's frames - exception type and message stay CPython-exact. |
 | `@rextio.native` / `@rextio.exempt` decorators | Stable | Public API. See [versioning](versioning.md). |
 | `rextio.toml` configuration schema | Stable | Keys are part of the contract. |
 | `[toolchain]` selection + version pins | Experimental | New in 0.1.0 alpha: tool paths, rustup channel, CPython targeting, strict verification pins. Semantics may be refined before the first non-alpha release. |

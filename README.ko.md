@@ -198,8 +198,10 @@ Rextio는 native 컴파일을 보수적으로 유지합니다:
   명시적으로 마킹돼 있고 callee의 시그니처가 처음부터 끝까지 불변 스칼라
   (`int`/`float`/`bool`/`str`/`None`)라면 그 호출은 in-process 스칼라
   boundary call(`RXT075`)이 됩니다. callee는 인터프리터에서 계속 실행되므로
-  값과 예외가 CPython-정확하고 monkeypatch도 반영됩니다. 컨테이너는 경계를
-  넘지 않으며, native 루프 안의 boundary call은 호출자를 fallback에
+  값과 예외가 CPython-정확하고 monkeypatch도 반영됩니다. 스칼라는 값으로
+  건너가므로 인자의 identity(`is`)는 보존되지 않습니다(`None`/`bool`
+  싱글턴은 보존됩니다). 컨테이너는 경계를 넘지 않으며, comprehension 본문을
+  포함한 native 루프 안의 boundary call은 호출자를 fallback에
   남깁니다(`RXT076`).
 - Python fallback 코드는 native 함수를 호출할 수 있습니다.
 - native 함수를 반복 호출하는 Python 루프는 boundary 경고를 냅니다.
@@ -340,6 +342,9 @@ CPython-정확 의미론을 갖지만, `@numba.*` 함수는 **Numba의** 의미�
 내장(embedding)은 생성 Cargo 프로젝트에 crate 의존성을 추가하지 않습니다.
 내장이 꺼져 있어도 적격 helper 호출은 런타임 스칼라 boundary call로 여전히
 동작합니다 — 내장은 호출마다의 인터프리터 왕복을 제거하는 빠른 경로입니다.
+boundary call과 달리 내장된 helper는 빌드 시점에 native 산출물로 컴파일된
+사본이므로, helper의 런타임 교체(monkeypatch)는 native 호출자에게 보이지
+않습니다.
 
 ## Rust에서 import 가능한 crate
 

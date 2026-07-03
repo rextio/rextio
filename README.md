@@ -200,8 +200,10 @@ Rextio keeps native compilation conservative:
   end to end (`int`/`float`/`bool`/`str`/`None`): that call becomes an
   in-process scalar boundary call (`RXT075`). The callee keeps running in the
   interpreter, so values and exceptions are CPython-exact and monkeypatching
-  is honored; containers never cross, and a boundary call inside a native
-  loop keeps the caller on fallback (`RXT076`).
+  is honored; scalars cross by value, so argument identity (`is`) is not
+  preserved (`None`/`bool` singletons are); containers never cross, and a
+  boundary call inside a native loop - including comprehension bodies - keeps
+  the caller on fallback (`RXT076`).
 - Python fallback code may call native functions.
 - Python loops that repeatedly call native functions produce boundary warnings.
 - Generated wrappers can switch a function back to fallback after repeated
@@ -347,7 +349,9 @@ lose to call-boundary costs under any accelerator.
 Embedding adds no crate dependencies to generated Cargo projects. When
 embedding is disabled, an eligible helper call still works through the
 run-time scalar boundary call; embedding is the fast path that removes the
-per-call interpreter round-trip.
+per-call interpreter round-trip. Unlike a boundary call, an embedded helper
+is compiled ahead of time into the native artifact, so runtime replacement
+of the helper (monkeypatching) is not visible to native callers.
 
 ## Rust-Importable Crate
 

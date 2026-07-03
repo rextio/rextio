@@ -376,7 +376,11 @@ function whose signature is immutable scalars end to end
 boundary call* (`RXT075`, informational) - the callee keeps running in the
 host interpreter, so its result and any raised exception are CPython-exact by
 construction, and the target is resolved per call (runtime replacement of the
-module attribute is honored). Containers never cross the boundary (a by-value
+module attribute is honored). Two caveats: scalars cross by *value*, so the
+callee observes equal values rather than the caller's original objects - an
+identity check (`is`) on an argument is not preserved (the `None`/`bool`
+singletons are) - and a callee exception's traceback includes the runtime
+dispatch hook's frames. Containers never cross the boundary (a by-value
 copy would sever the aliasing CPython preserves), a boundary call inside a
 native loop keeps the caller on the Python fallback (`RXT076` - a
 per-iteration interpreter round-trip predictably erases the speedup), and
@@ -395,7 +399,9 @@ function. Supported batch loop shapes include `for x in xs`,
 `for i, x in enumerate(xs)`, and `for x, y in zip(xs, ys)`.
 
 Generated wrappers also keep a per-function runtime crossing count, and every
-native scalar boundary call counts one crossing against its caller too. After
+native scalar boundary call counts one crossing against its caller too - one
+native call that performs `k` boundary calls therefore adds `k + 1` crossings
+(one wrapper entry plus `k` dispatches). After
 a function's total crossings exceed
 `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` (`1000` by default), later calls use the
 generated Python fallback path for that function. `rextio generate` and

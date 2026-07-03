@@ -193,9 +193,10 @@ Rextio 讓 native 編譯保持保守:
 - 呼叫僅 fallback 程式碼的 native 函式會被拒絕 — 除非呼叫者被顯式標記且
   callee 的簽名從頭到尾都是不可變純量（`int`/`float`/`bool`/`str`/`None`）:
   該呼叫將成為 in-process 純量 boundary call（`RXT075`）。callee 繼續在
-  直譯器中執行，因此值與例外都 CPython-精確，monkeypatch 也被尊重；容器
-  絕不跨越邊界，native 迴圈內的 boundary call 會讓呼叫者留在 fallback
-  （`RXT076`）。
+  直譯器中執行，因此值與例外都 CPython-精確，monkeypatch 也被尊重；純量
+  按值跨越邊界，因此引數的 identity（`is`）不被保留（`None`/`bool`
+  單例除外）；容器絕不跨越邊界，native 迴圈（包括推導式主體）內的
+  boundary call 會讓呼叫者留在 fallback（`RXT076`）。
 - Python fallback 程式碼可以呼叫 native 函式。
 - 反覆呼叫 native 函式的 Python 迴圈會產生 boundary 警告。
 - 產生的 wrapper 可以在邊界穿越反覆發生後把該函式切回 fallback —
@@ -323,7 +324,9 @@ plain Python（`.py` 繼續被 import），樹的其餘部分用 Nuitka 編譯�
 
 內嵌不會給產生的 Cargo 專案增加 crate 依賴。內嵌關閉時，合格的 helper
 呼叫仍透過執行時純量 boundary call 運作 — 內嵌是移除每次呼叫直譯器往返
-的快速路徑。
+的快速路徑。與 boundary call 不同，內嵌的 helper 是建置時編譯進 native
+成果物的副本，因此對 helper 的執行時替換（monkeypatch）對 native 呼叫方
+不可見。
 
 ## Rust-importable crate
 

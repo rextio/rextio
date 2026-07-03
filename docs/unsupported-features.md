@@ -274,7 +274,9 @@ Native functions must not call:
   non-scalar signature (`RXT070`/`RXT072`) - when the signature is immutable
   scalars end to end, an EXPLICITLY MARKED caller makes an in-process scalar
   boundary call instead (`RXT075`, informational; the callee keeps running in
-  the host interpreter), unless the call sits inside a native loop
+  the host interpreter, and scalars cross by value - argument identity `is`
+  is not preserved, though the `None`/`bool` singletons are), unless the call
+  sits inside a native loop or comprehension body
   (`RXT076`, rejected: a per-iteration interpreter round-trip erases the
   speedup)
 - unsupported external packages or unresolved functions (`RXT030`)
@@ -326,6 +328,12 @@ OverflowError, `%` keeps floored/zero-division semantics, and float `/` raises
 ZeroDivisionError. In the Rust executable backend an embedded helper compiles
 into the binary instead of being delegated per call to the CPython dispatcher.
 There is no runtime compilation.
+
+Because an embedded helper is a compiled copy fixed at build time, runtime
+replacement of the helper (monkeypatching the module attribute) is NOT
+visible to native callers - unlike a scalar boundary call, which resolves
+its target per call and honors monkeypatching. Test suites that patch a
+helper should run with embedding disabled or patch at a different seam.
 
 Code outside this subset remains on the normal direct Rust, Python runtime shim,
 or CPython/Nuitka fallback path.

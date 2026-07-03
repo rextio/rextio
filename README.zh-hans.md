@@ -193,9 +193,10 @@ Rextio 让 native 编译保持保守:
 - 调用仅 fallback 代码的 native 函数会被拒绝 — 除非调用者被显式标记且
   callee 的签名从头到尾都是不可变标量（`int`/`float`/`bool`/`str`/`None`）:
   该调用将成为 in-process 标量 boundary call（`RXT075`）。callee 继续在
-  解释器中运行，因此值与异常都 CPython-精确，monkeypatch 也被尊重；容器
-  绝不跨越边界，native 循环内的 boundary call 会让调用者留在 fallback
-  （`RXT076`）。
+  解释器中运行，因此值与异常都 CPython-精确，monkeypatch 也被尊重；标量
+  按值跨越边界，因此实参的 identity（`is`）不被保留（`None`/`bool`
+  单例除外）；容器绝不跨越边界，native 循环（包括推导式主体）内的
+  boundary call 会让调用者留在 fallback（`RXT076`）。
 - Python fallback 代码可以调用 native 函数。
 - 反复调用 native 函数的 Python 循环会产生 boundary 警告。
 - 生成的 wrapper 可以在边界穿越反复发生后把该函数切回 fallback —
@@ -322,7 +323,9 @@ Nuitka *可执行文件*（`--executable-backend=nuitka`）与
 
 内嵌不会给生成的 Cargo 项目增加 crate 依赖。内嵌关闭时，合格的 helper
 调用仍通过运行时标量 boundary call 工作 — 内嵌是移除每次调用解释器往返
-的快速路径。
+的快速路径。与 boundary call 不同，内嵌的 helper 是构建时编译进 native
+产物的副本，因此对 helper 的运行时替换（monkeypatch）对 native 调用方
+不可见。
 
 ## Rust-importable crate
 
