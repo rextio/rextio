@@ -54,8 +54,12 @@ def sum_total(xs: list[int]) -> int:
 
 """
 
-# Native try/except is pyo3-backend-only, so the exception-dispatch snapshot
-# (Python::attach guard) rides a pyo3-specific source variant.
+# Native try/except is pyo3-backend-only (the importable-crate generator
+# raises RustCodegenError for it), so the exception-dispatch snapshot
+# (Python::attach guard) rides a pyo3-specific source variant. Keep it equal
+# to _SOURCE plus ONLY the appended function: the shared prefix is what lets
+# the pyo3 and crate goldens cover the same base constructs without drift
+# (pinned by test_pyo3_only_source_extends_the_shared_source).
 _SOURCE_PYO3_ONLY = _SOURCE + """
 @rextio.native
 def safe_mod(a: int, b: int) -> int:
@@ -115,3 +119,9 @@ def test_generation_is_deterministic(tmp_path: Path) -> None:
     first = generate_rust_module(lower_project(analyze_project(project)))
     second = generate_rust_module(lower_project(analyze_project(project)))
     assert first == second
+
+
+def test_pyo3_only_source_extends_the_shared_source() -> None:
+    # The two goldens must keep covering the same base constructs; the pyo3
+    # variant may only APPEND pyo3-only functions to the shared source.
+    assert _SOURCE_PYO3_ONLY.startswith(_SOURCE)
