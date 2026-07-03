@@ -5306,6 +5306,57 @@ def total(n: int) -> int:
     assert [function.qualname for function in analysis.rejected_native_functions] == ["app.total"]
 
 
+def test_boundary_call_inside_comprehension_is_rejected(tmp_path: Path) -> None:
+    # A comprehension body runs once per element - the same per-iteration
+    # interpreter round-trip as an explicit loop, so the same RXT076 gate.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def bump(x: int) -> int:
+    return x + 1
+
+@rextio.native
+def total(xs: list[int]) -> int:
+    return sum([bump(x) for x in xs])
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert "RXT076" in {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.total"]
+
+
+def test_boundary_call_in_comprehension_source_is_accepted_once(tmp_path: Path) -> None:
+    # The first generator's iterable is evaluated once before iteration, so a
+    # boundary call there is not loop-positioned (mirrors the for-iterable rule).
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def bound(n: int) -> int:
+    return n + 1
+
+@rextio.native
+def total(n: int) -> int:
+    return sum([x for x in range(bound(n))])
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    codes = {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert "RXT076" not in codes
+    total = next(f for m in analysis.modules for f in m.functions if f.name == "total")
+    assert total.accepted
+    assert total.boundary_call_targets == {"app.bound"}
+
+
 def test_boundary_call_in_for_iterable_is_accepted_once(tmp_path: Path) -> None:
     # The for-loop iterable is evaluated once before the first iteration, so a
     # boundary call there is NOT loop-positioned: it crosses once per call of

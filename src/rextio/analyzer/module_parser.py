@@ -1088,6 +1088,44 @@ class _CallCollector(ast.NodeVisitor):
             self.visit(statement)
         self.loop_depth -= 1
 
+    def _visit_comprehension(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    ) -> None:
+        # A comprehension is a loop: its element expression, conditions, and
+        # every generator after the first run once per iteration. Only the
+        # FIRST generator's iterable is evaluated once, before iteration
+        # starts, so it keeps the enclosing depth (same rule as a for-loop
+        # iterable).
+        generators = node.generators
+        if generators:
+            self.visit(generators[0].iter)
+        self.loop_depth += 1
+        for index, comprehension in enumerate(generators):
+            if index > 0:
+                self.visit(comprehension.iter)
+            self.visit(comprehension.target)
+            for condition in comprehension.ifs:
+                self.visit(condition)
+        if isinstance(node, ast.DictComp):
+            self.visit(node.key)
+            self.visit(node.value)
+        else:
+            self.visit(node.elt)
+        self.loop_depth -= 1
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node)
+
     def visit_Call(self, node: ast.Call) -> None:
         target = canonical_call_target(node, self.imports, self.logger_names)
         if target is None:
