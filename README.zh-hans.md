@@ -47,6 +47,11 @@ REXTIO_DISABLE_NATIVE=1
 | Nuitka（可选） | >= 2.0 | 仅用于 `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka`。前两者由构建 preflight 预先拒绝；hybrid runtime 则在被委托的 fallback 调用确实需要 Nuitka dispatcher 时检查。 |
 | Numba（可选，experimental） | 随解释器: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61, 3.14→>=0.63 | Rextio 只识别 Numba 装饰器；该包是用户项目的运行时依赖，而非 Rextio 的依赖。下限遵循 [Numba 版本支持表](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information)。 |
 
+工具位置与版本 pin 可配置: 通过 `rextio.toml` 的 `[toolchain]`（或
+`REXTIO_*` 环境变量 / CLI 标志）选择构建所用的 cargo、maturin、Nuitka
+和 CPython，并可校验其版本。参见
+[REXTIO.md](./REXTIO.md#toolchain-selection-and-version-pins)。
+
 ## 快速示例
 
 ```python
