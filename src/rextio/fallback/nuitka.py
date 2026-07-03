@@ -22,11 +22,6 @@ def nuitka_unavailable_message() -> str:
     )
 
 
-def nuitka_available() -> bool:
-    """Report whether Nuitka is available."""
-    return shutil.which("nuitka") is not None
-
-
 def build_nuitka_fallback(
     python_dir: Path,
     *,
