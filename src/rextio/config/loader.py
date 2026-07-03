@@ -23,6 +23,7 @@ from rextio.config.schema import (
     RextioConfig,
     RustConfig,
     TargetConfig,
+    ToolchainConfig,
 )
 
 
@@ -41,6 +42,17 @@ CONFIG_KEYS = {
     "imports": {"default_external_policy", "packages"},
     "jit": {"enabled"},
     "executable": {"entrypoint", "name", "backend", "nuitka_mode", "python", "hybrid_runtime"},
+    "toolchain": {
+        "cargo",
+        "maturin",
+        "nuitka",
+        "python",
+        "rust_toolchain",
+        "cargo_version",
+        "maturin_version",
+        "nuitka_version",
+        "python_version",
+    },
     "policy": {
         "native_marker",
         "require_type_hints",
@@ -73,6 +85,15 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_NUITKA_MODE": ("executable", "nuitka_mode", "string"),
     "REXTIO_EXECUTABLE_PYTHON": ("executable", "python", "optional_string"),
     "REXTIO_HYBRID_RUNTIME": ("executable", "hybrid_runtime", "string"),
+    "REXTIO_CARGO": ("toolchain", "cargo", "optional_string"),
+    "REXTIO_MATURIN": ("toolchain", "maturin", "optional_string"),
+    "REXTIO_NUITKA": ("toolchain", "nuitka", "optional_string"),
+    "REXTIO_PYTHON": ("toolchain", "python", "optional_string"),
+    "REXTIO_RUST_TOOLCHAIN": ("toolchain", "rust_toolchain", "optional_string"),
+    "REXTIO_CARGO_VERSION": ("toolchain", "cargo_version", "optional_string"),
+    "REXTIO_MATURIN_VERSION": ("toolchain", "maturin_version", "optional_string"),
+    "REXTIO_NUITKA_VERSION": ("toolchain", "nuitka_version", "optional_string"),
+    "REXTIO_PYTHON_VERSION": ("toolchain", "python_version", "optional_string"),
     "REXTIO_NATIVE_MARKER": ("policy", "native_marker", "string"),
     "REXTIO_REQUIRE_TYPE_HINTS": ("policy", "require_type_hints", "boolean"),
     "REXTIO_ALLOW_DYNAMIC_FEATURES": ("policy", "allow_dynamic_features", "boolean"),
@@ -118,6 +139,7 @@ def load_config(
     imports = {**DEFAULT_CONFIG["imports"], **_section(raw, "imports")}
     jit = {**DEFAULT_CONFIG["jit"], **_section(raw, "jit")}
     executable = {**DEFAULT_CONFIG["executable"], **_section(raw, "executable")}
+    toolchain = {**DEFAULT_CONFIG["toolchain"], **_section(raw, "toolchain")}
     policy = {**DEFAULT_CONFIG["policy"], **_section(raw, "policy")}
     if environ is not None:
         _apply_environment_overrides(
@@ -129,10 +151,13 @@ def load_config(
             imports,
             jit,
             executable,
+            toolchain,
             policy,
             environ,
         )
-    return _build_config(build, rust, fallback, target, plugins, imports, jit, executable, policy)
+    return _build_config(
+        build, rust, fallback, target, plugins, imports, jit, executable, toolchain, policy
+    )
 
 
 def override_config(
@@ -148,6 +173,7 @@ def override_config(
     imports = _imports_asdict(config.imports)
     jit = asdict(config.jit)
     executable = asdict(config.executable)
+    toolchain = asdict(config.toolchain)
     policy = asdict(config.policy)
     sections = {
         "build": build,
@@ -158,6 +184,7 @@ def override_config(
         "imports": imports,
         "jit": jit,
         "executable": executable,
+        "toolchain": toolchain,
         "policy": policy,
     }
     for (section, key), value in overrides.items():
@@ -166,7 +193,9 @@ def override_config(
         if section not in sections or key not in CONFIG_KEYS[section]:
             raise ConfigError(f"unsupported config override: [{section}].{key}")
         sections[section][key] = value
-    return _build_config(build, rust, fallback, target, plugins, imports, jit, executable, policy)
+    return _build_config(
+        build, rust, fallback, target, plugins, imports, jit, executable, toolchain, policy
+    )
 
 
 def _build_config(
@@ -178,9 +207,12 @@ def _build_config(
     imports: dict[str, Any],
     jit: dict[str, Any],
     executable: dict[str, Any],
+    toolchain: dict[str, Any],
     policy: dict[str, Any],
 ) -> RextioConfig:
-    _validate_config_values(build, rust, fallback, target, plugins, imports, jit, executable, policy)
+    _validate_config_values(
+        build, rust, fallback, target, plugins, imports, jit, executable, toolchain, policy
+    )
     return RextioConfig(
         build=BuildConfig(**build),
         rust=RustConfig(**rust),
@@ -190,6 +222,7 @@ def _build_config(
         imports=_build_imports_config(imports),
         jit=JitConfig(**jit),
         executable=ExecutableConfig(**executable),
+        toolchain=ToolchainConfig(**toolchain),
         policy=PolicyConfig(**policy),
     )
 
@@ -203,6 +236,7 @@ def _validate_config_values(
     imports: dict[str, Any],
     jit: dict[str, Any],
     executable: dict[str, Any],
+    toolchain: dict[str, Any],
     policy: dict[str, Any],
 ) -> None:
     _require_string("build", "native_backend", build["native_backend"])
@@ -231,6 +265,10 @@ def _validate_config_values(
     _require_value("executable", "hybrid_runtime", executable["hybrid_runtime"], {"source", "nuitka"})
     _require_string("executable", "backend", executable["backend"])
     _require_string("executable", "nuitka_mode", executable["nuitka_mode"])
+    for tool_key in ("cargo", "maturin", "nuitka", "python", "rust_toolchain"):
+        _require_optional_string("toolchain", tool_key, toolchain[tool_key])
+    for pin_key in ("cargo_version", "maturin_version", "nuitka_version", "python_version"):
+        _require_optional_version_pin("toolchain", pin_key, toolchain[pin_key])
     _require_string("policy", "native_marker", policy["native_marker"])
     _require_bool("policy", "require_type_hints", policy["require_type_hints"])
     _require_bool("policy", "allow_dynamic_features", policy["allow_dynamic_features"])
@@ -278,6 +316,17 @@ def _require_crate_name(section: str, key: str, value: Any) -> None:
         raise ConfigError(
             f"[{section}].{key} must be a valid Cargo crate name using letters, digits, "
             "underscores, or hyphens, and it must not start with a digit"
+        )
+
+
+def _require_optional_version_pin(section: str, key: str, value: Any) -> None:
+    _require_optional_string(section, key, value)
+    if value is None:
+        return
+    if not re.fullmatch(r"(==|>=)?\d+(\.\d+)*", value):
+        raise ConfigError(
+            f"[{section}].{key} must be a version pin like \"1.85\", \"==2.6.1\", "
+            f"or \">=3.13\", got {value!r}"
         )
 
 
@@ -365,6 +414,7 @@ def _apply_environment_overrides(
     imports: dict[str, Any],
     jit: dict[str, Any],
     executable: dict[str, Any],
+    toolchain: dict[str, Any],
     policy: dict[str, Any],
     environ: Mapping[str, str],
 ) -> None:
@@ -377,6 +427,7 @@ def _apply_environment_overrides(
         "imports": imports,
         "jit": jit,
         "executable": executable,
+        "toolchain": toolchain,
         "policy": policy,
     }
     for env_name, (section, key, kind) in ENVIRONMENT_OVERRIDES.items():

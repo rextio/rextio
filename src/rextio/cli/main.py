@@ -81,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_target_options(build_parser_)
     _add_import_options(build_parser_)
     _add_jit_options(build_parser_)
+    _add_toolchain_options(build_parser_)
     build_parser_.add_argument(
         "--fallback",
         choices=("cpython", "nuitka"),
@@ -376,6 +377,48 @@ def _add_target_options(parser: argparse.ArgumentParser) -> None:
         dest="plugin_enabled",
         help="Installed Rextio plugin id to enable. Overrides REXTIO_PLUGINS_ENABLED and [plugins] enabled.",
     )
+
+
+def _add_toolchain_options(parser: argparse.ArgumentParser) -> None:
+    for tool, env in (("cargo", "REXTIO_CARGO"), ("maturin", "REXTIO_MATURIN"), ("nuitka", "REXTIO_NUITKA")):
+        parser.add_argument(
+            f"--{tool}",
+            default=None,
+            help=(
+                f"Path to the {tool} binary or a home directory containing it "
+                f"(bin/ is searched). Overrides {env} and [toolchain] {tool}."
+            ),
+        )
+    parser.add_argument(
+        "--python",
+        default=None,
+        help=(
+            "Path to the CPython interpreter (or its home directory) used as the "
+            "native-extension build target and the default delegated-call runtime. "
+            "Must match the build interpreter's minor version. Overrides "
+            "REXTIO_PYTHON and [toolchain] python."
+        ),
+    )
+    parser.add_argument(
+        "--rust-toolchain",
+        default=None,
+        help=(
+            "rustup toolchain to compile generated crates with (e.g. stable, 1.83); "
+            "forwarded as RUSTUP_TOOLCHAIN, so a non-rustup cargo ignores it. "
+            "Overrides REXTIO_RUST_TOOLCHAIN and [toolchain] rust_toolchain."
+        ),
+    )
+    for tool in ("cargo", "maturin", "nuitka", "python"):
+        env = f"REXTIO_{tool.upper()}_VERSION"
+        parser.add_argument(
+            f"--{tool}-version",
+            default=None,
+            help=(
+                f"Verification pin for the resolved {tool} (\"X.Y\" prefix, or ==/>= "
+                f"specifier). Verifies only - never installs. Overrides {env} and "
+                f"[toolchain] {tool}_version."
+            ),
+        )
 
 
 def _add_import_options(parser: argparse.ArgumentParser) -> None:

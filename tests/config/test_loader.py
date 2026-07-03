@@ -436,3 +436,45 @@ def test_load_config_ignores_unknown_environment_variables(tmp_path: Path) -> No
     )
 
     assert config.jit.enabled is False
+
+
+def test_toolchain_section_loads_from_toml_env_and_overrides(tmp_path):
+    (tmp_path / "rextio.toml").write_text(
+        """
+[toolchain]
+cargo = "/opt/rust/bin/cargo"
+python_version = ">=3.13"
+""",
+        encoding="utf-8",
+    )
+    config = load_config(tmp_path, environ={"REXTIO_NUITKA": "/opt/py/bin/nuitka"})
+    assert config.toolchain.cargo == "/opt/rust/bin/cargo"
+    assert config.toolchain.nuitka == "/opt/py/bin/nuitka"
+    assert config.toolchain.python_version == ">=3.13"
+    overridden = override_config(config, {("toolchain", "rust_toolchain"): "1.83"})
+    assert overridden.toolchain.rust_toolchain == "1.83"
+    assert overridden.toolchain.cargo == "/opt/rust/bin/cargo"
+
+
+def test_toolchain_version_pin_syntax_is_validated(tmp_path):
+    (tmp_path / "rextio.toml").write_text(
+        """
+[toolchain]
+cargo_version = "one-point-two"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="version pin"):
+        load_config(tmp_path)
+
+
+def test_unknown_toolchain_key_is_rejected(tmp_path):
+    (tmp_path / "rextio.toml").write_text(
+        """
+[toolchain]
+rustc = "/somewhere"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="unsupported config key"):
+        load_config(tmp_path)

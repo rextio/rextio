@@ -95,6 +95,31 @@ class ExecutableConfig:
 
 
 @dataclass(frozen=True)
+class ToolchainConfig:
+    """The [toolchain] configuration section.
+
+    Paths accept either the tool binary itself or a home directory containing
+    it (``bin/`` is searched). A configured path that does not resolve is a
+    build error - it never silently falls back to PATH. ``*_version`` values
+    are verification pins: the resolved tool's reported version must satisfy
+    them (``X[.Y[.Z]]`` prefix match, or an explicit ``==``/``>=`` specifier).
+    Pins verify; they never install or select a tool.
+    """
+
+    cargo: str | None = None
+    maturin: str | None = None
+    nuitka: str | None = None
+    python: str | None = None
+    # rustup channel/version forwarded as RUSTUP_TOOLCHAIN (only a rustup-managed
+    # cargo honors it; a plain cargo ignores the variable).
+    rust_toolchain: str | None = None
+    cargo_version: str | None = None
+    maturin_version: str | None = None
+    nuitka_version: str | None = None
+    python_version: str | None = None
+
+
+@dataclass(frozen=True)
 class PolicyConfig:
     """The [policy] configuration section."""
 
@@ -117,4 +142,5 @@ class RextioConfig:
     imports: ImportsConfig = ImportsConfig()
     jit: JitConfig = JitConfig()
     executable: ExecutableConfig = ExecutableConfig()
+    toolchain: ToolchainConfig = ToolchainConfig()
     policy: PolicyConfig = PolicyConfig()
