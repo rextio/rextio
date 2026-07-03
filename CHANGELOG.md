@@ -32,6 +32,21 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - `list.index` failure messages interpolate the needle repr exactly like
   CPython ("5 is not in list", "'x' is not in list", "[3] is not in list").
 
+### Scalar boundary calls
+
+- An explicitly marked native function may call a fallback-only project
+  function whose signature is immutable scalars end to end: the call is an
+  in-process boundary call (`RXT075`, informational) executed by the host
+  interpreter, so values and exceptions are CPython-exact and runtime
+  replacement of the callee (monkeypatching) is honored by the native path.
+  Containers never cross; a boundary call inside a native loop keeps the
+  caller on the Python fallback (`RXT076`); auto-discovered candidates are
+  excluded (marker-only). Every crossing counts against the caller's
+  boundary-fallback threshold, so a chattering native demotes itself to the
+  Python fallback at run time. The importable Rust crate does not export
+  boundary-calling functions (they need the interpreter), and the
+  rust-executable delegate mode is unchanged.
+
 ### Toolchain selection and version pins
 
 - A `[toolchain]` configuration section (CLI flag > `REXTIO_*` variable >

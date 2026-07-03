@@ -370,9 +370,20 @@ must be installed for this backend.
 ## Boundary Safety
 
 Native functions may call accepted native functions and supported builtins.
-They may not call fallback-only functions, rejected native candidates, or
-unresolved external package calls. Those cases produce deterministic diagnostics
-such as `RXT070`, `RXT072`, and `RXT030`.
+An explicitly marked native function may also call a fallback-only project
+function whose signature is immutable scalars end to end
+(`int`/`float`/`bool`/`str`/`None`): the call becomes an in-process *scalar
+boundary call* (`RXT075`, informational) - the callee keeps running in the
+host interpreter, so its result and any raised exception are CPython-exact by
+construction, and the target is resolved per call (runtime replacement of the
+module attribute is honored). Containers never cross the boundary (a by-value
+copy would sever the aliasing CPython preserves), a boundary call inside a
+native loop keeps the caller on the Python fallback (`RXT076` - a
+per-iteration interpreter round-trip predictably erases the speedup), and
+auto-discovered candidates never acquire boundary calls (marker-only, the
+same conservatism as the runtime-shim rule). Everything else - container
+signatures, unresolved external package calls, rejected dependencies -
+produces deterministic diagnostics such as `RXT070`, `RXT072`, and `RXT030`.
 
 If a direct-Rust native function calls a runtime-semantics native function,
 Rextio promotes the caller to the same runtime shim path and reports `RXT080`.
@@ -383,8 +394,9 @@ Rextio emits `RXT073` with the suggestion to move the loop into a native batch
 function. Supported batch loop shapes include `for x in xs`,
 `for i, x in enumerate(xs)`, and `for x, y in zip(xs, ys)`.
 
-Generated wrappers also keep a per-function runtime crossing count. After a
-function's Python-to-native wrapper calls exceed
+Generated wrappers also keep a per-function runtime crossing count, and every
+native scalar boundary call counts one crossing against its caller too. After
+a function's total crossings exceed
 `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` (`1000` by default), later calls use the
 generated Python fallback path for that function. `rextio generate` and
 `rextio build` accept `--fallback-threshold=N`, and projects can set

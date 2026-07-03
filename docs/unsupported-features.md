@@ -270,9 +270,13 @@ Rextio promotes the caller to the runtime shim path and emits `RXT080`.
 
 Native functions must not call:
 
-- fallback-only user functions (`RXT070`)
-- exempt user functions (`RXT070`)
-- rejected native candidates (`RXT072`)
+- fallback-only, exempt, or rejected project functions with a
+  non-scalar signature (`RXT070`/`RXT072`) - when the signature is immutable
+  scalars end to end, an EXPLICITLY MARKED caller makes an in-process scalar
+  boundary call instead (`RXT075`, informational; the callee keeps running in
+  the host interpreter), unless the call sits inside a native loop
+  (`RXT076`, rejected: a per-iteration interpreter round-trip erases the
+  speedup)
 - unsupported external packages or unresolved functions (`RXT030`)
 - I/O, network, database, or ORM functions
 
