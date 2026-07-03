@@ -42,28 +42,34 @@ def resolve_tool(name: str, configured: str | None) -> tuple[str | None, str | N
     # escape virtualenv layouts (.venv/bin/python3 is a symlink to the base
     # interpreter, and the base interpreter has none of the venv's packages).
     base = Path(os.path.abspath(Path(configured).expanduser()))
-    for direct in (base, base.parent / f"{base.name}.exe"):
-        if direct.is_file():
-            return _require_executable(direct, name)
+    # A non-executable match records an error but keeps searching, so a stray
+    # text file named like the tool cannot mask its .exe (or bin/) sibling.
+    not_executable: str | None = None
+    candidates = [base, base.parent / f"{base.name}.exe"]
     if base.is_dir():
         for subdir in _HOME_SUBDIRS:
-            for candidate in (base / subdir / name, base / subdir / f"{name}.exe"):
-                if candidate.is_file():
-                    return _require_executable(candidate, name)
+            candidates.extend((base / subdir / name, base / subdir / f"{name}.exe"))
+    seen_any = False
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        seen_any = True
+        if os.access(candidate, os.X_OK):
+            return str(candidate), None
+        not_executable = (
+            f"[toolchain] {name} resolved to {candidate}, but the file is not "
+            "executable."
+        )
+    if not_executable is not None:
+        return None, not_executable
+    if base.is_dir():
         return None, (
             f"[toolchain] {name} points at {base}, but no {name} executable was "
             f"found there (searched {', '.join(repr(s or '.') for s in _HOME_SUBDIRS)})."
         )
+    if seen_any:  # pragma: no cover - defensive; executables return above
+        return None, f"[toolchain] {name} points at {base}, which is not usable."
     return None, f"[toolchain] {name} points at {base}, which does not exist."
-
-
-def _require_executable(candidate: Path, name: str) -> tuple[str | None, str | None]:
-    if os.access(candidate, os.X_OK):
-        return str(candidate), None
-    return None, (
-        f"[toolchain] {name} resolved to {candidate}, but the file is not "
-        "executable."
-    )
 
 
 def resolve_python(toolchain: ToolchainConfig) -> tuple[str | None, str | None]:
@@ -82,7 +88,7 @@ def resolve_python(toolchain: ToolchainConfig) -> tuple[str | None, str | None]:
         "nor python resolved there."
     )
     if errors:
-        combined = f"{combined} {errors[-1]}"
+        combined = f"{combined} {' '.join(dict.fromkeys(errors))}"
     return None, combined
 
 

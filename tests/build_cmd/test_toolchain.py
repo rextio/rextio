@@ -198,3 +198,12 @@ def test_resolve_tool_preserves_symlinks(tmp_path: Path) -> None:
     assert error is None
     assert path == str(link)
     assert Path(path).is_symlink()
+
+
+def test_non_executable_file_does_not_mask_its_exe_sibling(tmp_path: Path) -> None:
+    plain = tmp_path / "cargo"
+    plain.write_text("not a program", encoding="utf-8")
+    exe = _script(tmp_path / "cargo.exe", "echo cargo 1.85.0")
+
+    path, error = resolve_tool("cargo", str(plain))
+    assert error is None and path == str(exe)
