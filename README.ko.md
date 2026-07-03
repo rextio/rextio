@@ -194,11 +194,18 @@ Rextio는 native 컴파일을 보수적으로 유지합니다:
 
 - direct Rust native 함수는 수락된 native 함수, 지원되는 builtin, 지원되는
   표준 라이브러리 함수만 호출할 수 있습니다.
-- fallback 전용 코드를 호출하는 native 함수는 native 컴파일에서 거부됩니다.
+- fallback 전용 코드를 호출하는 native 함수는 거부됩니다 — 단, 호출자가
+  명시적으로 마킹돼 있고 callee의 시그니처가 처음부터 끝까지 불변 스칼라
+  (`int`/`float`/`bool`/`str`/`None`)라면 그 호출은 in-process 스칼라
+  boundary call(`RXT075`)이 됩니다. callee는 인터프리터에서 계속 실행되므로
+  값과 예외가 CPython-정확하고 monkeypatch도 반영됩니다. 컨테이너는 경계를
+  넘지 않으며, native 루프 안의 boundary call은 호출자를 fallback에
+  남깁니다(`RXT076`).
 - Python fallback 코드는 native 함수를 호출할 수 있습니다.
 - native 함수를 반복 호출하는 Python 루프는 boundary 경고를 냅니다.
-- 생성된 wrapper는 Python→native wrapper 교차가 반복되면 그 함수를 다시
-  fallback으로 전환할 수 있습니다.
+- 생성된 wrapper는 경계 교차가 반복되면 그 함수를 다시 fallback으로
+  전환할 수 있습니다 — Python→native wrapper 진입과 native 스칼라 boundary
+  call이 같은 함수별 threshold에 함께 계상됩니다.
 - Python/Rust의 소유권 차이는 명시적으로 다룹니다. 소유 값의 읽기 전용
   재사용은 필요 시 Rust clone으로 낮추고, 가변 컬렉션의 alias mutation은
   Python fallback에 남습니다.
@@ -332,8 +339,8 @@ CPython-정확 의미론을 갖지만, `@numba.*` 함수는 **Numba의** 의미�
 유의하세요.
 
 내장(embedding)은 생성 Cargo 프로젝트에 crate 의존성을 추가하지 않습니다.
-내장이 꺼져 있으면 후보였을 함수는 일반 fallback 경로에 남습니다(그리고
-그 native 호출자는 평범한 boundary 규칙의 지배를 받습니다).
+내장이 꺼져 있어도 적격 helper 호출은 런타임 스칼라 boundary call로 여전히
+동작합니다 — 내장은 호출마다의 인터프리터 왕복을 제거하는 빠른 경로입니다.
 
 ## Rust에서 import 가능한 crate
 
@@ -360,7 +367,8 @@ fn main() -> Result<(), my_native::RextioError> {
 ```
 
 이 crate로는 직접 타입 Rust로 낮춰진 함수만 export됩니다. fallback 전용
-함수와 runtime semantics shim은 Python 쪽 경로로 남습니다.
+함수, runtime semantics shim, 그리고 스칼라 boundary call을 쓰는 함수
+(둘 다 인터프리터가 필요)는 Python 쪽 경로로 남습니다.
 
 ## 실행 artifact
 

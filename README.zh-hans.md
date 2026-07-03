@@ -190,11 +190,17 @@ Rextio 让 native 编译保持保守:
 
 - direct Rust native 函数只能调用被接受的 native 函数、受支持的 builtin
   和受支持的标准库函数。
-- 调用仅 fallback 代码的 native 函数会被拒绝进行 native 编译。
+- 调用仅 fallback 代码的 native 函数会被拒绝 — 除非调用者被显式标记且
+  callee 的签名从头到尾都是不可变标量（`int`/`float`/`bool`/`str`/`None`）:
+  该调用将成为 in-process 标量 boundary call（`RXT075`）。callee 继续在
+  解释器中运行，因此值与异常都 CPython-精确，monkeypatch 也被尊重；容器
+  绝不跨越边界，native 循环内的 boundary call 会让调用者留在 fallback
+  （`RXT076`）。
 - Python fallback 代码可以调用 native 函数。
 - 反复调用 native 函数的 Python 循环会产生 boundary 警告。
-- 生成的 wrapper 可以在 Python→native 的 wrapper 穿越反复发生后把该函数
-  切回 fallback。
+- 生成的 wrapper 可以在边界穿越反复发生后把该函数切回 fallback —
+  Python→native 的 wrapper 进入与 native 标量 boundary call 计入同一个
+  按函数阈值。
 - Python/Rust 的所有权差异被显式处理。持有值的只读复用在需要时用 Rust
   clone 下沉，可变集合的别名修改则留在 Python fallback。
 
@@ -315,8 +321,9 @@ Nuitka *可执行文件*（`--executable-backend=nuitka`）与
 调用。带类型的标量代码优先用 `@rextio.native`，NumPy/数组内核用 Numba，
 并注意非常小的函数在任何加速器下都会输给调用边界成本。
 
-内嵌不会给生成的 Cargo 项目增加 crate 依赖。内嵌关闭时，本可成为候选的
-函数留在常规 fallback 路径（其 native 调用者受常规 boundary 规则约束）。
+内嵌不会给生成的 Cargo 项目增加 crate 依赖。内嵌关闭时，合格的 helper
+调用仍通过运行时标量 boundary call 工作 — 内嵌是移除每次调用解释器往返
+的快速路径。
 
 ## Rust-importable crate
 
@@ -341,8 +348,9 @@ fn main() -> Result<(), my_native::RextioError> {
 }
 ```
 
-只有直接下沉为带类型 Rust 的函数通过该 crate 导出。仅 fallback 的函数和
-runtime semantics shim 仍是面向 Python 的路径。
+只有直接下沉为带类型 Rust 的函数通过该 crate 导出。仅 fallback 的函数、
+runtime semantics shim、以及使用标量 boundary call 的函数（都需要解释器）
+仍是面向 Python 的路径。
 
 ## 可执行 artifact
 

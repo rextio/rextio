@@ -195,12 +195,18 @@ Rextio keeps native compilation conservative:
 
 - A direct Rust native function may call only accepted native functions,
   supported builtins, and supported standard-library functions.
-- Native functions that call fallback-only code are rejected from native
-  compilation.
+- A native function calling fallback-only code is rejected - unless the
+  caller is explicitly marked and the callee's signature is immutable scalars
+  end to end (`int`/`float`/`bool`/`str`/`None`): that call becomes an
+  in-process scalar boundary call (`RXT075`). The callee keeps running in the
+  interpreter, so values and exceptions are CPython-exact and monkeypatching
+  is honored; containers never cross, and a boundary call inside a native
+  loop keeps the caller on fallback (`RXT076`).
 - Python fallback code may call native functions.
 - Python loops that repeatedly call native functions produce boundary warnings.
 - Generated wrappers can switch a function back to fallback after repeated
-  Python-to-native wrapper crossings.
+  boundary crossings - Python-to-native wrapper entries and native scalar
+  boundary calls count toward the same per-function threshold.
 - Python/Rust ownership differences are handled explicitly. Read-only reuse of
   owned values is lowered with Rust clones when needed, while mutable collection
   alias mutation stays on Python fallback.
@@ -340,8 +346,9 @@ code and Numba for NumPy/array kernels, and note that very small functions
 lose to call-boundary costs under any accelerator.
 
 Embedding adds no crate dependencies to generated Cargo projects. When
-embedding is disabled, would-be candidates stay on the normal fallback path
-(and their native callers are gated by the ordinary boundary rules).
+embedding is disabled, an eligible helper call still works through the
+run-time scalar boundary call; embedding is the fast path that removes the
+per-call interpreter round-trip.
 
 ## Rust-Importable Crate
 
@@ -368,7 +375,8 @@ fn main() -> Result<(), my_native::RextioError> {
 ```
 
 Only functions directly lowered to typed Rust are exported through this crate.
-Fallback-only functions and runtime semantics shims remain Python-facing paths.
+Fallback-only functions, runtime semantics shims, and functions that make
+scalar boundary calls (both need the interpreter) remain Python-facing paths.
 
 ## Executable Artifacts
 

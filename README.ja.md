@@ -194,12 +194,18 @@ Rextio は native コンパイルを保守的に保ちます:
 
 - direct Rust native 関数が呼べるのは、受理された native 関数、サポート
   される builtin、サポートされる標準ライブラリ関数だけです。
-- fallback 専用コードを呼ぶ native 関数は native コンパイルから拒否
-  されます。
+- fallback 専用コードを呼ぶ native 関数は拒否されます — ただし呼び出し側が
+  明示的にマークされ、callee のシグネチャが端から端まで不変スカラー
+  （`int`/`float`/`bool`/`str`/`None`）なら、その呼び出しは in-process の
+  スカラー boundary call（`RXT075`）になります。callee はインタプリタで
+  実行され続けるため、値と例外は CPython-正確で monkeypatch も反映
+  されます。コンテナは境界を越えず、native ループ内の boundary call は
+  呼び出し側を fallback に残します（`RXT076`）。
 - Python fallback コードは native 関数を呼べます。
 - native 関数を繰り返し呼ぶ Python ループは boundary 警告を出します。
-- 生成された wrapper は、Python→native の wrapper 横断が繰り返されると
-  その関数を fallback へ戻すことがあります。
+- 生成された wrapper は、境界横断が繰り返されるとその関数を fallback へ
+  戻すことがあります — Python→native の wrapper 進入と native スカラー
+  boundary call は同じ関数別しきい値に合算されます。
 - Python/Rust の所有権の違いは明示的に扱います。所有値の読み取り専用の
   再利用は必要に応じて Rust の clone で下ろし、可変コレクションの alias
   変更は Python fallback に残します。
@@ -338,8 +344,8 @@ runtime も動作します（dispatcher が本物の CPython を実行）。
 コストに負ける点に注意してください。
 
 埋め込みは生成 Cargo プロジェクトに crate 依存を追加しません。埋め込みが
-無効のとき、候補になり得た関数は通常の fallback 経路に残ります（その
-native 呼び出し元は通常の boundary 規則に従います）。
+無効でも、適格なヘルパー呼び出しは実行時のスカラー boundary call で動作
+します — 埋め込みは呼び出しごとのインタプリタ往復を除去する高速経路です。
 
 ## Rust-importable crate
 
@@ -366,8 +372,9 @@ fn main() -> Result<(), my_native::RextioError> {
 ```
 
 この crate から export されるのは、直接型付き Rust へ下ろされた関数だけ
-です。fallback 専用関数と runtime semantics shim は Python 側の経路に
-残ります。
+です。fallback 専用関数、runtime semantics shim、そしてスカラー boundary
+call を使う関数（いずれもインタプリタが必要）は Python 側の経路に残り
+ます。
 
 ## executable artifact
 
