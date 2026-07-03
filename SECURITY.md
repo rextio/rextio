@@ -68,7 +68,9 @@ external toolchain on your machine.
 
 ## Reporting
 
-This is a 0.1.0 alpha. To report a security issue, open a GitHub issue marked
-`security` (or contact the maintainer privately if the report is sensitive).
-There is no formal embargo process yet; please allow time for a fix before public
-disclosure.
+This is a 0.1.0 alpha. Report sensitive vulnerabilities privately through
+GitHub's private vulnerability reporting
+(<https://github.com/rextio/rextio/security/advisories/new>) - do not file
+them as public issues. Non-sensitive hardening suggestions can be ordinary
+GitHub issues labeled `security`. There is no formal embargo process yet;
+please allow time for a fix before public disclosure.
