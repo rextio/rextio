@@ -71,7 +71,7 @@ ambitions behind explicit opt-ins. Treat the surface in these tiers:
 | Tier | Features | Notes |
 | --- | --- | --- |
 | **Stable (core)** | Typed-function discovery, supported-subset checks, Rust/PyO3 AOT codegen, Cargo/maturin build, CPython fallback packaging, boundary policy | The path the alpha is meant to be judged on. |
-| **Experimental (opt-in)** | Scalar-helper embedding (`--jit`/`REXTIO_JIT`/`[jit] enabled`), Numba external accelerator recognition + Nuitka coexistence, Nuitka fallback and Nuitka executables, runtime-semantics shim (`RXT080`), Rust-importable crate | Behind flags/markers; behaviour and diagnostics may change before the first non-alpha release. |
+| **Experimental (opt-in)** | Scalar-helper embedding (`--jit`/`REXTIO_JIT`/`[jit] enabled`), Numba external accelerator recognition + Nuitka coexistence, Nuitka fallback and Nuitka executables, runtime-semantics shim (`RXT080`), Rust-importable crate, `[toolchain]` selection + version pins | Behind flags/markers; behaviour and diagnostics may change before the first non-alpha release. |
 | **Planned (not implemented)** | `mojo`/`julia` native targets, installed-package plugins beyond metadata | Target metadata can be recorded for planning, but only Rust codegen is implemented. |
 
 Stability of diagnostic codes (`RXT…`) is tracked in

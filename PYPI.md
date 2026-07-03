@@ -14,8 +14,10 @@ Rextio can:
 - generate Rust/PyO3 code for accepted functions
 - generate Python wrappers that preserve normal import paths
 - fall back to Python when native code is unavailable or disabled
-- build hybrid artifacts, zipapp executables, Nuitka executables, and optional
-  Rust-importable crates
+- build hybrid artifacts, zipapp executables, Nuitka executables, standalone
+  native Rust binaries, and optional Rust-importable crates
+- select and version-pin the exact cargo, maturin, Nuitka, and CPython a
+  build uses (`[toolchain]` in `rextio.toml`)
 
 Rextio is not a Python replacement and does not attempt full Python semantics
 or whole-project Rust migration. Native compilation is an optimization; Python

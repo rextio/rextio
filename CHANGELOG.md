@@ -32,6 +32,23 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - `list.index` failure messages interpolate the needle repr exactly like
   CPython ("5 is not in list", "'x' is not in list", "[3] is not in list").
 
+### Toolchain selection and version pins
+
+- A `[toolchain]` configuration section (CLI flag > `REXTIO_*` variable >
+  `rextio.toml` > PATH) selects the cargo, maturin, Nuitka, and CPython a
+  build uses: paths accept a binary or a home directory, a configured path
+  that does not resolve fails the build up front, and symlinks and `..`
+  components are traversed exactly as at the shell. `rust_toolchain`
+  forwards a rustup channel; `[toolchain] python` drives the PyO3 build
+  target (`PYO3_PYTHON`), Nuitka's interpreter (`python -m nuitka`), and the
+  hybrid binary's delegated-call runtime, and must be a CPython sharing the
+  build interpreter's minor version.
+- `*_version` pins verify (never install) tool versions: bare pins are
+  prefix matches, `==` is exact, `>=` is a minimum. A pin is enforced under
+  the environment the build runs the tool with, exactly when the build uses
+  the tool - including the hybrid dispatcher and the maturin-to-cargo
+  fallback - and an unresolvable or unprobeable pinned tool fails the build.
+
 ### Packaging and accelerator-scan behavior
 
 - The wheel built from a Nuitka fallback tree excludes `.py` sources
