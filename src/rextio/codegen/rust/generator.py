@@ -175,6 +175,14 @@ def _crate_excluded_qualnames(module_ir: ModuleIR) -> set[str]:
     Python interpreter). Any function that calls an excluded function - by
     qualname or by bare name within the same module, mirroring how the crate
     renderer resolves native calls - is excluded as well, to a fixed point.
+
+    The bare-name match assumes a collected call-target string that equals an
+    excluded function's name refers to that module-level function - the same
+    assumption the renderer's ``names_by_module_and_name`` lookup makes. A
+    same-named shadow could therefore over-exclude its caller; that bias is
+    deliberate: an over-excluded function merely stays off the crate (still
+    served by the wheel and the Python fallback), while an under-exclusion
+    would emit a call to a function the crate never defines.
     """
     excluded = {
         function.qualname
