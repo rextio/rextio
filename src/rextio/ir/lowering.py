@@ -165,6 +165,7 @@ def lower_function(
         return_type=_return_type(function, node),
         body=lower_block(node.body, module, resolver),
         native_jit=native_jit,
+        has_boundary_calls=bool(function.boundary_call_targets),
     )
 
 

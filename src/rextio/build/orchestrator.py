@@ -490,7 +490,10 @@ def _generate_native_source(
         )
     try:
         module_ir = lower_project(plan.analysis, include_jit=native_jit_enabled)
-        rust_source = generate_rust_module(module_ir)
+        rust_source = generate_rust_module(
+            module_ir,
+            boundary_call_return_types=_boundary_call_return_types(plan.analysis),
+        )
     except (LoweringError, RustCodegenError) as exc:
         return NativeSourceResult(
             status="failed",
@@ -669,6 +672,15 @@ def _rust_binary_name(executable_name: str | None, entry_qualname: str) -> str:
 
 def _delegated_return_types(analysis: ProjectAnalysis) -> dict[str, str]:
     """Map every delegated callee's qualname to its return type across the project."""
+    return _scalar_callee_return_types(analysis, "delegated_call_targets")
+
+
+def _boundary_call_return_types(analysis: ProjectAnalysis) -> dict[str, str]:
+    """Map every boundary-called callee's qualname to its return type."""
+    return _scalar_callee_return_types(analysis, "boundary_call_targets")
+
+
+def _scalar_callee_return_types(analysis: ProjectAnalysis, targets_attr: str) -> dict[str, str]:
     by_qualname = {
         function.qualname: function
         for module in analysis.modules
@@ -677,7 +689,7 @@ def _delegated_return_types(analysis: ProjectAnalysis) -> dict[str, str]:
     delegated: dict[str, str] = {}
     for module in analysis.modules:
         for function in module.functions:
-            for target in function.delegated_call_targets:
+            for target in getattr(function, targets_attr):
                 callee = by_qualname.get(target)
                 if callee is None:
                     continue

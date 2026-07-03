@@ -199,8 +199,10 @@ def compute(x: int) -> int:
     )
     assert exit_code == 0
     assert "experimental helper embedding: disabled" in captured.out
-    assert report["accepted_native_count"] == 1
-    assert report["rejected_native_count"] == 1
+    # With embedding disabled the helper is not embedded, but the marked
+    # caller survives natively through the scalar boundary-call path.
+    assert report["accepted_native_count"] == 2
+    assert report["rejected_native_count"] == 0
     assert report["jit_candidate_count"] == 0
 
 
@@ -1014,7 +1016,7 @@ def add(a: int, b: int) -> int:
         encoding="utf-8",
     )
 
-    def fail_codegen(_module_ir):
+    def fail_codegen(_module_ir, **_kwargs):
         raise RustCodegenError("synthetic codegen failure")
 
     monkeypatch.setattr(orchestrator, "generate_rust_module", fail_codegen)

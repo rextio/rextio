@@ -57,6 +57,9 @@ class FunctionIR(IRNode):
     body: "BlockIR"
     native_runtime_semantics: bool = False
     native_jit: bool = False
+    # Whether the body performs in-process scalar boundary calls to the
+    # Python fallback (RXT075); such a function has no pure-Rust crate form.
+    has_boundary_calls: bool = False
     runtime_fallback_module: str | None = None
     runtime_attr_path: tuple[str, ...] = ()
 

@@ -101,6 +101,11 @@ fn app__safe_mod(a: i64, b: i64) -> PyResult<i64> {
 }
 
 #[pyfunction]
+fn app__shifted(x: i64) -> PyResult<i64> {
+    return Ok(__rextio_checked_mul({ let __rextio_barg_1 = x.clone(); Python::attach(|py| -> PyResult<i64> { let __rextio_bhook = PyModule::import(py, "rextio.runtime.boundary_call")?.getattr("boundary_call")?; let __rextio_bval = __rextio_bhook.call1(("app.shifted", "app.offset", (__rextio_barg_1,)))?; __rextio_bval.extract::<i64>() })? }, 2)?);
+}
+
+#[pyfunction]
 fn app__total(xs: Vec<i64>) -> PyResult<i64> {
     let mut acc = 0;
     for x in xs.iter().cloned() {
@@ -121,6 +126,7 @@ fn _rextio_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(app__doubled, m)?)?;
     m.add_function(wrap_pyfunction!(app__lookup, m)?)?;
     m.add_function(wrap_pyfunction!(app__safe_mod, m)?)?;
+    m.add_function(wrap_pyfunction!(app__shifted, m)?)?;
     m.add_function(wrap_pyfunction!(app__total, m)?)?;
     m.add_function(wrap_pyfunction!(app__sum_total, m)?)?;
     Ok(())

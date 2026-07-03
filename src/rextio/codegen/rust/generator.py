@@ -89,8 +89,17 @@ from rextio.ir.types import (
 
 
 
-def generate_rust_module(module_ir: ModuleIR) -> str:
-    """Generate the PyO3 extension-module Rust source for a lowered module."""
+def generate_rust_module(
+    module_ir: ModuleIR,
+    boundary_call_return_types: dict[str, str] | None = None,
+) -> str:
+    """Generate the PyO3 extension-module Rust source for a lowered module.
+
+    ``boundary_call_return_types`` maps the qualname of each fallback function
+    reached through an in-process scalar boundary call (RXT075) to its return
+    type; those calls lower to a run-time dispatch through
+    ``rextio.runtime.boundary_call``.
+    """
     names_by_qualname = {
         function.qualname: rust_identifier(native_function_name(function.qualname))
         for function in module_ir.functions
@@ -116,6 +125,7 @@ def generate_rust_module(module_ir: ModuleIR) -> str:
                     return_types_by_qualname,
                     mode="pyo3",
                     used_helpers=used_helpers,
+                    boundary_call_return_types=boundary_call_return_types,
                     # An embedded helper compiles as a plain
                     # internal function: callable from native code, not exported.
                     pyo3_exported=not function.native_jit,
@@ -155,9 +165,10 @@ def generate_rust_crate_module(
     direct_functions = [
         function
         for function in module_ir.functions
-        # Embedded helpers are ordinary direct functions in
-        # crate mode; only runtime-shim functions have no crate lowering.
-        if not function.native_runtime_semantics
+        # Embedded helpers are ordinary direct functions in crate mode;
+        # runtime-shim functions and boundary-calling functions have no
+        # pure-Rust crate form (both need the Python interpreter).
+        if not function.native_runtime_semantics and not function.has_boundary_calls
     ]
     if not direct_functions:
         raise RustCodegenError("no direct Rust native functions are available for a Rust-importable crate")
@@ -426,6 +437,7 @@ class _FunctionRenderer:
         mode: str,
         used_helpers: set[str] | None = None,
         delegated_return_types: dict[str, str] | None = None,
+        boundary_call_return_types: dict[str, str] | None = None,
         pyo3_exported: bool = True,
     ) -> None:
         self.function = function
@@ -439,6 +451,9 @@ class _FunctionRenderer:
         # qualname -> return-type name for calls delegated to the CPython
         # dispatcher (executable delegate mode); empty in every normal build.
         self.delegated_return_types = delegated_return_types or {}
+        # qualname -> return-type name for in-process scalar boundary calls
+        # to the Python fallback (RXT075); pyo3 mode only.
+        self.boundary_call_return_types = boundary_call_return_types or {}
         self.declared = {param.name for param in function.params}
         self.variable_types = {param.name: param.type for param in function.params}
         self.maybe_bound_types: dict[str, RxtType] = {}
@@ -1384,6 +1399,8 @@ class _FunctionRenderer:
             return f"{rust_name}({args})?"
         if expr.function in self.delegated_return_types:
             return self._render_delegated_call(expr)
+        if expr.function in self.boundary_call_return_types:
+            return self._render_boundary_call(expr)
         raise RustCodegenError(f"unsupported call during Rust codegen: {expr.function}")
 
     def _render_delegated_call(self, expr: CallIR) -> str:
@@ -1436,6 +1453,80 @@ class _FunctionRenderer:
             "__rextio_dj", self.delegated_return_types[expr.function], expr.function
         )
         return "{ " + " ".join(lines) + " " + conversion + " }"
+
+    def _render_boundary_call(self, expr: CallIR) -> str:
+        """Render an in-process scalar boundary call to the Python fallback.
+
+        Binds each argument to a temporary (evaluated once, in order), then
+        attaches to the interpreter and dispatches through
+        ``rextio.runtime.boundary_call.boundary_call``, which resolves the
+        target with ``getattr`` at call time (honoring runtime replacement)
+        and counts the crossing against this caller for the boundary
+        threshold. The callee runs in real CPython, so the value - and any
+        raised exception, which propagates as the same Python exception - is
+        CPython-exact by construction.
+        """
+        if self.mode != "pyo3":
+            raise RustCodegenError(
+                "scalar boundary calls are only supported in the pyo3 backend, "
+                "not the importable Rust crate"
+            )
+        lines: list[str] = []
+        arg_names: list[str] = []
+        for arg in expr.args:
+            name = self.next_temp("__rextio_barg")
+            lines.append(f"let {name} = {strip_wrapping_parens(self.render_call_arg(arg))};")
+            arg_names.append(name)
+        if arg_names:
+            args_tuple = "(" + ", ".join(arg_names) + ",)"
+        else:
+            args_tuple = "PyTuple::empty(py)"
+        return_type_name = self.boundary_call_return_types[expr.function]
+        caller = self.function.qualname
+        target = expr.function
+        call_stmt = (
+            'let __rextio_bval = __rextio_bhook.call1(('
+            f'"{caller}", "{target}", {args_tuple}))?;'
+        )
+        prologue = (
+            'let __rextio_bhook = PyModule::import(py, "rextio.runtime.boundary_call")?'
+            '.getattr("boundary_call")?;'
+        )
+        extract = {
+            "int": "__rextio_bval.extract::<i64>()",
+            "float": "__rextio_bval.extract::<f64>()",
+            "bool": "__rextio_bval.extract::<bool>()",
+            "str": "__rextio_bval.extract::<String>()",
+        }.get(return_type_name)
+        if extract is not None:
+            rust_ret = {
+                "int": "i64",
+                "float": "f64",
+                "bool": "bool",
+                "str": "String",
+            }[return_type_name]
+            closure = (
+                f"Python::attach(|py| -> PyResult<{rust_ret}> {{ "
+                f"{prologue} {call_stmt} {extract} }})?"
+            )
+            return "{ " + " ".join(lines) + " " + closure + " }"
+        if return_type_name == "None":
+            err = (
+                f'pyo3::exceptions::PyTypeError::new_err('
+                f'"{target} was expected to return None")'
+            )
+            closure = (
+                "Python::attach(|py| -> PyResult<()> { "
+                f"{prologue} {call_stmt} "
+                f"if __rextio_bval.is_none() {{ Ok(()) }} else {{ Err({err}) }} }})?"
+            )
+            return "{ " + " ".join(lines) + " " + closure + " }"
+        # The analyzer's _is_delegatable gate authorizes only immutable
+        # scalars; reject anything else so a regression there is a clean
+        # build failure rather than a silent aliasing-severing copy.
+        raise RustCodegenError(
+            f"boundary call return type is not supported: {return_type_name}"
+        )
 
     def _convert_json_value(self, value_var: str, type_name: str, qualname: str) -> str:
         """Rust expression converting the already-bound JSON ``value_var`` to a type."""
@@ -1808,6 +1899,9 @@ class _FunctionRenderer:
             # a local assigned from it is typed correctly (e.g. its `print` formats
             # a `str` with `{}`, not Debug `{:?}`).
             return type_from_string(self.delegated_return_types[expr.function])
+        if expr.function in self.boundary_call_return_types:
+            # Same rule for in-process boundary calls.
+            return type_from_string(self.boundary_call_return_types[expr.function])
         return self.native_return_types.get(expr.function)
 
     def render_format_macro(
@@ -2032,6 +2126,7 @@ def _render_function(
     mode: str,
     used_helpers: set[str] | None = None,
     delegated_return_types: dict[str, str] | None = None,
+    boundary_call_return_types: dict[str, str] | None = None,
     pyo3_exported: bool = True,
 ) -> str:
     return _FunctionRenderer(
@@ -2042,6 +2137,7 @@ def _render_function(
         mode,
         used_helpers=used_helpers,
         delegated_return_types=delegated_return_types,
+        boundary_call_return_types=boundary_call_return_types,
         pyo3_exported=pyo3_exported,
     ).render()
 
