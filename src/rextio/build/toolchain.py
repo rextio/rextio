@@ -235,13 +235,18 @@ def python_toolchain_error(python: str, pin: str | None) -> str | None:
     explicit version pin all read the same `-c` probe, so the two can never
     disagree about what the interpreter reports.
     """
-    probe = _probe_python(python)
-    if probe is None:
-        return (
-            f"[toolchain] python at {python} did not report a parseable "
-            "version and implementation."
-        )
-    reported, implementation = probe
+    if python == sys.executable:
+        # The running interpreter needs no subprocess to describe itself.
+        reported = "%d.%d.%d" % sys.version_info[:3]
+        implementation = sys.implementation.name
+    else:
+        probe = _probe_python(python)
+        if probe is None:
+            return (
+                f"[toolchain] python at {python} did not report a parseable "
+                "version and implementation."
+            )
+        reported, implementation = probe
     if implementation != "cpython":
         return (
             f"[toolchain] python at {python} is {implementation}, not CPython; "

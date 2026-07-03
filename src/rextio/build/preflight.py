@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pathlib import Path
+
 from rextio.build.toolchain import check_version_pin, probe_version, resolve_tool
 from rextio.config.schema import ToolchainConfig
 
@@ -97,6 +99,8 @@ def nuitka_version_error(command: list[str]) -> str | None:
     determined, the build proceeds and the real invocation surfaces any
     incompatibility.
     """
+    if isinstance(command, (str, Path)):  # a bare path is ONE argument, not chars
+        command = [str(command)]
     return _nuitka_floor_error(probe_version([str(part) for part in command]))
 
 

@@ -17,7 +17,7 @@ from rextio.build.preflight import (
 )
 from rextio.build.toolchain import (
     cargo_environment,
-    check_version_pin,
+    rust_pin_error,
     python_toolchain_error,
     resolve_nuitka_command,
     resolve_python,
@@ -80,20 +80,14 @@ def _rust_toolchain_error(config: RextioConfig, build_tool: str) -> str | None:
     is absent and unpinned.
     """
     toolchain = config.toolchain
+    # Probe under the PyO3-extension environment: RUSTUP_TOOLCHAIN (the only
+    # variable that changes what a rustup shim reports) is shared with the
+    # pure-Rust builders' environment, so this gate's verdict matches every
+    # builder's own point-of-use rust_pin_error.
+    env = cargo_environment(toolchain)
     checked = ("cargo",) if build_tool == "cargo" else ("maturin", "cargo")
     for tool in checked:
-        pin = getattr(toolchain, f"{tool}_version")
-        if pin is None:
-            continue
-        path, resolve_error = resolve_tool(tool, getattr(toolchain, tool))
-        if path is None:
-            return resolve_error or (
-                f"{tool} is pinned to {pin!r} but could not be resolved; a pin "
-                "is strict for a tool this build uses. Install it or drop the pin."
-            )
-        # Probe under the same environment the build will use: a rustup shim
-        # reports a different cargo version depending on RUSTUP_TOOLCHAIN.
-        pin_error = check_version_pin(tool, [path], pin, cargo_environment(toolchain))
+        pin_error = rust_pin_error(toolchain, tool, env)
         if pin_error is not None:
             return pin_error
     return None
