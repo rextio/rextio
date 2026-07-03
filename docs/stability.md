@@ -23,6 +23,7 @@ Tiers:
 | CPython fallback packaging + generated wrappers | Stable | Preserves Python semantics for everything not lowered to native. |
 | `@rextio.native` / `@rextio.exempt` decorators | Stable | Public API. See [versioning](versioning.md). |
 | `rextio.toml` configuration schema | Stable | Keys are part of the contract. |
+| `[toolchain]` selection + version pins | Experimental | New in 0.1.0 alpha: tool paths, rustup channel, CPython targeting, strict verification pins. Semantics may be refined before the first non-alpha release. |
 | Diagnostics (`RXTxxx` codes + messages) | Stable | Deterministic and tested; treated as a contract. |
 | Native build orchestration (maturin / Cargo) | Stable | `cargo` is the default `[rust] build_tool` (always available). Set `--rust-build-tool=maturin` (or `[rust] build_tool = "maturin"`, requires the optional `rextio[build]` dependency) to build wheels with maturin; if maturin is selected but not installed Rextio automatically falls back to Cargo. If the native build fails, packaging still produces a fallback-only pure-Python (`py3-none-any`) wheel that works through the Python fallback. |
 | Import policy — `fallback` | Stable | Treats an external package as fallback-only at the boundary. |
