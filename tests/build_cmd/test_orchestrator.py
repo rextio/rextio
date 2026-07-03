@@ -1673,3 +1673,51 @@ def test_toolchain_python_becomes_the_delegation_default(tmp_path: Path) -> None
     # Explicit [executable] python still wins over the toolchain default.
     assert _delegation_python("/opt/other/python3", toolchain) == "/opt/other/python3"
     assert _delegation_python(None, None) == "python3"
+
+
+def test_pinned_maturin_missing_fails_instead_of_cargo_fallback(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    # A maturin pin is strict for a native build: the maturin-missing ->
+    # cargo fallback must not silently bypass it.
+    monkeypatch.setenv("PATH", str(fake_cargo.parent))
+    (tmp_path / "app.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8"
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--rust-build-tool=maturin",
+            "--maturin-version=1.7",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "pinned" in captured.err
+    assert "maturin" in captured.err
+
+
+def test_cargo_pin_is_not_probed_for_pure_python_builds(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # No native candidates -> the cargo pin (and cargo itself) is irrelevant,
+    # even when cargo is entirely absent.
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    (tmp_path / "empty-bin").mkdir()
+    (tmp_path / "app.py").write_text(
+        "def add(a, b):\n    return a + b\n", encoding="utf-8"
+    )
+
+    exit_code = main(["build", str(tmp_path), "--cargo-version=1.85"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "1.85" not in captured.err
