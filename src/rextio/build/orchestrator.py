@@ -548,8 +548,10 @@ def _build_fallback_backend(
     if fallback == "cpython":
         return cpython_fallback_build_result()
     if fallback == "nuitka":
-        # The CLI pre-gates the Nuitka version floor, so the builder's own
-        # probe is only reachable here for programmatic callers.
+        # The CLI pre-gates the Nuitka version floor for the FALLBACK path,
+        # so this builder's own probe is only reachable here for programmatic
+        # callers. The hybrid dispatcher (_build_nuitka_dispatcher) is NOT
+        # pre-gated and keeps its own point-of-use probe.
         return build_nuitka_fallback(layout.build_python_dir, timeout=build_timeout)
     return FallbackBuildResult(
         status="failed",
