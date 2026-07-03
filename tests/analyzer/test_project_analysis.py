@@ -4653,10 +4653,14 @@ def main(argv: list[str]) -> int:
 
 def test_external_accelerator_qualnames_pin_numba_public_api() -> None:
     # Council-53 regression guard: these keys are EXTERNAL API names owned by
-    # Numba. A Rextio-internal surface rename (the jit->embedding sweep was
-    # the incident) must never rewrite them - fixtures alone could not catch
-    # that because a blanket rename edits fixtures in lockstep, so this test
-    # pins the literal dictionary.
+    # Numba; a Rextio-internal surface rename (the jit->embedding sweep was
+    # the incident) must never rewrite them. Honest scope of this pin
+    # (mutation-tested): an edit to the source dictionary alone - typo,
+    # deletion, single-file rename - fails here mechanically. A sweep that
+    # also rewrites THIS file's expected literals passes it; the remaining
+    # defenses there are the unquoted @numba.jit decorator fixtures below
+    # (which a quoted-string sweep misses) and this test's name forcing a
+    # reviewer to notice the external contract in the sweep's diff.
     from rextio.analyzer.native_marker import _EXTERNAL_ACCELERATOR_QUALNAMES
 
     assert _EXTERNAL_ACCELERATOR_QUALNAMES == {
