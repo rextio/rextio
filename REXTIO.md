@@ -242,9 +242,13 @@ verifies their versions:
 - `cargo`, `maturin`, `nuitka`, and `python` accept either the tool binary
   itself or a home directory containing it (`bin/` and `Scripts/` are
   searched). Relative paths are resolved against the directory `rextio build`
-  is invoked from, and the resolved file must be executable. A configured
-  path that does not resolve fails the build up front (RXT060) - it never
-  silently falls back to PATH. Unset tools resolve from PATH as before.
+  is invoked from; symlinks are preserved (a venv's `bin/python3` symlink
+  stays the venv interpreter, keeping its packages visible to delegated
+  calls). The resolved file must be executable (on Windows this check is
+  advisory - the OS decides at spawn time). A configured path that does not
+  resolve fails the build up front (RXT060) - it never silently falls back
+  to PATH. Unset tools resolve from PATH as before. When `[toolchain] cargo`
+  is set, maturin runs it too (via the `CARGO` environment variable).
 - `python` selects the CPython the build targets end to end: the PyO3
   extension compiles against it (`PYO3_PYTHON`), Nuitka runs inside it
   (`python -m nuitka`) unless `nuitka` is set explicitly, and the hybrid rust
@@ -263,8 +267,10 @@ verifies their versions:
   the CPython pin on every build, cargo/maturin pins when native code is
   compiled, and the Nuitka pin at every Nuitka invocation (including the
   hybrid dispatcher). For a tool the build uses, a pin is strict - an
-  unresolvable tool or an undeterminable version fails the build. Pins
-  cannot relax hard floors (Nuitka >= 2.0 still applies).
+  unresolvable tool or an undeterminable version fails the build. Pins are
+  verified under the same environment the build runs the tool with (so a
+  rustup channel selection is reflected), and they add to - never relax -
+  the hard floors (Nuitka >= 2.0 still applies).
 
 Rust is the only implemented native target in 0.1.0 alpha. `mojo` and `julia` can
 be selected as target languages so versioned plugin metadata can be modeled, but
