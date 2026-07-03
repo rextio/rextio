@@ -211,7 +211,7 @@ def test_run_build_tool_forges_returncode_when_the_child_cannot_be_reaped(
     created: list[subprocess.Popen] = []
     real_start = subprocess_utils._start_process
 
-    def capturing_start(command, cwd):
+    def capturing_start(command, cwd, env=None):
         proc = real_start(command, cwd)
         created.append(proc)
         return proc

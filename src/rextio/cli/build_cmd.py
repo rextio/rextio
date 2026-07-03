@@ -4,18 +4,93 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+import sys
 from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
-from rextio.build.preflight import format_missing_tools, missing_build_tools, nuitka_version_error
+from rextio.build.preflight import (
+    format_missing_tools,
+    missing_build_tools,
+    nuitka_toolchain_error,
+)
+from rextio.build.toolchain import (
+    cargo_environment,
+    rust_pin_error,
+    python_toolchain_error,
+    resolve_nuitka_command,
+    resolve_python,
+    resolve_tool,
+)
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
 from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
+from rextio.config.schema import RextioConfig
 from rextio.fallback.nuitka import nuitka_unavailable_message
 from rextio.targets.plan import TargetPlanError, create_target_plan
+
+
+def _toolchain_preflight_error(config: RextioConfig) -> str | None:
+    """Verify the configured CPython before any analysis or build work.
+
+    The configured CPython must resolve, be CPython, and share the build
+    interpreter's minor version (the analyzer, wheel tags, and Nuitka output
+    are all bound to it); its pin is enforced here because the interpreter is
+    relevant to every build. Pins for cargo/maturin are enforced by
+    _rust_toolchain_error only when the build actually compiles native code,
+    and the Nuitka pin by the Nuitka gate and each Nuitka point of use, so a
+    pure-Python build never probes tools it will not run. A configured tool
+    path that does not resolve is always an error, wherever it is checked.
+    """
+    toolchain = config.toolchain
+    python, python_error = resolve_python(toolchain)
+    if toolchain.python is not None and python is None:
+        return python_error
+    if python is not None:
+        python_toolchain_issue = python_toolchain_error(python, toolchain.python_version)
+        if python_toolchain_issue is not None:
+            return python_toolchain_issue
+    elif toolchain.python_version is not None:
+        # No configured interpreter: the pin describes the build interpreter.
+        python_toolchain_issue = python_toolchain_error(
+            sys.executable, toolchain.python_version
+        )
+        if python_toolchain_issue is not None:
+            return python_toolchain_issue
+    # Configured (not merely pinned) cargo/maturin paths must resolve even if
+    # this build turns out not to need them - a broken explicit path is a
+    # config error, not a skippable probe.
+    for tool in ("cargo", "maturin"):
+        if getattr(toolchain, tool) is None:
+            continue
+        path, resolve_error = resolve_tool(tool, getattr(toolchain, tool))
+        if path is None:
+            return resolve_error
+    return None
+
+
+def _rust_toolchain_error(config: RextioConfig, build_tool: str) -> str | None:
+    """Enforce cargo/maturin version pins for a build that compiles native code.
+
+    A pin is strict for a tool this build will use: pinned + unresolvable is
+    an error (otherwise the maturin-missing -> cargo fallback would silently
+    bypass a maturin pin). cargo is checked for both build tools because
+    maturin wraps cargo and the orchestrator falls back to cargo when maturin
+    is absent and unpinned.
+    """
+    toolchain = config.toolchain
+    # Probe under the PyO3-extension environment: RUSTUP_TOOLCHAIN (the only
+    # variable that changes what a rustup shim reports) is shared with the
+    # pure-Rust builders' environment, so this gate's verdict matches every
+    # builder's own point-of-use rust_pin_error.
+    env = cargo_environment(toolchain)
+    checked = ("cargo",) if build_tool == "cargo" else ("maturin", "cargo")
+    for tool in checked:
+        pin_error = rust_pin_error(toolchain, tool, env)
+        if pin_error is not None:
+            return pin_error
+    return None
 
 
 def run(args: Namespace) -> int:
@@ -45,6 +120,15 @@ def run(args: Namespace) -> int:
                 ("executable", "name"): args.executable_name,
                 ("executable", "backend"): args.executable_backend,
                 ("executable", "python"): args.executable_python,
+                ("toolchain", "cargo"): args.cargo,
+                ("toolchain", "maturin"): args.maturin,
+                ("toolchain", "nuitka"): args.nuitka,
+                ("toolchain", "python"): args.python,
+                ("toolchain", "rust_toolchain"): args.rust_toolchain,
+                ("toolchain", "cargo_version"): args.cargo_version,
+                ("toolchain", "maturin_version"): args.maturin_version,
+                ("toolchain", "nuitka_version"): args.nuitka_version,
+                ("toolchain", "python_version"): args.python_version,
                 ("executable", "hybrid_runtime"): args.hybrid_runtime,
                 ("executable", "nuitka_mode"): args.nuitka_mode,
                 ("policy", "native_marker"): args.native_marker,
@@ -75,15 +159,30 @@ def run(args: Namespace) -> int:
     # finds delegated fallback calls, so a pre-analysis rejection would block
     # valid no-delegation builds that never touch Nuitka. The dispatcher
     # builder enforces the version floor at the point of real use.
+    toolchain_error = _toolchain_preflight_error(config)
+    if toolchain_error is not None:
+        reporter.error("RXT060 Build failed while preparing the toolchain.")
+        reporter.error(toolchain_error)
+        return 1
+
     nuitka_requested = fallback == "nuitka" or (
         config.executable.entrypoint is not None and config.executable.backend == "nuitka"
     )
     if nuitka_requested:
-        nuitka = shutil.which("nuitka")
-        if nuitka is None:
-            if fallback == "nuitka":
+        nuitka_command, resolve_error = resolve_nuitka_command(config.toolchain)
+        if nuitka_command is None:
+            if config.toolchain.nuitka_version is not None:
+                # A pin is strict for a tool this build uses: absent means
+                # the pin cannot be verified, so the build fails up front.
+                reporter.error("RXT060 Build failed while preparing the Nuitka toolchain.")
+                reporter.error(
+                    resolve_error
+                    or "Nuitka is pinned but not installed; install it or drop the pin."
+                )
+                return 1
+            if fallback == "nuitka" or resolve_error is not None:
                 reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
-                reporter.error(nuitka_unavailable_message())
+                reporter.error(resolve_error or nuitka_unavailable_message())
                 return 1
             # Executable/hybrid paths keep their existing missing-tool handling
             # (reported by the builder with path-specific guidance).
@@ -91,7 +190,7 @@ def run(args: Namespace) -> int:
             # Fail before the (potentially slow) project analysis, not mid-build.
             # The builders re-probe later so they stay correct for non-CLI callers;
             # the extra `nuitka --version` is a deliberate, negligible cost.
-            version_error = nuitka_version_error(nuitka)
+            version_error = nuitka_toolchain_error(nuitka_command, config.toolchain)
             if version_error is not None:
                 reporter.error("RXT060 Build failed while preparing the Nuitka toolchain.")
                 reporter.error(version_error)
@@ -132,9 +231,16 @@ def run(args: Namespace) -> int:
     # Only require the native toolchain when there is actually native code to
     # compile; a pure-Python project still builds its CPython fallback artifact.
     if analysis.requires_native_build():
-        missing_tools = missing_build_tools(native_backend=target_plan.spec.language)
+        missing_tools = missing_build_tools(
+            native_backend=target_plan.spec.language, toolchain=config.toolchain
+        )
         if missing_tools:
             reporter.error(format_missing_tools(missing_tools))
+            return 1
+        rust_toolchain_error = _rust_toolchain_error(config, config.rust.build_tool)
+        if rust_toolchain_error is not None:
+            reporter.error("RXT060 Build failed while preparing the Rust toolchain.")
+            reporter.error(rust_toolchain_error)
             return 1
 
     # The native Rust executable backend analyzes in delegate mode so the
@@ -178,6 +284,7 @@ def run(args: Namespace) -> int:
         executable_analysis=executable_analysis,
         executable_python=config.executable.python,
         executable_hybrid_runtime=config.executable.hybrid_runtime,
+        toolchain=config.toolchain,
     )
     lines = ["Rextio build", f"  target language: {target_plan.spec.language}"]
     if target_plan.spec.version:

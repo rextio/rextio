@@ -44,6 +44,17 @@ DEFAULT_CONFIG: dict[str, dict[str, object]] = {
         "python": None,
         "hybrid_runtime": "source",
     },
+    "toolchain": {
+        "cargo": None,
+        "maturin": None,
+        "nuitka": None,
+        "python": None,
+        "rust_toolchain": None,
+        "cargo_version": None,
+        "maturin_version": None,
+        "nuitka_version": None,
+        "python_version": None,
+    },
     "policy": {
         "native_marker": "auto",
         "require_type_hints": True,

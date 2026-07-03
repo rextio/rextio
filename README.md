@@ -57,6 +57,11 @@ ABI mismatch or a wrapper/codegen name mismatch.
 | Nuitka (optional) | >= 2.0 | Only for `--fallback=nuitka`, `--executable-backend=nuitka`, or `--hybrid-runtime=nuitka`. The first two are rejected up front by the build preflight; the hybrid runtime is checked when delegated fallback calls actually require the Nuitka dispatcher. |
 | Numba (optional, experimental) | matches your interpreter: >= 0.57 (3.11), >= 0.59 (3.12), >= 0.61 (3.13), >= 0.63 (3.14) | Rextio only recognizes Numba decorators — the package itself is a runtime dependency of YOUR project, not of Rextio. Floors follow [Numba's version support table](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information). |
 
+Tool locations and version pins are configurable: `[toolchain]` in
+`rextio.toml` (or `REXTIO_*` variables / CLI flags) selects the cargo,
+maturin, Nuitka, and CPython a build uses and can pin their versions.
+See [REXTIO.md](./REXTIO.md#toolchain-selection-and-version-pins).
+
 ## Quick Example
 
 Start with normal Python:

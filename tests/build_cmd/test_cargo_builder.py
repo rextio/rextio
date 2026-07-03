@@ -49,3 +49,41 @@ release.mkdir(parents=True, exist_ok=True)
     assert "--offline" in result.command
     assert calls.read_text(encoding="utf-8") == "2"
     assert Path(result.installed_path or "").exists()
+
+
+def test_cargo_build_receives_toolchain_environment(tmp_path, monkeypatch):
+    import stat
+
+    from rextio.build.cargo_builder import build_native_extension_with_cargo
+    from rextio.config.schema import ToolchainConfig
+
+    env_dump = tmp_path / "env-dump.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cargo = bin_dir / "cargo"
+    cargo.write_text(
+        "#!/bin/sh\n"
+        f'echo "RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN" > "{env_dump}"\n'
+        f'echo "PYO3_PYTHON=$PYO3_PYTHON" >> "{env_dump}"\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    cargo.chmod(cargo.stat().st_mode | stat.S_IEXEC)
+    fake_python = bin_dir / "python3"
+    fake_python.write_text("#!/bin/sh\necho Python 3.11.9\n", encoding="utf-8")
+    fake_python.chmod(fake_python.stat().st_mode | stat.S_IEXEC)
+
+    rust_dir = tmp_path / "rust"
+    rust_dir.mkdir()
+    result = build_native_extension_with_cargo(
+        rust_dir,
+        tmp_path / "python",
+        toolchain=ToolchainConfig(
+            cargo=str(cargo), rust_toolchain="1.83", python=str(fake_python)
+        ),
+    )
+
+    assert result.status == "failed"  # the fake exits 1; the env dump is the point
+    dump = env_dump.read_text(encoding="utf-8")
+    assert "RUSTUP_TOOLCHAIN=1.83" in dump
+    assert f"PYO3_PYTHON={fake_python}" in dump

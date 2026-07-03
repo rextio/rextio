@@ -47,6 +47,11 @@ REXTIO_DISABLE_NATIVE=1
 | Nuitka（任意） | >= 2.0 | `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka` 専用です。前者 2 つはビルド preflight が事前に拒否し、hybrid runtime は委譲された fallback 呼び出しが実際に Nuitka dispatcher を必要とする時点で検査されます。 |
 | Numba（任意・experimental） | インタプリタに応じて: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61, 3.14→>=0.63 | Rextio は Numba デコレータを認識するだけで、パッケージ自体は Rextio ではなくユーザープロジェクトのランタイム依存です。下限は [Numba のバージョンサポート表](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information) に従います。 |
 
+ツールの場所とバージョン pin は設定可能です: `rextio.toml` の `[toolchain]`
+（または `REXTIO_*` 環境変数 / CLI フラグ）でビルドが使う cargo・maturin・
+Nuitka・CPython を選択し、バージョンを検証できます。
+[REXTIO.md](./REXTIO.md#toolchain-selection-and-version-pins) を参照。
+
 ## クイック例
 
 ```python

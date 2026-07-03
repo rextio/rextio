@@ -1746,13 +1746,13 @@ def main(argv: list[str]) -> int:
 def test_subprocess_client_bakes_configured_python_command() -> None:
     from rextio.codegen.rust.subprocess_client import render_subprocess_client
 
-    # The configured interpreter is baked as the default; REXTIO_PYTHON overrides
+    # The configured interpreter is baked as the default; REXTIO_RUNTIME_PYTHON overrides
     # it at run time, and a relative-with-separator path resolves against the
     # runtime dir.
     client = render_subprocess_client("/opt/py/bin/python3")
     assert 'unwrap_or_else(|_| "/opt/py/bin/python3".to_string())' in client
     assert "__rextio_resolve_python" in client
-    assert 'std::env::var("REXTIO_PYTHON")' in client
+    assert 'std::env::var("REXTIO_RUNTIME_PYTHON")' in client
     # A path with a quote is escaped into a valid Rust literal.
     assert 'py\\"x' in render_subprocess_client('py"x')
 
@@ -1766,10 +1766,10 @@ def test_subprocess_client_nuitka_mode_launches_compiled_dispatcher() -> None:
     # Source mode launches the interpreter on the dispatcher script; nuitka mode
     # launches the self-contained compiled dispatcher directly (no interpreter).
     assert 'arg(runtime_dir.join("_rextio_dispatcher.py"))' in source
-    assert "REXTIO_PYTHON" in source
+    assert "REXTIO_RUNTIME_PYTHON" in source
     # Nuitka mode launches the compiled dispatcher, adding EXE_SUFFIX for Windows.
     assert 'format!("_rextio_dispatcher{}", std::env::consts::EXE_SUFFIX)' in nuitka
-    assert "REXTIO_PYTHON" not in nuitka
+    assert "REXTIO_RUNTIME_PYTHON" not in nuitka
     assert 'arg(runtime_dir.join("_rextio_dispatcher.py"))' not in nuitka
 
 

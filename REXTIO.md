@@ -223,7 +223,55 @@ flag and environment variable. Common examples:
 --entrypoint / REXTIO_EXECUTABLE_ENTRYPOINT / [executable] entrypoint
 --executable-backend / REXTIO_EXECUTABLE_BACKEND / [executable] backend
 --nuitka-mode / REXTIO_NUITKA_MODE / [executable] nuitka_mode
+--cargo / REXTIO_CARGO / [toolchain] cargo
+--maturin / REXTIO_MATURIN / [toolchain] maturin
+--nuitka / REXTIO_NUITKA / [toolchain] nuitka
+--python / REXTIO_PYTHON / [toolchain] python
+--rust-toolchain / REXTIO_RUST_TOOLCHAIN / [toolchain] rust_toolchain
+--cargo-version / REXTIO_CARGO_VERSION / [toolchain] cargo_version
+--maturin-version / REXTIO_MATURIN_VERSION / [toolchain] maturin_version
+--nuitka-version / REXTIO_NUITKA_VERSION / [toolchain] nuitka_version
+--python-version / REXTIO_PYTHON_VERSION / [toolchain] python_version
 ```
+
+### Toolchain selection and version pins
+
+`[toolchain]` selects which external tools a build uses and, optionally,
+verifies their versions:
+
+- `cargo`, `maturin`, `nuitka`, and `python` accept either the tool binary
+  itself or a home directory containing it (`bin/` and `Scripts/` are
+  searched). Relative paths are resolved against the directory `rextio build`
+  is invoked from; symlinks are preserved (a venv's `bin/python3` symlink
+  stays the venv interpreter, keeping its packages visible to delegated
+  calls), and `..` components are traversed by the OS in path order - a
+  path like `link/../tool` means what it means at the shell. The resolved file must be executable (on Windows this check is
+  advisory - the OS decides at spawn time). A configured path that does not
+  resolve fails the build up front (RXT060) - it never silently falls back
+  to PATH. Unset tools resolve from PATH as before. When `[toolchain] cargo`
+  is set, maturin runs it too (via the `CARGO` environment variable).
+- `python` selects the CPython the build targets end to end: the PyO3
+  extension compiles against it (`PYO3_PYTHON`), Nuitka runs inside it
+  (`python -m nuitka`) unless `nuitka` is set explicitly, and the hybrid rust
+  binary launches it for delegated calls (explicit `[executable] python`
+  still wins; `REXTIO_RUNTIME_PYTHON` overrides at run time). It must be a
+  CPython sharing the build interpreter's minor version - the analyzer
+  semantics, wheel tag, and Nuitka output are all bound to one interpreter,
+  and generated extensions target CPython only.
+- `rust_toolchain` names a rustup channel (`stable`, `1.83`, ...); it is
+  forwarded as `RUSTUP_TOOLCHAIN`, so a non-rustup cargo ignores it (pointing
+  `[toolchain] cargo` at a non-rustup binary makes this setting a no-op).
+- `*_version` values are verification pins: `"1.85"` accepts any 1.85.x,
+  `"==2.6.1"` is exact, `">=3.13"` is a minimum. Pins verify only - they
+  never install or select a tool (point the matching path setting at the
+  version you want). A pin is enforced exactly when the build uses the tool:
+  the CPython pin on every build, cargo/maturin pins when native code is
+  compiled, and the Nuitka pin at every Nuitka invocation (including the
+  hybrid dispatcher). For a tool the build uses, a pin is strict - an
+  unresolvable tool or an undeterminable version fails the build. Pins are
+  verified under the same environment the build runs the tool with (so a
+  rustup channel selection is reflected), and they add to - never relax -
+  the hard floors (Nuitka >= 2.0 still applies).
 
 Rust is the only implemented native target in 0.1.0 alpha. `mojo` and `julia` can
 be selected as target languages so versioned plugin metadata can be modeled, but

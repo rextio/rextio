@@ -1060,7 +1060,7 @@ def unused(argv: list[str]) -> int:
     analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
     layout = ArtifactLayout(tmp_path)
 
-    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout):
+    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout, toolchain=None):
         dist_dir.mkdir(parents=True, exist_ok=True)
         binary = dist_dir / binary_name
         binary.write_text("fake binary", encoding="utf-8")
@@ -1115,7 +1115,7 @@ def main(argv: list[str]) -> int:
     analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
     layout = ArtifactLayout(tmp_path)
 
-    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout):
+    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout, toolchain=None):
         dist_dir.mkdir(parents=True, exist_ok=True)
         binary = dist_dir / binary_name
         binary.write_text("fake binary", encoding="utf-8")
@@ -1131,7 +1131,7 @@ def main(argv: list[str]) -> int:
     monkeypatch.setattr(
         orchestrator,
         "_build_nuitka_dispatcher",
-        lambda runtime_dir, allowed_qualnames, timeout: "synthetic nuitka failure",
+        lambda runtime_dir, allowed_qualnames, timeout, toolchain=None: "synthetic nuitka failure",
     )
 
     result = orchestrator._build_rust_executable_artifact(
@@ -1172,7 +1172,7 @@ def main(argv: list[str]) -> int:
     analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
     layout = ArtifactLayout(tmp_path)
 
-    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout):
+    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout, toolchain=None):
         dist_dir.mkdir(parents=True, exist_ok=True)
         binary = dist_dir / binary_name
         binary.write_text("fake binary", encoding="utf-8")
@@ -1347,7 +1347,7 @@ def main(argv: list[str]) -> int:
     analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
     layout = ArtifactLayout(tmp_path)
 
-    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout):
+    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout, toolchain=None):
         dist_dir.mkdir(parents=True, exist_ok=True)
         binary = dist_dir / binary_name
         binary.write_text("fake binary", encoding="utf-8")
@@ -1412,7 +1412,7 @@ def main(argv: list[str]) -> int:
     analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
     layout = ArtifactLayout(tmp_path)
 
-    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout):
+    def fake_build(crate_dir, dist_dir, binary_name, entrypoint, *, timeout, toolchain=None):
         dist_dir.mkdir(parents=True, exist_ok=True)
         binary = dist_dir / binary_name
         binary.write_text("fake binary", encoding="utf-8")
@@ -1591,3 +1591,201 @@ def test_nuitka_backend_without_entrypoint_is_not_gated(
     captured = capsys.readouterr()
     assert "Nuitka 1.9.7 is too old" not in captured.err
     assert (tmp_path / ".rextio").exists()  # analysis ran
+
+
+def test_configured_cargo_path_that_does_not_exist_fails_preflight(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # A configured tool never silently falls back to PATH.
+    (tmp_path / "app.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8"
+    )
+
+    exit_code = main(["build", str(tmp_path), f"--cargo={tmp_path / 'nowhere'}"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "does not exist" in captured.err
+
+
+def test_python_minor_version_mismatch_fails_before_analysis(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    fake_py = tmp_path / "py" / "bin" / "python3"
+    fake_py.parent.mkdir(parents=True)
+    fake_py.write_text("#!/bin/sh\necho 3.2.0 cpython\n", encoding="utf-8")
+    fake_py.chmod(0o755)
+    (tmp_path / "app.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8"
+    )
+
+    exit_code = main(["build", str(tmp_path), f"--python={tmp_path / 'py'}"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "3.2" in captured.err
+    assert not (tmp_path / ".rextio").exists()
+
+
+def test_nuitka_version_pin_mismatch_fails_the_gate(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    bin_dir = tmp_path / "nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then echo 2.4.8; exit 0; fi\n',
+        encoding="utf-8",
+    )
+    nuitka.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    (tmp_path / "app.py").write_text(
+        "def add(a, b):\n    return a + b\n", encoding="utf-8"
+    )
+
+    exit_code = main(
+        ["build", str(tmp_path), "--fallback=nuitka", "--nuitka-version=2.6"]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "does not satisfy" in captured.err
+    assert not (tmp_path / ".rextio").exists()
+
+
+def test_toolchain_python_becomes_the_delegation_default(tmp_path: Path) -> None:
+    from rextio.build.orchestrator import _delegation_python
+    from rextio.config.schema import ToolchainConfig
+
+    fake_py = tmp_path / "py" / "bin" / "python3"
+    fake_py.parent.mkdir(parents=True)
+    fake_py.write_text("#!/bin/sh\necho Python 3.11.9\n", encoding="utf-8")
+    fake_py.chmod(0o755)
+
+    toolchain = ToolchainConfig(python=str(tmp_path / "py"))
+    assert _delegation_python(None, toolchain) == str(fake_py)
+    # Explicit [executable] python still wins over the toolchain default.
+    assert _delegation_python("/opt/other/python3", toolchain) == "/opt/other/python3"
+    assert _delegation_python(None, None) == "python3"
+
+
+def test_pinned_maturin_missing_fails_instead_of_cargo_fallback(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    # A maturin pin is strict for a native build: the maturin-missing ->
+    # cargo fallback must not silently bypass it.
+    monkeypatch.setenv("PATH", str(fake_cargo.parent))
+    (tmp_path / "app.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8"
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--rust-build-tool=maturin",
+            "--maturin-version=1.7",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "pinned" in captured.err
+    assert "maturin" in captured.err
+
+
+def test_cargo_pin_is_not_probed_for_pure_python_builds(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # No native candidates -> the cargo pin (and cargo itself) is irrelevant,
+    # even when cargo is entirely absent.
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    (tmp_path / "empty-bin").mkdir()
+    (tmp_path / "app.py").write_text(
+        "def add(a, b):\n    return a + b\n", encoding="utf-8"
+    )
+
+    exit_code = main(["build", str(tmp_path), "--cargo-version=1.85"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "1.85" not in captured.err
+
+
+def test_nuitka_pin_is_enforced_at_the_hybrid_dispatcher(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # The hybrid path is deliberately not pre-gated, so the pin must hold at
+    # the point of real use.
+    from rextio.build.orchestrator import _build_nuitka_dispatcher
+    from rextio.config.schema import ToolchainConfig
+
+    bin_dir = tmp_path / "nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then echo 2.4.8; exit 0; fi\n',
+        encoding="utf-8",
+    )
+    nuitka.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+
+    error = _build_nuitka_dispatcher(
+        runtime_dir, {"app.f"}, 30.0, ToolchainConfig(nuitka_version="2.6")
+    )
+
+    assert error is not None
+    assert "does not satisfy" in error
+
+
+def test_cargo_pin_holds_on_the_delegate_only_rust_executable(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    # Council-51 counterexample: an exempt helper leaves the MAIN analysis
+    # with zero accepted natives (requires_native_build() is False), yet the
+    # rust executable backend still compiles a bin crate with cargo. The pin
+    # must hold at the point of use even though the CLI native-build gate
+    # never ran.
+    monkeypatch.setenv("PATH", str(fake_cargo.parent))
+    (tmp_path / "app.py").write_text(
+        "import rextio\n"
+        "\n"
+        "@rextio.exempt\n"
+        "def helper(x: int) -> int:\n"
+        "    return x + 1\n"
+        "\n"
+        "def main(argv: list[str]) -> int:\n"
+        "    return helper(2)\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--executable-backend=rust",
+            "--entrypoint=app:main",
+            "--cargo-version=99.9",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "99.9" in captured.err

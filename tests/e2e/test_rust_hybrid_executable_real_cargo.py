@@ -88,7 +88,7 @@ def main(argv: list[str]) -> int:
         capture_output=True,
         text=True,
         timeout=60,
-        env={**__import__("os").environ, "REXTIO_PYTHON": "/nonexistent/rextio-python"},
+        env={**__import__("os").environ, "REXTIO_RUNTIME_PYTHON": "/nonexistent/rextio-python"},
     )
     assert bad_python.returncode == 1, bad_python.stderr
     assert "dispatcher" in bad_python.stderr
