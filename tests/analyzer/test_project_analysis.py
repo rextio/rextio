@@ -5279,6 +5279,64 @@ def total(n: int) -> int:
     assert [function.qualname for function in analysis.rejected_native_functions] == ["app.total"]
 
 
+def test_boundary_call_in_while_test_is_rejected(tmp_path: Path) -> None:
+    # A while-loop test re-evaluates on every iteration, so a boundary call
+    # there is loop-positioned exactly like a call in the loop body.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def bump(x: int) -> int:
+    return x + 1
+
+@rextio.native
+def total(n: int) -> int:
+    out = 0
+    while out < bump(n):
+        out += 1
+    return out
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    assert "RXT076" in {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.total"]
+
+
+def test_boundary_call_in_for_iterable_is_accepted_once(tmp_path: Path) -> None:
+    # The for-loop iterable is evaluated once before the first iteration, so a
+    # boundary call there is NOT loop-positioned: it crosses once per call of
+    # the native function and stays an accepted RXT075 boundary call.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def bump(x: int) -> int:
+    return x + 1
+
+@rextio.native
+def total(n: int) -> int:
+    out = 0
+    for i in range(bump(n)):
+        out += i
+    return out
+""",
+    )
+
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+
+    codes = {diagnostic.code for diagnostic in analysis.diagnostics}
+    assert "RXT076" not in codes
+    total = next(f for m in analysis.modules for f in m.functions if f.name == "total")
+    assert total.accepted
+    assert total.boundary_call_targets == {"app.bump"}
+
+
 def test_auto_discovered_caller_gets_no_boundary_calls(tmp_path: Path) -> None:
     # Only an explicit @rextio.native marker opts into run-time interpreter
     # calls (the same conservatism as the RXT080 marker rule). An

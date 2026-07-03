@@ -1521,7 +1521,11 @@ class _FunctionRenderer:
                 f"Python::attach(|py| -> PyResult<{rust_ret}> {{ "
                 f"{prologue} {call_stmt} {extract} }})?"
             )
-            return "{ " + " ".join(lines) + " " + closure + " }"
+            # Parenthesized so the block expression stays valid in
+            # struct-literal-free positions such as a `for` header range bound
+            # (`for i in 0..({ .. })` - a bare `{` there would be parsed as
+            # the loop body).
+            return "({ " + " ".join(lines) + " " + closure + " })"
         if return_type_name == "None":
             err = (
                 f'pyo3::exceptions::PyTypeError::new_err('
@@ -1532,7 +1536,7 @@ class _FunctionRenderer:
                 f"{prologue} {call_stmt} "
                 f"if __rextio_bval.is_none() {{ Ok(()) }} else {{ Err({err}) }} }})?"
             )
-            return "{ " + " ".join(lines) + " " + closure + " }"
+            return "({ " + " ".join(lines) + " " + closure + " })"
         # The analyzer's _is_delegatable gate authorizes only immutable
         # scalars; reject anything else so a regression there is a clean
         # build failure rather than a silent aliasing-severing copy.

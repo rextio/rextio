@@ -1067,6 +1067,9 @@ class _CallCollector(ast.NodeVisitor):
         return
 
     def visit_For(self, node: ast.For) -> None:
+        # The iterable expression is evaluated once, before the first
+        # iteration, so its calls carry the ENCLOSING loop depth only.
+        self.visit(node.iter)
         self.loop_depth += 1
         for statement in node.body:
             self.visit(statement)
@@ -1075,7 +1078,10 @@ class _CallCollector(ast.NodeVisitor):
         self.loop_depth -= 1
 
     def visit_While(self, node: ast.While) -> None:
+        # The test expression re-evaluates on every iteration, so its calls
+        # are loop-positioned just like calls in the body.
         self.loop_depth += 1
+        self.visit(node.test)
         for statement in node.body:
             self.visit(statement)
         for statement in node.orelse:
