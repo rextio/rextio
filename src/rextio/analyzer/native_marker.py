@@ -106,12 +106,16 @@ def has_exempt_marker(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
 # are then the TOOL's contract (e.g. Numba nopython int arithmetic wraps on
 # overflow), not Rextio's CPython-exact native contract - the same opt-out
 # philosophy as @rextio.exempt.
+#
+# These keys are EXTERNAL API names owned by the accelerator packages. They
+# must never be swept up in Rextio-internal renames (e.g. the jit->embedding
+# surface rename): `numba.jit` is Numba's decorator, not Rextio's.
 _EXTERNAL_ACCELERATOR_QUALNAMES = {
-    "numba.embedding": "numba",
+    "numba.jit": "numba",
     "numba.njit": "numba",
     "numba.vectorize": "numba",
     "numba.guvectorize": "numba",
-    "numba.cuda.embedding": "numba",
+    "numba.cuda.jit": "numba",
 }
 
 
@@ -206,7 +210,7 @@ def external_accelerator_for_source(
                 if alias.name == "*":
                     # `from numba import *`: make the known accelerator entry
                     # points AND their submodule heads (`cuda` for
-                    # `numba.cuda.embedding`) visible under their bare names.
+                    # `numba.cuda.jit`) visible under their bare names.
                     for qualname in _EXTERNAL_ACCELERATOR_QUALNAMES:
                         prefix = f"{node.module}."
                         if qualname.startswith(prefix):

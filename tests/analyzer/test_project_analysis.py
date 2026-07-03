@@ -4664,7 +4664,7 @@ import numba
 from numba import njit
 from numba import vectorize as vec
 
-@numba.embedding
+@numba.jit
 def a(x: int) -> int:
     return x + 1
 
@@ -4984,7 +4984,7 @@ def run(values):
             """
 from numba import *
 
-@cuda.embedding
+@cuda.jit
 def f(x: int) -> int:
     return x
 """,
