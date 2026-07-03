@@ -47,7 +47,7 @@ native is disabled, unavailable, rejected by analysis, or past the configured
 boundary threshold.
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 Set `REXTIO_DEBUG_NATIVE=1` to raise the full traceback (instead of warning and

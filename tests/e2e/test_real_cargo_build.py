@@ -82,7 +82,7 @@ def rejected(x: int) -> int:
     monkeypatch.setattr(module, "_native_add", lambda a, b: a + b + 100)
     assert module.add(2, 3) == 105
 
-    monkeypatch.setenv("REXTIO_DISABLE_NATIVE", "1")
+    monkeypatch.setenv("REXTIO_NATIVE_MODE", "fallback")
     assert module.add(2, 3) == 5
 
     wheels = sorted((tmp_path / "dist").glob("*.whl"))
@@ -113,7 +113,7 @@ def rejected(x: int) -> int:
             "-c",
             "from e2e_app import math_ops\nassert math_ops.add(2, 3) == 5\n",
         ],
-        env={**env, "REXTIO_DISABLE_NATIVE": "1"},
+        env={**env, "REXTIO_NATIVE_MODE": "fallback"},
     )
 
 

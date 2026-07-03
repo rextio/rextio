@@ -15,7 +15,7 @@ Python source
 ```
 
 Native compilation is an optimization. Fallback Python behavior must remain
-available, including when `REXTIO_DISABLE_NATIVE=1` is set.
+available, including when `REXTIO_NATIVE_MODE=fallback` is set.
 
 At a product level, Rextio gives a Python project four practical outputs:
 
@@ -346,7 +346,7 @@ PYTHONPATH=src pytest -m needs_nuitka tests/e2e
 
 The editable-install smoke also installs the generated artifact wheel into a
 fresh virtual environment and imports the generated package with
-`REXTIO_DISABLE_NATIVE=1`, so release checks cover the packaged fallback path as
+`REXTIO_NATIVE_MODE=fallback`, so release checks cover the packaged fallback path as
 well as the build directory path.
 
 `rextio build --entrypoint=module:function` generates a zipapp executable under

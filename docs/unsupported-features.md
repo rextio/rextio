@@ -36,7 +36,7 @@ assignments, augmented assignments, supported expressions, and `if`/`while`
 blocks that update variables assigned before the block. Assigned module
 variables must share one supported value type so the initializer can return
 `dict[str, T]`. Rextio still keeps a full original fallback module for
-`REXTIO_DISABLE_NATIVE=1` and native import failures.
+`REXTIO_NATIVE_MODE=fallback` and native import failures.
 
 If a source function has no annotations and no `.pyi` signature, Rextio only
 compiles it when constants, arithmetic, comparisons, `if` tests, loops,

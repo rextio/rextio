@@ -47,7 +47,7 @@ Rextio는 같은 Python 프로젝트에서 여러 산출물을 만들 수 있습
 넘으면 Python으로 fallback합니다.
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 빌드된 native 모듈이 로드에 실패할 때 경고 후 fallback하는 대신 전체

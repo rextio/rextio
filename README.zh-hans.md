@@ -44,7 +44,7 @@ Rextio 可以从同一个 Python 项目产出多种 artifact:
 分析拒绝、或超过配置的 boundary threshold 时回落到 Python。
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 设置 `REXTIO_DEBUG_NATIVE=1` 可以在构建出的 native 模块加载失败时抛出完整

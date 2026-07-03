@@ -120,7 +120,7 @@ If a native module is missing, fails to load, or is disabled, the generated pack
 Required runtime switch:
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 When this variable is set, the package must use fallback implementations.
@@ -1354,7 +1354,7 @@ Install Nuitka or run: rextio build --fallback=cpython
 Support at least:
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 Support runtime boundary fallback controls:
@@ -1436,7 +1436,7 @@ Shows fallback safety.
 Must demonstrate:
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 and native import failure fallback.

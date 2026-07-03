@@ -100,7 +100,7 @@ Initial public MVP for Rextio as a local hybrid build tool.
   direct-Rust functions as a path dependency.
 - CPython fallback packaging and generated wrappers that preserve fallback behavior.
 - Experimental Nuitka fallback packaging with clear unavailable-tool reporting.
-- Runtime controls: `REXTIO_DISABLE_NATIVE=1` and `REXTIO_NATIVE_MODE`.
+- Runtime control: `REXTIO_NATIVE_MODE=auto|native|fallback` (one switch for disable/require/default).
 - Runtime boundary fallback threshold for repeated Python-to-native wrapper crossings.
 - `--fallback-threshold` for embedding a generated-code default threshold in `rextio build` and `rextio generate`.
 - Configurable external build-tool timeout via `--build-timeout`,

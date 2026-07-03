@@ -47,7 +47,7 @@ Rextio は同じ Python プロジェクトから複数の成果物を作れま�
 fallback します。
 
 ```text
-REXTIO_DISABLE_NATIVE=1
+REXTIO_NATIVE_MODE=fallback
 ```
 
 ビルド済み native モジュールのロード失敗時に、警告して fallback する
