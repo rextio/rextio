@@ -88,17 +88,65 @@ def test_version_pins_are_strict_and_support_specifiers(tmp_path: Path) -> None:
     assert strict is not None and "could not be determined" in strict
 
 
-def test_python_version_mismatch_requires_same_minor(tmp_path: Path) -> None:
+def test_python_version_mismatch_requires_same_minor_cpython(tmp_path: Path) -> None:
     matching = _script(
         tmp_path / "match",
-        f"echo Python {sys.version_info[0]}.{sys.version_info[1]}.0",
+        f"echo {sys.version_info[0]}.{sys.version_info[1]}.0 cpython",
     )
     assert python_version_mismatch(str(matching)) is None
 
-    other = _script(tmp_path / "other", "echo Python 3.2.0")
+    other = _script(tmp_path / "other", "echo 3.2.0 cpython")
     error = python_version_mismatch(str(other))
     assert error is not None and "3.2" in error
+
+    pypy = _script(
+        tmp_path / "pypy",
+        f"echo {sys.version_info[0]}.{sys.version_info[1]}.0 pypy",
+    )
+    impl_error = python_version_mismatch(str(pypy))
+    assert impl_error is not None and "not CPython" in impl_error
+
+    # An explicitly configured interpreter is strict: unprobeable output fails.
+    silent = _script(tmp_path / "silent", "echo Python 3.11.9")
+    assert python_version_mismatch(str(silent)) is not None
 
 
 def test_resolve_python_unset_is_silent_none() -> None:
     assert resolve_python(ToolchainConfig()) == (None, None)
+
+
+def test_resolve_tool_returns_absolute_paths_for_relative_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Builders run tools with their own working directories, so a relative
+    # configured path must come back absolute or it breaks inside the build.
+    _script(tmp_path / "tools" / "cargo", "echo cargo 1.85.0")
+    monkeypatch.chdir(tmp_path)
+
+    path, error = resolve_tool("cargo", "tools")
+    assert error is None
+    assert path is not None and Path(path).is_absolute()
+
+
+def test_resolve_tool_rejects_non_executable_files(tmp_path: Path) -> None:
+    plain = tmp_path / "cargo"
+    plain.write_text("not a program", encoding="utf-8")
+
+    path, error = resolve_tool("cargo", str(plain))
+    assert path is None
+    assert error is not None and "not" in error and "executable" in error
+
+
+def test_resolve_tool_direct_path_accepts_exe_variant(tmp_path: Path) -> None:
+    exe = _script(tmp_path / "cargo.exe", "echo cargo 1.85.0")
+
+    path, error = resolve_tool("cargo", str(tmp_path / "cargo"))
+    assert error is None and path == str(exe)
+
+
+def test_resolve_python_error_mentions_both_names(tmp_path: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    path, error = resolve_python(ToolchainConfig(python=str(empty)))
+    assert path is None
+    assert error is not None and "python3" in error and "python" in error

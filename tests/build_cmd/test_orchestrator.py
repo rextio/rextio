@@ -1617,7 +1617,7 @@ def test_python_minor_version_mismatch_fails_before_analysis(
 ) -> None:
     fake_py = tmp_path / "py" / "bin" / "python3"
     fake_py.parent.mkdir(parents=True)
-    fake_py.write_text("#!/bin/sh\necho Python 3.2.0\n", encoding="utf-8")
+    fake_py.write_text("#!/bin/sh\necho 3.2.0 cpython\n", encoding="utf-8")
     fake_py.chmod(0o755)
     (tmp_path / "app.py").write_text(
         "def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8"

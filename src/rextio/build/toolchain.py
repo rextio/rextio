@@ -10,6 +10,7 @@ is an error - it never silently falls back to PATH.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -18,8 +19,9 @@ from pathlib import Path
 
 from rextio.config.schema import ToolchainConfig
 
-# Where a tool may live inside a configured home directory. `bin/` covers
-# POSIX layouts and rustup toolchains; `Scripts/` covers Windows virtualenvs.
+# Where a tool may live inside a configured home directory, searched in order:
+# the home itself first (a flat layout wins), then `bin/` (POSIX layouts and
+# rustup toolchains), then `Scripts/` (Windows virtualenvs).
 _HOME_SUBDIRS = ("", "bin", "Scripts")
 
 
@@ -33,14 +35,19 @@ def resolve_tool(name: str, configured: str | None) -> tuple[str | None, str | N
     """
     if configured is None:
         return shutil.which(name), None
-    base = Path(configured).expanduser()
-    if base.is_file():
-        return str(base), None
+    # Resolve to an absolute path: the builders run tools with their own
+    # working directories, so a relative configured path must be pinned to
+    # the invocation CWD here or it would break (or resolve differently)
+    # inside every builder.
+    base = Path(configured).expanduser().resolve()
+    for direct in (base, base.parent / f"{base.name}.exe"):
+        if direct.is_file():
+            return _require_executable(direct, name)
     if base.is_dir():
         for subdir in _HOME_SUBDIRS:
             for candidate in (base / subdir / name, base / subdir / f"{name}.exe"):
                 if candidate.is_file():
-                    return str(candidate), None
+                    return _require_executable(candidate, name)
         return None, (
             f"[toolchain] {name} points at {base}, but no {name} executable was "
             f"found there (searched {', '.join(repr(s or '.') for s in _HOME_SUBDIRS)})."
@@ -48,15 +55,33 @@ def resolve_tool(name: str, configured: str | None) -> tuple[str | None, str | N
     return None, f"[toolchain] {name} points at {base}, which does not exist."
 
 
+def _require_executable(candidate: Path, name: str) -> tuple[str | None, str | None]:
+    if os.access(candidate, os.X_OK):
+        return str(candidate), None
+    return None, (
+        f"[toolchain] {name} resolved to {candidate}, but the file is not "
+        "executable."
+    )
+
+
 def resolve_python(toolchain: ToolchainConfig) -> tuple[str | None, str | None]:
     """Resolve the configured CPython interpreter; (None, None) when unset."""
     if toolchain.python is None:
         return None, None
+    errors: list[str] = []
     for name in ("python3", "python"):
         path, error = resolve_tool(name, toolchain.python)
         if path is not None:
             return path, None
-    return None, error
+        if error is not None:
+            errors.append(error)
+    combined = (
+        f"[toolchain] python points at {toolchain.python}, but neither python3 "
+        "nor python resolved there."
+    )
+    if errors:
+        combined = f"{combined} {errors[-1]}"
+    return None, combined
 
 
 def resolve_nuitka_command(toolchain: ToolchainConfig) -> tuple[list[str] | None, str | None]:
@@ -141,16 +166,27 @@ def check_version_pin(display: str, command: list[str], pin: str | None) -> str 
 
 
 def python_version_mismatch(python: str) -> str | None:
-    """Reject a configured CPython whose minor version differs from the build's.
+    """Reject a configured interpreter that cannot stand in for the build's.
 
     The analyzer's semantics are defined against the interpreter running the
     build, generated wheels are tagged for its minor version, and Nuitka
     output binds to the interpreter it runs under - a different minor version
-    would silently split those contracts.
+    (or a non-CPython implementation: PyO3 extensions and cp-tagged wheels
+    target CPython only) would silently split those contracts. An explicitly
+    configured interpreter is strict: an unprobeable one is an error.
     """
-    reported = probe_version([python])
-    if reported is None:
-        return f"[toolchain] python at {python} did not report a parseable version."
+    probe = _probe_python(python)
+    if probe is None:
+        return (
+            f"[toolchain] python at {python} did not report a parseable "
+            "version and implementation."
+        )
+    reported, implementation = probe
+    if implementation != "cpython":
+        return (
+            f"[toolchain] python at {python} is {implementation}, not CPython; "
+            "generated extensions and wheel tags target CPython only."
+        )
     build = sys.version_info[:2]
     configured = _version_tuple(reported)[:2]
     if configured != build:
@@ -160,6 +196,26 @@ def python_version_mismatch(python: str) -> str | None:
             "interpreter (or run rextio under the configured one)."
         )
     return None
+
+
+def _probe_python(python: str) -> tuple[str, str] | None:
+    """Return (version, implementation) for an interpreter, or None."""
+    script = "import sys;print('%d.%d.%d %s'%(*sys.version_info[:3],sys.implementation.name))"
+    try:
+        completed = subprocess.run(
+            [python, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    parts = (completed.stdout or "").strip().split()
+    if len(parts) != 2 or re.fullmatch(r"\d+(\.\d+)*", parts[0]) is None:
+        return None
+    return parts[0], parts[1]
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
