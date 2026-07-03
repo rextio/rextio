@@ -244,3 +244,21 @@ def test_pinned_missing_maturin_fails_strictly_instead_of_falling_back(
     assert result.status == "failed"
     assert "pinned" in result.message
     assert "maturin was not found" not in result.message
+
+
+def test_relative_dotdot_traverses_symlinks_in_path_order(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # "link/../cargo" must reach the target the KERNEL reaches (follow the
+    # link, then go up): deep/cargo. A lexical collapse would instead look
+    # for tmp_path/cargo, which does not exist.
+    deep = tmp_path / "deep"
+    (deep / "nested").mkdir(parents=True)
+    tool = _script(deep / "cargo", "echo cargo 1.85.0")
+    link = tmp_path / "link"
+    link.symlink_to(deep / "nested")
+    monkeypatch.chdir(tmp_path)
+
+    path, error = resolve_tool("cargo", "link/../cargo")
+    assert error is None
+    assert Path(path).samefile(tool)

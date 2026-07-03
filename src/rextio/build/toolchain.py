@@ -35,40 +35,40 @@ def resolve_tool(name: str, configured: str | None) -> tuple[str | None, str | N
     """
     if configured is None:
         return shutil.which(name), None
-    # Absolutize lexically (no symlink resolution): the builders run tools
-    # with their own working directories, so a relative configured path must
-    # be pinned to the invocation CWD here or it would break inside every
-    # builder. Symlinks are deliberately preserved - resolving them would
-    # escape virtualenv layouts (.venv/bin/python3 is a symlink to the base
-    # interpreter, and the base interpreter has none of the venv's packages).
-    base = Path(os.path.abspath(Path(configured).expanduser()))
-    # A non-executable match records an error but keeps searching, so a stray
-    # text file named like the tool cannot mask its .exe (or bin/) sibling.
-    not_executable: str | None = None
+    # Anchor relative paths to the invocation CWD WITHOUT normalizing:
+    # the builders run tools with their own working directories, so the path
+    # must become absolute here - but a lexical ".." collapse would reorder
+    # ".." ahead of symlink traversal and change the target, and resolving
+    # symlinks would escape virtualenv layouts (.venv/bin/python3 links to a
+    # base interpreter that has none of the venv's packages). Joining onto
+    # the CWD keeps every component for the kernel to traverse in order.
+    base = Path(configured).expanduser()
+    if not base.is_absolute():
+        base = Path.cwd() / base
+    # Non-executable matches are recorded but the search continues, so a
+    # stray text file named like the tool cannot mask its .exe (or bin/)
+    # sibling; every offender is named if nothing usable exists.
+    not_executable: list[str] = []
     candidates = [base, base.parent / f"{base.name}.exe"]
     if base.is_dir():
         for subdir in _HOME_SUBDIRS:
             candidates.extend((base / subdir / name, base / subdir / f"{name}.exe"))
-    seen_any = False
     for candidate in candidates:
         if not candidate.is_file():
             continue
-        seen_any = True
         if os.access(candidate, os.X_OK):
             return str(candidate), None
-        not_executable = (
-            f"[toolchain] {name} resolved to {candidate}, but the file is not "
-            "executable."
+        not_executable.append(str(candidate))
+    if not_executable:
+        return None, (
+            f"[toolchain] {name} resolved to {', '.join(not_executable)}, "
+            "which is not executable."
         )
-    if not_executable is not None:
-        return None, not_executable
     if base.is_dir():
         return None, (
             f"[toolchain] {name} points at {base}, but no {name} executable was "
             f"found there (searched {', '.join(repr(s or '.') for s in _HOME_SUBDIRS)})."
         )
-    if seen_any:  # pragma: no cover - defensive; executables return above
-        return None, f"[toolchain] {name} points at {base}, which is not usable."
     return None, f"[toolchain] {name} points at {base}, which does not exist."
 
 
