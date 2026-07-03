@@ -2,11 +2,13 @@
 
 [한국어](README.ko.md) | [简体中文](README.zh-hans.md) | [繁體中文](README.zh-hant.md) | [日本語](README.ja.md)
 
-Rextio 0.1.0 is an alpha-stage local build tool for Python projects.
+**Rust speed where it is provably safe. Python everywhere else. Never
+silently wrong.**
 
-It finds Python functions that can be safely lowered to Rust, compiles those
-functions ahead-of-time, and keeps everything else running through Python
-fallback code.
+Rextio 0.1.0 is an alpha-stage local build tool for Python projects. It finds
+typed Python functions that can be safely lowered to Rust, compiles them
+ahead of time with PyO3, and keeps everything else running through generated
+Python fallback code - same imports, same behavior.
 
 ```text
 typed Python project
@@ -16,6 +18,10 @@ typed Python project
   -> generate Python fallback wrappers for the rest
   -> build import-compatible artifacts
 ```
+
+The contract is strict: a function is either compiled to native code with
+CPython-equivalent semantics, or rejected with a diagnostic and left on the
+Python fallback. When Rextio is unsure, it does not guess - it falls back.
 
 Rextio is not a Python replacement and not a whole-project Rust migration tool.
 Native compilation is an optimization. Python fallback behavior remains the
@@ -413,10 +419,13 @@ silently dropped. A delegated function's own stdout/stderr appears on the binary
 shim is not delegated: an entry that depends on one is rejected, not built.
 
 `--executable-python` pins the interpreter the binary launches (a name on `PATH`,
-an absolute path, or a path relative to `<binary>.runtime` to bundle one).
+an absolute path, or a path relative to `<binary>.runtime` to bundle one);
+`REXTIO_RUNTIME_PYTHON` overrides it at run time on the target machine.
 `--hybrid-runtime=nuitka` instead compiles the delegated Python into a
 self-contained dispatcher executable shipped in the runtime directory, so the
 hybrid binary needs no separate Python install (requires Nuitka at build time).
+
+## Configuration
 
 Build and analysis settings resolve in this order:
 
@@ -446,6 +455,14 @@ Common settings:
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
 | `[executable] nuitka_mode` | `--nuitka-mode` | `REXTIO_NUITKA_MODE` |
+| `[executable] python` | `--executable-python` | `REXTIO_EXECUTABLE_PYTHON` |
+| `[executable] hybrid_runtime` | `--hybrid-runtime` | `REXTIO_HYBRID_RUNTIME` |
+| `[toolchain] cargo` | `--cargo` | `REXTIO_CARGO` |
+| `[toolchain] maturin` | `--maturin` | `REXTIO_MATURIN` |
+| `[toolchain] nuitka` | `--nuitka` | `REXTIO_NUITKA` |
+| `[toolchain] python` | `--python` | `REXTIO_PYTHON` |
+| `[toolchain] rust_toolchain` | `--rust-toolchain` | `REXTIO_RUST_TOOLCHAIN` |
+| `[toolchain] *_version` pins | `--cargo-version` etc. | `REXTIO_CARGO_VERSION` etc. |
 | `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
