@@ -25,7 +25,7 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
     rejected_top_levels = analysis.rejected_native_top_levels
     warnings = analysis.boundary_warnings
     external_imports = _external_import_policies(analysis)
-    jit_candidates = analysis.jit_candidates
+    embedding_candidates = analysis.embedding_candidates
 
     lines.append("Native candidates:")
     if not analysis.native_candidates and not analysis.native_top_levels:
@@ -73,12 +73,12 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
             lines.append(f"  [note] {function.qualname}")
             lines.append(f"    {diagnostic.code}: {diagnostic.message}")
 
-    if jit_candidates:
+    if embedding_candidates:
         lines.extend(["", "Embedding candidates (experimental):"])
-        for function in jit_candidates:
-            lines.append(f"  [jit] {function.qualname}")
-            if function.jit_reason:
-                lines.append(f"    reason: {function.jit_reason}")
+        for function in embedding_candidates:
+            lines.append(f"  [embedding] {function.qualname}")
+            if function.embedding_reason:
+                lines.append(f"    reason: {function.embedding_reason}")
 
     external_accelerated = sorted(
         (
@@ -132,7 +132,7 @@ def run(args: Namespace) -> int:
                 ("plugins", "enabled"): tuple_overrides(args.plugin_enabled),
                 ("imports", "default_external_policy"): args.default_external_policy,
                 ("imports", "packages"): package_policy_overrides(args.package_import_policy),
-                ("jit", "enabled"): args.jit,
+                ("embedding", "enabled"): args.embed_helpers,
                 ("policy", "native_marker"): args.native_marker,
                 ("policy", "require_type_hints"): args.require_type_hints,
                 ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
@@ -152,7 +152,7 @@ def run(args: Namespace) -> int:
         native_top_level=config.policy.native_top_level,
         imports_config=config.imports,
         active_plugins=target_plan.plugins.active,
-        native_jit_enabled=config.jit.enabled,
+        embedding_enabled=config.embedding.enabled,
     )
     if not getattr(args, "no_report", False):
         write_check_report(project_root, analysis)

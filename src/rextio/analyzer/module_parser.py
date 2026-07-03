@@ -11,7 +11,7 @@ from rextio.analyzer.common_calls import canonical_call_target, is_logging_get_l
 from rextio.analyzer.common_calls import RUNTIME_FIDELITY_TARGETS
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.import_policy import classify_import_policies
-from rextio.analyzer.jit import is_embedding_candidate
+from rextio.analyzer.embedding import is_embedding_candidate
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis
 from rextio.analyzer.native_marker import (
     NativeMarker,
@@ -37,7 +37,7 @@ def parse_module(
     project_modules: set[str] | None = None,
     imports_config: ImportsConfig | None = None,
     active_plugins: Iterable[RextioPlugin] = (),
-    native_jit_enabled: bool = False,
+    embedding_enabled: bool = False,
     project_return_types: dict[str, str] | None = None,
 ) -> ModuleAnalysis:
     """Parse a module file into a ModuleAnalysis (functions, imports, top level)."""
@@ -79,7 +79,7 @@ def parse_module(
         native_marker,
         stub_signatures,
         target_language,
-        native_jit_enabled,
+        embedding_enabled,
         project_return_types or {},
         project_modules or set(),
     )
@@ -416,7 +416,7 @@ def _collect_module_functions(
     native_marker: str,
     stub_signatures: dict[str, StubSignature],
     target_language: str,
-    native_jit_enabled: bool,
+    embedding_enabled: bool,
     project_return_types: dict[str, str],
     project_modules: set[str],
 ) -> list[FunctionAnalysis]:
@@ -515,7 +515,7 @@ def _collect_module_functions(
         ):
             function.is_native_candidate = True
             function.accepted = True
-        elif native_jit_enabled and _mark_jit_candidate(
+        elif embedding_enabled and _mark_embedding_candidate(
             node,
             function,
             target_language,
@@ -539,7 +539,7 @@ def _collect_module_functions(
     return functions
 
 
-def _mark_jit_candidate(
+def _mark_embedding_candidate(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
     target_language: str,
@@ -578,8 +578,8 @@ def _mark_jit_candidate(
     function.has_keyword_only_params = probe.has_keyword_only_params
     function.inferred_return_type = probe.inferred_return_type
     function.native_target_language = target_language
-    function.is_jit_candidate = True
-    function.jit_reason = reason
+    function.is_embedding_candidate = True
+    function.embedding_reason = reason
     return True
 
 

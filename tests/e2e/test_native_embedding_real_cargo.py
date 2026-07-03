@@ -25,12 +25,12 @@ build_tool = "cargo"
 [policy]
 native_marker = "decorator"
 
-[jit]
+[embedding]
 enabled = true
 """,
         encoding="utf-8",
     )
-    source = tmp_path / "src" / "jit_app" / "math_ops.py"
+    source = tmp_path / "src" / "embed_app" / "math_ops.py"
     source.parent.mkdir(parents=True)
     source.write_text(
         """
@@ -60,19 +60,19 @@ def compute(x: float) -> float:
     assert exit_code == 0
     assert report["native_build"]["status"] == "built"
     assert report["accepted_native_count"] == 1
-    assert report["jit_candidate_count"] == 1
+    assert report["embedding_candidate_count"] == 1
     # The helper is embedded as an ordinary internal native function - no
     # runtime-compilation machinery and no Python export.
-    assert "fn jit_app__math_ops__helper(x: f64) -> PyResult<f64> {" in lib_rs
-    assert "wrap_pyfunction!(jit_app__math_ops__helper" not in lib_rs
+    assert "fn embed_app__math_ops__helper(x: f64) -> PyResult<f64> {" in lib_rs
+    assert "wrap_pyfunction!(embed_app__math_ops__helper" not in lib_rs
 
     monkeypatch.syspath_prepend(str(build_python))
     importlib.invalidate_caches()
-    for module_name in ("_rextio_native", "jit_app.math_ops", "jit_app._fallback_math_ops"):
+    for module_name in ("_rextio_native", "embed_app.math_ops", "embed_app._fallback_math_ops"):
         sys.modules.pop(module_name, None)
 
     native_module = importlib.import_module("_rextio_native")
-    assert native_module.jit_app__math_ops__compute(3.0) == 7.0
+    assert native_module.embed_app__math_ops__compute(3.0) == 7.0
 
-    module = importlib.import_module("jit_app.math_ops")
+    module = importlib.import_module("embed_app.math_ops")
     assert module.compute(4.0) == 9.0

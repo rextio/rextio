@@ -128,7 +128,7 @@ def generate_rust_module(
                     boundary_call_return_types=boundary_call_return_types,
                     # An embedded helper compiles as a plain
                     # internal function: callable from native code, not exported.
-                    pyo3_exported=not function.native_jit,
+                    pyo3_exported=not function.embedded,
                 )
             ),
         )
@@ -137,7 +137,7 @@ def generate_rust_module(
     exported = [
         names_by_qualname[function.qualname]
         for function in module_ir.functions
-        if not function.native_jit
+        if not function.embedded
     ]
     prelude: list[str] = []
     prelude.extend(_checked_arith_helpers(used_helpers, "pyo3"))
@@ -267,12 +267,12 @@ def _resolve_main_entry(module_ir: ModuleIR, entry_qualname: str) -> FunctionIR:
         raise RustCodegenError(
             f"Rust-main entrypoint '{entry_qualname}' cannot use Python runtime semantics (RXT080)"
         )
-    jit_matches = [
+    embedding_matches = [
         function
         for function in module_ir.functions
-        if function.qualname == entry_qualname and function.native_jit
+        if function.qualname == entry_qualname and function.embedded
     ]
-    if jit_matches:
+    if embedding_matches:
         raise RustCodegenError(
             f"Rust-main entrypoint '{entry_qualname}' cannot be an embedded helper function"
         )
@@ -281,7 +281,7 @@ def _resolve_main_entry(module_ir: ModuleIR, entry_qualname: str) -> FunctionIR:
         for function in module_ir.functions
         if function.qualname == entry_qualname
         and not function.native_runtime_semantics
-        and not function.native_jit
+        and not function.embedded
     ]
     if not matches:
         raise RustCodegenError(

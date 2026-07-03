@@ -1221,7 +1221,7 @@ def caller(x: float) -> float:
     assert accepted == {"app.shim": True, "app.caller": True}
 
 
-def test_requires_native_build_ignores_jit_only_projects(tmp_path: Path) -> None:
+def test_requires_native_build_ignores_embedding_only_projects(tmp_path: Path) -> None:
     # Embedding enabled, decorator-only, with an unmarked scalar helper: the helper
     # is an embedding *candidate* but there is no accepted native function to embed
     # it into, so no native artifact is produced and the build must not demand the
@@ -1238,10 +1238,10 @@ def helper(x: float) -> float:
     analysis = analyze_project(
         tmp_path,
         native_marker="decorator",
-        native_jit_enabled=True,
+        embedding_enabled=True,
     )
 
-    assert analysis.jit_candidates  # the helper is a JIT candidate
+    assert analysis.embedding_candidates  # the helper is a embedding candidate
     assert analysis.accepted_native_functions == []
     assert analysis.requires_native_build() is False
 
@@ -3457,7 +3457,7 @@ def process_all(xs: list[float]) -> list[float]:
     assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT073"]
 
 
-def test_jit_disabled_keeps_unmarked_helper_as_fallback_boundary(tmp_path: Path) -> None:
+def test_embedding_disabled_keeps_unmarked_helper_on_boundary_call(tmp_path: Path) -> None:
     write_module(
         tmp_path,
         "app.py",
@@ -3477,13 +3477,13 @@ def compute(x: int) -> int:
 
     # With embedding disabled the helper is not embedded, but the marked
     # caller survives through the run-time scalar boundary call instead.
-    assert analysis.jit_candidates == []
+    assert analysis.embedding_candidates == []
     assert analysis.rejected_native_functions == []
     compute = next(f for m in analysis.modules for f in m.functions if f.name == "compute")
     assert compute.accepted and compute.boundary_call_targets == {"app.helper"}
 
 
-def test_jit_enabled_promotes_typed_scalar_helper_for_native_caller(tmp_path: Path) -> None:
+def test_embedding_enabled_promotes_typed_scalar_helper_for_native_caller(tmp_path: Path) -> None:
     write_module(
         tmp_path,
         "app.py",
@@ -3502,12 +3502,12 @@ def compute(x: float) -> float:
     analysis = analyze_project(
         tmp_path,
         native_marker="decorator",
-        native_jit_enabled=True,
+        embedding_enabled=True,
     )
 
     assert [function.qualname for function in analysis.accepted_native_functions] == ["app.compute"]
-    assert [function.qualname for function in analysis.jit_candidates] == ["app.helper"]
-    assert "embedded" in (analysis.jit_candidates[0].jit_reason or "")
+    assert [function.qualname for function in analysis.embedding_candidates] == ["app.helper"]
+    assert "embedded" in (analysis.embedding_candidates[0].embedding_reason or "")
 
 
 def test_integer_arithmetic_is_embedding_eligible(tmp_path: Path) -> None:
@@ -3525,10 +3525,10 @@ def helper(x: int) -> int:
     analysis = analyze_project(
         tmp_path,
         native_marker="decorator",
-        native_jit_enabled=True,
+        embedding_enabled=True,
     )
 
-    assert [function.qualname for function in analysis.jit_candidates] == ["app.helper"]
+    assert [function.qualname for function in analysis.embedding_candidates] == ["app.helper"]
 
 
 def test_project_scanner_respects_rextioignore(tmp_path: Path) -> None:
@@ -3739,7 +3739,7 @@ def trailing_return(x: int) -> int:
     assert analysis.diagnostics == []
 
 
-def test_float_division_is_not_jit_eligible(tmp_path: Path) -> None:
+def test_float_division_is_not_embedding_eligible(tmp_path: Path) -> None:
     write_module(
         tmp_path,
         "app.py",
@@ -3761,13 +3761,13 @@ def compute(a: float, b: float) -> float:
     analysis = analyze_project(
         tmp_path,
         native_marker="decorator",
-        native_jit_enabled=True,
+        embedding_enabled=True,
     )
 
     # Both are embedding-eligible: embedded helpers lower through the checked
     # native path, so float `/` raises ZeroDivisionError like any native
     # function.
-    assert [function.qualname for function in analysis.jit_candidates] == ["app.fdiv", "app.fmul"]
+    assert [function.qualname for function in analysis.embedding_candidates] == ["app.fdiv", "app.fmul"]
 
 
 def test_rejects_len_on_scalar(tmp_path: Path) -> None:
@@ -4664,7 +4664,7 @@ import numba
 from numba import njit
 from numba import vectorize as vec
 
-@numba.jit
+@numba.embedding
 def a(x: int) -> int:
     return x + 1
 
@@ -4984,7 +4984,7 @@ def run(values):
             """
 from numba import *
 
-@cuda.jit
+@cuda.embedding
 def f(x: int) -> int:
     return x
 """,
@@ -5306,7 +5306,7 @@ def compute(x: int) -> int:
 
 
 def test_embedding_takes_precedence_over_boundary_calls(tmp_path: Path) -> None:
-    # With [jit] embedding enabled, an eligible scalar helper compiles into
+    # With [embedding] embedding enabled, an eligible scalar helper compiles into
     # the native artifact (fast path); the boundary call is the slow default.
     write_module(
         tmp_path,
@@ -5323,9 +5323,9 @@ def compute(x: int) -> int:
 """,
     )
 
-    analysis = analyze_project(tmp_path, native_marker="decorator", native_jit_enabled=True)
+    analysis = analyze_project(tmp_path, native_marker="decorator", embedding_enabled=True)
 
     compute = next(f for m in analysis.modules for f in m.functions if f.name == "compute")
     assert compute.accepted
     assert compute.boundary_call_targets == set()
-    assert [f.qualname for f in analysis.jit_candidates] == ["app.helper"]
+    assert [f.qualname for f in analysis.embedding_candidates] == ["app.helper"]

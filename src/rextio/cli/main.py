@@ -59,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_target_options(check_parser)
     _add_import_options(check_parser)
-    _add_jit_options(check_parser)
+    _add_embedding_options(check_parser)
     _add_policy_options(check_parser)
     _add_output_options(check_parser)
     check_parser.set_defaults(handler=check_cmd.run)
@@ -80,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_target_options(build_parser_)
     _add_import_options(build_parser_)
-    _add_jit_options(build_parser_)
+    _add_embedding_options(build_parser_)
     _add_toolchain_options(build_parser_)
     build_parser_.add_argument(
         "--fallback",
@@ -208,7 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_target_options(generate_parser)
     _add_import_options(generate_parser)
-    _add_jit_options(generate_parser)
+    _add_embedding_options(generate_parser)
     generate_parser.add_argument(
         "--fallback",
         choices=("cpython", "nuitka"),
@@ -446,15 +446,15 @@ def _add_import_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_jit_options(parser: argparse.ArgumentParser) -> None:
+def _add_embedding_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--jit",
+        "--embed-helpers",
         action=argparse.BooleanOptionalAction,
         default=None,
         help=(
             "Enable experimental scalar-helper embedding: eligible unmarked typed "
             "scalar helpers are compiled as internal native functions. "
-            "Overrides REXTIO_JIT and [jit] enabled."
+            "Overrides REXTIO_EMBED_HELPERS and [embedding] enabled."
         ),
     )
 

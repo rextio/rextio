@@ -17,7 +17,7 @@ from rextio.config.schema import (
     FallbackConfig,
     ImportPackagePolicy,
     ImportsConfig,
-    JitConfig,
+    EmbeddingConfig,
     PolicyConfig,
     PluginConfig,
     RextioConfig,
@@ -41,7 +41,7 @@ CONFIG_KEYS = {
     "target": {"version", "build_options"},
     "plugins": {"enabled"},
     "imports": {"default_external_policy", "packages"},
-    "jit": {"enabled"},
+    "embedding": {"enabled"},
     "executable": {"entrypoint", "name", "backend", "nuitka_mode", "python", "hybrid_runtime"},
     "toolchain": {
         "cargo",
@@ -79,7 +79,7 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_PLUGINS_ENABLED": ("plugins", "enabled", "string_list"),
     "REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY": ("imports", "default_external_policy", "string"),
     "REXTIO_IMPORTS_PACKAGES": ("imports", "packages", "package_policy_map"),
-    "REXTIO_JIT": ("jit", "enabled", "boolean"),
+    "REXTIO_EMBED_HELPERS": ("embedding", "enabled", "boolean"),
     "REXTIO_EXECUTABLE_ENTRYPOINT": ("executable", "entrypoint", "optional_string"),
     "REXTIO_EXECUTABLE_NAME": ("executable", "name", "optional_string"),
     "REXTIO_EXECUTABLE_BACKEND": ("executable", "backend", "string"),
@@ -138,7 +138,7 @@ def load_config(
     target = {**DEFAULT_CONFIG["target"], **_section(raw, "target")}
     plugins = {**DEFAULT_CONFIG["plugins"], **_section(raw, "plugins")}
     imports = {**DEFAULT_CONFIG["imports"], **_section(raw, "imports")}
-    jit = {**DEFAULT_CONFIG["jit"], **_section(raw, "jit")}
+    embedding = {**DEFAULT_CONFIG["embedding"], **_section(raw, "embedding")}
     executable = {**DEFAULT_CONFIG["executable"], **_section(raw, "executable")}
     toolchain = {**DEFAULT_CONFIG["toolchain"], **_section(raw, "toolchain")}
     policy = {**DEFAULT_CONFIG["policy"], **_section(raw, "policy")}
@@ -150,14 +150,14 @@ def load_config(
             target,
             plugins,
             imports,
-            jit,
+            embedding,
             executable,
             toolchain,
             policy,
             environ,
         )
     return _build_config(
-        build, rust, fallback, target, plugins, imports, jit, executable, toolchain, policy
+        build, rust, fallback, target, plugins, imports, embedding, executable, toolchain, policy
     )
 
 
@@ -172,7 +172,7 @@ def override_config(
     target = asdict(config.target)
     plugins = asdict(config.plugins)
     imports = _imports_asdict(config.imports)
-    jit = asdict(config.jit)
+    embedding = asdict(config.embedding)
     executable = asdict(config.executable)
     toolchain = asdict(config.toolchain)
     policy = asdict(config.policy)
@@ -183,7 +183,7 @@ def override_config(
         "target": target,
         "plugins": plugins,
         "imports": imports,
-        "jit": jit,
+        "embedding": embedding,
         "executable": executable,
         "toolchain": toolchain,
         "policy": policy,
@@ -195,7 +195,7 @@ def override_config(
             raise ConfigError(f"unsupported config override: [{section}].{key}")
         sections[section][key] = value
     return _build_config(
-        build, rust, fallback, target, plugins, imports, jit, executable, toolchain, policy
+        build, rust, fallback, target, plugins, imports, embedding, executable, toolchain, policy
     )
 
 
@@ -206,13 +206,13 @@ def _build_config(
     target: dict[str, Any],
     plugins: dict[str, Any],
     imports: dict[str, Any],
-    jit: dict[str, Any],
+    embedding: dict[str, Any],
     executable: dict[str, Any],
     toolchain: dict[str, Any],
     policy: dict[str, Any],
 ) -> RextioConfig:
     _validate_config_values(
-        build, rust, fallback, target, plugins, imports, jit, executable, toolchain, policy
+        build, rust, fallback, target, plugins, imports, embedding, executable, toolchain, policy
     )
     return RextioConfig(
         build=BuildConfig(**build),
@@ -221,7 +221,7 @@ def _build_config(
         target=TargetConfig(**target),
         plugins=PluginConfig(enabled=tuple(plugins["enabled"])),
         imports=_build_imports_config(imports),
-        jit=JitConfig(**jit),
+        embedding=EmbeddingConfig(**embedding),
         executable=ExecutableConfig(**executable),
         toolchain=ToolchainConfig(**toolchain),
         policy=PolicyConfig(**policy),
@@ -235,7 +235,7 @@ def _validate_config_values(
     target: dict[str, Any],
     plugins: dict[str, Any],
     imports: dict[str, Any],
-    jit: dict[str, Any],
+    embedding: dict[str, Any],
     executable: dict[str, Any],
     toolchain: dict[str, Any],
     policy: dict[str, Any],
@@ -259,7 +259,7 @@ def _validate_config_values(
     _require_string_list("plugins", "enabled", plugins["enabled"])
     _require_string("imports", "default_external_policy", imports["default_external_policy"])
     _require_package_policy_map("imports", "packages", imports["packages"])
-    _require_bool("jit", "enabled", jit["enabled"])
+    _require_bool("embedding", "enabled", embedding["enabled"])
     _require_optional_string("executable", "entrypoint", executable["entrypoint"])
     _require_optional_string("executable", "name", executable["name"])
     _require_optional_string("executable", "python", executable["python"])
@@ -413,7 +413,7 @@ def _apply_environment_overrides(
     target: dict[str, Any],
     plugins: dict[str, Any],
     imports: dict[str, Any],
-    jit: dict[str, Any],
+    embedding: dict[str, Any],
     executable: dict[str, Any],
     toolchain: dict[str, Any],
     policy: dict[str, Any],
@@ -426,7 +426,7 @@ def _apply_environment_overrides(
         "target": target,
         "plugins": plugins,
         "imports": imports,
-        "jit": jit,
+        "embedding": embedding,
         "executable": executable,
         "toolchain": toolchain,
         "policy": policy,

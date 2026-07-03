@@ -115,7 +115,7 @@ def run(args: Namespace) -> int:
                 ("plugins", "enabled"): tuple_overrides(args.plugin_enabled),
                 ("imports", "default_external_policy"): args.default_external_policy,
                 ("imports", "packages"): package_policy_overrides(args.package_import_policy),
-                ("jit", "enabled"): args.jit,
+                ("embedding", "enabled"): args.embed_helpers,
                 ("executable", "entrypoint"): args.entrypoint,
                 ("executable", "name"): args.executable_name,
                 ("executable", "backend"): args.executable_backend,
@@ -204,7 +204,7 @@ def run(args: Namespace) -> int:
         native_top_level=config.policy.native_top_level,
         imports_config=config.imports,
         active_plugins=target_plan.plugins.active,
-        native_jit_enabled=config.jit.enabled,
+        embedding_enabled=config.embedding.enabled,
     )
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:
@@ -262,7 +262,7 @@ def run(args: Namespace) -> int:
             # unmarked scalar helper compiles INTO the binary instead of being
             # delegated per call over IPC (bench gate: embedding beats delegation
             # by ~4-5 orders of magnitude per call).
-            native_jit_enabled=config.jit.enabled,
+            embedding_enabled=config.embedding.enabled,
                 delegate_fallback=True,
         )
 
@@ -279,7 +279,7 @@ def run(args: Namespace) -> int:
         target_plan=target_plan,
         rust_importable=config.rust.importable,
         rust_crate_name=config.rust.crate_name,
-        native_jit_enabled=config.jit.enabled,
+        embedding_enabled=config.embedding.enabled,
         build_timeout_seconds=config.build.build_timeout_seconds,
         executable_analysis=executable_analysis,
         executable_python=config.executable.python,
@@ -292,11 +292,11 @@ def run(args: Namespace) -> int:
     lines.append(f"  active plugins: {len(target_plan.plugins.active)}")
     lines.append(f"  fallback: {fallback}")
     lines.append(f"  boundary fallback threshold: {config.build.fallback_threshold}")
-    lines.append(f"  experimental helper embedding: {'enabled' if config.jit.enabled else 'disabled'}")
+    lines.append(f"  experimental helper embedding: {'enabled' if config.embedding.enabled else 'disabled'}")
     lines.append(f"  rust build tool: {config.rust.build_tool}")
     lines.append(f"  accepted native functions: {result.accepted_native_count}")
     lines.append(f"  rejected native functions: {result.rejected_native_count}")
-    lines.append(f"  embedding candidates: {len(result.plan.native.jit_functions)}")
+    lines.append(f"  embedding candidates: {len(result.plan.native.embedded_functions)}")
     if target_plan.spec.language == "rust":
         lines.append(f"  generated Rust project: {result.layout.rust_dir}")
     else:

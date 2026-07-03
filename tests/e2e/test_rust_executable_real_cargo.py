@@ -90,13 +90,13 @@ def main(argv: list[str]) -> int:
 
 
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for the Rust executable e2e")
-def test_rust_main_executable_with_jit_config_embeds_unmarked_helper(
+def test_rust_main_executable_with_embedding_config_embeds_unmarked_helper(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     (tmp_path / "rextio.toml").write_text(
         """
-[jit]
+[embedding]
 enabled = true
 
 [policy]
@@ -104,7 +104,7 @@ native_marker = "decorator"
 """,
         encoding="utf-8",
     )
-    source = tmp_path / "src" / "jit_cli" / "app.py"
+    source = tmp_path / "src" / "embed_cli" / "app.py"
     source.parent.mkdir(parents=True)
     source.write_text(
         """
@@ -129,7 +129,7 @@ def main(argv: list[str]) -> int:
             str(tmp_path),
             "--fallback=cpython",
             "--executable-backend=rust",
-            "--entrypoint=jit_cli.app:main",
+            "--entrypoint=embed_cli.app:main",
         ]
     )
     assert exit_code == 0

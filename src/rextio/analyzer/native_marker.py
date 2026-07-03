@@ -107,11 +107,11 @@ def has_exempt_marker(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
 # overflow), not Rextio's CPython-exact native contract - the same opt-out
 # philosophy as @rextio.exempt.
 _EXTERNAL_ACCELERATOR_QUALNAMES = {
-    "numba.jit": "numba",
+    "numba.embedding": "numba",
     "numba.njit": "numba",
     "numba.vectorize": "numba",
     "numba.guvectorize": "numba",
-    "numba.cuda.jit": "numba",
+    "numba.cuda.embedding": "numba",
 }
 
 
@@ -206,7 +206,7 @@ def external_accelerator_for_source(
                 if alias.name == "*":
                     # `from numba import *`: make the known accelerator entry
                     # points AND their submodule heads (`cuda` for
-                    # `numba.cuda.jit`) visible under their bare names.
+                    # `numba.cuda.embedding`) visible under their bare names.
                     for qualname in _EXTERNAL_ACCELERATOR_QUALNAMES:
                         prefix = f"{node.module}."
                         if qualname.startswith(prefix):

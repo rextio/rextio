@@ -38,7 +38,7 @@ BOUNDARY_DIAGNOSTIC_MESSAGES = {
 def apply_boundary_checks(
     analysis: ProjectAnalysis,
     boundary_warnings: bool = True,
-    native_jit_enabled: bool = False,
+    embedding_enabled: bool = False,
     delegate_fallback: bool = False,
 ) -> None:
     """Apply the native/fallback boundary policy, attaching RXT07x diagnostics."""
@@ -77,7 +77,7 @@ def apply_boundary_checks(
                     module,
                     function,
                     resolver,
-                    native_jit_enabled=native_jit_enabled,
+                    embedding_enabled=embedding_enabled,
                     delegate_fallback=delegate_fallback,
                 )
                 if boundary_errors:
@@ -145,7 +145,7 @@ def _boundary_errors(
     module: ModuleAnalysis,
     function: FunctionAnalysis,
     resolver: FunctionResolver,
-    native_jit_enabled: bool = False,
+    embedding_enabled: bool = False,
     delegate_fallback: bool = False,
 ) -> list[Diagnostic]:
     if function.native_runtime_semantics:
@@ -157,8 +157,8 @@ def _boundary_errors(
         if target in SUPPORTED_INTERNAL_CALLS or target.endswith(".append"):
             continue
         dependency = resolved.function
-        if native_jit_enabled and dependency is not None and dependency.is_jit_candidate:
-            # JIT candidates are lowered to a typed native inner function just like
+        if embedding_enabled and dependency is not None and dependency.is_embedding_candidate:
+            # embedding candidates are lowered to a typed native inner function just like
             # accepted native siblings, so the same call-compatibility check applies.
             diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
             continue
@@ -210,7 +210,7 @@ def _boundary_errors(
                         suggestion=(
                             "Hoist the call out of the loop, mark the callee "
                             "@rextio.native if it fits the supported subset, or "
-                            "enable [jit] scalar-helper embedding when eligible."
+                            "enable [embedding] scalar-helper embedding when eligible."
                         ),
                     )
                 )
@@ -376,7 +376,7 @@ def _native_arg_type_errors(
             # discarding it, which would falsely reject e.g. take_int(len(xs)).
             continue
         if resolved.accepted and not resolved.native_runtime_semantics:
-            # `accepted` (no error diagnostics) covers a valid JIT candidate too; a
+            # `accepted` (no error diagnostics) covers a valid embedding candidate too; a
             # rejected one is not accepted and must not be trusted.
             arg_types[index] = resolved.signature_return_type
         else:

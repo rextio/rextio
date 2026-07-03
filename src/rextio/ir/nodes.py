@@ -56,7 +56,7 @@ class FunctionIR(IRNode):
     return_type: RxtType
     body: "BlockIR"
     native_runtime_semantics: bool = False
-    native_jit: bool = False
+    embedded: bool = False
     # Whether the body performs in-process scalar boundary calls to the
     # Python fallback (RXT075); such a function has no pure-Rust crate form.
     has_boundary_calls: bool = False
@@ -77,8 +77,8 @@ class FunctionIR(IRNode):
             data["native_runtime_semantics"] = True
             data["runtime_fallback_module"] = self.runtime_fallback_module
             data["runtime_attr_path"] = list(self.runtime_attr_path)
-        if self.native_jit:
-            data["native_jit"] = True
+        if self.embedded:
+            data["embedded"] = True
         return data
 
 
