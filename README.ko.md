@@ -136,7 +136,7 @@ wheel 빌드, 실행파일 패키징은 실행하지 않습니다.
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit
+rextio build . --embed-helpers
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -277,9 +277,8 @@ semantics shim으로 노출됩니다. 자세한 경계는
 ## 실험적 scalar helper 내장(embedding)
 
 Rextio는 마킹되지 않은 아주 좁은 범위의 스칼라 helper를 내부 native 함수로
-선택적으로 내장할 수 있습니다. 기본값은 꺼짐입니다. 설정 키 이름이
-`[jit]`이지만 이것은 JIT가 아닙니다: 모든 것은 미리 컴파일되고, 빌드된
-artifact 안에 JIT 컴파일러는 존재하지도 실행되지도 않습니다.
+선택적으로 내장할 수 있습니다 — 다른 모든 것과 마찬가지로 미리(ahead-of-
+time) 컴파일됩니다. 기본값은 꺼짐입니다.
 
 활성화하면 적격인 비마킹 helper(스칼라 인자와 반환 타입, 단일 산술 반환
 식)가 생성 native artifact의 평범한 내부 함수로 컴파일됩니다 — native
@@ -290,15 +289,15 @@ backend에서 내장 helper는 호출마다 CPython dispatcher로 위임되는 �
 바이너리 안으로 컴파일됩니다.
 
 ```toml
-[jit]
+[embedding]
 enabled = true
 ```
 
 동등한 CLI/환경변수 제어:
 
 ```text
-rextio build . --jit
-REXTIO_JIT=true rextio build .
+rextio build . --embed-helpers
+REXTIO_EMBED_HELPERS=true rextio build .
 ```
 
 ## Numba 외부 가속기 (experimental)
@@ -451,7 +450,7 @@ CLI 파라미터 > 환경변수 > rextio.toml > 내장 기본값
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
-| `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
+| `[embedding] enabled` | `--embed-helpers` / `--no-embed-helpers` | `REXTIO_EMBED_HELPERS` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |

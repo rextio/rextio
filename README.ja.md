@@ -136,7 +136,7 @@ Nuitka、wheel ビルド、実行ファイルのパッケージングは実行�
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit
+rextio build . --embed-helpers
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -278,9 +278,8 @@ runtime semantics shim として公開されます。詳細な境界は
 ## Experimental scalar helper 埋め込み（embedding）
 
 Rextio は、マークされていないごく狭い範囲のスカラーヘルパーを内部 native
-関数として任意で埋め込めます。デフォルトはオフです。設定キー名は `[jit]`
-ですが、これは JIT ではありません: すべて事前にコンパイルされ、ビルド
-された artifact 内に JIT コンパイラは存在せず実行もされません。
+関数として任意で埋め込めます — 他のすべてと同じく事前（ahead-of-time）に
+コンパイルされます。デフォルトはオフです。
 
 有効化すると、適格な未マークヘルパー（スカラー引数と戻り値、単一の算術
 return 式）が生成 native artifact の普通の内部関数としてコンパイルされます
@@ -292,15 +291,15 @@ OverflowError を、ゼロ除算は ZeroDivisionError を他の native 関数と
 されます。
 
 ```toml
-[jit]
+[embedding]
 enabled = true
 ```
 
 同等の CLI / 環境変数:
 
 ```text
-rextio build . --jit
-REXTIO_JIT=true rextio build .
+rextio build . --embed-helpers
+REXTIO_EMBED_HELPERS=true rextio build .
 ```
 
 ## Numba 外部アクセラレータ（experimental）
@@ -461,7 +460,7 @@ CLI パラメータ > 環境変数 > rextio.toml > 組み込みデフォルト
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
-| `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
+| `[embedding] enabled` | `--embed-helpers` / `--no-embed-helpers` | `REXTIO_EMBED_HELPERS` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |

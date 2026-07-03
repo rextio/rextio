@@ -71,7 +71,7 @@ ambitions behind explicit opt-ins. Treat the surface in these tiers:
 | Tier | Features | Notes |
 | --- | --- | --- |
 | **Stable (core)** | Typed-function discovery, supported-subset checks, Rust/PyO3 AOT codegen, Cargo/maturin build, CPython fallback packaging, boundary policy | The path the alpha is meant to be judged on. |
-| **Experimental (opt-in)** | Scalar-helper embedding (`--jit`/`REXTIO_JIT`/`[jit] enabled`), Numba external accelerator recognition + Nuitka coexistence, Nuitka fallback and Nuitka executables, runtime-semantics shim (`RXT080`), Rust-importable crate, `[toolchain]` selection + version pins | Behind flags/markers; behaviour and diagnostics may change before the first non-alpha release. |
+| **Experimental (opt-in)** | Scalar-helper embedding (`--embed-helpers`/`REXTIO_EMBED_HELPERS`/`[embedding] enabled`), Numba external accelerator recognition + Nuitka coexistence, Nuitka fallback and Nuitka executables, runtime-semantics shim (`RXT080`), Rust-importable crate, `[toolchain]` selection + version pins | Behind flags/markers; behaviour and diagnostics may change before the first non-alpha release. |
 | **Planned (not implemented)** | `mojo`/`julia` native targets, installed-package plugins beyond metadata | Target metadata can be recorded for planning, but only Rust codegen is implemented. |
 
 Stability of diagnostic codes (`RXT…`) is tracked in
@@ -85,7 +85,7 @@ rextio init --project-root demo
 rextio check demo
 rextio generate demo --fallback=cpython
 rextio build demo --fallback=cpython
-rextio build demo --fallback=cpython --jit
+rextio build demo --fallback=cpython --embed-helpers
 rextio build demo --fallback=cpython --rust-importable --rust-crate-name=demo_native
 rextio build demo --fallback=cpython --entrypoint=demo_app.cli:main
 rextio bench demo_app.compute --project-root demo
@@ -214,7 +214,7 @@ flag and environment variable. Common examples:
 --enable-plugin / REXTIO_PLUGINS_ENABLED / [plugins] enabled
 --default-external-policy / REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY / [imports] default_external_policy
 --package-import-policy / REXTIO_IMPORTS_PACKAGES / [imports.packages]
---jit / REXTIO_JIT / [jit] enabled
+--embed-helpers / REXTIO_EMBED_HELPERS / [embedding] enabled
 --rust-importable / REXTIO_RUST_IMPORTABLE / [rust] importable
 --rust-crate-name / REXTIO_RUST_CRATE_NAME / [rust] crate_name
 --native-marker / REXTIO_NATIVE_MARKER / [policy] native_marker
@@ -303,18 +303,18 @@ reports. It does not authorize silent conversion of arbitrary third-party source
 if no safe direct lowering exists, Rextio keeps the native candidate on
 CPython/Nuitka fallback and reports the boundary reason.
 
-## Experimental Scalar-Helper Embedding (`[jit]`)
+## Experimental Scalar-Helper Embedding (`[embedding]`)
 
-Embedding is an explicit opt-in in 0.1.0 alpha. Despite the `[jit]` key
-name, this is NOT a JIT: everything compiles ahead of time and no JIT
-compiler exists or runs inside the built artifact.
+Embedding is an explicit opt-in in 0.1.0 alpha, compiled ahead of time like
+everything else Rextio builds.
 
 ```toml
-[jit]
+[embedding]
 enabled = true
 ```
 
-The same control is available as `--jit` / `--no-jit` or `REXTIO_JIT`.
+The same control is available as `--embed-helpers` / `--no-embed-helpers` or
+`REXTIO_EMBED_HELPERS`.
 
 With embedding enabled, an unmarked typed scalar helper (single arithmetic
 return expression) called from an accepted native function is compiled as an

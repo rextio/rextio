@@ -313,10 +313,11 @@ this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 ## Experimental Scalar-Helper Embedding Boundary
 
 Rextio 0.1.0 alpha includes opt-in embedding for a very narrow scalar helper
-subset. It is disabled by default and must be enabled with `[jit]
-enabled = true`, `--jit`, or `REXTIO_JIT=true`.
+subset. It is disabled by default and must be enabled with `[embedding]
+enabled = true`, `--embed-helpers`, or `REXTIO_EMBED_HELPERS=true`.
 
-Embedding is not a JIT. It covers unmarked functions with scalar `int` or
+Embedding compiles ahead of time (it is not a JIT). It covers unmarked
+functions with scalar `int` or
 `float` arguments and return values, a matching scalar signature, and a single
 arithmetic return expression; an eligible helper is compiled ahead of time as
 an ordinary internal native function (callable from native code, not exported

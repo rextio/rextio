@@ -30,7 +30,7 @@ exist. Concretely, the public contract today is the Stable-tier surface:
 - which supported-subset constructs compile to native versus fall back to Python.
 
 Anything marked **Experimental** in the stability doc — including its flags
-(e.g. `--jit`, `--fallback=nuitka`), its config keys (e.g. `[jit]`), and its
+(e.g. `--embed-helpers`, `--fallback=nuitka`), its config keys (e.g. `[embedding]`), and its
 diagnostic codes (e.g. `RXT080`) — and any underscore-prefixed or otherwise internal
 symbol, may change or be removed in any release without a deprecation period.
 

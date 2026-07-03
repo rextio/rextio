@@ -132,7 +132,7 @@ Nuitka、wheel 建置或可執行檔打包。
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit
+rextio build . --embed-helpers
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -268,8 +268,7 @@ semantics shim 暴露。詳細邊界見
 ## 實驗性 scalar helper 內嵌（embedding）
 
 Rextio 可以選擇性地把一組非常窄的未標記純量 helper 作為內部 native 函式
-內嵌。預設關閉。雖然設定鍵名叫 `[jit]`，但這不是 JIT: 一切都提前編譯，
-建置出的 artifact 內不存在也不執行任何 JIT 編譯器。
+內嵌 — 與其他一切一樣提前（ahead-of-time）編譯。預設關閉。
 
 啟用後，合格的未標記 helper（純量參數與回傳值、單一算術 return 運算式）
 會被編譯成產生 native artifact 中的普通內部函式 — 可被 native 程式碼
@@ -279,15 +278,15 @@ Rextio 可以選擇性地把一組非常窄的未標記純量 helper 作為內�
 每次呼叫委託給 CPython dispatcher。
 
 ```toml
-[jit]
+[embedding]
 enabled = true
 ```
 
 等價的命令列與環境變數控制:
 
 ```text
-rextio build . --jit
-REXTIO_JIT=true rextio build .
+rextio build . --embed-helpers
+REXTIO_EMBED_HELPERS=true rextio build .
 ```
 
 ## Numba 外部加速器（experimental）
@@ -431,7 +430,7 @@ CLI 參數 > 環境變數 > rextio.toml > 內建預設值
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
-| `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
+| `[embedding] enabled` | `--embed-helpers` / `--no-embed-helpers` | `REXTIO_EMBED_HELPERS` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |

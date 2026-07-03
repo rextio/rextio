@@ -143,7 +143,7 @@ Initial public MVP for Rextio as a local hybrid build tool.
 - Mirrored build and analysis settings across CLI parameters, environment variables, and `rextio.toml`.
 - Target planning metadata for future Rust/Mojo/Julia backends and installed package plugins.
 - Experimental opt-in scalar-helper embedding for narrow unmarked helpers
-  represented in Rextio IR, with `--jit`, `REXTIO_JIT`, and `[jit] enabled`
+  represented in Rextio IR, with `--embed-helpers`, `REXTIO_EMBED_HELPERS`, and `[embedding] enabled`
   controls: an eligible helper compiles ahead of time as an internal native
   function through the normal checked lowering (int overflow raises
   OverflowError; float `/` raises ZeroDivisionError), and in the Rust

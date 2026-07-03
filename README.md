@@ -136,7 +136,7 @@ Common build variants:
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit
+rextio build . --embed-helpers
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -279,9 +279,8 @@ This path preserves behavior. It should not be treated as a Rust speedup path.
 ## Experimental Scalar-Helper Embedding
 
 Rextio can optionally embed a very narrow set of unmarked scalar helpers as
-internal native functions. This is off by default. Despite the `[jit]`
-config-key name, this is NOT a JIT: everything compiles ahead of time and
-no JIT compiler exists or runs inside the built artifact.
+internal native functions, compiled ahead of time like everything else.
+This is off by default.
 
 When enabled, an eligible unmarked helper (typed scalar arguments and return,
 a single arithmetic return expression) is compiled into the generated native
@@ -293,15 +292,15 @@ backend an embedded helper compiles into the binary instead of being delegated
 per call to the CPython dispatcher.
 
 ```toml
-[jit]
+[embedding]
 enabled = true
 ```
 
 Equivalent command-line and environment controls are:
 
 ```text
-rextio build . --jit
-REXTIO_JIT=true rextio build .
+rextio build . --embed-helpers
+REXTIO_EMBED_HELPERS=true rextio build .
 ```
 
 ## Using Numba on Fallback Code (experimental)
@@ -458,7 +457,7 @@ Common settings:
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
-| `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
+| `[embedding] enabled` | `--embed-helpers` / `--no-embed-helpers` | `REXTIO_EMBED_HELPERS` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
