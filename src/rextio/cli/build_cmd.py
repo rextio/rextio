@@ -69,12 +69,15 @@ def run(args: Namespace) -> int:
         )
         return 1
 
-    nuitka_requested = fallback == "nuitka"
-    if config.executable.entrypoint is not None:
-        if config.executable.backend == "nuitka":
-            nuitka_requested = True
-        elif config.executable.backend == "rust" and config.executable.hybrid_runtime == "nuitka":
-            nuitka_requested = True
+    # Paths that ALWAYS invoke Nuitka when reached: the Nuitka fallback and a
+    # Nuitka executable with an entrypoint. The rust-executable hybrid runtime
+    # is deliberately NOT gated here: it only invokes Nuitka when analysis
+    # finds delegated fallback calls, so a pre-analysis rejection would block
+    # valid no-delegation builds that never touch Nuitka. The dispatcher
+    # builder enforces the version floor at the point of real use.
+    nuitka_requested = fallback == "nuitka" or (
+        config.executable.entrypoint is not None and config.executable.backend == "nuitka"
+    )
     if nuitka_requested:
         nuitka = shutil.which("nuitka")
         if nuitka is None:

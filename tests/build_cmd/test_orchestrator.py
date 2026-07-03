@@ -1533,18 +1533,26 @@ def test_build_rejects_pre_2_nuitka_for_executable_backend_before_analysis(
     assert not (tmp_path / ".rextio").exists()
 
 
-def test_build_rejects_pre_2_nuitka_for_hybrid_runtime_before_analysis(
+def test_hybrid_runtime_with_old_nuitka_is_not_gated_before_analysis(
     tmp_path: Path,
     monkeypatch,
     capsys,
+    fake_cargo: Path,
 ) -> None:
-    # --hybrid-runtime=nuitka (rust executable) fails before analysis too.
+    # The rust-executable hybrid runtime only invokes Nuitka when analysis
+    # finds delegated fallback calls, so an old Nuitka on PATH must NOT
+    # reject the build up front - a no-delegation build never touches
+    # Nuitka (and proceeds fine with no Nuitka installed at all). The
+    # dispatcher builder enforces the floor at the point of real use
+    # (see test_pre_2_nuitka_fails_the_hybrid_dispatcher).
     _old_nuitka_on_path(tmp_path, monkeypatch)
+    bin_dir = tmp_path / "old-nuitka-bin"
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{fake_cargo.parent}")
     (tmp_path / "app.py").write_text(
         "def main() -> int:\n    return 0\n", encoding="utf-8"
     )
 
-    exit_code = main(
+    main(
         [
             "build",
             str(tmp_path),
@@ -1556,6 +1564,5 @@ def test_build_rejects_pre_2_nuitka_for_hybrid_runtime_before_analysis(
     )
 
     captured = capsys.readouterr()
-    assert exit_code == 1
-    assert "Nuitka 1.9.7 is too old" in captured.err
-    assert not (tmp_path / ".rextio").exists()
+    assert "Nuitka 1.9.7 is too old" not in captured.err
+    assert (tmp_path / ".rextio").exists()  # analysis ran
