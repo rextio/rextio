@@ -27,7 +27,7 @@ from rextio.build.executable_builder import (
 from rextio.build.maturin_builder import build_native_extension_with_maturin
 from rextio.build.preflight import nuitka_version_error
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
-from rextio.build.toolchain import resolve_nuitka_command
+from rextio.build.toolchain import resolve_nuitka_command, resolve_python
 from rextio.config.schema import ToolchainConfig
 from rextio.codegen.rust.cargo import (
     render_binary_cargo_toml,
@@ -842,6 +842,21 @@ def _externally_accelerated_runtime_modules(analysis: ProjectAnalysis) -> list[s
     return sorted(accelerated)
 
 
+def _delegation_python(
+    executable_python: str | None, toolchain: ToolchainConfig | None
+) -> str:
+    """Return the interpreter command baked into the hybrid binary for delegated calls.
+
+    Explicit [executable] python wins; otherwise the [toolchain] python keeps
+    the runtime on the same interpreter the build targeted; otherwise the
+    portable default. REXTIO_RUNTIME_PYTHON still overrides at run time.
+    """
+    if executable_python is not None:
+        return executable_python
+    configured, _error = resolve_python(toolchain or ToolchainConfig())
+    return configured or "python3"
+
+
 def _build_nuitka_dispatcher(
     runtime_dir: Path,
     allowed_qualnames: set[str],
@@ -935,7 +950,7 @@ def _build_rust_executable_artifact(
             module_ir,
             entry_qualname,
             delegated_return_types,
-            executable_python or "python3",
+            _delegation_python(executable_python, toolchain),
             nuitka_dispatcher=nuitka_dispatcher,
         )
     except (RustCodegenError, LoweringError) as exc:

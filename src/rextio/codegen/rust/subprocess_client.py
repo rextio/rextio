@@ -34,7 +34,7 @@ def render_subprocess_client(python_command: str = "python3", *, nuitka_dispatch
     In the default (source) mode the binary launches ``python3`` on
     ``<exe>.runtime/_rextio_dispatcher.py``; ``python_command`` sets that interpreter (a
     bare name on ``PATH``, an absolute path, or a relative path resolved against
-    the runtime directory) and ``REXTIO_PYTHON`` overrides it at run time. When
+    the runtime directory) and ``REXTIO_RUNTIME_PYTHON`` overrides it at run time. When
     ``nuitka_dispatcher`` is set the runtime ships a Nuitka-compiled, self-contained
     dispatcher executable instead, which the binary launches directly (no Python).
     """
@@ -48,7 +48,7 @@ def render_subprocess_client(python_command: str = "python3", *, nuitka_dispatch
         )
     else:
         spawn_block = (
-            'let python = std::env::var("REXTIO_PYTHON")'
+            'let python = std::env::var("REXTIO_RUNTIME_PYTHON")'
             '.unwrap_or_else(|_| "{PYTHON_COMMAND}".to_string());\n'
             '        let python_path = __rextio_resolve_python(&runtime_dir, &python);\n'
             '        let mut child = Command::new(python_path).arg(runtime_dir.join("'

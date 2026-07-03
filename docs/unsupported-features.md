@@ -511,7 +511,7 @@ Python", i.e. a function that is not a native candidate (RXT070) or is rejected
 from the native subset (RXT072) — Rextio delegates that call to an **external
 CPython subprocess** rather than rejecting it. The build ships a
 `dist/<binary>.runtime/` directory (a generated dispatcher plus the project's
-Python source); the binary launches `python3` (overridable with `REXTIO_PYTHON`)
+Python source); the binary launches `python3` (overridable with `REXTIO_RUNTIME_PYTHON`)
 once and forwards delegated calls over a JSON stdio protocol. The delegated
 function runs real CPython, so its result is CPython-equivalent (not a silent
 miscompile), and a raised Python exception is forwarded and printed CPython-style.
@@ -552,7 +552,7 @@ Two options control the interpreter side:
 - `--executable-python` (`[executable] python`, `REXTIO_EXECUTABLE_PYTHON`) sets
   the interpreter the binary launches — a bare name resolved on `PATH`, an
   absolute path, or a path relative to `<binary>.runtime` (to bundle a specific
-  interpreter). `REXTIO_PYTHON` still overrides it at run time. Use this to keep
+  interpreter). `REXTIO_RUNTIME_PYTHON` still overrides it at run time. Use this to keep
   the binary off the system's default `python3`.
 - `--hybrid-runtime` (`[executable] hybrid_runtime`, `REXTIO_HYBRID_RUNTIME`;
   `source` or `nuitka`, default `source`) chooses how the Python is shipped.

@@ -1657,3 +1657,19 @@ def test_nuitka_version_pin_mismatch_fails_the_gate(
     assert exit_code == 1
     assert "does not satisfy" in captured.err
     assert not (tmp_path / ".rextio").exists()
+
+
+def test_toolchain_python_becomes_the_delegation_default(tmp_path: Path) -> None:
+    from rextio.build.orchestrator import _delegation_python
+    from rextio.config.schema import ToolchainConfig
+
+    fake_py = tmp_path / "py" / "bin" / "python3"
+    fake_py.parent.mkdir(parents=True)
+    fake_py.write_text("#!/bin/sh\necho Python 3.11.9\n", encoding="utf-8")
+    fake_py.chmod(0o755)
+
+    toolchain = ToolchainConfig(python=str(tmp_path / "py"))
+    assert _delegation_python(None, toolchain) == str(fake_py)
+    # Explicit [executable] python still wins over the toolchain default.
+    assert _delegation_python("/opt/other/python3", toolchain) == "/opt/other/python3"
+    assert _delegation_python(None, None) == "python3"
