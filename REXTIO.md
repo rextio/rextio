@@ -54,6 +54,15 @@ blocks that update already assigned module variables. Assigned module variables
 must share one supported value type. Rextio keeps an original fallback module
 and uses it whenever native is disabled or unavailable.
 
+## Requirements
+
+| Component | Version | Notes |
+| --- | --- | --- |
+| CPython | >= 3.11 (validated on 3.11-3.14) | The analyzer uses the build interpreter's `ast`; generated extensions pin PyO3 0.29, which supports up to CPython 3.14. Newer interpreters may work but are unvalidated. Wheels are tagged for the build interpreter's minor version. |
+| Rust toolchain | MSRV 1.83 (tested on recent stable) | Generated crates use edition 2021 and PyO3 0.29. Install via [rustup](https://rustup.rs). |
+| Nuitka (optional) | >= 2.0 | Only for the Nuitka fallback, Nuitka executables, and the hybrid runtime. The first two are rejected up front by the build preflight; the hybrid runtime is checked when delegated fallback calls actually require the Nuitka dispatcher. |
+| Numba (optional, experimental) | matches your interpreter: >= 0.57 (3.11), >= 0.59 (3.12), >= 0.61 (3.13), >= 0.63 (3.14) | Rextio only recognizes Numba decorators; the package is a runtime dependency of the user project, not of Rextio. Floors follow [Numba's version support table](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information). |
+
 ## Feature Stability
 
 0.1.0 alpha deliberately keeps a narrow, trustworthy core and gates broader
@@ -62,7 +71,7 @@ ambitions behind explicit opt-ins. Treat the surface in these tiers:
 | Tier | Features | Notes |
 | --- | --- | --- |
 | **Stable (core)** | Typed-function discovery, supported-subset checks, Rust/PyO3 AOT codegen, Cargo/maturin build, CPython fallback packaging, boundary policy | The path the alpha is meant to be judged on. |
-| **Experimental (opt-in)** | Cranelift JIT (`--jit`/`REXTIO_JIT`/`[jit]`), Nuitka fallback and Nuitka executables, runtime-semantics shim (`RXT080`), Rust-importable crate | Behind flags/markers; behaviour and diagnostics may change before the first non-alpha release. |
+| **Experimental (opt-in)** | Scalar-helper embedding (`--jit`/`REXTIO_JIT`/`[jit] enabled`), Numba external accelerator recognition + Nuitka coexistence, Nuitka fallback and Nuitka executables, runtime-semantics shim (`RXT080`), Rust-importable crate | Behind flags/markers; behaviour and diagnostics may change before the first non-alpha release. |
 | **Planned (not implemented)** | `mojo`/`julia` native targets, installed-package plugins beyond metadata | Target metadata can be recorded for planning, but only Rust codegen is implemented. |
 
 Stability of diagnostic codes (`RXT…`) is tracked in
@@ -76,7 +85,7 @@ rextio init --project-root demo
 rextio check demo
 rextio generate demo --fallback=cpython
 rextio build demo --fallback=cpython
-rextio build demo --fallback=cpython --jit --jit-hot-threshold=25
+rextio build demo --fallback=cpython --jit
 rextio build demo --fallback=cpython --rust-importable --rust-crate-name=demo_native
 rextio build demo --fallback=cpython --entrypoint=demo_app.cli:main
 rextio bench demo_app.compute --project-root demo
@@ -117,10 +126,11 @@ include trigonometric, logarithmic, rounding, finite/NaN checks, and
 `math.pi`/`math.e`. Common side-effect and standard-library lowering is limited
 to `print(...)`, `logging.debug/info/warning/error(...)`, module logger
 variables assigned from `logging.getLogger(...)`, `datetime`/`time` timestamp
-calls, `statistics.mean/fmean`, selected `str`/`bytes`/`list` methods, and
-constrained `hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`,
-and `json.dumps/json.loads` patterns. `json.loads` requires an expected
-supported target type. Empty list literals must
+calls, selected `str`/`bytes`/`list` methods, and constrained
+`hashlib.sha256(...).hexdigest()` and `base64.b64encode` patterns.
+`statistics.mean`/`fmean`, `json.dumps`/`json.loads`, and `base64.b64decode`
+have no direct native lowering: explicitly marked functions using them ride
+the RXT080 runtime shim and auto-discovered ones stay on the Python fallback. Empty list literals must
 use a supported local annotation such as `out: list[int] = []`. `enumerate` and
 `zip` are supported only as batch loop or comprehension iterables over list
 variables. Empty dict literals require a supported fixed `dict[K, V]`
@@ -205,8 +215,6 @@ flag and environment variable. Common examples:
 --default-external-policy / REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY / [imports] default_external_policy
 --package-import-policy / REXTIO_IMPORTS_PACKAGES / [imports.packages]
 --jit / REXTIO_JIT / [jit] enabled
---jit-backend / REXTIO_JIT_BACKEND / [jit] backend
---jit-hot-threshold / REXTIO_JIT_HOT_THRESHOLD / [jit] hot_threshold
 --rust-importable / REXTIO_RUST_IMPORTABLE / [rust] importable
 --rust-crate-name / REXTIO_RUST_CRATE_NAME / [rust] crate_name
 --native-marker / REXTIO_NATIVE_MARKER / [policy] native_marker
@@ -247,40 +255,29 @@ reports. It does not authorize silent conversion of arbitrary third-party source
 if no safe direct lowering exists, Rextio keeps the native candidate on
 CPython/Nuitka fallback and reports the boundary reason.
 
-## Experimental Native-Side JIT
+## Experimental Scalar-Helper Embedding (`[jit]`)
 
-JIT is an explicit opt-in in 0.1.0 alpha:
+Embedding is an explicit opt-in in 0.1.0 alpha. Despite the `[jit]` key
+name, this is NOT a JIT: everything compiles ahead of time and no JIT
+compiler exists or runs inside the built artifact.
 
 ```toml
 [jit]
 enabled = true
-backend = "cranelift"
-hot_threshold = 25
 ```
 
-The same controls are available as `--jit` / `--no-jit`,
-`--jit-backend=cranelift`, `--jit-hot-threshold=N`, or through
-`REXTIO_JIT`, `REXTIO_JIT_BACKEND`, and `REXTIO_JIT_HOT_THRESHOLD`.
+The same control is available as `--jit` / `--no-jit` or `REXTIO_JIT`.
 
-The implemented model is a native runtime Tier-2 path:
-
-```text
-AOT: Rextio IR -> Rust -> rustc/LLVM
-JIT: Rextio IR -> Cranelift, inside the generated native module
-```
-
-Python code does not call a separate JIT API. Instead, an accepted AOT native
-function may call an internal helper region that Rextio can represent as simple
-typed scalar IR but does not export as a PyO3 function. Generated Rust runs an
-interpreter-equivalent expression until the hot threshold is reached, then
-compiles the helper with Cranelift and caches the native function pointer.
-
-The current JIT subset is deliberately narrow: scalar `int` or `float`
-arguments and return values, matching argument/return scalar type, and a single
-arithmetic return expression. Cranelift dependencies are emitted into generated
-Cargo projects only when JIT is enabled and at least one JIT region is included.
-With JIT disabled, the same native-to-fallback helper call is rejected by the
-normal boundary rules and the caller stays on Python fallback.
+With embedding enabled, an unmarked typed scalar helper (single arithmetic
+return expression) called from an accepted native function is compiled as an
+internal native function - lowered through the normal checked path (overflow
+raises OverflowError, float division by zero raises ZeroDivisionError) and not
+exported as a PyO3 function. In the Rust executable backend the same helpers
+compile into the binary instead of being delegated per call. There is no
+runtime compilation, and embedding adds no crate dependencies to generated
+Cargo projects. With embedding disabled, the same native-to-helper call is
+rejected by the normal boundary rules and the caller stays on Python
+fallback.
 
 ## Release Verification
 

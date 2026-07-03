@@ -3422,9 +3422,7 @@ def compute(x: float) -> float:
 
 def test_integer_arithmetic_is_embedding_eligible(tmp_path: Path) -> None:
     # Embedded helpers lower through the ordinary checked native path, so int
-    # arithmetic raises OverflowError like any other native function. The old
-    # Cranelift hot path could not raise and therefore excluded int arithmetic
-    # entirely; with embedding that exclusion (and its diagnostic) is gone.
+    # arithmetic raises OverflowError like any other native function.
     write_module(
         tmp_path,
         "app.py",
@@ -3677,8 +3675,8 @@ def compute(a: float, b: float) -> float:
     )
 
     # Both are embedding-eligible: embedded helpers lower through the checked
-    # native path, so float `/` raises ZeroDivisionError like any native function
-    # (the former Cranelift fdiv exclusion is gone with the hot path).
+    # native path, so float `/` raises ZeroDivisionError like any native
+    # function.
     assert [function.qualname for function in analysis.jit_candidates] == ["app.fdiv", "app.fmul"]
 
 
@@ -4314,9 +4312,8 @@ def main(argv: list[str]) -> int:
 def test_delegate_fallback_types_pyi_stub_returns_across_modules(tmp_path: Path) -> None:
     # A callee whose return type lives ONLY in a sibling `.pyi` stub must be typed
     # at cross-module call sites too: a type-incompatible use of its result is a
-    # clean check-time rejection (previously it slipped past validation into a
-    # Rust `String + integer` compile failure), while a valid use stays accepted
-    # and delegated.
+    # clean check-time rejection (never a Rust `String + integer` compile
+    # failure), while a valid use stays accepted and delegated.
     write_module(
         tmp_path,
         "helpers.py",
@@ -4774,3 +4771,388 @@ def helper(x: int) -> int:
     return x + 1
 """
     assert external_accelerator_for_source(source) is None
+
+@pytest.mark.parametrize(
+    ("shape", "body"),
+    [
+        ("for_loop", "    out: list[int] = []\n    for x in xs:\n        out.append(x)\n    return out\n"),
+        ("comprehension", "    return [x for x in xs]\n"),
+    ],
+)
+def test_set_iteration_is_rejected_to_fallback(shape: str, body: str, tmp_path: Path) -> None:
+    # Iterating a set is order-observable: CPython's order is deterministic
+    # within a process while Rust's HashSet seeds per instance (same call, same
+    # elements, different order). No faithful lowering exists, so the function
+    # must be rejected loudly instead of silently mis-compiling the order.
+    write_module(
+        tmp_path,
+        "app.py",
+        f"""
+import rextio
+
+@rextio.native
+def f(xs: set[int]) -> list[int]:
+{body}""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert not function.accepted, shape
+    assert any("iterating a set" in d.message for d in function.error_diagnostics), shape
+    # Exactly ONE diagnostic: the dedicated message must not be followed by
+    # the generic iterable rejection or name-scope cascades.
+    assert len(function.error_diagnostics) == 1, [d.message for d in function.error_diagnostics]
+
+
+def test_building_a_set_from_a_list_stays_native(tmp_path: Path) -> None:
+    # Constructing a set (from an ordered iterable) observes no set order;
+    # only iteration OUT of a set is rejected.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def f(xs: list[int]) -> set[int]:
+    return {x for x in xs if x > 0}
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert function.accepted
+
+def test_bytes_decode_direct_native_carries_divergence_note(tmp_path: Path) -> None:
+    # bytes.decode() on the direct native path raises ValueError where CPython
+    # raises UnicodeDecodeError (documented divergence): the function must
+    # carry a non-rejecting RXT090 note so the divergence is visible at build
+    # time, not only in the docs.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def dec(b: bytes) -> str:
+    return b.decode()
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert function.accepted
+    notes = [d for d in function.diagnostics if d.code == "RXT090"]
+    assert len(notes) == 1
+    assert notes[0].severity == "warning"
+    assert "UnicodeDecodeError" in notes[0].message
+
+
+def test_divergence_note_stripped_from_shim_and_fallback_functions(tmp_path: Path) -> None:
+    # A shim (or rejected) function executes real CPython, so the decode
+    # divergence cannot occur there and the note must not survive.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+@rextio.native
+def dec(b: bytes) -> str:
+    try:
+        return b.decode()
+    except UnicodeDecodeError:
+        return "bad"
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert function.accepted
+    assert function.native_runtime_semantics
+    assert not [d for d in function.diagnostics if d.code == "RXT090"]
+
+@pytest.mark.parametrize(
+    ("shape", "source"),
+    [
+        (
+            "local_import_nested",
+            """
+def run(values):
+    from numba import njit
+
+    @njit
+    def inner(x):
+        return x * 2
+
+    return inner(values)
+""",
+        ),
+        (
+            "star_import_cuda",
+            """
+from numba import *
+
+@cuda.jit
+def f(x: int) -> int:
+    return x
+""",
+        ),
+        (
+            "except_handler_import",
+            """
+try:
+    import fast_numba as numba
+except ImportError:
+    import numba
+
+@numba.njit
+def f(x: int) -> int:
+    return x
+""",
+        ),
+    ],
+)
+def test_source_scan_walks_the_whole_tree(shape: str, source: str) -> None:
+    # A deferred import inside a function body decorating a NESTED function,
+    # `from numba import *` resolving the `cuda` submodule, and an import in
+    # an except handler are all knowable at build time; missing them meant a
+    # Nuitka-compiled module whose accelerated function dies at first call.
+    from rextio.analyzer.native_marker import external_accelerator_for_source
+
+    assert external_accelerator_for_source(source) == "numba", shape
+
+
+def test_source_scan_ignores_project_local_numba_module() -> None:
+    # The generated tree always contains every project module, so a top-level
+    # `numba` name in the tree means the import resolves to the user's own
+    # code: the build scans must not skip/block such modules (the analyzer
+    # already had this guard; the build scans lacked it).
+    from rextio.analyzer.native_marker import external_accelerator_for_source
+
+    source = """
+import numba
+
+@numba.njit
+def f(x: int) -> int:
+    return x
+"""
+    assert external_accelerator_for_source(source, frozenset({"numba"})) is None
+    assert external_accelerator_for_source(source, frozenset({"app"})) == "numba"
+
+def test_source_scan_accelerator_binding_survives_scope_collisions() -> None:
+    # The whole-tree walk flattens scopes: a nested `import local_numba as
+    # numba` must not overwrite the top-level `import numba` binding that a
+    # top-level @numba.njit resolves through - dropping it is UNDER-detection
+    # (compiled module, first-call death), the unsafe direction.
+    from rextio.analyzer.native_marker import external_accelerator_for_source
+
+    source = """
+import numba
+
+@numba.njit
+def kernel(x: int) -> int:
+    return x * 2
+
+def unrelated():
+    import local_numba as numba
+    return numba.helper()
+"""
+    assert external_accelerator_for_source(source, frozenset({"local_numba"})) == "numba"
+    assert external_accelerator_for_source(source) == "numba"
+
+
+def test_project_local_namespace_package_numba_is_recognized(tmp_path: Path) -> None:
+    # A local `numba/` NAMESPACE package (no __init__.py) is still project
+    # code; the tree-name derivation must include it.
+    from rextio.analyzer.native_marker import project_module_names_for_tree
+
+    (tmp_path / "numba").mkdir()
+    (tmp_path / "numba" / "shim.py").write_text("def njit(f):\n    return f\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text("import numba\n", encoding="utf-8")
+    assert "numba" in project_module_names_for_tree(tmp_path)
+
+@pytest.mark.parametrize(
+    ("shape", "body"),
+    [
+        ("enumerate", "    total = 0\n    for i, x in enumerate(xs):\n        total = total + i\n    return total\n"),
+        ("zip", "    total = 0\n    for a, b in zip(xs, xs):\n        total = total + a + b\n    return total\n"),
+    ],
+)
+def test_enumerate_and_zip_over_sets_explain_the_real_reason(
+    shape: str, body: str, tmp_path: Path
+) -> None:
+    # enumerate/zip over a set must report the actual reason (set iteration
+    # order divergence) - never the generic "supports list variables only"
+    # message - and exactly once.
+    write_module(
+        tmp_path,
+        "app.py",
+        f"""
+import rextio
+
+@rextio.native
+def f(xs: set[int]) -> int:
+{body}""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert not function.accepted, shape
+    messages = [d.message for d in function.error_diagnostics]
+    # Every diagnostic is the dedicated set message (one per offending
+    # argument) - no generic "list only" or name-scope cascade noise.
+    assert messages and all("iterating a set" in m for m in messages), messages
+
+@pytest.mark.parametrize(
+    "body_import",
+    [
+        ("from statistics import mean", "mean(xs)"),
+        ("from statistics import mean as avg", "avg(xs)"),
+        ("from json import dumps", "float(len(dumps(xs)))"),
+    ],
+    ids=["from-import", "aliased", "json-dumps"],
+)
+def test_fidelity_calls_shim_regardless_of_import_form(
+    body_import: tuple[str, str], tmp_path: Path
+) -> None:
+    # `statistics.mean` (attribute form) rides the RXT080 shim for marked
+    # functions; every bare from-import spelling must behave identically -
+    # import style must not change the documented behavior.
+    import_line, call = body_import
+    write_module(
+        tmp_path,
+        "app.py",
+        f"""
+import rextio
+{import_line}
+
+@rextio.native
+def f(xs: list[float]) -> float:
+    return {call}
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions)
+    assert function.accepted
+    assert function.native_runtime_semantics
+
+
+def test_local_function_named_mean_is_not_shim_promoted(tmp_path: Path) -> None:
+    # A project-local `mean` does not resolve through imports to the fidelity
+    # list: the marked caller is rejected loudly, not silently shimmed.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def mean(xs):
+    return 0.0
+
+@rextio.native
+def f(xs: list[float]) -> float:
+    return mean(xs)
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions if f.name == "f")
+    assert not function.accepted
+    assert not function.native_runtime_semantics
+
+@pytest.mark.parametrize(
+    ("shape", "prelude"),
+    [
+        ("def-shadow", "from statistics import mean\n\ndef mean(xs):\n    return 0.0\n"),
+        ("class-shadow", "from statistics import mean\n\nclass mean:\n    pass\n"),
+        ("assign-shadow", "from statistics import mean\n\nmean = len\n"),
+    ],
+)
+def test_shadowed_fidelity_import_is_not_shim_promoted(
+    shape: str, prelude: str, tmp_path: Path
+) -> None:
+    # A module-level def/class/assignment AFTER `from statistics import mean`
+    # rebinds the name to PROJECT code: the marked caller must reject loudly
+    # (the call resolves to the shadow at runtime, not to the stdlib).
+    write_module(
+        tmp_path,
+        "app.py",
+        f"""
+import rextio
+{prelude}
+@rextio.native
+def f(xs: list[float]) -> float:
+    return mean(xs)
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions if f.name == "f")
+    assert not function.accepted, shape
+    assert not function.native_runtime_semantics, shape
+
+
+def test_reimport_after_def_restores_fidelity_shim(tmp_path: Path) -> None:
+    # The binder ORDER decides: `def mean` followed by a re-import of the
+    # stdlib name means the runtime binding IS statistics.mean, so the marked
+    # caller rides the RXT080 shim exactly like an unshadowed from-import.
+    write_module(
+        tmp_path,
+        "app.py",
+        """
+import rextio
+
+def mean(xs):
+    return 0.0
+
+from statistics import mean
+
+@rextio.native
+def f(xs: list[float]) -> float:
+    return mean(xs)
+""",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions if f.name == "f")
+    assert function.accepted
+    assert function.native_runtime_semantics
+
+@pytest.mark.parametrize(
+    ("shape", "prelude"),
+    [
+        ("walrus", "from statistics import mean\n\n(mean := len)\n"),
+        ("relative-import", "from statistics import mean\nfrom .helpers import mean\n"),
+        ("relative-star", "from statistics import mean\nfrom .helpers import *\n"),
+        ("decorator-walrus", "from statistics import mean\n\n@(mean := staticmethod)\nclass C:\n    pass\n"),
+        (
+            "match-capture",
+            "from statistics import mean\n\nmatch 1:\n    case mean:\n        pass\n",
+        ),
+        (
+            "except-as",
+            "from statistics import mean\ntry:\n    pass\nexcept ImportError as mean:\n    pass\n",
+        ),
+        (
+            "trystar-handler-def",
+            "from statistics import mean\ntry:\n    pass\nexcept* ValueError:\n    def mean(xs):\n        return 0.0\n",
+        ),
+    ],
+)
+def test_exotic_rebinders_block_fidelity_shim(shape: str, prelude: str, tmp_path: Path) -> None:
+    # Any module-level rebinding of a fidelity name - a walrus or a relative
+    # import (project code) - overrides the earlier stdlib import; the marked
+    # caller must reject loudly instead of shim-promoting off the stale
+    # binding.
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "helpers.py").write_text("def mean(xs):\n    return 0.0\n", encoding="utf-8")
+    (pkg / "app.py").write_text(
+        f"""
+import rextio
+{prelude}
+@rextio.native
+def f(xs: list[float]) -> float:
+    return mean(xs)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    function = next(f for m in analysis.modules for f in m.functions if f.name == "f")
+    assert not function.native_runtime_semantics, shape
+    assert not function.accepted, shape

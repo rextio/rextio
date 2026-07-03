@@ -51,11 +51,29 @@ def classify(n: int) -> str:
 @rextio.native
 def sum_total(xs: list[int]) -> int:
     return total(xs) + 1
+
+"""
+
+# Native try/except is pyo3-backend-only (the importable-crate generator
+# raises RustCodegenError for it), so the exception-dispatch snapshot
+# (Python::attach guard) rides a pyo3-specific source variant. Keep it equal
+# to _SOURCE plus ONLY the appended function: the shared prefix is what lets
+# the pyo3 and crate goldens cover the same base constructs without drift
+# (pinned by test_pyo3_only_source_extends_the_shared_source).
+_SOURCE_PYO3_ONLY = _SOURCE + """
+@rextio.native
+def safe_mod(a: int, b: int) -> int:
+    out = 0
+    try:
+        out = a % b
+    except ZeroDivisionError:
+        out = -1
+    return out
 """
 
 
-def _write_project(tmp_path: Path) -> Path:
-    (tmp_path / "app.py").write_text(_SOURCE, encoding="utf-8")
+def _write_project(tmp_path: Path, source: str = _SOURCE) -> Path:
+    (tmp_path / "app.py").write_text(source, encoding="utf-8")
     return tmp_path
 
 
@@ -84,7 +102,9 @@ def _assert_golden(name: str, generated: str) -> None:
 
 
 def test_pyo3_module_matches_golden(tmp_path: Path) -> None:
-    source = generate_rust_module(lower_project(analyze_project(_write_project(tmp_path))))
+    source = generate_rust_module(
+        lower_project(analyze_project(_write_project(tmp_path, _SOURCE_PYO3_ONLY)))
+    )
     _assert_golden("representative_pyo3.rs", source)
 
 
@@ -99,3 +119,9 @@ def test_generation_is_deterministic(tmp_path: Path) -> None:
     first = generate_rust_module(lower_project(analyze_project(project)))
     second = generate_rust_module(lower_project(analyze_project(project)))
     assert first == second
+
+
+def test_pyo3_only_source_extends_the_shared_source() -> None:
+    # The two goldens must keep covering the same base constructs; the pyo3
+    # variant may only APPEND pyo3-only functions to the shared source.
+    assert _SOURCE_PYO3_ONLY.startswith(_SOURCE)

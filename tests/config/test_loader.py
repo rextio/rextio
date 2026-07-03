@@ -343,13 +343,13 @@ def test_load_config_rejects_import_plugin_policy_without_plugin(tmp_path: Path)
         load_config(tmp_path)
 
 
-def test_load_config_rejects_removed_jit_keys(tmp_path: Path) -> None:
-    # `backend`/`hot_threshold` were removed with the Cranelift hot path; they are
-    # now unknown [jit] keys and must be rejected rather than silently ignored.
+def test_load_config_rejects_unknown_jit_keys(tmp_path: Path) -> None:
+    # [jit] accepts only `enabled`; an unknown key must be rejected rather
+    # than silently ignored.
     (tmp_path / "rextio.toml").write_text(
         """
 [jit]
-hot_threshold = 25
+bogus_option = 25
 """,
         encoding="utf-8",
     )
@@ -422,13 +422,17 @@ native_marker = "always"
         load_config(tmp_path)
 
 
-def test_load_config_rejects_removed_jit_environment_variables(tmp_path: Path) -> None:
-    # The Cranelift knobs were removed with the hot path; a stale export must fail
-    # loudly (mirroring removed toml keys) instead of silently meaning nothing.
+
+
+def test_load_config_ignores_unknown_environment_variables(tmp_path: Path) -> None:
+    # An unrecognized REXTIO_* variable (including a typo) is silently
+    # ignored, like any junk environment variable - only the names in
+    # ENVIRONMENT_OVERRIDES are consulted.
     (tmp_path / "rextio.toml").write_text("", encoding="utf-8")
 
-    with pytest.raises(ConfigError, match=r"REXTIO_JIT_HOT_THRESHOLD was removed"):
-        load_config(tmp_path, environ={"REXTIO_JIT_HOT_THRESHOLD": "25"})
+    config = load_config(
+        tmp_path,
+        environ={"REXTIO_TOTALLY_UNKNOWN": "1", "REXTIO_JTI": "true"},
+    )
 
-    with pytest.raises(ConfigError, match=r"REXTIO_JIT_BACKEND was removed"):
-        load_config(tmp_path, environ={"REXTIO_JIT_BACKEND": "cranelift"})
+    assert config.jit.enabled is False

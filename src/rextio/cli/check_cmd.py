@@ -60,6 +60,19 @@ def format_check_report(analysis: ProjectAnalysis) -> str:
             if diagnostic.suggestion:
                 lines.append(f"    suggestion: {diagnostic.suggestion}")
 
+    divergence_notes = [
+        (function, diagnostic)
+        for module in analysis.modules
+        for function in module.functions
+        for diagnostic in function.diagnostics
+        if diagnostic.code == "RXT090"
+    ]
+    if divergence_notes:
+        lines.extend(["", "Native divergence notes:"])
+        for function, diagnostic in divergence_notes:
+            lines.append(f"  [note] {function.qualname}")
+            lines.append(f"    {diagnostic.code}: {diagnostic.message}")
+
     if jit_candidates:
         lines.extend(["", "Embedding candidates (experimental):"])
         for function in jit_candidates:

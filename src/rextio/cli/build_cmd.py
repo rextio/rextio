@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
-from rextio.build.preflight import format_missing_tools, missing_build_tools
+from rextio.build.preflight import format_missing_tools, missing_build_tools, nuitka_version_error
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
 from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
-from rextio.fallback.nuitka import nuitka_available, nuitka_unavailable_message
+from rextio.fallback.nuitka import nuitka_unavailable_message
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
@@ -68,10 +69,33 @@ def run(args: Namespace) -> int:
         )
         return 1
 
-    if fallback == "nuitka" and not nuitka_available():
-        reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
-        reporter.error(nuitka_unavailable_message())
-        return 1
+    # Paths that ALWAYS invoke Nuitka when reached: the Nuitka fallback and a
+    # Nuitka executable with an entrypoint. The rust-executable hybrid runtime
+    # is deliberately NOT gated here: it only invokes Nuitka when analysis
+    # finds delegated fallback calls, so a pre-analysis rejection would block
+    # valid no-delegation builds that never touch Nuitka. The dispatcher
+    # builder enforces the version floor at the point of real use.
+    nuitka_requested = fallback == "nuitka" or (
+        config.executable.entrypoint is not None and config.executable.backend == "nuitka"
+    )
+    if nuitka_requested:
+        nuitka = shutil.which("nuitka")
+        if nuitka is None:
+            if fallback == "nuitka":
+                reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
+                reporter.error(nuitka_unavailable_message())
+                return 1
+            # Executable/hybrid paths keep their existing missing-tool handling
+            # (reported by the builder with path-specific guidance).
+        else:
+            # Fail before the (potentially slow) project analysis, not mid-build.
+            # The builders re-probe later so they stay correct for non-CLI callers;
+            # the extra `nuitka --version` is a deliberate, negligible cost.
+            version_error = nuitka_version_error(nuitka)
+            if version_error is not None:
+                reporter.error("RXT060 Build failed while preparing the Nuitka toolchain.")
+                reporter.error(version_error)
+                return 1
 
     analysis = analyze_project(
         project_root,

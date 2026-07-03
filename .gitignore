@@ -14,6 +14,7 @@ htmlcov/
 
 # Virtual environments
 .venv/
+.venv*/
 venv/
 env/
 uv.lock
@@ -21,6 +22,12 @@ uv.lock
 # Build artifacts
 /build/
 /dist/
+
+# Compiled native extensions / shared libraries (never commit)
+*.so
+*.pyd
+*.dll
+*.dylib
 
 # Rextio generated artifacts
 .rextio/build/
@@ -32,6 +39,6 @@ uv.lock
 target/
 crates/*/Cargo.lock
 
-Agentic Coding generated artifacts
+# Agentic Coding generated artifacts
 .claude/
 .claude-octopus/

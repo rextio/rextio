@@ -60,7 +60,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
@@ -91,7 +91,7 @@ jobs:
         run: python -m pytest tests --ignore=tests/e2e -q --cov
 
   e2e:
-    name: E2E (real Rust/Cargo toolchain / ${{ matrix.os }})
+    name: E2E (real Rust/Cargo toolchain / py${{ matrix.python-version }} / ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -99,12 +99,16 @@ jobs:
         # Exercise the macOS-only generated `.cargo/config.toml` linker flags
         # (`-undefined dynamic_lookup`) that never run on ubuntu (council H4).
         os: [ubuntu-latest, macos-latest]
+        # The floor and the ceiling of the supported interpreter range: a real
+        # cargo/PyO3 compile on both continuously defends "validated on
+        # 3.11-3.14" for the generated-native path, not just the Python side.
+        python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

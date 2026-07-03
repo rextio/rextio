@@ -48,6 +48,15 @@ Set `REXTIO_DEBUG_NATIVE=1` to raise the full traceback (instead of warning and
 falling back) when a built native module fails to load — useful when debugging an
 ABI mismatch or a wrapper/codegen name mismatch.
 
+## Requirements
+
+| Component | Version | Notes |
+| --- | --- | --- |
+| CPython | >= 3.11 (validated on 3.11-3.14) | The analyzer uses the build interpreter's `ast`; generated extensions pin PyO3 0.29, which supports up to CPython 3.14. Newer interpreters may work but are unvalidated. Wheels are tagged for the build interpreter's minor version. |
+| Rust toolchain | MSRV 1.83 (tested on recent stable) | Generated crates use edition 2021 and PyO3 0.29. Install via [rustup](https://rustup.rs). |
+| Nuitka (optional) | >= 2.0 | Only for `--fallback=nuitka`, `--executable-backend=nuitka`, or `--hybrid-runtime=nuitka`. The first two are rejected up front by the build preflight; the hybrid runtime is checked when delegated fallback calls actually require the Nuitka dispatcher. |
+| Numba (optional, experimental) | matches your interpreter: >= 0.57 (3.11), >= 0.59 (3.12), >= 0.61 (3.13), >= 0.63 (3.14) | Rextio only recognizes Numba decorators — the package itself is a runtime dependency of YOUR project, not of Rextio. Floors follow [Numba's version support table](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information). |
+
 ## Quick Example
 
 Start with normal Python:
@@ -204,7 +213,9 @@ Supported types include:
 - `list[T]` for supported item types, including `list[list[T]]`
 - fixed `tuple[...]`
 - fixed `dict[K, V]` where keys are supported scalar key types
-- limited `set[int]`, `set[float]`, `set[bool]`, and `set[str]`
+- limited `set[int]`, `set[bool]`, and `set[str]` (`set[float]` stays on the
+  Python fallback: NaN-identity dedup has no faithful Rust lowering; native
+  code also never *iterates* a set - hash order diverges from CPython)
 - `Optional[T]` and `T | None`
 
 Supported syntax includes:
@@ -225,7 +236,11 @@ Supported builtin and standard-library lowering includes limited forms of:
 - selected `math` functions and constants
 - selected `str`, `bytes`, and `list` methods
 - `print`, `logging.debug/info/warning/error`
-- `datetime`, `time`, `statistics`, `hashlib.sha256`, `base64`, and `json`
+- `datetime`, `time`, `hashlib.sha256`, and `base64.b64encode`
+  (`statistics.mean`/`fmean`, `json.dumps`/`json.loads`, and
+  `base64.b64decode` have no faithful direct-native equivalent: explicitly
+  marked functions using them ride the RXT080 runtime shim, auto-discovered
+  ones stay on the Python fallback)
 
 Unsupported or ambiguous code stays on fallback or is exposed through a Python
 runtime semantics shim where supported. See
@@ -247,7 +262,9 @@ This path preserves behavior. It should not be treated as a Rust speedup path.
 ## Experimental Scalar-Helper Embedding
 
 Rextio can optionally embed a very narrow set of unmarked scalar helpers as
-internal native functions. This is off by default.
+internal native functions. This is off by default. Despite the `[jit]`
+config-key name, this is NOT a JIT: everything compiles ahead of time and
+no JIT compiler exists or runs inside the built artifact.
 
 When enabled, an eligible unmarked helper (typed scalar arguments and return,
 a single arithmetic return expression) is compiled into the generated native
@@ -257,11 +274,6 @@ integer overflow raises OverflowError and division by zero raises
 ZeroDivisionError exactly like any native function. In the Rust executable
 backend an embedded helper compiles into the binary instead of being delegated
 per call to the CPython dispatcher.
-
-The former runtime Cranelift JIT hot path was removed: benchmarks showed it
-strictly slower than this AOT path (the "cold" path was already the same
-expression compiled by rustc, so recompiling it at runtime only added
-overhead).
 
 ```toml
 [jit]
@@ -275,18 +287,23 @@ rextio build . --jit
 REXTIO_JIT=true rextio build .
 ```
 
-## Using Numba on Fallback Code
+## Using Numba on Fallback Code (experimental)
 
-Rextio recognizes Numba decorators (`numba.jit`, `numba.njit`,
-`numba.vectorize`, `numba.guvectorize`) as a supported external accelerator
+Numba support is EXPERIMENTAL in 0.1.0 alpha: recognition, reporting, and
+the Nuitka-coexistence behavior may change before the first non-alpha
+release. Rextio recognizes Numba decorators (`numba.jit`, `numba.njit`,
+`numba.vectorize`, `numba.guvectorize`) as an external accelerator
+(experimental)
 for Python fallback code - the same externally-supported-tool pattern as the
 Nuitka packaging backend. A decorated function stays on the Python fallback
 cleanly (excluded from auto-discovery and helper embedding) and is labeled
 `external_accelerator: numba` in reports; `rextio check` lists such functions.
 Recognition resolves through the module's imports (attribute, from-import,
-alias, and call forms; `numba.cuda.jit` included) - a star import
-(`from numba import *`) is not resolvable and such functions are simply
-unlabeled.
+alias, and call forms; `numba.cuda.jit` included). Report labels in
+`rextio check` cover straight-line imports only; the Nuitka build-time scan
+is broader (star imports, optional-dependency guards, deferred imports
+inside functions), so a module can be correctly kept plain by the build even
+when its functions carry no label.
 
 The contract boundary matters: an `@rextio.native` function has Rextio-verified,
 CPython-exact semantics, while a `@numba.*` function runs under **Numba's**
@@ -297,10 +314,13 @@ Rextio's native contract, exactly like `@rextio.exempt`. Combining
 
 Compatibility: wheel and zipapp deployments work with numba installed as a
 project dependency; the Rust executable's source-mode hybrid runtime works
-(the dispatcher runs real CPython). The `--fallback=nuitka` backend now
+(the dispatcher runs real CPython). The `--fallback=nuitka` backend
 coexists automatically: modules using a recognized external accelerator are
 kept as plain Python (the `.py` stays imported) while the rest of the tree is
-Nuitka-compiled, and the build report lists them. A Nuitka *executable*
+Nuitka-compiled, and the build report lists them. The generated wheel ships a
+Nuitka-compiled module as its extension only - the shadowed `.py` source is
+excluded (dead weight that would also expose the source) - and carries a
+platform-specific tag; accelerated modules keep their `.py`. A Nuitka *executable*
 (`--executable-backend=nuitka`) and the `--hybrid-runtime=nuitka` dispatcher
 cannot serve accelerated functions (compiled functions expose no bytecode and
 the accelerator is not bundled) - those builds fail early with guidance
@@ -308,9 +328,9 @@ instead of dying at the first call. Prefer `@rextio.native` for typed scalar
 code and Numba for NumPy/array kernels, and note that very small functions
 lose to call-boundary costs under any accelerator.
 
-Generated Cargo projects never contain Cranelift dependencies. When embedding
-is disabled, would-be candidates stay on the normal fallback path (and their
-native callers are gated by the ordinary boundary rules).
+Embedding adds no crate dependencies to generated Cargo projects. When
+embedding is disabled, would-be candidates stay on the normal fallback path
+(and their native callers are gated by the ordinary boundary rules).
 
 ## Rust-Importable Crate
 

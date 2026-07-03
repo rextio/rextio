@@ -1,4 +1,4 @@
-"""Integration test for Numba as a supported external accelerator.
+"""Integration test for Numba as an external accelerator (experimental).
 
 Skipped when numba is not installed: the recognition itself is AST-based and
 covered by analyzer unit tests; this exercises the real composition - a numba

@@ -49,8 +49,10 @@ Python source
     fallback import behavior.
 19. Rextio can optionally embed narrow unmarked scalar helpers as internal
     native functions (experimental) when `[jit] enabled = true`, `--jit`, or
-    `REXTIO_JIT=true` is set. Numba decorators are recognized as a supported
-    external accelerator for fallback code.
+    `REXTIO_JIT=true` is set. Despite the `[jit]` key name this is AOT
+    embedding only - no JIT compiler exists or runs inside the built
+    artifact. Numba decorators are recognized as an
+    external accelerator for fallback code (experimental in 0.1.0 alpha).
 
 The 0.1.0 alpha release must feel like a usable hybrid compiler/build tool, not merely a static analyzer.
 
@@ -67,7 +69,7 @@ Do not implement these in 0.1.0 alpha unless explicitly requested:
 * Full runtime boundary-cost model
 * Runtime-weighted native/fallback optimization
 * General-purpose Python JIT
-* Runtime JIT compilation (the former Cranelift native-side hot path was removed; scalar-helper embedding is AOT)
+* Runtime JIT compilation (scalar-helper embedding is strictly AOT)
 * LLVM integration
 * MLIR
 * General-purpose executable packaging beyond zipapp, Nuitka, and the native
@@ -556,13 +558,11 @@ Experimental scalar-helper embedding must stay opt-in:
   expression.
 * Embedded helpers are not exported as PyO3 functions. They are called only
   from generated native Rust code, and they lower through the normal checked
-  path (overflow raises OverflowError; there is no runtime compilation - the
-  former Cranelift hot path was removed after benchmarks showed it strictly
-  slower than the AOT lowering).
-* Generated Cargo projects must not contain Cranelift dependencies.
+  path (overflow raises OverflowError; there is no runtime compilation).
+* Embedding must not add crate dependencies to generated Cargo projects.
 * If a helper falls outside the embedding subset, use normal boundary
   rejection or fallback behavior. Do not build a CPython-hosted JIT API;
-  Numba is the supported external accelerator for fallback code.
+  Numba is the external accelerator for fallback code (experimental).
 
 Behavior:
 
@@ -668,9 +668,9 @@ list[list[T]]
 tuple[int, float]
 dict[K, V] where K is int, bool, or str and V is a supported fixed value type
 set[int]
-set[float]
 set[bool]
 set[str]
+set[float] (no native lowering - NaN identity - fallback/shim only)
 Optional[T]
 T | None
 ```
@@ -692,7 +692,7 @@ Python list[list[T]] -> Vec<Vec<T>>
 Python tuple[...]   -> Rust fixed tuple
 Python dict[K, V]   -> HashMap<K, V> for supported fixed K and V
 Python set[int]     -> HashSet<i64>
-Python set[float]   -> Vec<f64> internally, restored to Python set by wrappers
+Python set[float]   -> no native lowering (NaN identity); Python fallback or RXT080 shim
 Python set[bool]    -> HashSet<bool>
 Python set[str]     -> HashSet<String>
 Python Optional[T]  -> Option<T>
@@ -735,8 +735,10 @@ Support inside native candidate functions:
   iterables, including optional `if` clauses and multi-generator flattening
 * nested list comprehensions that produce `list[list[T]]`
 * limited dict comprehensions producing supported fixed `dict[K, V]` types
-* limited set comprehensions producing `set[int]`, `set[float]`, `set[bool]`,
-  or `set[str]`
+* limited set comprehensions producing `set[int]`, `set[bool]`, or `set[str]`;
+  the comprehension source must be a supported ordered iterable (list, range,
+  enumerate, zip) - iterating a set or dict as the source is rejected (hash
+  order diverges from CPython)
 * assignment expressions inside comprehensions, with Python-style binding into
   the containing function scope and rejection when rebinding comprehension
   iteration variables
@@ -756,11 +758,16 @@ Support inside native candidate functions:
 * limited `datetime.datetime.now/utcnow().isoformat()` and timestamp lowering
   to Rust `chrono` formatting/time values
 * limited `time.time()` lowering
-* limited `statistics.mean` and `statistics.fmean`
+* `statistics.mean`/`statistics.fmean` have NO direct native lowering
+  (naive native summation diverges from CPython's exact/`math.fsum`
+  behavior); marked functions using them ride the RXT080 shim and
+  auto-discovered ones stay on the Python fallback
 * limited `str`/`bytes`/`list` method lowering
-* limited `hashlib.sha256(...).hexdigest()`, `base64.b64encode/b64decode`, and
-  `json.dumps/json.loads` lowering, with `json.loads` requiring an expected
-  supported target type
+* limited `hashlib.sha256(...).hexdigest()` and `base64.b64encode` lowering
+  (`base64.b64decode` - CPython discards non-alphabet characters the native
+  decoder rejects - and `json.dumps`/`json.loads` - serde is not
+  CPython-`json`-compatible - never compile to direct Rust: marked functions
+  ride the RXT080 runtime shim, auto-discovered ones stay on the fallback)
 * simple `list`, fixed `tuple`, and fixed `dict` indexing such as `xs[i]`
   (`str` and `bytes` indexing is not supported)
 
@@ -1152,6 +1159,7 @@ RXT072 Native dependency rejected, so caller must fall back
 RXT073 Native function call inside Python loop may erase speedup
 RXT074 Undecorated function depends on a runtime-shim native; mark it @rextio.native to opt in
 RXT080 Native function uses Python runtime semantics shim
+RXT090 Native semantic divergence note (documented, non-rejecting warning)
 ```
 
 Diagnostics must be deterministic and testable.
@@ -1628,13 +1636,15 @@ Rust dependencies should be minimal:
 * base64 for limited Python `base64` lowering
 * chrono for limited `datetime` lowering
 * log for limited Python `logging` lowering
-* serde_json for limited `json` lowering
+* serde/serde_json only in the hybrid executable's binary crate (the
+  delegated-call wire protocol); generated extension crates never depend on
+  them and `json` lowering does not exist (fallback)
 * sha2 for limited `hashlib.sha256` lowering
 * optionally serde for helper structures later
 
-Do not add LLVM, Cranelift, Tokio, Axum, or framework dependencies in 0.1.0
-alpha. Generated Rust projects must not contain Cranelift dependencies (the
-former runtime JIT hot path was removed; helper embedding is plain AOT).
+Do not add LLVM, JIT-backend, Tokio, Axum, or framework dependencies in
+0.1.0 alpha. Helper embedding is plain AOT and adds no dependencies to
+generated Rust projects.
 
 ---
 
@@ -1701,7 +1711,7 @@ Do not claim full runtime boundary-cost optimization.
 
 Do not claim any runtime JIT. Scalar-helper embedding is opt-in, AOT,
 native-side only, and limited to narrow scalar Rextio IR helper regions;
-Numba is the supported external accelerator for fallback code.
+Numba is the external accelerator for fallback code (experimental).
 
 ---
 

@@ -7,7 +7,11 @@ import shutil
 import stat
 import sys
 import zipapp
-from rextio.analyzer.native_marker import external_accelerator_for_source
+from rextio.build.preflight import nuitka_version_error
+from rextio.analyzer.native_marker import (
+    external_accelerator_for_source,
+    project_module_names_for_tree,
+)
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 from dataclasses import dataclass
 from pathlib import Path
@@ -248,8 +252,18 @@ def build_nuitka_executable(
             path=None,
             message=(
                 "RXT060 Executable build failed because Nuitka is not installed. "
-                "Install Nuitka or use --executable-backend=zipapp."
+                "Install Nuitka or use --executable-backend=zipapp or "
+                "--executable-backend=rust."
             ),
+            entrypoint=entrypoint,
+            backend="nuitka",
+        )
+    version_error = nuitka_version_error(nuitka)
+    if version_error is not None:
+        return ExecutableBuildResult(
+            status="failed",
+            path=None,
+            message=f"RXT060 Executable build failed. {version_error}",
             entrypoint=entrypoint,
             backend="nuitka",
         )
@@ -367,6 +381,7 @@ def _externally_accelerated_modules(python_dir: Path) -> list[str]:
     guidance instead of producing a binary that dies at the first call.
     """
     found: list[str] = []
+    project_modules = project_module_names_for_tree(python_dir)
     for path in sorted(python_dir.rglob("*.py")):
         relative = path.relative_to(python_dir)
         if relative.parts and relative.parts[0] == "rextio":
@@ -375,8 +390,13 @@ def _externally_accelerated_modules(python_dir: Path) -> list[str]:
             source = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        if external_accelerator_for_source(source) is not None:
-            found.append(relative.as_posix())
+        if external_accelerator_for_source(source, project_modules) is not None:
+            name = relative.name
+            if name.startswith("_fallback_") and name.endswith(".py"):
+                original = f"{name[len('_fallback_'):-len('.py')]}.py"
+                found.append((relative.parent / original).as_posix() + " (fallback copy)")
+            else:
+                found.append(relative.as_posix())
     return found
 
 
@@ -394,8 +414,9 @@ def _find_nuitka_executable(dist_dir: Path, name: str, mode: str) -> Path | None
         candidate = standalone_dir / f"{name}{suffix}"
         if candidate.is_file():
             return candidate
-    if standalone_dir.is_dir():
-        return standalone_dir
+    # A `.dist` directory without the launcher binary inside is a partial
+    # build, not a success: returning the directory here made the caller
+    # report status="built" with a path no one can execute.
     return None
 
 

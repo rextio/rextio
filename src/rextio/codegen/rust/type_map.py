@@ -34,14 +34,14 @@ def rust_type(rxt_type: RxtType) -> str:
     if isinstance(rxt_type, RxtNone):
         return "()"
     if isinstance(rxt_type, RxtPyObject):
-        return "PyObject"
+        return "Py<PyAny>"
     if isinstance(rxt_type, RxtList):
         return f"Vec<{rust_type(rxt_type.item_type)}>"
     if isinstance(rxt_type, RxtSet):
         if isinstance(rxt_type.item_type, RxtFloat):
-            # `set[float]` has no faithful native lowering: a Rust set of f64
-            # (formerly a Vec + `contains`) cannot reproduce CPython's
-            # identity-based NaN dedup, so the analyzer keeps it on the Python
+            # `set[float]` has no faithful native lowering: no Rust
+            # representation reproduces CPython's identity-based NaN dedup,
+            # so the analyzer keeps it on the Python
             # fallback (`float` is not in `SET_ITEM_TYPES`). Fail loudly here so a
             # future relaxation of that gate surfaces as a build error instead of
             # silently re-introducing the divergent lowering.

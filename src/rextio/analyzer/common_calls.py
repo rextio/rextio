@@ -129,6 +129,17 @@ STATISTICS_TARGETS = {
     "statistics.mean",
 }
 
+# Stdlib calls with NO direct native lowering for fidelity reasons (naive
+# native behavior would diverge from CPython): an explicitly marked function
+# using one rides the RXT080 runtime shim, an auto-discovered one stays on
+# the Python fallback - regardless of import form (attribute or bare
+# from-import name).
+RUNTIME_FIDELITY_TARGETS = frozenset({
+    *JSON_TARGETS,
+    *STATISTICS_TARGETS,
+    "base64.b64decode",
+})
+
 TIME_TARGETS = {
     "time.time",
 }
@@ -139,7 +150,10 @@ COMMON_DIRECT_RUST_CALLS = {
     "reversed",
     "sorted",
     "print",
-    *BASE64_TARGETS,
+    # Only b64encode lowers to direct Rust; b64decode is recognized (see
+    # BASE64_TARGETS uses) but rejected for fidelity - it must not appear in
+    # a set whose name promises direct-Rust lowering.
+    "base64.b64encode",
     *BYTES_METHOD_TARGETS,
     *DATETIME_TIMESTAMP_TARGETS,
     *LOGGING_CANONICAL_TARGETS.values(),

@@ -114,7 +114,7 @@ def _parse_plugin_metadata(
     if "rules" in data:
         warnings.warn(
             f"Rextio plugin {plugin_id!r} (entry-point group {ENTRY_POINT_GROUP!r}) "
-            "declares a 'rules' field, which is no longer used — plugins are "
+            "declares a 'rules' field, which is ignored — plugins are "
             "metadata-only. Remove 'rules' from the plugin's entry-point metadata.",
             DeprecationWarning,
             stacklevel=2,

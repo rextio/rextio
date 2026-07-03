@@ -25,6 +25,7 @@ from rextio.build.executable_builder import (
     skipped_executable,
 )
 from rextio.build.maturin_builder import build_native_extension_with_maturin
+from rextio.build.preflight import nuitka_version_error
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
 from rextio.codegen.rust.cargo import (
     render_binary_cargo_toml,
@@ -547,6 +548,10 @@ def _build_fallback_backend(
     if fallback == "cpython":
         return cpython_fallback_build_result()
     if fallback == "nuitka":
+        # The CLI pre-gates the Nuitka version floor for the FALLBACK path,
+        # so this builder's own probe is only reachable here for programmatic
+        # callers. The hybrid dispatcher (_build_nuitka_dispatcher) is NOT
+        # pre-gated and keeps its own point-of-use probe.
         return build_nuitka_fallback(layout.build_python_dir, timeout=build_timeout)
     return FallbackBuildResult(
         status="failed",
@@ -808,12 +813,16 @@ def _externally_accelerated_runtime_modules(analysis: ProjectAnalysis) -> list[s
     safe direction, and ``--hybrid-runtime=source`` is the escape hatch.
     """
     accelerated: list[str] = []
+    project_modules = frozenset(
+        (module.module_name or Path(module.file_path).stem).split(".", 1)[0]
+        for module in analysis.modules
+    )
     for module in analysis.modules:
         try:
             source = Path(module.file_path).read_text(encoding="utf-8")
         except OSError:
             continue
-        if external_accelerator_for_source(source) is not None:
+        if external_accelerator_for_source(source, project_modules) is not None:
             accelerated.append(module.module_name or Path(module.file_path).stem)
     return sorted(accelerated)
 
@@ -833,6 +842,9 @@ def _build_nuitka_dispatcher(
             "Nuitka is not installed but --hybrid-runtime=nuitka was requested. "
             "Install Nuitka or use --hybrid-runtime=source."
         )
+    version_error = nuitka_version_error(nuitka)
+    if version_error is not None:
+        return version_error
     modules = sorted({q.rpartition(".")[0] for q in allowed_qualnames if "." in q})
     command = [
         nuitka,

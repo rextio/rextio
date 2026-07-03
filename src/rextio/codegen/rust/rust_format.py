@@ -78,42 +78,6 @@ def render_literal(value: object) -> str:
     return repr(value)
 
 
-def python_logging_format_to_rust(value: str) -> tuple[str, int] | None:
-    """Translate a printf-style logging format into a Rust format string + arg count, or None."""
-    output: list[str] = []
-    placeholders = 0
-    index = 0
-    while index < len(value):
-        char = value[index]
-        if char == "%":
-            if index + 1 >= len(value):
-                return None
-            specifier = value[index + 1]
-            if specifier == "%":
-                output.append("%")
-                index += 2
-                continue
-            if specifier in {"s", "d", "i", "f"}:
-                output.append("{}")
-                placeholders += 1
-                index += 2
-                continue
-            if specifier == "r":
-                output.append("{:?}")
-                placeholders += 1
-                index += 2
-                continue
-            return None
-        if char == "{":
-            output.append("{{")
-        elif char == "}":
-            output.append("}}")
-        else:
-            output.append(char)
-        index += 1
-    return "".join(output), placeholders
-
-
 def strip_wrapping_parens(value: str) -> str:
     """Strip a single layer of redundant wrapping parentheses from an expression string."""
     if not value.startswith("(") or not value.endswith(")"):

@@ -60,9 +60,11 @@ Supported types:
 - fixed `dict[K, V]` where `K` is `int`, `bool`, or `str` and `V` is a
   supported fixed value type
 - `set[int]`
-- `set[float]`
 - `set[bool]`
 - `set[str]`
+- (`set[float]` is NOT natively lowered - CPython's NaN-identity dedup has no
+  faithful Rust equivalent - such functions stay on the Python fallback or the
+  runtime-semantics shim)
 - `Optional[T]` and `T | None` for supported `T`
 
 Supported syntax is intentionally small:
@@ -99,8 +101,9 @@ Supported syntax is intentionally small:
   iterables, including optional `if` clauses and multi-generator flattening
 - nested list comprehensions that produce `list[list[T]]`
 - limited dict comprehensions producing supported fixed `dict[K, V]` types
-- limited set comprehensions producing `set[int]`, `set[float]`, `set[bool]`,
-  or `set[str]`
+- limited set comprehensions producing `set[int]`, `set[bool]`, or `set[str]`
+  from an ordered iterable (`set[float]` has no native lowering - NaN identity -
+  and iterating a *set* as the comprehension source is rejected)
 - assignment expressions inside comprehensions; targets bind in the containing
   function scope and cannot rebind comprehension iteration variables
 - `Optional[T]` / `T | None` annotations, `None` returns, and `is None` /
@@ -248,9 +251,11 @@ Native functions may call:
   `datetime.now().timestamp()`, `time.time()`, selected `str`/`bytes`/`list`
   methods, `hashlib.sha256(...).hexdigest()`, and `base64.b64encode(...)`
 
-> **Kept on the Python fallback for fidelity (0.1.0 alpha):** some stdlib calls
-> have no faithful native lowering and are rejected to fallback rather than
-> silently mis-compiled: `json.dumps`/`json.loads` (serde is not
+> **Kept off the direct native path for fidelity (0.1.0 alpha):** some stdlib
+> calls have no faithful native lowering and never compile to direct Rust —
+> an explicitly `@rextio.native` function using them rides the RXT080 runtime
+> shim (real CPython semantics) and an auto-discovered one stays on the plain
+> Python fallback: `json.dumps`/`json.loads` (serde is not
 > CPython-`json`-compatible), `statistics.mean`/`statistics.fmean` (naive native
 > summation diverges from CPython's exact/`math.fsum`), `base64.b64decode`
 > (CPython discards non-alphabet characters the native decoder rejects),
@@ -315,13 +320,16 @@ to Python) through the normal checked lowering - integer overflow raises
 OverflowError, `%` keeps floored/zero-division semantics, and float `/` raises
 ZeroDivisionError. In the Rust executable backend an embedded helper compiles
 into the binary instead of being delegated per call to the CPython dispatcher.
-The former runtime Cranelift hot path was removed after benchmarks showed it
-strictly slower than this AOT path.
+There is no runtime compilation.
 
 Code outside this subset remains on the normal direct Rust, Python runtime shim,
 or CPython/Nuitka fallback path.
 
-## Numba as an External Fallback Accelerator
+## Numba as an External Fallback Accelerator (experimental)
+
+Numba support is EXPERIMENTAL in 0.1.0 alpha: recognition, report labels,
+and the Nuitka-coexistence behavior may change before the first non-alpha
+release.
 
 Functions decorated with `numba.jit`, `numba.njit`, `numba.vectorize`, or
 `numba.guvectorize` (resolved through the module's imports, including aliases
@@ -344,13 +352,24 @@ functions carry a recognized accelerator decorator are skipped from
 Nuitka compilation and stay plain Python in the tree (Nuitka-compiled
 functions expose no real bytecode, which the accelerator lifts at first call);
 the build result names the modules kept plain, and the deployment environment
-must still have the accelerator installed. The build-time scan resolves the
-decorator through the module's imports, including the optional-dependency
-guard (`try: from numba import njit`), `from numba import *`, conditional
-top-level imports, and methods inside class bodies; a decorator that only
-resolves to numba dynamically (e.g. re-exported through another project
-module, or applied via a local factory) is not detected, and such a module
-would be compiled and fail at the accelerated function's first call. A Nuitka
+must still have the accelerator installed. The wheel built from a Nuitka
+fallback tree excludes a `.py` whose compiled sibling extension exists (the
+import system prefers the extension; shipping both bloats the wheel and
+exposes the source) and is tagged with the build platform instead of
+`py3-none-any`; modules kept plain for accelerators ship their `.py` as
+before. A zipapp keeps every `.py`: extension modules cannot be imported from
+inside a zip archive, so the sources are what actually runs there. The same build-time scan drives all
+three Nuitka paths (fallback skip, executable early failure, hybrid-runtime
+early failure). It walks the module's whole tree: imports anywhere (top
+level, `try`/`if` guards, `except`/`finally` handlers, deferred imports
+inside function bodies), `from numba import *` (including the `cuda`
+submodule), and every function definition (top level, class methods, nested
+functions); an import resolving to one of the project's own top-level module
+names (e.g. a local `numba.py` shim) is recognized as the user's code and
+never skips or blocks a build. A decorator that only resolves to numba
+dynamically (re-exported through another project module, or applied via a
+local decorator factory) is still not detected, and such a module would be
+compiled and fail at the accelerated function's first call. A Nuitka
 *executable* (`--executable-backend=nuitka`) cannot serve accelerated
 functions (no bytecode, accelerator not bundled); the build fails early with
 an actionable message (deploy as wheel/zipapp) instead of failing at the
@@ -367,18 +386,25 @@ they differ from CPython in a narrow, documented way. These are accepted trade-
 offs for 0.1.0 alpha (the alternative being a Python fallback for a common
 operation or replicating a large amount of CPython runtime formatting). All
 other observed divergences are treated as bugs and either fixed or rejected to
-fallback.
+fallback. Every STATICALLY ATTRIBUTABLE divergence remaining in this list is
+also surfaced at build time as a per-function `RXT090` note (shown by
+`rextio check` under "Native divergence notes"), so a build never relies on
+this page alone — the one exception is the value-dependent repr limitation
+below, which depends on runtime string data rather than on the code being
+compiled and therefore cannot carry a per-function note.
+For context, the textual output paths themselves are CPython-exact and are
+NOT divergences: `print`/`logging` of `bool` and `float` render CPython text
+(`True`/`False`; shortest correctly-rounded float repr with CPython's
+thresholds, `nan`/`inf` spellings, and `e+NN` exponents), printable
+containers — `list`, fixed tuples, `Optional` — compose their CPython repr
+recursively from the same pieces, and `print`/`logging` of a `set` or `dict`
+is rejected to the fallback (their native iteration order is not CPython's,
+so no exact text exists). Logging `%` conversions are validated per argument
+type — `%d`/`%i` accept int and bool, `%f` accepts float only, `%s`/`%r`
+accept the printable types; every other combination, a placeholder/argument
+count mismatch, or a non-literal format string with arguments keeps the
+function on the Python fallback.
 
-- **`print` / `logging` of a `float`.** A float is formatted with Rust's `{:?}`
-  (Debug), which matches CPython's `float` repr for the common cases (`print(1.0)`
-  writes `1.0`, and large/small magnitudes use scientific notation), but still
-  differs on two narrow points: the NaN spelling (`NaN` vs CPython `nan`) and the
-  exponent format (`1e16` / `1e-5` vs CPython `1e+16` / `1e-05`). Computed values
-  are unaffected — only the textual stdout/log output can differ. int and str
-  format identically.
-- **`print` / `logging` of a `bool`.** Rust prints `true`/`false` where CPython
-  prints `True`/`False`. Same class as the float case: only the textual output
-  differs, and the boolean value itself is unaffected.
 - **`bytes.decode()` on invalid UTF-8.** The native path raises `ValueError`
   where CPython raises `UnicodeDecodeError`. `UnicodeDecodeError` is a subclass
   of `ValueError`, so `except ValueError` still catches it; only code that
@@ -386,11 +412,26 @@ fallback.
   `UnicodeDecodeError` is feasible but DEFERRED for alpha — it would require
   threading the decode-position data through to the wrapper boundary (where the
   `py` token is available), since the inner native function has no `py` token.
-  Valid UTF-8 decodes identically.
+  Valid UTF-8 decodes identically. Direct-native functions lowering
+  `bytes.decode()` carry an `RXT090` note.
+- **repr of `str` VALUES containing non-printable characters above U+00A0.**
+  Native repr text (container printing, `%r`, `list.index` messages) escapes
+  quotes, backslashes, `\n`/`\r`/`\t`, the C0/C1 controls, DEL, and U+00A0
+  exactly like CPython, but characters such as U+2028 LINE SEPARATOR pass
+  through where CPython would escape them — exact classification needs
+  Unicode category tables Rust's standard library does not carry. This is
+  data-dependent (a property of runtime string VALUES, not of the code being
+  compiled), so no per-function `RXT090` note is possible; printable text —
+  the overwhelming case — is exact.
 
-Operations whose divergence could not be bounded this narrowly are kept on the
-Python fallback instead — for example `json.dumps`/`json.loads` (serde is not
-CPython-`json`-compatible), `set[float]` / `sorted(list[float])` (NaN identity),
+Operations whose divergence could not be bounded this narrowly are kept off
+the direct native path instead (RXT080 shim for explicitly marked functions,
+plain Python fallback otherwise) — for example `json.dumps`/`json.loads`
+(serde is not
+CPython-`json`-compatible), iterating a `set` (Rust hash-set iteration order
+diverges from CPython's, which is arbitrary but deterministic within a process;
+order-independent set operations like construction, `len`, and `==` stay
+native), `set[float]` / `sorted(list[float])` (NaN identity),
 `statistics.mean`/`statistics.fmean` (naive native summation diverges from
 CPython's exact/`math.fsum`), `base64.b64decode` (CPython silently discards
 non-alphabet characters), `str.strip` (Rust `trim()` differs from CPython's
@@ -427,8 +468,11 @@ Zipapp executable artifacts are supported through
 `rextio build --entrypoint=module:function`. They still require a compatible
 Python interpreter on the target machine. Native extension modules are not
 loaded directly from inside the zipapp, so generated wrappers use Python fallback
-when `_rextio_native` is unavailable. Python-free standalone binaries without
-Nuitka remain out of scope for 0.1.0 alpha.
+when `_rextio_native` is unavailable. A Python-free standalone binary IS
+available without Nuitka through `--executable-backend=rust` when the
+entrypoint's call graph is fully direct-native; with delegated fallback calls
+it ships a `<binary>.runtime` dispatcher that needs CPython (or a
+Nuitka-compiled dispatcher via `--hybrid-runtime=nuitka`).
 
 Rust-importable crate artifacts are supported with
 `rextio build --rust-importable --rust-crate-name=name`. They are normal Cargo

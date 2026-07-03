@@ -9,8 +9,13 @@ an opaque mid-build failure.
 
 from __future__ import annotations
 
+import re
 import shutil
+import subprocess
 from dataclasses import dataclass
+
+# Any 2.x release is accepted; every 1.x release is rejected.
+MINIMUM_NUITKA_MAJOR = 2
 
 
 @dataclass(frozen=True)
@@ -54,3 +59,38 @@ def format_missing_tools(missing: list[MissingTool]) -> str:
     lines = ["RXT060 Build prerequisites are missing:"]
     lines.extend(f"  - {tool.message()}" for tool in missing)
     return "\n".join(lines)
+
+
+def nuitka_version_error(nuitka: str) -> str | None:
+    """Return an actionable error when the installed Nuitka predates 2.0.
+
+    Rextio's Nuitka integration is validated against the 2.x CLI (module,
+    standalone, and onefile modes). The probe is best-effort: if the version
+    cannot be determined, the build proceeds and the real invocation surfaces
+    any incompatibility.
+    """
+    try:
+        completed = subprocess.run(
+            [nuitka, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        # A broken install may still print something version-shaped;
+        # treat it as undetermined rather than trusting the output.
+        return None
+    output = (completed.stdout or "").strip() or (completed.stderr or "").strip()
+    first_line = output.splitlines()[0].strip() if output else ""
+    # search, not match: tolerate a "Nuitka 1.9.7"-style prefix on the line.
+    match = re.search(r"(\d+)\.(\d+)", first_line)
+    if match is None:
+        return None
+    if int(match.group(1)) < MINIMUM_NUITKA_MAJOR:
+        return (
+            f"Nuitka {first_line} is too old: Rextio requires Nuitka >= "
+            f"{MINIMUM_NUITKA_MAJOR}.0. Upgrade with: pip install -U nuitka"
+        )
+    return None

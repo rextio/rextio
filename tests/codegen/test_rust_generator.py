@@ -50,9 +50,8 @@ def sum_squares(xs: list[float]) -> float:
 
 def test_embeds_internal_helper_only_when_enabled(tmp_path: Path) -> None:
     # With `[jit] enabled`, an unmarked scalar helper is EMBEDDED as an ordinary
-    # internal native function (callable from native code, not exported to Python).
-    # The former Cranelift hot path was removed: benchmarks showed it strictly
-    # slower than this AOT path, so no runtime-compilation machinery is emitted.
+    # internal native function (callable from native code, not exported to
+    # Python); no runtime-compilation machinery of any kind is emitted.
     (tmp_path / "app.py").write_text(
         """
 import rextio
@@ -74,7 +73,6 @@ def compute(x: float) -> float:
     )
     source = generate_rust_module(lower_project(analysis, include_jit=True))
 
-    assert "cranelift" not in source
     assert "fn app__helper(x: f64) -> PyResult<f64> {" in source
     assert "return Ok(x * 2.0);" in source
     assert "return Ok(app__helper(x.clone())? + 1.0);" in source
@@ -115,13 +113,12 @@ def compute(x: int) -> int:
     assert "__rextio_checked_rem(" in source
     assert "fn __rextio_checked_mul(" in source
     assert "fn __rextio_checked_rem(" in source
-    assert "cranelift" not in source
 
 
 def test_embedded_helper_with_a_rust_keyword_name_is_escaped(tmp_path: Path) -> None:
-    # An embedded helper named after a Rust keyword renders through the ordinary
-    # raw-identifier escaping (`fn r#loop`). The former Cranelift path needed
-    # compound `__rextio_jit_*` identifiers; plain embedding does not.
+    # An embedded helper named after a Rust keyword renders through the
+    # ordinary raw-identifier escaping (`fn r#loop`) - no compound
+    # `__rextio_jit_*` identifier scheme.
     (tmp_path / "__init__.py").write_text(
         """
 import rextio
@@ -144,7 +141,6 @@ def compute(x: float) -> float:
     assert "fn r#loop(" in source
     assert "return Ok(r#loop(x.clone())? + 1.0);" in source
     assert "__rextio_jit_" not in source
-    assert "cranelift" not in source
 
 
 def test_generates_rust_importable_crate_module_for_native_functions(tmp_path: Path) -> None:
@@ -1807,3 +1803,99 @@ def test_crate_exception_name_rejects_unmapped_kind() -> None:
 
     with pytest.raises(RustCodegenError, match="unmapped crate error kind"):
         _crate_exception_name("not-a-kind")
+
+def test_print_and_logging_format_bool_and_float_like_cpython(tmp_path: Path) -> None:
+    # print/logging of bool and float must be textually CPython-exact: bools
+    # render True/False (Rust Display gives true/false) and floats go through
+    # __rextio_repr_float (shortest correctly-rounded digits, CPython repr
+    # thresholds, lowercase nan, e+NN exponents). %f is fixed six decimals and
+    # %d of a float truncates through the guarded f2i conversion.
+    source = tmp_path / "app.py"
+    source.write_text(
+        """
+import rextio
+import logging
+
+logger = logging.getLogger(__name__)
+
+@rextio.native
+def emit(flag: bool, x: float, n: int) -> None:
+    print(flag, x, n)
+    logger.info("f=%s x=%s pct=%f d=%d b=%d r=%r", flag, x, x, n, flag, x)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    code = generate_rust_module(lower_project(analysis))
+
+    assert 'if flag.clone() { "True" } else { "False" }' in code
+    assert "__rextio_repr_float(x.clone())" in code
+    assert "fn __rextio_repr_float" in code
+    assert "__rextio_fixed6(" in code  # %f of float (nan -> "nan")
+    assert "((flag.clone()) as i64)" in code  # %d of bool -> 1/0
+    assert 'println!("{} {} {}"' in code
+
+def test_logging_percent_matrix_rejects_inexact_combinations(tmp_path: Path) -> None:
+    # %f of a bool would need `bool as f64` (invalid Rust, E0606); %d of a
+    # float and %f of an int have no CPython-exact native text either. All
+    # such combinations must leave the direct path.
+    source = tmp_path / "app.py"
+    source.write_text(
+        """
+import rextio
+import logging
+
+logger = logging.getLogger(__name__)
+
+@rextio.native
+def bad_f_bool(flag: bool) -> None:
+    logger.info("v=%f", flag)
+
+@rextio.native
+def bad_d_float(x: float) -> None:
+    logger.info("v=%d", x)
+
+@rextio.native
+def bad_count(n: int) -> None:
+    logger.info("a=%s b=%s", n)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    code = generate_rust_module(lower_project(analysis))
+    # None of the rejected combinations may reach a direct native body.
+    assert "as f64" not in code
+    assert "{:.6}" not in code
+    for module in analysis.modules:
+        for function in module.functions:
+            assert function.native_runtime_semantics or not function.accepted, function.qualname
+
+
+def test_print_of_containers_composes_cpython_repr(tmp_path: Path) -> None:
+    # Containers compose CPython repr recursively (list[str] must quote like
+    # ['a'], never Rust Debug's ["a"]), and order-observable containers
+    # (set/dict) are rejected.
+    source = tmp_path / "app.py"
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def show(xs: list[str], t: tuple[int, str], o: int | None) -> None:
+    print(xs, t, o)
+
+@rextio.native
+def bad_set(s: set[int]) -> None:
+    print(s)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    functions = {f.name: f for m in analysis.modules for f in m.functions}
+    assert functions["show"].accepted and not functions["show"].native_runtime_semantics
+    assert not functions["bad_set"].accepted
+    assert any("set iteration order" in d.message for d in functions["bad_set"].error_diagnostics)
+    code = generate_rust_module(lower_project(analysis))
+    assert "__rextio_repr_str(" in code  # str inside containers is quoted
+    assert '"None".to_string()' in code  # Optional composes None
+    assert "{:?}" not in [seg for line in code.splitlines() if "println" in line for seg in [line]][0]

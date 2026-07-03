@@ -133,10 +133,8 @@ class FunctionAnalysis:
     # this function on the Python fallback intentionally: it is compiled by that
     # tool under THAT tool's semantics, outside Rextio's native contract.
     external_accelerator: str | None = None
-    # Set when a function would otherwise be JIT-eligible but was kept on the
-    # checked native path (e.g. overflow-prone int arithmetic the Cranelift path
-    # cannot make raise OverflowError). Surfaced by `rextio check`, not
-    # serialized, so it is purely diagnostic.
+    # Resolved import map for the function's module (visible name ->
+    # dotted target), used by decorator/call resolution.
     imports: dict[str, str] = field(default_factory=dict)
     logger_names: tuple[str, ...] = ()
     # All names bound anywhere in the function body (params, assignments, loop

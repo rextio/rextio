@@ -66,7 +66,6 @@ def rejected(x: int) -> int:
     assert "generated Python package tree" in captured.out
     assert "build artifact" in captured.out
     assert (rust_dir / "Cargo.toml").exists()
-    assert "cranelift-jit" not in (rust_dir / "Cargo.toml").read_text(encoding="utf-8")
     assert (rust_dir / ".cargo" / "config.toml").exists()
     assert (rust_dir / "pyproject.toml").exists()
     assert lib_rs.exists()
@@ -145,7 +144,6 @@ def compute(x: float) -> float:
         (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
     rust_dir = tmp_path / ".rextio" / "generated" / "rust"
-    cargo_toml = (rust_dir / "Cargo.toml").read_text(encoding="utf-8")
     lib_rs = (rust_dir / "src" / "lib.rs").read_text(encoding="utf-8")
 
     assert exit_code == 0
@@ -154,10 +152,8 @@ def compute(x: float) -> float:
     assert report["accepted_native_count"] == 1
     assert report["rejected_native_count"] == 0
     assert report["jit_candidate_count"] == 1
-    # The embedded helper compiles as a plain internal native function: no
-    # Cranelift dependency or machinery, callable from native, not exported.
-    assert "cranelift" not in cargo_toml
-    assert "cranelift" not in lib_rs
+    # The embedded helper compiles as a plain internal native function -
+    # callable from native code, not exported, no extra dependencies.
     assert "fn app__helper(" in lib_rs
     assert "wrap_pyfunction!(app__compute" in lib_rs
     assert "wrap_pyfunction!(app__helper" not in lib_rs
@@ -201,16 +197,11 @@ def compute(x: int) -> int:
     report = json.loads(
         (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
-    cargo_toml = (
-        tmp_path / ".rextio" / "generated" / "rust" / "Cargo.toml"
-    ).read_text(encoding="utf-8")
-
     assert exit_code == 0
     assert "experimental helper embedding: disabled" in captured.out
     assert report["accepted_native_count"] == 1
     assert report["rejected_native_count"] == 1
     assert report["jit_candidate_count"] == 0
-    assert "cranelift" not in cargo_toml
 
 
 def test_rust_executable_delegate_analysis_embeds_helpers(
@@ -1290,6 +1281,9 @@ import sys
 from pathlib import Path
 
 args = sys.argv[1:]
+if "--version" in args:
+    print("2.4.8")
+    sys.exit(0)
 out = Path(next(arg.split("=", 1)[1] for arg in args if arg.startswith("--output-dir=")))
 name = next(arg.split("=", 1)[1] for arg in args if arg.startswith("--output-filename="))
 out.mkdir(parents=True, exist_ok=True)
@@ -1445,3 +1439,155 @@ def main(argv: list[str]) -> int:
     assert result.status == "failed"
     assert "kernels" in result.message
     assert "--hybrid-runtime=source" in result.message
+
+
+def test_build_rejects_pre_2_nuitka_before_analysis(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # The CLI-level gate fires before project analysis: no reports are written.
+    bin_dir = tmp_path / "old-nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then echo 1.9.7; exit 0; fi\n',
+        encoding="utf-8",
+    )
+    nuitka.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    (tmp_path / "app.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8"
+    )
+
+    exit_code = main(["build", str(tmp_path), "--fallback=nuitka"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Nuitka 1.9.7 is too old" in captured.err
+    assert not (tmp_path / ".rextio").exists()
+
+
+def test_pre_2_nuitka_fails_the_hybrid_dispatcher(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # The hybrid-runtime dispatcher path enforces the Nuitka >= 2.0 floor too.
+    from rextio.build.orchestrator import _build_nuitka_dispatcher
+
+    _old_nuitka_on_path(tmp_path, monkeypatch)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+
+    error = _build_nuitka_dispatcher(runtime_dir, {"app.f"}, timeout=30.0)
+
+    assert error is not None
+    assert "Nuitka 1.9.7 is too old" in error
+    assert ">= 2.0" in error
+
+
+def _old_nuitka_on_path(tmp_path: Path, monkeypatch) -> None:
+    bin_dir = tmp_path / "old-nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then echo 1.9.7; exit 0; fi\n',
+        encoding="utf-8",
+    )
+    nuitka.chmod(0o755)
+    # Prepend rather than replace: the fake still shadows any real nuitka by
+    # PATH order, while tools the build may legitimately need (python3 for
+    # env-shebang fakes, cargo) stay resolvable.
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
+def test_build_rejects_pre_2_nuitka_for_executable_backend_before_analysis(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # --executable-backend=nuitka fails as fast as --fallback=nuitka does.
+    _old_nuitka_on_path(tmp_path, monkeypatch)
+    (tmp_path / "app.py").write_text(
+        "def main() -> int:\n    return 0\n", encoding="utf-8"
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--entrypoint=app:main",
+            "--executable-backend=nuitka",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "RXT060 Build failed while preparing the Nuitka toolchain." in captured.err
+    assert "Nuitka 1.9.7 is too old" in captured.err
+    assert not (tmp_path / ".rextio").exists()
+
+
+def test_hybrid_runtime_with_old_nuitka_is_not_gated_before_analysis(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    fake_cargo: Path,
+) -> None:
+    # The rust-executable hybrid runtime only invokes Nuitka when analysis
+    # finds delegated fallback calls, so an old Nuitka on PATH must NOT
+    # reject the build up front - a no-delegation build never touches
+    # Nuitka (and proceeds fine with no Nuitka installed at all). The
+    # dispatcher builder enforces the floor at the point of real use
+    # (see test_pre_2_nuitka_fails_the_hybrid_dispatcher).
+    _old_nuitka_on_path(tmp_path, monkeypatch)
+    # Put the fake cargo ahead of any real one; the old-nuitka bin stays first.
+    bin_dir = tmp_path / "old-nuitka-bin"
+    monkeypatch.setenv(
+        "PATH", f"{bin_dir}{os.pathsep}{fake_cargo.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+    )
+    (tmp_path / "app.py").write_text(
+        "def main() -> int:\n    return 0\n", encoding="utf-8"
+    )
+
+    # The exit code is deliberately not pinned: this test proves only that
+    # the pre-analysis gate does not fire; the build may still fail later
+    # for unrelated reasons (the fake cargo emits no runnable binary).
+    main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--entrypoint=app:main",
+            "--executable-backend=rust",
+            "--hybrid-runtime=nuitka",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert "RXT060 Build failed while preparing the Nuitka toolchain." not in captured.err
+    assert "Nuitka 1.9.7 is too old" not in captured.err
+    assert (tmp_path / ".rextio").exists()  # analysis ran
+
+
+def test_nuitka_backend_without_entrypoint_is_not_gated(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    # Without an entrypoint the executable is skipped entirely, so an old
+    # Nuitka must not fire the version gate on a plain cpython-fallback build.
+    _old_nuitka_on_path(tmp_path, monkeypatch)
+    # Untyped on purpose: no native candidates, so requires_native_build()
+    # is False, the orchestrator skips the cargo build, and the only way to
+    # fail early would be the (unwanted) version gate.
+    (tmp_path / "app.py").write_text(
+        "def add(a, b):\n    return a + b\n", encoding="utf-8"
+    )
+
+    main(["build", str(tmp_path), "--fallback=cpython", "--executable-backend=nuitka"])
+
+    captured = capsys.readouterr()
+    assert "Nuitka 1.9.7 is too old" not in captured.err
+    assert (tmp_path / ".rextio").exists()  # analysis ran

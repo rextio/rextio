@@ -1,8 +1,7 @@
 """Eligibility check for the experimental scalar-helper native embedding.
 
-With `[jit] enabled`, an unmarked typed scalar helper is embedded as an ordinary
-internal native function (the former Cranelift hot path was removed after
-benchmarks showed it strictly slower than this AOT path). Embedded int
+With `[jit] enabled`, an unmarked typed scalar helper is embedded as an
+ordinary internal native function, compiled ahead of time. Embedded int
 arithmetic goes through the normal checked lowering, so overflow raises
 OverflowError like any other native function.
 """
@@ -83,9 +82,7 @@ def _is_supported_expr(node: ast.AST, names: set[str], return_type: str) -> bool
         # Embedded helpers lower through the ordinary checked native path, so the
         # full checked operator set is safe: int overflow raises OverflowError,
         # `%` handles floored semantics and division-by-zero, and float `/`
-        # raises ZeroDivisionError. (The former Cranelift path had to exclude
-        # int arithmetic and float `/` because its raw instructions wrapped or
-        # returned inf/NaN instead of raising.)
+        # raises ZeroDivisionError.
         if return_type == "int" and not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Mod)):
             return False
         if return_type == "float" and not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):

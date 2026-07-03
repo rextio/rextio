@@ -28,6 +28,7 @@ from rextio.analyzer.common_calls import (
     is_supported_effect_call,
 )
 from rextio.analyzer.diagnostics import Diagnostic
+from rextio.analyzer.logging_format import python_logging_format_segments
 from rextio.analyzer.models import FunctionAnalysis
 from rextio.analyzer.native_marker import dotted_name, is_native_decorator
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
@@ -54,6 +55,7 @@ from rextio.analyzer.type_predicates import (
     _is_zip_call,
     _list_item_type,
     _mutable_collection_names_captured_by_container,
+    _optional_item_type,
     _mutated_collection_names,
     _set_item_type,
     _tuple_item_types,
@@ -636,7 +638,7 @@ def _validate_statement_types(
                 iterable_type = None
             else:
                 iterable_type = _infer_expr_type(node.iter, function, env)
-            item_type = _iter_item_type(node.iter, iterable_type)
+            item_type = _iter_item_type(node.iter, iterable_type, function)
             _bind_loop_target_types(
                 node.target,
                 [item_type] if item_type is not None else [],
@@ -893,7 +895,7 @@ def _validate_mutable_ownership_in_statements(
                     if _is_range_call(statement.iter)
                     else _infer_expr_type(statement.iter, function, env)
                 )
-                item_type = _iter_item_type(statement.iter, iterable_type)
+                item_type = _iter_item_type(statement.iter, iterable_type, function)
                 _bind_loop_target_types(
                     statement.target,
                     [item_type] if item_type is not None else [],
@@ -1636,6 +1638,10 @@ class _SignatureInferencer:
         if _is_list_type(iterable_type):
             item_type = _list_item_type(iterable_type)
             return [item_type] if item_type is not None else []
+        # Set item typing stays here for INFERENCE only: the validation pass
+        # (`_iter_item_type`) rejects native set iteration regardless, so this
+        # never admits a set-iterating function - it just keeps local type
+        # inference coherent while the rejection diagnostic is produced.
         if _is_set_type(iterable_type):
             item_type = _set_item_type(iterable_type)
             return [item_type] if item_type is not None else []
@@ -2202,7 +2208,7 @@ def _comprehension_iter_item_types(
         iterable_type: str | None = None
     else:
         iterable_type = _infer_expr_type(node, function, env)
-    item_type = _iter_item_type(node, iterable_type)
+    item_type = _iter_item_type(node, iterable_type, function)
     return [item_type] if item_type is not None else []
 
 
@@ -2539,6 +2545,52 @@ def _infer_call_type(
     return function.call_return_types.get(target) if target is not None else None
 
 
+def _format_arg_unprintable_reason(arg_type: str | None) -> str | None:
+    """Why a print/logging argument type has no CPython-exact native text, or None.
+
+    Scalars are exact (bool/float via the CPython-repr lowering); list/tuple/
+    Optional compose recursively from exact pieces. A set or dict anywhere in
+    the type is order-observable (Rust hash containers do not reproduce
+    CPython's iteration/insertion order), and bytes would need CPython's
+    ``b'...'`` escaping, so those reject to the Python fallback.
+    """
+    if arg_type is None:
+        return "its type could not be inferred"
+    if arg_type in {"int", "bool", "float", "str"}:
+        return None
+    if _is_set_type(arg_type) or arg_type == "set":
+        return "set iteration order diverges from CPython's"
+    if _is_dict_type(arg_type) or arg_type == "dict":
+        return "dict iteration order (CPython insertion order) has no native equivalent"
+    if arg_type == "bytes":
+        return "bytes repr (b'...') has no native lowering"
+    if _is_list_type(arg_type):
+        return _format_arg_unprintable_reason(_list_item_type(arg_type))
+    if _is_tuple_type(arg_type):
+        for item in _tuple_item_types(arg_type):
+            reason = _format_arg_unprintable_reason(item)
+            if reason is not None:
+                return reason
+        return None
+    optional_item = _optional_item_type(arg_type)
+    if optional_item is not None:
+        return _format_arg_unprintable_reason(optional_item)
+    if arg_type == "None":
+        return "a bare None has no faithful native format"
+    return f"type {arg_type} has no CPython-exact native text form"
+
+
+# Which argument types each logging % conversion accepts natively. A rejected
+# combination keeps the function on the Python fallback (exact by construction)
+# instead of printing wrong text or emitting uncompilable Rust (e.g. `%f` of a
+# bool lowered as `bool as f64`).
+_LOGGING_SPEC_SCALARS = {
+    "d": {"int", "bool"},
+    "i": {"int", "bool"},
+    "f": {"float"},
+}
+
+
 def _infer_effect_call_type(
     target: str,
     node: ast.Call,
@@ -2550,8 +2602,10 @@ def _infer_effect_call_type(
     if target != "print" and len(node.args) < 1:
         _add_unsupported_syntax(function, node, f"{target} requires at least one positional argument")
         return None
+    arg_types: list[str | None] = []
     for arg in node.args:
         arg_type = _infer_expr_type(arg, function, env)
+        arg_types.append(arg_type)
         if arg_type == "None" or (isinstance(arg, ast.Constant) and arg.value is None):
             # A None argument has no faithful native print form: CPython prints
             # "None", but a bare native `None` literal in a `{:?}`/`{}` position
@@ -2564,6 +2618,53 @@ def _infer_effect_call_type(
                 "(no faithful native format); kept on the Python fallback",
             )
             return None
+        reason = _format_arg_unprintable_reason(arg_type)
+        if reason is not None:
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"{target} of a {arg_type} argument is not supported in native "
+                f"functions ({reason}); kept on the Python fallback",
+            )
+            return None
+    if target != "print" and len(node.args) >= 2:
+        first = node.args[0]
+        if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"{target} with a non-literal format string and arguments cannot be "
+                "validated for CPython-exact native formatting; kept on the Python fallback",
+            )
+            return None
+        converted = python_logging_format_segments(first.value)
+        if converted is None:
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"{target} format string uses a % conversion outside the supported "
+                "%s/%d/%i/%f/%r set; kept on the Python fallback",
+            )
+            return None
+        _, specifiers = converted
+        if len(specifiers) != len(node.args) - 1:
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"{target} format string has {len(specifiers)} % conversion(s) but "
+                f"{len(node.args) - 1} argument(s); kept on the Python fallback",
+            )
+            return None
+        for specifier, arg_type in zip(specifiers, arg_types[1:], strict=True):
+            allowed = _LOGGING_SPEC_SCALARS.get(specifier)
+            if allowed is not None and arg_type not in allowed:
+                _add_unsupported_syntax(
+                    function,
+                    node,
+                    f"{target} %{specifier} of a {arg_type} argument has no "
+                    "CPython-exact native lowering; kept on the Python fallback",
+                )
+                return None
     return "None"
 
 
@@ -2636,6 +2737,35 @@ def _infer_bytes_method_type(
     if target == "bytes.decode":
         if not _require_arg_count(target, node, function, {0}):
             return None
+        # Divergence note (RXT090): the native path raises ValueError on
+        # invalid UTF-8 where CPython raises UnicodeDecodeError (its subclass).
+        # Emitted here for every candidate that lowers decode; the project
+        # scanner strips the note from functions that do not end up on the
+        # direct native path (rejected or shim functions run real CPython).
+        if any(d.code == "RXT090" for d in function.diagnostics):
+            return "str"
+        function.add_diagnostic(
+            Diagnostic(
+                code="RXT090",
+                severity="warning",
+                message=(
+                    "native semantic divergence note: bytes.decode() on invalid "
+                    "UTF-8 raises ValueError natively where CPython raises "
+                    "UnicodeDecodeError (a ValueError subclass, so `except "
+                    "ValueError` behaves identically; `except UnicodeDecodeError` "
+                    "does not match the native error)"
+                ),
+                file_path=function.file_path,
+                line=getattr(node, "lineno", function.line),
+                column=getattr(node, "col_offset", function.column),
+                function_name=function.qualname,
+                suggestion=(
+                    "Documented in docs/unsupported-features.md under Accepted "
+                    "Native Semantic Divergences; keep the function on the Python "
+                    "fallback if the exact exception type matters."
+                ),
+            )
+        )
         return "str"
     return None
 
@@ -2920,10 +3050,31 @@ def _validate_compare_types(
         left_node = comparator
 
 
-def _iter_item_type(node: ast.AST, iterable_type: str | None) -> str | None:
+def _add_set_iteration_rejection(function: FunctionAnalysis, node: ast.AST) -> None:
+    _add_unsupported_syntax(
+        function,
+        node,
+        "iterating a set is not supported in native functions (Rust hash-set "
+        "iteration order diverges from CPython's); iterate a list instead or "
+        "keep the function on the Python fallback",
+    )
+
+
+def _iter_item_type(
+    node: ast.AST, iterable_type: str | None, function: FunctionAnalysis
+) -> str | None:
     if _is_list_type(iterable_type):
         return _list_item_type(iterable_type)
     if _is_set_type(iterable_type):
+        # Iterating a set is order-observable: CPython's iteration order is
+        # arbitrary but deterministic within a process, while Rust's HashSet
+        # uses a per-instance random seed (two calls with the same elements can
+        # iterate differently). No faithful lowering exists, so reject to the
+        # Python fallback. Order-independent set operations (len, membership,
+        # add, ==) stay native. Return the item type anyway so the loop target
+        # binds and the rejection is reported ONCE (not followed by the
+        # generic iterable message and name-scope cascades).
+        _add_set_iteration_rejection(function, node)
         return _set_item_type(iterable_type)
     if isinstance(node, ast.Call) and dotted_name(node.func) == "range":
         return "int"
@@ -2937,7 +3088,10 @@ def _iter_unpack_types(
 ) -> list[str]:
     if isinstance(node, ast.Call) and _is_enumerate_call(node):
         _validate_enumerate_call(node, function, env)
-        item_type = _list_item_type(_infer_expr_type(node.args[0], function, env))
+        iterable_type = _infer_expr_type(node.args[0], function, env)
+        # A set-typed source was already rejected with the dedicated message;
+        # still bind the targets so no generic/name-scope cascade follows.
+        item_type = _list_item_type(iterable_type) or _set_item_type(iterable_type)
         return ["int", item_type] if item_type is not None else []
     if isinstance(node, ast.Call) and _is_zip_call(node):
         item_types = _validate_zip_call(node, function, env)
@@ -3009,7 +3163,11 @@ def _validate_enumerate_call(
             "enumerate currently supports list variables only",
         )
         return
-    item_type = _list_item_type(_infer_expr_type(node.args[0], function, env))
+    iterable_type = _infer_expr_type(node.args[0], function, env)
+    if _is_set_type(iterable_type):
+        _add_set_iteration_rejection(function, node.args[0])
+        return
+    item_type = _list_item_type(iterable_type)
     if item_type is None:
         _add_unsupported_syntax(
             function,
@@ -3030,7 +3188,16 @@ def _validate_zip_call(
         if not isinstance(arg, ast.Name):
             _add_unsupported_syntax(function, arg, "zip currently supports list variables only")
             continue
-        item_type = _list_item_type(_infer_expr_type(arg, function, env))
+        iterable_type = _infer_expr_type(arg, function, env)
+        if _is_set_type(iterable_type):
+            # Rejected with the dedicated message; keep the item type so the
+            # loop targets still bind (no generic/name-scope cascade).
+            _add_set_iteration_rejection(function, arg)
+            item = _set_item_type(iterable_type)
+            if item is not None:
+                item_types.append(item)
+            continue
+        item_type = _list_item_type(iterable_type)
         if item_type is None:
             _add_unsupported_syntax(
                 function,

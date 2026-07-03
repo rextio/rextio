@@ -16,6 +16,8 @@ def _fake_nuitka(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     nuitka = bin_dir / "nuitka"
     nuitka.write_text(
         "#!/bin/sh\n"
+        "# Answer the preflight version probe without logging or touching files.\n"
+        'if [ "$1" = --version ]; then echo 2.4.8; exit 0; fi\n'
         f'echo "$@" >> "{log}"\n'
         "# second argv entry is the --module target path\n"
         'target="$2"\n'
@@ -78,7 +80,7 @@ def test_all_modules_accelerated_still_reports_built(
     result = build_nuitka_fallback(python_dir)
 
     assert result.status == "built"
-    assert not log.exists()  # nuitka never invoked
+    assert not log.exists()  # no compilation was invoked
     assert "Kept as plain Python for external accelerators" in result.message
 
 def test_mixed_module_wrapper_compiles_while_fallback_copy_stays_plain(
@@ -127,4 +129,51 @@ def fast(x: int) -> int:
     assert "_fallback_mixed.py" not in calls  # numba-bearing copy untouched
     assert (python_dir / "hb" / "mixed.so").exists()
     assert not (python_dir / "hb" / "_fallback_mixed.so").exists()
-    assert "hb/_fallback_mixed.py" in result.message
+    assert "hb/mixed.py (fallback copy)" in result.message
+
+def test_project_local_numba_module_is_compiled_normally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A project that SHIPS its own `numba.py` shim is not using the external
+    # accelerator: nothing may be skipped, and both modules compile.
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    (python_dir / "numba.py").write_text(
+        "def njit(func):\n    return func\n", encoding="utf-8"
+    )
+    (python_dir / "app.py").write_text(
+        "import numba\n\n@numba.njit\ndef f(x: int) -> int:\n    return x\n",
+        encoding="utf-8",
+    )
+    log = _fake_nuitka(tmp_path, monkeypatch)
+
+    result = build_nuitka_fallback(python_dir)
+
+    assert result.status == "built"
+    calls = log.read_text(encoding="utf-8")
+    assert "app.py" in calls
+    assert "numba.py" in calls
+    assert "Kept as plain Python" not in result.message
+
+
+def test_pre_2_nuitka_fails_the_fallback_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Nuitka integration is validated against the 2.x CLI; an older
+    # install fails up front with upgrade guidance instead of mid-build.
+    bin_dir = tmp_path / "old-nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 1.9.7; exit 0; fi\n", encoding="utf-8")
+    nuitka.chmod(nuitka.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    (python_dir / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+
+    result = build_nuitka_fallback(python_dir)
+
+    assert result.status == "failed"
+    assert "too old" in result.message
+    assert ">= 2.0" in result.message

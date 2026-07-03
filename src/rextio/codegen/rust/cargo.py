@@ -11,6 +11,8 @@ def render_cargo_toml(package_name: str = "rextio_generated_native") -> str:
 name = "{package_name}"
 version = "0.1.0"
 edition = "2021"
+# Documented MSRV (PyO3 0.29 floor); cargo enforces it at build time.
+rust-version = "1.83"
 
 [lib]
 name = "_rextio_native"
@@ -26,7 +28,7 @@ overflow-checks = true
 base64 = "0.22"
 chrono = "0.4"
 log = "0.4"
-pyo3 = {{ version = "0.22", features = ["extension-module"] }}
+pyo3 = {{ version = "0.29", features = ["extension-module"] }}
 sha2 = "0.10"
 """
 
@@ -39,6 +41,9 @@ def render_importable_cargo_toml(package_name: str = "rextio_generated_rust") ->
 name = "{package_name}"
 version = "0.1.0"
 edition = "2021"
+# Uniform documented MSRV shared with the extension template (whose floor
+# is set by PyO3 0.29); this crate itself has no PyO3 dependency.
+rust-version = "1.83"
 
 [lib]
 name = "{package_name.replace("-", "_")}"
@@ -78,6 +83,9 @@ def render_binary_cargo_toml(
 name = "{package_name}"
 version = "0.1.0"
 edition = "2021"
+# Uniform documented MSRV shared with the extension template (whose floor
+# is set by PyO3 0.29); this crate itself has no PyO3 dependency.
+rust-version = "1.83"
 
 [[bin]]
 name = "{binary_name}"

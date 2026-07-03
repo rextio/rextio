@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from rextio.analyzer.common_calls import canonical_call_target, is_logging_get_logger_call
+from rextio.analyzer.common_calls import RUNTIME_FIDELITY_TARGETS
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.import_policy import classify_import_policies
 from rextio.analyzer.jit import is_embedding_candidate
@@ -131,6 +132,191 @@ def _collect_imports(
                 visible = alias.asname or alias.name
                 imports[visible] = f"{base_module}.{alias.name}" if base_module else alias.name
     return imports
+
+
+def _collect_fidelity_shim_names(tree: ast.Module) -> frozenset[str]:
+    """Return bare names whose FINAL module-level binder is a fidelity import.
+
+    Walks the module body in source order (descending into control-flow
+    bodies the way `_collect_module_assigned_names` does) and records, for
+    each top-level name, the last statement that binds it: an import, a
+    `def`/`class`, an assignment, a loop/with target, or a `del`. A bare call
+    to one of these names promotes a marked function to the RXT080 shim ONLY
+    when the last binder is a `from`-import resolving into
+    `RUNTIME_FIDELITY_TARGETS` - so `def mean` followed by
+    `from statistics import mean` promotes (the runtime binding IS the
+    stdlib), while the reverse order, a class, or an assignment shadowing the
+    import rejects loudly like any project-code call. For conditional bodies
+    the last binder in SOURCE ORDER is used - a deterministic approximation;
+    when it guesses "project code" the result is a loud rejection, never a
+    silent mis-compile. (A from-import that only exists inside control flow
+    can enter this set while staying absent from the module's import map; the
+    validation probe then accepts the call unresolved and the boundary pass
+    rejects it with RXT030 before this set is ever consulted - the star-import
+    case follows the same sequencing.)
+    """
+    final: dict[str, str | None] = {}
+
+    def clear_fidelity_bindings() -> None:
+        # A star import with unknown exports can rebind ANY name - including
+        # a fidelity name bound earlier. Keeping the stale binding would be
+        # the unsafe direction for this collector, so drop every current
+        # fidelity binding (a later fidelity import re-registers).
+        for name, target in list(final.items()):
+            if target in RUNTIME_FIDELITY_TARGETS:
+                final[name] = None
+
+    def bind_import_from(node: ast.ImportFrom) -> None:
+        if not node.module or node.level != 0:
+            # A relative (or module-less) import still REBINDS its names at
+            # module scope - to project code - so it must override an earlier
+            # fidelity binding rather than being invisible.
+            for alias in node.names:
+                if alias.name == "*":
+                    clear_fidelity_bindings()
+                else:
+                    bind_other(alias.asname or alias.name)
+            return
+        for alias in node.names:
+            if alias.name == "*":
+                fidelity_module = any(
+                    qualname.rpartition(".")[0] == node.module
+                    for qualname in RUNTIME_FIDELITY_TARGETS
+                )
+                if not fidelity_module:
+                    # Unknown exports: the star may rebind fidelity names.
+                    clear_fidelity_bindings()
+                    continue
+                for qualname in RUNTIME_FIDELITY_TARGETS:
+                    module, _, attr = qualname.rpartition(".")
+                    if module == node.module:
+                        final[attr] = qualname
+                continue
+            visible = alias.asname or alias.name
+            final[visible] = f"{node.module}.{alias.name}"
+
+    def bind_other(name: str) -> None:
+        final[name] = None
+
+    def add_target(target: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            bind_other(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                add_target(element)
+        elif isinstance(target, ast.Starred):
+            add_target(target.value)
+
+    def bind_walrus_targets(node: ast.AST) -> None:
+        # A module-level walrus (`(mean := ...)`, `if (mean := ...):`) binds at
+        # module scope - including inside a module-level comprehension (PEP
+        # 572 leaks the target to the containing scope). Recurse without
+        # entering nested function/class BODIES, whose walruses bind in their
+        # own scope - but a def/class HEADER (decorators, base list, keyword
+        # arguments, parameter defaults, annotations, the return annotation)
+        # is evaluated at module scope and can rebind there.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            header_exprs: list[ast.AST] = list(getattr(node, "decorator_list", []))
+            if isinstance(node, ast.ClassDef):
+                header_exprs.extend(node.bases)
+                header_exprs.extend(keyword.value for keyword in node.keywords)
+            else:
+                arguments = node.args
+                header_exprs.extend(default for default in arguments.defaults)
+                header_exprs.extend(
+                    default for default in arguments.kw_defaults if default is not None
+                )
+                if not isinstance(node, ast.Lambda):
+                    for argument in (
+                        *arguments.posonlyargs,
+                        *arguments.args,
+                        *arguments.kwonlyargs,
+                        *((arguments.vararg,) if arguments.vararg else ()),
+                        *((arguments.kwarg,) if arguments.kwarg else ()),
+                    ):
+                        if argument.annotation is not None:
+                            header_exprs.append(argument.annotation)
+                    if node.returns is not None:
+                        header_exprs.append(node.returns)
+            for expr in header_exprs:
+                bind_walrus_targets(expr)
+            return
+        if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            bind_other(node.target.id)
+        for child in ast.iter_child_nodes(node):
+            bind_walrus_targets(child)
+
+    def bind_match_captures(pattern: ast.AST) -> None:
+        # Captures live on MatchAs/MatchStar `.name` and MatchMapping `.rest`;
+        # the recursion also passes through expression nodes (mapping keys,
+        # MatchValue values), which carry no `.name`/`.rest` str attributes -
+        # their walruses are collected by the statement-level pre-scan.
+        name = getattr(pattern, "name", None)
+        if isinstance(name, str):
+            bind_other(name)
+        rest = getattr(pattern, "rest", None)
+        if isinstance(rest, str):
+            bind_other(rest)
+        for child in ast.iter_child_nodes(pattern):
+            bind_match_captures(child)
+
+    def walk(statements: list[ast.stmt]) -> None:
+        for node in statements:
+            bind_walrus_targets(node)
+            if isinstance(node, ast.ImportFrom):
+                bind_import_from(node)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    bind_other(alias.asname or alias.name.split(".", 1)[0])
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bind_other(node.name)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    add_target(target)
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                add_target(node.target)
+            elif isinstance(node, ast.AugAssign):
+                add_target(node.target)
+            elif isinstance(node, ast.Delete):
+                for target in node.targets:
+                    add_target(target)
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                add_target(node.target)
+                walk(node.body)
+                walk(node.orelse)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        add_target(item.optional_vars)
+                walk(node.body)
+            elif isinstance(node, ast.If):
+                walk(node.body)
+                walk(node.orelse)
+            elif isinstance(node, ast.While):
+                walk(node.body)
+                walk(node.orelse)
+            elif isinstance(node, (ast.Try, ast.TryStar)):
+                walk(node.body)
+                for handler in node.handlers:
+                    if handler.name is not None:
+                        # `except E as name` binds (and later unbinds) the
+                        # name at module scope - either way the name does not
+                        # denote the fidelity import.
+                        bind_other(handler.name)
+                    walk(handler.body)
+                walk(node.orelse)
+                walk(node.finalbody)
+            elif isinstance(node, ast.Match):
+                for case in node.cases:
+                    bind_match_captures(case.pattern)
+                    walk(case.body)
+
+    walk(tree.body)
+    return frozenset(
+        name
+        for name, target in final.items()
+        if target in RUNTIME_FIDELITY_TARGETS
+    )
 
 
 def _collect_module_assigned_names(tree: ast.Module) -> frozenset[str]:
@@ -257,6 +443,7 @@ def _collect_module_functions(
     # (e.g. `len = 5` makes `len(xs)` a TypeError), so the shadow checker treats a
     # call to such a name as shadowed.
     module_assigned_names = _collect_module_assigned_names(tree)
+    fidelity_shim_names = _collect_fidelity_shim_names(tree)
     for node in tree.body:
         if isinstance(node, ast.AsyncFunctionDef):
             marker = native_marker_for_function(node)
@@ -307,7 +494,9 @@ def _collect_module_functions(
         elif marker is not None and not _native_marker_applies(marker, target_language):
             function.is_native_candidate = False
         elif has_marker:
-            _classify_native_function(node, function, return_types, module_function_names)
+            _classify_native_function(
+                node, function, return_types, module_function_names, fidelity_shim_names
+            )
         elif function.external_accelerator is not None:
             # A recognized external-accelerator decorator (e.g. @numba.njit) keeps
             # the function on the Python fallback intentionally: no auto-discovery,
@@ -431,6 +620,10 @@ def _is_auto_native_candidate(
         function.has_keyword_only_params = probe.has_keyword_only_params
         function.inferred_return_type = probe.inferred_return_type
         function.native_target_language = target_language
+        # Carry the probe's non-error diagnostics (e.g. RXT090 divergence
+        # notes); an accepted probe has no errors.
+        for diagnostic in probe.diagnostics:
+            function.add_diagnostic(diagnostic)
         return True
     # Auto-discovered (undecorated) functions are accepted only when they fall
     # within the direct-Rust subset. The Python runtime-semantics shim (RXT080)
@@ -446,6 +639,7 @@ def _classify_native_function(
     function: FunctionAnalysis,
     return_types: dict[str, str] | None = None,
     module_function_names: set[str] | None = None,
+    fidelity_shim_names: frozenset[str] = frozenset(),
 ) -> None:
     probe = FunctionAnalysis(
         name=function.name,
@@ -474,9 +668,13 @@ def _classify_native_function(
     function.has_keyword_only_params = probe.has_keyword_only_params
     function.inferred_return_type = probe.inferred_return_type
     if probe.accepted:
+        # Carry the probe's non-error diagnostics (e.g. RXT090 divergence
+        # notes) onto the real function; an accepted probe has no errors.
+        for diagnostic in probe.diagnostics:
+            function.add_diagnostic(diagnostic)
         function.accepted = True
         return
-    if not _requires_runtime_semantics(node):
+    if not _requires_runtime_semantics(node, fidelity_shim_names):
         for diagnostic in probe.diagnostics:
             function.add_diagnostic(diagnostic)
         function.accepted = False
@@ -496,7 +694,10 @@ def _classify_native_function(
     _add_runtime_semantics_warning(function, node)
 
 
-def _requires_runtime_semantics(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+def _requires_runtime_semantics(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    fidelity_shim_names: frozenset[str] = frozenset(),
+) -> bool:
     # Used only on the explicit `@rextio.native` path (`_classify_native_function`).
     # Auto-discovered functions are never promoted to the runtime shim on the
     # strength of this check alone (see `_is_auto_native_candidate`).
@@ -524,6 +725,16 @@ def _requires_runtime_semantics(node: ast.FunctionDef | ast.AsyncFunctionDef) ->
         if isinstance(child, ast.Call):
             target = dotted_name(child.func)
             if target in {"getattr", "setattr", "hasattr"}:
+                return True
+            # A fidelity-kept stdlib call spelled as a bare from-import name
+            # (`from statistics import mean; mean(xs)`): the attribute form
+            # already promotes via the unknown-attribute rule above, and the
+            # import STYLE must not change the documented marked-function
+            # behavior (rejected vs RXT080 shim). `fidelity_shim_names` holds
+            # names whose FINAL module-level binder is such an import (order-
+            # aware: a def/class/assignment shadowing the import - in either
+            # order - rebinds the name to project code and rejects loudly).
+            if target is not None and target in fidelity_shim_names:
                 return True
     return False
 

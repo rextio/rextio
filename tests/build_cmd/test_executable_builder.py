@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import stat
 import subprocess
+
+import pytest
 import sys
 import zipfile
 from pathlib import Path
@@ -233,6 +236,9 @@ import sys
 from pathlib import Path
 
 args = sys.argv[1:]
+if "--version" in args:
+    print("2.4.8")
+    sys.exit(0)
 out = Path(next(arg.split("=", 1)[1] for arg in args if arg.startswith("--output-dir=")))
 name = next(arg.split("=", 1)[1] for arg in args if arg.startswith("--output-filename="))
 out.mkdir(parents=True, exist_ok=True)
@@ -283,3 +289,71 @@ def test_nuitka_executable_fails_early_for_externally_accelerated_modules(
     assert "external" in result.message and "accelerator" in result.message
     assert "app/kernels.py" in result.message
     assert not (tmp_path / "dist").exists() or not any((tmp_path / "dist").iterdir())
+
+def test_nuitka_standalone_without_binary_is_a_failed_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A fake nuitka that produces the .dist directory but no launcher binary:
+    # a partial standalone build must be reported as failed, not as a "built"
+    # artifact whose path is a directory nobody can execute.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "nuitka"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'out=""; name=""\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        '    --output-dir=*) out="${arg#--output-dir=}";;\n'
+        '    --output-filename=*) name="${arg#--output-filename=}";;\n'
+        "  esac\n"
+        "done\n"
+        'mkdir -p "$out/$name.dist"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    (python_dir / "app.py").write_text("def main():\n    return 0\n", encoding="utf-8")
+
+    result = build_nuitka_executable(
+        python_dir,
+        tmp_path / "dist",
+        "app:main",
+        executable_name="demo-tool",
+    )
+
+    assert result.status == "failed"
+    assert "not found" in result.message
+
+
+def test_pre_2_nuitka_fails_the_executable_build(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # The executable path enforces the same Nuitka >= 2.0 floor as the
+    # fallback path, before any real compilation is attempted.
+    python_dir = _python_app(tmp_path)
+    bin_dir = tmp_path / "old-nuitka-bin"
+    bin_dir.mkdir()
+    nuitka = bin_dir / "nuitka"
+    nuitka.write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then echo 1.9.7; exit 0; fi\n',
+        encoding="utf-8",
+    )
+    nuitka.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    result = build_nuitka_executable(
+        python_dir,
+        tmp_path / "dist",
+        entrypoint="demo_app.cli:main",
+        executable_name="demo-tool",
+        mode="standalone",
+    )
+
+    assert result.status == "failed"
+    assert "Nuitka 1.9.7 is too old" in (result.message or "")
+    assert ">= 2.0" in (result.message or "")

@@ -55,8 +55,9 @@ external toolchain on your machine.
 ## Supply chain
 
 - Generated crates depend on a small, fixed set of crates — `pyo3`, `base64`,
-  `sha2`, `serde_json`, `chrono`, `log`, and (only with `--jit`) the
-  feature-gated `cranelift-*` crates.
+  `sha2`, `chrono`, and `log`; only the hybrid executable's binary crate adds
+  `serde`/`serde_json` (the delegated-call wire protocol). `--jit` adds no
+  dependency: it controls AOT scalar-helper embedding only.
   The generated `Cargo.toml` constrains each to a compatible version range, and
   `cargo build` produces a `Cargo.lock` recording the exact resolved graph for
   reproducible builds.

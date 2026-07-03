@@ -38,6 +38,15 @@ Native コンパイルは最適化であり、Python fallback の動作が正し
 REXTIO_DISABLE_NATIVE=1
 ```
 
+## 要件
+
+| コンポーネント | バージョン | 備考 |
+| --- | --- | --- |
+| CPython | >= 3.11（3.11-3.14 で検証） | アナライザはビルドインタプリタの `ast` を使用し、生成拡張は PyO3 0.29（CPython 3.14 まで対応）を固定します。より新しいインタプリタは動作する可能性がありますが未検証です。wheel はビルドインタプリタの minor バージョンタグを持ちます。 |
+| Rust toolchain | MSRV 1.83（最新 stable で検証） | 生成 crate は edition 2021 + PyO3 0.29 を使用します。[rustup](https://rustup.rs) でインストールしてください。 |
+| Nuitka（任意） | >= 2.0 | `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka` 専用です。前者 2 つはビルド preflight が事前に拒否し、hybrid runtime は委譲された fallback 呼び出しが実際に Nuitka dispatcher を必要とする時点で検査されます。 |
+| Numba（任意・experimental） | インタプリタに応じて: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61, 3.14→>=0.63 | Rextio は Numba デコレータを認識するだけで、パッケージ自体は Rextio ではなくユーザープロジェクトのランタイム依存です。下限は [Numba のバージョンサポート表](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information) に従います。 |
+
 ## クイック例
 
 ```python
@@ -100,7 +109,7 @@ executable packaging は実行しません。`rextio build` は生成、コン�
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit --jit-hot-threshold=25
+rextio build . --jit
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -183,8 +192,10 @@ indexing、accepted native helper call です。
 
 lowering できる builtin/standard-library の範囲には `len`、`abs`、`min`、`max`、
 `sum`、`all`、`any`、`sorted`、`reversed`、一部 `math`、一部 `str`/`bytes`/`list`
-method、`print`、`logging`、`datetime`、`time`、`statistics`、`hashlib.sha256`、
-`base64`、`json` が含まれます。
+method、`print`、`logging`、`datetime`、`time`、`hashlib.sha256`、
+`base64.b64encode` が含まれます。（`statistics.mean`/`fmean`、
+`json.dumps`/`json.loads`、`base64.b64decode` は CPython と正確に一致する
+native 実装がないため、Python fallback または runtime shim に残ります。）
 
 未対応または意味が曖昧なコードは fallback に残るか、対応している場合は Python runtime
 semantics shim で挙動を保ちます。詳しい境界は
@@ -223,23 +234,42 @@ fn main() -> Result<(), my_native::RextioError> {
 この crate は typed Rust に直接 lowering された関数だけを export します。fallback-only 関数と
 runtime semantics shim は Python-facing path のままです。
 
-## Experimental native JIT
+## Experimental scalar helper 埋め込み（embedding）
 
-Rextio はごく狭い scalar helper region に対して experimental native-side JIT を有効化できます。
-デフォルトでは無効です。
+Rextio はごく狭い scalar helper（型が確定した単一算術 return 式の unmarked 関数）を
+native 関数内に AOT で埋め込めます。デフォルトでは無効です。
 
 ```toml
 [jit]
 enabled = true
-backend = "cranelift"
-hot_threshold = 25
 ```
 
-同じ設定は `rextio build . --jit --jit-hot-threshold=25`、
-`REXTIO_JIT=true`、`REXTIO_JIT_BACKEND`、`REXTIO_JIT_HOT_THRESHOLD` でも指定できます。
-JIT は生成された native module 内部でのみ動作し、Python が別の JIT API を直接呼ぶことは
-ありません。Cranelift dependency は JIT が有効で JIT 候補が生成される場合だけ generated
-Cargo project に追加されます。
+同じ設定は `rextio build . --jit` または `REXTIO_JIT=true` でも指定できます。
+（`[jit]` というキー名に反して、この機能は JIT では
+ありません — すべてのコンパイルはビルド時（AOT）に完了し、ビルド成果物の中で
+動作する JIT コンパイラは存在しません。）
+埋め込まれた helper は通常の checked 経路でコンパイルされ、overflow は
+OverflowError を、ゼロ除算は ZeroDivisionError を正しく raise し、PyO3 関数として
+export されません。ランタイムコンパイルはありません。
+
+## Numba 外部アクセラレータ（experimental）
+
+0.1.0 alpha における Numba サポートは実験的（experimental）機能です:
+認識・レポート・Nuitka 共存の挙動は最初の non-alpha リリース前に変わる
+可能性があります。
+
+`numba.jit`/`njit`/`vectorize`/`guvectorize`/`cuda.jit` デコレータ付きの関数は
+意図的に Python fallback に残り（診断ノイズなし）、レポートに
+`external_accelerator: numba` と表示されます。これらの関数は Numba のセマンティクス
+（例: nopython モードの int overflow は wrap）で実行され、Rextio の CPython 正確性
+契約の外にあります — `@rextio.exempt` と同じ opt-in 哲学です。`--fallback=nuitka`
+は自動的に共存します: アクセラレータを使うモジュールはコンパイルから除外され
+plain `.py` のまま残り、wheel は Nuitka でコンパイルされたモジュールの `.py`
+ソースを除外してプラットフォームタグを付けます。Nuitka *実行ファイル* と
+`--hybrid-runtime=nuitka` はアクセラレータ使用モジュールがあると案内付きで早期に
+失敗します（`--hybrid-runtime=source` を使用）。ビルド時スキャンはレポートの
+ラベルより範囲が広く、`rextio check` のラベルは直線的な import のみを扱うため、
+ラベルのない関数のモジュールもビルドでは正しく plain のまま保持されることがあります。
 
 ## executable artifact
 
@@ -282,8 +312,6 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
 | `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
-| `[jit] backend` | `--jit-backend` | `REXTIO_JIT_BACKEND` |
-| `[jit] hot_threshold` | `--jit-hot-threshold` | `REXTIO_JIT_HOT_THRESHOLD` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |

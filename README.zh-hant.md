@@ -38,6 +38,15 @@ boundary threshold 時會使用 Python fallback。
 REXTIO_DISABLE_NATIVE=1
 ```
 
+## 環境需求
+
+| 元件 | 版本 | 說明 |
+| --- | --- | --- |
+| CPython | >= 3.11（在 3.11-3.14 上驗證） | 分析器使用建置直譯器的 `ast`；產生的擴充固定 PyO3 0.29（最高支援 CPython 3.14）。更新的直譯器可能可用，但未經驗證。wheel 帶有建置直譯器 minor 版本標籤。 |
+| Rust toolchain | MSRV 1.83（在最新 stable 上驗證） | 產生的 crate 使用 edition 2021 + PyO3 0.29。請透過 [rustup](https://rustup.rs) 安裝。 |
+| Nuitka（可選） | >= 2.0 | 僅用於 `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka`。前兩者由建置 preflight 預先拒絕；hybrid runtime 則在被委託的 fallback 呼叫確實需要 Nuitka dispatcher 時檢查。 |
+| Numba（可選，experimental） | 隨直譯器: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61, 3.14→>=0.63 | Rextio 只識別 Numba 裝飾器；該套件是使用者專案的執行時依賴，而非 Rextio 的依賴。下限遵循 [Numba 版本支援表](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information)。 |
+
 ## 快速範例
 
 ```python
@@ -99,7 +108,7 @@ executable 封裝。`rextio build` 會執行產生、編譯和封裝。
 rextio build . --fallback=cpython
 rextio build . --fallback=nuitka
 rextio build . --fallback-threshold=1000
-rextio build . --jit --jit-hot-threshold=25
+rextio build . --jit
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
@@ -182,7 +191,9 @@ accepted native helper 呼叫。
 
 有限 lowering 的 builtin/標準函式庫包括 `len`、`abs`、`min`、`max`、`sum`、`all`、
 `any`、`sorted`、`reversed`、部分 `math`、部分 `str`/`bytes`/`list` method、`print`、
-`logging`、`datetime`、`time`、`statistics`、`hashlib.sha256`、`base64`、`json`。
+`logging`、`datetime`、`time`、`hashlib.sha256`、`base64.b64encode`。
+（`statistics.mean`/`fmean`、`json.dumps`/`json.loads`、`base64.b64decode`
+沒有與 CPython 精確一致的 native 實作，保留在 Python fallback 或 runtime shim。）
 
 不支援或語意不明確的程式碼會留在 fallback，或在支援時透過 Python runtime semantics shim
 保留行為。詳細邊界見 [0.1.0 alpha 不支援的功能](docs/unsupported-features.md)。
@@ -220,21 +231,37 @@ fn main() -> Result<(), my_native::RextioError> {
 該 crate 只 export 直接 lowering 到 typed Rust 的函式。fallback-only 函式和 runtime
 semantics shim 仍是 Python-facing 路徑。
 
-## 實驗性 native JIT
+## 實驗性 scalar helper 內嵌（embedding）
 
-Rextio 可以為非常窄的 scalar helper region 啟用實驗性的 native-side JIT。預設關閉。
+Rextio 可以把非常窄的 scalar helper（型別確定、單一算術 return 運算式的 unmarked
+函式）以 AOT 方式內嵌進 native 函式。預設關閉。
 
 ```toml
 [jit]
 enabled = true
-backend = "cranelift"
-hot_threshold = 25
 ```
 
-同樣的設定也可以透過 `rextio build . --jit --jit-hot-threshold=25`、
-`REXTIO_JIT=true`、`REXTIO_JIT_BACKEND`、`REXTIO_JIT_HOT_THRESHOLD` 指定。JIT 只在
-產生的 native module 內部執行，Python 不會直接呼叫單獨的 JIT API。只有在 JIT 開啟且產生
-JIT 候選時，Cranelift dependency 才會加入 generated Cargo project。
+同樣的設定也可以透過 `rextio build . --jit` 或 `REXTIO_JIT=true` 指定。
+（與 `[jit]` 這個鍵名不同，此功能並非 JIT —— 全部編譯在建置時（AOT）
+完成，建置產物內部不存在任何執行時 JIT 編譯器。）內嵌的
+helper 走正常的 checked 路徑編譯：overflow 正確地 raise OverflowError，除以零
+raise ZeroDivisionError，且不會作為 PyO3 函式匯出。不存在執行時編譯。
+
+## Numba 外部加速器（experimental）
+
+0.1.0 alpha 中的 Numba 支援是實驗性（experimental）功能：識別、報告與
+Nuitka 共存行為在首個 non-alpha 版本之前可能發生變化。
+
+帶有 `numba.jit`/`njit`/`vectorize`/`guvectorize`/`cuda.jit` 裝飾器的函式會刻意
+留在 Python fallback（無診斷噪音），並在報告中標記為
+`external_accelerator: numba`。這類函式依 Numba 的語義執行（例如 nopython 模式
+int overflow 會 wrap），在 Rextio 的 CPython 精確性契約之外 — 與 `@rextio.exempt`
+相同的 opt-in 哲學。`--fallback=nuitka` 自動共存：使用加速器的模組被排除在編譯
+之外、保持為 plain `.py`；wheel 會排除已被 Nuitka 編譯模組的 `.py` 原始碼並帶上
+平台標籤。Nuitka *執行檔* 與 `--hybrid-runtime=nuitka` 在存在加速模組時會帶指引
+提前失敗（請改用 `--hybrid-runtime=source`）。建置時掃描的涵蓋面比報告標籤
+更廣：`rextio check` 標籤只處理直線式 import，因此沒有標籤的函式所在模組
+在建置中仍可能被正確地保持為 plain。
 
 ## 可執行 artifact
 
@@ -276,8 +303,6 @@ CLI parameter > environment variable > rextio.toml > built-in default
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
 | `[jit] enabled` | `--jit` / `--no-jit` | `REXTIO_JIT` |
-| `[jit] backend` | `--jit-backend` | `REXTIO_JIT_BACKEND` |
-| `[jit] hot_threshold` | `--jit-hot-threshold` | `REXTIO_JIT_HOT_THRESHOLD` |
 | `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
 | `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
