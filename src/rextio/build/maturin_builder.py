@@ -8,6 +8,8 @@ from pathlib import Path
 
 from rextio.build.cargo_builder import NativeBuildResult
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
+from rextio.build.toolchain import cargo_environment, resolve_tool
+from rextio.config.schema import ToolchainConfig
 
 
 def maturin_available() -> bool:
@@ -20,16 +22,18 @@ def build_native_extension_with_maturin(
     python_dir: Path,
     *,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    toolchain: ToolchainConfig | None = None,
 ) -> NativeBuildResult:
     """Build the native extension with maturin and return the result."""
-    maturin = shutil.which("maturin")
+    toolchain = toolchain or ToolchainConfig()
+    maturin, resolve_error = resolve_tool("maturin", toolchain.maturin)
     if maturin is None:
         return NativeBuildResult(
             status="failed",
             tool="maturin",
             message=(
                 "RXT060 Build failed while compiling generated Rust module. "
-                "Cause: maturin was not found."
+                f"Cause: {resolve_error or 'maturin was not found.'}"
             ),
         )
 
@@ -44,7 +48,7 @@ def build_native_extension_with_maturin(
         "--out",
         str(wheels_dir),
     ]
-    completed = run_build_tool(command, cwd=rust_dir, timeout=timeout)
+    completed = run_build_tool(command, cwd=rust_dir, timeout=timeout, env=cargo_environment(toolchain))
     if completed.returncode != 0:
         return NativeBuildResult(
             status="failed",

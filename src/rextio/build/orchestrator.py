@@ -27,6 +27,8 @@ from rextio.build.executable_builder import (
 from rextio.build.maturin_builder import build_native_extension_with_maturin
 from rextio.build.preflight import nuitka_version_error
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
+from rextio.build.toolchain import resolve_nuitka_command
+from rextio.config.schema import ToolchainConfig
 from rextio.codegen.rust.cargo import (
     render_binary_cargo_toml,
     render_cargo_config_toml,
@@ -176,6 +178,7 @@ def build_hybrid_artifact(
     executable_analysis: ProjectAnalysis | None = None,
     executable_python: str | None = None,
     executable_hybrid_runtime: str = "source",
+    toolchain: ToolchainConfig | None = None,
 ) -> BuildResult:
     """Build the hybrid native+fallback artifact for a project.
 
@@ -186,6 +189,7 @@ def build_hybrid_artifact(
     """
     if executable_analysis is None:
         executable_analysis = analysis
+    toolchain = toolchain or ToolchainConfig()
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
     plan = create_build_plan(analysis, fallback)
@@ -201,6 +205,7 @@ def build_hybrid_artifact(
         target_plan,
         native_jit_enabled=native_jit_enabled,
         build_timeout=build_timeout_seconds,
+        toolchain=toolchain,
     )
     rust_crate_build = _generate_and_build_rust_crate(
         plan,
@@ -209,9 +214,12 @@ def build_hybrid_artifact(
         enabled=rust_importable,
         crate_name=rust_crate_name,
         build_timeout=build_timeout_seconds,
+        toolchain=toolchain,
     )
     _write_build_artifact(layout)
-    fallback_build = _build_fallback_backend(fallback, layout, build_timeout=build_timeout_seconds)
+    fallback_build = _build_fallback_backend(
+        fallback, layout, build_timeout=build_timeout_seconds, toolchain=toolchain
+    )
     wheel_build = _build_wheel_artifact(project_root, layout, native_build, fallback_build)
     executable_build = _build_executable_artifact(
         layout,
@@ -226,6 +234,7 @@ def build_hybrid_artifact(
         executable_python,
         executable_hybrid_runtime,
         build_timeout=build_timeout_seconds,
+        toolchain=toolchain,
     )
 
     result = BuildResult(
@@ -393,6 +402,7 @@ def _generate_and_build_native(
     *,
     native_jit_enabled: bool,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    toolchain: ToolchainConfig | None = None,
 ) -> NativeBuildResult:
     if not plan.native.has_native_artifacts:
         return skipped_native_build("No accepted native functions were found.")
@@ -413,7 +423,7 @@ def _generate_and_build_native(
         )
 
     if target_plan.spec.language == "rust":
-        return _build_native_with_selected_tool(layout, build_tool, build_timeout)
+        return _build_native_with_selected_tool(layout, build_tool, build_timeout, toolchain)
     return NativeBuildResult(
         status="failed",
         tool=target_plan.spec.language,
@@ -432,6 +442,7 @@ def _generate_and_build_rust_crate(
     enabled: bool,
     crate_name: str,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    toolchain: ToolchainConfig | None = None,
 ) -> RustCrateBuildResult:
     if not enabled:
         return skipped_rust_crate_build("Rust-importable crate was not requested.")
@@ -453,7 +464,7 @@ def _generate_and_build_rust_crate(
             ),
         )
     return build_importable_rust_crate(
-        layout.rust_crate_dir, layout.dist_dir, crate_name, timeout=build_timeout
+        layout.rust_crate_dir, layout.dist_dir, crate_name, timeout=build_timeout, toolchain=toolchain
     )
 
 
@@ -544,6 +555,7 @@ def _build_fallback_backend(
     layout: ArtifactLayout,
     *,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    toolchain: ToolchainConfig | None = None,
 ) -> FallbackBuildResult:
     if fallback == "cpython":
         return cpython_fallback_build_result()
@@ -552,7 +564,7 @@ def _build_fallback_backend(
         # so this builder's own probe is only reachable here for programmatic
         # callers. The hybrid dispatcher (_build_nuitka_dispatcher) is NOT
         # pre-gated and keeps its own point-of-use probe.
-        return build_nuitka_fallback(layout.build_python_dir, timeout=build_timeout)
+        return build_nuitka_fallback(layout.build_python_dir, timeout=build_timeout, toolchain=toolchain)
     return FallbackBuildResult(
         status="failed",
         backend=fallback,
@@ -592,6 +604,7 @@ def _build_executable_artifact(
     executable_hybrid_runtime: str,
     *,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    toolchain: ToolchainConfig | None = None,
 ) -> ExecutableBuildResult:
     if entrypoint is None:
         return skipped_executable("No executable entrypoint was requested.")
@@ -607,6 +620,7 @@ def _build_executable_artifact(
             executable_python,
             executable_hybrid_runtime,
             build_timeout=build_timeout,
+            toolchain=toolchain,
         )
     if fallback_build.status != "built":
         return skipped_executable("Fallback packaging failed, so no executable was generated.")
@@ -627,6 +641,7 @@ def _build_executable_artifact(
             executable_name,
             nuitka_mode,
             timeout=build_timeout,
+            toolchain=toolchain,
         )
     return ExecutableBuildResult(
         status="failed",
@@ -828,7 +843,10 @@ def _externally_accelerated_runtime_modules(analysis: ProjectAnalysis) -> list[s
 
 
 def _build_nuitka_dispatcher(
-    runtime_dir: Path, allowed_qualnames: set[str], timeout: float
+    runtime_dir: Path,
+    allowed_qualnames: set[str],
+    timeout: float,
+    toolchain: ToolchainConfig | None = None,
 ) -> str | None:
     """Compile the dispatcher into a self-contained executable; return an error or None.
 
@@ -836,18 +854,18 @@ def _build_nuitka_dispatcher(
     ``DISPATCHER_STEM``) with the delegated fallback modules bundled, so the hybrid
     binary needs no separate Python install.
     """
-    nuitka = shutil.which("nuitka")
-    if nuitka is None:
-        return (
+    nuitka_command, resolve_error = resolve_nuitka_command(toolchain or ToolchainConfig())
+    if nuitka_command is None:
+        return resolve_error or (
             "Nuitka is not installed but --hybrid-runtime=nuitka was requested. "
             "Install Nuitka or use --hybrid-runtime=source."
         )
-    version_error = nuitka_version_error(nuitka)
+    version_error = nuitka_version_error(nuitka_command)
     if version_error is not None:
         return version_error
     modules = sorted({q.rpartition(".")[0] for q in allowed_qualnames if "." in q})
     command = [
-        nuitka,
+        *nuitka_command,
         "--onefile",
         "--assume-yes-for-downloads",
         f"{DISPATCHER_STEM}.py",
@@ -874,6 +892,7 @@ def _build_rust_executable_artifact(
     hybrid_runtime: str,
     *,
     build_timeout: float,
+    toolchain: ToolchainConfig | None = None,
 ) -> ExecutableBuildResult:
     """Generate and build the native Rust executable for the entrypoint.
 
@@ -941,7 +960,7 @@ def _build_rust_executable_artifact(
     (layout.rust_bin_src_dir / "main.rs").write_text(main_rs, encoding="utf-8")
 
     result = build_rust_executable(
-        crate_dir, layout.dist_dir, binary_name, entrypoint, timeout=build_timeout
+        crate_dir, layout.dist_dir, binary_name, entrypoint, timeout=build_timeout, toolchain=toolchain
     )
     if result.status == "built" and hybrid:
         # Ship the dispatcher + project source as `<binary>.runtime` next to the
@@ -959,7 +978,9 @@ def _build_rust_executable_artifact(
                 backend="rust",
             )
         if nuitka_dispatcher:
-            error = _build_nuitka_dispatcher(runtime_dir, set(delegated_return_types), build_timeout)
+            error = _build_nuitka_dispatcher(
+                runtime_dir, set(delegated_return_types), build_timeout, toolchain
+            )
             if error is not None:
                 _cleanup_rust_executable_outputs(result.path, runtime_dir)
                 return ExecutableBuildResult(
@@ -986,17 +1007,24 @@ def _build_native_with_selected_tool(
     layout: ArtifactLayout,
     build_tool: str,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    toolchain: ToolchainConfig | None = None,
 ) -> NativeBuildResult:
     normalized = build_tool.lower()
     if normalized == "cargo":
-        return build_native_extension_with_cargo(layout.rust_dir, layout.python_dir, timeout=build_timeout)
+        return build_native_extension_with_cargo(
+            layout.rust_dir, layout.python_dir, timeout=build_timeout, toolchain=toolchain
+        )
     if normalized == "maturin":
-        result = build_native_extension_with_maturin(layout.rust_dir, layout.python_dir, timeout=build_timeout)
+        result = build_native_extension_with_maturin(
+            layout.rust_dir, layout.python_dir, timeout=build_timeout, toolchain=toolchain
+        )
         if result.status == "built":
             return result
         if "maturin was not found" not in result.message:
             return result
-        cargo_result = build_native_extension_with_cargo(layout.rust_dir, layout.python_dir, timeout=build_timeout)
+        cargo_result = build_native_extension_with_cargo(
+            layout.rust_dir, layout.python_dir, timeout=build_timeout, toolchain=toolchain
+        )
         if cargo_result.status == "built":
             return NativeBuildResult(
                 status="built",

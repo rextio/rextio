@@ -4,18 +4,64 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+import sys
 from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
 from rextio.build.preflight import format_missing_tools, missing_build_tools, nuitka_version_error
+from rextio.build.toolchain import (
+    check_version_pin,
+    python_version_mismatch,
+    resolve_nuitka_command,
+    resolve_python,
+    resolve_tool,
+)
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
 from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
+from rextio.config.schema import RextioConfig
 from rextio.fallback.nuitka import nuitka_unavailable_message
 from rextio.targets.plan import TargetPlanError, create_target_plan
+
+
+def _toolchain_preflight_error(config: RextioConfig) -> str | None:
+    """Verify the configured toolchain before any analysis or build work.
+
+    The configured CPython must resolve and share the build interpreter's
+    minor version (the analyzer, wheel tags, and Nuitka output are all bound
+    to it), and explicit version pins for cargo/maturin/python are enforced
+    strictly here. The Nuitka pin is checked by the Nuitka gate (and at the
+    dispatcher for the hybrid path) so it stays scoped to builds that use it.
+    """
+    toolchain = config.toolchain
+    python, python_error = resolve_python(toolchain)
+    if toolchain.python is not None and python is None:
+        return python_error
+    if python is not None:
+        mismatch = python_version_mismatch(python)
+        if mismatch is not None:
+            return mismatch
+        pin_error = check_version_pin("CPython", [python], toolchain.python_version)
+        if pin_error is not None:
+            return pin_error
+    elif toolchain.python_version is not None:
+        pin_error = check_version_pin("CPython", [sys.executable], toolchain.python_version)
+        if pin_error is not None:
+            return pin_error
+    for tool, pin in (("cargo", toolchain.cargo_version), ("maturin", toolchain.maturin_version)):
+        if pin is None and getattr(toolchain, tool) is None:
+            continue
+        path, resolve_error = resolve_tool(tool, getattr(toolchain, tool))
+        if path is None:
+            if resolve_error is not None:
+                return resolve_error
+            continue  # not installed + not explicitly configured: existing handling
+        pin_error = check_version_pin(tool, [path], pin)
+        if pin_error is not None:
+            return pin_error
+    return None
 
 
 def run(args: Namespace) -> int:
@@ -84,15 +130,21 @@ def run(args: Namespace) -> int:
     # finds delegated fallback calls, so a pre-analysis rejection would block
     # valid no-delegation builds that never touch Nuitka. The dispatcher
     # builder enforces the version floor at the point of real use.
+    toolchain_error = _toolchain_preflight_error(config)
+    if toolchain_error is not None:
+        reporter.error("RXT060 Build failed while preparing the toolchain.")
+        reporter.error(toolchain_error)
+        return 1
+
     nuitka_requested = fallback == "nuitka" or (
         config.executable.entrypoint is not None and config.executable.backend == "nuitka"
     )
     if nuitka_requested:
-        nuitka = shutil.which("nuitka")
-        if nuitka is None:
-            if fallback == "nuitka":
+        nuitka_command, resolve_error = resolve_nuitka_command(config.toolchain)
+        if nuitka_command is None:
+            if fallback == "nuitka" or resolve_error is not None:
                 reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
-                reporter.error(nuitka_unavailable_message())
+                reporter.error(resolve_error or nuitka_unavailable_message())
                 return 1
             # Executable/hybrid paths keep their existing missing-tool handling
             # (reported by the builder with path-specific guidance).
@@ -100,7 +152,9 @@ def run(args: Namespace) -> int:
             # Fail before the (potentially slow) project analysis, not mid-build.
             # The builders re-probe later so they stay correct for non-CLI callers;
             # the extra `nuitka --version` is a deliberate, negligible cost.
-            version_error = nuitka_version_error(nuitka)
+            version_error = nuitka_version_error(nuitka_command) or check_version_pin(
+                "Nuitka", nuitka_command, config.toolchain.nuitka_version
+            )
             if version_error is not None:
                 reporter.error("RXT060 Build failed while preparing the Nuitka toolchain.")
                 reporter.error(version_error)
@@ -141,7 +195,9 @@ def run(args: Namespace) -> int:
     # Only require the native toolchain when there is actually native code to
     # compile; a pure-Python project still builds its CPython fallback artifact.
     if analysis.requires_native_build():
-        missing_tools = missing_build_tools(native_backend=target_plan.spec.language)
+        missing_tools = missing_build_tools(
+            native_backend=target_plan.spec.language, toolchain=config.toolchain
+        )
         if missing_tools:
             reporter.error(format_missing_tools(missing_tools))
             return 1
@@ -187,6 +243,7 @@ def run(args: Namespace) -> int:
         executable_analysis=executable_analysis,
         executable_python=config.executable.python,
         executable_hybrid_runtime=config.executable.hybrid_runtime,
+        toolchain=config.toolchain,
     )
     lines = ["Rextio build", f"  target language: {target_plan.spec.language}"]
     if target_plan.spec.version:

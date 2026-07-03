@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 from rextio.analyzer.native_marker import (
@@ -12,6 +11,8 @@ from rextio.analyzer.native_marker import (
 from rextio.fallback.build_result import FallbackBuildResult
 from rextio.build.preflight import nuitka_version_error
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
+from rextio.build.toolchain import resolve_nuitka_command
+from rextio.config.schema import ToolchainConfig
 
 
 def nuitka_unavailable_message() -> str:
@@ -26,16 +27,20 @@ def build_nuitka_fallback(
     python_dir: Path,
     *,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    toolchain: ToolchainConfig | None = None,
 ) -> FallbackBuildResult:
     """Build the Nuitka fallback and return the result."""
-    nuitka = shutil.which("nuitka")
-    if nuitka is None:
+    nuitka_command, resolve_error = resolve_nuitka_command(toolchain or ToolchainConfig())
+    if nuitka_command is None:
         return FallbackBuildResult(
             status="failed",
             backend="nuitka",
-            message=f"RXT060 Build failed while preparing Nuitka fallback. {nuitka_unavailable_message()}",
+            message=(
+                "RXT060 Build failed while preparing Nuitka fallback. "
+                f"{resolve_error or nuitka_unavailable_message()}"
+            ),
         )
-    version_error = nuitka_version_error(nuitka)
+    version_error = nuitka_version_error(nuitka_command)
     if version_error is not None:
         return FallbackBuildResult(
             status="failed",
@@ -66,7 +71,7 @@ def build_nuitka_fallback(
     stderr_parts: list[str] = []
     for target in targets:
         command = [
-            nuitka,
+            *nuitka_command,
             "--module",
             str(target),
             f"--output-dir={target.parent}",

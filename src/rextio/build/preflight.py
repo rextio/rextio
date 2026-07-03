@@ -10,9 +10,11 @@ an opaque mid-build failure.
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
+
+from rextio.build.toolchain import resolve_tool
+from rextio.config.schema import ToolchainConfig
 
 # Any 2.x release is accepted; every 1.x release is rejected.
 MINIMUM_NUITKA_MAJOR = 2
@@ -31,7 +33,9 @@ class MissingTool:
         return f"{self.name} was not found ({self.reason}). Install it with: {self.install}"
 
 
-def missing_build_tools(*, native_backend: str = "rust") -> list[MissingTool]:
+def missing_build_tools(
+    *, native_backend: str = "rust", toolchain: ToolchainConfig | None = None
+) -> list[MissingTool]:
     """Return the tools required to compile a native artifact that are missing.
 
     Only called when a native artifact is actually needed (see build_cmd). cargo is
@@ -42,14 +46,16 @@ def missing_build_tools(*, native_backend: str = "rust") -> list[MissingTool]:
     """
     missing: list[MissingTool] = []
 
-    if native_backend == "rust" and shutil.which("cargo") is None:
-        missing.append(
-            MissingTool(
-                name="Rust toolchain",
-                reason="cargo is required to compile generated native code",
-                install="https://rustup.rs (or your platform package manager)",
+    if native_backend == "rust":
+        cargo, resolve_error = resolve_tool("cargo", (toolchain or ToolchainConfig()).cargo)
+        if cargo is None:
+            missing.append(
+                MissingTool(
+                    name="Rust toolchain",
+                    reason=resolve_error or "cargo is required to compile generated native code",
+                    install="https://rustup.rs (or your platform package manager)",
+                )
             )
-        )
 
     return missing
 
@@ -61,17 +67,19 @@ def format_missing_tools(missing: list[MissingTool]) -> str:
     return "\n".join(lines)
 
 
-def nuitka_version_error(nuitka: str) -> str | None:
+def nuitka_version_error(nuitka: str | list[str]) -> str | None:
     """Return an actionable error when the installed Nuitka predates 2.0.
 
-    Rextio's Nuitka integration is validated against the 2.x CLI (module,
-    standalone, and onefile modes). The probe is best-effort: if the version
-    cannot be determined, the build proceeds and the real invocation surfaces
-    any incompatibility.
+    ``nuitka`` is the executable path or an argument-list prefix (e.g.
+    ``[python, "-m", "nuitka"]``). Rextio's Nuitka integration is validated
+    against the 2.x CLI (module, standalone, and onefile modes). The probe is
+    best-effort: if the version cannot be determined, the build proceeds and
+    the real invocation surfaces any incompatibility.
     """
+    command = [nuitka] if isinstance(nuitka, str) else list(nuitka)
     try:
         completed = subprocess.run(
-            [nuitka, "--version"],
+            [*command, "--version"],
             capture_output=True,
             text=True,
             timeout=30,

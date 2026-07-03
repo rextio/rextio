@@ -27,6 +27,7 @@ import os
 import signal
 import subprocess
 from pathlib import Path
+from typing import Mapping
 
 # Re-exported here so the builders that already import them from this module keep
 # working; the source of truth is the dependency-free ``rextio.limits`` so the
@@ -55,6 +56,7 @@ def run_build_tool(
     *,
     cwd: Path | str,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an external build tool with no shell, captured output, and a timeout.
 
@@ -75,7 +77,7 @@ def run_build_tool(
         raise ValueError(f"build timeout must be a finite positive number, got {timeout!r}")
     if timeout > MAX_BUILD_TIMEOUT_SECONDS:
         timeout = float(MAX_BUILD_TIMEOUT_SECONDS)
-    with _start_process(command, cwd) as process:
+    with _start_process(command, cwd, env) as process:
         try:
             stdout, stderr = process.communicate(timeout=timeout)
             return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
@@ -113,8 +115,15 @@ def run_build_tool(
             )
 
 
-def _start_process(command: list[str], cwd: Path | str) -> subprocess.Popen[str]:
-    """Start the tool in its own process group so the whole tree can be killed."""
+def _start_process(
+    command: list[str], cwd: Path | str, env: Mapping[str, str] | None = None
+) -> subprocess.Popen[str]:
+    """Start the tool in its own process group so the whole tree can be killed.
+
+    ``env`` entries are overlaid on the current environment (they extend it,
+    never replace it), so tool discovery via PATH keeps working.
+    """
+    merged_env = {**os.environ, **env} if env else None
     if os.name == "nt":  # pragma: no cover - exercised on Windows only.
         new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         return subprocess.Popen(
@@ -124,6 +133,7 @@ def _start_process(command: list[str], cwd: Path | str) -> subprocess.Popen[str]
             stderr=subprocess.PIPE,
             text=True,
             creationflags=new_group,
+            env=merged_env,
         )
     # POSIX: a new session makes the child a process-group leader, so we can signal
     # the entire group (the tool and everything it spawns) on timeout.
@@ -134,6 +144,7 @@ def _start_process(command: list[str], cwd: Path | str) -> subprocess.Popen[str]
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
+        env=merged_env,
     )
 
 

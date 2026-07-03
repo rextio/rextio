@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import shutil
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS, run_build_tool
+from rextio.build.toolchain import cargo_environment, resolve_tool
+from rextio.config.schema import ToolchainConfig
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,20 +46,23 @@ def build_importable_rust_crate(
     crate_name: str,
     *,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    toolchain: ToolchainConfig | None = None,
 ) -> RustCrateBuildResult:
     """Build the Rust-importable crate artifact and return the result."""
-    cargo = shutil.which("cargo")
+    toolchain = toolchain or ToolchainConfig()
+    cargo, resolve_error = resolve_tool("cargo", toolchain.cargo)
     if cargo is None:
         return RustCrateBuildResult(
             status="failed",
             message=(
                 "RXT060 Build failed while compiling Rust-importable crate. "
-                "Cause: cargo was not found. Suggestion: install Rust and Cargo, then rerun rextio build."
+                f"Cause: {resolve_error or 'cargo was not found.'} "
+                "Suggestion: install Rust and Cargo, then rerun rextio build."
             ),
         )
 
     command = [cargo, "build", "--release", "--manifest-path", str(crate_dir / "Cargo.toml")]
-    completed = run_build_tool(command, cwd=crate_dir, timeout=timeout)
+    completed = run_build_tool(command, cwd=crate_dir, timeout=timeout, env=cargo_environment(toolchain))
     if completed.returncode != 0:
         return RustCrateBuildResult(
             status="failed",

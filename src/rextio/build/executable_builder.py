@@ -8,6 +8,8 @@ import stat
 import sys
 import zipapp
 from rextio.build.preflight import nuitka_version_error
+from rextio.build.toolchain import cargo_environment, resolve_nuitka_command, resolve_tool
+from rextio.config.schema import ToolchainConfig
 from rextio.analyzer.native_marker import (
     external_accelerator_for_source,
     project_module_names_for_tree,
@@ -60,6 +62,7 @@ def build_rust_executable(
     entrypoint: str,
     *,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    toolchain: ToolchainConfig | None = None,
 ) -> ExecutableBuildResult:
     """Compile the generated Rust bin crate and copy the binary into ``dist``.
 
@@ -67,21 +70,23 @@ def build_rust_executable(
     written into ``crate_dir`` by the caller. This is a standalone native binary
     with no Python dependency.
     """
-    cargo = shutil.which("cargo")
+    toolchain = toolchain or ToolchainConfig()
+    cargo, resolve_error = resolve_tool("cargo", toolchain.cargo)
     if cargo is None:
         return ExecutableBuildResult(
             status="failed",
             path=None,
             message=(
                 "RXT060 Executable build failed while compiling the Rust binary. "
-                "Cause: cargo was not found. Suggestion: install Rust and Cargo, then rerun rextio build."
+                f"Cause: {resolve_error or 'cargo was not found.'} "
+                "Suggestion: install Rust and Cargo, then rerun rextio build."
             ),
             entrypoint=entrypoint,
             backend="rust",
         )
 
     command = [cargo, "build", "--release", "--manifest-path", str(crate_dir / "Cargo.toml")]
-    completed = run_build_tool(command, cwd=crate_dir, timeout=timeout)
+    completed = run_build_tool(command, cwd=crate_dir, timeout=timeout, env=cargo_environment(toolchain))
     if completed.returncode != 0:
         return ExecutableBuildResult(
             status="failed",
@@ -210,6 +215,7 @@ def build_nuitka_executable(
     mode: str = "standalone",
     *,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    toolchain: ToolchainConfig | None = None,
 ) -> ExecutableBuildResult:
     """Build a Nuitka executable from the entrypoint and return the result."""
     if entrypoint is None:
@@ -245,20 +251,21 @@ def build_nuitka_executable(
             backend="nuitka",
         )
 
-    nuitka = shutil.which("nuitka")
-    if nuitka is None:
+    nuitka_command, resolve_error = resolve_nuitka_command(toolchain or ToolchainConfig())
+    if nuitka_command is None:
         return ExecutableBuildResult(
             status="failed",
             path=None,
             message=(
                 "RXT060 Executable build failed because Nuitka is not installed. "
+                f"{resolve_error or ''}"
                 "Install Nuitka or use --executable-backend=zipapp or "
                 "--executable-backend=rust."
             ),
             entrypoint=entrypoint,
             backend="nuitka",
         )
-    version_error = nuitka_version_error(nuitka)
+    version_error = nuitka_version_error(nuitka_command)
     if version_error is not None:
         return ExecutableBuildResult(
             status="failed",
@@ -291,7 +298,7 @@ def build_nuitka_executable(
     launcher = _write_nuitka_launcher(python_dir, entrypoint)
     dist_dir.mkdir(parents=True, exist_ok=True)
     command = [
-        nuitka,
+        *nuitka_command,
         f"--{mode}",
         str(launcher),
         f"--output-dir={dist_dir}",
