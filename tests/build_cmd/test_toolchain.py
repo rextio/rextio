@@ -183,3 +183,18 @@ def test_unresolvable_configured_python_fails_the_rust_executable(tmp_path: Path
     )
     assert result.status == "failed"
     assert "python" in (result.message or "")
+
+
+def test_resolve_tool_preserves_symlinks(tmp_path: Path) -> None:
+    # A venv-style python3 symlink must come back AS the symlink: resolving
+    # it would escape the venv and lose its site-packages at delegation time.
+    real = _script(tmp_path / "base" / "python3.13", "echo 3.13.0 cpython")
+    link_dir = tmp_path / "venv" / "bin"
+    link_dir.mkdir(parents=True)
+    link = link_dir / "python3"
+    link.symlink_to(real)
+
+    path, error = resolve_tool("python3", str(tmp_path / "venv"))
+    assert error is None
+    assert path == str(link)
+    assert Path(path).is_symlink()

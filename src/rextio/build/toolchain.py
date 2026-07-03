@@ -35,11 +35,13 @@ def resolve_tool(name: str, configured: str | None) -> tuple[str | None, str | N
     """
     if configured is None:
         return shutil.which(name), None
-    # Resolve to an absolute path: the builders run tools with their own
-    # working directories, so a relative configured path must be pinned to
-    # the invocation CWD here or it would break (or resolve differently)
-    # inside every builder.
-    base = Path(configured).expanduser().resolve()
+    # Absolutize lexically (no symlink resolution): the builders run tools
+    # with their own working directories, so a relative configured path must
+    # be pinned to the invocation CWD here or it would break inside every
+    # builder. Symlinks are deliberately preserved - resolving them would
+    # escape virtualenv layouts (.venv/bin/python3 is a symlink to the base
+    # interpreter, and the base interpreter has none of the venv's packages).
+    base = Path(os.path.abspath(Path(configured).expanduser()))
     for direct in (base, base.parent / f"{base.name}.exe"):
         if direct.is_file():
             return _require_executable(direct, name)
