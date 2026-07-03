@@ -17,6 +17,16 @@ fn __rextio_checked_mul(a: i64, b: i64) -> PyResult<i64> {
     a.checked_mul(b).ok_or_else(|| pyo3::exceptions::PyOverflowError::new_err("integer overflow"))
 }
 
+fn __rextio_checked_rem(a: i64, b: i64) -> PyResult<i64> {
+    if b == 0 { return Err(pyo3::exceptions::PyZeroDivisionError::new_err("integer modulo by zero")); }
+    let r = a.checked_rem(b).unwrap_or(0);
+    Ok(if r != 0 && (r ^ b) < 0 { r + b } else { r })
+}
+
+fn __rextio_checked_neg(a: i64) -> PyResult<i64> {
+    a.checked_neg().ok_or_else(|| pyo3::exceptions::PyOverflowError::new_err("integer overflow"))
+}
+
 
 fn rextio_call_python_runtime(
     py: Python<'_>,
@@ -67,6 +77,30 @@ fn app__lookup(scores: HashMap<String, i64>, key: String) -> PyResult<i64> {
 }
 
 #[pyfunction]
+fn app__safe_mod(a: i64, b: i64) -> PyResult<i64> {
+    let mut out = 0;
+    let __rextio_try_1: PyResult<()> = (|| -> PyResult<()> {
+        let __rextio_try_1_body: PyResult<()> = (|| -> PyResult<()> {
+            out = __rextio_checked_rem(a, b)?;
+            Ok(())
+        })();
+        match __rextio_try_1_body {
+            Ok(()) => Ok(()),
+            Err(__rextio_try_1_err) => {
+                if Python::attach(|py| __rextio_try_1_err.is_instance_of::<pyo3::exceptions::PyZeroDivisionError>(py)) {
+                    out = __rextio_checked_neg(1)?;
+                    Ok(())
+                } else {
+                    Err(__rextio_try_1_err)
+                }
+            }
+        }
+    })();
+    __rextio_try_1?;
+    return Ok(out);
+}
+
+#[pyfunction]
 fn app__total(xs: Vec<i64>) -> PyResult<i64> {
     let mut acc = 0;
     for x in xs.iter().cloned() {
@@ -86,6 +120,7 @@ fn _rextio_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(app__classify, m)?)?;
     m.add_function(wrap_pyfunction!(app__doubled, m)?)?;
     m.add_function(wrap_pyfunction!(app__lookup, m)?)?;
+    m.add_function(wrap_pyfunction!(app__safe_mod, m)?)?;
     m.add_function(wrap_pyfunction!(app__total, m)?)?;
     m.add_function(wrap_pyfunction!(app__sum_total, m)?)?;
     Ok(())
