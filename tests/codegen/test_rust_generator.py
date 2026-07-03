@@ -1422,6 +1422,10 @@ def total(n: int) -> int:
         encoding="utf-8",
     )
 
+    # Deliberate coupling to the build layer's private helper: it is the
+    # production wiring that feeds boundary_call_return_types to the
+    # generator (same pattern as the golden-snapshot harness), and
+    # re-deriving the mapping here would drift from it.
     from rextio.build.orchestrator import _boundary_call_return_types
 
     analysis = analyze_project(tmp_path)
