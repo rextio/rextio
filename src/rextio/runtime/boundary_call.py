@@ -37,6 +37,9 @@ def boundary_call(caller_qualname: str, target_qualname: str, args: tuple[Any, .
     # boundary_fallback_required permanently latches the caller into
     # fallback_functions, so every future wrapper entry takes the fallback.
     boundary_fallback_required(caller_qualname)
+    # target_qualname is always "<module>.<function>" - the analyzer builds it
+    # from the module name plus the function name - so rpartition always
+    # yields a non-empty module name here.
     module_name, _, attribute = target_qualname.rpartition(".")
     module = importlib.import_module(module_name)
     return getattr(module, attribute)(*args)

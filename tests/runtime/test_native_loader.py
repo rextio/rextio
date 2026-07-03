@@ -12,12 +12,17 @@ def _spec() -> importlib.machinery.ModuleSpec:
     return importlib.machinery.ModuleSpec("_rextio_native", loader=None)
 
 
-def test_absent_native_module_returns_none_silently(monkeypatch: pytest.MonkeyPatch) -> None:
-    # find_spec returns None -> the module was never built -> silent fallback.
+@pytest.fixture(autouse=True)
+def _isolated_native_module_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     # An earlier test (e.g. a real-cargo e2e) may have left a built
     # _rextio_native in sys.modules; import_module would return that cached
-    # module without consulting find_spec, so drop it for isolation.
+    # module without consulting the patched find_spec, so drop it for
+    # isolation before EVERY test in this file.
     monkeypatch.delitem(native_loader.sys.modules, "_rextio_native", raising=False)
+
+
+def test_absent_native_module_returns_none_silently(monkeypatch: pytest.MonkeyPatch) -> None:
+    # find_spec returns None -> the module was never built -> silent fallback.
     monkeypatch.setattr(native_loader.importlib.util, "find_spec", lambda name: None)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

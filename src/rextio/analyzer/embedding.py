@@ -39,6 +39,8 @@ def is_embedding_candidate(
         return False, "embedding candidates currently require a single return expression"
     if not _is_supported_expr(node.body[0].value, set(arg_types), return_type):
         return False, "embedding candidates currently support only scalar arithmetic expressions"
+    # This exact wording is asserted by tests and surfaces in reports as
+    # embedding_reason - change it deliberately, not in passing.
     return True, "typed scalar helper can be embedded as an internal native function"
 
 
