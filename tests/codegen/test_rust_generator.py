@@ -1399,6 +1399,40 @@ def at(xs: list[int], i: int) -> int:
     assert "pyo3" not in source
 
 
+def test_crate_mode_excludes_boundary_calling_functions_transitively(tmp_path: Path) -> None:
+    # A boundary-calling function has no pure-Rust crate form, and neither
+    # does any native function that calls it: keeping the caller would render
+    # a call to a function the crate never emits (undefined symbol).
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def bump(x: int) -> int:
+    return x + 1
+
+@rextio.native
+def b(x: int) -> int:
+    return bump(x) * 2
+
+@rextio.native
+def a(x: int) -> int:
+    return b(x) + 1
+
+@rextio.native
+def pure(x: int) -> int:
+    return x * 3
+""",
+        encoding="utf-8",
+    )
+
+    source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
+
+    assert "fn app__pure" in source
+    assert "app__a" not in source
+    assert "app__b" not in source
+
+
 def test_domain_error_prone_math_is_guarded(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """

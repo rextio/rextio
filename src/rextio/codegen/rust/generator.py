@@ -148,6 +148,67 @@ def generate_rust_module(
     )
 
 
+def _called_function_names(function: FunctionIR) -> set[str]:
+    """Every call-target name in the function body (qualified or bare)."""
+    names: set[str] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            if node.get("kind") == "call":
+                target = node.get("function")
+                if isinstance(target, str):
+                    names.add(target)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(function.body.to_dict())
+    return names
+
+
+def _crate_excluded_qualnames(module_ir: ModuleIR) -> set[str]:
+    """Functions with no pure-Rust crate form, closed over the native call graph.
+
+    Seeds are runtime-shim and boundary-calling functions (both need the
+    Python interpreter). Any function that calls an excluded function - by
+    qualname or by bare name within the same module, mirroring how the crate
+    renderer resolves native calls - is excluded as well, to a fixed point.
+    """
+    excluded = {
+        function.qualname
+        for function in module_ir.functions
+        if function.native_runtime_semantics or function.has_boundary_calls
+    }
+    if not excluded:
+        return excluded
+    candidates = [
+        function for function in module_ir.functions if function.qualname not in excluded
+    ]
+    calls_by_qualname = {
+        function.qualname: _called_function_names(function) for function in candidates
+    }
+    functions_by_qualname = {function.qualname: function for function in module_ir.functions}
+    changed = True
+    while changed:
+        changed = False
+        for function in candidates:
+            if function.qualname in excluded:
+                continue
+            targets = calls_by_qualname[function.qualname]
+            for excluded_qualname in excluded:
+                dependency = functions_by_qualname[excluded_qualname]
+                if excluded_qualname in targets or (
+                    dependency.module_name == function.module_name
+                    and dependency.name in targets
+                ):
+                    excluded.add(function.qualname)
+                    changed = True
+                    break
+    return excluded
+
+
 def generate_rust_crate_module(
     module_ir: ModuleIR,
     delegated_return_types: dict[str, str] | None = None,
@@ -162,13 +223,16 @@ def generate_rust_crate_module(
     ``__rextio_call_python``.
     """
     delegated_return_types = delegated_return_types or {}
+    # Embedded helpers are ordinary direct functions in crate mode;
+    # runtime-shim functions and boundary-calling functions have no
+    # pure-Rust crate form (both need the Python interpreter). The exclusion
+    # is TRANSITIVE: a function whose native callee is excluded would render
+    # a call to a function the crate does not emit, so it is excluded too.
+    excluded = _crate_excluded_qualnames(module_ir)
     direct_functions = [
         function
         for function in module_ir.functions
-        # Embedded helpers are ordinary direct functions in crate mode;
-        # runtime-shim functions and boundary-calling functions have no
-        # pure-Rust crate form (both need the Python interpreter).
-        if not function.native_runtime_semantics and not function.has_boundary_calls
+        if function.qualname not in excluded
     ]
     if not direct_functions:
         raise RustCodegenError("no direct Rust native functions are available for a Rust-importable crate")
