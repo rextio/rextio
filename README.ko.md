@@ -421,6 +421,31 @@ builtin·표준 라이브러리 lowering(제한적 형태):
 semantics shim으로 노출됩니다. 자세한 경계는
 [0.1.0 alpha의 미지원 기능](docs/unsupported-features.md)을 보세요.
 
+## Rextio 친화적인 Python 작성법
+
+native 승격과 boundary 동작은 코드의 모양에서 그대로 결정됩니다. Rextio를
+최대한 활용하려면:
+
+- 핫 함수는 끝까지 annotate하세요 - 매개변수와 반환 타입을 지원되는
+  scalar/list 타입으로. 타입이 해석되지 않는 함수는 fallback에 남습니다.
+- 핫 경로는 지원 subset 안에 두고 `rextio check`를 일찍 돌리세요. 모든
+  거부에는 원인이 된 구문이 명시됩니다.
+- 루프를 native 안으로 옮기세요: native 함수를 호출하는 Python 루프는
+  반복마다 경계를 넘지만(boundary 경고), 내부에서 루프를 도는 native
+  함수는 호출당 한 번만 넘습니다.
+- native 호출 그래프는 native로 유지하세요: native-to-native 호출은 Rust
+  안에 머뭅니다. fallback 전용 helper 호출은 호출자를 거부시키거나,
+  호출마다 발생하며 강등 threshold에 누적되는 scalar boundary call이
+  됩니다.
+- boundary call은 루프와 comprehension 본문 밖에 두세요(`RXT076`).
+  밖으로 끌어올리거나, callee가 subset에 맞으면 `@rextio.native`로
+  마킹하세요.
+- 경계는 불변 스칼라로 건너세요. 컨테이너는 경계를 넘지 않습니다.
+- Python에 남아야 하는 함수는 `@rextio.exempt`로 표시하고, 혼합 함수는
+  typed 핫 코어가 별도 함수가 되도록 분리하세요.
+- `rextio bench`로 측정하세요: 아주 작은 함수는 호출 오버헤드에 질 수
+  있으므로 native 호출 한 번에 충분한 작업을 몰아넣으세요.
+
 ## Python runtime semantics shim
 
 일부 Python 기능은 타입이 있는 Rust 문장으로 안전하게 번역할 수 없습니다.

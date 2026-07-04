@@ -401,6 +401,27 @@ builtin 与标准库下沉（受限形式）:
 semantics shim 暴露。详细边界见
 [0.1.0 alpha 不支持的特性](docs/unsupported-features.md)。
 
+## 编写适合 Rextio 的 Python
+
+native 提升与 boundary 行为直接由代码形状决定。要充分发挥 Rextio:
+
+- 热点函数从头到尾加注解 - 参数与返回类型都用受支持的 scalar/list 类型。
+  类型无法解析的函数会留在 fallback。
+- 热点路径保持在受支持的 subset 内，并尽早运行 `rextio check`;
+  每条拒绝都会指明导致它的构造。
+- 把循环移进 native: 调用 native 函数的 Python 循环每次迭代都跨越边界
+  （boundary 警告），而内部循环的 native 函数每次调用只跨越一次。
+- 让 native 调用图保持 native: native-to-native 调用留在 Rust 内。调用
+  仅 fallback 的 helper 要么使调用者被拒绝，要么变成每次调用发生、并计入
+  降级 threshold 的 scalar boundary call。
+- 让 boundary call 远离循环和推导式主体（`RXT076`）; 把它提升到循环外，
+  或在 callee 符合 subset 时标记 `@rextio.native`。
+- 跨边界只传不可变标量; 容器绝不跨越边界。
+- 必须留在 Python 的函数用 `@rextio.exempt` 标记，混合函数应拆分，
+  让带类型的热点核心成为独立函数。
+- 用 `rextio bench` 测量: 非常小的函数可能输给调用开销，
+  所以每次 native 调用要聚合足够的工作量。
+
 ## Python runtime semantics shim
 
 一些 Python 特性无法安全翻译为带类型的 Rust 语句。对显式标记的 native

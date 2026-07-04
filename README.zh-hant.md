@@ -403,6 +403,27 @@ builtin 與標準函式庫下沉（受限形式）:
 semantics shim 暴露。詳細邊界見
 [0.1.0 alpha 不支援的特性](docs/unsupported-features.md)。
 
+## 撰寫適合 Rextio 的 Python
+
+native 提升與 boundary 行為直接由程式碼形狀決定。要充分發揮 Rextio:
+
+- 熱點函式從頭到尾加註解 - 參數與回傳型別都用受支援的 scalar/list 型別。
+  型別無法解析的函式會留在 fallback。
+- 熱點路徑保持在受支援的 subset 內，並盡早執行 `rextio check`;
+  每條拒絕都會指明導致它的構造。
+- 把迴圈移進 native: 呼叫 native 函式的 Python 迴圈每次迭代都跨越邊界
+  （boundary 警告），而內部迴圈的 native 函式每次呼叫只跨越一次。
+- 讓 native 呼叫圖保持 native: native-to-native 呼叫留在 Rust 內。呼叫
+  僅 fallback 的 helper 要麼使呼叫者被拒絕，要麼變成每次呼叫發生、並計入
+  降級 threshold 的 scalar boundary call。
+- 讓 boundary call 遠離迴圈和推導式主體（`RXT076`）; 把它提升到迴圈外，
+  或在 callee 符合 subset 時標記 `@rextio.native`。
+- 跨邊界只傳不可變純量; 容器絕不跨越邊界。
+- 必須留在 Python 的函式用 `@rextio.exempt` 標記，混合函式應拆分，
+  讓帶型別的熱點核心成為獨立函式。
+- 用 `rextio bench` 測量: 非常小的函式可能輸給呼叫開銷，
+  所以每次 native 呼叫要聚合足夠的工作量。
+
 ## Python runtime semantics shim
 
 一些 Python 特性無法安全翻譯為帶型別的 Rust 敘述。對顯式標記的 native

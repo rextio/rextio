@@ -427,6 +427,30 @@ runtime semantics shim として公開されます。詳細な境界は
 [0.1.0 alpha の未サポート機能](docs/unsupported-features.md) を参照して
 ください。
 
+## Rextio に適した Python の書き方
+
+native への昇格と boundary の挙動はコードの形からそのまま決まります。
+Rextio を最大限に活かすには:
+
+- ホットな関数は端から端まで annotate する - 引数と戻り値の型を、サポート
+  される scalar/list 型で。型が解決できない関数は fallback に残ります。
+- ホットパスはサポート subset の中に収め、`rextio check` を早めに実行する。
+  すべての拒否には原因となった構文が明示されます。
+- ループを native の中へ移す: native 関数を呼ぶ Python ループは反復ごとに
+  境界を越えますが（boundary 警告）、内部でループする native 関数は呼び出し
+  ごとに 1 回だけ越えます。
+- native 呼び出しグラフは native のまま保つ: native-to-native 呼び出しは
+  Rust 内に留まります。fallback 専用 helper の呼び出しは呼び出し側を拒否
+  させるか、呼び出しごとに発生して降格 threshold に加算される scalar
+  boundary call になります。
+- boundary call はループや内包表記本体の外に置く（`RXT076`）。外へ
+  巻き上げるか、callee が subset に収まるなら `@rextio.native` を付ける。
+- 境界は不変スカラーで越える。コンテナは境界を越えません。
+- Python に残すべき関数は `@rextio.exempt` を付け、混在した関数は typed な
+  ホットコアが独立した関数になるよう分割する。
+- `rextio bench` で測定する: 非常に小さな関数は呼び出しオーバーヘッドに
+  負けることがあるため、native 呼び出し 1 回に十分な仕事をまとめる。
+
 ## Python runtime semantics shim
 
 一部の Python 機能は型付き Rust 文へ安全に翻訳できません。明示的にマーク

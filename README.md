@@ -421,6 +421,29 @@ runtime semantics shim where supported. See
 [Unsupported Features in 0.1.0 alpha](docs/unsupported-features.md) for the
 detailed boundary.
 
+## Writing Rextio-Friendly Python
+
+Native promotion and boundary behavior follow directly from code shape. To
+get the most out of Rextio:
+
+- Annotate hot functions end to end - parameters and return type, using the
+  supported scalar/list types. Unresolved types keep a function on fallback.
+- Keep hot paths inside the supported subset and run `rextio check` early;
+  every rejection names the construct that caused it.
+- Move loops into native code: a Python loop that calls a native function
+  crosses the boundary once per iteration (boundary warnings), while a
+  native function that loops internally crosses once per call.
+- Keep native call graphs native: native-to-native calls stay in Rust. A
+  call to a fallback-only helper either rejects the caller or becomes a
+  per-call scalar boundary call that counts toward the demotion threshold.
+- Keep boundary calls out of loops and comprehension bodies (`RXT076`);
+  hoist them, or mark the callee `@rextio.native` when it fits the subset.
+- Pass immutable scalars across boundaries; containers never cross.
+- Mark functions that must stay Python with `@rextio.exempt`, and split
+  mixed functions so the typed hot core is its own function.
+- Measure with `rextio bench`: very small functions can lose to call
+  overhead, so batch enough work into each native call.
+
 ## Python Runtime Semantics Shim
 
 Some Python features cannot be safely translated into typed Rust statements.
