@@ -30,8 +30,11 @@ from __future__ import annotations
 import os
 import shutil
 import warnings
+from pathlib import Path
 
 import pytest
+
+_E2E_DIR = Path(__file__).resolve().parent
 
 _NEEDS_CARGO = pytest.mark.needs_cargo
 _NEEDS_NUITKA = pytest.mark.needs_nuitka
@@ -86,6 +89,14 @@ def pytest_collection_modifyitems(
     for item in items:
         path = item.fspath
         if path is None or path.purebasename == "conftest":
+            continue
+        # pytest_collection_modifyitems is a session-scoped hook: when the run
+        # root is wider than tests/e2e (e.g. a full `pytest` from the repo
+        # root), this conftest still receives EVERY collected item. The
+        # toolchain classification only applies to this directory's tests -
+        # without this scope check the guard flagged the whole unit suite as
+        # "unclassified" in combined runs.
+        if not Path(str(path)).resolve().is_relative_to(_E2E_DIR):
             continue
         stem = path.purebasename
         toolchain = _classify(stem)
