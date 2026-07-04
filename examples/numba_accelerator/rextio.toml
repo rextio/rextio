@@ -1,0 +1,16 @@
+[build]
+native_backend = "rust"
+fallback_backend = "cpython"
+
+[rust]
+binding = "pyo3"
+build_tool = "cargo"
+
+[policy]
+native_marker = "auto"
+require_type_hints = true
+allow_dynamic_features = false
+boundary_warnings = true
+
+[imports]
+default_external_policy = "fallback"
