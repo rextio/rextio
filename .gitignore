@@ -44,3 +44,6 @@ crates/*/Cargo.lock
 .claude-octopus/
 .agents/
 .kilocode/
+
+# Example build outputs
+examples/*/dist/
