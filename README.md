@@ -606,3 +606,4 @@ Plans, not promises - priorities can shift with alpha feedback:
 - [Security model](SECURITY.md) — trust boundary and how to report vulnerabilities.
 - [Contributing](CONTRIBUTING.md) — setup, gates, and conventions.
 - [Changelog](CHANGELOG.md).
+- Author: Steve Si-young Song <rextio.co@gmail.com> — X (Twitter): [@RextioDev](https://x.com/RextioDev).

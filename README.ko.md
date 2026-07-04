@@ -600,3 +600,4 @@ python -m pytest
 - [보안 모델](SECURITY.md) — 신뢰 경계와 취약점 신고 방법.
 - [기여 안내](CONTRIBUTING.md) — 환경 설정, 게이트, 관례.
 - [변경 이력](CHANGELOG.md).
+- 개발자: 송시영 <rextio.co@gmail.com> — X (Twitter): [@RextioDev](https://x.com/RextioDev).
