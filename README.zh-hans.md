@@ -25,47 +25,7 @@ Rextio 0.1.0 是面向 Python 项目的 alpha 阶段本地构建工具。它找�
 Rextio 不是 Python 的替代品，也不是整个项目迁移到 Rust 的工具。Native
 编译是一种优化，Python fallback 行为始终是正确性的基准线。
 
-## 提供什么
-
-Rextio 可以从同一个 Python 项目产出多种 artifact:
-
-| 产出 | 用途 |
-| --- | --- |
-| `.rextio/generated/rust/` | 被接受的 native 函数的 Rust/PyO3 生成源码。 |
-| `.rextio/generated/python/` | 生成的 Python wrapper 与 fallback 模块。 |
-| `.rextio/build/python/` | import 兼容的 hybrid 包树。 |
-| `dist/*.whl` | 含 fallback 代码以及（构建成功时）native 扩展的 wheel。 |
-| `dist/<name>.pyz` | 为配置的 Python entrypoint 生成的 zipapp 可执行文件（可选）。 |
-| `dist/<name>.dist/` 或 `dist/<name>` | Nuitka standalone/onefile 可执行文件（可选）。 |
-| `dist/<name>` | 独立的 native Rust 二进制（`--executable-backend=rust`），无需 Python 运行时（可选）。 |
-| `dist/<crate>-rust-crate/` | 供 Rust 项目 import 的 Rust 库 crate（可选）。 |
-
-生成的 Python wrapper 会先尝试 native 代码；当 native 被禁用、不可用、被
-分析拒绝、或超过配置的 boundary threshold 时回落到 Python。
-
-```text
-REXTIO_NATIVE_MODE=fallback
-```
-
-设置 `REXTIO_DEBUG_NATIVE=1` 可以在构建出的 native 模块加载失败时抛出完整
-traceback（而不是警告后回落）— 调试 ABI 不匹配或 wrapper/codegen 命名不
-一致时很有用。
-
-## 环境要求
-
-| 组件 | 版本 | 说明 |
-| --- | --- | --- |
-| CPython | >= 3.11（在 3.11-3.14 上验证） | 分析器使用构建解释器的 `ast`；生成的扩展固定 PyO3 0.29（最高支持 CPython 3.14）。更新的解释器可能可用，但未经验证。wheel 带有构建解释器 minor 版本标签。 |
-| Rust toolchain | MSRV 1.83（在最新 stable 上验证） | 生成的 crate 使用 edition 2021 + PyO3 0.29。请通过 [rustup](https://rustup.rs) 安装。 |
-| Nuitka（可选） | >= 2.0 | 仅用于 `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka`。前两者由构建 preflight 预先拒绝；hybrid runtime 则在被委托的 fallback 调用确实需要 Nuitka dispatcher 时检查。 |
-| Numba（可选，experimental） | 随解释器: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61, 3.14→>=0.63 | Rextio 只识别 Numba 装饰器；该包是用户项目的运行时依赖，而非 Rextio 的依赖。下限遵循 [Numba 版本支持表](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information)。 |
-
-工具位置与版本 pin 可配置: 通过 `rextio.toml` 的 `[toolchain]`（或
-`REXTIO_*` 环境变量 / CLI 标志）选择构建所用的 cargo、maturin、Nuitka
-和 CPython，并可校验其版本。参见
-[REXTIO.md](./REXTIO.md#toolchain-selection-and-version-pins)。
-
-## 快速示例
+## 快速开始
 
 从普通的 Python 代码开始:
 
@@ -100,23 +60,7 @@ assert sum_squares([1, 2, 3]) == 14
 assert format_result(14) == "score=14"
 ```
 
-## 常用流程
-
-```text
-rextio init --project-root path/to/project
-rextio check path/to/project
-rextio generate path/to/project --fallback=cpython
-rextio build path/to/project --fallback=cpython
-rextio bench myapp.math_ops.sum_squares --project-root path/to/project
-rextio clean path/to/project
-```
-
-只需要生成源码时用 `rextio generate`。它不会运行 Cargo、maturin、Nuitka、
-wheel 构建或可执行文件打包。
-
-需要生成源码加上编译/打包产物时用 `rextio build`。
-
-## 命令
+主要命令:
 
 | 命令 | 作用 |
 | --- | --- |
@@ -138,6 +82,205 @@ rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --rust-importable --rust-crate-name=my_native
 ```
+
+常见的完整流程:
+
+```text
+rextio init --project-root path/to/project
+rextio check path/to/project
+rextio generate path/to/project --fallback=cpython
+rextio build path/to/project --fallback=cpython
+rextio bench myapp.math_ops.sum_squares --project-root path/to/project
+rextio clean path/to/project
+```
+
+只需要生成源码时用 `rextio generate`。它不会运行 Cargo、maturin、Nuitka、
+wheel 构建或可执行文件打包。
+
+需要生成源码加上编译/打包产物时用 `rextio build`。
+
+## 环境要求
+
+| 组件 | 版本 | 说明 |
+| --- | --- | --- |
+| CPython | >= 3.11（在 3.11-3.14 上验证） | 分析器使用构建解释器的 `ast`；生成的扩展固定 PyO3 0.29（最高支持 CPython 3.14）。更新的解释器可能可用，但未经验证。wheel 带有构建解释器 minor 版本标签。 |
+| Rust toolchain | MSRV 1.83（在最新 stable 上验证） | 生成的 crate 使用 edition 2021 + PyO3 0.29。请通过 [rustup](https://rustup.rs) 安装。 |
+| Nuitka（可选） | >= 2.0 | 仅用于 `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka`。前两者由构建 preflight 预先拒绝；hybrid runtime 则在被委托的 fallback 调用确实需要 Nuitka dispatcher 时检查。 |
+| Numba（可选，experimental） | 随解释器: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61, 3.14→>=0.63 | Rextio 只识别 Numba 装饰器；该包是用户项目的运行时依赖，而非 Rextio 的依赖。下限遵循 [Numba 版本支持表](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information)。 |
+
+工具位置与版本 pin 可配置: 通过 `rextio.toml` 的 `[toolchain]`（或
+`REXTIO_*` 环境变量 / CLI 标志）选择构建所用的 cargo、maturin、Nuitka
+和 CPython，并可校验其版本。参见
+[REXTIO.md](./REXTIO.md#toolchain-selection-and-version-pins)。
+
+## 构建 target
+
+Rextio 可以从同一个 Python 项目产出多种 artifact:
+
+| 产出 | 用途 |
+| --- | --- |
+| `.rextio/generated/rust/` | 被接受的 native 函数的 Rust/PyO3 生成源码。 |
+| `.rextio/generated/python/` | 生成的 Python wrapper 与 fallback 模块。 |
+| `.rextio/build/python/` | import 兼容的 hybrid 包树。 |
+| `dist/*.whl` | 含 fallback 代码以及（构建成功时）native 扩展的 wheel。 |
+| `dist/<name>.pyz` | 为配置的 Python entrypoint 生成的 zipapp 可执行文件（可选）。 |
+| `dist/<name>.dist/` 或 `dist/<name>` | Nuitka standalone/onefile 可执行文件（可选）。 |
+| `dist/<name>` | 独立的 native Rust 二进制（`--executable-backend=rust`），无需 Python 运行时（可选）。 |
+| `dist/<crate>-rust-crate/` | 供 Rust 项目 import 的 Rust 库 crate（可选）。 |
+
+生成的 Python wrapper 会先尝试 native 代码；当 native 被禁用、不可用、被
+分析拒绝、或超过配置的 boundary threshold 时回落到 Python。
+
+```text
+REXTIO_NATIVE_MODE=fallback
+```
+
+设置 `REXTIO_DEBUG_NATIVE=1` 可以在构建出的 native 模块加载失败时抛出完整
+traceback（而不是警告后回落）— 调试 ABI 不匹配或 wrapper/codegen 命名不
+一致时很有用。
+
+Zipapp:
+
+```text
+rextio build . --entrypoint=myapp.cli:main --executable-name=myapp
+```
+
+写出 `dist/myapp.pyz`。目标机器仍需要兼容的 Python 解释器。native 扩展
+不会从 zipapp 内部 import，因此 `_rextio_native` 不可用时 wrapper 保持
+fallback 行为。
+
+Nuitka:
+
+```text
+rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=standalone
+rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
+```
+
+Nuitka 可执行文件打包是 experimental 的，需要安装 Nuitka。
+
+Native Rust 二进制:
+
+```text
+rextio build . --entrypoint=myapp.cli:main --executable-backend=rust
+```
+
+编译一个 `main` 在 Rust 中运行的 native 二进制（`dist/<name>`）。
+entrypoint 必须是被接受的 direct-native `def main(argv: list[str]) -> int`:
+`argv` 对应 `sys.argv`（index 0 是程序路径），返回的 `int` 是进程退出码，
+抛出的错误以 CPython 风格（`OverflowError: ...`）打印到 stderr 并以非零
+退出。需要 Cargo。
+
+当 entrypoint 调用留在 Python fallback 的项目函数（Rust subset 之外的
+代码）时，Rextio 把该调用委托给外部 CPython 子进程: 构建会附带
+`dist/<name>.runtime/` 目录（dispatcher + 项目源码），二进制通过 stdio
+驱动它，难以编译的逻辑可以留作 Python。这样的 hybrid 二进制在运行时需要
+Python 解释器；调用图完全 direct-native 的二进制则是无 Python 依赖的
+独立程序。被委托调用的参数与结果都必须是不可变标量
+（`int`/`float`/`bool`/`str`/`None`）；`list`/`dict`/`set` 在任一方向都
+不被委托（它们按值过线，切断 CPython 保持的别名关系，被修改的参数或被
+修改的别名返回值会悄悄偏离），非有限 float（`NaN`/`Infinity`）会被拒绝
+而不是悄悄丢弃。被委托函数自身的 stdout/stderr 出现在二进制的 stderr 上
+（二进制的 stdout 承载线协议）。RXT080 runtime shim 上的函数不被委托:
+依赖它的 entry 会被拒绝而非构建。
+
+`--executable-python` 固定二进制启动的解释器（`PATH` 上的名字、绝对路径、
+或相对 `<binary>.runtime` 的路径以便捆绑）。`REXTIO_RUNTIME_PYTHON` 在
+目标机器上于运行时覆盖它。`--hybrid-runtime=nuitka` 则把被委托的 Python
+编译成随 runtime 目录一起交付的自包含 dispatcher 可执行文件，使 hybrid
+二进制无需单独安装 Python（构建时需要 Nuitka）。
+
+当 Rust 应用需要使用 direct Rust 函数时，构建一个额外的 Cargo 库 crate:
+
+```text
+rextio build . --rust-importable --rust-crate-name=my_native
+```
+
+在 Rust 中使用生成的 crate:
+
+```toml
+[dependencies]
+my_native = { path = "../dist/my_native-rust-crate" }
+```
+
+```rust
+fn main() -> Result<(), my_native::RextioError> {
+    let value = my_native::myapp__math_ops__sum_squares(vec![1, 2, 3])?;
+    assert_eq!(value, 14);
+    Ok(())
+}
+```
+
+只有直接下沉为带类型 Rust 的函数通过该 crate 导出。仅 fallback 的函数、
+runtime semantics shim、以及使用标量 boundary call 的函数（都需要解释器）
+仍是面向 Python 的路径。
+
+## 配置
+
+构建/分析设置按此顺序解析:
+
+```text
+CLI 参数 > 环境变量 > rextio.toml > 内置默认值
+```
+
+常用设置:
+
+| `rextio.toml` 键 | CLI 参数 | 环境变量 |
+| --- | --- | --- |
+| `[build] native_backend` | `--native-backend` / `--target-language` | `REXTIO_TARGET_LANGUAGE` / `REXTIO_NATIVE_BACKEND` |
+| `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
+| `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
+| `[build] build_timeout_seconds` | `--build-timeout` | `REXTIO_BUILD_TIMEOUT` |
+| `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
+| `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
+| `[rust] importable` | `--rust-importable` / `--no-rust-importable` | `REXTIO_RUST_IMPORTABLE` |
+| `[rust] crate_name` | `--rust-crate-name` | `REXTIO_RUST_CRATE_NAME` |
+| `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
+| `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
+| `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
+| `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
+| `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
+| `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
+| `[embedding] enabled` | `--embed-helpers` / `--no-embed-helpers` | `REXTIO_EMBED_HELPERS` |
+| `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
+| `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
+| `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
+| `[executable] nuitka_mode` | `--nuitka-mode` | `REXTIO_NUITKA_MODE` |
+| `[executable] python` | `--executable-python` | `REXTIO_EXECUTABLE_PYTHON` |
+| `[executable] hybrid_runtime` | `--hybrid-runtime` | `REXTIO_HYBRID_RUNTIME` |
+| `[toolchain] cargo` | `--cargo` | `REXTIO_CARGO` |
+| `[toolchain] maturin` | `--maturin` | `REXTIO_MATURIN` |
+| `[toolchain] nuitka` | `--nuitka` | `REXTIO_NUITKA` |
+| `[toolchain] python` | `--python` | `REXTIO_PYTHON` |
+| `[toolchain] rust_toolchain` | `--rust-toolchain` | `REXTIO_RUST_TOOLCHAIN` |
+| `[toolchain] *_version` pin | `--cargo-version` 等 | `REXTIO_CARGO_VERSION` 等 |
+| `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
+| `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
+| `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
+
+0.1.0 alpha 中唯一实现的 native 目标是 Rust。`mojo` 与 `julia` 作为未来
+backend 的规划值被接受，但在这些 backend 存在之前代码生成会明确失败。
+
+Rextio 插件是用 `pip` 或 `uv` 等工具安装的普通 Python 包。插件包通过
+`rextio.plugins` entry point 组暴露元数据，包括它覆盖的 Python 包名。
+项目用 `[plugins] enabled` 或 `--enable-plugin` 启用特定插件 id。
+
+没有激活 Rextio 插件的外部 Python 包默认保守处理: Rextio 不会悄悄把第三
+方包源码翻译成 Rust。除非添加插件，或对已知纯 Python 包显式 opt-in 实验
+性依赖分析，对这些包的调用会让周围的 native 候选留在 fallback:
+
+```toml
+[imports]
+default_external_policy = "fallback"
+
+[imports.packages]
+"some_pure_python_pkg" = { policy = "try-native", max_depth = 1 }
+"legacy_dynamic_pkg" = "fallback"
+"known_pkg" = { policy = "plugin", plugin = "known-rust" }
+```
+
+支持的包策略是 `fallback`、`analyze`、`try-native`、`plugin`。具体的第三
+方插件变换和一般依赖下沉不随 0.1.0 alpha 捆绑；`try-native` 是显式的规划
+策略，没有安全的 direct 下沉时仍会 fallback。
 
 ## Native 选择
 
@@ -329,153 +472,6 @@ Nuitka *可执行文件*（`--executable-backend=nuitka`）与
 的快速路径。与 boundary call 不同，内嵌的 helper 是构建时编译进 native
 产物的副本，因此对 helper 的运行时替换（monkeypatch）对 native 调用方
 不可见。
-
-## Rust-importable crate
-
-当 Rust 应用需要使用 direct Rust 函数时，构建一个额外的 Cargo 库 crate:
-
-```text
-rextio build . --rust-importable --rust-crate-name=my_native
-```
-
-在 Rust 中使用生成的 crate:
-
-```toml
-[dependencies]
-my_native = { path = "../dist/my_native-rust-crate" }
-```
-
-```rust
-fn main() -> Result<(), my_native::RextioError> {
-    let value = my_native::myapp__math_ops__sum_squares(vec![1, 2, 3])?;
-    assert_eq!(value, 14);
-    Ok(())
-}
-```
-
-只有直接下沉为带类型 Rust 的函数通过该 crate 导出。仅 fallback 的函数、
-runtime semantics shim、以及使用标量 boundary call 的函数（都需要解释器）
-仍是面向 Python 的路径。
-
-## 可执行 artifact
-
-Zipapp:
-
-```text
-rextio build . --entrypoint=myapp.cli:main --executable-name=myapp
-```
-
-写出 `dist/myapp.pyz`。目标机器仍需要兼容的 Python 解释器。native 扩展
-不会从 zipapp 内部 import，因此 `_rextio_native` 不可用时 wrapper 保持
-fallback 行为。
-
-Nuitka:
-
-```text
-rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=standalone
-rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
-```
-
-Nuitka 可执行文件打包是 experimental 的，需要安装 Nuitka。
-
-Native Rust 二进制:
-
-```text
-rextio build . --entrypoint=myapp.cli:main --executable-backend=rust
-```
-
-编译一个 `main` 在 Rust 中运行的 native 二进制（`dist/<name>`）。
-entrypoint 必须是被接受的 direct-native `def main(argv: list[str]) -> int`:
-`argv` 对应 `sys.argv`（index 0 是程序路径），返回的 `int` 是进程退出码，
-抛出的错误以 CPython 风格（`OverflowError: ...`）打印到 stderr 并以非零
-退出。需要 Cargo。
-
-当 entrypoint 调用留在 Python fallback 的项目函数（Rust subset 之外的
-代码）时，Rextio 把该调用委托给外部 CPython 子进程: 构建会附带
-`dist/<name>.runtime/` 目录（dispatcher + 项目源码），二进制通过 stdio
-驱动它，难以编译的逻辑可以留作 Python。这样的 hybrid 二进制在运行时需要
-Python 解释器；调用图完全 direct-native 的二进制则是无 Python 依赖的
-独立程序。被委托调用的参数与结果都必须是不可变标量
-（`int`/`float`/`bool`/`str`/`None`）；`list`/`dict`/`set` 在任一方向都
-不被委托（它们按值过线，切断 CPython 保持的别名关系，被修改的参数或被
-修改的别名返回值会悄悄偏离），非有限 float（`NaN`/`Infinity`）会被拒绝
-而不是悄悄丢弃。被委托函数自身的 stdout/stderr 出现在二进制的 stderr 上
-（二进制的 stdout 承载线协议）。RXT080 runtime shim 上的函数不被委托:
-依赖它的 entry 会被拒绝而非构建。
-
-`--executable-python` 固定二进制启动的解释器（`PATH` 上的名字、绝对路径、
-或相对 `<binary>.runtime` 的路径以便捆绑）。`REXTIO_RUNTIME_PYTHON` 在
-目标机器上于运行时覆盖它。`--hybrid-runtime=nuitka` 则把被委托的 Python
-编译成随 runtime 目录一起交付的自包含 dispatcher 可执行文件，使 hybrid
-二进制无需单独安装 Python（构建时需要 Nuitka）。
-
-## 配置
-
-构建/分析设置按此顺序解析:
-
-```text
-CLI 参数 > 环境变量 > rextio.toml > 内置默认值
-```
-
-常用设置:
-
-| `rextio.toml` 键 | CLI 参数 | 环境变量 |
-| --- | --- | --- |
-| `[build] native_backend` | `--native-backend` / `--target-language` | `REXTIO_TARGET_LANGUAGE` / `REXTIO_NATIVE_BACKEND` |
-| `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
-| `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
-| `[build] build_timeout_seconds` | `--build-timeout` | `REXTIO_BUILD_TIMEOUT` |
-| `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
-| `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
-| `[rust] importable` | `--rust-importable` / `--no-rust-importable` | `REXTIO_RUST_IMPORTABLE` |
-| `[rust] crate_name` | `--rust-crate-name` | `REXTIO_RUST_CRATE_NAME` |
-| `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
-| `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
-| `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
-| `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
-| `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
-| `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
-| `[embedding] enabled` | `--embed-helpers` / `--no-embed-helpers` | `REXTIO_EMBED_HELPERS` |
-| `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
-| `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
-| `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
-| `[executable] nuitka_mode` | `--nuitka-mode` | `REXTIO_NUITKA_MODE` |
-| `[executable] python` | `--executable-python` | `REXTIO_EXECUTABLE_PYTHON` |
-| `[executable] hybrid_runtime` | `--hybrid-runtime` | `REXTIO_HYBRID_RUNTIME` |
-| `[toolchain] cargo` | `--cargo` | `REXTIO_CARGO` |
-| `[toolchain] maturin` | `--maturin` | `REXTIO_MATURIN` |
-| `[toolchain] nuitka` | `--nuitka` | `REXTIO_NUITKA` |
-| `[toolchain] python` | `--python` | `REXTIO_PYTHON` |
-| `[toolchain] rust_toolchain` | `--rust-toolchain` | `REXTIO_RUST_TOOLCHAIN` |
-| `[toolchain] *_version` pin | `--cargo-version` 等 | `REXTIO_CARGO_VERSION` 等 |
-| `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
-| `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
-| `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
-
-0.1.0 alpha 中唯一实现的 native 目标是 Rust。`mojo` 与 `julia` 作为未来
-backend 的规划值被接受，但在这些 backend 存在之前代码生成会明确失败。
-
-Rextio 插件是用 `pip` 或 `uv` 等工具安装的普通 Python 包。插件包通过
-`rextio.plugins` entry point 组暴露元数据，包括它覆盖的 Python 包名。
-项目用 `[plugins] enabled` 或 `--enable-plugin` 启用特定插件 id。
-
-没有激活 Rextio 插件的外部 Python 包默认保守处理: Rextio 不会悄悄把第三
-方包源码翻译成 Rust。除非添加插件，或对已知纯 Python 包显式 opt-in 实验
-性依赖分析，对这些包的调用会让周围的 native 候选留在 fallback:
-
-```toml
-[imports]
-default_external_policy = "fallback"
-
-[imports.packages]
-"some_pure_python_pkg" = { policy = "try-native", max_depth = 1 }
-"legacy_dynamic_pkg" = "fallback"
-"known_pkg" = { policy = "plugin", plugin = "known-rust" }
-```
-
-支持的包策略是 `fallback`、`analyze`、`try-native`、`plugin`。具体的第三
-方插件变换和一般依赖下沉不随 0.1.0 alpha 捆绑；`try-native` 是显式的规划
-策略，没有安全的 direct 下沉时仍会 fallback。
 
 ## 示例
 
