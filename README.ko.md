@@ -112,8 +112,8 @@ wheel 빌드, 실행파일 패키징은 실행하지 않습니다.
 | Numba (선택, experimental) | 인터프리터에 맞춰: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61, 3.14→>=0.63 | Rextio는 Numba 데코레이터를 인식만 하며, 패키지 자체는 Rextio가 아닌 사용자 프로젝트의 런타임 의존성입니다. 하한은 [Numba 버전 지원 표](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information)를 따릅니다. |
 
 도구 위치와 버전 pin을 설정할 수 있습니다: `rextio.toml`의 `[toolchain]`
-(또는 `REXTIO_*` 환경변수 / CLI 플래그)으로 빌드가 사용할 cargo·maturin·
-Nuitka·CPython을 선택하고 버전을 검증할 수 있습니다.
+(또는 `REXTIO_*` 환경변수 / CLI 플래그)으로 빌드가 사용할
+cargo·maturin·Nuitka·CPython을 선택하고 버전을 검증할 수 있습니다.
 [REXTIO.md](./REXTIO.md#toolchain-selection-and-version-pins) 참고.
 
 ## 빌드 target
