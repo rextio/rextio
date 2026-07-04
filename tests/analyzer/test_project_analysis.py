@@ -70,14 +70,17 @@ def add(x: int, y: int) -> int:
     assert analysis.rejected_native_functions == []
 
 
-def test_ignores_targeted_native_marker_for_inactive_target(tmp_path: Path) -> None:
+def test_unsupported_targeted_native_marker_is_rejected_loudly(tmp_path: Path) -> None:
+    # The analyzer parses markers from source without importing the module,
+    # so a target the decorator would refuse at import time must still be
+    # rejected loudly here (rust is the only supported target language).
     write_module(
         tmp_path,
         "app.py",
         """
 import rextio
 
-@rextio.native(target="mojo")
+@rextio.native(target="zig")
 def add(x: int, y: int) -> int:
     return x + y
 """,
@@ -85,29 +88,12 @@ def add(x: int, y: int) -> int:
 
     analysis = analyze_project(tmp_path, native_marker="decorator", target_language="rust")
 
-    assert analysis.native_candidates == []
+    assert analysis.accepted_native_functions == []
     function = analysis.modules[0].functions_by_name["add"]
-    assert function.native_target_language == "mojo"
-    assert function.diagnostics == []
-
-
-def test_accepts_targeted_native_marker_when_target_is_active(tmp_path: Path) -> None:
-    write_module(
-        tmp_path,
-        "app.py",
-        """
-import rextio
-
-@rextio.native(target="mojo")
-def add(x: int, y: int) -> int:
-    return x + y
-""",
+    assert any(
+        "unsupported @rextio.native target" in diagnostic.message
+        for diagnostic in function.diagnostics
     )
-
-    analysis = analyze_project(tmp_path, native_marker="decorator", target_language="mojo")
-
-    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.add"]
-    assert analysis.accepted_native_functions[0].native_target_language == "mojo"
 
 
 def test_rejects_invalid_native_marker_target(tmp_path: Path) -> None:

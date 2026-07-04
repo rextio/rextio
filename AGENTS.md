@@ -522,10 +522,9 @@ Command routing and output formatting flags such as project roots, bench
 targets, `init --force`, and `check --json` are command-line concerns rather
 than project configuration.
 
-Rust is the only implemented native target in 0.1.0. Non-Rust
-target-language values may be accepted as planning configuration so
-version-specific plugin metadata can be represented, but code generation must
-fail clearly until a matching backend is implemented. Rextio plugins must be ordinary Python packages
+Rust is the only native target in 0.1.0: `native_backend` must reject any
+other value at configuration load with a clear error, and the decorator/
+analyzer must reject markers naming other targets. Rextio plugins must be ordinary Python packages
 installed with tools such as `pip` or `uv`. Each plugin package exposes metadata
 through the `rextio.plugins` entry point group, and projects opt into plugin ids
 with `[plugins] enabled` or `--enable-plugin`.
@@ -906,12 +905,10 @@ def sum_squares(xs: list[float]) -> float:
     return total
 ```
 
-The target name is normalized case-insensitively. 0.1.0 accepts non-Rust
-values as target-planning configuration, but only Rust code generation is
-implemented. A target-specific marker applies only when the active
-`[build] native_backend` / `--target-language` matches that marker: a marker
-pinned to a non-Rust target is not a Rust native candidate and remains Python
-fallback for that build.
+The target name is normalized case-insensitively; `rust` is the only
+supported value in 0.1.0. A marker naming any other target is rejected with
+a diagnostic (the analyzer parses source without importing it, so this is
+enforced at analysis time as well as at decoration time).
 
 Projects that want decorator-only behavior can opt out of automatic discovery:
 

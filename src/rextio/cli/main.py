@@ -49,11 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--native-backend",
         "--target-language",
         dest="native_backend",
-        choices=("rust", "mojo", "julia"),
+        choices=("rust",),
         default=None,
         help=(
-            "Native target language (0.1.0 implements rust; mojo/julia are "
-            "planned). Overrides REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
+            "Native target language (0.1.0 implements rust). Overrides "
+            "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
     )
@@ -70,11 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--native-backend",
         "--target-language",
         dest="native_backend",
-        choices=("rust", "mojo", "julia"),
+        choices=("rust",),
         default=None,
         help=(
-            "Native target language (0.1.0 implements rust; mojo/julia are "
-            "planned). Overrides REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
+            "Native target language (0.1.0 implements rust). Overrides "
+            "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
     )
@@ -198,11 +198,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--native-backend",
         "--target-language",
         dest="native_backend",
-        choices=("rust", "mojo", "julia"),
+        choices=("rust",),
         default=None,
         help=(
-            "Native target language (0.1.0 implements rust; mojo/julia are "
-            "planned). Overrides REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
+            "Native target language (0.1.0 implements rust). Overrides "
+            "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
     )

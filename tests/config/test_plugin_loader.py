@@ -111,20 +111,20 @@ def test_load_plugin_registry_ignores_legacy_rules_metadata() -> None:
 
 def test_load_plugin_registry_filters_by_target_version() -> None:
     registry = load_plugin_registry(
-        PluginConfig(enabled=("mojo-dev",)),
-        TargetSpec(language="mojo", version="25.2"),
+        PluginConfig(enabled=("rust-pinned",)),
+        TargetSpec(language="rust", version="1.90"),
         entry_points=(
             FakeEntryPoint(
-                "mojo-dev",
+                "rust-pinned",
                 {
-                    "target_language": "mojo",
-                    "target_versions": ["25.1"],
+                    "target_language": "rust",
+                    "target_versions": ["1.83"],
                 },
             ),
         ),
     )
 
-    assert [plugin.id for plugin in registry.discovered] == ["mojo-dev"]
+    assert [plugin.id for plugin in registry.discovered] == ["rust-pinned"]
     assert registry.active == ()
 
 

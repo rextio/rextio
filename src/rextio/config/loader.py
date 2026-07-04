@@ -276,7 +276,7 @@ def _validate_config_values(
     _require_bool("policy", "boundary_warnings", policy["boundary_warnings"])
     _require_bool("policy", "native_top_level", policy["native_top_level"])
 
-    _require_value("build", "native_backend", build["native_backend"], {"julia", "mojo", "rust"})
+    _require_value("build", "native_backend", build["native_backend"], {"rust"})
     _require_value("build", "fallback_backend", build["fallback_backend"], {"cpython", "nuitka"})
     _require_value("rust", "binding", rust["binding"], {"pyo3"})
     _require_value("rust", "build_tool", rust["build_tool"], {"cargo", "maturin"})

@@ -39,9 +39,8 @@ conservative local context inference. Projects can set
 Explicit native markers can also name the intended native target:
 `@rextio.native(target="rust")`. Target names are normalized
 case-insensitively, and a target-specific marker applies only when the active
-`--target-language` / `[build] native_backend` matches it. 0.1.0 can record
-non-Rust target selections for planning, but only Rust code generation is
-implemented.
+`--target-language` / `[build] native_backend` matches it. `rust` is the only
+accepted target language in 0.1.0.
 
 Use `@rextio.exempt` on functions that must stay on Python fallback. Exemptions
 override automatic discovery and explicit native markers.
@@ -273,10 +272,8 @@ verifies their versions:
   rustup channel selection is reflected), and they add to - never relax -
   the hard floors (Nuitka >= 2.0 still applies).
 
-Rust is the only implemented native target in 0.1.0. A non-Rust target
-language can be recorded so versioned plugin metadata can be modeled, but
-native source generation reports a clear unsupported-backend failure until a
-matching codegen backend exists. Rextio plugins are installed as ordinary
+Rust is the only native target in 0.1.0: `native_backend` rejects any other
+value at configuration load. Rextio plugins are installed as ordinary
 Python packages and expose metadata through the `rextio.plugins` entry point
 group. Projects enable specific plugin ids with `[plugins] enabled` or
 `--enable-plugin`.

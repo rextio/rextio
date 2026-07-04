@@ -55,7 +55,7 @@ Tiers:
 
 | Feature | Tier | Notes |
 | --- | --- | --- |
-| Additional native target languages | Planned | Non-Rust `native_backend` values are accepted as planning configuration only; code generation is rejected with `RXT050` until a matching backend exists. |
+| Additional native target languages | Planned | `native_backend` accepts only `rust` in 0.1.0; any other value is rejected at configuration load with a clear error. |
 
 If a feature you depend on is **Experimental**, pin your Rextio version and watch the
 changelog; if it is **Planned**, expect a diagnostic rather than a build.

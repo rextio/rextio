@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-SUPPORTED_TARGET_LANGUAGES = {"rust", "mojo", "julia"}
+SUPPORTED_TARGET_LANGUAGES = {"rust"}
 IMPLEMENTED_TARGET_LANGUAGES = {"rust"}
 
 

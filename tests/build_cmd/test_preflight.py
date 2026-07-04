@@ -31,7 +31,7 @@ def test_cargo_required_even_when_only_maturin_is_present(
 
 def test_non_rust_backend_does_not_require_cargo(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(toolchain_mod.shutil, "which", lambda name: None)
-    assert preflight.missing_build_tools(native_backend="mojo") == []
+    assert preflight.missing_build_tools(native_backend="zig") == []
 
 
 def _fake_nuitka_printing(

@@ -41,8 +41,7 @@ def missing_build_tools(
     Only called when a native artifact is actually needed (see build_cmd). cargo is
     always required for the rust backend: maturin wraps cargo/rustc, and a missing
     maturin falls back to cargo in the orchestrator — so cargo is the single real
-    requirement. Other backends (mojo/julia) are not implemented yet and gate
-    nothing here.
+    requirement. Non-rust backends gate nothing here.
     """
     missing: list[MissingTool] = []
 
