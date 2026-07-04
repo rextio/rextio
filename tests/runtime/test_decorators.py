@@ -40,7 +40,7 @@ def test_native_decorator_keeps_bare_form() -> None:
     assert not hasattr(marked, "__rextio_native_target__")
 
 
-@pytest.mark.parametrize("target", ["mojo", "Julia", " RUST "])
+@pytest.mark.parametrize("target", ["rust", "Rust", " RUST "])
 def test_native_decorator_accepts_supported_targets(target: str) -> None:
     @rextio.native(target=target)
     def helper() -> int:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+import pytest
 from pathlib import Path
 from typing import Any
 
@@ -237,7 +239,6 @@ def test_generate_reports_target_and_active_plugin(tmp_path: Path, monkeypatch, 
                     {
                         "target_language": "rust",
                         "target_versions": ["stable"],
-                        "rules": ["numpy.ndarray"],
                         "target_build_options": {"binding": "pyo3"},
                     },
                 ),
@@ -265,7 +266,11 @@ def add(a: int, b: int) -> int:
         encoding="utf-8",
     )
 
-    exit_code = main(["generate", str(tmp_path)])
+    # [target].version has no effect in 0.1.0 (reserved): the warning is an
+    # expected side effect of this fixture, asserted here instead of leaking
+    # into the run summary.
+    with pytest.warns(RuntimeWarning, match="no effect in 0.1.0"):
+        exit_code = main(["generate", str(tmp_path)])
 
     captured = capsys.readouterr()
     report = json.loads(
@@ -281,7 +286,10 @@ def add(a: int, b: int) -> int:
     assert report["target"]["plugins"]["active"][0]["id"] == "numpy-rust"
 
 
-def test_generate_reports_unimplemented_target_language(tmp_path: Path, capsys) -> None:
+def test_generate_rejects_unsupported_native_backend_from_config(tmp_path: Path, capsys) -> None:
+    # rust is the only accepted native_backend in 0.1.0: a config carrying
+    # anything else fails at load time with a clear configuration error
+    # instead of reaching codegen.
     (tmp_path / "app.py").write_text(
         """
 def add(a: int, b: int) -> int:
@@ -289,19 +297,19 @@ def add(a: int, b: int) -> int:
 """,
         encoding="utf-8",
     )
-
-    exit_code = main(["generate", str(tmp_path), "--target-language=mojo", "--target-version=25.1"])
-
-    captured = capsys.readouterr()
-    report = json.loads(
-        (tmp_path / ".rextio" / "reports" / "generate.json").read_text(encoding="utf-8")
+    (tmp_path / "rextio.toml").write_text(
+        """
+[build]
+native_backend = "zig"
+""",
+        encoding="utf-8",
     )
 
+    exit_code = main(["generate", str(tmp_path)])
+
+    captured = capsys.readouterr()
+
     assert exit_code == 1
-    assert "target language: mojo" in captured.out
-    assert "target version: 25.1" in captured.out
-    # The RXT050 codegen-failure diagnostic is routed to stderr.
-    assert "no codegen backend is implemented" in captured.err
-    assert report["status"] == "codegen-failed"
-    assert report["target"]["spec"]["language"] == "mojo"
-    assert not report["target"]["spec"]["implemented"]
+    assert "RXT060 Generate failed while loading configuration" in captured.err
+    assert "unsupported config value for [build].native_backend" in captured.err
+    assert '"rust"' in captured.err

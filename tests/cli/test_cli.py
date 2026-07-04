@@ -192,12 +192,12 @@ def add(a: int, b: int) -> int:
     assert not (tmp_path / ".rextio" / "reports" / "check.json").exists()
 
 
-def test_check_json_respects_native_marker_target_language(tmp_path: Path, capsys) -> None:
+def test_check_json_rejects_unsupported_marker_target(tmp_path: Path, capsys) -> None:
     (tmp_path / "app.py").write_text(
         """
 import rextio
 
-@rextio.native(target="mojo")
+@rextio.native(target="zig")
 def add(a: int, b: int) -> int:
     return a + b
 """,

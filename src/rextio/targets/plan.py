@@ -61,7 +61,7 @@ def create_target_spec(config: RextioConfig) -> TargetSpec:
         # toolchain version or pass build options.
         warnings.warn(
             "[target].version and [target].build_options are accepted but have no "
-            "effect in 0.1.0 alpha; they are reserved for a future release.",
+            "effect in 0.1.0; they are reserved for a future release.",
             RuntimeWarning,
             stacklevel=2,
         )

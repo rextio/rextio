@@ -66,7 +66,7 @@ def test_load_config_reads_target_and_plugin_options(tmp_path: Path) -> None:
     (tmp_path / "rextio.toml").write_text(
         """
 [build]
-native_backend = "mojo"
+native_backend = "rust"
 
 [target]
 version = "25.1"
@@ -76,17 +76,32 @@ optimization = "speed"
 abi = "cpython"
 
 [plugins]
-enabled = ["numpy-mojo"]
+enabled = ["numpy-rust"]
 """,
         encoding="utf-8",
     )
 
     config = load_config(tmp_path)
 
-    assert config.build.native_backend == "mojo"
+    assert config.build.native_backend == "rust"
     assert config.target.version == "25.1"
     assert config.target.build_options == {"optimization": "speed", "abi": "cpython"}
-    assert config.plugins.enabled == ("numpy-mojo",)
+    assert config.plugins.enabled == ("numpy-rust",)
+
+
+def test_load_config_rejects_unsupported_native_backend(tmp_path: Path) -> None:
+    # rust is the only accepted native_backend in 0.1.0; nothing else is a
+    # planning value anymore.
+    (tmp_path / "rextio.toml").write_text(
+        """
+[build]
+native_backend = "zig"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=r'native_backend.*Use "rust"'):
+        load_config(tmp_path)
 
 
 def test_load_config_reads_import_policy_options(tmp_path: Path) -> None:
@@ -149,10 +164,10 @@ boundary_warnings = true
             "REXTIO_RUST_BUILD_TOOL": "cargo",
             "REXTIO_RUST_IMPORTABLE": "true",
             "REXTIO_RUST_CRATE_NAME": "demo_env_rust",
-            "REXTIO_TARGET_LANGUAGE": "julia",
+            "REXTIO_TARGET_LANGUAGE": "rust",
             "REXTIO_TARGET_VERSION": "1.11",
             "REXTIO_TARGET_BUILD_OPTIONS": "profile=release,threads=auto",
-            "REXTIO_PLUGINS_ENABLED": "numpy-julia",
+            "REXTIO_PLUGINS_ENABLED": "numpy-env",
             "REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY": "try-native",
             "REXTIO_IMPORTS_PACKAGES": "safe_pkg=try-native,legacy_pkg=fallback",
             "REXTIO_EMBED_HELPERS": "true",
@@ -171,10 +186,10 @@ boundary_warnings = true
     assert config.rust.build_tool == "cargo"
     assert config.rust.importable is True
     assert config.rust.crate_name == "demo_env_rust"
-    assert config.build.native_backend == "julia"
+    assert config.build.native_backend == "rust"
     assert config.target.version == "1.11"
     assert config.target.build_options == {"profile": "release", "threads": "auto"}
-    assert config.plugins.enabled == ("numpy-julia",)
+    assert config.plugins.enabled == ("numpy-env",)
     assert config.imports.default_external_policy == "try-native"
     assert config.imports.packages["safe_pkg"].policy == "try-native"
     assert config.imports.packages["legacy_pkg"].policy == "fallback"
@@ -263,13 +278,13 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
         ),
         {
             ("build", "fallback_backend"): "cpython",
-            ("build", "native_backend"): "mojo",
+            ("build", "native_backend"): "rust",
             ("build", "fallback_threshold"): 3,
             ("rust", "importable"): True,
             ("rust", "crate_name"): "demo_cli_rust",
             ("target", "version"): "25.1",
             ("target", "build_options"): {"profile": "debug"},
-            ("plugins", "enabled"): ("numpy-mojo",),
+            ("plugins", "enabled"): ("numpy-cli",),
             ("imports", "default_external_policy"): "analyze",
             ("imports", "packages"): {"safe_pkg": {"policy": "try-native", "max_depth": 1}},
             ("embedding", "enabled"): True,
@@ -278,14 +293,14 @@ def test_override_config_applies_cli_style_overrides(tmp_path: Path) -> None:
         },
     )
 
-    assert config.build.native_backend == "mojo"
+    assert config.build.native_backend == "rust"
     assert config.build.fallback_backend == "cpython"
     assert config.build.fallback_threshold == 3
     assert config.rust.importable is True
     assert config.rust.crate_name == "demo_cli_rust"
     assert config.target.version == "25.1"
     assert config.target.build_options == {"profile": "debug"}
-    assert config.plugins.enabled == ("numpy-mojo",)
+    assert config.plugins.enabled == ("numpy-cli",)
     assert config.imports.default_external_policy == "analyze"
     assert config.imports.packages["safe_pkg"].policy == "try-native"
     assert config.imports.packages["safe_pkg"].max_depth == 1
