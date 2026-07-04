@@ -458,6 +458,12 @@ rextio build . --embed-helpers
 REXTIO_EMBED_HELPERS=true rextio build .
 ```
 
+內嵌不會給產生的 Cargo 專案增加 crate 依賴。內嵌關閉時，合格的 helper
+呼叫仍透過執行時純量 boundary call 運作 — 內嵌是移除每次呼叫直譯器往返
+的快速路徑。與 boundary call 不同，內嵌的 helper 是建置時編譯進 native
+成果物的副本，因此對 helper 的執行時替換（monkeypatch）對 native 呼叫方
+不可見。
+
 ## Numba 外部加速器（experimental）
 
 Numba 支援在 0.1.0 alpha 中是 EXPERIMENTAL 的: 識別、回報和 Nuitka 共存
@@ -490,11 +496,10 @@ plain Python（`.py` 繼續被 import），樹的其餘部分用 Nuitka 編譯�
 在第一次呼叫。帶型別的純量程式碼優先用 `@rextio.native`，NumPy/陣列核心
 用 Numba，並注意非常小的函式在任何加速器下都會輸給呼叫邊界成本。
 
-內嵌不會給產生的 Cargo 專案增加 crate 依賴。內嵌關閉時，合格的 helper
-呼叫仍透過執行時純量 boundary call 運作 — 內嵌是移除每次呼叫直譯器往返
-的快速路徑。與 boundary call 不同，內嵌的 helper 是建置時編譯進 native
-成果物的副本，因此對 helper 的執行時替換（monkeypatch）對 native 呼叫方
-不可見。
+我們計畫推出一個 Rextio 外掛，目標是把基於 NumPy 的 Python 轉換為 AOT
+編譯的 native Rust。屆時 NumPy 程式碼將有兩條可選路徑（透過 Rextio 外掛做
+AOT 編譯，或在 Python fallback 內用 Numba 做 JIT），未來版本也可能提供
+兩者取捨的指南; 目前一切尚未確定。
 
 ## 範例
 

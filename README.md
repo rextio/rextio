@@ -481,6 +481,13 @@ rextio build . --embed-helpers
 REXTIO_EMBED_HELPERS=true rextio build .
 ```
 
+Embedding adds no crate dependencies to generated Cargo projects. When
+embedding is disabled, an eligible helper call still works through the
+run-time scalar boundary call; embedding is the fast path that removes the
+per-call interpreter round-trip. Unlike a boundary call, an embedded helper
+is compiled ahead of time into the native artifact, so runtime replacement
+of the helper (monkeypatching) is not visible to native callers.
+
 ## Using Numba on Fallback Code (experimental)
 
 Numba support is EXPERIMENTAL in 0.1.0 alpha: recognition, reporting, and
@@ -522,12 +529,11 @@ instead of dying at the first call. Prefer `@rextio.native` for typed scalar
 code and Numba for NumPy/array kernels, and note that very small functions
 lose to call-boundary costs under any accelerator.
 
-Embedding adds no crate dependencies to generated Cargo projects. When
-embedding is disabled, an eligible helper call still works through the
-run-time scalar boundary call; embedding is the fast path that removes the
-per-call interpreter round-trip. Unlike a boundary call, an embedded helper
-is compiled ahead of time into the native artifact, so runtime replacement
-of the helper (monkeypatching) is not visible to native callers.
+A planned Rextio plugin aims to translate NumPy-based Python into
+AOT-compiled native Rust. Once it exists, NumPy code will have two possible
+routes - Rextio-plugin AOT compilation, or Numba JIT inside the Python
+fallback - and future releases may add guidance on choosing between them;
+nothing here is settled yet.
 
 ## Examples
 

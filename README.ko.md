@@ -482,6 +482,13 @@ rextio build . --embed-helpers
 REXTIO_EMBED_HELPERS=true rextio build .
 ```
 
+내장(embedding)은 생성 Cargo 프로젝트에 crate 의존성을 추가하지 않습니다.
+내장이 꺼져 있어도 적격 helper 호출은 런타임 스칼라 boundary call로 여전히
+동작합니다 — 내장은 호출마다의 인터프리터 왕복을 제거하는 빠른 경로입니다.
+boundary call과 달리 내장된 helper는 빌드 시점에 native 산출물로 컴파일된
+사본이므로, helper의 런타임 교체(monkeypatch)는 native 호출자에게 보이지
+않습니다.
+
 ## Numba 외부 가속기 (experimental)
 
 Numba 지원은 0.1.0 alpha에서 EXPERIMENTAL입니다: 인식, 리포트, Nuitka 공존
@@ -519,12 +526,11 @@ CPython-정확 의미론을 갖지만, `@numba.*` 함수는 **Numba의** 의미�
 권하며, 아주 작은 함수는 어떤 가속기에서도 호출 경계 비용에 지는 점을
 유의하세요.
 
-내장(embedding)은 생성 Cargo 프로젝트에 crate 의존성을 추가하지 않습니다.
-내장이 꺼져 있어도 적격 helper 호출은 런타임 스칼라 boundary call로 여전히
-동작합니다 — 내장은 호출마다의 인터프리터 왕복을 제거하는 빠른 경로입니다.
-boundary call과 달리 내장된 helper는 빌드 시점에 native 산출물로 컴파일된
-사본이므로, helper의 런타임 교체(monkeypatch)는 native 호출자에게 보이지
-않습니다.
+NumPy 기반 Python을 AOT 컴파일된 native Rust로 변환하는 것을 목표로 하는
+Rextio plugin이 계획돼 있습니다. 그것이 나오면 NumPy 코드에는 두 가지
+경로(Rextio plugin을 통한 AOT 컴파일, 또는 Python fallback 안의 Numba
+JIT)가 생기며, 둘 중 어느 쪽이 효율적인지에 대한 가이드가 향후 버전에
+추가될 수도 있습니다. 아직 확정된 것은 없습니다.
 
 ## 예제
 

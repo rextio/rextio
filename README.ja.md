@@ -488,6 +488,13 @@ rextio build . --embed-helpers
 REXTIO_EMBED_HELPERS=true rextio build .
 ```
 
+埋め込みは生成 Cargo プロジェクトに crate 依存を追加しません。埋め込みが
+無効でも、適格なヘルパー呼び出しは実行時のスカラー boundary call で動作
+します — 埋め込みは呼び出しごとのインタプリタ往復を除去する高速経路です。
+boundary call と異なり、埋め込まれたヘルパーはビルド時に native 成果物へ
+コンパイルされたコピーなので、ヘルパーの実行時差し替え（monkeypatch）は
+native 呼び出し側からは見えません。
+
 ## Numba 外部アクセラレータ（experimental）
 
 Numba サポートは 0.1.0 alpha で EXPERIMENTAL です: 認識、レポート、Nuitka
@@ -528,12 +535,11 @@ runtime も動作します（dispatcher が本物の CPython を実行）。
 には Numba を推奨し、ごく小さな関数はどのアクセラレータでも呼び出し境界
 コストに負ける点に注意してください。
 
-埋め込みは生成 Cargo プロジェクトに crate 依存を追加しません。埋め込みが
-無効でも、適格なヘルパー呼び出しは実行時のスカラー boundary call で動作
-します — 埋め込みは呼び出しごとのインタプリタ往復を除去する高速経路です。
-boundary call と異なり、埋め込まれたヘルパーはビルド時に native 成果物へ
-コンパイルされたコピーなので、ヘルパーの実行時差し替え（monkeypatch）は
-native 呼び出し側からは見えません。
+NumPy ベースの Python を AOT コンパイルされた native Rust へ変換することを
+目指す Rextio plugin を計画しています。それが登場すれば NumPy コードには
+2 つの経路（Rextio plugin による AOT コンパイル、または Python fallback 内の
+Numba JIT）ができ、どちらが効率的かのガイドが将来のバージョンで追加される
+可能性もあります。まだ何も確定していません。
 
 ## 例
 
