@@ -553,6 +553,16 @@ Example projects:
 - `examples/boundary_demo`: native-to-fallback boundary rejection and warnings.
 - `examples/app_shell`: application shell stays Python while a scoring hot
   path can be native.
+- `examples/nuitka_fallback`: hybrid wheel with a Nuitka-compiled fallback.
+- `examples/numba_accelerator`: Rextio native and a Numba-JIT NumPy kernel
+  side by side.
+- `examples/nuitka_numba`: Rust native + Nuitka fallback + a Numba module
+  kept as plain Python, in one build.
+- `examples/zipapp_app`: single-file `.pyz` executable.
+- `examples/nuitka_executable`: onefile Nuitka executable.
+- `examples/rust_executable`: standalone native Rust binary.
+- `examples/rust_crate`: Cargo library crate for Rust callers.
+- `examples/embedding_helpers`: scalar boundary calls vs. embedded helpers.
 
 ## Development And Verification
 

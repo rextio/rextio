@@ -515,6 +515,15 @@ rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 - `examples/fallback_demo`: native 关闭或缺失时的 fallback 行为。
 - `examples/boundary_demo`: native→fallback boundary 的拒绝与警告。
 - `examples/app_shell`: 应用外壳保持 Python，只有评分热路径可以 native。
+- `examples/nuitka_fallback`: 含 Nuitka 编译 fallback 的 hybrid wheel。
+- `examples/numba_accelerator`: Rextio native 与 Numba-JIT NumPy 内核并用。
+- `examples/nuitka_numba`: 一次构建中同时有 Rust native、Nuitka fallback
+  与保持 plain Python 的 Numba 模块。
+- `examples/zipapp_app`: 单文件 `.pyz` 可执行文件。
+- `examples/nuitka_executable`: onefile Nuitka 可执行文件。
+- `examples/rust_executable`: 独立 native Rust 二进制。
+- `examples/rust_crate`: 供 Rust 调用方使用的 Cargo 库 crate。
+- `examples/embedding_helpers`: scalar boundary call 与内嵌 helper 的对比。
 
 ## 开发与验证
 

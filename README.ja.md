@@ -559,6 +559,18 @@ rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 - `examples/boundary_demo`: native→fallback boundary の拒否と警告。
 - `examples/app_shell`: アプリの shell は Python のまま、スコアリングの
   hot path だけ native になり得る構成。
+- `examples/nuitka_fallback`: Nuitka でコンパイルされた fallback を含む
+  hybrid wheel。
+- `examples/numba_accelerator`: Rextio native と Numba-JIT の NumPy カーネル
+  の併用。
+- `examples/nuitka_numba`: Rust native + Nuitka fallback + plain Python の
+  まま残る Numba モジュールを 1 つのビルドで。
+- `examples/zipapp_app`: 単一ファイルの `.pyz` 実行ファイル。
+- `examples/nuitka_executable`: onefile の Nuitka 実行ファイル。
+- `examples/rust_executable`: 独立した native Rust バイナリ。
+- `examples/rust_crate`: Rust 呼び出し側向けの Cargo ライブラリ crate。
+- `examples/embedding_helpers`: scalar boundary call と埋め込み helper の
+  対比。
 
 ## 開発と検証
 
