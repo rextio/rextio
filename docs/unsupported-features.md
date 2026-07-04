@@ -479,7 +479,7 @@ local time).
 - automatic Rust translation of arbitrary third-party Python packages
 - general-purpose Python JIT, LLVM JIT, or MLIR integration
 - cloud build, SaaS dashboards, or GitHub app workflows
-- Mojo or Julia native code generation
+- native code generation for target languages other than Rust
 - concrete third-party plugin transformations
 
 Nuitka fallback packaging is experimental in 0.1.0. If requested and not
@@ -584,10 +584,10 @@ Two options control the interpreter side:
   so the hybrid binary needs no separate Python install at runtime; the Rust
   binary launches that executable directly. It requires Nuitka at build time.
 
-`native_backend = "mojo"` and `native_backend = "julia"` are accepted only as
-target-planning values. They allow Rextio to record target version,
-target-specific build options, and matching plugin metadata, but 0.1.0
-does not generate Mojo or Julia source. Rextio plugins are ordinary Python
+A non-Rust `native_backend` value is accepted only as a target-planning
+value. It lets Rextio record the target version, target-specific build
+options, and matching plugin metadata, but 0.1.0 generates Rust source
+only. Rextio plugins are ordinary Python
 packages installed with tools such as `pip` or `uv`; they expose metadata
 through the `rextio.plugins` entry point group. Projects opt into specific
 plugin ids with `[plugins] enabled`, `--enable-plugin`, or
@@ -597,6 +597,5 @@ plugin work.
 `@rextio.native(target="rust")` can pin an explicit native candidate to a target
 language. Target names are normalized case-insensitively. A target-specific
 marker applies only when the active target language matches it, whether that
-target came from `--target-language` or `[build] native_backend`, so
-`@rextio.native(target="mojo")` remains fallback in a Rust build until a Mojo
-backend exists.
+target came from `--target-language` or `[build] native_backend`, so a marker
+pinned to a non-Rust target remains fallback in a Rust build.

@@ -55,8 +55,7 @@ Tiers:
 
 | Feature | Tier | Notes |
 | --- | --- | --- |
-| `mojo` target language | Planned | Configurable (`native_backend = "mojo"`) but no codegen backend yet — rejected with `RXT050`. |
-| `julia` target language | Planned | Same as above. |
+| Additional native target languages | Planned | Non-Rust `native_backend` values are accepted as planning configuration only; code generation is rejected with `RXT050` until a matching backend exists. |
 
 If a feature you depend on is **Experimental**, pin your Rextio version and watch the
 changelog; if it is **Planned**, expect a diagnostic rather than a build.

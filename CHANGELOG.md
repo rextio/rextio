@@ -147,7 +147,7 @@ Initial public release (alpha stage) of Rextio as a local hybrid build tool.
   executable, so no separate Python install is needed at runtime (requires Nuitka
   at build time).
 - Mirrored build and analysis settings across CLI parameters, environment variables, and `rextio.toml`.
-- Target planning metadata for future Rust/Mojo/Julia backends and installed package plugins.
+- Target planning metadata for future native backends and installed package plugins.
 - Experimental opt-in scalar-helper embedding for narrow unmarked helpers
   represented in Rextio IR, with `--embed-helpers`, `REXTIO_EMBED_HELPERS`, and `[embedding] enabled`
   controls: an eligible helper compiles ahead of time as an internal native
@@ -202,8 +202,8 @@ Initial public release (alpha stage) of Rextio as a local hybrid build tool.
 
 ### Semantics and safety guarantees
 
-- `@rextio.native` validates its `target` against the supported languages
-  (rust/mojo/julia), and both `@rextio.native`/`@rextio.exempt` reject classes
+- `@rextio.native` validates its `target` against the recognized target
+  languages, and both `@rextio.native`/`@rextio.exempt` reject classes
   and non-callables at decoration time, surfacing typos and misuse immediately.
 - Plugins are metadata-only; a legacy `rules` key in plugin metadata is
   accepted and ignored so such plugins still load.
