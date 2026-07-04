@@ -12,6 +12,11 @@ from rextio.cli.main import main
 
 
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for native e2e")
+# The fixture calls datetime.utcnow() ON PURPOSE - it pins Rextio's
+# utcnow().timestamp() lowering - and CPython 3.12+ deprecation-warns about
+# the fixture's own fallback execution. Scoped here so the run summary stays
+# empty without hiding utcnow deprecations anywhere else.
+@pytest.mark.filterwarnings("ignore:datetime.datetime.utcnow:DeprecationWarning")
 def test_real_cargo_build_handles_expanded_stdlib_lowering(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
