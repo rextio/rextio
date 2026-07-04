@@ -562,3 +562,4 @@ python -m pytest
 - [安全模型](SECURITY.md) — 信任边界与漏洞报告方式。
 - [贡献指南](CONTRIBUTING.md) — 环境、门禁与惯例。
 - [变更日志](CHANGELOG.md)。
+- 开发者: 宋始永 <rextio.co@gmail.com> — X (Twitter): [@RextioDev](https://x.com/RextioDev)。

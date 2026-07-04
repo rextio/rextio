@@ -28,3 +28,5 @@ or whole-project Rust migration. Native compilation is an optimization; Python
 fallback behavior remains the correctness baseline.
 
 Project repository: https://github.com/rextio/rextio
+
+Author: Steve Si-young Song <rextio.co@gmail.com> — X (Twitter): [@RextioDev](https://x.com/RextioDev)

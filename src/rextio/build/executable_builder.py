@@ -332,6 +332,8 @@ def build_nuitka_executable(
             stderr=_tail(completed.stderr),
         )
 
+    if mode == "standalone":
+        _normalize_standalone_dist(dist_dir, launcher, name)
     executable = _find_nuitka_executable(dist_dir, name, mode)
     if executable is None:
         return ExecutableBuildResult(
@@ -416,6 +418,25 @@ def _externally_accelerated_modules(python_dir: Path) -> list[str]:
             else:
                 found.append(relative.as_posix())
     return found
+
+
+def _normalize_standalone_dist(dist_dir: Path, launcher: Path, name: str) -> None:
+    """Rename Nuitka's script-named standalone directory to the documented name.
+
+    ``--output-filename`` names the binary INSIDE the standalone directory,
+    but Nuitka names the directory itself after the compiled script - so a
+    launcher called ``__rextio_executable__.py`` yields
+    ``dist/__rextio_executable__.dist/<name>``. Rextio documents (and the
+    resolver expects) ``dist/<name>.dist/<name>``, so move the fresh output
+    over, replacing any stale directory from a previous build.
+    """
+    produced = dist_dir / f"{launcher.stem}.dist"
+    expected = dist_dir / f"{name}.dist"
+    if produced == expected or not produced.is_dir():
+        return
+    if expected.exists():
+        shutil.rmtree(expected)
+    produced.rename(expected)
 
 
 def _find_nuitka_executable(dist_dir: Path, name: str, mode: str) -> Path | None:

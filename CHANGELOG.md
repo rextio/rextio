@@ -150,7 +150,8 @@ Initial public release (alpha stage) of Rextio as a local hybrid build tool.
 - Target planning metadata for future native backends and installed package plugins.
 - Experimental opt-in scalar-helper embedding for narrow unmarked helpers
   represented in Rextio IR, with `--embed-helpers`, `REXTIO_EMBED_HELPERS`, and `[embedding] enabled`
-  controls: an eligible helper compiles ahead of time as an internal native
+  controls (`rextio bench` accepts the same flag pair, so both embedding
+  modes can be benchmarked): an eligible helper compiles ahead of time as an internal native
   function through the normal checked lowering (int overflow raises
   OverflowError; float `/` raises ZeroDivisionError), and in the Rust
   executable backend it compiles into the binary instead of being delegated

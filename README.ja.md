@@ -614,3 +614,4 @@ python -m pytest
 - [セキュリティモデル](SECURITY.md) — 信頼境界と脆弱性の報告方法。
 - [コントリビュート](CONTRIBUTING.md) — セットアップ、ゲート、慣例。
 - [変更履歴](CHANGELOG.md)。
+- 開発者: 宋始永（ソン・シヨン） <rextio.co@gmail.com> — X (Twitter): [@RextioDev](https://x.com/RextioDev)。

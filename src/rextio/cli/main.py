@@ -248,6 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bench_parser.add_argument("target", help="Fully qualified function name.")
     bench_parser.add_argument("--project-root", default=".", help="Project root to benchmark.")
+    _add_embedding_options(bench_parser)
     _add_output_options(bench_parser)
     bench_parser.set_defaults(handler=bench_cmd.run)
 

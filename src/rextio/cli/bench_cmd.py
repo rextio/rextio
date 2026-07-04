@@ -15,7 +15,7 @@ def run(args: Namespace) -> int:
     reporter = Reporter.from_args(args)
     project_root = Path(args.project_root).resolve()
     try:
-        result = run_benchmark(project_root, args.target)
+        result = run_benchmark(project_root, args.target, embed_helpers=args.embed_helpers)
     except BenchError as exc:
         reporter.error(f"RXT060 Benchmark failed for {args.target}: {exc}")
         return 1

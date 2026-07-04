@@ -36,7 +36,7 @@ Compare performance between the two builds:
 
 ```text
 rextio bench embedding_helpers.pricing.total_margin --project-root examples/embedding_helpers
-REXTIO_EMBED_HELPERS=true rextio bench embedding_helpers.pricing.total_margin --project-root examples/embedding_helpers
+rextio bench embedding_helpers.pricing.total_margin --project-root examples/embedding_helpers --embed-helpers
 ```
 
 Numbers depend on the machine; the embedded build removes three
