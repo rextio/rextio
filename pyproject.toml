@@ -41,6 +41,11 @@ test = [
   # Property-based native<->fallback equivalence tests (tests/e2e). In `test` so
   # the e2e CI job (which installs `.[test]`) can run them.
   "hypothesis>=6.0",
+  # The real-Numba e2e (tests/e2e/test_numba_external_accelerator.py) skips
+  # when numba is missing; declared here so the e2e CI job actually runs it.
+  # Rextio itself never imports numba - this is a test-time dependency only
+  # (per-interpreter floors resolve via pip; 0.57 is the 3.11 floor).
+  "numba>=0.57",
 ]
 # Optional toolchains used by `rextio build`. Rextio shells out to these; they
 # are not Python runtime imports, so they stay optional and are surfaced by the
@@ -55,6 +60,7 @@ dev = [
   "pytest>=8.0",
   "pytest-cov>=5.0",
   "hypothesis>=6.0",
+  "numba>=0.57",
   "ruff>=0.15",
   "mypy>=1.11",
 ]
