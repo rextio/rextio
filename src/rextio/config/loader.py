@@ -291,9 +291,9 @@ def _validate_config_values(
     _require_value("executable", "nuitka_mode", executable["nuitka_mode"], {"standalone", "onefile"})
     _require_value("policy", "native_marker", policy["native_marker"], {"auto", "decorator"})
     if policy["require_type_hints"] is not True:
-        raise ConfigError("0.1.0 alpha requires [policy] require_type_hints = true")
+        raise ConfigError("0.1.0 requires [policy] require_type_hints = true")
     if policy["allow_dynamic_features"] is not False:
-        raise ConfigError("0.1.0 alpha does not support [policy] allow_dynamic_features = true")
+        raise ConfigError("0.1.0 does not support [policy] allow_dynamic_features = true")
 
 
 def _require_string(section: str, key: str, value: Any) -> None:

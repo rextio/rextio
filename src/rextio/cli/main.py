@@ -17,7 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argparse parser for the rextio CLI."""
     parser = argparse.ArgumentParser(
         prog="rextio",
-        description="Rextio 0.1.0 alpha hybrid build tool.",
+        description="Rextio 0.1.0 hybrid build tool.",
     )
     parser.add_argument(
         "--version",
@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust", "mojo", "julia"),
         default=None,
         help=(
-            "Native target language (0.1.0 alpha implements rust; mojo/julia are "
+            "Native target language (0.1.0 implements rust; mojo/julia are "
             "planned). Overrides REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust", "mojo", "julia"),
         default=None,
         help=(
-            "Native target language (0.1.0 alpha implements rust; mojo/julia are "
+            "Native target language (0.1.0 implements rust; mojo/julia are "
             "planned). Overrides REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
@@ -113,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--rust-binding",
         choices=("pyo3",),
         default=None,
-        help="Rust binding backend (0.1.0 alpha supports pyo3 only). "
+        help="Rust binding backend (0.1.0 supports pyo3 only). "
         "Overrides REXTIO_RUST_BINDING and [rust] binding.",
     )
     build_parser_.add_argument(
@@ -201,7 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust", "mojo", "julia"),
         default=None,
         help=(
-            "Native target language (0.1.0 alpha implements rust; mojo/julia are "
+            "Native target language (0.1.0 implements rust; mojo/julia are "
             "planned). Overrides REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
