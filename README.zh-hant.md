@@ -258,7 +258,7 @@ CLI 參數 > 環境變數 > rextio.toml > 內建預設值
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.0 alpha 中唯一實作的 native 目標是 Rust。
+0.1.0 中唯一實作的 native 目標是 Rust。
 
 Rextio 外掛是用 `pip` 或 `uv` 等工具安裝的普通 Python 套件。外掛套件透過
 `rextio.plugins` entry point 群組暴露中繼資料，包括它涵蓋的 Python 套件
@@ -280,7 +280,7 @@ default_external_policy = "fallback"
 ```
 
 支援的套件策略是 `fallback`、`analyze`、`try-native`、`plugin`。具體的
-第三方外掛變換和一般依賴下沉不隨 0.1.0 alpha 捆綁；`try-native` 是顯式的
+第三方外掛變換和一般依賴下沉不隨 0.1.0 捆綁；`try-native` 是顯式的
 規劃策略，沒有安全的 direct 下沉時仍會 fallback。
 
 ## Native 選擇
@@ -360,7 +360,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.0 alpha 刻意支援一個小的 subset。這個 subset 就是以 native
+Rextio 0.1.0 刻意支援一個小的 subset。這個 subset 就是以 native
 Rust 執行的程式碼。
 
 支援的型別:
@@ -400,7 +400,7 @@ builtin 與標準函式庫下沉（受限形式）:
 
 不支援或含糊的程式碼留在 fallback 上，或在受支援時透過 Python runtime
 semantics shim 暴露。詳細邊界見
-[0.1.0 alpha 不支援的特性](docs/unsupported-features.md)。
+[0.1.0 不支援的特性](docs/unsupported-features.md)。
 
 ## 撰寫適合 Rextio 的 Python
 
@@ -466,7 +466,7 @@ REXTIO_EMBED_HELPERS=true rextio build .
 
 ## Numba 外部加速器（experimental）
 
-Numba 支援在 0.1.0 alpha 中是 EXPERIMENTAL 的: 識別、回報和 Nuitka 共存
+Numba 支援在 0.1.0 中是 EXPERIMENTAL 的: 識別、回報和 Nuitka 共存
 行為在第一個 non-alpha 版本之前可能改變。Rextio 把 Numba 裝飾器
 （`numba.jit`、`numba.njit`、`numba.vectorize`、`numba.guvectorize`）識別
 為 Python fallback 程式碼的外部加速器（experimental）— 與 Nuitka 打包
@@ -535,7 +535,7 @@ python -m pytest
 
 這是計畫而非承諾，優先順序可能隨 alpha 回饋調整:
 
-1. 穩定化優先: 在擴大表面之前，先基於真實使用夯實 0.1.0 alpha 的表面。
+1. 穩定化優先: 在擴大表面之前，先基於真實使用夯實 0.1.0 的表面。
 2. 面向 agentic coding 的 skill/plugin，教編碼代理如何撰寫適合 Rextio
    的 Python。
 3. VS Code 擴充功能，在編輯時直接顯示目前程式碼是否符合受支援的 native
@@ -549,9 +549,9 @@ python -m pytest
 
 ## 專案資訊
 
-- [特性穩定性](docs/stability.md) — 0.1.0 alpha 中哪些是 stable、哪些是 experimental。
+- [特性穩定性](docs/stability.md) — 0.1.0 中哪些是 stable、哪些是 experimental。
 - [版本策略](docs/versioning.md) — 帶 pre-1.0 注意事項的 SemVer。
-- [不支援的特性](docs/unsupported-features.md) — 0.1.0 alpha subset 的邊界。
+- [不支援的特性](docs/unsupported-features.md) — 0.1.0 subset 的邊界。
 - [安全模型](SECURITY.md) — 信任邊界與漏洞回報方式。
 - [貢獻指南](CONTRIBUTING.md) — 環境、門檻與慣例。
 - [變更日誌](CHANGELOG.md)。

@@ -271,7 +271,7 @@ CLI パラメータ > 環境変数 > rextio.toml > 組み込みデフォルト
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.0 alpha で実装済みの native ターゲットは Rust だけです。
+0.1.0 で実装済みの native ターゲットは Rust だけです。
 
 Rextio プラグインは `pip` や `uv` などでインストールする普通の Python
 パッケージです。プラグインパッケージは、対象とする Python パッケージ名を
@@ -297,7 +297,7 @@ default_external_policy = "fallback"
 
 サポートされるパッケージポリシーは `fallback`、`analyze`、`try-native`、
 `plugin` です。具体的なサードパーティのプラグイン変換と一般的な依存
-lowering は 0.1.0 alpha にはバンドルされません。`try-native` は明示的な
+lowering は 0.1.0 にはバンドルされません。`try-native` は明示的な
 計画ポリシーで、安全な direct lowering がなければやはり fallback します。
 
 ## Native 選択
@@ -380,7 +380,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.0 alpha は意図的に小さな subset をサポートします。この subset が
+Rextio 0.1.0 は意図的に小さな subset をサポートします。この subset が
 native Rust として実行されるコードです。
 
 サポートされる型:
@@ -422,7 +422,7 @@ builtin・標準ライブラリの lowering（限定形式）:
 
 未サポート・曖昧なコードは fallback に残るか、サポートされる場合は Python
 runtime semantics shim として公開されます。詳細な境界は
-[0.1.0 alpha の未サポート機能](docs/unsupported-features.md) を参照して
+[0.1.0 の未サポート機能](docs/unsupported-features.md) を参照して
 ください。
 
 ## Rextio に適した Python の書き方
@@ -497,7 +497,7 @@ native 呼び出し側からは見えません。
 
 ## Numba 外部アクセラレータ（experimental）
 
-Numba サポートは 0.1.0 alpha で EXPERIMENTAL です: 認識、レポート、Nuitka
+Numba サポートは 0.1.0 で EXPERIMENTAL です: 認識、レポート、Nuitka
 共存の挙動は最初の non-alpha リリース前に変わる可能性があります。Rextio は
 Numba デコレータ（`numba.jit`、`numba.njit`、`numba.vectorize`、
 `numba.guvectorize`）を Python fallback コード向けの外部アクセラレータ
@@ -578,7 +578,7 @@ python -m pytest
 
 約束ではなく計画であり、alpha のフィードバックで優先順位は変わり得ます:
 
-1. まず安定化: 表面を広げる前に、実利用に基づいて 0.1.0 alpha の表面を
+1. まず安定化: 表面を広げる前に、実利用に基づいて 0.1.0 の表面を
    固めます。
 2. コーディングエージェントに Rextio に適した Python の書き方を教える
    agentic coding 用 skill/plugin。
@@ -594,9 +594,9 @@ python -m pytest
 
 ## プロジェクト情報
 
-- [機能の安定性](docs/stability.md) — 0.1.0 alpha で何が stable で何が experimental か。
+- [機能の安定性](docs/stability.md) — 0.1.0 で何が stable で何が experimental か。
 - [バージョニングポリシー](docs/versioning.md) — pre-1.0 の注意点付き SemVer。
-- [未サポート機能](docs/unsupported-features.md) — 0.1.0 alpha subset の境界。
+- [未サポート機能](docs/unsupported-features.md) — 0.1.0 subset の境界。
 - [セキュリティモデル](SECURITY.md) — 信頼境界と脆弱性の報告方法。
 - [コントリビュート](CONTRIBUTING.md) — セットアップ、ゲート、慣例。
 - [変更履歴](CHANGELOG.md)。

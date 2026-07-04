@@ -265,7 +265,7 @@ Common settings:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Rust is the only implemented native target in 0.1.0 alpha.
+Rust is the only implemented native target in 0.1.0.
 
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry
@@ -290,7 +290,7 @@ default_external_policy = "fallback"
 
 The supported package policies are `fallback`, `analyze`, `try-native`, and
 `plugin`. Concrete third-party plugin transformations and general dependency
-lowering are not bundled in 0.1.0 alpha; `try-native` is an explicit planning
+lowering are not bundled in 0.1.0; `try-native` is an explicit planning
 policy and still falls back when no safe direct lowering exists.
 
 ## Native Selection
@@ -374,7 +374,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## Supported Direct Rust Subset
 
-Rextio 0.1.0 alpha supports a deliberately small subset. This is the code
+Rextio 0.1.0 supports a deliberately small subset. This is the code
 that runs as native Rust.
 
 Supported types include:
@@ -416,7 +416,7 @@ Supported builtin and standard-library lowering includes limited forms of:
 
 Unsupported or ambiguous code stays on fallback or is exposed through a Python
 runtime semantics shim where supported. See
-[Unsupported Features in 0.1.0 alpha](docs/unsupported-features.md) for the
+[Unsupported Features in 0.1.0](docs/unsupported-features.md) for the
 detailed boundary.
 
 ## Writing Rextio-Friendly Python
@@ -490,7 +490,7 @@ of the helper (monkeypatching) is not visible to native callers.
 
 ## Using Numba on Fallback Code (experimental)
 
-Numba support is EXPERIMENTAL in 0.1.0 alpha: recognition, reporting, and
+Numba support is EXPERIMENTAL in 0.1.0: recognition, reporting, and
 the Nuitka-coexistence behavior may change before the first non-alpha
 release. Rextio recognizes Numba decorators (`numba.jit`, `numba.njit`,
 `numba.vectorize`, `numba.guvectorize`) as an external accelerator
@@ -572,7 +572,7 @@ gates.
 
 Plans, not promises - priorities can shift with alpha feedback:
 
-1. Stabilization first: hardening the 0.1.0 alpha surface based on real
+1. Stabilization first: hardening the 0.1.0 surface based on real
    usage before growing it.
 2. An agentic-coding skill/plugin that teaches coding agents how to write
    Rextio-friendly Python.
@@ -588,9 +588,9 @@ Plans, not promises - priorities can shift with alpha feedback:
 
 ## Project Information
 
-- [Feature stability](docs/stability.md) — what is stable vs. experimental in 0.1.0 alpha.
+- [Feature stability](docs/stability.md) — what is stable vs. experimental in 0.1.0.
 - [Versioning policy](docs/versioning.md) — SemVer with pre-1.0 caveats.
-- [Unsupported features](docs/unsupported-features.md) — the 0.1.0 alpha subset boundaries.
+- [Unsupported features](docs/unsupported-features.md) — the 0.1.0 subset boundaries.
 - [Security model](SECURITY.md) — trust boundary and how to report vulnerabilities.
 - [Contributing](CONTRIBUTING.md) — setup, gates, and conventions.
 - [Changelog](CHANGELOG.md).

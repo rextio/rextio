@@ -1,6 +1,6 @@
-# Unsupported Features in 0.1.0 alpha
+# Unsupported Features in 0.1.0
 
-Rextio 0.1.0 alpha is a focused hybrid build tool. It compiles eligible Python
+Rextio 0.1.0 is a focused, alpha-stage hybrid build tool. It compiles eligible Python
 functions with statically resolved types to Rust native modules and keeps the
 rest of the project as Python fallback.
 
@@ -21,7 +21,7 @@ semantics shim; everything else remains ordinary Python fallback.
 
 ## Supported Native Surface
 
-0.1.0 alpha native candidates must be module-level functions whose argument and
+0.1.0 native candidates must be module-level functions whose argument and
 return types are resolved from annotations, sibling `.pyi` stubs, or
 conservative local context inference. Rextio discovers eligible candidates
 automatically by default. Projects can set `[policy] native_marker = "decorator"`
@@ -251,7 +251,7 @@ Native functions may call:
   `datetime.now().timestamp()`, `time.time()`, selected `str`/`bytes`/`list`
   methods, `hashlib.sha256(...).hexdigest()`, and `base64.b64encode(...)`
 
-> **Kept off the direct native path for fidelity (0.1.0 alpha):** some stdlib
+> **Kept off the direct native path for fidelity (0.1.0):** some stdlib
 > calls have no faithful native lowering and never compile to direct Rust —
 > an explicitly `@rextio.native` function using them rides the RXT080 runtime
 > shim (real CPython semantics) and an auto-discovered one stays on the plain
@@ -299,7 +299,7 @@ function-level fallback, adding a plugin, or refactoring to a batch API.
 Fallback Python code may call native functions. If fallback Python code calls a
 native function inside a Python loop, Rextio emits `RXT073` because repeated
 Python/Rust boundary crossings may erase speedup. The suggestion points users
-toward native batch loops that 0.1.0 alpha can compile, including `for x in xs`,
+toward native batch loops that 0.1.0 can compile, including `for x in xs`,
 `for i, x in enumerate(xs)`, and `for x, y in zip(xs, ys)`.
 
 Generated wrappers count Python-to-native wrapper crossings per function. If the
@@ -314,7 +314,7 @@ this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
 
 ## Experimental Scalar-Helper Embedding Boundary
 
-Rextio 0.1.0 alpha includes opt-in embedding for a very narrow scalar helper
+Rextio 0.1.0 includes opt-in embedding for a very narrow scalar helper
 subset. It is disabled by default and must be enabled with `[embedding]
 enabled = true`, `--embed-helpers`, or `REXTIO_EMBED_HELPERS=true`.
 
@@ -340,7 +340,7 @@ or CPython/Nuitka fallback path.
 
 ## Numba as an External Fallback Accelerator (experimental)
 
-Numba support is EXPERIMENTAL in 0.1.0 alpha: recognition, report labels,
+Numba support is EXPERIMENTAL in 0.1.0: recognition, report labels,
 and the Nuitka-coexistence behavior may change before the first non-alpha
 release.
 
@@ -396,7 +396,7 @@ dispatcher; use `--hybrid-runtime=source` instead.
 
 A small number of native lowerings are kept on the direct Rust path even though
 they differ from CPython in a narrow, documented way. These are accepted trade-
-offs for 0.1.0 alpha (the alternative being a Python fallback for a common
+offs for 0.1.0 (the alternative being a Python fallback for a common
 operation or replicating a large amount of CPython runtime formatting). All
 other observed divergences are treated as bugs and either fixed or rejected to
 fallback. Every STATICALLY ATTRIBUTABLE divergence remaining in this list is
@@ -462,9 +462,9 @@ whitespace set on the C0 separators `\x1c`–`\x1f`), and
 `datetime.utcnow().timestamp()` (CPython interprets the naive UTC wall-clock as
 local time).
 
-## Out of Scope for 0.1.0 alpha
+## Out of Scope for 0.1.0
 
-0.1.0 alpha does not include:
+0.1.0 does not include:
 
 - whole-project Python-to-Rust migration
 - full Python compatibility
@@ -482,7 +482,7 @@ local time).
 - Mojo or Julia native code generation
 - concrete third-party plugin transformations
 
-Nuitka fallback packaging is experimental in 0.1.0 alpha. If requested and not
+Nuitka fallback packaging is experimental in 0.1.0. If requested and not
 available, Rextio reports a clear `RXT060` error and suggests CPython fallback.
 If Nuitka is available, Rextio invokes it for generated fallback modules and
 records the result in `.rextio/reports/build.json`.
@@ -510,7 +510,7 @@ with `[executable] backend`, `[executable] nuitka_mode`, or matching
 `REXTIO_EXECUTABLE_*` environment variables. This backend is available only when
 Nuitka is installed and remains dependent on the local Nuitka toolchain. Rextio
 does not guarantee cross-platform packaging of arbitrary third-party
-dependencies in 0.1.0 alpha.
+dependencies in 0.1.0.
 
 Native Rust binary artifacts are supported with `--executable-backend=rust` (or
 `[executable] backend = "rust"`). Rextio generates a Cargo binary crate whose
@@ -526,7 +526,7 @@ represented as valid UTF-8 `str` values. If the OS supplies a non-Unicode
 argument, the binary prints `ValueError: command-line argument is not valid
 UTF-8` to stderr and exits with status 1. CPython on Unix can expose arbitrary
 argv bytes through `surrogateescape`; Rextio does not model surrogate-containing
-`str` values in the native Rust executable ABI for 0.1.0 alpha.
+`str` values in the native Rust executable ABI for 0.1.0.
 
 When the entrypoint (or its native call graph) calls a project function that
 lives on the Python fallback — code outside the Rust subset that is "left as
@@ -586,7 +586,7 @@ Two options control the interpreter side:
 
 `native_backend = "mojo"` and `native_backend = "julia"` are accepted only as
 target-planning values. They allow Rextio to record target version,
-target-specific build options, and matching plugin metadata, but 0.1.0 alpha
+target-specific build options, and matching plugin metadata, but 0.1.0
 does not generate Mojo or Julia source. Rextio plugins are ordinary Python
 packages installed with tools such as `pip` or `uv`; they expose metadata
 through the `rextio.plugins` entry point group. Projects opt into specific

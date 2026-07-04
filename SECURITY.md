@@ -1,4 +1,4 @@
-# Security model — Rextio 0.1.0 alpha
+# Security model — Rextio 0.1.0
 
 Rextio turns typed Python into Rust/PyO3 native artifacts: it analyzes your
 source, generates Rust, and invokes external build tools. That makes its trust
@@ -68,7 +68,7 @@ external toolchain on your machine.
 
 ## Reporting
 
-This is a 0.1.0 alpha. Report sensitive vulnerabilities privately through
+This is 0.1.0, an alpha-stage release. Report sensitive vulnerabilities privately through
 GitHub's private vulnerability reporting
 (<https://github.com/rextio/rextio/security/advisories/new>) - do not file
 them as public issues. Non-sensitive hardening suggestions can be ordinary

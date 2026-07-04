@@ -1,10 +1,10 @@
-# Rextio 0.1.0 alpha Notes
+# Rextio 0.1.0 Notes
 
 > **Security:** Rextio analyzes source, generates Rust, and runs external build
 > tools — treat it like a compiler and only build trusted projects. See
 > [`SECURITY.md`](./SECURITY.md) for the threat model and protections.
 
-Rextio 0.1.0 alpha proves a focused hybrid build workflow:
+Rextio 0.1.0 proves a focused hybrid build workflow:
 
 ```text
 Python source
@@ -39,7 +39,7 @@ conservative local context inference. Projects can set
 Explicit native markers can also name the intended native target:
 `@rextio.native(target="rust")`. Target names are normalized
 case-insensitively, and a target-specific marker applies only when the active
-`--target-language` / `[build] native_backend` matches it. 0.1.0 alpha can record
+`--target-language` / `[build] native_backend` matches it. 0.1.0 can record
 `rust`, `mojo`, and `julia` target selections for planning, but only Rust code
 generation is implemented.
 
@@ -65,7 +65,7 @@ and uses it whenever native is disabled or unavailable.
 
 ## Feature Stability
 
-0.1.0 alpha deliberately keeps a narrow, trustworthy core and gates broader
+0.1.0 deliberately keeps a narrow, trustworthy core and gates broader
 ambitions behind explicit opt-ins. Treat the surface in these tiers:
 
 | Tier | Features | Notes |
@@ -106,7 +106,7 @@ build artifact compilation steps. With `--rust-importable`, it also writes
 
 ## Native Subset
 
-0.1.0 alpha native candidates support module-level functions with statically
+0.1.0 native candidates support module-level functions with statically
 resolved scalar types including `bytes`, `list[int|float|bool|str]`,
 `list[list[T]]`, fixed tuples, limited
 fixed `dict[K, V]`, limited `set[int|float|bool|str]`, and `Optional[T]` /
@@ -273,7 +273,7 @@ verifies their versions:
   rustup channel selection is reflected), and they add to - never relax -
   the hard floors (Nuitka >= 2.0 still applies).
 
-Rust is the only implemented native target in 0.1.0 alpha. `mojo` and `julia` can
+Rust is the only implemented native target in 0.1.0. `mojo` and `julia` can
 be selected as target languages so versioned plugin metadata can be modeled, but
 native source generation reports a clear unsupported-backend failure until those
 codegen backends are implemented. Rextio plugins are installed as ordinary
@@ -305,7 +305,7 @@ CPython/Nuitka fallback and reports the boundary reason.
 
 ## Experimental Scalar-Helper Embedding (`[embedding]`)
 
-Embedding is an explicit opt-in in 0.1.0 alpha, compiled ahead of time like
+Embedding is an explicit opt-in in 0.1.0, compiled ahead of time like
 everything else Rextio builds.
 
 ```toml

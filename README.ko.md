@@ -266,7 +266,7 @@ CLI 파라미터 > 환경변수 > rextio.toml > 내장 기본값
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.0 alpha에서 구현된 native target은 Rust뿐입니다.
+0.1.0에서 구현된 native target은 Rust뿐입니다.
 
 Rextio 플러그인은 `pip`이나 `uv` 같은 도구로 설치하는 평범한 Python
 패키지입니다. 플러그인 패키지는 자신이 다루는 Python 패키지 이름을 포함한
@@ -291,7 +291,7 @@ default_external_policy = "fallback"
 ```
 
 지원되는 패키지 정책은 `fallback`, `analyze`, `try-native`, `plugin`입니다.
-구체적인 서드파티 플러그인 변환과 일반 의존성 lowering은 0.1.0 alpha에
+구체적인 서드파티 플러그인 변환과 일반 의존성 lowering은 0.1.0에
 번들되지 않습니다. `try-native`는 명시적 계획 정책이며, 안전한 direct
 lowering이 없으면 여전히 fallback합니다.
 
@@ -375,7 +375,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## 지원하는 direct Rust subset
 
-Rextio 0.1.0 alpha는 의도적으로 작은 subset을 지원합니다. 이 subset이
+Rextio 0.1.0는 의도적으로 작은 subset을 지원합니다. 이 subset이
 native Rust로 실행되는 코드입니다.
 
 지원 타입:
@@ -417,7 +417,7 @@ builtin·표준 라이브러리 lowering(제한적 형태):
 
 미지원이거나 모호한 코드는 fallback에 남거나, 지원되는 경우 Python runtime
 semantics shim으로 노출됩니다. 자세한 경계는
-[0.1.0 alpha의 미지원 기능](docs/unsupported-features.md)을 보세요.
+[0.1.0의 미지원 기능](docs/unsupported-features.md)을 보세요.
 
 ## Rextio 친화적인 Python 작성법
 
@@ -491,7 +491,7 @@ boundary call과 달리 내장된 helper는 빌드 시점에 native 산출물로
 
 ## Numba 외부 가속기 (experimental)
 
-Numba 지원은 0.1.0 alpha에서 EXPERIMENTAL입니다: 인식, 리포트, Nuitka 공존
+Numba 지원은 0.1.0에서 EXPERIMENTAL입니다: 인식, 리포트, Nuitka 공존
 동작은 첫 non-alpha 릴리스 전에 바뀔 수 있습니다. Rextio는 Numba 데코레이터
 (`numba.jit`, `numba.njit`, `numba.vectorize`, `numba.guvectorize`)를 Python
 fallback 코드용 외부 가속기(experimental)로 인식합니다 — Nuitka 패키징
@@ -567,7 +567,7 @@ python -m pytest
 
 약속이 아닌 계획이며, alpha 피드백에 따라 우선순위가 바뀔 수 있습니다:
 
-1. 안정화 우선: 표면을 키우기 전에 실제 사용을 바탕으로 0.1.0 alpha
+1. 안정화 우선: 표면을 키우기 전에 실제 사용을 바탕으로 0.1.0
    표면을 다집니다.
 2. 코딩 에이전트에게 Rextio 친화적인 Python 작성법을 알려 주는 agentic
    coding용 skill/plugin.
@@ -583,9 +583,9 @@ python -m pytest
 
 ## 프로젝트 정보
 
-- [기능 안정성](docs/stability.md) — 0.1.0 alpha에서 무엇이 stable이고 무엇이 experimental인지.
+- [기능 안정성](docs/stability.md) — 0.1.0에서 무엇이 stable이고 무엇이 experimental인지.
 - [버전 정책](docs/versioning.md) — pre-1.0 유의점이 있는 SemVer.
-- [미지원 기능](docs/unsupported-features.md) — 0.1.0 alpha subset의 경계.
+- [미지원 기능](docs/unsupported-features.md) — 0.1.0 subset의 경계.
 - [보안 모델](SECURITY.md) — 신뢰 경계와 취약점 신고 방법.
 - [기여 안내](CONTRIBUTING.md) — 환경 설정, 게이트, 관례.
 - [변경 이력](CHANGELOG.md).
