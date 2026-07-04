@@ -1,6 +1,6 @@
 # Feature stability
 
-Rextio is **0.1.0 alpha**. This page is the source of truth for which features are
+Rextio **0.1.0** is an alpha-stage release. This page is the source of truth for which features are
 covered by the [versioning policy](versioning.md)'s stability promises and which are
 experimental (correct-but-incomplete, and free to change).
 
@@ -24,11 +24,11 @@ Tiers:
 | Scalar boundary calls (`RXT075`/`RXT076`) | Stable | A marked native may call a scalar-signature fallback function in-process; loop-positioned calls (including comprehension bodies) are rejected; crossings count toward the threshold. Scalars cross by value (argument identity `is` is not preserved; `None`/`bool` singletons are), and a callee exception's traceback includes the runtime hook's frames - exception type and message stay CPython-exact. |
 | `@rextio.native` / `@rextio.exempt` decorators | Stable | Public API. See [versioning](versioning.md). |
 | `rextio.toml` configuration schema | Stable | Keys are part of the contract. |
-| `[toolchain]` selection + version pins | Experimental | New in 0.1.0 alpha: tool paths, rustup channel, CPython targeting, strict verification pins. Semantics may be refined before the first non-alpha release. |
+| `[toolchain]` selection + version pins | Experimental | New in 0.1.0: tool paths, rustup channel, CPython targeting, strict verification pins. Semantics may be refined before the first non-alpha release. |
 | Diagnostics (`RXTxxx` codes + messages) | Stable | Deterministic and tested; treated as a contract. |
 | Native build orchestration (maturin / Cargo) | Stable | `cargo` is the default `[rust] build_tool` (the builder needs no extra Python dependency; Cargo itself must be on PATH or configured via `[toolchain]`). Set `--rust-build-tool=maturin` (or `[rust] build_tool = "maturin"`, requires the optional `rextio[build]` dependency) to build wheels with maturin; if maturin is selected but not installed Rextio automatically falls back to Cargo. If the native build fails, packaging still produces a fallback-only pure-Python (`py3-none-any`) wheel that works through the Python fallback. |
 | Import policy — `fallback` | Stable | Treats an external package as fallback-only at the boundary. |
-| Import policy — `analyze` / `try-native` / `plugin` | Experimental | Accepted as configuration, but in 0.1.0 alpha these are largely planning metadata; concrete third-party native lowering is not yet implemented. |
+| Import policy — `analyze` / `try-native` / `plugin` | Experimental | Accepted as configuration, but in 0.1.0 these are largely planning metadata; concrete third-party native lowering is not yet implemented. |
 
 ## CLI
 
@@ -55,8 +55,7 @@ Tiers:
 
 | Feature | Tier | Notes |
 | --- | --- | --- |
-| `mojo` target language | Planned | Configurable (`native_backend = "mojo"`) but no codegen backend yet — rejected with `RXT050`. |
-| `julia` target language | Planned | Same as above. |
+| Additional native target languages | Planned | Non-Rust `native_backend` values are accepted as planning configuration only; code generation is rejected with `RXT050` until a matching backend exists. |
 
 If a feature you depend on is **Experimental**, pin your Rextio version and watch the
 changelog; if it is **Planned**, expect a diagnostic rather than a build.
