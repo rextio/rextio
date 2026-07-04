@@ -1,0 +1,1 @@
+"""Nuitka executable example package."""
