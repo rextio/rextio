@@ -265,9 +265,7 @@ Common settings:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Rust is the only implemented native target in 0.1.0 alpha. `mojo` and `julia`
-are accepted as planning values for future backends, but code generation fails
-clearly until those backends exist.
+Rust is the only implemented native target in 0.1.0 alpha.
 
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry
@@ -563,6 +561,24 @@ toolchain is unavailable.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development setup and quality
 gates.
+
+## Roadmap
+
+Plans, not promises - priorities can shift with alpha feedback:
+
+1. Stabilization first: hardening the 0.1.0 alpha surface based on real
+   usage before growing it.
+2. An agentic-coding skill/plugin that teaches coding agents how to write
+   Rextio-friendly Python.
+3. A VS Code extension that shows, while you edit, whether the code on
+   screen fits the supported native subset.
+4. Rextio plugins - a plugin defines the rules for translating Python code
+   that uses a specific package into Rust plus fallback code. We plan to
+   build first-party plugins ourselves, starting with NumPy and continuing
+   with widely used numeric and AI packages; once the plugin surface has
+   stabilized, anyone will be able to build and publish Rextio plugins.
+5. Longer term, additional native target backends beyond Rust are possible,
+   but there is no concrete plan yet.
 
 ## Project Information
 

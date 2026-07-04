@@ -271,9 +271,7 @@ CLI パラメータ > 環境変数 > rextio.toml > 組み込みデフォルト
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.0 alpha で実装済みの native ターゲットは Rust だけです。`mojo` と
-`julia` は将来の backend のための計画値として受け付けられますが、backend が
-存在するまでコード生成は明確に失敗します。
+0.1.0 alpha で実装済みの native ターゲットは Rust だけです。
 
 Rextio プラグインは `pip` や `uv` などでインストールする普通の Python
 パッケージです。プラグインパッケージは、対象とする Python パッケージ名を
@@ -569,6 +567,24 @@ python -m pytest
 
 開発環境の詳細と品質ゲートは [CONTRIBUTING.md](CONTRIBUTING.md) を参照して
 ください。
+
+## 今後の計画
+
+約束ではなく計画であり、alpha のフィードバックで優先順位は変わり得ます:
+
+1. まず安定化: 表面を広げる前に、実利用に基づいて 0.1.0 alpha の表面を
+   固めます。
+2. コーディングエージェントに Rextio に適した Python の書き方を教える
+   agentic coding 用 skill/plugin。
+3. 編集中のコードがサポート対象の native subset に収まるかを画面上で
+   示す VS Code 拡張。
+4. Rextio plugin - 特定のパッケージを使う Python コードを Rust と
+   fallback コードへ変換する規則を定義するプラグインです。NumPy を
+   皮切りに、よく使われる数値計算・AI パッケージを対象とした自前の
+   プラグインを開発する計画で、plugin の表面が安定すれば誰でも Rextio
+   plugin を作って公開できるようになります。
+5. 長期的には Rust 以外の native target backend を増やす可能性が
+   ありますが、具体的な計画はまだありません。
 
 ## プロジェクト情報
 

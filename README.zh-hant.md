@@ -258,8 +258,7 @@ CLI 參數 > 環境變數 > rextio.toml > 內建預設值
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.0 alpha 中唯一實作的 native 目標是 Rust。`mojo` 與 `julia` 作為未來
-backend 的規劃值被接受，但在這些 backend 存在之前程式碼產生會明確失敗。
+0.1.0 alpha 中唯一實作的 native 目標是 Rust。
 
 Rextio 外掛是用 `pip` 或 `uv` 等工具安裝的普通 Python 套件。外掛套件透過
 `rextio.plugins` entry point 群組暴露中繼資料，包括它涵蓋的 Python 套件
@@ -526,6 +525,22 @@ python -m pytest
 真實的 Cargo、Nuitka 和可執行檔測試在對應 toolchain 不可用時會跳過。
 
 完整的開發環境與品質門檻見 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 後續計畫
+
+這是計畫而非承諾，優先順序可能隨 alpha 回饋調整:
+
+1. 穩定化優先: 在擴大表面之前，先基於真實使用夯實 0.1.0 alpha 的表面。
+2. 面向 agentic coding 的 skill/plugin，教編碼代理如何撰寫適合 Rextio
+   的 Python。
+3. VS Code 擴充功能，在編輯時直接顯示目前程式碼是否符合受支援的 native
+   subset。
+4. Rextio 外掛 - 外掛定義把使用特定套件的 Python 程式碼轉換為 Rust 加
+   fallback 程式碼的規則。我們計畫從 NumPy 開始，為常用數值計算與 AI
+   套件自行開發第一方外掛; 外掛表面穩定後，任何人都可以開發並發布
+   Rextio 外掛。
+5. 長期來看，可能增加 Rust 之外的 native target backend，但目前沒有
+   具體計畫。
 
 ## 專案資訊
 

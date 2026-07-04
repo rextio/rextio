@@ -257,8 +257,7 @@ CLI 参数 > 环境变量 > rextio.toml > 内置默认值
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.0 alpha 中唯一实现的 native 目标是 Rust。`mojo` 与 `julia` 作为未来
-backend 的规划值被接受，但在这些 backend 存在之前代码生成会明确失败。
+0.1.0 alpha 中唯一实现的 native 目标是 Rust。
 
 Rextio 插件是用 `pip` 或 `uv` 等工具安装的普通 Python 包。插件包通过
 `rextio.plugins` entry point 组暴露元数据，包括它覆盖的 Python 包名。
@@ -523,6 +522,21 @@ python -m pytest
 真实的 Cargo、Nuitka 和可执行文件测试在对应 toolchain 不可用时会跳过。
 
 完整的开发环境与质量门禁见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 后续计划
+
+这是计划而非承诺，优先级可能随 alpha 反馈调整:
+
+1. 稳定化优先: 在扩大表面之前，先基于真实使用夯实 0.1.0 alpha 的表面。
+2. 面向 agentic coding 的 skill/plugin，教编码代理如何编写适合 Rextio
+   的 Python。
+3. VS Code 扩展，在编辑时直接显示当前代码是否符合受支持的 native subset。
+4. Rextio 插件 - 插件定义把使用特定包的 Python 代码转换为 Rust 加
+   fallback 代码的规则。我们计划从 NumPy 开始，为常用数值计算与 AI 包
+   自行开发第一方插件; 插件表面稳定后，任何人都可以开发并发布 Rextio
+   插件。
+5. 长期来看，可能增加 Rust 之外的 native target backend，但目前没有
+   具体计划。
 
 ## 项目信息
 
