@@ -1,0 +1,15 @@
+[build]
+native_backend = "rust"
+fallback_backend = "cpython"
+
+[rust]
+binding = "pyo3"
+build_tool = "cargo"
+importable = true
+crate_name = "rust_crate_demo"
+
+[policy]
+native_marker = "auto"
+require_type_hints = true
+allow_dynamic_features = false
+boundary_warnings = true
