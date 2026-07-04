@@ -2,8 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-hans.md) | [繁體中文](README.zh-hant.md) | [日本語](README.ja.md)
 
-**증명 가능하게 안전한 곳에는 Rust의 속도를. 나머지는 전부 Python으로.
-조용히 틀리는 일은 없습니다.**
+**적합한 typed Python 함수는 Rust로 컴파일하고, 나머지는 전부 Python
+fallback으로 유지합니다.**
 
 Rextio 0.1.0은 Python 프로젝트를 위한 alpha 단계 로컬 빌드 도구입니다.
 타입이 지정된 Python 함수 중 안전하게 Rust로 낮출 수 있는 것을 찾아
@@ -223,8 +223,8 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## 지원하는 direct Rust subset
 
-Rextio 0.1.0 alpha는 의도적으로 작은 subset을 지원합니다. 이것이 실제 Rust
-속도 향상을 제공할 수 있는 경로입니다.
+Rextio 0.1.0 alpha는 의도적으로 작은 subset을 지원합니다. 이 subset이
+native Rust로 실행되는 코드입니다.
 
 지원 타입:
 

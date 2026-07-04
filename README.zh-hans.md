@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md) | [繁體中文](README.zh-hant.md) | [日本語](README.ja.md)
 
-**在可证明安全的地方用 Rust 的速度，其余一切仍是 Python。绝不悄悄出错。**
+**把符合条件的 typed Python 函数编译为 Rust，其余一切保留在 Python fallback 上。**
 
 Rextio 0.1.0 是面向 Python 项目的 alpha 阶段本地构建工具。它找出可以安全
 下沉到 Rust 的带类型 Python 函数，用 PyO3 提前（ahead-of-time）编译它们，
@@ -216,8 +216,8 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.0 alpha 刻意支持一个小的 subset。这是能提供真实 Rust 加速的
-路径。
+Rextio 0.1.0 alpha 刻意支持一个小的 subset。这个 subset 就是以 native
+Rust 运行的代码。
 
 支持的类型:
 

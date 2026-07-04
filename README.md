@@ -2,8 +2,8 @@
 
 [한국어](README.ko.md) | [简体中文](README.zh-hans.md) | [繁體中文](README.zh-hant.md) | [日本語](README.ja.md)
 
-**Rust speed where it is provably safe. Python everywhere else. Never
-silently wrong.**
+**Compiles eligible typed Python functions to Rust and keeps everything
+else on the Python fallback.**
 
 Rextio 0.1.0 is an alpha-stage local build tool for Python projects. It finds
 typed Python functions that can be safely lowered to Rust, compiles them
@@ -224,8 +224,8 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## Supported Direct Rust Subset
 
-Rextio 0.1.0 alpha supports a deliberately small subset. This is the path that
-can provide real Rust speedups.
+Rextio 0.1.0 alpha supports a deliberately small subset. This is the code
+that runs as native Rust.
 
 Supported types include:
 
