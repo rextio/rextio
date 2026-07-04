@@ -60,6 +60,57 @@ def add(a: int, b: int) -> int:
     assert report["build"]["native_build"]["status"] == "built"
 
 
+def test_bench_embed_helpers_flag_enables_embedding(
+    tmp_path: Path,
+    monkeypatch,
+    fake_cargo: Path,
+    capsys,
+) -> None:
+    # --embed-helpers must override [embedding] enabled for bench exactly
+    # like it does for build: in decorator mode the unmarked helper makes the
+    # caller a boundary-calling native by default, and embedding is what the
+    # flag turns on for the benchmarked artifact.
+    (tmp_path / "rextio.toml").write_text(
+        """
+[policy]
+native_marker = "decorator"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "bench_app.py").write_text(
+        """
+import rextio
+
+
+def bump(x: float) -> float:
+    return x + 1.5
+
+
+@rextio.native
+def total(x: float) -> float:
+    return bump(x) + bump(x + 1.0)
+""",
+        encoding="utf-8",
+    )
+    _install_fake_native(monkeypatch, {"bench_app__total": lambda x: (x + 2.5) + (x + 3.5)})
+
+    exit_code = main(
+        ["bench", "bench_app.total", "--project-root", str(tmp_path), "--embed-helpers"]
+    )
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "bench.json").read_text(encoding="utf-8")
+    )
+
+    assert exit_code == 0
+    assert "Rextio bench bench_app.total" in captured.out
+    assert report["status"] == "benchmarked"
+    # The benchmarked build ran with embedding enabled: the helper is counted
+    # as an embedding candidate instead of remaining a boundary-call target.
+    assert report["build"]["embedding_candidate_count"] == 1
+
+
 def test_bench_rejects_non_native_target(tmp_path: Path, capsys) -> None:
     (tmp_path / "rextio.toml").write_text(
         """

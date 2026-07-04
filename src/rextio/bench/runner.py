@@ -17,7 +17,7 @@ from typing import Any, get_args, get_origin, get_type_hints
 from rextio.analyzer.models import FunctionAnalysis, ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
-from rextio.config.loader import ConfigError, load_config
+from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.fallback.module_copy import fallback_module_name
 from rextio.runtime.boundary_fallback import DISABLE_ENV as DISABLE_BOUNDARY_FALLBACK_ENV
 from rextio.targets.plan import TargetPlanError, create_target_plan
@@ -46,10 +46,23 @@ class BenchResult:
         }
 
 
-def run_benchmark(project_root: Path, target: str, iterations: int = 1000) -> BenchResult:
-    """Benchmark a target function (native vs. fallback) and return the comparison."""
+def run_benchmark(
+    project_root: Path,
+    target: str,
+    iterations: int = 1000,
+    embed_helpers: bool | None = None,
+) -> BenchResult:
+    """Benchmark a target function (native vs. fallback) and return the comparison.
+
+    ``embed_helpers`` overrides ``[embedding] enabled`` / ``REXTIO_EMBED_HELPERS``
+    the same way ``--embed-helpers`` does for ``rextio build``, so the two
+    embedding modes can be benchmarked against each other.
+    """
     try:
-        config = load_config(project_root, environ=os.environ)
+        config = override_config(
+            load_config(project_root, environ=os.environ),
+            {("embedding", "enabled"): embed_helpers},
+        )
         target_plan = create_target_plan(project_root, config)
     except (ConfigError, TargetPlanError) as exc:
         raise BenchError(f"configuration error: {exc}") from exc
