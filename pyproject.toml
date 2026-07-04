@@ -98,6 +98,13 @@ fail_under = 80
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+filterwarnings = [
+  # Generated wrappers warn-and-fall-back BY DESIGN when a native module is
+  # absent, fake, or partial; dozens of tests exercise exactly that path, so
+  # the summary would otherwise bury any unexpected warning. Tests that
+  # assert the warning itself use pytest.warns, which overrides this filter.
+  "ignore:Rextio native module:RuntimeWarning",
+]
 markers = [
   "needs_cargo: end-to-end test that requires a real Rust/Cargo toolchain",
   "needs_nuitka: end-to-end test that requires a real Nuitka toolchain",

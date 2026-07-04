@@ -20,29 +20,33 @@ class FakeEntryPoint:
 
 
 def test_load_plugin_registry_activates_configured_installed_plugin() -> None:
-    registry = load_plugin_registry(
-        PluginConfig(enabled=("numpy-rust",)),
-        TargetSpec(
-            language="rust",
-            version="stable",
-            build_options={"binding": "pyo3"},
-        ),
-        entry_points=(
-            FakeEntryPoint(
-                "numpy-rust",
-                lambda: {
-                    "name": "Python NumPy to rust-numpy",
-                    "source_language": "python",
-                    "target_language": "rust",
-                    "target_versions": ["stable"],
-                    "target_build_options": {"binding": "pyo3"},
-                    # A legacy `rules` key must be accepted and ignored (metadata-only).
-                    "rules": ["numpy.ndarray"],
-                    "packages": ["numpy"],
-                },
+    # The fixture keeps a legacy `rules` key on purpose: activation must
+    # accept-and-ignore it (metadata-only), warning once - asserted here so
+    # the expected warning never leaks into the run summary.
+    with pytest.warns(DeprecationWarning, match="metadata-only"):
+        registry = load_plugin_registry(
+            PluginConfig(enabled=("numpy-rust",)),
+            TargetSpec(
+                language="rust",
+                version="stable",
+                build_options={"binding": "pyo3"},
             ),
-        ),
-    )
+            entry_points=(
+                FakeEntryPoint(
+                    "numpy-rust",
+                    lambda: {
+                        "name": "Python NumPy to rust-numpy",
+                        "source_language": "python",
+                        "target_language": "rust",
+                        "target_versions": ["stable"],
+                        "target_build_options": {"binding": "pyo3"},
+                        # A legacy `rules` key must be accepted and ignored (metadata-only).
+                        "rules": ["numpy.ndarray"],
+                        "packages": ["numpy"],
+                    },
+                ),
+            ),
+        )
 
     assert [plugin.id for plugin in registry.discovered] == ["numpy-rust"]
     assert [plugin.id for plugin in registry.active] == ["numpy-rust"]

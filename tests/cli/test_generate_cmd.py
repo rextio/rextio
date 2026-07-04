@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+import pytest
 from pathlib import Path
 from typing import Any
 
@@ -237,7 +239,6 @@ def test_generate_reports_target_and_active_plugin(tmp_path: Path, monkeypatch, 
                     {
                         "target_language": "rust",
                         "target_versions": ["stable"],
-                        "rules": ["numpy.ndarray"],
                         "target_build_options": {"binding": "pyo3"},
                     },
                 ),
@@ -265,7 +266,11 @@ def add(a: int, b: int) -> int:
         encoding="utf-8",
     )
 
-    exit_code = main(["generate", str(tmp_path)])
+    # [target].version has no effect in 0.1.0 (reserved): the warning is an
+    # expected side effect of this fixture, asserted here instead of leaking
+    # into the run summary.
+    with pytest.warns(RuntimeWarning, match="no effect in 0.1.0"):
+        exit_code = main(["generate", str(tmp_path)])
 
     captured = capsys.readouterr()
     report = json.loads(

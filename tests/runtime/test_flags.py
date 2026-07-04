@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from rextio.runtime.flags import native_disabled, native_mode, native_required
 
 
@@ -14,7 +16,8 @@ def test_native_mode_defaults_to_auto(monkeypatch) -> None:
 def test_invalid_native_mode_falls_back_to_auto(monkeypatch) -> None:
     monkeypatch.setenv("REXTIO_NATIVE_MODE", "invalid")
 
-    assert native_mode() == "auto"
+    with pytest.warns(RuntimeWarning, match="not one of auto/native/fallback"):
+        assert native_mode() == "auto"
 
 
 def test_fallback_mode_disables_native(monkeypatch) -> None:
