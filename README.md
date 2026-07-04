@@ -553,6 +553,8 @@ Example projects:
 - `examples/boundary_demo`: native-to-fallback boundary rejection and warnings.
 - `examples/app_shell`: application shell stays Python while a scoring hot
   path can be native.
+- `examples/wheel_package`: the default hybrid wheel, installed into a
+  fresh environment and used through unchanged imports.
 - `examples/nuitka_fallback`: hybrid wheel with a Nuitka-compiled fallback.
 - `examples/numba_accelerator`: Rextio native and a Numba-JIT NumPy kernel
   side by side.

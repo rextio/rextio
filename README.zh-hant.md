@@ -518,6 +518,8 @@ rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 - `examples/fallback_demo`: native 關閉或缺失時的 fallback 行為。
 - `examples/boundary_demo`: native→fallback boundary 的拒絕與警告。
 - `examples/app_shell`: 應用外殼保持 Python，只有評分熱路徑可以 native。
+- `examples/wheel_package`: 預設 hybrid wheel，安裝到全新環境並以不變的
+  import 使用。
 - `examples/nuitka_fallback`: 含 Nuitka 編譯 fallback 的 hybrid wheel。
 - `examples/numba_accelerator`: Rextio native 與 Numba-JIT NumPy 核心並用。
 - `examples/nuitka_numba`: 一次建置中同時有 Rust native、Nuitka fallback

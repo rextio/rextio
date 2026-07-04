@@ -559,6 +559,8 @@ rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 - `examples/boundary_demo`: native→fallback boundary の拒否と警告。
 - `examples/app_shell`: アプリの shell は Python のまま、スコアリングの
   hot path だけ native になり得る構成。
+- `examples/wheel_package`: 既定の hybrid wheel を新しい環境にインストール
+  し、同じ import で使う例。
 - `examples/nuitka_fallback`: Nuitka でコンパイルされた fallback を含む
   hybrid wheel。
 - `examples/numba_accelerator`: Rextio native と Numba-JIT の NumPy カーネル
