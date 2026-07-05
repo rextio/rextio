@@ -47,3 +47,7 @@ crates/*/Cargo.lock
 
 # Example build outputs
 examples/*/dist/
+
+# direnv folder-scoped GitHub CLI config (machine-local)
+.envrc
+~/
