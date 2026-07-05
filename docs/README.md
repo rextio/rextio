@@ -12,6 +12,13 @@ An index of the project's documentation. See the top-level
 - [Unsupported features](unsupported-features.md) — the boundaries of the 0.1.0
   supported subset.
 
+## Specs
+
+- [Machine-readable tooling contract](specs/tooling-contract.md) — draft (0.1.1):
+  route taxonomy, `check --json` extensions, the `capabilities --json` manifest,
+  and the plugin self-description protocol consumed by agent skills, LSP, and
+  editor tooling.
+
 ## Project
 
 - [Contributing](../CONTRIBUTING.md) — development setup, quality gates, conventions.
