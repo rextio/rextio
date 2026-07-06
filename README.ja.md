@@ -5,7 +5,7 @@
 **適格な typed Python 関数を Rust にコンパイルし、それ以外はすべて
 Python fallback のまま動かします。**
 
-Rextio 0.1.0 は Python プロジェクト向けの alpha 段階ローカルビルドツール
+Rextio 0.1.1 は Python プロジェクト向けの alpha 段階ローカルビルドツール
 です。型付きの Python 関数のうち安全に Rust へ下ろせるものを見つけて
 PyO3 で事前（ahead-of-time）コンパイルし、それ以外はすべて生成された
 Python fallback コードで動かし続けます — import パスも動作もそのままです。
@@ -67,7 +67,8 @@ assert format_result(14) == "score=14"
 | コマンド | 動作 |
 | --- | --- |
 | `rextio init` | `rextio.toml`、`REXTIO.md`、`.rextioignore` を作成します。 |
-| `rextio check` | native 候補を分析し、診断を出力します。 |
+| `rextio check` | native 候補を分析し、診断を出力します（構造化 JSON は `--format json`）。 |
+| `rextio capabilities` | 機械可読な capability manifest を出力します: サポート型、ガイダンス付きの昇格ルール、アクティブなプラグイン（experimental）。 |
 | `rextio generate` | コンパイルせずに Rust/Python 生成ソースを書き出します。 |
 | `rextio build` | 生成・コンパイル・パッケージングし、ビルドレポートを書きます。 |
 | `rextio bench` | 1 つの関数について Python fallback と Rust native の時間を比較します。 |
@@ -271,7 +272,7 @@ CLI パラメータ > 環境変数 > rextio.toml > 組み込みデフォルト
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.0 で実装済みの native ターゲットは Rust だけです。
+0.1.1 で実装済みの native ターゲットは Rust だけです。
 
 Rextio プラグインは `pip` や `uv` などでインストールする普通の Python
 パッケージです。プラグインパッケージは、対象とする Python パッケージ名を
@@ -296,9 +297,13 @@ default_external_policy = "fallback"
 ```
 
 サポートされるパッケージポリシーは `fallback`、`analyze`、`try-native`、
-`plugin` です。具体的なサードパーティのプラグイン変換と一般的な依存
-lowering は 0.1.0 にはバンドルされません。`try-native` は明示的な
-計画ポリシーで、安全な direct lowering がなければやはり fallback します。
+`plugin` です。0.1.1 からはプラグインがカバーする構文を記述し、直接
+*lowering* することもできます（plugin API 1.1 —
+[plugin lowering 仕様](docs/specs/plugin-lowering.md) を参照）。first-party の
+[rextio-numpy](https://github.com/rextio/rextio-numpy) プラグインが、認証済みの
+初期 float64 1-D サーフェスを実装しています。一般的な依存 lowering は
+バンドルされません。`try-native` は明示的な計画ポリシーで、安全な direct
+lowering がなければやはり fallback します。
 
 ## Native 選択
 
@@ -380,7 +385,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.0 は意図的に小さな subset をサポートします。この subset が
+Rextio 0.1.1 は意図的に小さな subset をサポートします。この subset が
 native Rust として実行されるコードです。
 
 サポートされる型:
@@ -535,11 +540,15 @@ runtime も動作します（dispatcher が本物の CPython を実行）。
 には Numba を推奨し、ごく小さな関数はどのアクセラレータでも呼び出し境界
 コストに負ける点に注意してください。
 
-NumPy ベースの Python を AOT コンパイルされた native Rust へ変換することを
-目指す Rextio plugin を計画しています。それが登場すれば NumPy コードには
-2 つの経路（Rextio plugin による AOT コンパイル、または Python fallback 内の
-Numba JIT）ができ、どちらが効率的かのガイドが将来のバージョンで追加される
-可能性もあります。まだ何も確定していません。
+first-party の [rextio-numpy](https://github.com/rextio/rextio-numpy)
+プラグインは、認証済みの初期 NumPy サーフェス（float64 1-D の要素ごとの
+算術、`numpy.dot`、配列全体の `sum`/`mean`）を AOT コンパイルされた native
+Rust へ変換します。これにより NumPy コードには 2 つの経路（カバーされた
+サーフェスに対する Rextio plugin の AOT コンパイル、または Python fallback
+内の Numba JIT）があります。両方が適用できる場合は明示的な `@numba.*`
+デコレータが優先され、analyzer は情報提供の RXT091 ノートを出力します。
+経路選択のより広いガイドは、プラグインのサーフェスが育つにつれて
+固まっていく予定です。
 
 ## 例
 
