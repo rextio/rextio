@@ -74,6 +74,8 @@ def run_benchmark(
         native_top_level=config.policy.native_top_level,
         imports_config=config.imports,
         active_plugins=target_plan.plugins.active,
+        plugin_registry=target_plan.plugins,
+        plugin_config=config,
         embedding_enabled=config.embedding.enabled,
     )
     function = _find_target(analysis, target)

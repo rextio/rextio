@@ -11,9 +11,10 @@ from rextio.analyzer.boundary import apply_boundary_checks
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.module_parser import module_name_for_path, parse_module
+from rextio.analyzer.plugin_claims import ClaimEngine
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
-from rextio.config.schema import ImportsConfig
-from rextio.plugins.models import RextioPlugin
+from rextio.config.schema import ImportsConfig, RextioConfig
+from rextio.plugins.models import PluginRegistry, RextioPlugin
 from rextio.targets.models import normalize_target_language
 
 IGNORED_PARTS = {
@@ -90,6 +91,8 @@ def analyze_project(
     active_plugins: Iterable[RextioPlugin] = (),
     embedding_enabled: bool = False,
     delegate_fallback: bool = False,
+    plugin_registry: PluginRegistry | None = None,
+    plugin_config: RextioConfig | None = None,
 ) -> ProjectAnalysis:
     """Analyze a project directory and return its ProjectAnalysis.
 
@@ -97,9 +100,17 @@ def analyze_project(
     direct-native function that calls a project function living on the Python
     fallback records it as a delegated call instead of being rejected, so the
     generated binary can invoke it through the external CPython dispatcher.
+
+    ``plugin_registry``/``plugin_config`` enable the plugin claim pass
+    (docs/specs/plugin-lowering.md): when the registry carries lowering
+    providers, their annotation vocabularies resolve and covered sites are
+    offered for claiming.
     """
     root = Path(project_root).resolve()
     target_language = normalize_target_language(target_language)
+    claim_engine: ClaimEngine | None = None
+    if plugin_registry is not None and plugin_registry.providers:
+        claim_engine = ClaimEngine(plugin_registry, plugin_config or RextioConfig())
     analysis = ProjectAnalysis(project_root=root)
     files = scan_python_files(root)
     project_modules = _project_module_names(files, root)
@@ -116,6 +127,7 @@ def analyze_project(
             active_plugins=active_plugins,
             embedding_enabled=embedding_enabled,
             project_return_types=project_return_types,
+            claim_engine=claim_engine,
         )
         for path in files
     ]

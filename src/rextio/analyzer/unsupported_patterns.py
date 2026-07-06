@@ -351,6 +351,8 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                 )
             )
         elif arg.annotation is not None and not is_supported_type(arg.annotation):
+            if _plugin_annotation_key(function, arg.annotation) is not None:
+                continue
             function.add_diagnostic(
                 Diagnostic(
                     code="RXT002",
@@ -378,6 +380,8 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
             )
         )
     elif node.returns is not None and not is_supported_type(node.returns):
+        if _plugin_annotation_key(function, node.returns) is not None:
+            return
         function.add_diagnostic(
             Diagnostic(
                 code="RXT003",
@@ -390,6 +394,13 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                 suggestion="Use a supported 0.1.0 scalar or collection type.",
             )
         )
+
+
+def _plugin_annotation_key(function: FunctionAnalysis, annotation: ast.AST) -> str | None:
+    """Resolve an annotation to an active plugin's type key, or None."""
+    if function.claim_engine is None:
+        return None
+    return function.claim_engine.resolve_annotation(annotation, function.imports)
 
 
 def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
@@ -455,6 +466,11 @@ def _initial_type_env(node: ast.FunctionDef, function: FunctionAnalysis) -> dict
     for arg in args:
         if arg.annotation is not None and is_supported_type(arg.annotation):
             env[arg.arg] = annotation_name(arg.annotation)
+        elif (
+            arg.annotation is not None
+            and (plugin_key := _plugin_annotation_key(function, arg.annotation)) is not None
+        ):
+            env[arg.arg] = plugin_key
         elif arg.arg in function.inferred_arg_types:
             env[arg.arg] = function.inferred_arg_types[arg.arg]
     return env
@@ -1023,6 +1039,10 @@ def _validate_type_match(
 def _return_type_name(node: ast.FunctionDef, function: FunctionAnalysis) -> str | None:
     if node.returns is not None and is_supported_type(node.returns):
         return annotation_name(node.returns)
+    if node.returns is not None:
+        plugin_key = _plugin_annotation_key(function, node.returns)
+        if plugin_key is not None:
+            return plugin_key
     return function.inferred_return_type
 
 
@@ -2582,7 +2602,18 @@ def _infer_call_type(
         return None
     if _is_append_call(node):
         return _infer_append_call_type(node, function, env)
-    return function.call_return_types.get(target) if target is not None else None
+    if target is None:
+        return None
+    known_return = function.call_return_types.get(target)
+    if known_return is not None:
+        return known_return
+    if function.claim_engine is not None and not node.keywords:
+        handled, claim_type = function.claim_engine.claim_call(
+            function, node, target, tuple(infer_arg(arg) for arg in node.args)
+        )
+        if handled:
+            return claim_type
+    return None
 
 
 def _format_arg_unprintable_reason(arg_type: str | None) -> str | None:
@@ -2869,6 +2900,11 @@ def _infer_binop_type(
         return None
     if left is None or right is None:
         return None
+    engine = function.claim_engine
+    if engine is not None and (engine.is_plugin_type(left) or engine.is_plugin_type(right)):
+        handled, claim_type = engine.claim_binop(function, node, op, left, right)
+        if handled:
+            return claim_type
     if isinstance(op, ast.Div) and left == "int" and right == "int":
         _add_unsupported_syntax(
             function,

@@ -279,6 +279,26 @@ def _boundary_errors(
             diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
             continue
 
+        if any(
+            claim.line == call.line and claim.column == call.column
+            for claim in function.plugin_claims
+        ):
+            # An active lowering plugin claimed this call at analysis time
+            # (docs/specs/plugin-lowering.md): it is legal, the plugin emits it.
+            continue
+        claim_rejection = next(
+            (
+                diagnostic
+                for diagnostic in function.plugin_claim_rejections
+                if diagnostic.line == call.line and diagnostic.column == call.column
+            ),
+            None,
+        )
+        if claim_rejection is not None:
+            # A covering plugin rejected this site with its own guidance;
+            # surface that instead of the generic RXT030.
+            diagnostics.append(claim_rejection)
+            continue
         decision = decision_for_target(module, resolved.resolved_target)
         message, suggestion = _external_call_diagnostic_text(resolved.resolved_target, call.in_loop, decision)
         diagnostics.append(

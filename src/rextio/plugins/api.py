@@ -228,9 +228,17 @@ class ClaimSite:
 
 @dataclass(frozen=True)
 class Claimed:
-    """The plugin will lower this site under the given rule."""
+    """The plugin will lower this site under the given rule.
+
+    ``result_type`` is the expression type the claimed site produces (a core
+    type name or a plugin type key), so the analyzer's inference can keep
+    typing the enclosing expression; ``None`` means unknown. (Spec amendment:
+    added to the shape shown in docs/specs/plugin-lowering.md section 2 —
+    without it, claimed sites would be untyped in the analyzer.)
+    """
 
     rule_id: str
+    result_type: str | None = None
 
 
 @dataclass(frozen=True)
