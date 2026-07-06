@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argparse parser for the rextio CLI."""
     parser = argparse.ArgumentParser(
         prog="rextio",
-        description="Rextio 0.1.0 hybrid build tool.",
+        description="Rextio hybrid build tool.",
     )
     parser.add_argument(
         "--version",

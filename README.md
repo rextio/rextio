@@ -5,7 +5,7 @@
 **Compiles eligible typed Python functions to Rust and keeps everything
 else on the Python fallback.**
 
-Rextio 0.1.0 is an alpha-stage local build tool for Python projects. It finds
+Rextio 0.1.1 is an alpha-stage local build tool for Python projects. It finds
 typed Python functions that can be safely lowered to Rust, compiles them
 ahead of time with PyO3, and keeps everything else running through generated
 Python fallback code - same imports, same behavior.
@@ -67,7 +67,8 @@ The main commands:
 | Command | What it does |
 | --- | --- |
 | `rextio init` | Creates `rextio.toml`, `REXTIO.md`, and `.rextioignore`. |
-| `rextio check` | Analyzes native candidates and prints diagnostics. |
+| `rextio check` | Analyzes native candidates and prints diagnostics (structured JSON via `--format json`). |
+| `rextio capabilities` | Prints the machine-readable capability manifest: supported types, promotion rules with guidance, and active plugins (experimental). |
 | `rextio generate` | Writes generated Rust and Python source without compiling. |
 | `rextio build` | Generates, compiles, packages, and writes build reports. |
 | `rextio bench` | Compares Python fallback and Rust native timing for one function. |
@@ -265,7 +266,7 @@ Common settings:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Rust is the only implemented native target in 0.1.0.
+Rust is the only implemented native target in 0.1.1.
 
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry
@@ -289,9 +290,13 @@ default_external_policy = "fallback"
 ```
 
 The supported package policies are `fallback`, `analyze`, `try-native`, and
-`plugin`. Concrete third-party plugin transformations and general dependency
-lowering are not bundled in 0.1.0; `try-native` is an explicit planning
-policy and still falls back when no safe direct lowering exists.
+`plugin`. Since 0.1.1 a plugin can also describe and *lower* covered
+constructs (plugin API 1.1 — see
+[the plugin lowering spec](docs/specs/plugin-lowering.md)); the first-party
+[rextio-numpy](https://github.com/rextio/rextio-numpy) plugin implements an
+initial certified float64 1-D surface. General dependency lowering is not
+bundled; `try-native` is an explicit planning policy and still falls back
+when no safe direct lowering exists.
 
 ## Native Selection
 
@@ -374,7 +379,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## Supported Direct Rust Subset
 
-Rextio 0.1.0 supports a deliberately small subset. This is the code
+Rextio 0.1.1 supports a deliberately small subset. This is the code
 that runs as native Rust.
 
 Supported types include:
@@ -529,11 +534,14 @@ instead of dying at the first call. Prefer `@rextio.native` for typed scalar
 code and Numba for NumPy/array kernels, and note that very small functions
 lose to call-boundary costs under any accelerator.
 
-A planned Rextio plugin aims to translate NumPy-based Python into
-AOT-compiled native Rust. Once it exists, NumPy code will have two possible
-routes - Rextio-plugin AOT compilation, or Numba JIT inside the Python
-fallback - and future releases may add guidance on choosing between them;
-nothing here is settled yet.
+The first-party [rextio-numpy](https://github.com/rextio/rextio-numpy)
+plugin translates an initial certified NumPy surface (float64 1-D
+element-wise arithmetic, `numpy.dot`, whole-array `sum`/`mean`) into
+AOT-compiled native Rust, so NumPy code now has two routes - Rextio-plugin
+AOT compilation for the covered surface, or Numba JIT inside the Python
+fallback. When both apply, an explicit `@numba.*` decorator wins and the
+analyzer emits an informational RXT091 note; broader guidance on choosing
+between the routes will firm up as the plugin surface grows.
 
 ## Examples
 

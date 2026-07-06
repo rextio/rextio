@@ -1,10 +1,16 @@
-# Rextio 0.1.0 Notes
+# Rextio 0.1.1 Notes
 
 > **Security:** Rextio analyzes source, generates Rust, and runs external build
 > tools — treat it like a compiler and only build trusted projects. See
 > [`SECURITY.md`](./SECURITY.md) for the threat model and protections.
 
-Rextio 0.1.0 proves a focused hybrid build workflow:
+Rextio 0.1.1 adds the machine-readable tooling contract (`rextio
+capabilities`, route/status fields in `rextio check --format json`) and the
+plugin protocol that lets plugins describe and lower covered constructs (see
+[docs/specs/](./docs/README.md) and [CHANGELOG.md](./CHANGELOG.md)); the core
+workflow below is unchanged from 0.1.0.
+
+Rextio proves a focused hybrid build workflow:
 
 ```text
 Python source

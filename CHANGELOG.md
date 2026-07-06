@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.1.1 — 2026-07-06
+
+Contract-and-plugins release: the machine-readable tooling contract for
+external tooling (agent skills, LSP servers, editor extensions) and the
+plugin protocol that lets plugins describe AND lower covered constructs.
+All new surfaces are Experimental (see docs/stability.md); no analyzer or
+codegen behavior changed for plugin-free projects.
+
+### Machine-readable tooling contract
+
+- `rextio check --format json` (and `.rextio/reports/check.json`) carries a
+  top-level `contract_version` plus per-function `route` (`native-direct`,
+  `native-shim`, `native-plugin:<id>`, `fallback-accelerated:<tool>`,
+  `fallback-python`), `native_status` (`accepted`/`rejected`/`not-candidate`),
+  and `rejection_codes`. Additive: no existing key changed.
+- New `rextio capabilities [project_root] --format json`: the config-resolved
+  capability manifest — the supported type matrix, structured L2 rule records
+  (constraint + diagnostic code + remediation guidance per rule, core and
+  active plugins merged), a `config_fingerprint` for consumer caching, and the
+  active plugin list. Introspection-only: no source analysis, no report files.
+- Specs: `docs/specs/tooling-contract.md` and `docs/specs/plugin-lowering.md`.
+
+### Plugin protocol v2 and lowering (plugin API 1.1)
+
+- Entry-point plugins can now self-describe declarative rule records via
+  `describe()`/`covers()` (`rextio.plugins.api`), with `RXTP-<PLUGIN>-NNN`
+  diagnostic namespacing validated at load. Metadata-only plugins keep
+  loading unchanged.
+- Plugin API 1.1 adds the lowering members (`type_vocabulary`, `claim`,
+  `lower`, `crate_dependencies` — all-or-nothing): a plugin registers an
+  annotation vocabulary the analyzer resolves through the module import map,
+  claims covered call/binop sites at analysis time (deterministic by
+  contract; claims are matched to IR nodes on the full kind+span signature),
+  and emits expression-level Rust through `lower(site, LoweringContext)` at
+  codegen time. Claimed functions route as `native-plugin:<id>`; plugin
+  claim rejections surface at the boundary pass with the plugin's own
+  diagnostics; plugin codegen failures demote to the Python fallback exactly
+  like core codegen failures.
+- Plugin-typed PyO3 boundaries: plugin types declare their parameter/return
+  conversions (read-only borrows in, owned returns out); plugin types never
+  cross scalar boundary calls or executable delegation, and plugin-lowered
+  functions are excluded from the Rust-importable crate.
+- Pinned crate injection: a lowering plugin declares exact-pinned crate
+  dependencies; they are appended to the generated Cargo.toml only when a
+  plugin-lowered function exists, listed in `build.json`
+  (`plugin_crate_dependencies`) and the text report, and cross-plugin pin
+  conflicts fail loudly up front.
+- New diagnostics: `RXT091` (informational: an accelerator-decorated function
+  may be plugin-lowerable if the decorator is removed — the decorator is
+  respected; precedence is explicit decorator > plugin > fallback) and the
+  plugin-owned `RXTP-*` code space.
+
+### Plugin certification kit
+
+- `rextio.plugins.testing`: builds a fixture project once, then runs each
+  input through the generated wrapper on both legs
+  (`REXTIO_NATIVE_MODE=native`/`fallback`) with deep-copied arguments,
+  comparing results (NaN-aware, type-strict; custom comparators for richer
+  types) and exceptions (type + message). Rule records gain an optional
+  `verified` field for certification status.
+- First consumer: the rextio-numpy plugin's initial float64 1-D surface
+  (element-wise arithmetic, `numpy.dot`, whole-array `sum`/`mean`) is
+  certified with this kit against CPython NumPy under real cargo builds.
+
 ## 0.1.0 — 2026-07-04
 
 Initial public release (alpha stage) of Rextio as a local hybrid build tool.

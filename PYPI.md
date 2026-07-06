@@ -1,6 +1,6 @@
 # Rextio
 
-Rextio 0.1.0 is an alpha-stage local build tool for Python projects.
+Rextio 0.1.1 is an alpha-stage local build tool for Python projects.
 
 ```text
 pip install rextio

@@ -6,7 +6,7 @@ An index of the project's documentation. See the top-level
 ## Guides
 
 - [Feature stability](stability.md) — the Stable / Experimental / Planned tier table
-  for every feature in 0.1.0.
+  for every feature in the 0.1.x line.
 - [Versioning policy](versioning.md) — SemVer with the pre-1.0 caveats and the
   definition of the public contract.
 - [Unsupported features](unsupported-features.md) — the boundaries of the 0.1.0
