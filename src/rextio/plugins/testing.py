@@ -33,11 +33,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-# The kit mutates process-global state (REXTIO_NATIVE_MODE, sys.modules) per
-# leg; concurrent same-process checkers would race modes between legs and
-# cross-evict each other's imports. The lock serializes the critical section;
-# the kit is NOT safe for same-process parallel execution beyond that
-# (pytest-xdist's separate worker processes are fine).
+# The kit mutates process-global state (REXTIO_NATIVE_MODE, sys.modules,
+# sys.path) per leg. The lock serializes each leg's critical section, so
+# same-process concurrent checkers execute their legs one at a time
+# (correct, just not parallel); separate processes (pytest-xdist's default
+# workers) need no coordination at all.
 _RUN_LOCK = threading.Lock()
 
 
@@ -217,7 +217,16 @@ class EquivalenceChecker:
         with _RUN_LOCK:
             previous = os.environ.get("REXTIO_NATIVE_MODE")
             os.environ["REXTIO_NATIVE_MODE"] = mode
+            build_dir = str(self.project.build_python_dir)
+            inserted = build_dir not in sys.path
+            self._evict_modules()
+            if inserted:
+                sys.path.insert(0, build_dir)
             try:
+                # The build tree stays on sys.path (and its modules stay in
+                # sys.modules) for the DURATION of the call, not just the
+                # import: a function-local/lazy import inside the leg would
+                # otherwise fail (council round 6).
                 function = self._load_function()
                 copier = self.copy_args if self.copy_args is not None else copy.deepcopy
                 call_args = tuple(copier(args))
@@ -226,35 +235,36 @@ class EquivalenceChecker:
                 except Exception as exc:
                     return ("raised", exc), call_args
             finally:
+                if inserted and build_dir in sys.path:
+                    sys.path.remove(build_dir)
+                # Leave no trace: the generated native extension is always
+                # named _rextio_native, so a cached module from ANOTHER built
+                # project would be silently reused by this project's wrappers
+                # - and ours would poison the next.
+                self._evict_modules()
                 if previous is None:
                     os.environ.pop("REXTIO_NATIVE_MODE", None)
                 else:
                     os.environ["REXTIO_NATIVE_MODE"] = previous
 
     def _load_function(self) -> Callable[..., object]:
-        build_dir = str(self.project.build_python_dir)
-        inserted = build_dir not in sys.path
-        self._evict_modules()
-        if inserted:
-            sys.path.insert(0, build_dir)
-        try:
-            module = importlib.import_module(self.module_name)
-            loaded_from = getattr(module, "__file__", "") or ""
-            if not loaded_from.startswith(str(self.project.build_python_dir)):
-                raise CertificationError(
-                    f"module {self.module_name!r} was imported from {loaded_from!r}, not the "
-                    "generated build tree; remove conflicting entries from sys.path/sys.modules"
-                )
-            return getattr(module, self.function_name)
-        finally:
-            if inserted:
-                sys.path.remove(build_dir)
-            # Leave no trace: the generated native extension is always named
-            # _rextio_native, so a cached module from ANOTHER built project
-            # (e.g. an earlier test in the same session) would be silently
-            # reused by this project's wrappers - and ours would poison the
-            # next. Evict on the way in and on the way out.
-            self._evict_modules()
+        """Import the generated module and return the target function.
+
+        sys.path/sys.modules setup and teardown live in `_run` so the build
+        tree remains importable while the function executes.
+        """
+        module = importlib.import_module(self.module_name)
+        loaded_from = getattr(module, "__file__", None)
+        build_root = self.project.build_python_dir.resolve()
+        # Resolved-path containment, not string prefix: symlinked temp dirs
+        # and case-insensitive volumes broke the prefix check only in the
+        # safe direction (spurious rejection), but loudly (council round 6).
+        if loaded_from is None or not Path(loaded_from).resolve().is_relative_to(build_root):
+            raise CertificationError(
+                f"module {self.module_name!r} was imported from {loaded_from!r}, not the "
+                "generated build tree; remove conflicting entries from sys.path/sys.modules"
+            )
+        return getattr(module, self.function_name)
 
     def _evict_modules(self) -> None:
         # Pops by name; None-valued sys.modules entries (failed relative

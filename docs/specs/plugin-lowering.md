@@ -62,7 +62,9 @@ def claim(self, site: ClaimSite, config: RextioConfig) -> ClaimResult: ...
 def lower(self, claimed: ClaimedSite, ctx: LoweringContext) -> LoweredExpr: ...
 ```
 
-- `ClaimSite`: one candidate construct — a call or binary operation whose
+- `ClaimSite`: one candidate construct — a call or binary operation
+  (`+ - * / % @` — matmul is offered to plugins BEFORE core's arithmetic
+  allow-set rejects it, so a plugin may claim `@`) whose
   operand/argument types include a plugin type or a covered symbol
   (`covers()` decides which sites are offered to which plugin). Carries the
   resolved operand types and the dotted call target. The source-location
@@ -74,7 +76,10 @@ def lower(self, claimed: ClaimedSite, ctx: LoweringContext) -> LoweredExpr: ...
   - `Claimed(rule_id, result_type)` — the plugin will lower this site;
     `rule_id` must be one of the plugin's rule records (enforced: a claim
     with an unadvertised rule id from a describing plugin fails the
-    analysis with a PluginError). `result_type` (a core
+    analysis with a PluginError). `result_type` is REQUIRED for expression
+    claims (enforced with a PluginError): without it the enclosing
+    expression stays untyped and the analyzer would report accepted for a
+    function it never finished typing. `result_type` (a core
     type name or plugin type key, or None for unknown) is the expression type
     the site produces, so the analyzer's inference keeps typing the enclosing
     expression. *(Amended during implementation: without it, claimed sites

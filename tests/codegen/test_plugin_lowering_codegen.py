@@ -257,6 +257,8 @@ def test_cargo_toml_merges_duplicate_pins_across_plugins() -> None:
     }
     assert parsed["dependencies"]["rand"] == "=0.8.5"
     assert rendered.count("numpy = ") == 1
+    # Features render in sorted order (determinism), not insertion order.
+    assert rendered.index('"half"') < rendered.index('"nalgebra"')
 
 
 def test_cargo_toml_without_extras_is_unchanged() -> None:

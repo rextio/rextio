@@ -36,7 +36,8 @@ from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.config.schema import RextioConfig
 from rextio.contract import TOOLING_CONTRACT_VERSION
-from rextio.targets.plan import TargetPlan, TargetPlanError, create_target_plan
+from rextio.plugins.models import PluginRegistry
+from rextio.targets.plan import TargetPlan, TargetPlanError, create_target_plan, create_target_spec
 
 
 def config_fingerprint(config: RextioConfig) -> str:
@@ -79,6 +80,10 @@ def build_manifest(
             {
                 "id": plugin.id,
                 "name": plugin.name,
+                # Distribution version: the manifest cache key is documented
+                # as (fingerprint, rextio version, plugin versions), so the
+                # manifest must supply the plugin-version component itself.
+                "version": plugin.version,
                 "packages": list(plugin.packages),
                 "rules_provided": plugin.rules_provided,
                 "api_version": plugin.api_version,
@@ -147,7 +152,13 @@ def run(args: Namespace) -> int:
                 ("policy", "native_top_level"): args.native_top_level,
             },
         )
-        target_plan = create_target_plan(project_root, config)
+        if getattr(args, "no_plugins", False):
+            # Core-only manifest: entry-point discovery itself imports and
+            # executes installed plugin packages, so --no-plugins must skip
+            # registry loading entirely, not merely disable plugins.
+            target_plan = TargetPlan(spec=create_target_spec(config), plugins=PluginRegistry())
+        else:
+            target_plan = create_target_plan(project_root, config)
     except (ConfigError, TargetPlanError) as exc:
         reporter.error(f"RXT060 Configuration error: {exc}")
         return 1

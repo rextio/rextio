@@ -175,12 +175,6 @@ class ClaimEngine:
             )
         if claims:
             plugin_id, claimed = claims[0]
-            advertised = self._rule_ids.get(plugin_id)
-            if advertised is not None and claimed.rule_id not in advertised:
-                raise PluginError(
-                    f"plugin {plugin_id!r} claimed site {site.target!r} with rule id "
-                    f"{claimed.rule_id!r}, which is not among its described rule records"
-                )
             claim = PluginClaim(
                 plugin_id=plugin_id,
                 rule_id=claimed.rule_id,
@@ -243,6 +237,26 @@ class ClaimEngine:
             raise PluginError(
                 f"plugin {plugin_id!r} claim() must return Claimed, NotCovered, or Rejected"
             )
+        # Claim validation happens HERE, before the result is cached, so the
+        # cache never stores a verdict that is invalid by construction
+        # (council round 6).
+        if isinstance(result, Claimed):
+            advertised = self._rule_ids.get(plugin_id)
+            if advertised is not None and result.rule_id not in advertised:
+                raise PluginError(
+                    f"plugin {plugin_id!r} claimed site {site.target!r} with rule id "
+                    f"{result.rule_id!r}, which is not among its described rule records"
+                )
+            if result.result_type is None:
+                # Without a result type the enclosing expression stays
+                # untyped, return validation is skipped, and `check` reports
+                # accepted/native-plugin for a function the analyzer never
+                # finished typing (council round 6).
+                raise PluginError(
+                    f"plugin {plugin_id!r} claimed site {site.target!r} without a "
+                    "result_type; expression claims must state the type the "
+                    "site produces"
+                )
         self._cache[cache_key] = result
         return result
 

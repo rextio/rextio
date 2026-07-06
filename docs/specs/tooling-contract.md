@@ -132,14 +132,18 @@ in registry order, then plugin rules and the `plugins` array sorted by id.
     "set_item_types": ["int", "bool", "str"]
   },
   "rules": [ <RuleRecord>, ... ],
-  "plugins": [ { "id": "rextio-numpy", "api_version": "1.0",
-                 "rules_provided": true }, ... ]
+  "plugins": [ { "id": "rextio-numpy", "version": "0.1.0",
+                 "api_version": "1.0", "rules_provided": true }, ... ]
 }
 ```
 
 `type_capabilities` is emitted from the existing single-source-of-truth
 constants in `src/rextio/capabilities.py`. `config_fingerprint` lets consumers
-cache the manifest keyed on (fingerprint, rextio version, plugin versions).
+cache the manifest keyed on (fingerprint, rextio version, plugin versions) —
+each plugin entry carries its distribution `version` (null when the provider
+has no entry-point distribution metadata) so the key is computable from the
+manifest alone. `--no-plugins` emits the core-only manifest without importing
+or executing any plugin package code.
 
 ### RuleRecord (L2 — required)
 

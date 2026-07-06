@@ -585,6 +585,108 @@ def mixed(a: F64Arr1, b: I64Arr1) -> float:
     assert function.route == "native-plugin:rextio-numpy+rextio-other"
 
 
+def test_comparisons_on_plugin_typed_values_are_rejected(tmp_path: Path) -> None:
+    # Council round 6 (7/8 reviewers): same-plugin-type comparison pairs
+    # passed _types_comparable and lowered to raw Rust - ndarray's PartialEq
+    # returns a scalar bool where NumPy returns an elementwise bool array, a
+    # silent divergence that COMPILED. Plugins have no comparison claim
+    # vocabulary this release, so every form rejects.
+    write_module(
+        tmp_path,
+        """
+import rextio
+from rextio_numpy.types import F64Arr1
+
+@rextio.native
+def eq(a: F64Arr1, b: F64Arr1) -> bool:
+    return a == b
+
+@rextio.native
+def lt(a: F64Arr1, b: F64Arr1) -> bool:
+    return a < b
+
+@rextio.native
+def chained(a: F64Arr1, b: F64Arr1, c: F64Arr1) -> bool:
+    return a == b == c
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        plugin_registry=make_registry(NumpyProvider()),
+        plugin_config=RextioConfig(),
+    )
+
+    for name in ("eq", "lt", "chained"):
+        function = function_named(analysis, f"myapp.kernels.{name}")
+        assert function.accepted is False, name
+        assert any(
+            "comparing plugin-typed values" in diagnostic.message
+            for diagnostic in function.error_diagnostics
+        ), (name, function.diagnostics)
+
+
+def test_matmul_on_plugin_typed_values_is_offered_to_plugins(tmp_path: Path) -> None:
+    # Council round 6 (glm): the operator allow-set (and the blanket syntax
+    # blocklist) rejected `@` BEFORE the claim offer, so _BINOP_SYMBOLS'
+    # MatMult entry was dead code. Plugin-typed `@` is now offered first;
+    # non-plugin `@` still rejects with the same message.
+    class MatmulProvider(NumpyProvider):
+        def claim(self, site: ClaimSite, config: RextioConfig):
+            if site.kind == "binop" and site.target == "@":
+                return Claimed(rule_id="rextio-numpy/dot-float64", result_type="float")
+            return super().claim(site, config)
+
+    write_module(
+        tmp_path,
+        """
+import rextio
+from rextio_numpy.types import F64Arr1
+
+@rextio.native
+def matmul(a: F64Arr1, b: F64Arr1) -> float:
+    return a @ b
+
+@rextio.native
+def core_matmul(x: float, y: float) -> float:
+    return x @ y
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        plugin_registry=make_registry(MatmulProvider()),
+        plugin_config=RextioConfig(),
+    )
+
+    claimed = function_named(analysis, "myapp.kernels.matmul")
+    assert claimed.accepted is True
+    assert claimed.route == "native-plugin:rextio-numpy"
+    assert len(claimed.plugin_claims) == 1
+    core = function_named(analysis, "myapp.kernels.core_matmul")
+    assert core.accepted is False
+
+
+def test_claim_without_result_type_fails_analysis(tmp_path: Path) -> None:
+    # Council round 6 (codex): a Claimed(result_type=None) left the enclosing
+    # expression untyped, return validation was skipped, and check reported
+    # accepted/native-plugin for a function the analyzer never finished
+    # typing.
+    class NoneTypeProvider(NumpyProvider):
+        def claim(self, site: ClaimSite, config: RextioConfig):
+            if site.kind == "call" and site.target == "numpy.dot":
+                return Claimed(rule_id="rextio-numpy/dot-float64", result_type=None)
+            return super().claim(site, config)
+
+    write_module(tmp_path, DOT_MODULE)
+    with pytest.raises(PluginError, match="without a result_type"):
+        analyze_project(
+            tmp_path,
+            plugin_registry=make_registry(NoneTypeProvider()),
+            plugin_config=RextioConfig(),
+        )
+
+
 def test_local_name_py_on_plugin_typed_function_is_rejected(tmp_path: Path) -> None:
     # Council round 5 (kimi): a LOCAL named `py` shadows the injected
     # interpreter token in the generated Rust body, so the return conversion

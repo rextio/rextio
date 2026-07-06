@@ -260,6 +260,47 @@ def test_core_reserved_crate_name_fails_load() -> None:
         load(("rextio-other", PyO3Plugin()), enabled=("rextio-other",))
 
 
+def test_same_provider_duplicate_diagnostic_codes_fail_load() -> None:
+    # Council round 6 (codex): the uniqueness check only fired across
+    # providers; a plugin describing two records with the same code slipped
+    # through, making manifest remediation lookups ambiguous.
+    class DupCodePlugin(LoweringPlugin):
+        plugin_id = "rextio-other"
+
+        def to_rextio_plugin(self) -> RextioPlugin:
+            return RextioPlugin(id="rextio-other", name="Other")
+
+        def describe(self, config: RextioConfig) -> tuple[RuleRecord, ...]:
+            record = RuleRecord(
+                id="rextio-other/one",
+                provider="rextio-other",
+                scope=RuleScope(kind="call", pattern="x"),
+                constraint="c",
+                outcome="fallback",
+                diagnostic_code="RXTP-OTHER-001",
+                guidance="g",
+            )
+            second = RuleRecord(
+                id="rextio-other/two",
+                provider="rextio-other",
+                scope=RuleScope(kind="call", pattern="y"),
+                constraint="c",
+                outcome="fallback",
+                diagnostic_code="RXTP-OTHER-001",
+                guidance="g",
+            )
+            return (record, second)
+
+        def type_vocabulary(self) -> tuple[PluginType, ...]:
+            return ()
+
+        def crate_dependencies(self) -> tuple[CrateDependency, ...]:
+            return ()
+
+    with pytest.raises(PluginError, match="duplicate plugin diagnostic code"):
+        load(("rextio-other", DupCodePlugin()), enabled=("rextio-other",))
+
+
 def test_matching_crate_pins_across_plugins_are_allowed() -> None:
     class OtherPlugin(LoweringPlugin):
         plugin_id = "rextio-other"

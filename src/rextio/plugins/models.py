@@ -80,6 +80,11 @@ class RextioPlugin:
     packages: tuple[str, ...] = ()
     source: str = "entry-point"
     package: str | None = None
+    # Distribution version of the providing package (from entry-point
+    # metadata) - part of the manifest cache key the tooling contract
+    # documents (council round 6: the manifest promised the key but did not
+    # supply the plugin-version component).
+    version: str | None = None
     entry_point: str | None = None
     # Protocol v2: True when the plugin self-describes rule records through
     # ``describe()``; the declared plugin-API version travels with it.
@@ -109,12 +114,14 @@ class RextioPlugin:
         source: str,
         package: str | None = None,
         entry_point: str | None = None,
+        version: str | None = None,
     ) -> RextioPlugin:
         """Return a copy of this plugin annotated with its discovery source."""
         return replace(
             self,
             source=source,
             package=package,
+            version=version,
             entry_point=entry_point,
         )
 
@@ -130,6 +137,7 @@ class RextioPlugin:
             "packages": list(self.packages),
             "source": self.source,
             "package": self.package,
+            "version": self.version,
             "entry_point": self.entry_point,
             "rules_provided": self.rules_provided,
             "api_version": self.api_version,

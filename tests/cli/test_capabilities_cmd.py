@@ -125,6 +125,7 @@ def test_capabilities_merges_v2_plugin_rules(
         {
             "id": "rextio-numpy",
             "name": "NumPy to Rust",
+            "version": None,  # FakeEntryPoint has no dist metadata
             "packages": ["numpy"],
             "rules_provided": True,
             "api_version": "1.0",
@@ -147,3 +148,23 @@ def test_capabilities_rejects_nonexistent_project_root(tmp_path: Path, capsys) -
     err = capsys.readouterr().err
     assert "RXT060" in err
     assert "does not exist" in err
+
+
+def test_capabilities_no_plugins_emits_core_only_manifest(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    # Council round 6 (kimi): resolving the plugin registry executes enabled
+    # plugins' module-level code; --no-plugins is the side-effect-free
+    # escape hatch for consumers who only need the core manifest.
+    (tmp_path / "rextio.toml").write_text(
+        '[plugins]\nenabled = ["rextio-numpy"]\n', encoding="utf-8"
+    )
+    from rextio.plugins import loader as plugin_loader
+
+    def exploding_entry_points(_eps):
+        raise AssertionError("--no-plugins must not touch plugin entry points")
+
+    monkeypatch.setattr(plugin_loader, "_plugin_entry_points", exploding_entry_points)
+    manifest = run_capabilities_json(tmp_path, capsys, "--no-plugins")
+    assert manifest["plugins"] == []
+    assert all(rule["provider"] == "core" for rule in manifest["rules"])

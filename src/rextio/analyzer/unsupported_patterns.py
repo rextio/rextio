@@ -97,7 +97,9 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.TryStar,
     ast.FloorDiv,
     ast.Pow,
-    ast.MatMult,
+    # ast.MatMult deliberately NOT here: `@` must reach _infer_binop_type so
+    # a covering plugin can claim it (council round 6); non-claimed `@` is
+    # rejected there by the operator allow-set with the same message.
     ast.BitAnd,
     ast.BitXor,
     ast.LShift,
@@ -3155,6 +3157,21 @@ def _infer_binop_type(
     function: FunctionAnalysis,
     node: ast.AST,
 ) -> str | None:
+    engine = function.claim_engine
+    if (
+        engine is not None
+        and left is not None
+        and right is not None
+        and (engine.is_plugin_type(left) or engine.is_plugin_type(right))
+    ):
+        # Offered BEFORE core's operator allow-set: otherwise `a @ b` (and
+        # any future operator in _BINOP_SYMBOLS beyond core's arithmetic
+        # set) would be rejected by core before the covering plugin ever saw
+        # the site (council round 6). claim_binop itself ignores operators
+        # outside the claim vocabulary.
+        handled, claim_type = engine.claim_binop(function, node, op, left, right)
+        if handled:
+            return claim_type
     if not isinstance(op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod)):
         _add_unsupported_syntax(
             function,
@@ -3164,11 +3181,6 @@ def _infer_binop_type(
         return None
     if left is None or right is None:
         return None
-    engine = function.claim_engine
-    if engine is not None and (engine.is_plugin_type(left) or engine.is_plugin_type(right)):
-        handled, claim_type = engine.claim_binop(function, node, op, left, right)
-        if handled:
-            return claim_type
     if isinstance(op, ast.Div) and left == "int" and right == "int":
         _add_unsupported_syntax(
             function,
@@ -3376,7 +3388,24 @@ def _validate_compare_types(
                 "ordering comparisons (<, <=, >, >=) on dict/set operands are not "
                 "supported in native functions",
             )
-        if (
+        engine = function.claim_engine
+        if engine is not None and (
+            engine.is_plugin_type(left_type) or engine.is_plugin_type(right_type)
+        ):
+            # Same-plugin-type pairs passed _types_comparable (equal type
+            # strings), lowered to a raw Rust comparison, and COMPILED for
+            # ndarray: scalar bool natively vs NumPy's elementwise bool array
+            # on the fallback - a silent divergence (council round 6, 7/8
+            # reviewers). Plugins have no comparison claim vocabulary this
+            # release, so the site always rejects.
+            _add_unsupported_syntax(
+                function,
+                node,
+                "comparing plugin-typed values is not covered by any plugin "
+                "rule; compute the result with a covered operation or keep "
+                "the function on the Python fallback",
+            )
+        elif (
             left_type is not None
             and right_type is not None
             and not _types_comparable(left_type, right_type)

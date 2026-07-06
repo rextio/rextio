@@ -236,12 +236,16 @@ def _validate_rule_codes_unique(records: tuple[RuleRecord, ...]) -> None:
         if record.diagnostic_code is None:
             continue
         owner = seen.get(record.diagnostic_code)
-        if owner is not None and owner != record.provider:
+        if owner is not None:
+            # The tooling contract promises one rule record per diagnostic
+            # code; a same-provider duplicate previously slipped through
+            # (council round 6) and would make manifest remediation lookups
+            # ambiguous.
             raise PluginError(
                 f"duplicate plugin diagnostic code {record.diagnostic_code!r} "
                 f"declared by {owner!r} and {record.provider!r}"
             )
-        seen.setdefault(record.diagnostic_code, record.provider)
+        seen[record.diagnostic_code] = record.provider
 
 
 def _plugin_entry_points(entry_points: Iterable[Any] | None) -> tuple[Any, ...]:
@@ -275,12 +279,14 @@ def _load_entry_point_plugin(entry_point: Any) -> tuple[RextioPlugin, Any | None
     if hasattr(payload, "to_rextio_plugin"):
         payload = payload.to_rextio_plugin()
     package = _entry_point_package(entry_point)
+    version = _entry_point_version(entry_point)
     entry_point_ref = f"{ENTRY_POINT_GROUP}:{entry_point_name}"
     if isinstance(payload, RextioPlugin):
         plugin = payload.with_source_metadata(
             source="entry-point",
             package=package,
             entry_point=entry_point_ref,
+            version=version,
         )
     elif isinstance(payload, Mapping):
         plugin = _parse_plugin_metadata(
@@ -289,6 +295,7 @@ def _load_entry_point_plugin(entry_point: Any) -> tuple[RextioPlugin, Any | None
             source="entry-point",
             package=package,
             entry_point=entry_point_ref,
+            version=version,
         )
     else:
         raise PluginError(
@@ -368,6 +375,13 @@ def _entry_point_package(entry_point: Any) -> str | None:
     return metadata_.get("Name")
 
 
+def _entry_point_version(entry_point: Any) -> str | None:
+    distribution = getattr(entry_point, "dist", None)
+    if distribution is None:
+        return None
+    return getattr(distribution, "version", None)
+
+
 def _parse_plugin_metadata(
     data: Mapping[str, Any],
     *,
@@ -375,6 +389,7 @@ def _parse_plugin_metadata(
     source: str,
     package: str | None = None,
     entry_point: str | None = None,
+    version: str | None = None,
 ) -> RextioPlugin:
     plugin_id = _optional_string(data, "id", default_id)
     target_language = _required_string(data, "target_language").lower()
@@ -406,6 +421,7 @@ def _parse_plugin_metadata(
         packages=_optional_string_tuple(data, "packages"),
         source=source,
         package=package,
+        version=version,
         entry_point=entry_point,
     )
 

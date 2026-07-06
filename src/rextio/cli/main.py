@@ -80,6 +80,15 @@ def build_parser() -> argparse.ArgumentParser:
         "project_root", nargs="?", default=".", help="Project root to describe."
     )
     capabilities_parser.add_argument(
+        "--no-plugins",
+        action="store_true",
+        help=(
+            "Emit the core-only manifest without importing or executing any "
+            "plugin package code (resolving enabled plugins runs their "
+            "module-level code)."
+        ),
+    )
+    capabilities_parser.add_argument(
         "--native-backend",
         "--target-language",
         dest="native_backend",
