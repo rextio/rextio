@@ -17,7 +17,7 @@ output.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, Union
 
@@ -272,6 +272,22 @@ class LoweredExpr:
 
 
 @dataclass(frozen=True)
+class LoweringContext:
+    """The codegen-side context handed to a plugin's ``lower()``.
+
+    ``operands`` are the rendered Rust sub-expressions of the claimed site's
+    operands/arguments in positional order (already lowered by core or by
+    prior plugin claims); ``target_language`` names the active codegen backend
+    (``"rust"``); ``fresh_name`` allocates a fresh temporary identifier in the
+    enclosing function's namespace from a given prefix.
+    """
+
+    operands: tuple[str, ...]
+    target_language: str
+    fresh_name: Callable[[str], str]
+
+
+@dataclass(frozen=True)
 class CrateDependency:
     """A crate a plugin's generated code depends on, with a mandatory exact pin."""
 
@@ -344,9 +360,10 @@ class RextioLoweringPlugin(RextioPluginV2, Protocol):
     def lower(self, claimed: ClaimSite, ctx: object) -> LoweredExpr:
         """Emit the Rust expression for a previously claimed site.
 
-        ``ctx`` is the codegen-side LoweringContext (defined with the codegen
-        integration slice); it provides rendered operand sub-expressions,
-        fresh-name allocation, and the active target spec.
+        ``ctx`` is the codegen-side :class:`LoweringContext`: rendered operand
+        sub-expressions in positional order, the target language, and
+        fresh-name allocation. (Typed ``object`` here so 1.1 providers with
+        looser annotations keep matching the protocol structurally.)
         """
         ...
 

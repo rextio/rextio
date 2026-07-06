@@ -31,6 +31,17 @@ class PluginClaim:
     line: int
     column: int
     result_type: str | None
+    # The resolved operand/argument types of the claimed site in positional
+    # order (plugin type keys or core type names, None when unresolved),
+    # carried through to codegen so lower() sees the same site claim() saw.
+    operand_types: tuple[str | None, ...] = ()
+    # End of the claimed node's source span. (line, column) alone is ambiguous:
+    # a BinOp starts at the same offset as its leftmost operand, so an
+    # expression like `np.dot(a, b) * factor` has the call AND the enclosing
+    # binop at one (line, column). IR lowering matches claims on the full
+    # (start, end, kind) signature to re-identify the exact node.
+    end_line: int | None = None
+    end_column: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this claim."""
@@ -41,7 +52,10 @@ class PluginClaim:
             "target": self.target,
             "line": self.line,
             "column": self.column,
+            "end_line": self.end_line,
+            "end_column": self.end_column,
             "result_type": self.result_type,
+            "operand_types": list(self.operand_types),
         }
 
 

@@ -9,6 +9,7 @@ accepted the input, so a failure here is an internal invariant violation, not us
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rextio.analyzer.call_resolution import FunctionResolver
@@ -26,6 +27,7 @@ from rextio.analyzer.common_calls import (
 from rextio.analyzer.models import (
     FunctionAnalysis,
     ModuleAnalysis,
+    PluginClaim,
     ProjectAnalysis,
     TopLevelAnalysis,
 )
@@ -61,6 +63,7 @@ from rextio.ir.nodes import (
     NameIR,
     NamedExprIR,
     ParamIR,
+    PluginClaimIR,
     ReturnIR,
     SetComprehensionIR,
     SetIR,
@@ -73,21 +76,58 @@ from rextio.ir.nodes import (
     WhileIR,
 )
 from rextio.ir.types import type_from_annotation, type_from_string
-from rextio.ir.types import RxtDict, RxtPyObject, RxtStr
+from rextio.ir.types import RxtDict, RxtPluginType, RxtPyObject, RxtStr, RxtType
 
 
 class LoweringError(RuntimeError):
     """Raised when an accepted analysis result cannot be lowered to IR."""
 
 
-def lower_project(analysis: ProjectAnalysis, include_embedding: bool = False) -> ModuleIR:
+@dataclass(frozen=True)
+class PluginTypeMaps:
+    """Plugin type lookups for lowering: by stable key and by annotation spelling."""
+
+    by_key: dict[str, RxtPluginType]
+    by_spelling: dict[str, RxtPluginType]
+
+
+@dataclass
+class _PluginLoweringState:
+    """Per-function plugin state consulted while lowering one function."""
+
+    # (line, column) of the claimed AST node -> the analyzer claim.
+    claims: dict[tuple[str, int, int, int | None, int | None], PluginClaim] = field(default_factory=dict)
+    type_maps: PluginTypeMaps | None = None
+    # The function's resolved import map (visible name -> dotted target),
+    # used to resolve plugin annotation spellings like the claim engine does.
+    imports: dict[str, str] = field(default_factory=dict)
+
+
+# Module-level plugin state, set/cleared (try/finally) around each
+# ``lower_function`` call. ``lower_expr`` and the signature-type helpers
+# recurse deeply and are called from many statement paths; a module global
+# avoids threading a rarely-used parameter through that whole recursion for
+# the plugin-free common case. Lowering is single-threaded per process, and
+# the try/finally keeps the state strictly scoped to one function.
+_PLUGIN_STATE: _PluginLoweringState | None = None
+
+
+def lower_project(
+    analysis: ProjectAnalysis,
+    include_embedding: bool = False,
+    plugin_types: PluginTypeMaps | None = None,
+) -> ModuleIR:
     """Lower every accepted native function (and embedding candidate, if included) to a module IR."""
     functions: list[FunctionIR] = []
     nodes_by_file: dict[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]] = {}
     module_trees_by_file: dict[str, ast.Module] = {}
     resolver = FunctionResolver(analysis)
     for function in analysis.accepted_native_functions:
-        functions.append(_lower_analysis_function(function, analysis, nodes_by_file, resolver))
+        functions.append(
+            _lower_analysis_function(
+                function, analysis, nodes_by_file, resolver, plugin_types=plugin_types
+            )
+        )
     if include_embedding:
         for function in analysis.embedding_candidates:
             functions.append(
@@ -97,6 +137,7 @@ def lower_project(analysis: ProjectAnalysis, include_embedding: bool = False) ->
                     nodes_by_file,
                     resolver,
                     embedded=True,
+                    plugin_types=plugin_types,
                 )
             )
     for top_level in analysis.accepted_native_top_levels:
@@ -118,6 +159,7 @@ def _lower_analysis_function(
     resolver: FunctionResolver,
     *,
     embedded: bool = False,
+    plugin_types: PluginTypeMaps | None = None,
 ) -> FunctionIR:
     nodes = nodes_by_file.setdefault(function.file_path, _function_nodes(Path(function.file_path)))
     node = nodes.get(_function_node_key(function))
@@ -127,7 +169,9 @@ def _lower_analysis_function(
     module = analysis.module_for_function(function)
     if module is None:
         raise LoweringError(f"module was not found for function: {function.qualname}")
-    return lower_function(function, node, module, resolver, embedded=embedded)
+    return lower_function(
+        function, node, module, resolver, embedded=embedded, plugin_types=plugin_types
+    )
 
 
 def lower_function(
@@ -137,8 +181,10 @@ def lower_function(
     resolver: FunctionResolver,
     *,
     embedded: bool = False,
+    plugin_types: PluginTypeMaps | None = None,
 ) -> FunctionIR:
     """Lower a single analyzed native function (signature + body) to a ``FunctionIR``."""
+    global _PLUGIN_STATE
     if function.native_runtime_semantics:
         return FunctionIR(
             name=function.name,
@@ -152,21 +198,39 @@ def lower_function(
             runtime_fallback_module=_runtime_fallback_module(module),
             runtime_attr_path=(runtime_original_name(function.qualname),),
         )
-    args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
-    params = [
-        ParamIR(name=arg.arg, type=_argument_type(function, arg))
-        for arg in args
-    ]
-    return FunctionIR(
-        name=function.name,
-        qualname=function.qualname,
-        module_name=function.module_name,
-        params=params,
-        return_type=_return_type(function, node),
-        body=lower_block(node.body, module, resolver),
-        embedded=embedded,
-        has_boundary_calls=bool(function.boundary_call_targets),
+    _PLUGIN_STATE = _PluginLoweringState(
+        claims={
+            (claim.kind, claim.line, claim.column, claim.end_line, claim.end_column): claim
+            for claim in function.plugin_claims
+        },
+        type_maps=plugin_types,
+        imports=function.imports,
     )
+    try:
+        args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+        params = [
+            ParamIR(name=arg.arg, type=_argument_type(function, arg))
+            for arg in args
+        ]
+        return_type = _return_type(function, node)
+        plugin_lowered = (
+            bool(function.plugin_claims)
+            or any(isinstance(param.type, RxtPluginType) for param in params)
+            or isinstance(return_type, RxtPluginType)
+        )
+        return FunctionIR(
+            name=function.name,
+            qualname=function.qualname,
+            module_name=function.module_name,
+            params=params,
+            return_type=return_type,
+            body=lower_block(node.body, module, resolver),
+            embedded=embedded,
+            has_boundary_calls=bool(function.boundary_call_targets),
+            plugin_lowered=plugin_lowered,
+        )
+    finally:
+        _PLUGIN_STATE = None
 
 
 def lower_top_level(
@@ -199,8 +263,11 @@ def lower_top_level(
     )
 
 
-def _argument_type(function: FunctionAnalysis, arg: ast.arg):
+def _argument_type(function: FunctionAnalysis, arg: ast.arg) -> RxtType:
     if arg.annotation is not None:
+        plugin_type = _plugin_annotation_type(arg.annotation)
+        if plugin_type is not None:
+            return plugin_type
         return type_from_annotation(arg.annotation)
     inferred = function.inferred_arg_types.get(arg.arg)
     if inferred is None:
@@ -208,12 +275,88 @@ def _argument_type(function: FunctionAnalysis, arg: ast.arg):
     return type_from_string(inferred)
 
 
-def _return_type(function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef):
+def _return_type(function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef) -> RxtType:
     if node.returns is not None:
+        plugin_type = _plugin_annotation_type(node.returns)
+        if plugin_type is not None:
+            return plugin_type
         return type_from_annotation(node.returns)
     if function.inferred_return_type is None:
         raise LoweringError(f"missing inferred return type for function: {function.qualname}")
     return type_from_string(function.inferred_return_type)
+
+
+def _plugin_annotation_type(node: ast.AST) -> RxtPluginType | None:
+    """Resolve an annotation node to a plugin type through the active state, or None.
+
+    Tried BEFORE ``type_from_annotation`` (no exception juggling): only a
+    Name/Attribute dotted chain can spell a plugin type, and the core table
+    never claims a dotted plugin spelling, so plugin-first resolution cannot
+    shadow a supported core annotation. The dotted spelling is resolved
+    through the function's import map (head partition, like
+    ``_resolve_import_alias`` in ``analyzer/call_resolution.py``), so both
+    ``from rextio_numpy.types import F64Arr1`` and
+    ``import rextio_numpy.types as t; t.F64Arr1`` reach the vocabulary entry.
+    """
+    state = _PLUGIN_STATE
+    if state is None or state.type_maps is None:
+        return None
+    dotted = _dotted_annotation(node)
+    if dotted is None:
+        return None
+    head, separator, tail = dotted.partition(".")
+    imported = state.imports.get(head)
+    resolved = dotted if imported is None else (f"{imported}.{tail}" if separator else imported)
+    return state.type_maps.by_spelling.get(resolved)
+
+
+def _dotted_annotation(node: ast.AST) -> str | None:
+    """Render a Name/Attribute annotation chain as a dotted string, or None."""
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    parts.append(current.id)
+    return ".".join(reversed(parts))
+
+
+def _plugin_claim_ir(node: ast.AST, kind: str) -> PluginClaimIR | None:
+    """Return the claim IR matching an AST node's kind and source span, or None.
+
+    Claims are matched on (kind, start, end): the start position alone is
+    ambiguous because a BinOp shares its (line, column) with its leftmost
+    operand (`np.dot(a, b) * factor` puts the call and the enclosing binop at
+    one start offset).
+    """
+    state = _PLUGIN_STATE
+    if state is None or not state.claims:
+        return None
+    lineno = getattr(node, "lineno", None)
+    col_offset = getattr(node, "col_offset", None)
+    if lineno is None or col_offset is None:
+        return None
+    claim = state.claims.get(
+        (
+            kind,
+            lineno,
+            col_offset,
+            getattr(node, "end_lineno", None),
+            getattr(node, "end_col_offset", None),
+        )
+    )
+    if claim is None:
+        return None
+    return PluginClaimIR(
+        plugin_id=claim.plugin_id,
+        rule_id=claim.rule_id,
+        kind=claim.kind,
+        target=claim.target,
+        operand_types=claim.operand_types,
+        result_type=claim.result_type,
+    )
 
 
 def _runtime_fallback_module(module: ModuleAnalysis) -> str:
@@ -400,6 +543,16 @@ def lower_expr(
             generators=lower_comprehension_generators(node.generators, module, resolver),
         )
     if isinstance(node, ast.BinOp):
+        claim = _plugin_claim_ir(node, "binop")
+        if claim is not None:
+            # A plugin-claimed binop skips core operator validation; codegen
+            # hands the whole site to the claiming plugin's lower().
+            return BinaryOpIR(
+                left=lower_expr(node.left, module, resolver),
+                op=lower_binary_op(node.op),
+                right=lower_expr(node.right, module, resolver),
+                claim=claim,
+            )
         return BinaryOpIR(
             left=lower_expr(node.left, module, resolver),
             op=lower_binary_op(node.op),
@@ -419,6 +572,16 @@ def lower_expr(
             comparators=[lower_expr(comparator, module, resolver) for comparator in node.comparators],
         )
     if isinstance(node, ast.Call):
+        claim = _plugin_claim_ir(node, "call")
+        if claim is not None:
+            # A plugin-claimed call skips the normal target resolution: the
+            # claim carries the dotted target, and keyword arguments are
+            # never claimed, so the positional args are the whole site.
+            return CallIR(
+                function=claim.target,
+                args=[lower_expr(arg, module, resolver) for arg in node.args],
+                claim=claim,
+            )
         target = canonical_call_target(node, module.imports, module.logger_names)
         if target is None:
             target = dotted_name(node.func)

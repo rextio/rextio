@@ -280,7 +280,7 @@ def _boundary_errors(
             continue
 
         if any(
-            claim.line == call.line and claim.column == call.column
+            claim.kind == "call" and claim.line == call.line and claim.column == call.column
             for claim in function.plugin_claims
         ):
             # An active lowering plugin claimed this call at analysis time

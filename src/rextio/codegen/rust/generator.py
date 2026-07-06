@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from rextio.codegen.native_names import native_function_name
 from rextio.exceptions import BUILTIN_EXCEPTION_TO_PYO3
@@ -29,6 +29,7 @@ from rextio.codegen.rust.rust_format import (
 )
 from rextio.codegen.rust.type_map import rust_type
 from rextio.analyzer.logging_format import python_logging_format_segments
+from rextio.plugins.api import ClaimSite, LoweredExpr, LoweringContext
 from rextio.ir.nodes import (
     AppendIR,
     AssignIR,
@@ -54,6 +55,7 @@ from rextio.ir.nodes import (
     ModuleIR,
     NameIR,
     NamedExprIR,
+    PluginClaimIR,
     ReturnIR,
     SetComprehensionIR,
     SetIR,
@@ -75,6 +77,7 @@ from rextio.ir.types import (
     RxtList,
     RxtNone,
     RxtOptional,
+    RxtPluginType,
     RxtSet,
     RxtStr,
     RxtTuple,
@@ -92,6 +95,8 @@ from rextio.ir.types import (
 def generate_rust_module(
     module_ir: ModuleIR,
     boundary_call_return_types: dict[str, str] | None = None,
+    plugin_providers: dict[str, object] | None = None,
+    plugin_types_by_key: Mapping[str, RxtType] | None = None,
 ) -> str:
     """Generate the PyO3 extension-module Rust source for a lowered module.
 
@@ -99,6 +104,11 @@ def generate_rust_module(
     reached through an in-process scalar boundary call (RXT075) to its return
     type; those calls lower to a run-time dispatch through
     ``rextio.runtime.boundary_call``.
+
+    ``plugin_providers`` maps plugin ids to live lowering providers for
+    plugin-claimed sites; ``plugin_types_by_key`` maps plugin type keys to
+    their ``RxtPluginType`` so claim result types resolve during inference.
+    Both are None/empty for plugin-free builds, which render exactly as before.
     """
     names_by_qualname = {
         function.qualname: rust_identifier(native_function_name(function.qualname))
@@ -112,6 +122,10 @@ def generate_rust_module(
         function.qualname: function.return_type for function in module_ir.functions
     }
     used_helpers: set[str] = set()
+    # Shared plugin collectors: `use` lines deduplicate as a set (sorted for
+    # determinism at emission); helpers keep first-seen order via a dict.
+    plugin_uses: set[str] = set()
+    plugin_helpers: dict[str, None] = {}
     rendered = [
         (
             names_by_qualname[function.qualname],
@@ -129,6 +143,10 @@ def generate_rust_module(
                     # An embedded helper compiles as a plain
                     # internal function: callable from native code, not exported.
                     pyo3_exported=not function.embedded,
+                    plugin_providers=plugin_providers,
+                    plugin_types_by_key=plugin_types_by_key,
+                    plugin_uses=plugin_uses,
+                    plugin_helpers=plugin_helpers,
                 )
             ),
         )
@@ -140,6 +158,8 @@ def generate_rust_module(
         if not function.embedded
     ]
     prelude: list[str] = []
+    prelude.extend(sorted(plugin_uses))
+    prelude.extend(plugin_helpers)
     prelude.extend(_checked_arith_helpers(used_helpers, "pyo3"))
     return render_pyo3_module(
         rendered,
@@ -171,8 +191,10 @@ def _called_function_names(function: FunctionIR) -> set[str]:
 def _crate_excluded_qualnames(module_ir: ModuleIR) -> set[str]:
     """Functions with no pure-Rust crate form, closed over the native call graph.
 
-    Seeds are runtime-shim and boundary-calling functions (both need the
-    Python interpreter). Any function that calls an excluded function - by
+    Seeds are runtime-shim, boundary-calling, and plugin-lowered functions
+    (the first two need the Python interpreter; plugin lowering emits
+    PyO3-boundary code, so a plugin-lowered function has no pure-Rust crate
+    form either). Any function that calls an excluded function - by
     qualname or by bare name within the same module, mirroring how the crate
     renderer resolves native calls - is excluded as well, to a fixed point.
 
@@ -187,7 +209,9 @@ def _crate_excluded_qualnames(module_ir: ModuleIR) -> set[str]:
     excluded = {
         function.qualname
         for function in module_ir.functions
-        if function.native_runtime_semantics or function.has_boundary_calls
+        if function.native_runtime_semantics
+        or function.has_boundary_calls
+        or function.plugin_lowered
     }
     if not excluded:
         return excluded
@@ -511,6 +535,10 @@ class _FunctionRenderer:
         delegated_return_types: dict[str, str] | None = None,
         boundary_call_return_types: dict[str, str] | None = None,
         pyo3_exported: bool = True,
+        plugin_providers: dict[str, object] | None = None,
+        plugin_types_by_key: Mapping[str, RxtType] | None = None,
+        plugin_uses: set[str] | None = None,
+        plugin_helpers: dict[str, None] | None = None,
     ) -> None:
         self.function = function
         # Whether the pyo3-mode function is registered with the module. Embedded
@@ -534,25 +562,76 @@ class _FunctionRenderer:
         # function, recorded structurally so the module assembler emits exactly
         # the helpers that are referenced rather than scanning the rendered text.
         self.used_helpers = used_helpers if used_helpers is not None else set()
+        # Plugin lowering (docs/specs/plugin-lowering.md): live providers by
+        # plugin id, plugin types by key for claim result-type inference, and
+        # module-shared collectors for `use` lines and helper items.
+        self.plugin_providers = plugin_providers or {}
+        self.plugin_types_by_key = plugin_types_by_key or {}
+        self.plugin_uses = plugin_uses if plugin_uses is not None else set()
+        self.plugin_helpers = plugin_helpers if plugin_helpers is not None else {}
 
     def render(self) -> str:
+        if self.mode != "pyo3" and self.function.plugin_lowered:
+            raise RustCodegenError(
+                f"plugin-lowered function has no pure-Rust form: {self.function.qualname}"
+            )
         assigned_names = _assigned_names(self.function.body)
-        params = ", ".join(
-            f"{'mut ' if param.name in assigned_names else ''}"
-            f"{rust_identifier(param.name)}: {rust_type(param.type)}"
-            for param in self.function.params
-        )
-        return_type = rust_type(self.function.return_type)
+        plugin_params = [
+            param for param in self.function.params if isinstance(param.type, RxtPluginType)
+        ]
+        plugin_return = isinstance(self.function.return_type, RxtPluginType)
         rust_name = rust_identifier(native_function_name(self.function.qualname))
-        if self.mode == "pyo3":
+        prologue: list[str] = []
+        if self.mode == "pyo3" and (plugin_params or plugin_return):
+            # Plugin-typed boundary: the function takes the interpreter token
+            # and a 'py lifetime; plugin params arrive as their PyO3 types and
+            # convert to native values in the prologue; a plugin return leaves
+            # as its PyO3 return type through the ReturnIR wrapping.
+            param_parts = ["py: pyo3::Python<'py>"]
+            for param in self.function.params:
+                name = rust_identifier(param.name)
+                if isinstance(param.type, RxtPluginType):
+                    # The prologue rebinds the converted native value under the
+                    # same name (mut when reassigned); the signature parameter
+                    # itself is consumed once and never needs mut.
+                    param_parts.append(f"{name}: {param.type.param_rust}")
+                    mut = "mut " if param.name in assigned_names else ""
+                    prologue.append(
+                        f"let {mut}{name} = {param.type.param_expr.format(param=name)};"
+                    )
+                else:
+                    mut = "mut " if param.name in assigned_names else ""
+                    param_parts.append(f"{mut}{name}: {rust_type(param.type)}")
+            return_type = (
+                self.function.return_type.return_rust
+                if isinstance(self.function.return_type, RxtPluginType)
+                else rust_type(self.function.return_type)
+            )
             lines = [
+                # `py` is part of the plugin conversion contract (return_expr
+                # and param_expr may reference it); a function whose
+                # conversions happen not to use it would otherwise warn.
+                "#[allow(unused_variables)]",
                 *(["#[pyfunction]"] if self.pyo3_exported else []),
-                f"fn {rust_name}({params}) -> PyResult<{return_type}> {{",
+                f"fn {rust_name}<'py>({', '.join(param_parts)}) -> PyResult<{return_type}> {{",
             ]
+            lines.extend(f"{_indent(1)}{line}" for line in prologue)
         else:
-            lines = [
-                f"pub fn {rust_name}({params}) -> Result<{return_type}, RextioError> {{",
-            ]
+            params = ", ".join(
+                f"{'mut ' if param.name in assigned_names else ''}"
+                f"{rust_identifier(param.name)}: {rust_type(param.type)}"
+                for param in self.function.params
+            )
+            return_type = rust_type(self.function.return_type)
+            if self.mode == "pyo3":
+                lines = [
+                    *(["#[pyfunction]"] if self.pyo3_exported else []),
+                    f"fn {rust_name}({params}) -> PyResult<{return_type}> {{",
+                ]
+            else:
+                lines = [
+                    f"pub fn {rust_name}({params}) -> Result<{return_type}, RextioError> {{",
+                ]
         lines.extend(self.render_block(self.function.body, indent=1))
         if not _block_always_returns(self.function.body):
             lines.append(f"{_indent(1)}Ok({default_return(return_type)})")
@@ -630,6 +709,10 @@ class _FunctionRenderer:
                 statement.value,
                 self.render_expr_with_expected(statement.value, self.function.return_type),
             )
+            if self.mode == "pyo3" and isinstance(self.function.return_type, RxtPluginType):
+                # A plugin-typed return crosses the boundary through the
+                # plugin's conversion expression (owned, newly allocated).
+                value = self.function.return_type.return_expr.format(value=value)
             return [*lines, f"{prefix}return Ok({value});"]
         if isinstance(statement, IfIR):
             lines = self.named_expr_prelude(statement.condition, indent)
@@ -815,6 +898,8 @@ class _FunctionRenderer:
         if isinstance(expr, SetComprehensionIR):
             return self.render_set_comprehension(expr)
         if isinstance(expr, BinaryOpIR):
+            if expr.claim is not None:
+                return self.render_plugin_claim(expr.claim, [expr.left, expr.right])
             checked = self.render_checked_int_binop(expr)
             if checked is None:
                 checked = self.render_checked_float_binop(expr)
@@ -1318,7 +1403,57 @@ class _FunctionRenderer:
         # always divergence-free by construction.
         return " && ".join(parts)
 
+    def render_plugin_claim(self, claim: PluginClaimIR, operand_exprs: list[ExprIR]) -> str:
+        """Render a plugin-claimed site by delegating to the plugin's ``lower()``.
+
+        Core renders the operand sub-expressions and hands them to the
+        claiming provider through a :class:`LoweringContext`; the plugin
+        returns one Rust expression plus its support items
+        (docs/specs/plugin-lowering.md section 3).
+        """
+        if self.mode != "pyo3":
+            raise RustCodegenError(
+                f"plugin-lowered function has no pure-Rust form: {self.function.qualname}"
+            )
+        provider = self.plugin_providers.get(claim.plugin_id)
+        if provider is None:
+            raise RustCodegenError(
+                f"no active lowering provider for plugin {claim.plugin_id!r} "
+                f"(claimed site {claim.target!r} in {self.function.qualname})"
+            )
+        operands = tuple(self.render_call_arg(arg) for arg in operand_exprs)
+        site = ClaimSite(
+            kind=claim.kind,
+            target=claim.target,
+            operand_types=claim.operand_types,
+            file_path="",
+            line=0,
+            column=0,
+        )
+        ctx = LoweringContext(
+            operands=operands,
+            target_language="rust",
+            fresh_name=self.next_temp,
+        )
+        try:
+            lowered = provider.lower(site, ctx)  # type: ignore[attr-defined]
+        except Exception as exc:
+            raise RustCodegenError(
+                f"plugin {claim.plugin_id!r} lower() failed: {exc}"
+            ) from exc
+        if not isinstance(lowered, LoweredExpr):
+            raise RustCodegenError(
+                f"plugin {claim.plugin_id!r} lower() must return a LoweredExpr, "
+                f"got {type(lowered).__name__}"
+            )
+        self.plugin_uses.update(lowered.uses)
+        for helper in lowered.helpers:
+            self.plugin_helpers.setdefault(helper)
+        return f"({lowered.rust})"
+
     def render_call(self, expr: CallIR) -> str:
+        if expr.claim is not None:
+            return self.render_plugin_claim(expr.claim, expr.args)
         if expr.function == "len" and len(expr.args) == 1:
             # CPython `len(str)` counts Unicode code points; Rust `String::len`
             # returns the UTF-8 byte length, so a `str` argument must use
@@ -1893,6 +2028,8 @@ class _FunctionRenderer:
                 return None
             return RxtSet(item_type)
         if isinstance(expr, BinaryOpIR):
+            if expr.claim is not None:
+                return self._claim_result_type(expr.claim)
             return self.infer_expr_type(expr.left)
         if isinstance(expr, UnaryOpIR):
             if expr.op == "not":
@@ -1928,7 +2065,25 @@ class _FunctionRenderer:
             for condition in generator.conditions:
                 self.infer_expr_type(condition)
 
+    def _claim_result_type(self, claim: PluginClaimIR) -> RxtType | None:
+        """Map a plugin claim's declared result type to an ``RxtType``, or None.
+
+        A plugin type key resolves through ``plugin_types_by_key``; a core
+        type name parses through ``type_from_string``; unknown/None stays None.
+        """
+        if claim.result_type is None:
+            return None
+        plugin_type = self.plugin_types_by_key.get(claim.result_type)
+        if plugin_type is not None:
+            return plugin_type
+        try:
+            return type_from_string(claim.result_type)
+        except (ValueError, SyntaxError):
+            return None
+
     def call_return_type(self, expr: CallIR) -> RxtType | None:
+        if expr.claim is not None:
+            return self._claim_result_type(expr.claim)
         if expr.function == "len":
             return RxtInt()
         if expr.function in {"all", "any"}:
@@ -2226,6 +2381,10 @@ def _render_function(
     delegated_return_types: dict[str, str] | None = None,
     boundary_call_return_types: dict[str, str] | None = None,
     pyo3_exported: bool = True,
+    plugin_providers: dict[str, object] | None = None,
+    plugin_types_by_key: Mapping[str, RxtType] | None = None,
+    plugin_uses: set[str] | None = None,
+    plugin_helpers: dict[str, None] | None = None,
 ) -> str:
     return _FunctionRenderer(
         function,
@@ -2237,6 +2396,10 @@ def _render_function(
         delegated_return_types=delegated_return_types,
         boundary_call_return_types=boundary_call_return_types,
         pyo3_exported=pyo3_exported,
+        plugin_providers=plugin_providers,
+        plugin_types_by_key=plugin_types_by_key,
+        plugin_uses=plugin_uses,
+        plugin_helpers=plugin_helpers,
     ).render()
 
 
