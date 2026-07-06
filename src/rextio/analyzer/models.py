@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from rextio.analyzer.diagnostics import Diagnostic
+from rextio.contract import TOOLING_CONTRACT_VERSION
 
 
 @dataclass(frozen=True)
@@ -168,6 +169,46 @@ class FunctionAnalysis:
     call_return_types: dict[str, str] = field(default_factory=dict)
 
     @property
+    def native_status(self) -> str:
+        """The promotion verdict: ``accepted`` | ``rejected`` | ``not-candidate``.
+
+        Part of the tooling contract (docs/specs/tooling-contract.md). Orthogonal
+        to :attr:`route`: a rejected candidate still *executes* on the fallback,
+        so its route is ``fallback-python`` while its status is ``rejected``.
+        """
+        if self.is_native_candidate:
+            return "accepted" if self.accepted else "rejected"
+        return "not-candidate"
+
+    @property
+    def rejection_codes(self) -> list[str]:
+        """The sorted error-diagnostic codes explaining a rejection (else empty).
+
+        Part of the tooling contract. Only rejected candidates carry codes, so
+        consumers can key remediation guidance directly off this list.
+        """
+        if self.native_status != "rejected":
+            return []
+        return sorted({diagnostic.code for diagnostic in self.error_diagnostics})
+
+    @property
+    def route(self) -> str:
+        """The execution-route label defined by the tooling contract.
+
+        One of ``native-direct``, ``native-shim``,
+        ``fallback-accelerated:<tool>``, or ``fallback-python``. The
+        ``native-plugin:<id>`` route is reserved for plugin-lowered functions
+        and cannot be produced until the plugin rule protocol lands.
+        """
+        if self.is_native_candidate and self.accepted:
+            if self.native_runtime_semantics:
+                return "native-shim"
+            return "native-direct"
+        if self.external_accelerator is not None:
+            return f"fallback-accelerated:{self.external_accelerator}"
+        return "fallback-python"
+
+    @property
     def error_diagnostics(self) -> list[Diagnostic]:
         """The error-severity diagnostics attached to this function."""
         return [diagnostic for diagnostic in self.diagnostics if diagnostic.severity == "error"]
@@ -206,6 +247,9 @@ class FunctionAnalysis:
             "column": self.column,
             "is_native_candidate": self.is_native_candidate,
             "accepted": self.accepted,
+            "route": self.route,
+            "native_status": self.native_status,
+            "rejection_codes": self.rejection_codes,
             "explicitly_marked": self.explicitly_marked,
             "native_target_language": self.native_target_language,
             "native_runtime_semantics": self.native_runtime_semantics,
@@ -453,6 +497,7 @@ class ProjectAnalysis:
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of the whole project analysis."""
         return {
+            "contract_version": TOOLING_CONTRACT_VERSION,
             "project_root": str(self.project_root),
             "modules": [module.to_dict() for module in self.modules],
             "native_candidates": [function.qualname for function in self.native_candidates],

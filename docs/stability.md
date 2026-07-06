@@ -50,6 +50,7 @@ Tiers:
 | Nuitka fallback / executable backend | Experimental | `--fallback=nuitka`, `--executable-backend=nuitka`. Requires Nuitka; surfaced by the build preflight when missing. The real-Nuitka end-to-end path runs only on the scheduled/manual CI job (not on every PR), so regressions there may surface later than for the Cargo path. |
 | Rust-importable crate artifact | Experimental | `--rust-importable` / `--rust-crate-name`. Exposes accepted direct-Rust functions as a Cargo path dependency. |
 | Plugins | Experimental (metadata-only) | Entry-point plugins declare target compatibility and the external packages they cover; they do **not** inject codegen rules. |
+| Tooling-contract JSON fields | Experimental | `rextio check --format json` (and `.rextio/reports/check.json`) carries a top-level `contract_version` plus per-function `route`, `native_status`, and `rejection_codes`, as specified in [the tooling contract](specs/tooling-contract.md). Additive today; the shape may be refined until the contract is promoted to stable. |
 
 ## Planned (not implemented)
 
