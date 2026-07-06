@@ -111,7 +111,9 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
                 diagnostic_code="RXT092",
                 guidance=(
                     "Call plugin-typed functions from Python fallback code, or inline the "
-                    "covered operations into the caller."
+                    "covered operations into the caller. A REJECTED plugin-typed callee "
+                    "reports RXT072 (dependency rejected) instead; tooling keying on "
+                    "RXT092 should also handle RXT072."
                 ),
                 stability="experimental",
             ),

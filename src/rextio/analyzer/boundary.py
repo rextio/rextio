@@ -276,6 +276,10 @@ def _boundary_errors(
             )
             continue
         if dependency is not None and dependency.plugin_type_keys:
+            # NOTE: a REJECTED plugin-typed callee is reported as RXT072
+            # (dependency rejected) by the earlier branch — deliberate:
+            # RXT092 marks calls into otherwise-healthy plugin-typed
+            # functions; tooling keying on RXT092 should also handle RXT072.
             # A plugin-typed function compiles as a PyO3 boundary entry point
             # (interpreter token + conversion parameter types); a native call
             # into it would emit Rust with the wrong arity and types. In this
@@ -313,9 +317,11 @@ def _boundary_errors(
             continue
         claim_rejection = next(
             (
-                diagnostic
-                for diagnostic in function.plugin_claim_rejections
-                if diagnostic.line == call.line and diagnostic.column == call.column
+                rejection.diagnostic
+                for rejection in function.plugin_claim_rejections
+                if rejection.kind == "call"
+                and rejection.diagnostic.line == call.line
+                and rejection.diagnostic.column == call.column
             ),
             None,
         )
@@ -341,10 +347,17 @@ def _boundary_errors(
     # Claim rejections recorded at sites that are not calls (binops have no
     # CallSite) never match the loop above; attach them here so a plugin's
     # Rejected verdict always rejects the function with its own guidance.
+    # Matching is KIND-aware: a rejected binop can share its start position
+    # with a claimed call (`np.dot(a, b) + c`), so position alone must not
+    # suppress delivery.
     call_positions = {(call.line, call.column) for call in function.calls}
     for rejection in function.plugin_claim_rejections:
-        if (rejection.line, rejection.column) not in call_positions:
-            diagnostics.append(rejection)
+        if rejection.kind == "call" and (
+            rejection.diagnostic.line,
+            rejection.diagnostic.column,
+        ) in call_positions:
+            continue
+        diagnostics.append(rejection.diagnostic)
     return diagnostics
 
 

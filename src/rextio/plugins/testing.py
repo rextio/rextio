@@ -100,6 +100,7 @@ class CertifiedProject:
         qualname: str,
         *,
         equals: Callable[[object, object], bool] | None = None,
+        args_equals: Callable[[object, object], bool] | None = None,
     ) -> EquivalenceChecker:
         """Return a checker for one generated function (``pkg.module.func``).
 
@@ -107,6 +108,11 @@ class CertifiedProject:
         fallback-only (or shim) symbol both legs would execute the same
         Python implementation and every equivalence check would pass
         vacuously.
+
+        ``args_equals`` (optional) additionally compares each argument's
+        post-call state between the legs — catching divergences the return
+        value cannot show, e.g. a fallback that mutates an argument in place
+        while the native leg leaves its copy untouched.
         """
         module_name, _, function_name = qualname.rpartition(".")
         if not module_name:
@@ -117,6 +123,7 @@ class CertifiedProject:
             module_name=module_name,
             function_name=function_name,
             equals=equals if equals is not None else default_equals,
+            args_equals=args_equals,
         )
 
     def _assert_natively_served(self, qualname: str) -> None:
@@ -151,6 +158,7 @@ class EquivalenceChecker:
     module_name: str
     function_name: str
     equals: Callable[[object, object], bool]
+    args_equals: Callable[[object, object], bool] | None = None
 
     def __call__(self, *args: object) -> object:
         """Run both legs on deep copies of ``args`` and return the native result.
@@ -159,9 +167,10 @@ class EquivalenceChecker:
         exception is re-raised: agreement on an error is certified behavior.
         A divergence of any kind raises :class:`CertificationError`.
         """
-        native_outcome = self._run("native", args)
-        fallback_outcome = self._run("fallback", args)
+        native_outcome, native_args = self._run("native", args)
+        fallback_outcome, fallback_args = self._run("fallback", args)
         self._compare(native_outcome, fallback_outcome, args)
+        self._compare_args(native_args, fallback_args, args)
         kind, value = native_outcome
         if kind == "raised":
             # Both legs raised equivalently - that IS the agreed behavior;
@@ -173,14 +182,17 @@ class EquivalenceChecker:
     def _site(self) -> str:
         return f"{self.module_name}.{self.function_name}"
 
-    def _run(self, mode: str, args: tuple[object, ...]) -> tuple[str, object]:
+    def _run(
+        self, mode: str, args: tuple[object, ...]
+    ) -> tuple[tuple[str, object], tuple[object, ...]]:
         function = self._load_function()
+        call_args = copy.deepcopy(args)
         previous = os.environ.get("REXTIO_NATIVE_MODE")
         os.environ["REXTIO_NATIVE_MODE"] = mode
         try:
-            return ("returned", function(*copy.deepcopy(args)))
+            return ("returned", function(*call_args)), call_args
         except Exception as exc:
-            return ("raised", exc)
+            return ("raised", exc), call_args
         finally:
             if previous is None:
                 os.environ.pop("REXTIO_NATIVE_MODE", None)
@@ -251,3 +263,21 @@ class EquivalenceChecker:
                 f"{self._site()} results diverged for args {args!r}: native "
                 f"{native_value!r}, fallback {fallback_value!r}"
             )
+
+    def _compare_args(
+        self,
+        native_args: tuple[object, ...],
+        fallback_args: tuple[object, ...],
+        args: tuple[object, ...],
+    ) -> None:
+        if self.args_equals is None:
+            return
+        for index, (native_arg, fallback_arg) in enumerate(
+            zip(native_args, fallback_args)
+        ):
+            if not self.args_equals(native_arg, fallback_arg):
+                raise CertificationError(
+                    f"{self._site()} argument {index} diverged after the call for "
+                    f"args {args!r}: native leg left {native_arg!r}, fallback leg "
+                    f"left {fallback_arg!r}"
+                )

@@ -31,6 +31,13 @@ fields bump minor; renames/removals bump major. Consumers must tolerate unknown
 fields and check `contract_version` compatibility, degrading to generic guidance
 on mismatch.
 
+`1.0.0` covers the entire pre-release 0.1.1 line: fields added before the first
+tagged release (`plugin_type_keys`, rule records, RXT091/RXT092) did not bump
+the version because no consumer could have shipped against an earlier manifest
+generation. From the first release onward this shortcut is closed — **any
+post-release additive change MUST bump the contract minor version** so
+consumers can distinguish manifest generations.
+
 ## Route taxonomy
 
 Today classification is spread across `FunctionAnalysis` booleans

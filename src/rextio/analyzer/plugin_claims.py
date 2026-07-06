@@ -14,7 +14,8 @@ import ast
 from collections.abc import Mapping
 from dataclasses import replace
 
-from rextio.analyzer.models import FunctionAnalysis, PluginClaim
+from rextio.analyzer.models import FunctionAnalysis, PluginClaim, PluginClaimRejection
+from rextio.analyzer.native_marker import dotted_name
 from rextio.config.schema import RextioConfig
 from rextio.plugins.api import Claimed, ClaimSite, NotCovered, Rejected
 from rextio.plugins.loader import PluginError
@@ -65,7 +66,7 @@ class ClaimEngine:
         ``import rextio_numpy.types as t; t.F64Arr1`` both reach the
         vocabulary entry.
         """
-        dotted = _dotted_annotation(annotation)
+        dotted = dotted_name(annotation)
         if dotted is None:
             return None
         head, separator, tail = dotted.partition(".")
@@ -104,6 +105,9 @@ class ClaimEngine:
         right: str,
     ) -> tuple[bool, str | None]:
         """Offer a binary operation to the operand types' plugins."""
+        # The site target is the Python operator symbol (the spec's binop
+        # vocabulary); operators outside _BINOP_SYMBOLS (e.g. **, //, bit ops)
+        # are never offered and stay with core's own validation.
         symbol = _BINOP_SYMBOLS.get(type(op))
         if symbol is None:
             return False, None
@@ -199,10 +203,14 @@ class ClaimEngine:
             # at parse time would divert marked functions onto the RXT080 shim
             # and silently drop auto candidates, hiding the plugin's guidance.
             if not any(
-                existing.line == diagnostic.line and existing.column == diagnostic.column
+                existing.kind == site.kind
+                and existing.diagnostic.line == diagnostic.line
+                and existing.diagnostic.column == diagnostic.column
                 for existing in function.plugin_claim_rejections
             ):
-                function.plugin_claim_rejections.append(diagnostic)
+                function.plugin_claim_rejections.append(
+                    PluginClaimRejection(kind=site.kind, diagnostic=diagnostic)
+                )
             return True, None
         return False, None
 
@@ -224,19 +232,6 @@ class ClaimEngine:
             )
         self._cache[cache_key] = result
         return result
-
-
-def _dotted_annotation(node: ast.AST) -> str | None:
-    """Render a Name/Attribute annotation chain as a dotted string, or None."""
-    parts: list[str] = []
-    current = node
-    while isinstance(current, ast.Attribute):
-        parts.append(current.attr)
-        current = current.value
-    if not isinstance(current, ast.Name):
-        return None
-    parts.append(current.id)
-    return ".".join(reversed(parts))
 
 
 def _node_end(node: ast.AST) -> tuple[int | None, int | None]:

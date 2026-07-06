@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -276,27 +277,125 @@ def test_claim_engine_absent_means_no_claims(tmp_path: Path) -> None:
 
 
 def test_plugin_typed_signature_without_claims_routes_as_plugin(tmp_path: Path) -> None:
-    # Council M18: an identity function needs the plugin's boundary
-    # conversions and crates even though no body site is claimed, so it must
-    # not report native-direct.
+    # Council M18: a function with a plugin-typed parameter needs the
+    # plugin's boundary conversions and crates even though no body site is
+    # claimed, so it must not report native-direct.
     write_module(
         tmp_path,
         """
 from rextio_numpy.types import F64Arr1
 
-def identity(a: F64Arr1) -> F64Arr1:
-    return a
+def peek(a: F64Arr1) -> float:
+    return 0.0
 """,
     )
     analysis = analyze_project(
         tmp_path, plugin_registry=make_registry(NumpyProvider()), plugin_config=RextioConfig()
     )
 
-    function = function_named(analysis, "myapp.kernels.identity")
+    function = function_named(analysis, "myapp.kernels.peek")
     assert function.accepted is True
     assert function.plugin_claims == []
     assert function.plugin_type_keys == [F64_ARR1.key]
     assert function.route == "native-plugin:rextio-numpy"
+
+
+def test_returning_plugin_typed_parameter_alias_is_rejected(tmp_path: Path) -> None:
+    # Council T1 (round 3): the fallback of `return a` returns the caller's
+    # own object while the native leg returns a fresh copy — an aliasing
+    # divergence the kit's value comparison cannot see. Reject to fallback.
+    write_module(
+        tmp_path,
+        """
+import rextio
+from rextio_numpy.types import F64Arr1
+
+@rextio.native
+def identity(a: F64Arr1) -> F64Arr1:
+    return a
+
+@rextio.native
+def renamed(a: F64Arr1) -> F64Arr1:
+    b = a
+    return b
+
+@rextio.native
+def fresh(a: F64Arr1, b: F64Arr1) -> F64Arr1:
+    return a + b
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        plugin_registry=make_registry(NumpyProvider()),
+        plugin_config=RextioConfig(),
+    )
+
+    for name in ("identity", "renamed"):
+        function = function_named(analysis, f"myapp.kernels.{name}")
+        assert function.accepted is False, name
+        assert any(
+            "alias" in diagnostic.message for diagnostic in function.error_diagnostics
+        ), (name, function.diagnostics)
+    fresh = function_named(analysis, "myapp.kernels.fresh")
+    assert fresh.accepted is True
+
+
+def test_augmented_assignment_on_plugin_typed_value_is_rejected(tmp_path: Path) -> None:
+    # Council T8 (round 3): NumPy's `a += b` mutates in place through the
+    # caller's reference; the native lowering rebinds instead. Reject.
+    write_module(
+        tmp_path,
+        """
+import rextio
+from rextio_numpy.types import F64Arr1
+
+@rextio.native
+def accumulate(a: F64Arr1, b: F64Arr1) -> float:
+    a += b
+    return 0.0
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        plugin_registry=make_registry(NumpyProvider()),
+        plugin_config=RextioConfig(),
+    )
+
+    function = function_named(analysis, "myapp.kernels.accumulate")
+    assert function.accepted is False
+    assert any(
+        "aliasing semantics" in diagnostic.message
+        for diagnostic in function.error_diagnostics
+    ), function.diagnostics
+
+
+def test_parameter_named_py_on_plugin_typed_function_is_rejected(tmp_path: Path) -> None:
+    # Council T9 (round 3): plugin-typed PyO3 functions receive an injected
+    # `py: pyo3::Python<'py>` token; a user parameter named `py` would emit a
+    # duplicate parameter and fail to compile.
+    write_module(
+        tmp_path,
+        """
+import rextio
+from rextio_numpy.types import F64Arr1
+
+@rextio.native
+def scaled(py: float, a: F64Arr1) -> float:
+    return py
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        plugin_registry=make_registry(NumpyProvider()),
+        plugin_config=RextioConfig(),
+    )
+
+    function = function_named(analysis, "myapp.kernels.scaled")
+    assert function.accepted is False
+    assert "RXT011" in function.rejection_codes
 
 
 class RejectingBinopProvider(NumpyProvider):
@@ -313,6 +412,76 @@ class RejectingBinopProvider(NumpyProvider):
                 )
             )
         return super().claim(site, config)
+
+
+def test_claim_cache_distinguishes_unresolved_operand_types(tmp_path: Path) -> None:
+    # Council T20 (round 3): the claim cache keys on operand_types, so a site
+    # first offered with an unresolved (None) operand must not serve its
+    # cached verdict to the same target with fully resolved operands.
+    from rextio.analyzer.plugin_claims import ClaimEngine
+
+    calls: list[tuple[str | None, ...]] = []
+
+    class CountingProvider(NumpyProvider):
+        def claim(self, site: ClaimSite, config: RextioConfig):
+            calls.append(site.operand_types)
+            if any(operand is None for operand in site.operand_types):
+                return NotCovered()
+            return Claimed(rule_id="rextio-numpy/dot-float64", result_type="float")
+
+    engine = ClaimEngine(make_registry(CountingProvider()), RextioConfig())
+    function = FunctionAnalysis(
+        name="f",
+        qualname="myapp.kernels.f",
+        module_name="myapp.kernels",
+        file_path="src/myapp/kernels.py",
+        line=1,
+        column=0,
+    )
+    node = ast.parse("numpy.dot(a, b)").body[0].value
+
+    unresolved = engine.claim_call(function, node, "numpy.dot", (None, F64_ARR1.key))
+    resolved = engine.claim_call(
+        function, node, "numpy.dot", (F64_ARR1.key, F64_ARR1.key)
+    )
+    cached = engine.claim_call(
+        function, node, "numpy.dot", (F64_ARR1.key, F64_ARR1.key)
+    )
+
+    assert unresolved == (False, None)
+    assert resolved == (True, "float")
+    assert cached == (True, "float")
+    # Two distinct cache entries; the repeat came from the cache.
+    assert calls == [(None, F64_ARR1.key), (F64_ARR1.key, F64_ARR1.key)]
+
+
+def test_rejected_binop_sharing_position_with_claimed_call_is_delivered(
+    tmp_path: Path,
+) -> None:
+    # Council T2 (round 3): a BinOp's start position equals its leftmost
+    # operand's, so `np.dot(a, b) + c` places a rejected binop at the same
+    # (line, column) as a CLAIMED call. Position-based matching alone dropped
+    # the rejection on both boundary paths; delivery must be kind-aware.
+    write_module(
+        tmp_path,
+        """
+import numpy as np
+from rextio_numpy.types import F64Arr1
+
+def mixed(a: F64Arr1, b: F64Arr1, c: F64Arr1) -> F64Arr1:
+    return np.dot(a, b) + c
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=make_registry(RejectingBinopProvider()),
+        plugin_config=RextioConfig(),
+    )
+
+    function = function_named(analysis, "myapp.kernels.mixed")
+    assert function.native_status == "rejected"
+    assert "RXTP-NUMPY-010" in function.rejection_codes
+    assert function.route == "fallback-python"
 
 
 def test_rejected_binop_claim_rejects_the_function(tmp_path: Path) -> None:

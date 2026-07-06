@@ -163,6 +163,10 @@ class BoundaryConversion:
     ``{value}`` in ``return_expr`` is the native result expression. Arguments
     are read-only borrows and returns transfer ownership of newly allocated
     values (docs/specs/plugin-lowering.md section 4).
+
+    Both expressions are ``str.format`` templates: literal braces in the Rust
+    text (closures, struct literals, blocks) must be doubled — ``{{`` and
+    ``}}`` — or formatting fails at codegen.
     """
 
     param_rust: str

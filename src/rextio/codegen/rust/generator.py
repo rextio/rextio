@@ -1439,11 +1439,13 @@ class _FunctionRenderer:
             lowered = provider.lower(site, ctx)  # type: ignore[attr-defined]
         except Exception as exc:
             raise RustCodegenError(
-                f"plugin {claim.plugin_id!r} lower() failed: {exc}"
+                f"plugin {claim.plugin_id!r} lower() failed for claimed site "
+                f"{claim.target!r} in {self.function.qualname}: {exc}"
             ) from exc
         if not isinstance(lowered, LoweredExpr):
             raise RustCodegenError(
-                f"plugin {claim.plugin_id!r} lower() must return a LoweredExpr, "
+                f"plugin {claim.plugin_id!r} lower() must return a LoweredExpr for "
+                f"claimed site {claim.target!r} in {self.function.qualname}, "
                 f"got {type(lowered).__name__}"
             )
         self.plugin_uses.update(lowered.uses)

@@ -124,3 +124,44 @@ def test_equivalence_checker_requires_known_function(tmp_path: Path) -> None:
     project = CertifiedProject(project_root=tmp_path)
     with pytest.raises(CertificationError, match="was not found"):
         project.equivalence_checker("app.mod.other")
+
+
+def test_args_equals_catches_in_place_mutation_divergence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Council T12 (round 3): a fallback that mutates an argument in place
+    # while the native leg leaves its copy untouched returns identical
+    # values — only the arguments' post-call state shows the divergence.
+    import os
+
+    from rextio.plugins.testing import EquivalenceChecker
+
+    _write_check_report(tmp_path, "app.mod.f", "native-direct", "accepted")
+    project = CertifiedProject(project_root=tmp_path)
+
+    def constant_but_mutating(items: list[int]) -> int:
+        if os.environ.get("REXTIO_NATIVE_MODE") == "fallback":
+            items.append(99)
+        return 0
+
+    checker = EquivalenceChecker(
+        project=project,
+        module_name="app.mod",
+        function_name="f",
+        equals=default_equals,
+        args_equals=lambda left, right: left == right,
+    )
+    monkeypatch.setattr(checker, "_load_function", lambda: constant_but_mutating)
+    with pytest.raises(CertificationError, match="argument 0 diverged after the call"):
+        checker([1, 2, 3])
+
+    # Without args_equals the same divergence passes silently (return values
+    # agree) — documenting that the opt-in is what adds the coverage.
+    plain = EquivalenceChecker(
+        project=project,
+        module_name="app.mod",
+        function_name="f",
+        equals=default_equals,
+    )
+    monkeypatch.setattr(plain, "_load_function", lambda: constant_but_mutating)
+    assert plain([1, 2, 3]) == 0

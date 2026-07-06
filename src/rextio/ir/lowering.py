@@ -301,26 +301,13 @@ def _plugin_annotation_type(node: ast.AST) -> RxtPluginType | None:
     state = _PLUGIN_STATE
     if state is None or state.type_maps is None:
         return None
-    dotted = _dotted_annotation(node)
+    dotted = dotted_name(node)
     if dotted is None:
         return None
     head, separator, tail = dotted.partition(".")
     imported = state.imports.get(head)
     resolved = dotted if imported is None else (f"{imported}.{tail}" if separator else imported)
     return state.type_maps.by_spelling.get(resolved)
-
-
-def _dotted_annotation(node: ast.AST) -> str | None:
-    """Render a Name/Attribute annotation chain as a dotted string, or None."""
-    parts: list[str] = []
-    current = node
-    while isinstance(current, ast.Attribute):
-        parts.append(current.attr)
-        current = current.value
-    if not isinstance(current, ast.Name):
-        return None
-    parts.append(current.id)
-    return ".".join(reversed(parts))
 
 
 def _plugin_claim_ir(node: ast.AST, kind: str) -> PluginClaimIR | None:

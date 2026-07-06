@@ -60,6 +60,20 @@ class PluginClaim:
 
 
 @dataclass(frozen=True)
+class PluginClaimRejection:
+    """A plugin claim rejection pending boundary-pass delivery, with its site kind.
+
+    The kind matters for delivery: a call-site rejection replaces RXT030 in
+    the boundary pass's call loop, while a binop rejection has no CallSite and
+    must be attached unconditionally — including when it shares a start
+    position with a (claimed) call, e.g. ``np.dot(a, b) + c``.
+    """
+
+    kind: str
+    diagnostic: Diagnostic
+
+
+@dataclass(frozen=True)
 class CallSite:
     """A recorded call to another function, with its source location."""
 
@@ -217,7 +231,7 @@ class FunctionAnalysis:
     # Claim rejections recorded at inference time but attached by the boundary
     # pass (mirroring RXT030): parse-time errors would divert explicitly marked
     # functions onto the RXT080 shim and hide the plugin's guidance.
-    plugin_claim_rejections: list[Diagnostic] = field(default_factory=list)
+    plugin_claim_rejections: list[PluginClaimRejection] = field(default_factory=list)
     # Plugin type keys resolved in this function's SIGNATURE (parameters or
     # return). A function can need a plugin's boundary conversions and crates
     # without any claimed body site (e.g. an identity function), so the

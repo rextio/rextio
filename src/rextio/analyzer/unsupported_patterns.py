@@ -385,6 +385,7 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
         plugin_key = _plugin_annotation_key(function, node.returns)
         if plugin_key is not None:
             _record_plugin_type_key(function, plugin_key)
+            _validate_plugin_signature_names(node, function)
             return
         function.add_diagnostic(
             Diagnostic(
@@ -398,6 +399,36 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                 suggestion="Use a supported 0.1.0 scalar or collection type.",
             )
         )
+    _validate_plugin_signature_names(node, function)
+
+
+def _validate_plugin_signature_names(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+    """Reject a parameter named ``py`` on a plugin-typed signature.
+
+    Plugin-typed PyO3 functions receive the injected interpreter token
+    ``py: pyo3::Python<'py>``; a user parameter with the same name would emit
+    a duplicate parameter and fail to compile.
+    """
+    if not function.plugin_type_keys:
+        return
+    args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    for arg in args:
+        if arg.arg == "py":
+            function.add_diagnostic(
+                Diagnostic(
+                    code="RXT011",
+                    severity="error",
+                    message=(
+                        "parameter name 'py' collides with the interpreter token "
+                        "injected for plugin-typed functions"
+                    ),
+                    file_path=function.file_path,
+                    line=arg.lineno,
+                    column=arg.col_offset,
+                    function_name=function.qualname,
+                    suggestion="Rename the parameter (any name other than 'py').",
+                )
+            )
 
 
 def _plugin_annotation_key(function: FunctionAnalysis, annotation: ast.AST) -> str | None:
@@ -416,6 +447,7 @@ def _record_plugin_type_key(function: FunctionAnalysis, plugin_key: str) -> None
 def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
     type_env = _initial_type_env(node, function)
     return_type = _return_type_name(node, function)
+    _validate_plugin_alias_escape(node, function, type_env)
     for statement in node.body:
         _validate_statement_types(statement, function, type_env, return_type)
         for child in ast.walk(statement):
@@ -429,6 +461,50 @@ def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
                 _validate_call(function, child)
     _validate_mutable_ownership_patterns(node, function)
     _validate_return_paths(node, function, return_type)
+
+
+def _validate_plugin_alias_escape(
+    node: ast.FunctionDef,
+    function: FunctionAnalysis,
+    type_env: dict[str, str],
+) -> None:
+    """Reject returning an alias of a plugin-typed parameter.
+
+    The Python fallback of ``return a`` returns the caller's own array object
+    (identity is preserved; later mutations are shared), while the native leg
+    returns a newly allocated copy — a silent aliasing divergence. Track the
+    parameter names plus simple name-to-name assignment chains; a claimed
+    expression result (e.g. ``a * 1.0``) is a fresh array and stays legal.
+    """
+    engine = function.claim_engine
+    if engine is None:
+        return
+    aliases = {
+        arg
+        for arg, type_name in type_env.items()
+        if engine.is_plugin_type(type_name)
+    }
+    if not aliases:
+        return
+    for child in ast.walk(node):
+        if isinstance(child, ast.Assign):
+            if (
+                isinstance(child.value, ast.Name)
+                and child.value.id in aliases
+            ):
+                for target in child.targets:
+                    if isinstance(target, ast.Name):
+                        aliases.add(target.id)
+        elif isinstance(child, ast.Return):
+            if isinstance(child.value, ast.Name) and child.value.id in aliases:
+                _add_unsupported_syntax(
+                    function,
+                    child,
+                    "returning a plugin-typed parameter (or an alias of one) "
+                    "diverges: the fallback returns the caller's own object "
+                    "while the native path returns a copy; compute a new value "
+                    "or keep the function on the Python fallback",
+                )
 
 
 def _validate_return_paths(
@@ -597,6 +673,19 @@ def _validate_statement_types(
             _add_unsupported_syntax(function, node.target, "augmented assignment targets must be local names")
             return
         target_type = _infer_expr_type(node.target, function, env)
+        engine = function.claim_engine
+        if engine is not None and engine.is_plugin_type(target_type):
+            # NumPy's `a += b` mutates the array in place, visibly through
+            # every alias including the caller's reference; the native lowering
+            # rebinds a fresh value, so the semantics cannot be preserved.
+            _add_unsupported_syntax(
+                function,
+                node,
+                "in-place augmented assignment on a plugin-typed value cannot "
+                "preserve NumPy's aliasing semantics; use a plain assignment "
+                "with a new value or keep the function on the Python fallback",
+            )
+            return
         value_type = _infer_expr_type(node.value, function, env)
         result_type = _infer_binop_type(node.op, target_type, value_type, function, node)
         if result_type is not None:

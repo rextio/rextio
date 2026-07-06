@@ -114,6 +114,19 @@ class LoweredExpr:
   so a shape mismatch raises the CPython-comparable exception type.
 - Exposing core IR to plugins is **deferred**; nothing in this contract
   assumes plugins can see or produce IR nodes.
+- **Helper namespacing.** `helpers` items land at module level in one shared
+  generated file, deduplicated by exact text. Two plugins emitting a helper
+  with the same name but different text collide loudly at `cargo build`
+  (duplicate definition) — deliberate: a silent merge would pick one plugin's
+  semantics for both. To stay collision-free, prefix helper names with your
+  plugin id, e.g. `fn __rextio_numpy_dot_f64(...)`.
+- **Debugging plugin-emitted Rust.** The generated crate is kept on disk
+  under the project's `.rextio/build/` tree; when a plugin's emission
+  misbehaves, read the generated `src/lib.rs` there and run `cargo build`
+  directly in that directory for full rustc diagnostics. `rextio build`
+  surfaces codegen/build failures with the owning plugin id (see section 7);
+  the emitted expression appears verbatim in the generated function body, so
+  rustc's spans point into your `LoweredExpr.rust`/`helpers` text.
 
 ## 4. Boundary ABI: read-only in, owned out, no aliasing
 
@@ -130,6 +143,11 @@ class BoundaryConversion:
     return_expr: str   # expression converting the native result for Python,
                        # e.g. "numpy::ToPyArray::to_pyarray(&{value}, py)"
 ```
+
+`param_expr` and `return_expr` are `str.format` templates (placeholders
+`{param}` / `{value}`), so any literal `{`/`}` in the Rust text — closures,
+struct literals, blocks — must be doubled (`{{` and `}}`) or formatting
+raises `KeyError`/`ValueError` at codegen.
 
 Normative rules for the initial surface:
 
