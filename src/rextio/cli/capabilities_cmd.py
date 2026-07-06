@@ -73,6 +73,7 @@ def build_manifest(
                 "packages": list(plugin.packages),
                 "rules_provided": plugin.rules_provided,
                 "api_version": plugin.api_version,
+                "lowering_provided": plugin.lowering_provided,
             }
             for plugin in target_plan.plugins.active
         ],

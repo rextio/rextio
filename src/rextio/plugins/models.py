@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from rextio.plugins.api import CoverageDecl, RuleRecord
+from rextio.plugins.api import CoverageDecl, CrateDependency, PluginType, RuleRecord
 from rextio.targets.models import TargetSpec
 
 
@@ -18,6 +18,42 @@ class PluginCoverage:
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this object."""
         return {"plugin_id": self.plugin_id, "coverage": self.coverage.to_dict()}
+
+
+@dataclass(frozen=True)
+class PluginTypeBinding:
+    """A plugin-provided type, tagged with its owning plugin id."""
+
+    plugin_id: str
+    plugin_type: PluginType
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this object."""
+        return {"plugin_id": self.plugin_id, "type": self.plugin_type.to_dict()}
+
+
+@dataclass(frozen=True)
+class PluginCrateDependency:
+    """A plugin-injected crate dependency, tagged with its owning plugin id."""
+
+    plugin_id: str
+    dependency: CrateDependency
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this object."""
+        return {"plugin_id": self.plugin_id, **self.dependency.to_dict()}
+
+
+@dataclass(frozen=True)
+class PluginProviderBinding:
+    """A live lowering-capable provider object, kept for claim/lower calls.
+
+    Never serialized: the provider is runtime state, not report data. Present
+    only for active plugins that implement the lowering members.
+    """
+
+    plugin_id: str
+    provider: object
 
 
 @dataclass(frozen=True)
@@ -48,6 +84,9 @@ class RextioPlugin:
     # ``describe()``; the declared plugin-API version travels with it.
     rules_provided: bool = False
     api_version: str | None = None
+    # Plugin API 1.1: True when the plugin implements the lowering members
+    # (type_vocabulary/claim/lower/crate_dependencies).
+    lowering_provided: bool = False
 
     def matches(self, target: TargetSpec) -> bool:
         """Report whether this plugin applies to the given target spec."""
@@ -93,6 +132,7 @@ class RextioPlugin:
             "entry_point": self.entry_point,
             "rules_provided": self.rules_provided,
             "api_version": self.api_version,
+            "lowering_provided": self.lowering_provided,
         }
 
 
@@ -107,6 +147,11 @@ class PluginRegistry:
     # already validated by the loader. Empty when only v1 plugins are active.
     rule_records: tuple[RuleRecord, ...] = ()
     coverages: tuple[PluginCoverage, ...] = ()
+    # Plugin API 1.1 lowering surfaces, validated by the loader. ``providers``
+    # holds the live objects for claim/lower calls and is never serialized.
+    types: tuple[PluginTypeBinding, ...] = ()
+    crate_dependencies: tuple[PluginCrateDependency, ...] = ()
+    providers: tuple[PluginProviderBinding, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this object.
@@ -123,4 +168,8 @@ class PluginRegistry:
             data["rule_records"] = [record.to_dict() for record in self.rule_records]
         if self.coverages:
             data["coverages"] = [coverage.to_dict() for coverage in self.coverages]
+        if self.types:
+            data["types"] = [binding.to_dict() for binding in self.types]
+        if self.crate_dependencies:
+            data["crate_dependencies"] = [binding.to_dict() for binding in self.crate_dependencies]
         return data

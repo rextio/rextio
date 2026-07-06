@@ -13,10 +13,19 @@ from rextio.plugins.api import (
     PLUGIN_API_VERSION,
     PLUGIN_DIAGNOSTIC_CODE_PATTERN,
     CoverageDecl,
+    CrateDependency,
+    PluginType,
     RuleRecord,
     plugin_code_segment,
 )
-from rextio.plugins.models import PluginCoverage, PluginRegistry, RextioPlugin
+from rextio.plugins.models import (
+    PluginCoverage,
+    PluginCrateDependency,
+    PluginProviderBinding,
+    PluginRegistry,
+    PluginTypeBinding,
+    RextioPlugin,
+)
 from rextio.targets.models import SUPPORTED_TARGET_LANGUAGES, TargetSpec
 
 
@@ -54,6 +63,9 @@ def load_plugin_registry(
     active: list[RextioPlugin] = []
     rule_records: list[RuleRecord] = []
     coverages: list[PluginCoverage] = []
+    type_bindings: list[PluginTypeBinding] = []
+    crate_bindings: list[PluginCrateDependency] = []
+    providers: list[PluginProviderBinding] = []
     for plugin, provider in active_pairs:
         if provider is None:
             active.append(plugin)
@@ -63,17 +75,94 @@ def load_plugin_registry(
         # Coverage packages join the metadata packages so the import policy
         # and the RXT091 hint see one merged view.
         merged_packages = tuple(sorted({*plugin.packages, *coverage.packages}))
-        active.append(replace(plugin, packages=merged_packages))
+        annotated = replace(plugin, packages=merged_packages)
+        if annotated.lowering_provided:
+            type_bindings.extend(_plugin_type_bindings(annotated, provider))
+            crate_bindings.extend(_plugin_crate_bindings(annotated, provider))
+            providers.append(PluginProviderBinding(plugin_id=annotated.id, provider=provider))
+        active.append(annotated)
         rule_records.extend(records)
         coverages.append(PluginCoverage(plugin_id=plugin.id, coverage=coverage))
     _validate_rule_codes_unique(tuple(rule_records))
+    _validate_type_annotations_unique(tuple(type_bindings))
+    _validate_crate_pins_compatible(tuple(crate_bindings))
     return PluginRegistry(
         enabled=config.enabled,
         discovered=discovered,
         active=tuple(active),
         rule_records=tuple(rule_records),
         coverages=tuple(coverages),
+        types=tuple(type_bindings),
+        crate_dependencies=tuple(crate_bindings),
+        providers=tuple(providers),
     )
+
+
+def _plugin_type_bindings(plugin: RextioPlugin, provider: Any) -> tuple[PluginTypeBinding, ...]:
+    try:
+        vocabulary = provider.type_vocabulary()
+    except Exception as exc:
+        raise PluginError(f"plugin {plugin.id!r} type_vocabulary() failed: {exc}") from exc
+    bindings: list[PluginTypeBinding] = []
+    key_prefix = f"{plugin.id}/"
+    for plugin_type in vocabulary:
+        if not isinstance(plugin_type, PluginType):
+            raise PluginError(
+                f"plugin {plugin.id!r} type_vocabulary() must yield PluginType objects"
+            )
+        if not plugin_type.key.startswith(key_prefix):
+            raise PluginError(
+                f"plugin {plugin.id!r} type key {plugin_type.key!r} must be namespaced {key_prefix!r}"
+            )
+        if not plugin_type.annotations:
+            raise PluginError(
+                f"plugin {plugin.id!r} type {plugin_type.key!r} declares no annotation spellings"
+            )
+        bindings.append(PluginTypeBinding(plugin_id=plugin.id, plugin_type=plugin_type))
+    return tuple(bindings)
+
+
+def _plugin_crate_bindings(
+    plugin: RextioPlugin, provider: Any
+) -> tuple[PluginCrateDependency, ...]:
+    try:
+        dependencies = provider.crate_dependencies()
+    except Exception as exc:
+        raise PluginError(f"plugin {plugin.id!r} crate_dependencies() failed: {exc}") from exc
+    bindings: list[PluginCrateDependency] = []
+    for dependency in dependencies:
+        if not isinstance(dependency, CrateDependency):
+            raise PluginError(
+                f"plugin {plugin.id!r} crate_dependencies() must yield CrateDependency objects"
+            )
+        bindings.append(PluginCrateDependency(plugin_id=plugin.id, dependency=dependency))
+    return tuple(bindings)
+
+
+def _validate_type_annotations_unique(bindings: tuple[PluginTypeBinding, ...]) -> None:
+    seen: dict[str, str] = {}
+    for binding in bindings:
+        for annotation in binding.plugin_type.annotations:
+            owner = seen.get(annotation)
+            if owner is not None and owner != binding.plugin_id:
+                raise PluginError(
+                    f"annotation {annotation!r} is claimed by both {owner!r} "
+                    f"and {binding.plugin_id!r}"
+                )
+            seen.setdefault(annotation, binding.plugin_id)
+
+
+def _validate_crate_pins_compatible(bindings: tuple[PluginCrateDependency, ...]) -> None:
+    seen: dict[str, tuple[str, str]] = {}
+    for binding in bindings:
+        dependency = binding.dependency
+        previous = seen.get(dependency.name)
+        if previous is not None and previous[1] != dependency.version:
+            raise PluginError(
+                f"crate {dependency.name!r} is pinned to {previous[1]} by {previous[0]!r} "
+                f"but to {dependency.version} by {binding.plugin_id!r}"
+            )
+        seen.setdefault(dependency.name, (binding.plugin_id, dependency.version))
 
 
 def _plugin_coverage(plugin: RextioPlugin, provider: Any) -> CoverageDecl:
@@ -155,6 +244,14 @@ def _load_entry_point_plugin(entry_point: Any) -> tuple[RextioPlugin, Any | None
     # Protocol v2 is recognized by a callable ``describe`` on the resolved
     # object; the same object must still provide the v1 metadata below.
     provider = payload if callable(getattr(payload, "describe", None)) else None
+    if provider is None and any(
+        callable(getattr(payload, member, None))
+        for member in ("claim", "lower", "type_vocabulary", "crate_dependencies")
+    ):
+        raise PluginError(
+            f"plugin entry point {entry_point_name!r} implements lowering members "
+            "but not describe(); lowering requires protocol v2"
+        )
     if hasattr(payload, "to_rextio_plugin"):
         payload = payload.to_rextio_plugin()
     package = _entry_point_package(entry_point)
@@ -196,7 +293,33 @@ def _annotate_v2_plugin(plugin: RextioPlugin, provider: Any) -> RextioPlugin:
             f"plugin {plugin.id!r} targets plugin-API {api_version!r}; "
             f"this rextio implements {PLUGIN_API_VERSION!r} (major must match)"
         )
-    return replace(plugin, rules_provided=True, api_version=api_version)
+    return replace(
+        plugin,
+        rules_provided=True,
+        api_version=api_version,
+        lowering_provided=_lowering_provided(plugin, provider),
+    )
+
+
+# The plugin API 1.1 lowering members. They arrive together: implementing a
+# strict subset is a load error, so a half-wired plugin cannot look like a
+# describe-only one.
+_LOWERING_MEMBERS = ("type_vocabulary", "claim", "lower", "crate_dependencies")
+
+
+def _lowering_provided(plugin: RextioPlugin, provider: Any) -> bool:
+    implemented = tuple(
+        member for member in _LOWERING_MEMBERS if callable(getattr(provider, member, None))
+    )
+    if not implemented:
+        return False
+    missing = tuple(member for member in _LOWERING_MEMBERS if member not in implemented)
+    if missing:
+        raise PluginError(
+            f"plugin {plugin.id!r} implements {', '.join(implemented)} but is missing "
+            f"{', '.join(missing)}; the lowering members arrive together (plugin API 1.1)"
+        )
+    return True
 
 
 def _entry_point_package(entry_point: Any) -> str | None:

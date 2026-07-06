@@ -19,7 +19,9 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, Union
+
+from rextio.analyzer.diagnostics import Diagnostic
 
 if TYPE_CHECKING:
     from rextio.config.schema import RextioConfig
@@ -30,8 +32,14 @@ RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 
 # The plugin-API version this core implements. SemVer over the protocol
 # surface: a v2 plugin declares the api_version it was built against, and the
-# loader accepts it when the major version matches.
-PLUGIN_API_VERSION = "1.0"
+# loader accepts it when the major version matches. 1.1 added the optional
+# lowering members (type_vocabulary/claim/lower/crate_dependencies) from
+# docs/specs/plugin-lowering.md.
+PLUGIN_API_VERSION = "1.1"
+
+# Crate dependency pins are exact by decree of the lowering spec: a plugin
+# without an exact pin fails to load.
+CRATE_PIN_PATTERN = re.compile(r"^=\d+\.\d+\.\d+$")
 
 # Plugin diagnostic codes are namespaced ``RXTP-<PLUGIN>-NNN`` where <PLUGIN>
 # is the plugin's code segment (its id, uppercased, with a leading "rextio-"
@@ -140,6 +148,146 @@ class CoverageDecl:
         }
 
 
+@dataclass(frozen=True)
+class BoundaryConversion:
+    """How a plugin type crosses the Python<->Rust boundary of a PyO3 function.
+
+    Placeholders: ``{param}`` in ``param_expr`` is the PyO3 parameter name;
+    ``{value}`` in ``return_expr`` is the native result expression. Arguments
+    are read-only borrows and returns transfer ownership of newly allocated
+    values (docs/specs/plugin-lowering.md section 4).
+    """
+
+    param_rust: str
+    param_expr: str
+    return_rust: str
+    return_expr: str
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this conversion."""
+        return {
+            "param_rust": self.param_rust,
+            "param_expr": self.param_expr,
+            "return_rust": self.return_rust,
+            "return_expr": self.return_expr,
+        }
+
+
+@dataclass(frozen=True)
+class PluginType:
+    """A plugin-provided type the analyzer can resolve from annotations.
+
+    ``annotations`` are the dotted spellings that resolve to this type (the
+    plugin's explicit annotation vocabulary); ``rust_type`` is the native
+    representation inside generated code.
+    """
+
+    key: str
+    annotations: tuple[str, ...]
+    rust_type: str
+    conversion: BoundaryConversion
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this type."""
+        return {
+            "key": self.key,
+            "annotations": list(self.annotations),
+            "rust_type": self.rust_type,
+            "conversion": self.conversion.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class ClaimSite:
+    """One candidate construct offered to a plugin's ``claim``.
+
+    ``kind`` is ``call`` (dotted call target in ``target``) or ``binop``
+    (operator token in ``target``); ``operand_types`` are the resolved operand
+    or argument types in positional order (plugin type keys or core type
+    names, ``None`` when unresolved).
+    """
+
+    kind: str
+    target: str
+    operand_types: tuple[str | None, ...]
+    file_path: str
+    line: int
+    column: int
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this site."""
+        return {
+            "kind": self.kind,
+            "target": self.target,
+            "operand_types": list(self.operand_types),
+            "file_path": self.file_path,
+            "line": self.line,
+            "column": self.column,
+        }
+
+
+@dataclass(frozen=True)
+class Claimed:
+    """The plugin will lower this site under the given rule."""
+
+    rule_id: str
+
+
+@dataclass(frozen=True)
+class NotCovered:
+    """The site is not this plugin's business; core proceeds as usual."""
+
+
+@dataclass(frozen=True)
+class Rejected:
+    """The site is covered but not lowerable; the diagnostic explains why."""
+
+    diagnostic: Diagnostic
+
+
+ClaimResult = Union[Claimed, NotCovered, Rejected]
+
+
+@dataclass(frozen=True)
+class LoweredExpr:
+    """A plugin-lowered expression: one Rust expression plus its support items.
+
+    ``rust`` is a single expression with no trailing semicolon; core owns
+    statements, control flow, and temporaries. ``uses`` are deduplicated
+    ``use`` lines; ``helpers`` are module-level items deduplicated by exact
+    text.
+    """
+
+    rust: str
+    uses: tuple[str, ...] = ()
+    helpers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CrateDependency:
+    """A crate a plugin's generated code depends on, with a mandatory exact pin."""
+
+    name: str
+    version: str
+    features: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Validate the mandatory exact version pin (``=X.Y.Z``)."""
+        if CRATE_PIN_PATTERN.match(self.version) is None:
+            raise ValueError(
+                f"crate dependency {self.name!r} must carry an exact version pin "
+                f"(=X.Y.Z), got {self.version!r}"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this dependency."""
+        return {
+            "name": self.name,
+            "version": self.version,
+            "features": list(self.features),
+        }
+
+
 class RextioPluginV2(Protocol):
     """The self-describing plugin protocol (tooling contract, protocol v2).
 
@@ -163,4 +311,37 @@ class RextioPluginV2(Protocol):
 
     def describe(self, config: RextioConfig) -> tuple[RuleRecord, ...]:
         """Return this plugin's rule records for the resolved configuration."""
+        ...
+
+
+class RextioLoweringPlugin(RextioPluginV2, Protocol):
+    """A protocol-v2 plugin that also lowers code (plugin API 1.1).
+
+    All four members below arrive together: the loader rejects a plugin that
+    implements ``claim`` without ``lower`` or vice versa, and lowering
+    requires the v2 base (``describe``/``covers``). The claim decision MUST
+    be deterministic — identical (site, config) inputs always produce the
+    identical result; core may cache it across analysis and codegen
+    (docs/specs/plugin-lowering.md section 2).
+    """
+
+    def type_vocabulary(self) -> tuple[PluginType, ...]:
+        """Return the annotation vocabulary this plugin adds to the analyzer."""
+        ...
+
+    def claim(self, site: ClaimSite, config: RextioConfig) -> ClaimResult:
+        """Decide, at analysis time, whether this plugin lowers the site."""
+        ...
+
+    def lower(self, claimed: ClaimSite, ctx: object) -> LoweredExpr:
+        """Emit the Rust expression for a previously claimed site.
+
+        ``ctx`` is the codegen-side LoweringContext (defined with the codegen
+        integration slice); it provides rendered operand sub-expressions,
+        fresh-name allocation, and the active target spec.
+        """
+        ...
+
+    def crate_dependencies(self) -> tuple[CrateDependency, ...]:
+        """Return the pinned crates this plugin's generated code depends on."""
         ...
