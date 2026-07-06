@@ -608,6 +608,10 @@ class _FunctionRenderer:
                 else rust_type(self.function.return_type)
             )
             lines = [
+                # `py` is part of the plugin conversion contract (return_expr
+                # and param_expr may reference it); a function whose
+                # conversions happen not to use it would otherwise warn.
+                "#[allow(unused_variables)]",
                 *(["#[pyfunction]"] if self.pyo3_exported else []),
                 f"fn {rust_name}<'py>({', '.join(param_parts)}) -> PyResult<{return_type}> {{",
             ]

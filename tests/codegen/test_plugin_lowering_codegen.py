@@ -262,3 +262,31 @@ def square(x: float) -> float:
     assert baseline == with_plugin_args
     assert "ndarray" not in baseline
     assert "<'py>" not in baseline
+
+SCALED_DOT_MODULE = """
+from rextio_numpy.types import F64Arr1
+import numpy as np
+
+def scaled_dot(a: F64Arr1, b: F64Arr1, factor: float) -> float:
+    return np.dot(a, b) * factor
+"""
+
+
+def test_claim_matching_distinguishes_nested_call_and_binop(tmp_path: Path) -> None:
+    # Regression: `np.dot(a, b) * factor` puts the call and the enclosing
+    # binop at the same (line, column). Matching claims on start position
+    # alone rendered the float multiply through the plugin's dot lowering
+    # (`(...).dot(&factor)`); span+kind matching keeps the multiply core.
+    write_module(tmp_path, SCALED_DOT_MODULE)
+    analysis = analyze_with_plugin(tmp_path, NumpyProvider())
+    module_ir = lower_project(analysis, plugin_types=TYPE_MAPS)
+
+    source = generate_rust_module(
+        module_ir,
+        plugin_providers={PLUGIN_ID: NumpyProvider()},
+        plugin_types_by_key=TYPES_BY_KEY,
+    )
+
+    assert ".dot(&b" in source
+    assert ") * factor" in source
+    assert ".dot(&factor" not in source

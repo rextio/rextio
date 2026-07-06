@@ -96,7 +96,7 @@ class _PluginLoweringState:
     """Per-function plugin state consulted while lowering one function."""
 
     # (line, column) of the claimed AST node -> the analyzer claim.
-    claims: dict[tuple[int, int], PluginClaim] = field(default_factory=dict)
+    claims: dict[tuple[str, int, int, int | None, int | None], PluginClaim] = field(default_factory=dict)
     type_maps: PluginTypeMaps | None = None
     # The function's resolved import map (visible name -> dotted target),
     # used to resolve plugin annotation spellings like the claim engine does.
@@ -199,7 +199,10 @@ def lower_function(
             runtime_attr_path=(runtime_original_name(function.qualname),),
         )
     _PLUGIN_STATE = _PluginLoweringState(
-        claims={(claim.line, claim.column): claim for claim in function.plugin_claims},
+        claims={
+            (claim.kind, claim.line, claim.column, claim.end_line, claim.end_column): claim
+            for claim in function.plugin_claims
+        },
         type_maps=plugin_types,
         imports=function.imports,
     )
@@ -320,8 +323,14 @@ def _dotted_annotation(node: ast.AST) -> str | None:
     return ".".join(reversed(parts))
 
 
-def _plugin_claim_ir(node: ast.AST) -> PluginClaimIR | None:
-    """Return the claim IR for an AST node's (line, column), or None."""
+def _plugin_claim_ir(node: ast.AST, kind: str) -> PluginClaimIR | None:
+    """Return the claim IR matching an AST node's kind and source span, or None.
+
+    Claims are matched on (kind, start, end): the start position alone is
+    ambiguous because a BinOp shares its (line, column) with its leftmost
+    operand (`np.dot(a, b) * factor` puts the call and the enclosing binop at
+    one start offset).
+    """
     state = _PLUGIN_STATE
     if state is None or not state.claims:
         return None
@@ -329,7 +338,15 @@ def _plugin_claim_ir(node: ast.AST) -> PluginClaimIR | None:
     col_offset = getattr(node, "col_offset", None)
     if lineno is None or col_offset is None:
         return None
-    claim = state.claims.get((lineno, col_offset))
+    claim = state.claims.get(
+        (
+            kind,
+            lineno,
+            col_offset,
+            getattr(node, "end_lineno", None),
+            getattr(node, "end_col_offset", None),
+        )
+    )
     if claim is None:
         return None
     return PluginClaimIR(
@@ -526,7 +543,7 @@ def lower_expr(
             generators=lower_comprehension_generators(node.generators, module, resolver),
         )
     if isinstance(node, ast.BinOp):
-        claim = _plugin_claim_ir(node)
+        claim = _plugin_claim_ir(node, "binop")
         if claim is not None:
             # A plugin-claimed binop skips core operator validation; codegen
             # hands the whole site to the claiming plugin's lower().
@@ -555,7 +572,7 @@ def lower_expr(
             comparators=[lower_expr(comparator, module, resolver) for comparator in node.comparators],
         )
     if isinstance(node, ast.Call):
-        claim = _plugin_claim_ir(node)
+        claim = _plugin_claim_ir(node, "call")
         if claim is not None:
             # A plugin-claimed call skips the normal target resolution: the
             # claim carries the dotted target, and keyword arguments are

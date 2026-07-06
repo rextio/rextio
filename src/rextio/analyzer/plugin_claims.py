@@ -93,7 +93,7 @@ class ClaimEngine:
             line=getattr(node, "lineno", function.line),
             column=getattr(node, "col_offset", function.column),
         )
-        return self._offer(function, site, plugin_ids)
+        return self._offer(function, site, plugin_ids, _node_end(node))
 
     def claim_binop(
         self,
@@ -121,7 +121,7 @@ class ClaimEngine:
             line=getattr(node, "lineno", function.line),
             column=getattr(node, "col_offset", function.column),
         )
-        return self._offer(function, site, plugin_ids)
+        return self._offer(function, site, plugin_ids, _node_end(node))
 
     def _call_plugins(
         self, target: str, operand_types: tuple[str | None, ...]
@@ -146,6 +146,7 @@ class ClaimEngine:
         function: FunctionAnalysis,
         site: ClaimSite,
         plugin_ids: tuple[str, ...],
+        node_end: tuple[int | None, int | None] = (None, None),
     ) -> tuple[bool, str | None]:
         claims: list[tuple[str, Claimed]] = []
         rejections: list[tuple[str, Rejected]] = []
@@ -172,9 +173,15 @@ class ClaimEngine:
                 column=site.column,
                 result_type=claimed.result_type,
                 operand_types=site.operand_types,
+                end_line=node_end[0],
+                end_column=node_end[1],
             )
             if not any(
-                existing.line == claim.line and existing.column == claim.column
+                existing.kind == claim.kind
+                and existing.line == claim.line
+                and existing.column == claim.column
+                and existing.end_line == claim.end_line
+                and existing.end_column == claim.end_column
                 for existing in function.plugin_claims
             ):
                 function.plugin_claims.append(claim)
@@ -230,3 +237,8 @@ def _dotted_annotation(node: ast.AST) -> str | None:
         return None
     parts.append(current.id)
     return ".".join(reversed(parts))
+
+
+def _node_end(node: ast.AST) -> tuple[int | None, int | None]:
+    """Return the node's end (line, column), or (None, None) when absent."""
+    return (getattr(node, "end_lineno", None), getattr(node, "end_col_offset", None))
