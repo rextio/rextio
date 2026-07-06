@@ -38,7 +38,8 @@ def render_wrapper_module(
     if not accepted and top_level is None:
         raise ValueError(f"module has no accepted native functions: {module.module_name}")
 
-    function_nodes = _function_nodes(Path(module.file_path))
+    source_tree = ast.parse(Path(module.file_path).read_text(encoding="utf-8"), filename=module.file_path)
+    function_nodes = _function_nodes_from_tree(source_tree)
     fallback_name = fallback_module_name(module)
     import_prefix = "." if "." in module.module_name or Path(module.file_path).name == "__init__.py" else ""
     lines = [
@@ -52,9 +53,14 @@ def render_wrapper_module(
         # (string) annotations never evaluate.
         "from __future__ import annotations",
         "",
-        "from rextio.runtime.boundary_fallback import boundary_fallback_required",
-        "from rextio.runtime.flags import native_disabled, native_required",
-        "from rextio.runtime.native_loader import load_native_function",
+        # Runtime helpers are aliased under _rextio_-prefixed names so a user
+        # module that happens to export a public name like `native_disabled`
+        # cannot clobber the dispatch helpers via the fallback star-import
+        # (council round 8).
+        "from rextio.runtime.boundary_fallback import boundary_fallback_required as _rextio_boundary_fallback_required",
+        "from rextio.runtime.flags import native_disabled as _rextio_native_disabled",
+        "from rextio.runtime.flags import native_required as _rextio_native_required",
+        "from rextio.runtime.native_loader import load_native_function as _rextio_load_native_function",
         "",
     ]
     if top_level is not None:
@@ -73,6 +79,11 @@ def render_wrapper_module(
     else:
         lines.extend(_fallback_module_import_lines(import_prefix, fallback_name))
         lines.append(f"from {import_prefix}{fallback_name} import *  # noqa: F401,F403")
+    lines.append("")
+    # Faithfully mirror the source module's public surface: its docstring, any
+    # module-level names referenced by parameter defaults (which the star-import
+    # misses when they are private or excluded from __all__), and its __all__.
+    lines.extend(_render_namespace_fidelity(source_tree, accepted, function_nodes))
     lines.append("")
     for function in accepted:
         lines.extend(_render_fallback_binding(function, import_prefix, fallback_name, top_level is not None))
@@ -94,6 +105,89 @@ def render_wrapper_module(
     return "\n".join(lines)
 
 
+def _render_namespace_fidelity(
+    source_tree: ast.Module,
+    accepted: list[FunctionAnalysis],
+    function_nodes: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+) -> list[str]:
+    """Mirror the source module's __doc__, private default names, and __all__.
+
+    ``from ._fallback import *`` only carries the fallback module's PUBLIC
+    names, so (1) the module docstring is lost, (2) a private module-level name
+    used as a parameter default (``_MAX = 3; def f(n=_MAX)``) is absent and the
+    wrapper NameErrors at import — the sibling of the round-7 annotation bug,
+    since defaults are eagerly evaluated even under PEP 563 — and (3) an
+    explicit ``__all__`` is not propagated. This rebinds each from the fallback
+    module reference (council round 8).
+    """
+    lines = ['__doc__ = _rextio_fallback_module.__doc__']
+    module_level_names = _module_level_names(source_tree)
+    accepted_names = {function.name for function in accepted}
+    default_names = _default_referenced_names(accepted, function_nodes)
+    # Only names actually defined at module level and not already bound as a
+    # wrapper function; builtins/keywords in defaults resolve on their own.
+    names_to_bind = sorted((default_names & module_level_names) - accepted_names)
+    for name in names_to_bind:
+        lines.append(f"{name} = _rextio_fallback_module.{name}")
+    if _has_module_all(source_tree):
+        lines.append("__all__ = list(_rextio_fallback_module.__all__)")
+    return lines
+
+
+def _module_level_names(tree: ast.Module) -> set[str]:
+    """Names bound at the top level of the source module."""
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                names.update(_assign_target_names(target))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+def _assign_target_names(target: ast.expr) -> set[str]:
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: set[str] = set()
+        for element in target.elts:
+            names.update(_assign_target_names(element))
+        return names
+    return set()
+
+
+def _default_referenced_names(
+    accepted: list[FunctionAnalysis],
+    function_nodes: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+) -> set[str]:
+    names: set[str] = set()
+    for function in accepted:
+        node = function_nodes[_function_node_key(function)]
+        defaults = [*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)]
+        for default in defaults:
+            for child in ast.walk(default):
+                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+                    names.add(child.id)
+    return names
+
+
+def _has_module_all(tree: ast.Module) -> bool:
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            if any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
+                return True
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == "__all__":
+                return True
+    return False
+
+
 def _fallback_module_import_lines(import_prefix: str, fallback_name: str) -> list[str]:
     if import_prefix == ".":
         return [f"from . import {fallback_name} as _rextio_fallback_module"]
@@ -102,7 +196,7 @@ def _fallback_module_import_lines(import_prefix: str, fallback_name: str) -> lis
 
 def _render_native_binding(function: FunctionAnalysis) -> list[str]:
     return [
-        f"{_native_binding_name(function)} = load_native_function(",
+        f"{_native_binding_name(function)} = _rextio_load_native_function(",
         '    module_name="_rextio_native",',
         f'    function_name="{native_function_name(function.qualname)}",',
         ")",
@@ -111,7 +205,7 @@ def _render_native_binding(function: FunctionAnalysis) -> list[str]:
 
 def _render_native_top_level_binding(top_level: TopLevelAnalysis) -> list[str]:
     return [
-        "_native___rextio_top_level__ = load_native_function(",
+        "_native___rextio_top_level__ = _rextio_load_native_function(",
         '    module_name="_rextio_native",',
         f'    function_name="{native_function_name(top_level.qualname)}",',
         ")",
@@ -143,10 +237,10 @@ def _render_dynamic_fallback_selection(
         "    globals().update({name: getattr(module, name) for name in _rextio_public_names(module)})",
         "",
         "def _rextio_select_fallback_module():",
-        "    if native_disabled():",
+        "    if _rextio_native_disabled():",
         "        return _rextio_import_fallback_module(_REXTIO_FALLBACK_MODULE_NAME)",
         "    if _native___rextio_top_level__ is None:",
-        "        if native_required():",
+        "        if _rextio_native_required():",
         "            raise RuntimeError(",
         f'                "native mode requires generated native top-level initializer: {top_level.qualname}"',
         "            )",
@@ -180,22 +274,39 @@ def _render_wrapper_function(
         native_return = f"set({native_return})"
     prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
     wrapper_name = function.name if not _is_method(function) else _wrapper_method_name(function)
-    return [
+    # Plugin-routed functions are exempt from the boundary-fallback threshold:
+    # flipping such a function to the fallback leg mid-run would silently change
+    # its observable behavior (e.g. a native builtin float vs NumPy's float64
+    # return, a documented per-leg divergence) after N calls (council round 8).
+    threshold_gate = "" if function.plugin_type_keys else _threshold_gate_lines(
+        function, boundary_fallback_threshold, fallback_call
+    )
+    body = [
         f"{prefix} {wrapper_name}({signature}){_return_annotation(node)}:",
-        "    if native_disabled():",
+        "    if _rextio_native_disabled():",
         f"        return {fallback_call}",
         f"    if {_native_binding_name(function)} is None:",
-        "        if native_required():",
+        "        if _rextio_native_required():",
         "            raise RuntimeError(",
         f'                "native mode requires generated native function: {function.qualname}"',
         "            )",
         f"        return {fallback_call}",
+    ]
+    if threshold_gate:
+        body.extend(threshold_gate)
+    body.append(f"    return {native_return}")
+    return body
+
+
+def _threshold_gate_lines(
+    function: FunctionAnalysis, boundary_fallback_threshold: int, fallback_call: str
+) -> list[str]:
+    return [
         (
-            f'    if not native_required() and boundary_fallback_required("{function.qualname}", '
+            f'    if not _rextio_native_required() and _rextio_boundary_fallback_required("{function.qualname}", '
             f"{boundary_fallback_threshold}):"
         ),
         f"        return {fallback_call}",
-        f"    return {native_return}",
     ]
 
 
@@ -273,8 +384,7 @@ def _annotation_name(node: ast.AST | None) -> str | None:
         return None
 
 
-def _function_nodes(path: Path) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+def _function_nodes_from_tree(tree: ast.Module) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     nodes: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -318,15 +428,17 @@ def _function_node_key(function: FunctionAnalysis) -> str:
 
 
 def _fallback_binding_name(function: FunctionAnalysis) -> str:
+    # _rextio_-namespaced and underscore-prefixed so it is neither carried by
+    # the fallback star-import nor collides with a user name (council round 8).
     if not _is_method(function):
-        return f"_fallback_{function.name}"
-    return f"_fallback_{_local_qualname(function).replace('.', '_')}"
+        return f"_rextio_fallback_fn_{function.name}"
+    return f"_rextio_fallback_fn_{_local_qualname(function).replace('.', '_')}"
 
 
 def _native_binding_name(function: FunctionAnalysis) -> str:
     if not _is_method(function):
-        return f"_native_{function.name}"
-    return f"_native_{_local_qualname(function).replace('.', '_')}"
+        return f"_rextio_native_fn_{function.name}"
+    return f"_rextio_native_fn_{_local_qualname(function).replace('.', '_')}"
 
 
 def _wrapper_method_name(function: FunctionAnalysis) -> str:

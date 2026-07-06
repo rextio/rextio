@@ -27,13 +27,19 @@ def write_module(root: Path, name: str, contents: str) -> Path:
     return path
 
 
-def numpy_plugin(*, rules_provided: bool, packages: tuple[str, ...] = ("numpy",)) -> RextioPlugin:
+def numpy_plugin(
+    *,
+    rules_provided: bool,
+    lowering_provided: bool = True,
+    packages: tuple[str, ...] = ("numpy",),
+) -> RextioPlugin:
     return RextioPlugin(
         id="rextio-numpy",
         name="NumPy to Rust",
         packages=packages,
         rules_provided=rules_provided,
-        api_version="1.0" if rules_provided else None,
+        lowering_provided=lowering_provided,
+        api_version="1.1" if rules_provided else None,
     )
 
 
@@ -64,6 +70,20 @@ def test_rxt091_hint_on_covered_accelerated_function(tmp_path: Path) -> None:
 
     # Undecorated functions never get the hint.
     assert hint_codes(function_named(analysis, "myapp.mod.plain")) == []
+
+
+def test_no_rxt091_hint_for_describe_only_plugin(tmp_path: Path) -> None:
+    # Council round 8 (qwen): a plugin that describes rules but does not lower
+    # cannot promote the function, so the "removing the decorator makes this
+    # plugin-lowerable" hint must not fire.
+    write_module(tmp_path, "src/myapp/mod.py", NUMBA_NUMPY_MODULE)
+    analysis = analyze_project(
+        tmp_path,
+        active_plugins=(numpy_plugin(rules_provided=True, lowering_provided=False),),
+    )
+
+    kernel = function_named(analysis, "myapp.mod.kernel")
+    assert hint_codes(kernel) == []
 
 
 def test_no_hint_without_rule_providing_plugin(tmp_path: Path) -> None:

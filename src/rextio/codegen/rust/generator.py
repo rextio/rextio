@@ -1421,7 +1421,7 @@ class _FunctionRenderer:
                 f"no active lowering provider for plugin {claim.plugin_id!r} "
                 f"(claimed site {claim.target!r} in {self.function.qualname})"
             )
-        operands = tuple(self.render_call_arg(arg) for arg in operand_exprs)
+        operands = tuple(self._render_plugin_operand(arg) for arg in operand_exprs)
         site = ClaimSite(
             kind=claim.kind,
             target=claim.target,
@@ -1931,6 +1931,21 @@ class _FunctionRenderer:
                 return self.render_expr(expr)
             return f"{rust_identifier(expr.id)}.clone()"
         return self.render_expr(expr)
+
+    def _render_plugin_operand(self, expr: ExprIR) -> str:
+        """Render a plugin-claim operand, borrowing plugin-typed names.
+
+        A plugin-typed local is not a Rust ``Copy`` type, so render_call_arg
+        would emit ``name.clone()`` -- and the plugin's snippet then borrows it
+        (``&{operand}``), producing a clone-then-borrow that copies the whole
+        array on every use (council round 8). The plugin owns the borrow/own
+        decision in its own snippet, so we hand it the bare identifier and let
+        it add ``&`` where needed; non-name operands render normally.
+        """
+        if isinstance(expr, NameIR) and expr.id not in self.maybe_bound_types:
+            if isinstance(self.infer_expr_type(expr), RxtPluginType):
+                return rust_identifier(expr.id)
+        return self.render_call_arg(expr)
 
     def render_owned_expr(self, expr: ExprIR) -> str:
         if isinstance(expr, NameIR) and not self.is_copy_expr(expr):

@@ -733,6 +733,24 @@ def test_claim_with_unknown_result_type_fails_analysis(tmp_path: Path) -> None:
         )
 
 
+def test_claim_with_unsupported_container_element_type_fails_analysis(tmp_path: Path) -> None:
+    # Council round 8 (codex): _is_known_core_type accepted any list[...]/dict[...]
+    # shape, so list[object] passed claim validation and only failed in codegen.
+    class ContainerTypeProvider(NumpyProvider):
+        def claim(self, site: ClaimSite, config: RextioConfig):
+            if site.kind == "call" and site.target == "numpy.dot":
+                return Claimed(rule_id="rextio-numpy/dot-float64", result_type="list[object]")
+            return NotCovered()
+
+    write_module(tmp_path, DOT_MODULE)
+    with pytest.raises(PluginError, match="neither a core type"):
+        analyze_project(
+            tmp_path,
+            plugin_registry=make_registry(ContainerTypeProvider()),
+            plugin_config=RextioConfig(),
+        )
+
+
 def test_rejection_outside_plugin_namespace_fails_analysis(tmp_path: Path) -> None:
     # Council round 7 (antigravity): a plugin could previously reject with a
     # core-shaped diagnostic code, defeating manifest remediation lookups.
@@ -964,3 +982,37 @@ def use(a: F64Arr1, b: F64Arr1) -> float:
     caller = function_named(analysis, "myapp.kernels.use")
     assert caller.native_status == "rejected"
     assert "RXT092" in caller.rejection_codes
+
+
+def test_used_plugin_ids_excludes_unused_active_plugins(tmp_path: Path) -> None:
+    # Council round 8 (codex): only plugins whose lowering an accepted function
+    # actually uses may contribute crates; an enabled-but-unused plugin must
+    # not be injected.
+    from rextio.build.orchestrator import _used_plugin_ids
+
+    write_module(
+        tmp_path,
+        """
+import numpy as np
+from rextio_numpy.types import F64Arr1
+
+def dot(a: F64Arr1, b: F64Arr1) -> float:
+    return np.dot(a, b)
+""",
+    )
+    analysis = analyze_project(
+        tmp_path, plugin_registry=make_registry(NumpyProvider()), plugin_config=RextioConfig()
+    )
+    assert _used_plugin_ids(analysis) == {"rextio-numpy"}
+    # A function that never touches the plugin surface contributes no plugin id.
+    write_module(
+        tmp_path,
+        """
+def scalar(a: int, b: int) -> int:
+    return a + b
+""",
+    )
+    plain = analyze_project(
+        tmp_path, plugin_registry=make_registry(NumpyProvider()), plugin_config=RextioConfig()
+    )
+    assert _used_plugin_ids(plain) == set()

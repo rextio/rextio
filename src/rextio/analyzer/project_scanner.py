@@ -154,7 +154,14 @@ def _note_plugin_lowerable_accelerated(
     so removing the decorator could promote the function to plugin-lowered,
     CPython-exact native code.
     """
-    rule_plugins = [plugin for plugin in active_plugins if plugin.rules_provided and plugin.packages]
+    rule_plugins = [
+        plugin
+        for plugin in active_plugins
+        # Require lowering, not just rule records: a describe-only plugin
+        # cannot lower anything, so removing the decorator would not
+        # promote the function through it (council round 8).
+        if plugin.rules_provided and plugin.lowering_provided and plugin.packages
+    ]
     if not rule_plugins:
         return
     for module in analysis.modules:

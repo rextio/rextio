@@ -47,8 +47,30 @@ def config_fingerprint(config: RextioConfig) -> str:
     versions): any change to the resolved config — from `rextio.toml`, an
     environment variable, or a CLI override — changes the fingerprint.
     """
-    canonical = json.dumps(asdict(config), sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(
+        asdict(config), sort_keys=True, separators=(",", ":"), default=_fingerprint_default
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _fingerprint_default(value: object) -> object:
+    """Normalize non-JSON-serializable config values for the fingerprint.
+
+    The config schema is primitives/dicts/tuples today, but a future Path or
+    Enum field would otherwise crash ``rextio capabilities`` (council round 8).
+    """
+    from enum import Enum
+    from pathlib import Path as _Path
+
+    if isinstance(value, _Path):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (set, frozenset)):
+        return sorted(value, key=repr)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "backslashreplace")
+    return repr(value)
 
 
 def build_manifest(

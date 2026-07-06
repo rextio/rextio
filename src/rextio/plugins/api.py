@@ -44,6 +44,13 @@ PLUGIN_API_VERSION = "1.1"
 # Crate dependency pins are exact by decree of the lowering spec: a plugin
 # without an exact pin fails to load.
 CRATE_PIN_PATTERN = re.compile(r"^=\d+\.\d+\.\d+$")
+# Cargo crate names: ASCII alphanumerics, `-` and `_` (crates.io rules).
+# Feature names additionally allow `/` and `.` for `dep/feature` and
+# `dep?/feature` style entries. Both are rendered as bare/quoted tokens
+# into Cargo.toml, so anything outside these sets could break or inject
+# TOML (council round 8).
+CRATE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+CRATE_FEATURE_PATTERN = re.compile(r"^[A-Za-z0-9_./?-]+$")
 
 # Plugin diagnostic codes are namespaced ``RXTP-<PLUGIN>-NNN`` where <PLUGIN>
 # is the plugin's code segment (its id, uppercased, with a leading "rextio-"
@@ -334,12 +341,23 @@ class CrateDependency:
     features: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        """Validate the mandatory exact version pin (``=X.Y.Z``)."""
+        """Validate the crate name, exact version pin (``=X.Y.Z``), and features."""
+        if CRATE_NAME_PATTERN.match(self.name) is None:
+            raise ValueError(
+                f"crate dependency name {self.name!r} is not a valid Cargo crate "
+                "name (ASCII letters, digits, '-' and '_' only)"
+            )
         if CRATE_PIN_PATTERN.match(self.version) is None:
             raise ValueError(
                 f"crate dependency {self.name!r} must carry an exact version pin "
                 f"(=X.Y.Z), got {self.version!r}"
             )
+        for feature in self.features:
+            if CRATE_FEATURE_PATTERN.match(feature) is None:
+                raise ValueError(
+                    f"crate dependency {self.name!r} declares an invalid feature "
+                    f"name {feature!r}"
+                )
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this dependency."""

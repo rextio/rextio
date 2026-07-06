@@ -16,6 +16,7 @@ from dataclasses import replace
 
 from rextio.analyzer.models import FunctionAnalysis, PluginClaim, PluginClaimRejection
 from rextio.analyzer.native_marker import dotted_name
+from rextio.capabilities import DICT_KEY_TYPES, LIST_ITEM_TYPES, SET_ITEM_TYPES
 from rextio.config.schema import RextioConfig
 from rextio.plugins.api import Claimed, ClaimSite, NotCovered, Rejected, plugin_code_segment
 from rextio.plugins.loader import PluginError
@@ -43,9 +44,12 @@ class ClaimEngine:
         # (e.g. minimal test providers) are exempt.
         self._rule_ids: dict[str, set[str]] = {}
         self._rule_kinds: dict[tuple[str, str], str] = {}
+        self._rule_codes: dict[str, set[str]] = {}
         for record in registry.rule_records:
             self._rule_ids.setdefault(record.provider, set()).add(record.id)
             self._rule_kinds[(record.provider, record.id)] = record.scope.kind
+            if record.diagnostic_code is not None:
+                self._rule_codes.setdefault(record.provider, set()).add(record.diagnostic_code)
         # annotation spelling -> (plugin_id, plugin type key)
         self._annotations: dict[str, tuple[str, str]] = {}
         self._type_keys: set[str] = set()
@@ -253,6 +257,16 @@ class ClaimEngine:
                     f"diagnostic code {result.diagnostic.code!r}; plugin "
                     f"rejections must use the {expected_prefix!r} namespace"
                 )
+            declared = self._rule_codes.get(plugin_id)
+            if declared is not None and result.diagnostic.code not in declared:
+                # The rejection code must resolve to one of the plugin's own
+                # rule records, or a manifest remediation lookup dangles
+                # (council round 8).
+                raise PluginError(
+                    f"plugin {plugin_id!r} rejected site {site.target!r} with "
+                    f"diagnostic code {result.diagnostic.code!r}, which is not "
+                    "declared by any of its rule records"
+                )
         if isinstance(result, Claimed):
             advertised = self._rule_ids.get(plugin_id)
             if advertised is not None and result.rule_id not in advertised:
@@ -299,13 +313,35 @@ _CORE_RESULT_TYPES = frozenset(
 
 
 def _is_known_core_type(type_name: str) -> bool:
-    """Report whether a claimed result type is a core scalar or container form."""
-    if type_name in _CORE_RESULT_TYPES:
+    """Report whether a claimed result type is a valid core scalar or container.
+
+    Container ELEMENT types are validated against the supported vocabulary, not
+    just the ``list[...]``/``dict[...]`` shape: previously any string with a
+    recognized prefix and a closing bracket passed, so ``list[object]`` or a
+    malformed ``list[`` was accepted at claim time and only failed deep in
+    codegen (council round 8).
+    """
+    normalized = type_name.replace(" ", "")
+    if normalized in _CORE_RESULT_TYPES:
         return True
-    for prefix in ("list[", "set[", "dict[", "tuple["):
-        if type_name.startswith(prefix) and type_name.endswith("]"):
-            return True
+    inner = _container_inner(normalized, "list[")
+    if inner is not None:
+        return inner in LIST_ITEM_TYPES
+    inner = _container_inner(normalized, "set[")
+    if inner is not None:
+        return inner in SET_ITEM_TYPES
+    inner = _container_inner(normalized, "dict[")
+    if inner is not None:
+        key, sep, value = inner.partition(",")
+        return bool(sep) and key in DICT_KEY_TYPES and value in _CORE_RESULT_TYPES
     return False
+
+
+def _container_inner(type_name: str, prefix: str) -> str | None:
+    """Return the element string inside ``prefix...]``, or None if it does not match."""
+    if type_name.startswith(prefix) and type_name.endswith("]"):
+        return type_name[len(prefix):-1]
+    return None
 
 
 def _node_end(node: ast.AST) -> tuple[int | None, int | None]:

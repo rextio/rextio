@@ -505,3 +505,32 @@ def broken(x: int) ->
     exit_code = main(["check", str(tmp_path), "--no-report"])
 
     assert exit_code == 1
+
+
+@pytest.mark.parametrize("command", ["build", "generate"])
+def test_plugin_claim_error_is_reported_as_rxt060(
+    tmp_path: Path, capsys, monkeypatch, command: str
+) -> None:
+    # Council round 8 (codex): only `check` caught PluginError from the claim
+    # pass; build/generate/bench leaked a raw traceback instead of the stable
+    # RXT060 diagnostic.
+    import rextio.cli.build_cmd as build_cmd
+    import rextio.cli.generate_cmd as generate_cmd
+    from rextio.plugins.loader import PluginError
+
+    (tmp_path / "app.py").write_text(
+        "import rextio\n\n@rextio.native\ndef f(x: int) -> int:\n    return x\n",
+        encoding="utf-8",
+    )
+
+    def _raise(*args: object, **kwargs: object) -> object:
+        raise PluginError("boom from claim()")
+
+    module = build_cmd if command == "build" else generate_cmd
+    monkeypatch.setattr(module, "analyze_project", _raise)
+
+    exit_code = main([command, str(tmp_path)])
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "RXT060 Plugin error" in captured.err
+    assert "boom from claim()" in captured.err

@@ -280,6 +280,39 @@ def test_lower_receives_the_claimed_rule_id(tmp_path: Path) -> None:
     assert ("rextio-numpy/dot-float64", "float") in seen
 
 
+def test_mixed_module_native_and_plugin_functions_generate_consistently(tmp_path: Path) -> None:
+    # Council round 8 (hy3): a module with both a core-native function and a
+    # plugin-lowered function must generate consistent PyO3 output; the core
+    # function stays crate-eligible while the plugin one needs the boundary.
+    write_module(
+        tmp_path,
+        """
+import numpy as np
+from rextio_numpy.types import F64Arr1
+
+def scalar(x: int, y: int) -> int:
+    return x + y
+
+def dot(a: F64Arr1, b: F64Arr1) -> float:
+    return np.dot(a, b)
+""",
+    )
+    analysis = analyze_with_plugin(tmp_path, NumpyProvider())
+    module_ir = lower_project(analysis, plugin_types=TYPE_MAPS)
+    plugin_lowered = {f.qualname: f.plugin_lowered for f in module_ir.functions}
+    assert plugin_lowered["myapp.kernels.scalar"] is False
+    assert plugin_lowered["myapp.kernels.dot"] is True
+
+    source = generate_rust_module(
+        module_ir,
+        plugin_providers={PLUGIN_ID: NumpyProvider()},
+        plugin_types_by_key=TYPES_BY_KEY,
+    )
+    assert "fn myapp__kernels__scalar" in source
+    assert "fn myapp__kernels__dot" in source
+    assert ".dot(&" in source
+
+
 def test_cargo_toml_appends_pinned_plugin_dependencies() -> None:
     rendered = render_cargo_toml(
         extra_dependencies=(

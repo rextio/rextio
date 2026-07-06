@@ -377,3 +377,30 @@ def test_duplicate_annotation_spelling_within_one_plugin_fails_load() -> None:
 
     with pytest.raises(PluginError, match="declares annotation .* on both"):
         load(("rextio-numpy", DupSpelling()))
+
+
+@pytest.mark.parametrize(
+    "name",
+    ['ev"il', "has space", "with\nnewline", "brack[et", 'quo"te'],
+)
+def test_crate_dependency_rejects_unsafe_names(name: str) -> None:
+    # Council round 8: crate names are rendered as bare TOML keys, so an
+    # unvalidated name could break or inject the generated Cargo.toml.
+    with pytest.raises(ValueError, match="not a valid Cargo crate name"):
+        CrateDependency(name=name, version="=1.0.0")
+
+
+@pytest.mark.parametrize(
+    "feature",
+    ['a"b', "has space", "new\nline", "semi;colon"],
+)
+def test_crate_dependency_rejects_unsafe_features(feature: str) -> None:
+    with pytest.raises(ValueError, match="invalid feature name"):
+        CrateDependency(name="ndarray", version="=0.16.1", features=(feature,))
+
+
+def test_crate_dependency_accepts_valid_names_and_features() -> None:
+    dep = CrateDependency(
+        name="serde-json_2", version="=1.0.0", features=("derive", "dep/feat", "a?/b")
+    )
+    assert dep.name == "serde-json_2"

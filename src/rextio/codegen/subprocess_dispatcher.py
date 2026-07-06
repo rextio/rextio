@@ -152,6 +152,12 @@ def main():
     # Make rextio importable for the reconstructed modules AFTER the redirect, so a
     # real rextio package's import-time output can never land on the protocol stream.
     _ensure_rextio()
+    # Handshake: the client verifies this protocol version before any call so a
+    # dispatcher/binary version mismatch fails with a clear message instead of
+    # cryptic JSON/schema errors (council round 8).
+    protocol.write(json.dumps({{"protocol": PROTOCOL_VERSION}}))
+    protocol.write("\\n")
+    protocol.flush()
     for line in sys.stdin:
         line = line.strip()
         if not line:

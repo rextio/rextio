@@ -198,6 +198,15 @@ def lower_function(
             runtime_fallback_module=_runtime_fallback_module(module),
             runtime_attr_path=(runtime_original_name(function.qualname),),
         )
+    if _PLUGIN_STATE is not None:
+        # The module-global claim state is single-threaded and non-reentrant.
+        # A plugin lower() hook that re-triggered lowering would clobber the
+        # outer state on its inner finally; fail loudly rather than silently
+        # mis-resolve claims/plugin types (council round 8).
+        raise LoweringError(
+            "re-entrant plugin lowering detected: lower_function was called "
+            "while another lowering was in progress"
+        )
     _PLUGIN_STATE = _PluginLoweringState(
         claims={
             (claim.kind, claim.line, claim.column, claim.end_line, claim.end_column): claim

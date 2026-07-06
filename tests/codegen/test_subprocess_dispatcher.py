@@ -38,7 +38,14 @@ def total(xs):
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
-    return [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    return _responses(completed.stdout)
+
+
+def _responses(stdout: str) -> list[dict]:
+    """Parse call responses, consuming the leading protocol handshake frame."""
+    frames = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+    assert frames and frames[0] == {"protocol": PROTOCOL_VERSION}, frames[:1]
+    return frames[1:]
 
 
 def test_dispatcher_serves_calls_errors_and_denies_unlisted(tmp_path: Path) -> None:
@@ -78,7 +85,7 @@ def test_dispatcher_reports_invalid_json_request(tmp_path: Path) -> None:
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
-    response = json.loads(completed.stdout.splitlines()[0])
+    response = _responses(completed.stdout)[0]
     assert response["error"]["type"] == "ValueError"
 
 
@@ -137,7 +144,7 @@ def circular():
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
-    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    responses = _responses(completed.stdout)
     assert responses[0] == {"ok": 10}
     assert responses[1] == {"error": {"type": "SystemExit", "message": "3"}}
     assert responses[2]["error"]["type"] == "TypeError"
@@ -183,7 +190,7 @@ def raise_bad():
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
-    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    responses = _responses(completed.stdout)
     assert responses[0]["error"]["type"] == "Bad"  # __str__ raising did not crash the dispatcher
     assert responses[1]["error"]["type"] == "AttributeError"  # non-dict request handled
     assert responses[2] == {"ok": 42}  # dispatcher still alive after both poison inputs
@@ -213,7 +220,7 @@ def slug(text):
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout.splitlines()[0]) == {"ok": "hello-world"}
+    assert _responses(completed.stdout)[0] == {"ok": "hello-world"}
 
 
 def test_render_is_deterministic_and_embeds_sorted_allowlist() -> None:
