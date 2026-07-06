@@ -8,6 +8,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from rextio.analyzer.boundary import apply_boundary_checks
+from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.module_parser import module_name_for_path, parse_module
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
@@ -125,7 +126,61 @@ def analyze_project(
         delegate_fallback=delegate_fallback,
     )
     _strip_divergence_notes_from_non_native(analysis)
+    _note_plugin_lowerable_accelerated(analysis, tuple(active_plugins))
     return analysis
+
+
+def _note_plugin_lowerable_accelerated(
+    analysis: ProjectAnalysis, active_plugins: tuple[RextioPlugin, ...]
+) -> None:
+    """Attach the RXT091 hint to accelerator-decorated, plugin-covered functions.
+
+    Informational and non-rejecting: an accelerator decorator is the user's
+    explicit opt-in to that tool's semantics, so the function stays on the
+    ``fallback-accelerated`` route. The hint only notes that an active
+    rule-providing (v2) plugin covers a package the function's module imports,
+    so removing the decorator could promote the function to plugin-lowered,
+    CPython-exact native code.
+    """
+    rule_plugins = [plugin for plugin in active_plugins if plugin.rules_provided and plugin.packages]
+    if not rule_plugins:
+        return
+    for module in analysis.modules:
+        imported_packages = {target.split(".")[0] for target in module.imports.values()}
+        if not imported_packages:
+            continue
+        for function in module.functions:
+            if function.external_accelerator is None:
+                continue
+            covering = [
+                plugin
+                for plugin in rule_plugins
+                if imported_packages.intersection(plugin.packages)
+            ]
+            if not covering:
+                continue
+            plugin_ids = ", ".join(sorted(plugin.id for plugin in covering))
+            function.add_diagnostic(
+                Diagnostic(
+                    code="RXT091",
+                    severity="info",
+                    message=(
+                        f"{function.external_accelerator}-decorated function may be "
+                        f"lowerable by an active Rextio plugin ({plugin_ids}) if the "
+                        "decorator is removed"
+                    ),
+                    file_path=function.file_path,
+                    line=function.line,
+                    column=function.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "The decorator is an explicit opt-in to the accelerator's "
+                        "semantics and is respected as-is. Remove it only if "
+                        "CPython-exact native lowering is preferred over "
+                        f"{function.external_accelerator} for this function."
+                    ),
+                )
+            )
 
 
 def _strip_divergence_notes_from_non_native(analysis: ProjectAnalysis) -> None:

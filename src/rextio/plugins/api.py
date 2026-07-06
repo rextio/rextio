@@ -16,12 +16,33 @@ output.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from rextio.config.schema import RextioConfig
 
 RULE_SCOPE_KINDS = frozenset({"type", "syntax", "call", "import", "decorator"})
 RULE_OUTCOMES = frozenset({"native", "fallback", "reject", "shim", "boundary"})
 RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
+
+# The plugin-API version this core implements. SemVer over the protocol
+# surface: a v2 plugin declares the api_version it was built against, and the
+# loader accepts it when the major version matches.
+PLUGIN_API_VERSION = "1.0"
+
+# Plugin diagnostic codes are namespaced ``RXTP-<PLUGIN>-NNN`` where <PLUGIN>
+# is the plugin's code segment (its id, uppercased, with a leading "rextio-"
+# stripped and non-alphanumerics removed): rextio-numpy -> RXTP-NUMPY-001.
+PLUGIN_DIAGNOSTIC_CODE_PATTERN = re.compile(r"^RXTP-([A-Z0-9]+)-\d{3}$")
+
+
+def plugin_code_segment(plugin_id: str) -> str:
+    """Return the ``<PLUGIN>`` segment plugin diagnostic codes must carry."""
+    stem = plugin_id[len("rextio-"):] if plugin_id.startswith("rextio-") else plugin_id
+    return re.sub(r"[^A-Z0-9]", "", stem.upper())
 
 
 @dataclass(frozen=True)
@@ -95,3 +116,51 @@ class RuleRecord:
         if self.examples:
             data["examples"] = [dict(example) for example in self.examples]
         return data
+
+
+@dataclass(frozen=True)
+class CoverageDecl:
+    """What a plugin can lower: the packages, modules, and symbols it covers.
+
+    ``packages`` drives the ``plugin`` import policy and the RXT091
+    plugin-lowerable hint; ``modules`` and ``symbols`` refine coverage for
+    future per-call-site decisions and may be empty.
+    """
+
+    packages: tuple[str, ...] = ()
+    modules: tuple[str, ...] = ()
+    symbols: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this coverage."""
+        return {
+            "packages": list(self.packages),
+            "modules": list(self.modules),
+            "symbols": list(self.symbols),
+        }
+
+
+class RextioPluginV2(Protocol):
+    """The self-describing plugin protocol (tooling contract, protocol v2).
+
+    A v2 plugin entry point returns an object that provides the v1 metadata
+    (a ``to_rextio_plugin()`` method returning :class:`RextioPlugin`, or an
+    equivalent metadata mapping) **plus** the members below. The loader
+    recognizes v2 by the presence of a callable ``describe``. Metadata-only
+    (v1) plugins keep loading unchanged and simply provide no rules.
+
+    The actual lowering hook (``lower``) is intentionally not part of this
+    protocol yet; rule records are declarative descriptions, and the analyzer
+    remains the authority on what lowers.
+    """
+
+    plugin_id: str
+    api_version: str
+
+    def covers(self) -> CoverageDecl:
+        """Return the coverage declaration for this plugin."""
+        ...
+
+    def describe(self, config: RextioConfig) -> tuple[RuleRecord, ...]:
+        """Return this plugin's rule records for the resolved configuration."""
+        ...

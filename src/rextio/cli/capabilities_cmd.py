@@ -51,7 +51,7 @@ def build_manifest(
     project_root: Path, config: RextioConfig, target_plan: TargetPlan
 ) -> dict[str, object]:
     """Assemble the capability manifest dict for the resolved project state."""
-    rules = core_rule_records()
+    rules = (*core_rule_records(), *target_plan.plugins.rule_records)
     return {
         "contract_version": TOOLING_CONTRACT_VERSION,
         "rextio_version": __version__,
@@ -66,14 +66,13 @@ def build_manifest(
             "set_item_types": sorted(SET_ITEM_TYPES),
         },
         "rules": [record.to_dict() for record in rules],
-        # Plugin rule records arrive with plugin protocol v2 (`describe()`);
-        # until then every discovered plugin is metadata-only.
         "plugins": [
             {
                 "id": plugin.id,
                 "name": plugin.name,
                 "packages": list(plugin.packages),
-                "rules_provided": False,
+                "rules_provided": plugin.rules_provided,
+                "api_version": plugin.api_version,
             }
             for plugin in target_plan.plugins.active
         ],
