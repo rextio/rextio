@@ -204,6 +204,8 @@ def run(args: Namespace) -> int:
         native_top_level=config.policy.native_top_level,
         imports_config=config.imports,
         active_plugins=target_plan.plugins.active,
+        plugin_registry=target_plan.plugins,
+        plugin_config=config,
         embedding_enabled=config.embedding.enabled,
     )
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
@@ -257,13 +259,15 @@ def run(args: Namespace) -> int:
             native_top_level=config.policy.native_top_level,
             imports_config=config.imports,
             active_plugins=target_plan.plugins.active,
+            plugin_registry=target_plan.plugins,
+            plugin_config=config,
             # Embedded helpers are ordinary direct-native crate functions now, so
             # the executable graph honors the embedding opt-in: an eligible
             # unmarked scalar helper compiles INTO the binary instead of being
             # delegated per call over IPC (bench gate: embedding beats delegation
             # by ~4-5 orders of magnitude per call).
             embedding_enabled=config.embedding.enabled,
-                delegate_fallback=True,
+            delegate_fallback=True,
         )
 
     result = build_hybrid_artifact(

@@ -39,8 +39,14 @@ def parse_module(
     active_plugins: Iterable[RextioPlugin] = (),
     embedding_enabled: bool = False,
     project_return_types: dict[str, str] | None = None,
+    claim_engine: object | None = None,
 ) -> ModuleAnalysis:
-    """Parse a module file into a ModuleAnalysis (functions, imports, top level)."""
+    """Parse a module file into a ModuleAnalysis (functions, imports, top level).
+
+    ``claim_engine`` is the active lowering plugins' claim engine (or None);
+    it rides on each FunctionAnalysis so the validators can resolve plugin
+    annotation vocabularies and offer claim sites.
+    """
     target_language = normalize_target_language(target_language)
     module_name = module_name_for_path(path, project_root)
     module = ModuleAnalysis(module_name=module_name, file_path=str(path))
@@ -82,6 +88,7 @@ def parse_module(
         embedding_enabled,
         project_return_types or {},
         project_modules or set(),
+        claim_engine,
     )
     module.functions.extend(_collect_native_methods(tree, module, target_language))
     if native_top_level:
@@ -419,6 +426,7 @@ def _collect_module_functions(
     embedding_enabled: bool,
     project_return_types: dict[str, str],
     project_modules: set[str],
+    claim_engine: object | None = None,
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
     # Module-level map of function name -> annotated return type, so the signature
@@ -483,6 +491,7 @@ def _collect_module_functions(
             module_assigned_names=module_assigned_names,
             call_return_types={**project_return_types, **return_types},
         )
+        function.claim_engine = claim_engine  # type: ignore[assignment]
         function.external_accelerator = external_accelerator_for_function(
             node, module.imports, project_modules
         )
@@ -608,6 +617,7 @@ def _is_auto_native_candidate(
         logger_names=function.logger_names,
         module_assigned_names=function.module_assigned_names,
         call_return_types=dict(function.call_return_types),
+        claim_engine=function.claim_engine,
     )
     validate_native_function(node, probe, return_types, module_function_names)
     if probe.accepted:
@@ -619,6 +629,8 @@ def _is_auto_native_candidate(
         function.positional_param_count = probe.positional_param_count
         function.has_keyword_only_params = probe.has_keyword_only_params
         function.inferred_return_type = probe.inferred_return_type
+        function.plugin_claims = list(probe.plugin_claims)
+        function.plugin_claim_rejections = list(probe.plugin_claim_rejections)
         function.native_target_language = target_language
         # Carry the probe's non-error diagnostics (e.g. RXT090 divergence
         # notes); an accepted probe has no errors.
@@ -657,6 +669,7 @@ def _classify_native_function(
         logger_names=function.logger_names,
         module_assigned_names=function.module_assigned_names,
         call_return_types=dict(function.call_return_types),
+        claim_engine=function.claim_engine,
     )
     validate_native_function(node, probe, return_types, module_function_names)
     function.inferred_arg_types = dict(probe.inferred_arg_types)
@@ -667,6 +680,8 @@ def _classify_native_function(
     function.positional_param_count = probe.positional_param_count
     function.has_keyword_only_params = probe.has_keyword_only_params
     function.inferred_return_type = probe.inferred_return_type
+    function.plugin_claims = list(probe.plugin_claims)
+    function.plugin_claim_rejections = list(probe.plugin_claim_rejections)
     if probe.accepted:
         # Carry the probe's non-error diagnostics (e.g. RXT090 divergence
         # notes) onto the real function; an accepted probe has no errors.

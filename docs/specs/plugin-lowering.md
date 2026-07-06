@@ -67,12 +67,20 @@ def lower(self, claimed: ClaimedSite, ctx: LoweringContext) -> LoweredExpr: ...
   (`covers()` decides which sites are offered to which plugin). Carries the
   resolved operand types, the dotted call target, and the source location.
 - `ClaimResult` is one of:
-  - `Claimed(rule_id)` — the plugin will lower this site; `rule_id` must be
-    one of the plugin's rule records.
+  - `Claimed(rule_id, result_type)` — the plugin will lower this site;
+    `rule_id` must be one of the plugin's rule records. `result_type` (a core
+    type name or plugin type key, or None for unknown) is the expression type
+    the site produces, so the analyzer's inference keeps typing the enclosing
+    expression. *(Amended during implementation: without it, claimed sites
+    were untyped.)*
   - `NotCovered()` — not this plugin's business; core continues as if the
     plugin did not exist (usually → candidate rejection via core rules).
   - `Rejected(diagnostic)` — covered but not lowerable; the RXTP diagnostic
-    (with guidance) attaches to the function, which falls back.
+    (with guidance) attaches to the function, which falls back. *(Amended
+    during implementation: the rejection is recorded at claim time but
+    attached by the boundary pass, mirroring RXT030 — a parse-time error
+    would divert explicitly marked functions onto the RXT080 shim and
+    silently drop auto candidates, hiding the plugin's guidance.)*
 - **Determinism contract (normative):** for identical inputs (site, resolved
   types, config), `claim` MUST return the same result every time it is
   called. Core MAY call `claim` once and cache, or call it in both phases;
