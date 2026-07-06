@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from rextio.__about__ import __version__
 from rextio.capabilities import SCALAR_TYPES, SET_ITEM_TYPES
 from rextio.cli.main import main
@@ -76,3 +78,60 @@ def test_capabilities_rejects_invalid_config(tmp_path: Path, capsys) -> None:
     assert main(["capabilities", str(tmp_path), "--format", "json"]) == 1
     err = capsys.readouterr().err
     assert "RXT060" in err
+
+
+def test_capabilities_merges_v2_plugin_rules(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rextio.plugins import loader as plugin_loader
+    from rextio.plugins.api import CoverageDecl, RuleRecord, RuleScope
+    from rextio.plugins.models import RextioPlugin
+
+    class FakeV2Plugin:
+        plugin_id = "rextio-numpy"
+        api_version = "1.0"
+
+        def to_rextio_plugin(self) -> RextioPlugin:
+            return RextioPlugin(id="rextio-numpy", name="NumPy to Rust")
+
+        def covers(self) -> CoverageDecl:
+            return CoverageDecl(packages=("numpy",))
+
+        def describe(self, config) -> tuple[RuleRecord, ...]:
+            return (
+                RuleRecord(
+                    id="rextio-numpy/elementwise-float64",
+                    provider="rextio-numpy",
+                    scope=RuleScope(kind="call", pattern="numpy elementwise op"),
+                    constraint="Only float64 elementwise operations lower.",
+                    outcome="fallback",
+                    diagnostic_code="RXTP-NUMPY-001",
+                    guidance="Use float64 arrays.",
+                ),
+            )
+
+    class FakeEntryPoint:
+        name = "rextio-numpy"
+
+        def load(self) -> object:
+            return FakeV2Plugin()
+
+    monkeypatch.setattr(plugin_loader, "_plugin_entry_points", lambda _eps: (FakeEntryPoint(),))
+
+    manifest = run_capabilities_json(tmp_path, capsys, "--enable-plugin", "rextio-numpy")
+
+    plugin_entries = manifest["plugins"]
+    assert plugin_entries == [
+        {
+            "id": "rextio-numpy",
+            "name": "NumPy to Rust",
+            "packages": ["numpy"],
+            "rules_provided": True,
+            "api_version": "1.0",
+        }
+    ]
+    plugin_rules = [rule for rule in manifest["rules"] if rule["provider"] == "rextio-numpy"]
+    assert [rule["id"] for rule in plugin_rules] == ["rextio-numpy/elementwise-float64"]
+    assert plugin_rules[0]["diagnostic_code"] == "RXTP-NUMPY-001"
+    core_rules = [rule for rule in manifest["rules"] if rule["provider"] == "core"]
+    assert core_rules, "core rules must still be present alongside plugin rules"

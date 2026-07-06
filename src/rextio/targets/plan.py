@@ -37,7 +37,7 @@ def create_target_plan(project_root: Path, config: RextioConfig) -> TargetPlan:
     """Resolve the target plan for a project and configuration."""
     target = create_target_spec(config)
     try:
-        plugins = load_plugin_registry(config.plugins, target)
+        plugins = load_plugin_registry(config.plugins, target, full_config=config)
     except PluginError as exc:
         raise TargetPlanError(str(exc)) from exc
     _validate_import_plugin_policies(config, plugins)

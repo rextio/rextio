@@ -48,6 +48,11 @@ _CODES: tuple[DiagnosticCode, ...] = (
         "Native semantic divergence note (documented, non-rejecting)",
         "experimental",
     ),
+    DiagnosticCode(
+        "RXT091",
+        "Accelerator-decorated function may be plugin-lowerable if the decorator is removed",
+        "experimental",
+    ),
 )
 
 DIAGNOSTIC_CODES: dict[str, DiagnosticCode] = {entry.code: entry for entry in _CODES}
