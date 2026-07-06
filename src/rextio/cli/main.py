@@ -10,7 +10,15 @@ from collections.abc import Sequence
 
 from rextio.__about__ import __version__
 from rextio.limits import MAX_BUILD_TIMEOUT_SECONDS
-from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, generate_cmd, init_cmd
+from rextio.cli import (
+    bench_cmd,
+    build_cmd,
+    capabilities_cmd,
+    check_cmd,
+    clean_cmd,
+    generate_cmd,
+    init_cmd,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,6 +71,32 @@ def build_parser() -> argparse.ArgumentParser:
     _add_policy_options(check_parser)
     _add_output_options(check_parser)
     check_parser.set_defaults(handler=check_cmd.run)
+
+    capabilities_parser = subparsers.add_parser(
+        "capabilities",
+        help="Print the machine-readable capability manifest (experimental).",
+    )
+    capabilities_parser.add_argument(
+        "project_root", nargs="?", default=".", help="Project root to describe."
+    )
+    capabilities_parser.add_argument(
+        "--native-backend",
+        "--target-language",
+        dest="native_backend",
+        choices=("rust",),
+        default=None,
+        help=(
+            "Native target language (0.1.0 implements rust). Overrides "
+            "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
+            "and [build] native_backend."
+        ),
+    )
+    _add_target_options(capabilities_parser)
+    _add_import_options(capabilities_parser)
+    _add_embedding_options(capabilities_parser)
+    _add_policy_options(capabilities_parser)
+    _add_output_options(capabilities_parser)
+    capabilities_parser.set_defaults(handler=capabilities_cmd.run)
 
     build_parser_ = subparsers.add_parser("build", help="Build a hybrid artifact.")
     build_parser_.add_argument("project_root", nargs="?", default=".", help="Project root to build.")

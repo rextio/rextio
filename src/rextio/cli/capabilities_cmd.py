@@ -1,0 +1,140 @@
+"""The ``rextio capabilities`` command.
+
+Emits the machine-readable capability manifest defined by
+docs/specs/tooling-contract.md: the config-resolved answer to "in this
+project, what can become native, and what should tooling suggest when it
+can't?". External consumers (agent skills, LSP servers, editor extensions)
+read the JSON form; the text form is a human summary.
+
+The manifest is pure introspection: it loads configuration and resolves the
+plugin registry but never analyzes project sources or writes report files.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from argparse import Namespace
+from dataclasses import asdict
+from pathlib import Path
+
+from rextio.__about__ import __version__
+from rextio.analyzer.rule_records import core_rule_records
+from rextio.capabilities import (
+    DICT_KEY_TYPES,
+    LIST_ITEM_TYPES,
+    NUMERIC_TYPES,
+    SCALAR_TYPES,
+    SET_ITEM_TYPES,
+)
+from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
+from rextio.cli.reporter import Reporter
+from rextio.config.loader import ConfigError, load_config, override_config
+from rextio.config.schema import RextioConfig
+from rextio.contract import TOOLING_CONTRACT_VERSION
+from rextio.targets.plan import TargetPlan, TargetPlanError, create_target_plan
+
+
+def config_fingerprint(config: RextioConfig) -> str:
+    """Return the SHA-256 fingerprint of the fully resolved configuration.
+
+    Consumers cache the manifest keyed on (fingerprint, rextio version, plugin
+    versions): any change to the resolved config — from `rextio.toml`, an
+    environment variable, or a CLI override — changes the fingerprint.
+    """
+    canonical = json.dumps(asdict(config), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_manifest(
+    project_root: Path, config: RextioConfig, target_plan: TargetPlan
+) -> dict[str, object]:
+    """Assemble the capability manifest dict for the resolved project state."""
+    rules = core_rule_records()
+    return {
+        "contract_version": TOOLING_CONTRACT_VERSION,
+        "rextio_version": __version__,
+        "project_root": str(project_root),
+        "config_fingerprint": config_fingerprint(config),
+        "target": {"language": target_plan.spec.language},
+        "type_capabilities": {
+            "scalar_types": sorted(SCALAR_TYPES),
+            "numeric_types": sorted(NUMERIC_TYPES),
+            "list_item_types": sorted(LIST_ITEM_TYPES),
+            "dict_key_types": sorted(DICT_KEY_TYPES),
+            "set_item_types": sorted(SET_ITEM_TYPES),
+        },
+        "rules": [record.to_dict() for record in rules],
+        # Plugin rule records arrive with plugin protocol v2 (`describe()`);
+        # until then every discovered plugin is metadata-only.
+        "plugins": [
+            {
+                "id": plugin.id,
+                "name": plugin.name,
+                "packages": list(plugin.packages),
+                "rules_provided": False,
+            }
+            for plugin in target_plan.plugins.active
+        ],
+    }
+
+
+def format_capabilities_report(manifest: dict[str, object]) -> str:
+    """Format the manifest into the human-readable capabilities report text."""
+    target = manifest["target"]
+    rules = manifest["rules"]
+    plugins = manifest["plugins"]
+    assert isinstance(target, dict) and isinstance(rules, list) and isinstance(plugins, list)
+    lines: list[str] = [
+        "Rextio capabilities",
+        f"  contract version: {manifest['contract_version']}",
+        f"  rextio version: {manifest['rextio_version']}",
+        f"  target language: {target['language']}",
+        f"  config fingerprint: {manifest['config_fingerprint']}",
+        f"  active plugins: {len(plugins)}",
+        f"  rules: {len(rules)}",
+    ]
+    if plugins:
+        lines.extend(["", "Active plugins:"])
+        for plugin in plugins:
+            rules_note = "rules" if plugin["rules_provided"] else "metadata-only"
+            lines.append(f"  [{rules_note}] {plugin['id']}")
+    lines.extend(["", "Rules:"])
+    for rule in rules:
+        code = rule["diagnostic_code"] or "-"
+        lines.append(f"  [{code}] {rule['id']}")
+        lines.append(f"    {rule['constraint']}")
+        lines.append(f"    guidance: {rule['guidance']}")
+    return "\n".join(lines)
+
+
+def run(args: Namespace) -> int:
+    """Run the capabilities command; return the process exit code."""
+    reporter = Reporter.from_args(args)
+    project_root = Path(args.project_root).resolve()
+    try:
+        config = override_config(
+            load_config(project_root, environ=os.environ),
+            {
+                ("build", "native_backend"): args.native_backend,
+                ("target", "version"): args.target_version,
+                ("target", "build_options"): key_value_overrides(args.target_build_option),
+                ("plugins", "enabled"): tuple_overrides(args.plugin_enabled),
+                ("imports", "default_external_policy"): args.default_external_policy,
+                ("imports", "packages"): package_policy_overrides(args.package_import_policy),
+                ("embedding", "enabled"): args.embed_helpers,
+                ("policy", "native_marker"): args.native_marker,
+                ("policy", "require_type_hints"): args.require_type_hints,
+                ("policy", "allow_dynamic_features"): args.allow_dynamic_features,
+                ("policy", "boundary_warnings"): args.boundary_warnings,
+                ("policy", "native_top_level"): args.native_top_level,
+            },
+        )
+        target_plan = create_target_plan(project_root, config)
+    except (ConfigError, TargetPlanError) as exc:
+        reporter.error(f"RXT060 Configuration error: {exc}")
+        return 1
+    manifest = build_manifest(project_root, config, target_plan)
+    reporter.print_result(text=format_capabilities_report(manifest), data=manifest)
+    return 0

@@ -51,6 +51,7 @@ Tiers:
 | Rust-importable crate artifact | Experimental | `--rust-importable` / `--rust-crate-name`. Exposes accepted direct-Rust functions as a Cargo path dependency. |
 | Plugins | Experimental (metadata-only) | Entry-point plugins declare target compatibility and the external packages they cover; they do **not** inject codegen rules. |
 | Tooling-contract JSON fields | Experimental | `rextio check --format json` (and `.rextio/reports/check.json`) carries a top-level `contract_version` plus per-function `route`, `native_status`, and `rejection_codes`, as specified in [the tooling contract](specs/tooling-contract.md). Additive today; the shape may be refined until the contract is promoted to stable. |
+| `rextio capabilities` command | Experimental | Prints the config-resolved capability manifest from [the tooling contract](specs/tooling-contract.md): the supported type matrix, the core rule records (constraint + diagnostic code + guidance per rule), a `config_fingerprint` for consumer caching, and the active plugins. Core rules only until plugin protocol v2 lands; introspection-only (no source analysis, no report files). |
 
 ## Planned (not implemented)
 
