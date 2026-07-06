@@ -287,3 +287,29 @@ def test_registry_to_dict_serializes_lowering_surfaces_without_providers() -> No
         {"plugin_id": "rextio-numpy", "name": "ndarray", "version": "=0.16.1", "features": []}
     ]
     assert "providers" not in data
+
+
+def test_lowering_members_require_api_1_1() -> None:
+    # Council round-2 R5: a plugin declaring api_version 1.0 must not expose
+    # the 1.1 lowering members.
+    plugin = LoweringPlugin()
+    plugin.api_version = "1.0"
+    with pytest.raises(PluginError, match="requires api_version >= 1.1"):
+        load(("rextio-numpy", plugin))
+
+
+def test_duplicate_annotation_spelling_within_one_plugin_fails_load() -> None:
+    # Council round-2 R14: cross-plugin collisions were caught, same-plugin
+    # duplicates silently resolved first-wins.
+    class DupSpelling(LoweringPlugin):
+        def type_vocabulary(self) -> tuple[PluginType, ...]:
+            second = PluginType(
+                key="rextio-numpy/f64-other",
+                annotations=("rextio_numpy.types.F64Arr1",),
+                rust_type="ndarray::Array1<f64>",
+                conversion=F64_ARR1.conversion,
+            )
+            return (F64_ARR1, second)
+
+    with pytest.raises(PluginError, match="declares annotation .* on both"):
+        load(("rextio-numpy", DupSpelling()))

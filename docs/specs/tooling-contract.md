@@ -188,8 +188,8 @@ class RextioPluginV2(Protocol):
     def describe(self, config: RextioConfig) -> RuleManifest: ...
         # -> list of RuleRecord (L2 required, L3 fields optional)
 
-    def lower(self, ir_node, ctx) -> LoweringResult: ...
-        # actual translation; out of scope for this spec
+    # Lowering hooks (type_vocabulary/claim/lower/crate_dependencies) are
+    # plugin API 1.1 - specified separately in plugin-lowering.md.
 ```
 
 - **Discovery** stays on the `rextio.plugins` entry-point group. A v2 plugin is

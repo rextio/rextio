@@ -275,6 +275,31 @@ def _boundary_errors(
                 )
             )
             continue
+        if dependency is not None and dependency.plugin_type_keys:
+            # A plugin-typed function compiles as a PyO3 boundary entry point
+            # (interpreter token + conversion parameter types); a native call
+            # into it would emit Rust with the wrong arity and types. In this
+            # release plugin-typed functions are Python-facing only.
+            diagnostics.append(
+                Diagnostic(
+                    code="RXT092",
+                    severity="error",
+                    message=(
+                        "native function calls a plugin-typed function: "
+                        f"{resolved.resolved_target}; plugin-typed functions are "
+                        "Python-facing entry points in this release"
+                    ),
+                    file_path=function.file_path,
+                    line=call.line,
+                    column=call.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "Call the plugin-typed function from Python fallback code, "
+                        "or inline the covered operations into this function."
+                    ),
+                )
+            )
+            continue
         if dependency is not None:
             diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
             continue
@@ -313,6 +338,13 @@ def _boundary_errors(
                 suggestion=suggestion,
             )
         )
+    # Claim rejections recorded at sites that are not calls (binops have no
+    # CallSite) never match the loop above; attach them here so a plugin's
+    # Rejected verdict always rejects the function with its own guidance.
+    call_positions = {(call.line, call.column) for call in function.calls}
+    for rejection in function.plugin_claim_rejections:
+        if (rejection.line, rejection.column) not in call_positions:
+            diagnostics.append(rejection)
     return diagnostics
 
 

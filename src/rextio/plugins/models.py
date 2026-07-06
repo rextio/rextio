@@ -65,9 +65,10 @@ class RextioPlugin:
     external Python packages it covers (``packages``), which the analyzer uses to
     resolve those packages to the ``plugin`` import policy. A protocol-v2 plugin
     additionally *self-describes* declarative rule records through ``describe()``
-    (``rules_provided`` is True; see ``rextio.plugins.api``). No plugin injects
-    codegen rules or otherwise alters lowering; the analyzer remains the
-    authority on what lowers.
+    (``rules_provided`` is True; see ``rextio.plugins.api``). A plugin API 1.1
+    plugin additionally *lowers* covered constructs through claim()/lower()
+    (``lowering_provided`` is True) — the analyzer still decides which sites
+    are offered and remains the authority on acceptance.
     """
 
     id: str

@@ -195,9 +195,12 @@ result equivalence with hypothesis — the same posture as core's own
 
 ## 7. Routes, policies, and failure flow
 
-- A function with ≥1 plugin-lowered site gets route `native-plugin:<id>`
-  (even if other sites lowered through core rules). `native_status` stays
-  `accepted`.
+- A function with ≥1 plugin-claimed site OR a plugin-typed parameter/return
+  gets route `native-plugin:<id>` (even if other sites lowered through core
+  rules) — a signature-only plugin function still needs the plugin's boundary
+  conversions and crates. `native_status` stays `accepted`. Native-to-native
+  calls INTO a plugin-typed function are rejected in this release (RXT092):
+  plugin-typed functions are Python-facing entry points.
 - Overlapping claims: if two active plugins both return `Claimed` for one
   site, core fails loudly (PluginError naming both plugins). Priority
   systems are deferred.

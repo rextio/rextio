@@ -297,3 +297,73 @@ def identity(a: F64Arr1) -> F64Arr1:
     assert function.plugin_claims == []
     assert function.plugin_type_keys == [F64_ARR1.key]
     assert function.route == "native-plugin:rextio-numpy"
+
+
+class RejectingBinopProvider(NumpyProvider):
+    def claim(self, site: ClaimSite, config: RextioConfig):
+        if site.kind == "binop":
+            return Rejected(
+                diagnostic=Diagnostic(
+                    code="RXTP-NUMPY-010",
+                    severity="error",
+                    message="elementwise op outside the covered surface",
+                    file_path="",
+                    line=0,
+                    column=0,
+                )
+            )
+        return super().claim(site, config)
+
+
+def test_rejected_binop_claim_rejects_the_function(tmp_path: Path) -> None:
+    # Council round-2 R3: binop rejections have no CallSite, so the boundary
+    # pass must still deliver them - previously they were silently dropped
+    # and the function stayed accepted with un-lowerable plugin-typed math.
+    write_module(
+        tmp_path,
+        """
+from rextio_numpy.types import F64Arr1
+
+def add(a: F64Arr1, b: F64Arr1) -> F64Arr1:
+    return a + b
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=make_registry(RejectingBinopProvider()),
+        plugin_config=RextioConfig(),
+    )
+
+    function = function_named(analysis, "myapp.kernels.add")
+    assert function.native_status == "rejected"
+    assert "RXTP-NUMPY-010" in function.rejection_codes
+    assert function.route == "fallback-python"
+
+
+def test_native_caller_of_plugin_typed_function_is_rejected(tmp_path: Path) -> None:
+    # Council round-2 R8: plugin-typed functions compile as PyO3 boundary
+    # entry points; a native call into one would emit wrong-arity Rust.
+    write_module(
+        tmp_path,
+        """
+import numpy as np
+from rextio_numpy.types import F64Arr1
+
+def dot(a: F64Arr1, b: F64Arr1) -> float:
+    return np.dot(a, b)
+
+def use(a: F64Arr1, b: F64Arr1) -> float:
+    return dot(a, b)
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=make_registry(NumpyProvider()),
+        plugin_config=RextioConfig(),
+    )
+
+    callee = function_named(analysis, "myapp.kernels.dot")
+    assert callee.native_status == "accepted"
+    caller = function_named(analysis, "myapp.kernels.use")
+    assert caller.native_status == "rejected"
+    assert "RXT092" in caller.rejection_codes

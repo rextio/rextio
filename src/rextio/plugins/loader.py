@@ -104,6 +104,7 @@ def _plugin_type_bindings(plugin: RextioPlugin, provider: Any) -> tuple[PluginTy
     except Exception as exc:
         raise PluginError(f"plugin {plugin.id!r} type_vocabulary() failed: {exc}") from exc
     bindings: list[PluginTypeBinding] = []
+    seen_spellings: dict[str, str] = {}
     key_prefix = f"{plugin.id}/"
     for plugin_type in vocabulary:
         if not isinstance(plugin_type, PluginType):
@@ -118,6 +119,14 @@ def _plugin_type_bindings(plugin: RextioPlugin, provider: Any) -> tuple[PluginTy
             raise PluginError(
                 f"plugin {plugin.id!r} type {plugin_type.key!r} declares no annotation spellings"
             )
+        for spelling in plugin_type.annotations:
+            owner = seen_spellings.get(spelling)
+            if owner is not None:
+                raise PluginError(
+                    f"plugin {plugin.id!r} declares annotation {spelling!r} on both "
+                    f"{owner!r} and {plugin_type.key!r}"
+                )
+            seen_spellings[spelling] = plugin_type.key
         bindings.append(PluginTypeBinding(plugin_id=plugin.id, plugin_type=plugin_type))
     return tuple(bindings)
 
@@ -319,7 +328,23 @@ def _lowering_provided(plugin: RextioPlugin, provider: Any) -> bool:
             f"plugin {plugin.id!r} implements {', '.join(implemented)} but is missing "
             f"{', '.join(missing)}; the lowering members arrive together (plugin API 1.1)"
         )
+    declared = str(getattr(provider, "api_version", ""))
+    if _version_tuple(declared) < (1, 1):
+        raise PluginError(
+            f"plugin {plugin.id!r} exposes lowering members but declares plugin-API "
+            f"{declared!r}; lowering requires api_version >= 1.1"
+        )
     return True
+
+
+def _version_tuple(version: str) -> tuple[int, int]:
+    parts = version.split(".")
+    try:
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return (0, 0)
+    return (major, minor)
 
 
 def _entry_point_package(entry_point: Any) -> str | None:

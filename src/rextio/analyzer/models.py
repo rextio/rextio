@@ -330,6 +330,7 @@ class FunctionAnalysis:
                 claim.to_dict()
                 for claim in sorted(self.plugin_claims, key=lambda c: (c.line, c.column))
             ],
+            "plugin_type_keys": list(self.plugin_type_keys),
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
         # Only present for functions kept off embedding for overflow safety, so the

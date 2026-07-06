@@ -328,9 +328,9 @@ class RextioPluginV2(Protocol):
     recognizes v2 by the presence of a callable ``describe``. Metadata-only
     (v1) plugins keep loading unchanged and simply provide no rules.
 
-    The actual lowering hook (``lower``) is intentionally not part of this
-    protocol yet; rule records are declarative descriptions, and the analyzer
-    remains the authority on what lowers.
+    Rule records are declarative descriptions; the lowering hooks live on the
+    :class:`RextioLoweringPlugin` extension (plugin API 1.1). The analyzer
+    remains the authority on which sites are offered and accepted.
     """
 
     plugin_id: str

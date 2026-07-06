@@ -96,6 +96,46 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
                 guidance="Replace the call with a supported equivalent, hoist it out of the native function, or mark the callee @rextio.native when it fits the subset.",
             ),
             RuleRecord(
+                id="core/native-call-into-plugin-typed",
+                provider="core",
+                scope=RuleScope(
+                    kind="call",
+                    pattern="native candidate calls a plugin-typed function",
+                ),
+                constraint=(
+                    "A plugin-typed function compiles as a PyO3 boundary entry point; a "
+                    "native-to-native call into it would emit Rust with the wrong arity and "
+                    "parameter types, so the caller is rejected in this release."
+                ),
+                outcome="reject",
+                diagnostic_code="RXT092",
+                guidance=(
+                    "Call plugin-typed functions from Python fallback code, or inline the "
+                    "covered operations into the caller."
+                ),
+                stability="experimental",
+            ),
+            RuleRecord(
+                id="core/plugin-lowerable-accelerated",
+                provider="core",
+                scope=RuleScope(
+                    kind="decorator",
+                    pattern="accelerator-decorated function in a module importing a plugin-covered package",
+                ),
+                constraint=(
+                    "The explicit accelerator decorator wins (decorator > plugin > fallback); "
+                    "the informational note only signals that an active rule-providing plugin "
+                    "covers a package the module imports."
+                ),
+                outcome="fallback",
+                diagnostic_code="RXT091",
+                guidance=(
+                    "Remove the accelerator decorator only if CPython-exact plugin lowering is "
+                    "preferred over the accelerator's semantics for this function."
+                ),
+                stability="experimental",
+            ),
+            RuleRecord(
                 id="core/native-calls-fallback",
                 provider="core",
                 scope=RuleScope(kind="call", pattern="native candidate calls a fallback-only project function"),
