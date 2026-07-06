@@ -75,3 +75,52 @@ def test_rule_record_verified_field_is_optional() -> None:
     assert "verified" not in unset.to_dict()
     verified = RuleRecord(**base, verified=True)
     assert verified.to_dict()["verified"] is True
+
+
+def _write_check_report(tmp_path: Path, qualname: str, route: str, status: str) -> None:
+    module_name, _, name = qualname.rpartition(".")
+    report = {
+        "modules": [
+            {
+                "module_name": module_name,
+                "functions": [
+                    {"qualname": qualname, "route": route, "native_status": status}
+                ],
+            }
+        ]
+    }
+    reports = tmp_path / ".rextio" / "reports"
+    reports.mkdir(parents=True)
+    import json
+
+    (reports / "check.json").write_text(json.dumps(report), encoding="utf-8")
+
+
+def test_equivalence_checker_refuses_fallback_only_functions(tmp_path: Path) -> None:
+    # Council M16: certifying a fallback-only symbol compares the fallback
+    # against itself and passes vacuously.
+    _write_check_report(tmp_path, "app.mod.f", "fallback-python", "rejected")
+    project = CertifiedProject(project_root=tmp_path)
+    with pytest.raises(CertificationError, match="not natively served"):
+        project.equivalence_checker("app.mod.f")
+
+
+def test_equivalence_checker_refuses_shim_functions(tmp_path: Path) -> None:
+    _write_check_report(tmp_path, "app.mod.f", "native-shim", "accepted")
+    project = CertifiedProject(project_root=tmp_path)
+    with pytest.raises(CertificationError, match="not natively served"):
+        project.equivalence_checker("app.mod.f")
+
+
+def test_equivalence_checker_accepts_native_routes(tmp_path: Path) -> None:
+    _write_check_report(tmp_path, "app.mod.f", "native-plugin:rextio-numpy", "accepted")
+    project = CertifiedProject(project_root=tmp_path)
+    checker = project.equivalence_checker("app.mod.f")
+    assert checker.function_name == "f"
+
+
+def test_equivalence_checker_requires_known_function(tmp_path: Path) -> None:
+    _write_check_report(tmp_path, "app.mod.f", "native-direct", "accepted")
+    project = CertifiedProject(project_root=tmp_path)
+    with pytest.raises(CertificationError, match="was not found"):
+        project.equivalence_checker("app.mod.other")

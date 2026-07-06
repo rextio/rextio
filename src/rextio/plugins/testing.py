@@ -101,16 +101,46 @@ class CertifiedProject:
         *,
         equals: Callable[[object, object], bool] | None = None,
     ) -> EquivalenceChecker:
-        """Return a checker for one generated function (``pkg.module.func``)."""
+        """Return a checker for one generated function (``pkg.module.func``).
+
+        Refuses functions that are not actually served natively: for a
+        fallback-only (or shim) symbol both legs would execute the same
+        Python implementation and every equivalence check would pass
+        vacuously.
+        """
         module_name, _, function_name = qualname.rpartition(".")
         if not module_name:
             raise ValueError(f"qualname must be package-qualified: {qualname!r}")
+        self._assert_natively_served(qualname)
         return EquivalenceChecker(
             project=self,
             module_name=module_name,
             function_name=function_name,
             equals=equals if equals is not None else default_equals,
         )
+
+    def _assert_natively_served(self, qualname: str) -> None:
+        report_path = self.project_root / ".rextio" / "reports" / "check.json"
+        if not report_path.exists():
+            raise CertificationError(
+                f"missing analysis report {report_path}; build the project first"
+            )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        for module in report.get("modules", ()):
+            for function in module.get("functions", ()):
+                if function.get("qualname") != qualname:
+                    continue
+                route = str(function.get("route", ""))
+                if function.get("native_status") == "accepted" and (
+                    route == "native-direct" or route.startswith("native-plugin:")
+                ):
+                    return
+                raise CertificationError(
+                    f"{qualname} is not natively served (native_status="
+                    f"{function.get('native_status')!r}, route={route!r}); "
+                    "certifying it would compare the fallback against itself"
+                )
+        raise CertificationError(f"{qualname} was not found in {report_path}")
 
 
 @dataclass

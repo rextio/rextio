@@ -351,7 +351,9 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                 )
             )
         elif arg.annotation is not None and not is_supported_type(arg.annotation):
-            if _plugin_annotation_key(function, arg.annotation) is not None:
+            plugin_key = _plugin_annotation_key(function, arg.annotation)
+            if plugin_key is not None:
+                _record_plugin_type_key(function, plugin_key)
                 continue
             function.add_diagnostic(
                 Diagnostic(
@@ -380,7 +382,9 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
             )
         )
     elif node.returns is not None and not is_supported_type(node.returns):
-        if _plugin_annotation_key(function, node.returns) is not None:
+        plugin_key = _plugin_annotation_key(function, node.returns)
+        if plugin_key is not None:
+            _record_plugin_type_key(function, plugin_key)
             return
         function.add_diagnostic(
             Diagnostic(
@@ -401,6 +405,12 @@ def _plugin_annotation_key(function: FunctionAnalysis, annotation: ast.AST) -> s
     if function.claim_engine is None:
         return None
     return function.claim_engine.resolve_annotation(annotation, function.imports)
+
+
+def _record_plugin_type_key(function: FunctionAnalysis, plugin_key: str) -> None:
+    """Record a plugin type resolved in the signature (drives the plugin route)."""
+    if plugin_key not in function.plugin_type_keys:
+        function.plugin_type_keys.append(plugin_key)
 
 
 def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:

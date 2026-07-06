@@ -631,6 +631,7 @@ def _is_auto_native_candidate(
         function.inferred_return_type = probe.inferred_return_type
         function.plugin_claims = list(probe.plugin_claims)
         function.plugin_claim_rejections = list(probe.plugin_claim_rejections)
+        function.plugin_type_keys = list(probe.plugin_type_keys)
         function.native_target_language = target_language
         # Carry the probe's non-error diagnostics (e.g. RXT090 divergence
         # notes); an accepted probe has no errors.
@@ -682,6 +683,7 @@ def _classify_native_function(
     function.inferred_return_type = probe.inferred_return_type
     function.plugin_claims = list(probe.plugin_claims)
     function.plugin_claim_rejections = list(probe.plugin_claim_rejections)
+    function.plugin_type_keys = list(probe.plugin_type_keys)
     if probe.accepted:
         # Carry the probe's non-error diagnostics (e.g. RXT090 divergence
         # notes) onto the real function; an accepted probe has no errors.

@@ -134,10 +134,13 @@ class BoundaryConversion:
 Normative rules for the initial surface:
 
 - Arguments are **read-only borrows**; generated code never mutates an
-  argument array in place. (For numpy: C-contiguous float64 only; a
-  non-contiguous or wrong-dtype array raises the wrapper's normal
-  warn-and-fallback path at runtime and is rejected at analysis when
-  statically known.)
+  argument array in place. (For numpy: C-contiguous float64 only; statically
+  known mismatches are rejected at analysis. A runtime value that violates
+  the declared plugin type — wrong dtype, non-contiguous layout — raises the
+  PyO3 conversion error in native mode; it does NOT fall back per call.
+  Treat it as a runtime type-contract violation, like passing a str to an
+  int-typed native function. A per-call conversion-failure fallback may be
+  added later.)
 - Returns transfer ownership of **newly allocated** values.
 - Plugin types NEVER cross the internal scalar boundary-call path (RXT075)
   and are never delegated by the Rust-executable dispatcher — the existing
@@ -179,6 +182,10 @@ result equivalence with hypothesis — the same posture as core's own
 
 - A lowering rule record SHOULD reference its certification status; rule
   records gain an optional `verified: bool` field (L2-compatible, additive).
+  When a rule's documented divergence makes bit-exact comparison impossible
+  (e.g. summation order), certification MAY use a tolerance-based comparator,
+  and the rule's `constraint` MUST state that tolerance — `verified` then
+  means "certified within the stated tolerance", not bit-equivalence.
 - Divergences must be documented per rule in `constraint` (the float
   summation-order divergence in RXTP-NUMPY-002/003 is the model) and follow
   the RXT090 posture: statically attributable ones may carry a per-function

@@ -273,3 +273,27 @@ def test_claim_engine_absent_means_no_claims(tmp_path: Path) -> None:
     function = function_named(analysis, "myapp.kernels.dot")
     assert function.plugin_claims == []
     assert function.native_status == "not-candidate"
+
+
+def test_plugin_typed_signature_without_claims_routes_as_plugin(tmp_path: Path) -> None:
+    # Council M18: an identity function needs the plugin's boundary
+    # conversions and crates even though no body site is claimed, so it must
+    # not report native-direct.
+    write_module(
+        tmp_path,
+        """
+from rextio_numpy.types import F64Arr1
+
+def identity(a: F64Arr1) -> F64Arr1:
+    return a
+""",
+    )
+    analysis = analyze_project(
+        tmp_path, plugin_registry=make_registry(NumpyProvider()), plugin_config=RextioConfig()
+    )
+
+    function = function_named(analysis, "myapp.kernels.identity")
+    assert function.accepted is True
+    assert function.plugin_claims == []
+    assert function.plugin_type_keys == [F64_ARR1.key]
+    assert function.route == "native-plugin:rextio-numpy"
