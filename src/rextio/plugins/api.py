@@ -91,6 +91,11 @@ class RuleRecord:
     diagnostic_code: str | None
     guidance: str
     stability: str = "stable"
+    # Certification status (docs/specs/plugin-lowering.md section 6): True when
+    # the rule's lowering passed the plugin certification kit, False when it
+    # failed or was skipped, None when certification does not apply (e.g.
+    # describe-only rules). Emitted only when set.
+    verified: bool | None = None
     fix_template: Mapping[str, str] | None = None
     examples: tuple[Mapping[str, str], ...] = ()
 
@@ -119,6 +124,8 @@ class RuleRecord:
             "guidance": self.guidance,
             "stability": self.stability,
         }
+        if self.verified is not None:
+            data["verified"] = self.verified
         if self.fix_template is not None:
             data["fix_template"] = dict(self.fix_template)
         if self.examples:
