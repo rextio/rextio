@@ -155,7 +155,12 @@ def run(args: Namespace) -> int:
         if getattr(args, "no_plugins", False):
             # Core-only manifest: entry-point discovery itself imports and
             # executes installed plugin packages, so --no-plugins must skip
-            # registry loading entirely, not merely disable plugins.
+            # registry loading entirely, not merely disable plugins. The
+            # config override ALSO clears plugins.enabled so the emitted
+            # config_fingerprint differs from the plugin-loaded manifest -
+            # a consumer caching on the fingerprint must not collide the two
+            # views (council round 7).
+            config = override_config(config, {("plugins", "enabled"): ()})
             target_plan = TargetPlan(spec=create_target_spec(config), plugins=PluginRegistry())
         else:
             target_plan = create_target_plan(project_root, config)

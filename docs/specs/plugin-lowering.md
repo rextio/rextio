@@ -59,12 +59,16 @@ at analysis time, separately from emission:
 
 ```python
 def claim(self, site: ClaimSite, config: RextioConfig) -> ClaimResult: ...
-def lower(self, claimed: ClaimedSite, ctx: LoweringContext) -> LoweredExpr: ...
+def lower(self, claimed: ClaimSite, ctx: LoweringContext) -> LoweredExpr: ...
+# at lower() time the site carries the claim's own rule_id and result_type
 ```
 
 - `ClaimSite`: one candidate construct — a call or binary operation
   (`+ - * / % @` — matmul is offered to plugins BEFORE core's arithmetic
-  allow-set rejects it, so a plugin may claim `@`) whose
+  allow-set rejects it, so a plugin may claim `@`). Calls written with
+  KEYWORD arguments are never offered (`operand_types` is positional);
+  a covered target reached with keywords falls back with core's RXT030.
+  One candidate construct whose
   operand/argument types include a plugin type or a covered symbol
   (`covers()` decides which sites are offered to which plugin). Carries the
   resolved operand types and the dotted call target. The source-location

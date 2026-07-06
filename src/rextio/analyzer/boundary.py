@@ -556,7 +556,8 @@ def _external_call_diagnostic_text(target: str, in_loop: bool, decision) -> tupl
         return (
             f"plugin-managed external package call is not lowered by this build: {target}",
             (
-                f"Ensure plugin {plugin!r} is active and provides a direct lowering rule for this call, "
+                f"Ensure plugin {plugin!r} is active and provides a direct lowering rule for this "
+                "call form (keyword-argument calls are never claimed - use positional arguments), "
                 "or keep the function on fallback."
             ),
         )

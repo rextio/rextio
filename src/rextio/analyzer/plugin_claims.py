@@ -17,7 +17,7 @@ from dataclasses import replace
 from rextio.analyzer.models import FunctionAnalysis, PluginClaim, PluginClaimRejection
 from rextio.analyzer.native_marker import dotted_name
 from rextio.config.schema import RextioConfig
-from rextio.plugins.api import Claimed, ClaimSite, NotCovered, Rejected
+from rextio.plugins.api import Claimed, ClaimSite, NotCovered, Rejected, plugin_code_segment
 from rextio.plugins.loader import PluginError
 from rextio.plugins.models import PluginRegistry
 
@@ -42,8 +42,10 @@ class ClaimEngine:
         # always resolve to a capabilities rule. Plugins without records
         # (e.g. minimal test providers) are exempt.
         self._rule_ids: dict[str, set[str]] = {}
+        self._rule_kinds: dict[tuple[str, str], str] = {}
         for record in registry.rule_records:
             self._rule_ids.setdefault(record.provider, set()).add(record.id)
+            self._rule_kinds[(record.provider, record.id)] = record.scope.kind
         # annotation spelling -> (plugin_id, plugin type key)
         self._annotations: dict[str, tuple[str, str]] = {}
         self._type_keys: set[str] = set()
@@ -240,12 +242,42 @@ class ClaimEngine:
         # Claim validation happens HERE, before the result is cached, so the
         # cache never stores a verdict that is invalid by construction
         # (council round 6).
+        if isinstance(result, Rejected):
+            expected_prefix = f"RXTP-{plugin_code_segment(plugin_id)}-"
+            if not result.diagnostic.code.startswith(expected_prefix):
+                # A plugin must reject within its own namespace; a core-shaped
+                # or foreign code would defeat the manifest's remediation
+                # lookup (council round 7).
+                raise PluginError(
+                    f"plugin {plugin_id!r} rejected site {site.target!r} with "
+                    f"diagnostic code {result.diagnostic.code!r}; plugin "
+                    f"rejections must use the {expected_prefix!r} namespace"
+                )
         if isinstance(result, Claimed):
             advertised = self._rule_ids.get(plugin_id)
             if advertised is not None and result.rule_id not in advertised:
                 raise PluginError(
                     f"plugin {plugin_id!r} claimed site {site.target!r} with rule id "
                     f"{result.rule_id!r}, which is not among its described rule records"
+                )
+            rule_kind = self._rule_kinds.get((plugin_id, result.rule_id))
+            if rule_kind is not None and rule_kind != site.kind:
+                raise PluginError(
+                    f"plugin {plugin_id!r} claimed a {site.kind!r} site under rule "
+                    f"{result.rule_id!r}, whose scope kind is {rule_kind!r}"
+                )
+            if (
+                result.result_type is not None
+                and result.result_type not in self._type_keys
+                and not _is_known_core_type(result.result_type)
+            ):
+                # A bogus result type would pass analysis and only fail deep
+                # in codegen; the analyzer is the user-visible gate (council
+                # round 7).
+                raise PluginError(
+                    f"plugin {plugin_id!r} claimed site {site.target!r} with result "
+                    f"type {result.result_type!r}, which is neither a core type "
+                    "nor a registered plugin type key"
                 )
             if result.result_type is None:
                 # Without a result type the enclosing expression stays
@@ -259,6 +291,21 @@ class ClaimEngine:
                 )
         self._cache[cache_key] = result
         return result
+
+
+_CORE_RESULT_TYPES = frozenset(
+    {"int", "float", "bool", "str", "bytes", "None"}
+)
+
+
+def _is_known_core_type(type_name: str) -> bool:
+    """Report whether a claimed result type is a core scalar or container form."""
+    if type_name in _CORE_RESULT_TYPES:
+        return True
+    for prefix in ("list[", "set[", "dict[", "tuple["):
+        if type_name.startswith(prefix) and type_name.endswith("]"):
+            return True
+    return False
 
 
 def _node_end(node: ast.AST) -> tuple[int | None, int | None]:

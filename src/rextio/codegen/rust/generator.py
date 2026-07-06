@@ -1429,6 +1429,10 @@ class _FunctionRenderer:
             file_path="",
             line=0,
             column=0,
+            # lower() receives the claim's own verdict so plugins with
+            # several same-shape rules can dispatch by rule id.
+            rule_id=claim.rule_id,
+            result_type=claim.result_type,
         )
         ctx = LoweringContext(
             operands=operands,

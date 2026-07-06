@@ -533,10 +533,14 @@ def lower_expr(
         claim = _plugin_claim_ir(node, "binop")
         if claim is not None:
             # A plugin-claimed binop skips core operator validation; codegen
-            # hands the whole site to the claiming plugin's lower().
+            # hands the whole site to the claiming plugin's lower(). The op
+            # label comes from the CLAIM, not lower_binary_op: a claimed
+            # operator (e.g. `@`) need not be in core's operator map, and
+            # calling the core lowering here failed generate for a site check
+            # had already accepted (council round 7).
             return BinaryOpIR(
                 left=lower_expr(node.left, module, resolver),
-                op=lower_binary_op(node.op),
+                op=claim.target,
                 right=lower_expr(node.right, module, resolver),
                 claim=claim,
             )

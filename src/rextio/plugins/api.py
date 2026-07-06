@@ -221,12 +221,19 @@ class PluginType:
 
 @dataclass(frozen=True)
 class ClaimSite:
-    """One candidate construct offered to a plugin's ``claim``.
+    """One candidate construct offered to a plugin's ``claim`` or ``lower``.
 
     ``kind`` is ``call`` (dotted call target in ``target``) or ``binop``
     (operator token in ``target``); ``operand_types`` are the resolved operand
     or argument types in positional order (plugin type keys or core type
     names, ``None`` when unresolved).
+
+    At ``claim()`` time ``rule_id``/``result_type`` are ``None`` (the claim
+    has not happened yet). At ``lower()`` time core fills them with the
+    plugin's own claimed values, so a plugin with several same-shape rules
+    can dispatch its lowering deterministically by ``rule_id`` (council
+    round 7 — previously lower() had to re-infer the rule from
+    target/operands).
     """
 
     kind: str
@@ -235,10 +242,12 @@ class ClaimSite:
     file_path: str
     line: int
     column: int
+    rule_id: str | None = None
+    result_type: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this site."""
-        return {
+        data: dict[str, object] = {
             "kind": self.kind,
             "target": self.target,
             "operand_types": list(self.operand_types),
@@ -246,6 +255,11 @@ class ClaimSite:
             "line": self.line,
             "column": self.column,
         }
+        if self.rule_id is not None:
+            data["rule_id"] = self.rule_id
+        if self.result_type is not None:
+            data["result_type"] = self.result_type
+        return data
 
 
 @dataclass(frozen=True)
@@ -260,7 +274,9 @@ class Claimed:
     """
 
     rule_id: str
-    result_type: str | None = None
+    # REQUIRED for expression claims (the engine raises PluginError on None);
+    # no default so the omission fails at construction (council round 7).
+    result_type: str | None
 
 
 @dataclass(frozen=True)

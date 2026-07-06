@@ -512,9 +512,12 @@ def _validate_plugin_alias_escape(
     function's names (and nested defs are rejected by the subset anyway).
 
     Tracked binding forms: Assign/AnnAssign name targets, walrus targets, and
-    (defensively) for/with name targets. Tuple-unpacking targets and other
-    shapes that could carry a plugin value are rejected by separate subset
-    guards before this walker's verdict matters.
+    (defensively) for/with name targets. AugAssign is deliberately absent:
+    in-place augmented assignment on plugin-typed values is rejected outright
+    by the AugAssign statement guard, and on core types it cannot create a
+    plugin alias. Tuple-unpacking targets and other shapes that could carry a
+    plugin value are rejected by separate subset guards before this walker's
+    verdict matters.
     """
     engine = function.claim_engine
     if engine is None:
@@ -3707,7 +3710,8 @@ def _unsupported_message(node: ast.AST) -> str:
         (
             ast.FloorDiv,
             ast.Pow,
-            ast.MatMult,
+            # MatMult is absent: `@` is claimable, so its rejection message is
+            # owned exclusively by _infer_binop_type's operator allow-set.
             ast.BitAnd,
             ast.BitXor,
             ast.LShift,

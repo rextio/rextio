@@ -48,8 +48,12 @@ class CertificationError(AssertionError):
 def default_equals(left: object, right: object) -> bool:
     """Compare two results: ``==`` with NaN-equality for floats.
 
-    Raises :class:`CertificationError` when ``==`` does not produce a plain
-    bool (e.g. numpy arrays) — pass a custom ``equals`` for such types.
+    Deliberately STRICT: types must match exactly (``numpy.float64`` !=
+    ``float`` — pass a coercing comparator for subclass-returning plugins),
+    and floats compare sign-of-zero (``0.0 != -0.0``) because a sign
+    divergence is observable through NumPy APIs. Raises
+    :class:`CertificationError` when ``==`` does not produce a plain bool
+    (e.g. numpy arrays) — pass a custom ``equals`` for such types.
     """
     if isinstance(left, float) and isinstance(right, float):
         if math.isnan(left) and math.isnan(right):

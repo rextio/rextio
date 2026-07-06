@@ -44,6 +44,35 @@ def helper(x: int) -> int:
     assert "_rextio_fallback_module.add = add" in wrapper
 
 
+def test_wrapper_uses_lazy_annotations(tmp_path: Path) -> None:
+    # Council round 7 (antigravity): wrapper defs reproduce user annotations
+    # verbatim, and the names are only present via the fallback star-import -
+    # which misses anything hidden by __all__ or an underscore alias. Eager
+    # annotation evaluation then broke the whole generated module with
+    # NameError at import; PEP 563 string annotations never evaluate.
+    source = tmp_path / "src" / "demo_pkg" / "scoring.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+__all__ = ["add"]
+
+@rextio.native
+def add(a: int, b: int) -> int:
+    return a + b
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    wrapper = render_wrapper_module(analysis.modules[0])
+
+    header, _, _ = wrapper.partition("def add")
+    assert "from __future__ import annotations" in header
+    # The future import must precede every other import to be valid Python.
+    compile(wrapper, "<wrapper>", "exec")
+
+
 def test_wrapper_wraps_native_set_return_as_python_set(tmp_path: Path) -> None:
     # The native side returns a Rust HashSet; the wrapper normalizes it back to a
     # Python `set`. (set[float] is not native -- it stays on the Python fallback --

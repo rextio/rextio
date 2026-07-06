@@ -329,7 +329,7 @@ def test_crate_dependency_requires_exact_pin(version: str) -> None:
 
 
 def test_claim_results_are_distinct_types() -> None:
-    assert Claimed(rule_id="rextio-numpy/x") != NotCovered()
+    assert Claimed(rule_id="rextio-numpy/x", result_type="float") != NotCovered()
     rejected = Rejected(
         diagnostic=Diagnostic(
             code="RXTP-NUMPY-010",

@@ -141,8 +141,13 @@ in registry order, then plugin rules and the `plugins` array sorted by id.
 constants in `src/rextio/capabilities.py`. `config_fingerprint` lets consumers
 cache the manifest keyed on (fingerprint, rextio version, plugin versions) —
 each plugin entry carries its distribution `version` (null when the provider
-has no entry-point distribution metadata) so the key is computable from the
-manifest alone. `--no-plugins` emits the core-only manifest without importing
+has no entry-point distribution metadata — a null version is NOT cache-safe:
+consumers must treat manifests containing it as uncacheable or key on their
+own knowledge of that plugin's revision) so the key is computable from the
+manifest alone. The `plugins` array (each entry's `id` + `version`) IS the
+plugin-version component of the cache key; consumers MUST fold it into their
+key alongside `config_fingerprint` — the fingerprint itself hashes only the
+resolved config (which contains plugin ids, not versions). `--no-plugins` emits the core-only manifest without importing
 or executing any plugin package code.
 
 ### RuleRecord (L2 — required)

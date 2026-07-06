@@ -220,6 +220,66 @@ def test_missing_provider_is_a_codegen_error(tmp_path: Path) -> None:
         generate_rust_module(module_ir, plugin_types_by_key=TYPES_BY_KEY)
 
 
+class MatmulProvider(NumpyProvider):
+    def claim(self, site: ClaimSite, config: RextioConfig):
+        if site.kind == "binop" and site.target == "@":
+            return Claimed(rule_id="rextio-numpy/dot-float64", result_type="float")
+        return super().claim(site, config)
+
+    def lower(self, site: ClaimSite, ctx: LoweringContext) -> LoweredExpr:
+        if site.kind == "binop" and site.target == "@":
+            return LoweredExpr(rust=f"{ctx.operands[0]}.dot(&{ctx.operands[1]})")
+        return super().lower(site, ctx)
+
+
+def test_claimed_matmul_lowers_through_generate(tmp_path: Path) -> None:
+    # Council round 7 (codex): the round-6 matmul fix was analyzer-only -
+    # check reported accepted/native-plugin but IR lowering still called
+    # lower_binary_op (no MatMult case) and generate failed. The claimed
+    # branch now takes its op label from the claim, so the whole pipeline
+    # must succeed, not just analysis.
+    write_module(
+        tmp_path,
+        """
+from rextio_numpy.types import F64Arr1
+
+def matmul(a: F64Arr1, b: F64Arr1) -> float:
+    return a @ b
+""",
+    )
+    analysis = analyze_with_plugin(tmp_path, MatmulProvider())
+    module_ir = lower_project(analysis, plugin_types=TYPE_MAPS)
+    source = generate_rust_module(
+        module_ir,
+        plugin_providers={PLUGIN_ID: MatmulProvider()},
+        plugin_types_by_key=TYPES_BY_KEY,
+    )
+    assert "fn myapp__kernels__matmul" in source
+    assert ".dot(&" in source
+
+
+def test_lower_receives_the_claimed_rule_id(tmp_path: Path) -> None:
+    # Council round 7 (codex): lower() previously received a bare ClaimSite
+    # without the claim's rule_id, so a plugin with two same-shape rules
+    # could not dispatch deterministically.
+    seen: list[tuple[str | None, str | None]] = []
+
+    class RecordingProvider(NumpyProvider):
+        def lower(self, site: ClaimSite, ctx: LoweringContext) -> LoweredExpr:
+            seen.append((site.rule_id, site.result_type))
+            return super().lower(site, ctx)
+
+    write_module(tmp_path, DOT_MODULE)
+    analysis = analyze_with_plugin(tmp_path, RecordingProvider())
+    module_ir = lower_project(analysis, plugin_types=TYPE_MAPS)
+    generate_rust_module(
+        module_ir,
+        plugin_providers={PLUGIN_ID: RecordingProvider()},
+        plugin_types_by_key=TYPES_BY_KEY,
+    )
+    assert ("rextio-numpy/dot-float64", "float") in seen
+
+
 def test_cargo_toml_appends_pinned_plugin_dependencies() -> None:
     rendered = render_cargo_toml(
         extra_dependencies=(

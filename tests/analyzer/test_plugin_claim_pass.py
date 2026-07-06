@@ -667,6 +667,99 @@ def core_matmul(x: float, y: float) -> float:
     assert core.accepted is False
 
 
+def test_binop_claim_vocabulary_covers_core_arithmetic() -> None:
+    # Council round 7 (hy3): the claim vocabulary and core's arithmetic
+    # allow-set are defined independently; this pins that every core
+    # arithmetic operator stays claimable so the two sets cannot silently
+    # drift apart.
+    import ast
+
+    from rextio.analyzer.plugin_claims import _BINOP_SYMBOLS
+
+    for op in (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod):
+        assert op in _BINOP_SYMBOLS, op.__name__
+
+
+def test_claim_under_wrong_scope_kind_fails_analysis(tmp_path: Path) -> None:
+    # Council round 7 (kimi): a claim must cite a rule whose scope kind
+    # matches the site kind, or manifest remediation lookups dangle.
+    from rextio.plugins.api import RuleRecord, RuleScope
+
+    class WrongKindProvider(NumpyProvider):
+        def claim(self, site: ClaimSite, config: RextioConfig):
+            if site.kind == "call" and site.target == "numpy.dot":
+                return Claimed(rule_id="rextio-numpy/binop-rule", result_type="float")
+            return NotCovered()
+
+    registry = make_registry(WrongKindProvider())
+    registry = PluginRegistry(
+        enabled=registry.enabled,
+        discovered=registry.discovered,
+        active=registry.active,
+        rule_records=(
+            RuleRecord(
+                id="rextio-numpy/binop-rule",
+                provider="rextio-numpy",
+                scope=RuleScope(kind="binop", pattern="x"),
+                constraint="c",
+                outcome="native",
+                diagnostic_code="RXTP-NUMPY-001",
+                guidance="g",
+            ),
+        ),
+        types=registry.types,
+        providers=registry.providers,
+    )
+    write_module(tmp_path, DOT_MODULE)
+    with pytest.raises(PluginError, match="scope kind"):
+        analyze_project(tmp_path, plugin_registry=registry, plugin_config=RextioConfig())
+
+
+def test_claim_with_unknown_result_type_fails_analysis(tmp_path: Path) -> None:
+    # Council round 7 (kimi): a bogus result type previously leaked to
+    # codegen; the analyzer is the user-visible gate.
+    class BadTypeProvider(NumpyProvider):
+        def claim(self, site: ClaimSite, config: RextioConfig):
+            if site.kind == "call" and site.target == "numpy.dot":
+                return Claimed(rule_id="rextio-numpy/dot-float64", result_type="bad_type")
+            return NotCovered()
+
+    write_module(tmp_path, DOT_MODULE)
+    with pytest.raises(PluginError, match="neither a core type"):
+        analyze_project(
+            tmp_path,
+            plugin_registry=make_registry(BadTypeProvider()),
+            plugin_config=RextioConfig(),
+        )
+
+
+def test_rejection_outside_plugin_namespace_fails_analysis(tmp_path: Path) -> None:
+    # Council round 7 (antigravity): a plugin could previously reject with a
+    # core-shaped diagnostic code, defeating manifest remediation lookups.
+    class ForeignCodeProvider(NumpyProvider):
+        def claim(self, site: ClaimSite, config: RextioConfig):
+            if site.kind == "call" and site.target == "numpy.dot":
+                return Rejected(
+                    diagnostic=Diagnostic(
+                        code="RXT002",
+                        severity="error",
+                        message="masquerading as core",
+                        file_path="",
+                        line=0,
+                        column=0,
+                    )
+                )
+            return NotCovered()
+
+    write_module(tmp_path, DOT_MODULE)
+    with pytest.raises(PluginError, match="namespace"):
+        analyze_project(
+            tmp_path,
+            plugin_registry=make_registry(ForeignCodeProvider()),
+            plugin_config=RextioConfig(),
+        )
+
+
 def test_claim_without_result_type_fails_analysis(tmp_path: Path) -> None:
     # Council round 6 (codex): a Claimed(result_type=None) left the enclosing
     # expression untyped, return validation was skipped, and check reported

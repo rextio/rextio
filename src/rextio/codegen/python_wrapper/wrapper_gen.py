@@ -44,6 +44,14 @@ def render_wrapper_module(
     lines = [
         GENERATED_PYTHON_HEADER,
         "",
+        # PEP 563: wrapper defs reproduce the user's annotations verbatim, but
+        # the names they reference are only in this namespace by way of the
+        # fallback star-import - which misses anything excluded by __all__ or
+        # imported under an underscore alias. Eager evaluation then breaks the
+        # whole module with NameError at import (council round 7); lazy
+        # (string) annotations never evaluate.
+        "from __future__ import annotations",
+        "",
         "from rextio.runtime.boundary_fallback import boundary_fallback_required",
         "from rextio.runtime.flags import native_disabled, native_required",
         "from rextio.runtime.native_loader import load_native_function",
