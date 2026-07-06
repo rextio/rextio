@@ -157,6 +157,27 @@ def _boundary_errors(
     diagnostics: list[Diagnostic] = []
     for call in function.calls:
         target = call.target
+        # A covering plugin's Rejected verdict wins over every other branch of
+        # this loop — checked FIRST so no early `continue` (internal-call
+        # allowlist, `.append`, dependency handling) can swallow it. Council
+        # round 4: a rejected `numpy.append` (matching the `.append` list
+        # special case) was recorded but never delivered, leaving the function
+        # accepted with an un-lowerable call. Claimed sites never carry a
+        # rejection (the engine records one only when no plugin claims), so
+        # this cannot misfire on legal claimed calls.
+        claim_rejection = next(
+            (
+                rejection.diagnostic
+                for rejection in function.plugin_claim_rejections
+                if rejection.kind == "call"
+                and rejection.diagnostic.line == call.line
+                and rejection.diagnostic.column == call.column
+            ),
+            None,
+        )
+        if claim_rejection is not None:
+            diagnostics.append(claim_rejection)
+            continue
         resolved = resolver.resolve(module, target)
         if target in SUPPORTED_INTERNAL_CALLS or target.endswith(".append"):
             continue
@@ -314,21 +335,6 @@ def _boundary_errors(
         ):
             # An active lowering plugin claimed this call at analysis time
             # (docs/specs/plugin-lowering.md): it is legal, the plugin emits it.
-            continue
-        claim_rejection = next(
-            (
-                rejection.diagnostic
-                for rejection in function.plugin_claim_rejections
-                if rejection.kind == "call"
-                and rejection.diagnostic.line == call.line
-                and rejection.diagnostic.column == call.column
-            ),
-            None,
-        )
-        if claim_rejection is not None:
-            # A covering plugin rejected this site with its own guidance;
-            # surface that instead of the generic RXT030.
-            diagnostics.append(claim_rejection)
             continue
         decision = decision_for_target(module, resolved.resolved_target)
         message, suggestion = _external_call_diagnostic_text(resolved.resolved_target, call.in_loop, decision)

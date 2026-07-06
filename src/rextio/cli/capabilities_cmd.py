@@ -51,7 +51,13 @@ def build_manifest(
     project_root: Path, config: RextioConfig, target_plan: TargetPlan
 ) -> dict[str, object]:
     """Assemble the capability manifest dict for the resolved project state."""
-    rules = (*core_rule_records(), *target_plan.plugins.rule_records)
+    # Deterministic order regardless of entry-point discovery order: core
+    # records first (their in-registry order is canonical), then plugin
+    # records sorted by (provider, id) (council round 4).
+    plugin_rules = sorted(
+        target_plan.plugins.rule_records, key=lambda record: (record.provider, record.id)
+    )
+    rules = (*core_rule_records(), *plugin_rules)
     return {
         "contract_version": TOOLING_CONTRACT_VERSION,
         "rextio_version": __version__,
@@ -113,6 +119,11 @@ def run(args: Namespace) -> int:
     """Run the capabilities command; return the process exit code."""
     reporter = Reporter.from_args(args)
     project_root = Path(args.project_root).resolve()
+    if not project_root.is_dir():
+        # Without this a typo'd path silently reports default capabilities,
+        # which downstream tooling would cache as the project's contract.
+        reporter.error(f"RXT060 Configuration error: project root does not exist: {project_root}")
+        return 1
     try:
         config = override_config(
             load_config(project_root, environ=os.environ),

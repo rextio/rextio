@@ -463,6 +463,9 @@ def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
     _validate_return_paths(node, function, return_type)
 
 
+_ALIAS_SCOPE_BARRIERS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
 def _validate_plugin_alias_escape(
     node: ast.FunctionDef,
     function: FunctionAnalysis,
@@ -472,9 +475,16 @@ def _validate_plugin_alias_escape(
 
     The Python fallback of ``return a`` returns the caller's own array object
     (identity is preserved; later mutations are shared), while the native leg
-    returns a newly allocated copy — a silent aliasing divergence. Track the
-    parameter names plus simple name-to-name assignment chains; a claimed
-    expression result (e.g. ``a * 1.0``) is a fresh array and stays legal.
+    returns a newly allocated copy — a silent aliasing divergence.
+
+    Statements are processed in source order (``ast.walk``'s breadth-first
+    order visited top-level returns before nested assignments — council
+    round 4). Straight-line rebinding to a non-alias value clears a name's
+    alias status (``a = a + b; return a`` is legal: both legs return a fresh
+    value); bindings inside conditional/looping blocks only ever ADD alias
+    status, to a fixpoint, because the analyzer cannot prove which path runs.
+    Nested function/class scopes are skipped — their names are not this
+    function's names (and nested defs are rejected by the subset anyway).
     """
     engine = function.claim_engine
     if engine is None:
@@ -486,25 +496,121 @@ def _validate_plugin_alias_escape(
     }
     if not aliases:
         return
-    for child in ast.walk(node):
-        if isinstance(child, ast.Assign):
-            if (
-                isinstance(child.value, ast.Name)
-                and child.value.id in aliases
-            ):
-                for target in child.targets:
-                    if isinstance(target, ast.Name):
-                        aliases.add(target.id)
-        elif isinstance(child, ast.Return):
-            if isinstance(child.value, ast.Name) and child.value.id in aliases:
-                _add_unsupported_syntax(
-                    function,
-                    child,
-                    "returning a plugin-typed parameter (or an alias of one) "
-                    "diverges: the fallback returns the caller's own object "
-                    "while the native path returns a copy; compute a new value "
-                    "or keep the function on the Python fallback",
-                )
+    _check_alias_statements(node.body, function, aliases)
+
+
+def _check_alias_statements(
+    statements: list[ast.stmt], function: FunctionAnalysis, aliases: set[str]
+) -> None:
+    for statement in statements:
+        if isinstance(statement, _ALIAS_SCOPE_BARRIERS):
+            continue
+        if isinstance(statement, ast.Return):
+            _check_alias_return(statement, function, aliases)
+            continue
+        if any(isinstance(child, ast.stmt) for child in ast.walk(statement) if child is not statement):
+            # Compound statement (if/for/while/try/with/...): absorb every
+            # binding anywhere in the subtree additively to a fixpoint (loop
+            # bodies re-run, so late bindings feed earlier ones), then check
+            # the subtree's returns against the final set.
+            _absorb_conditional_aliases(statement, aliases)
+            for child in _walk_skipping_scopes(statement):
+                if isinstance(child, ast.Return):
+                    _check_alias_return(child, function, aliases)
+            continue
+        _apply_straight_line_bindings(statement, aliases)
+
+
+def _check_alias_return(
+    statement: ast.Return, function: FunctionAnalysis, aliases: set[str]
+) -> None:
+    if isinstance(statement.value, ast.Name) and statement.value.id in aliases:
+        _add_unsupported_syntax(
+            function,
+            statement,
+            "returning a plugin-typed parameter (or a possible alias of one) "
+            "diverges: the fallback returns the caller's own object "
+            "while the native path returns a copy; compute a new value "
+            "or keep the function on the Python fallback",
+        )
+
+
+def _apply_straight_line_bindings(statement: ast.stmt, aliases: set[str]) -> None:
+    """Update alias statuses for one unconditionally executed simple statement."""
+    bindings: list[tuple[list[str], ast.expr]] = []
+    if isinstance(statement, ast.Assign):
+        names = [target.id for target in statement.targets if isinstance(target, ast.Name)]
+        if names:
+            bindings.append((names, statement.value))
+    elif isinstance(statement, ast.AnnAssign):
+        if statement.value is not None and isinstance(statement.target, ast.Name):
+            bindings.append(([statement.target.id], statement.value))
+    for names, value in bindings:
+        resolved = _unwrap_named_expr(value)
+        if isinstance(resolved, ast.Name) and resolved.id in aliases:
+            aliases.update(names)
+        else:
+            # Rebound to a computed value: both legs bind a fresh object, so
+            # the name is no longer an alias on this (unconditional) path.
+            aliases.difference_update(names)
+    # Walrus targets anywhere in the statement bind additively (most
+    # plugin-typed walrus shapes are rejected by other subset guards; this
+    # is defense in depth).
+    _absorb_walrus_bindings(statement, aliases)
+
+
+def _absorb_conditional_aliases(statement: ast.stmt, aliases: set[str]) -> None:
+    """Grow the alias set over a compound subtree to a fixpoint (adds only)."""
+    changed = True
+    while changed:
+        changed = False
+        for child in _walk_skipping_scopes(statement):
+            names: list[str] = []
+            value: ast.expr | None = None
+            if isinstance(child, ast.Assign):
+                names = [target.id for target in child.targets if isinstance(target, ast.Name)]
+                value = child.value
+            elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                names = [child.target.id]
+                value = child.value
+            elif isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+                names = [child.target.id]
+                value = child.value
+            if value is None:
+                continue
+            resolved = _unwrap_named_expr(value)
+            if isinstance(resolved, ast.Name) and resolved.id in aliases:
+                for name in names:
+                    if name not in aliases:
+                        aliases.add(name)
+                        changed = True
+
+
+def _absorb_walrus_bindings(statement: ast.stmt, aliases: set[str]) -> None:
+    for child in _walk_skipping_scopes(statement):
+        if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+            resolved = _unwrap_named_expr(child.value)
+            if isinstance(resolved, ast.Name) and resolved.id in aliases:
+                aliases.add(child.target.id)
+
+
+def _unwrap_named_expr(value: ast.expr) -> ast.expr:
+    """Resolve ``(b := a)`` chains to the underlying value expression."""
+    while isinstance(value, ast.NamedExpr):
+        value = value.value
+    return value
+
+
+def _walk_skipping_scopes(node: ast.AST):
+    """Yield descendant nodes without descending into nested scopes."""
+    stack: list[ast.AST] = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        for child in ast.iter_child_nodes(current):
+            if isinstance(child, _ALIAS_SCOPE_BARRIERS):
+                continue
+            stack.append(child)
 
 
 def _validate_return_paths(

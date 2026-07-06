@@ -237,6 +237,29 @@ def test_crate_pin_conflict_across_plugins_fails_load() -> None:
         )
 
 
+def test_core_reserved_crate_name_fails_load() -> None:
+    # Council round 4: spec section 5 REQUIRES plugin-vs-core crate
+    # collisions to fail up front; the loader previously only compared
+    # plugins against each other.
+    class PyO3Plugin(LoweringPlugin):
+        plugin_id = "rextio-other"
+
+        def to_rextio_plugin(self) -> RextioPlugin:
+            return RextioPlugin(id="rextio-other", name="Other")
+
+        def describe(self, config: RextioConfig) -> tuple[RuleRecord, ...]:
+            return ()
+
+        def type_vocabulary(self) -> tuple[PluginType, ...]:
+            return ()
+
+        def crate_dependencies(self) -> tuple[CrateDependency, ...]:
+            return (CrateDependency(name="pyo3", version="=0.30.0"),)
+
+    with pytest.raises(PluginError, match="reserved by the core-generated manifest"):
+        load(("rextio-other", PyO3Plugin()), enabled=("rextio-other",))
+
+
 def test_matching_crate_pins_across_plugins_are_allowed() -> None:
     class OtherPlugin(LoweringPlugin):
         plugin_id = "rextio-other"

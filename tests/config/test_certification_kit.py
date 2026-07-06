@@ -165,3 +165,56 @@ def test_args_equals_catches_in_place_mutation_divergence(
     )
     monkeypatch.setattr(plain, "_load_function", lambda: constant_but_mutating)
     assert plain([1, 2, 3]) == 0
+
+
+def test_native_mode_is_exported_before_module_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Council round 4 (codex): generated native top-level initialization is
+    # selected at IMPORT time, so the mode must be exported before
+    # _load_function imports the module - previously the fallback leg could
+    # import natively-initialized module state.
+    import os
+
+    from rextio.plugins.testing import EquivalenceChecker
+
+    _write_check_report(tmp_path, "app.mod.f", "native-direct", "accepted")
+    project = CertifiedProject(project_root=tmp_path)
+    checker = EquivalenceChecker(
+        project=project, module_name="app.mod", function_name="f", equals=default_equals
+    )
+    modes_at_import: list[str | None] = []
+
+    def fake_load():
+        modes_at_import.append(os.environ.get("REXTIO_NATIVE_MODE"))
+        return lambda: 0
+
+    monkeypatch.setattr(checker, "_load_function", fake_load)
+    assert checker() == 0
+    assert modes_at_import == ["native", "fallback"]
+
+
+def test_copy_args_overrides_deepcopy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Council round 4 (glm): deepcopy normalizes representation (e.g. numpy
+    # strided views become contiguous), so representation-sensitive
+    # certification needs a custom per-leg copier.
+    from rextio.plugins.testing import EquivalenceChecker
+
+    _write_check_report(tmp_path, "app.mod.f", "native-direct", "accepted")
+    project = CertifiedProject(project_root=tmp_path)
+    copies: list[tuple[object, ...]] = []
+
+    def preserving_copy(args: tuple[object, ...]) -> tuple[object, ...]:
+        copies.append(args)
+        return tuple(list(arg) for arg in args)
+
+    checker = EquivalenceChecker(
+        project=project,
+        module_name="app.mod",
+        function_name="f",
+        equals=default_equals,
+        copy_args=preserving_copy,
+    )
+    monkeypatch.setattr(checker, "_load_function", lambda: (lambda items: len(items)))
+    assert checker([1, 2, 3]) == 3
+    assert len(copies) == 2  # one per leg

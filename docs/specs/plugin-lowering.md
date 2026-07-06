@@ -151,14 +151,22 @@ raises `KeyError`/`ValueError` at codegen.
 
 Normative rules for the initial surface:
 
-- Arguments are **read-only borrows**; generated code never mutates an
-  argument array in place. (For numpy: C-contiguous float64 only; statically
-  known mismatches are rejected at analysis. A runtime value that violates
-  the declared plugin type — wrong dtype, non-contiguous layout — raises the
-  PyO3 conversion error in native mode; it does NOT fall back per call.
-  Treat it as a runtime type-contract violation, like passing a str to an
-  int-typed native function. A per-call conversion-failure fallback may be
-  added later.)
+- Arguments cross the boundary as **read-only PyO3 views**; generated code
+  never mutates the caller's array in place. The plugin's ``param_expr``
+  decides what the function body actually operates on — in the initial
+  surface it is an **owned copy** (``as_array().to_owned()``), NOT a borrow:
+  every plugin-typed argument pays an O(n) materialization per call,
+  including arguments the body never reads. Plugin authors designing around
+  a "borrow" mental model will silently inherit that copy cost.
+  (For numpy: float64 1-D only; statically known mismatches are rejected at
+  analysis. **Non-contiguous (strided) arrays are accepted**: the read-only
+  view honors strides and the conversion materializes a contiguous owned
+  copy — certified behavior since round 4. A runtime value that violates the
+  declared plugin type — wrong dtype, wrong rank — raises the PyO3
+  conversion error in native mode; it does NOT fall back per call. Treat it
+  as a runtime type-contract violation, like passing a str to an int-typed
+  native function. A per-call conversion-failure fallback may be added
+  later.)
 - Returns transfer ownership of **newly allocated** values.
 - Plugin types NEVER cross the internal scalar boundary-call path (RXT075)
   and are never delegated by the Rust-executable dispatcher — the existing
@@ -188,7 +196,10 @@ Normative rules (all REQUIRED by this spec):
   plugin-injected dependency as `{plugin_id, name, version, features}`.
 - Conflicts (two plugins pinning the same crate to different versions, or a
   plugin colliding with a core-generated dependency) fail the build up front
-  with a configuration-style error (RXT060 posture).
+  with a configuration-style error (RXT060 posture). The core-generated
+  manifests reserve these crate names, which plugins may not declare:
+  ``base64``, ``chrono``, ``log``, ``pyo3``, ``sha2``, ``serde``,
+  ``serde_json`` (the loader enforces the list — ``CORE_CRATE_NAMES``).
 
 ## 6. Verification: the plugin certification kit
 

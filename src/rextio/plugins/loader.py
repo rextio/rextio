@@ -162,9 +162,20 @@ def _validate_type_annotations_unique(bindings: tuple[PluginTypeBinding, ...]) -
 
 
 def _validate_crate_pins_compatible(bindings: tuple[PluginCrateDependency, ...]) -> None:
+    from rextio.codegen.rust.cargo import CORE_CRATE_NAMES
+
     seen: dict[str, tuple[str, str]] = {}
     for binding in bindings:
         dependency = binding.dependency
+        if dependency.name in CORE_CRATE_NAMES:
+            # Spec section 5 requires plugin-vs-core collisions to fail up
+            # front with a configuration-style error, not a cargo resolver
+            # error later (council round 4).
+            raise PluginError(
+                f"plugin {binding.plugin_id!r} declares crate dependency "
+                f"{dependency.name!r}, which is reserved by the core-generated "
+                "manifest; plugins may not inject or re-pin core crates"
+            )
         previous = seen.get(dependency.name)
         if previous is not None and previous[1] != dependency.version:
             raise PluginError(

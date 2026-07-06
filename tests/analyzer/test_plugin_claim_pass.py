@@ -341,6 +341,94 @@ def fresh(a: F64Arr1, b: F64Arr1) -> F64Arr1:
     assert fresh.accepted is True
 
 
+def test_alias_escape_is_flow_ordered_and_conditional_aware(tmp_path: Path) -> None:
+    # Council round 4 (claude/antigravity/minimax): the original single-pass
+    # ast.walk visited top-level returns before nested assignments, so a
+    # re-alias inside a branch or loop escaped; and rebinding a param to a
+    # computed value was falsely rejected. The rewritten walker processes
+    # statements in source order, clears alias status on straight-line
+    # rebinding, and treats bindings inside branches/loops additively.
+    write_module(
+        tmp_path,
+        """
+import rextio
+from rextio_numpy.types import F64Arr1
+
+@rextio.native
+def if_realias(a: F64Arr1, flag: bool) -> F64Arr1:
+    b = a + a
+    if flag:
+        b = a
+    return b
+
+@rextio.native
+def for_realias(a: F64Arr1, n: int) -> F64Arr1:
+    b = a + a
+    for i in range(n):
+        b = a
+    return b
+
+@rextio.native
+def loop_chain(a: F64Arr1, n: int) -> F64Arr1:
+    b = a + a
+    c = a + a
+    for i in range(n):
+        c = b
+        b = a
+    return c
+
+@rextio.native
+def branch_then_chain(a: F64Arr1, flag: bool) -> F64Arr1:
+    b = a + a
+    if flag:
+        b = a
+    c = b
+    return c
+
+@rextio.native
+def rebound_param(a: F64Arr1, b: F64Arr1) -> F64Arr1:
+    a = a + b
+    return a
+
+@rextio.native
+def rebound_alias(a: F64Arr1, b: F64Arr1) -> F64Arr1:
+    c = a
+    c = a + b
+    return c
+
+@rextio.native
+def cond_rebind_still_alias(a: F64Arr1, b: F64Arr1, flag: bool) -> F64Arr1:
+    c = a
+    if flag:
+        c = a + b
+    return c
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        plugin_registry=make_registry(NumpyProvider()),
+        plugin_config=RextioConfig(),
+    )
+
+    rejected = ("if_realias", "for_realias", "loop_chain", "branch_then_chain")
+    for name in rejected:
+        function = function_named(analysis, f"myapp.kernels.{name}")
+        assert function.accepted is False, name
+        assert any(
+            "alias" in diagnostic.message for diagnostic in function.error_diagnostics
+        ), (name, function.diagnostics)
+    # Straight-line rebinding to a computed value clears alias status: both
+    # legs bind a fresh object, so returning the name is legal.
+    for name in ("rebound_param", "rebound_alias"):
+        function = function_named(analysis, f"myapp.kernels.{name}")
+        assert function.accepted is True, (name, function.diagnostics)
+    # A rebinding on only ONE branch cannot clear: the other path still
+    # returns the caller's object (conservative rejection).
+    function = function_named(analysis, "myapp.kernels.cond_rebind_still_alias")
+    assert function.accepted is False
+
+
 def test_augmented_assignment_on_plugin_typed_value_is_rejected(tmp_path: Path) -> None:
     # Council T8 (round 3): NumPy's `a += b` mutates in place through the
     # caller's reference; the native lowering rebinds instead. Reject.
@@ -453,6 +541,49 @@ def test_claim_cache_distinguishes_unresolved_operand_types(tmp_path: Path) -> N
     assert cached == (True, "float")
     # Two distinct cache entries; the repeat came from the cache.
     assert calls == [(None, F64_ARR1.key), (F64_ARR1.key, F64_ARR1.key)]
+
+
+def test_rejection_on_internal_allowlist_call_is_still_delivered(tmp_path: Path) -> None:
+    # Council round 4 (antigravity): the boundary loop's internal-call
+    # allowlist (`len`, `.append`, ...) `continue`d before the rejection
+    # lookup, so a plugin's Rejected verdict on e.g. `numpy.append` was
+    # recorded but never delivered - the function stayed accepted with an
+    # un-lowerable call.
+    class AppendRejectingProvider(NumpyProvider):
+        def claim(self, site: ClaimSite, config: RextioConfig):
+            if site.kind == "call" and site.target == "numpy.append":
+                return Rejected(
+                    diagnostic=Diagnostic(
+                        code="RXTP-NUMPY-010",
+                        severity="error",
+                        message="numpy.append is not covered by the initial surface",
+                        file_path="",
+                        line=0,
+                        column=0,
+                    )
+                )
+            return super().claim(site, config)
+
+    write_module(
+        tmp_path,
+        """
+import numpy as np
+from rextio_numpy.types import F64Arr1
+
+def appender(a: F64Arr1, b: F64Arr1) -> F64Arr1:
+    return np.append(a, b)
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=make_registry(AppendRejectingProvider()),
+        plugin_config=RextioConfig(),
+    )
+
+    function = function_named(analysis, "myapp.kernels.appender")
+    assert function.native_status == "rejected"
+    assert "RXTP-NUMPY-010" in function.rejection_codes
+    assert function.route == "fallback-python"
 
 
 def test_rejected_binop_sharing_position_with_claimed_call_is_delivered(

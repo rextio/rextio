@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+# Crate names the generated manifests always declare themselves. Plugins may
+# not inject dependencies with these names: the loader rejects the collision
+# up front (docs/specs/plugin-lowering.md section 5) instead of leaving it to
+# a confusing cargo resolver error.
+CORE_CRATE_NAMES = frozenset({"base64", "chrono", "log", "pyo3", "sha2", "serde", "serde_json"})
+
 
 def render_cargo_toml(
     package_name: str = "rextio_generated_native",

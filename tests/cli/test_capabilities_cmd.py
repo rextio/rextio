@@ -136,3 +136,14 @@ def test_capabilities_merges_v2_plugin_rules(
     assert plugin_rules[0]["diagnostic_code"] == "RXTP-NUMPY-001"
     core_rules = [rule for rule in manifest["rules"] if rule["provider"] == "core"]
     assert core_rules, "core rules must still be present alongside plugin rules"
+
+
+def test_capabilities_rejects_nonexistent_project_root(tmp_path: Path, capsys) -> None:
+    # Council round 4 (qwen): a typo'd path previously reported default
+    # capabilities silently, which downstream tooling would cache as the
+    # project's contract.
+    missing = tmp_path / "no" / "such" / "project"
+    assert main(["capabilities", str(missing)]) == 1
+    err = capsys.readouterr().err
+    assert "RXT060" in err
+    assert "does not exist" in err

@@ -14,4 +14,7 @@ the ``.rextio/reports/check.json`` report) today, and the planned
 
 from __future__ import annotations
 
+# 1.0.0 covers the whole pre-release 0.1.1 line (see
+# docs/specs/tooling-contract.md). From the first tagged release onward, ANY
+# additive manifest/check-JSON change MUST bump the minor version here.
 TOOLING_CONTRACT_VERSION = "1.0.0"

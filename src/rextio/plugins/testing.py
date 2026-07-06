@@ -51,8 +51,9 @@ def default_equals(left: object, right: object) -> bool:
     result = left == right
     if not isinstance(result, bool):
         raise CertificationError(
-            f"default_equals cannot compare {type(left).__name__} results; "
-            "pass a custom equals= comparator"
+            f"default_equals cannot compare {type(left).__name__} == "
+            f"{type(right).__name__}: the comparison returned "
+            f"{type(result).__name__}, not bool; pass a custom equals= comparator"
         )
     return result
 
@@ -101,6 +102,7 @@ class CertifiedProject:
         *,
         equals: Callable[[object, object], bool] | None = None,
         args_equals: Callable[[object, object], bool] | None = None,
+        copy_args: Callable[[tuple[object, ...]], tuple[object, ...]] | None = None,
     ) -> EquivalenceChecker:
         """Return a checker for one generated function (``pkg.module.func``).
 
@@ -113,6 +115,11 @@ class CertifiedProject:
         post-call state between the legs — catching divergences the return
         value cannot show, e.g. a fallback that mutates an argument in place
         while the native leg leaves its copy untouched.
+
+        ``copy_args`` (optional) replaces the per-leg ``copy.deepcopy`` when
+        the input's representation matters: deepcopy normalizes e.g. a
+        strided numpy view to a fresh contiguous array, silently changing
+        what actually crosses the boundary.
         """
         module_name, _, function_name = qualname.rpartition(".")
         if not module_name:
@@ -124,6 +131,7 @@ class CertifiedProject:
             function_name=function_name,
             equals=equals if equals is not None else default_equals,
             args_equals=args_equals,
+            copy_args=copy_args,
         )
 
     def _assert_natively_served(self, qualname: str) -> None:
@@ -159,6 +167,13 @@ class EquivalenceChecker:
     function_name: str
     equals: Callable[[object, object], bool]
     args_equals: Callable[[object, object], bool] | None = None
+    # Per-leg argument copier (default: copy.deepcopy). deepcopy isolates the
+    # legs but can NORMALIZE the value's representation - e.g. a strided
+    # (non-contiguous) numpy view deep-copies to a fresh C-contiguous array -
+    # so inputs whose REPRESENTATION is the scenario under test need a custom
+    # copier that reconstructs it (council round 4: the non-contiguous
+    # certification was vacuous under deepcopy).
+    copy_args: Callable[[tuple[object, ...]], tuple[object, ...]] | None = None
 
     def __call__(self, *args: object) -> object:
         """Run both legs on deep copies of ``args`` and return the native result.
@@ -185,14 +200,21 @@ class EquivalenceChecker:
     def _run(
         self, mode: str, args: tuple[object, ...]
     ) -> tuple[tuple[str, object], tuple[object, ...]]:
-        function = self._load_function()
-        call_args = copy.deepcopy(args)
+        # The mode is exported BEFORE the module import: generated native
+        # top-level initialization is selected at import time
+        # (_rextio_select_fallback_module), so importing first would let the
+        # fallback leg observe natively-initialized module state (council
+        # round 4).
         previous = os.environ.get("REXTIO_NATIVE_MODE")
         os.environ["REXTIO_NATIVE_MODE"] = mode
         try:
-            return ("returned", function(*call_args)), call_args
-        except Exception as exc:
-            return ("raised", exc), call_args
+            function = self._load_function()
+            copier = self.copy_args if self.copy_args is not None else copy.deepcopy
+            call_args = tuple(copier(args))
+            try:
+                return ("returned", function(*call_args)), call_args
+            except Exception as exc:
+                return ("raised", exc), call_args
         finally:
             if previous is None:
                 os.environ.pop("REXTIO_NATIVE_MODE", None)

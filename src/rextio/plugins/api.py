@@ -26,7 +26,11 @@ from rextio.analyzer.diagnostics import Diagnostic
 if TYPE_CHECKING:
     from rextio.config.schema import RextioConfig
 
-RULE_SCOPE_KINDS = frozenset({"type", "syntax", "call", "import", "decorator"})
+# "binop" describes operator lowering surfaces (ClaimSite kind "binop"), so a
+# plugin claiming `+`/`-`/`*`/`/` can label the rule accurately (council
+# round 4: the closed set had no vocabulary for operator rules and the
+# first-party numpy elementwise rule was mislabeled "call").
+RULE_SCOPE_KINDS = frozenset({"type", "syntax", "call", "binop", "import", "decorator"})
 RULE_OUTCOMES = frozenset({"native", "fallback", "reject", "shim", "boundary"})
 RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 
@@ -50,7 +54,14 @@ PLUGIN_DIAGNOSTIC_CODE_PATTERN = re.compile(r"^RXTP-([A-Z0-9]+)-\d{3}$")
 def plugin_code_segment(plugin_id: str) -> str:
     """Return the ``<PLUGIN>`` segment plugin diagnostic codes must carry."""
     stem = plugin_id[len("rextio-"):] if plugin_id.startswith("rextio-") else plugin_id
-    return re.sub(r"[^A-Z0-9]", "", stem.upper())
+    segment = re.sub(r"[^A-Z0-9]", "", stem.upper())
+    if not segment:
+        raise ValueError(
+            f"plugin id {plugin_id!r} yields an empty diagnostic-code segment; "
+            "plugin ids must contain at least one alphanumeric character "
+            "(after the optional 'rextio-' prefix)"
+        )
+    return segment
 
 
 @dataclass(frozen=True)

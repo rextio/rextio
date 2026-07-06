@@ -152,7 +152,9 @@ cache the manifest keyed on (fingerprint, rextio version, plugin versions).
 ```
 
 - `id`: stable slug, namespaced by provider (`core/...`, `rextio-numpy/...`).
-- `scope.kind`: `type` | `syntax` | `call` | `import` | `decorator`.
+- `scope.kind`: `type` | `syntax` | `call` | `binop` | `import` | `decorator`.
+  `binop` labels operator lowering surfaces (a plugin claiming `+`/`-`/`*`/`/`
+  sites); `call` is reserved for call-shaped sites.
 - `outcome`: `native` | `fallback` | `reject` | `shim` | `boundary`.
 - `diagnostic_code`: the RXT/RXTP code emitted when the rule fires (1:1 where
   possible; the registry in `diagnostic_codes.py` remains the code
