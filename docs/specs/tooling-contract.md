@@ -50,8 +50,8 @@ decided about promotion):
 | `route` | Meaning | Derivation (current model) |
 |---|---|---|
 | `native-direct` | Direct core-subset Rust lowering | `is_native_candidate and accepted and not native_runtime_semantics`, no plugin rule involved |
-| `native-plugin:<plugin_id>` | Lowered by a Rextio plugin (AOT Rust, Rextio contract) | accepted via a plugin rule record (new; requires plugin protocol v2) |
-| `native-shim` | RXT080 runtime-semantics shim (behavior-preserving, not a speedup) | `accepted and native_runtime_semantics` |
+| `native-plugin:<plugin_id>[+<plugin_id>...]` | Lowered by a Rextio plugin (AOT Rust, Rextio contract) | accepted via a plugin rule record (new; requires plugin protocol v2). When several plugins contribute (claimed sites and/or plugin-typed parameters from different plugins in one signature), their ids are joined with `+` in sorted order — consumers MUST parse the segment after `:` as a `+`-separated set, not a single id |
+| `native-shim` | RXT080 runtime-semantics shim (behavior-preserving, not a speedup) | `accepted and native_runtime_semantics`. Any `plugin_claims`/`plugin_type_keys` reported on a shim-routed function are informational only — the shim executes the Python fallback, so claims are never lowered |
 | `fallback-python` | Generated Python fallback | everything not otherwise labeled |
 | `fallback-accelerated:<tool>` | External accelerator on the fallback (its own semantics contract) | `external_accelerator` set (today: `"numba"`) |
 
@@ -112,6 +112,11 @@ can become native, and what should I do when it can't?"*
 Resolution is config-aware: it loads the project config (same
 CLI > env > `rextio.toml` > default chain), resolves active plugins via the
 existing `PluginRegistry`, and merges rule records from core and plugins.
+Note: resolving the registry imports and executes enabled plugin packages'
+module-level code — with plugins enabled, `capabilities` is configuration
+introspection but not side-effect-free. The command never analyzes project
+sources or writes report files. Output ordering is deterministic: core rules
+in registry order, then plugin rules and the `plugins` array sorted by id.
 
 ```json
 {

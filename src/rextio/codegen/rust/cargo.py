@@ -17,12 +17,18 @@ def render_cargo_toml(
 
     ``extra_dependencies`` are plugin-injected ``(name, exact_version_pin,
     features)`` triples (docs/specs/plugin-lowering.md section 5), appended to
-    the ``[dependencies]`` block sorted by name.
+    the ``[dependencies]`` block sorted by name. Two plugins may legitimately
+    pin the same crate at the same version (the loader rejects version
+    CONFLICTS only), so entries are merged per crate here — a duplicate TOML
+    key would break cargo (council round 5) — with features unioned sorted.
     """
+    merged: dict[tuple[str, str], set[str]] = {}
+    for name, version, features in extra_dependencies:
+        merged.setdefault((name, version), set()).update(features)
     extra_lines = ""
-    for name, version, features in sorted(extra_dependencies):
-        if features:
-            feature_list = ", ".join(f'"{feature}"' for feature in features)
+    for (name, version), feature_set in sorted(merged.items()):
+        if feature_set:
+            feature_list = ", ".join(f'"{feature}"' for feature in sorted(feature_set))
             extra_lines += f'{name} = {{ version = "{version}", features = [{feature_list}] }}\n'
         else:
             extra_lines += f'{name} = "{version}"\n'

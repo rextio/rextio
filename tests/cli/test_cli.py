@@ -385,7 +385,7 @@ def test_check_reports_plugin_configuration_error(tmp_path: Path, capsys) -> Non
 
     assert exit_code == 1
     assert "RXT060 Configuration error" in captured.err
-    assert "enabled plugin was not discovered: numpy-rust" in captured.err
+    assert "enabled plugins were not discovered: numpy-rust" in captured.err
 
 
 def test_check_applies_package_import_policy_override(tmp_path: Path, capsys) -> None:

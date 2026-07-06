@@ -65,10 +65,16 @@ def lower(self, claimed: ClaimedSite, ctx: LoweringContext) -> LoweredExpr: ...
 - `ClaimSite`: one candidate construct — a call or binary operation whose
   operand/argument types include a plugin type or a covered symbol
   (`covers()` decides which sites are offered to which plugin). Carries the
-  resolved operand types, the dotted call target, and the source location.
+  resolved operand types and the dotted call target. The source-location
+  fields exist on the dataclass but are ZEROED (`file_path=""`, `line=0`,
+  `column=0`) for `claim()`/`lower()` calls — the determinism contract lets
+  core cache verdicts per site signature, so plugins must not key behavior
+  on location. Locations are re-attached by core when reporting.
 - `ClaimResult` is one of:
   - `Claimed(rule_id, result_type)` — the plugin will lower this site;
-    `rule_id` must be one of the plugin's rule records. `result_type` (a core
+    `rule_id` must be one of the plugin's rule records (enforced: a claim
+    with an unadvertised rule id from a describing plugin fails the
+    analysis with a PluginError). `result_type` (a core
     type name or plugin type key, or None for unknown) is the expression type
     the site produces, so the analyzer's inference keeps typing the enclosing
     expression. *(Amended during implementation: without it, claimed sites
@@ -187,7 +193,9 @@ New optional protocol member: `def crate_dependencies(self) -> tuple[CrateDepend
 Normative rules (all REQUIRED by this spec):
 
 - **Version pins are mandatory.** A dependency without an exact `=X.Y.Z` pin
-  fails plugin load (PluginError). A Cargo lockfile is NOT required.
+  fails plugin load (PluginError). A Cargo lockfile is NOT required. Two
+  plugins may pin the same crate at the same version; core merges them into
+  one manifest entry with the union of their feature sets.
 - **User consent:** plugin-injected crates are compiled only for plugins the
   user explicitly enabled (`[plugins] enabled` / `--enable-plugin`) — and the
   first build after a plugin's dependency set changes surfaces the injected
@@ -200,6 +208,9 @@ Normative rules (all REQUIRED by this spec):
   manifests reserve these crate names, which plugins may not declare:
   ``base64``, ``chrono``, ``log``, ``pyo3``, ``sha2``, ``serde``,
   ``serde_json`` (the loader enforces the list — ``CORE_CRATE_NAMES``).
+  ``serde``/``serde_json`` are not in the extension crate's manifest today;
+  they are reserved because the hybrid executable's core-generated binary
+  crate declares them for the delegated-call wire protocol.
 
 ## 6. Verification: the plugin certification kit
 

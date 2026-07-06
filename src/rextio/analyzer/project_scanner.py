@@ -177,9 +177,10 @@ def _note_plugin_lowerable_accelerated(
                     code="RXT091",
                     severity="info",
                     message=(
-                        f"{function.external_accelerator}-decorated function may be "
-                        f"lowerable by an active Rextio plugin ({plugin_ids}) if the "
-                        "decorator is removed"
+                        f"{function.external_accelerator}-decorated function is in a "
+                        f"module importing a package covered by an active Rextio plugin "
+                        f"({plugin_ids}); it MAY be plugin-lowerable if the decorator is "
+                        "removed (import-based hint - the function body is not analyzed)"
                     ),
                     file_path=function.file_path,
                     line=function.line,

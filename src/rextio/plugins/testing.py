@@ -27,9 +27,18 @@ import json
 import math
 import os
 import sys
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+
+# The kit mutates process-global state (REXTIO_NATIVE_MODE, sys.modules) per
+# leg; concurrent same-process checkers would race modes between legs and
+# cross-evict each other's imports. The lock serializes the critical section;
+# the kit is NOT safe for same-process parallel execution beyond that
+# (pytest-xdist's separate worker processes are fine).
+_RUN_LOCK = threading.Lock()
 
 
 class CertificationError(AssertionError):
@@ -205,21 +214,22 @@ class EquivalenceChecker:
         # (_rextio_select_fallback_module), so importing first would let the
         # fallback leg observe natively-initialized module state (council
         # round 4).
-        previous = os.environ.get("REXTIO_NATIVE_MODE")
-        os.environ["REXTIO_NATIVE_MODE"] = mode
-        try:
-            function = self._load_function()
-            copier = self.copy_args if self.copy_args is not None else copy.deepcopy
-            call_args = tuple(copier(args))
+        with _RUN_LOCK:
+            previous = os.environ.get("REXTIO_NATIVE_MODE")
+            os.environ["REXTIO_NATIVE_MODE"] = mode
             try:
-                return ("returned", function(*call_args)), call_args
-            except Exception as exc:
-                return ("raised", exc), call_args
-        finally:
-            if previous is None:
-                os.environ.pop("REXTIO_NATIVE_MODE", None)
-            else:
-                os.environ["REXTIO_NATIVE_MODE"] = previous
+                function = self._load_function()
+                copier = self.copy_args if self.copy_args is not None else copy.deepcopy
+                call_args = tuple(copier(args))
+                try:
+                    return ("returned", function(*call_args)), call_args
+                except Exception as exc:
+                    return ("raised", exc), call_args
+            finally:
+                if previous is None:
+                    os.environ.pop("REXTIO_NATIVE_MODE", None)
+                else:
+                    os.environ["REXTIO_NATIVE_MODE"] = previous
 
     def _load_function(self) -> Callable[..., object]:
         build_dir = str(self.project.build_python_dir)
@@ -247,6 +257,8 @@ class EquivalenceChecker:
             self._evict_modules()
 
     def _evict_modules(self) -> None:
+        # Pops by name; None-valued sys.modules entries (failed relative
+        # imports) are evicted harmlessly like any other entry.
         package_root = self.module_name.split(".")[0]
         for name in list(sys.modules):
             if (

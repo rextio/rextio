@@ -37,6 +37,13 @@ class ClaimEngine:
     def __init__(self, registry: PluginRegistry, config: RextioConfig) -> None:
         self._config = config
         self._providers = {binding.plugin_id: binding.provider for binding in registry.providers}
+        # Advertised rule ids per plugin: a describing plugin must claim
+        # within its own manifest (council round 5) so check.json claims
+        # always resolve to a capabilities rule. Plugins without records
+        # (e.g. minimal test providers) are exempt.
+        self._rule_ids: dict[str, set[str]] = {}
+        for record in registry.rule_records:
+            self._rule_ids.setdefault(record.provider, set()).add(record.id)
         # annotation spelling -> (plugin_id, plugin type key)
         self._annotations: dict[str, tuple[str, str]] = {}
         self._type_keys: set[str] = set()
@@ -168,6 +175,12 @@ class ClaimEngine:
             )
         if claims:
             plugin_id, claimed = claims[0]
+            advertised = self._rule_ids.get(plugin_id)
+            if advertised is not None and claimed.rule_id not in advertised:
+                raise PluginError(
+                    f"plugin {plugin_id!r} claimed site {site.target!r} with rule id "
+                    f"{claimed.rule_id!r}, which is not among its described rule records"
+                )
             claim = PluginClaim(
                 plugin_id=plugin_id,
                 rule_id=claimed.rule_id,

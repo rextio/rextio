@@ -133,7 +133,7 @@ def test_load_plugin_registry_filters_by_target_version() -> None:
 
 
 def test_load_plugin_registry_rejects_missing_enabled_plugin() -> None:
-    with pytest.raises(PluginError, match=r"enabled plugin was not discovered"):
+    with pytest.raises(PluginError, match=r"enabled plugins were not discovered"):
         load_plugin_registry(
             PluginConfig(enabled=("missing",)),
             TargetSpec(language="rust"),

@@ -403,11 +403,13 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
 
 
 def _validate_plugin_signature_names(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
-    """Reject a parameter named ``py`` on a plugin-typed signature.
+    """Reject any binding of the name ``py`` in a plugin-typed function.
 
     Plugin-typed PyO3 functions receive the injected interpreter token
     ``py: pyo3::Python<'py>``; a user parameter with the same name would emit
-    a duplicate parameter and fail to compile.
+    a duplicate parameter, and a LOCAL named ``py`` (assignment, walrus, or
+    loop target — council round 5) shadows the token in the generated body,
+    so the return conversion resolves to the wrong binding and cargo fails.
     """
     if not function.plugin_type_keys:
         return
@@ -427,6 +429,27 @@ def _validate_plugin_signature_names(node: ast.FunctionDef, function: FunctionAn
                     column=arg.col_offset,
                     function_name=function.qualname,
                     suggestion="Rename the parameter (any name other than 'py').",
+                )
+            )
+    for child in _walk_skipping_scopes(node):
+        if (
+            isinstance(child, ast.Name)
+            and isinstance(child.ctx, ast.Store)
+            and child.id == "py"
+        ):
+            function.add_diagnostic(
+                Diagnostic(
+                    code="RXT011",
+                    severity="error",
+                    message=(
+                        "local name 'py' shadows the interpreter token injected "
+                        "for plugin-typed functions"
+                    ),
+                    file_path=function.file_path,
+                    line=child.lineno,
+                    column=child.col_offset,
+                    function_name=function.qualname,
+                    suggestion="Rename the variable (any name other than 'py').",
                 )
             )
 
@@ -485,6 +508,11 @@ def _validate_plugin_alias_escape(
     status, to a fixpoint, because the analyzer cannot prove which path runs.
     Nested function/class scopes are skipped — their names are not this
     function's names (and nested defs are rejected by the subset anyway).
+
+    Tracked binding forms: Assign/AnnAssign name targets, walrus targets, and
+    (defensively) for/with name targets. Tuple-unpacking targets and other
+    shapes that could carry a plugin value are rejected by separate subset
+    guards before this walker's verdict matters.
     """
     engine = function.claim_engine
     if engine is None:
@@ -560,7 +588,17 @@ def _apply_straight_line_bindings(statement: ast.stmt, aliases: set[str]) -> Non
 
 
 def _absorb_conditional_aliases(statement: ast.stmt, aliases: set[str]) -> None:
-    """Grow the alias set over a compound subtree to a fixpoint (adds only)."""
+    """Grow the alias set over a compound subtree to a fixpoint (adds only).
+
+    Adds-only is deliberate: bindings under a condition/loop may or may not
+    execute, so they can never CLEAR a name's alias status (the other path
+    keeps the alias live) — this also covers walrus targets, which can sit
+    in conditionally evaluated expression positions. ``for``/``with``-target
+    bindings of plugin values are rejected by other subset guards before this
+    walker matters; they are absorbed here only as defense in depth.
+    Convergence: the set only grows and is bounded by the function's local
+    names, and the AST is immutable, so the fixpoint terminates.
+    """
     changed = True
     while changed:
         changed = False
@@ -576,6 +614,12 @@ def _absorb_conditional_aliases(statement: ast.stmt, aliases: set[str]) -> None:
             elif isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
                 names = [child.target.id]
                 value = child.value
+            elif isinstance(child, (ast.For, ast.AsyncFor)) and isinstance(child.target, ast.Name):
+                names = [child.target.id]
+                value = child.iter
+            elif isinstance(child, ast.withitem) and isinstance(child.optional_vars, ast.Name):
+                names = [child.optional_vars.id]
+                value = child.context_expr
             if value is None:
                 continue
             resolved = _unwrap_named_expr(value)
@@ -2203,6 +2247,21 @@ def _infer_expr_type(
                 function,
                 node,
                 f"indexing a {value_type} value is not supported in native functions",
+            )
+            return None
+        engine = function.claim_engine
+        if engine is not None and engine.is_plugin_type(value_type):
+            # Without this, a plugin-typed subscript fell through to codegen's
+            # generic sequence indexing — an unclaimed, uncertified native
+            # surface with core's IndexError semantics instead of the
+            # library's (council round 5). Plugins have no subscript claim
+            # vocabulary in this release, so the site always rejects.
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"indexing a plugin-typed value ({value_type}) is not covered "
+                "by any plugin rule; compute the element with a covered "
+                "operation or keep the function on the Python fallback",
             )
             return None
         return None

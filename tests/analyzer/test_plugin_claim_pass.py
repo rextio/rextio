@@ -543,6 +543,108 @@ def test_claim_cache_distinguishes_unresolved_operand_types(tmp_path: Path) -> N
     assert calls == [(None, F64_ARR1.key), (F64_ARR1.key, F64_ARR1.key)]
 
 
+def test_two_plugins_types_in_one_signature_join_the_route(tmp_path: Path) -> None:
+    # Council round 5 (glm): the +-joined route form is reachable WITHOUT any
+    # multi-claim error - two plugins' types on one signature suffice - so
+    # the contract documents the join grammar and this pins it.
+    other_type = PluginType(
+        key="rextio-other/i64-1d",
+        annotations=("otherlib.types.I64Arr1",),
+        rust_type="ndarray::Array1<i64>",
+        conversion=F64_ARR1.conversion,
+    )
+
+    class OtherProvider(NumpyProvider):
+        plugin_id = "rextio-other"
+
+        def claim(self, site: ClaimSite, config: RextioConfig):
+            return NotCovered()
+
+    registry = make_registry(NumpyProvider(), OtherProvider())
+    registry = PluginRegistry(
+        enabled=registry.enabled,
+        discovered=registry.discovered,
+        active=registry.active,
+        types=(*registry.types, PluginTypeBinding(plugin_id="rextio-other", plugin_type=other_type)),
+        providers=registry.providers,
+    )
+    write_module(
+        tmp_path,
+        """
+from rextio_numpy.types import F64Arr1
+from otherlib.types import I64Arr1
+
+def mixed(a: F64Arr1, b: I64Arr1) -> float:
+    return 0.0
+""",
+    )
+    analysis = analyze_project(tmp_path, plugin_registry=registry, plugin_config=RextioConfig())
+
+    function = function_named(analysis, "myapp.kernels.mixed")
+    assert function.accepted is True
+    assert function.route == "native-plugin:rextio-numpy+rextio-other"
+
+
+def test_local_name_py_on_plugin_typed_function_is_rejected(tmp_path: Path) -> None:
+    # Council round 5 (kimi): a LOCAL named `py` shadows the injected
+    # interpreter token in the generated Rust body, so the return conversion
+    # receives the local's value and cargo fails - the analyzer must reject
+    # it like the parameter case (round-3 T9).
+    write_module(
+        tmp_path,
+        """
+import rextio
+from rextio_numpy.types import F64Arr1
+
+@rextio.native
+def scaled(a: F64Arr1) -> F64Arr1:
+    py = 2.0
+    return a + a
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        plugin_registry=make_registry(NumpyProvider()),
+        plugin_config=RextioConfig(),
+    )
+
+    function = function_named(analysis, "myapp.kernels.scaled")
+    assert function.accepted is False
+    assert "RXT011" in function.rejection_codes
+
+
+def test_subscript_on_plugin_typed_value_is_rejected(tmp_path: Path) -> None:
+    # Council round 5 (codex): a plugin-typed subscript previously fell
+    # through to codegen's generic sequence indexing - an unclaimed,
+    # uncertified native surface with core's IndexError semantics instead of
+    # the library's.
+    write_module(
+        tmp_path,
+        """
+import rextio
+from rextio_numpy.types import F64Arr1
+
+@rextio.native
+def first(a: F64Arr1) -> float:
+    return a[0]
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        native_marker="decorator",
+        plugin_registry=make_registry(NumpyProvider()),
+        plugin_config=RextioConfig(),
+    )
+
+    function = function_named(analysis, "myapp.kernels.first")
+    assert function.accepted is False
+    assert any(
+        "indexing a plugin-typed value" in diagnostic.message
+        for diagnostic in function.error_diagnostics
+    ), function.diagnostics
+
+
 def test_rejection_on_internal_allowlist_call_is_still_delivered(tmp_path: Path) -> None:
     # Council round 4 (antigravity): the boundary loop's internal-call
     # allowlist (`len`, `.append`, ...) `continue`d before the rejection

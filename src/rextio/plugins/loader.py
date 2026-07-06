@@ -421,7 +421,7 @@ def _validate_enabled_plugins(
         ids.add(plugin.id)
     missing = sorted(set(enabled) - ids)
     if missing:
-        raise PluginError(f"enabled plugin was not discovered: {missing[0]}")
+        raise PluginError(f"enabled plugins were not discovered: {', '.join(missing)}")
 
 
 def _plugin_enabled(plugin: RextioPlugin, enabled: tuple[str, ...]) -> bool:

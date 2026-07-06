@@ -133,7 +133,9 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
                 diagnostic_code="RXT091",
                 guidance=(
                     "Remove the accelerator decorator only if CPython-exact plugin lowering is "
-                    "preferred over the accelerator's semantics for this function."
+                    "preferred over the accelerator's semantics for this function. The hint is "
+                    "import-based (the function body is not analyzed), so removal may simply "
+                    "yield a core-native or fallback function instead."
                 ),
                 stability="experimental",
             ),

@@ -6,8 +6,11 @@ project, what can become native, and what should tooling suggest when it
 can't?". External consumers (agent skills, LSP servers, editor extensions)
 read the JSON form; the text form is a human summary.
 
-The manifest is pure introspection: it loads configuration and resolves the
-plugin registry but never analyzes project sources or writes report files.
+The manifest is pure introspection of configuration: it never analyzes
+project sources or writes report files. Resolving the plugin registry DOES
+import and execute enabled plugin packages' module-level code, however —
+plugins are compiler extensions, and building their manifest entries
+requires loading them (docs/specs/tooling-contract.md).
 """
 
 from __future__ import annotations
@@ -81,7 +84,9 @@ def build_manifest(
                 "api_version": plugin.api_version,
                 "lowering_provided": plugin.lowering_provided,
             }
-            for plugin in target_plan.plugins.active
+            # Sorted by id (not entry-point discovery order) so the manifest
+            # is byte-stable across environments, matching the rules array.
+            for plugin in sorted(target_plan.plugins.active, key=lambda plugin: (plugin.id, plugin.name))
         ],
     }
 

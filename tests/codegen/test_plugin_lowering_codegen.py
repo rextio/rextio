@@ -236,6 +236,29 @@ def test_cargo_toml_appends_pinned_plugin_dependencies() -> None:
     assert 'pyo3 = { version = "0.29", features = ["extension-module"] }' in rendered
 
 
+def test_cargo_toml_merges_duplicate_pins_across_plugins() -> None:
+    # Council round 5 (codex): two plugins pinning the same crate at the same
+    # version (allowed by the loader) must render ONE dependency entry - a
+    # duplicate TOML key is invalid and breaks cargo. Features are unioned.
+    import tomllib
+
+    rendered = render_cargo_toml(
+        extra_dependencies=(
+            ("numpy", "=0.29.0", ("half",)),
+            ("numpy", "=0.29.0", ("nalgebra",)),
+            ("rand", "=0.8.5", ()),
+            ("rand", "=0.8.5", ()),
+        )
+    )
+    parsed = tomllib.loads(rendered)  # raises on duplicate keys
+    assert parsed["dependencies"]["numpy"] == {
+        "version": "=0.29.0",
+        "features": ["half", "nalgebra"],
+    }
+    assert parsed["dependencies"]["rand"] == "=0.8.5"
+    assert rendered.count("numpy = ") == 1
+
+
 def test_cargo_toml_without_extras_is_unchanged() -> None:
     assert render_cargo_toml() == render_cargo_toml(extra_dependencies=())
 
