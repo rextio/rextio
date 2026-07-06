@@ -31,6 +31,10 @@ class PluginClaim:
     line: int
     column: int
     result_type: str | None
+    # The resolved operand/argument types of the claimed site in positional
+    # order (plugin type keys or core type names, None when unresolved),
+    # carried through to codegen so lower() sees the same site claim() saw.
+    operand_types: tuple[str | None, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this claim."""
@@ -42,6 +46,7 @@ class PluginClaim:
             "line": self.line,
             "column": self.column,
             "result_type": self.result_type,
+            "operand_types": list(self.operand_types),
         }
 
 

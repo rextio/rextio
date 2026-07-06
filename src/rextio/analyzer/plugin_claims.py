@@ -171,6 +171,7 @@ class ClaimEngine:
                 line=site.line,
                 column=site.column,
                 result_type=claimed.result_type,
+                operand_types=site.operand_types,
             )
             if not any(
                 existing.line == claim.line and existing.column == claim.column

@@ -309,6 +309,11 @@ def run(args: Namespace) -> int:
         )
     lines.append(f"  generated Python package tree: {result.layout.python_dir}")
     lines.append(f"  build artifact: {result.layout.build_python_dir}")
+    for dependency in result.plugin_crate_dependencies:
+        lines.append(
+            f"  plugin crate: {dependency['name']} {dependency['version']} "
+            f"({dependency['plugin_id']})"
+        )
     lines.append(f"  native build: {result.native_build.status}")
     lines.append(f"  rust importable crate: {result.rust_crate_build.status}")
     lines.append(f"  fallback packaging: {result.fallback_build.status}")

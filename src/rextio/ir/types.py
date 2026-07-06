@@ -182,6 +182,37 @@ class RxtOptional(RxtType):
         }
 
 
+@dataclass(frozen=True)
+class RxtPluginType(RxtType):
+    """A plugin-provided type resolved from a plugin's annotation vocabulary.
+
+    ``key`` is the plugin type's stable id (e.g. ``rextio-numpy/f64-1d``);
+    ``native_rust`` is its native representation inside generated code; the
+    remaining fields carry the boundary conversion (PyO3 parameter/return
+    types and the conversion expressions) from the plugin's
+    ``BoundaryConversion`` (docs/specs/plugin-lowering.md section 4).
+    """
+
+    key: str
+    native_rust: str
+    param_rust: str
+    param_expr: str
+    return_rust: str
+    return_expr: str
+
+    def display_name(self) -> str:
+        """Return the human-readable name of this type (the plugin type key)."""
+        return self.key
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this type."""
+        return {
+            "kind": "plugin",
+            "key": self.key,
+            "native_rust": self.native_rust,
+        }
+
+
 # Capitalized typing aliases (`List[int]`, `typing.List[int]`, ...) that are not
 # the lowercase builtin form. Normalizing them lets a `typing`-style annotation be
 # recognized as its builtin equivalent (e.g. by the delegation wire-type checks and

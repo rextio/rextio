@@ -255,6 +255,7 @@ def main(argv: list[str]) -> int:
             fallback_build=SimpleNamespace(status="built", message="ok"),
             executable_build=SimpleNamespace(status="skipped", message="ok", path=None),
             wheel_build=SimpleNamespace(path=None),
+            plugin_crate_dependencies=(),
         )
 
     monkeypatch.setattr("rextio.cli.build_cmd.build_hybrid_artifact", fake_build_hybrid_artifact)
