@@ -28,7 +28,8 @@ Tiers:
 | Diagnostics (`RXTxxx` codes + messages) | Stable | Deterministic and tested; treated as a contract. |
 | Native build orchestration (maturin / Cargo) | Stable | `cargo` is the default `[rust] build_tool` (the builder needs no extra Python dependency; Cargo itself must be on PATH or configured via `[toolchain]`). Set `--rust-build-tool=maturin` (or `[rust] build_tool = "maturin"`, requires the optional `rextio[build]` dependency) to build wheels with maturin; if maturin is selected but not installed Rextio automatically falls back to Cargo. If the native build fails, packaging still produces a fallback-only pure-Python (`py3-none-any`) wheel that works through the Python fallback. |
 | Import policy — `fallback` | Stable | Treats an external package as fallback-only at the boundary. |
-| Import policy — `analyze` / `try-native` / `plugin` | Experimental | Accepted as configuration, but in 0.1.0 these are largely planning metadata; concrete third-party native lowering is not yet implemented. |
+| Import policy — `analyze` / `try-native` | Experimental | Accepted as configuration, but largely planning metadata; concrete core-driven native lowering of external calls is not yet implemented. |
+| Import policy — `plugin` | Experimental | A package covered by an installed plugin is routed through it. As of 0.1.1 an API 1.1 plugin can concretely lower covered constructs via the claim/lower hooks (see the [plugin lowering spec](specs/plugin-lowering.md)); the analyzer still decides which sites are offered and remains the acceptance authority. |
 
 ## CLI
 

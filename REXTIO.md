@@ -412,4 +412,7 @@ generated Python fallback path for that function. `rextio generate` and
 `[build] fallback_threshold = N`, to embed the generated-code default. The
 runtime environment variable overrides that embedded default. Set the threshold
 to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this automatic
-fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
+fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold. Plugin-routed
+functions (route `native-plugin:<id>`) are exempt from the threshold — their
+native and fallback legs may have documented per-leg divergences, so they never
+flip to the fallback mid-run.
