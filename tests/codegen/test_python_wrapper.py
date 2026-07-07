@@ -251,3 +251,106 @@ class C:
     assert "C.im" in wrapper
     assert "C.sm" not in wrapper
     assert "C.cm" not in wrapper
+
+
+def test_wrapper_rejects_all_descriptor_method_shapes(tmp_path: Path) -> None:
+    # Council round 10: the round-9 name-based static/classmethod rejection was
+    # evaded by aliased decorators, @property/@cached_property, implicit
+    # descriptor dunders, and class-body reassignment - all of which the
+    # wrapper would strip. The generalized check rejects every non-plain
+    # instance method; only the plain instance method survives.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+import functools
+
+sm = staticmethod
+cm = classmethod
+
+class C:
+    @sm
+    @rextio.native
+    def aliased_sm(x: int) -> int:
+        return x
+
+    @cm
+    @rextio.native
+    def aliased_cm(cls, x: int) -> int:
+        return x
+
+    @property
+    @rextio.native
+    def prop(self) -> int:
+        return 1
+
+    @functools.cached_property
+    @rextio.native
+    def cached(self) -> int:
+        return 2
+
+    @rextio.native
+    def __new__(cls) -> object:
+        return object.__new__(cls)
+
+    @rextio.native
+    def __init_subclass__(cls, **kw) -> None:
+        return None
+
+    @rextio.native
+    def moved(x: int) -> int:
+        return x
+    moved = staticmethod(moved)
+
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 3
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    accepted = {
+        f.qualname: f.accepted for m in analysis.modules for f in m.functions
+    }
+    rejected = [
+        "demo_pkg.mod.C.aliased_sm",
+        "demo_pkg.mod.C.aliased_cm",
+        "demo_pkg.mod.C.prop",
+        "demo_pkg.mod.C.cached",
+        "demo_pkg.mod.C.__new__",
+        "demo_pkg.mod.C.__init_subclass__",
+        "demo_pkg.mod.C.moved",
+    ]
+    for qualname in rejected:
+        assert accepted[qualname] is False, qualname
+    assert accepted["demo_pkg.mod.C.im"] is True
+
+    # Only the plain instance method is wrapped; descriptor methods are left alone.
+    wrapper = render_wrapper_module(analysis.modules[0])
+    assert "C.im" in wrapper
+    for name in ("aliased_sm", "aliased_cm", "prop", "cached", "__new__", "moved"):
+        assert f"C.{name}" not in wrapper
+
+
+def test_wrapper_mirrors_control_flow_defined_all(tmp_path: Path) -> None:
+    # Council round 10 (codex): __all__ defined by control flow (or import) was
+    # missed by the AST heuristic; it is now mirrored at runtime.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+if True:
+    __all__ = ["keep"]
+EXTRA = 1
+@rextio.native
+def keep(x: int) -> int:
+    return x
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    wrapper = render_wrapper_module(analysis.modules[0])
+    assert 'if hasattr(_rextio_fallback_module, "__all__"):' in wrapper
+    compile(wrapper, "<wrapper>", "exec")

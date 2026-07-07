@@ -19,6 +19,7 @@ from rextio.analyzer.native_marker import (
     external_accelerator_for_function,
     has_exempt_marker,
     native_marker_for_function,
+    parse_native_marker,
 )
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.analyzer.top_level import analyze_native_top_level
@@ -918,15 +919,20 @@ def _collect_native_methods(
                 continue
             if not _native_marker_applies(marker, target_language):
                 continue
-            if _is_static_or_class_method(child):
+            non_instance_reason = _non_instance_method_reason(child, node)
+            if non_instance_reason is not None:
                 # Only regular instance methods are supported (AGENTS.md /
-                # docs/unsupported-features.md). A native shim for a
-                # static/classmethod would replace the class attribute with a
-                # plain function and strip the descriptor, breaking the calling
-                # convention; reject so it stays an ordinary Python method on
-                # the fallback (council round 9).
+                # docs/unsupported-features.md). A native shim for anything that
+                # carries a descriptor - a static/class/property method
+                # (aliased or not), an implicit-descriptor dunder, or a method
+                # reassigned to one in the class body - would replace the class
+                # attribute with a plain function and strip the descriptor,
+                # breaking the calling convention; reject so it stays an
+                # ordinary Python method on the fallback (council rounds 9-10).
                 functions.append(
-                    _rejected_static_or_class_method(child, module, node.name, target_language)
+                    _rejected_non_instance_method(
+                        child, module, node.name, target_language, non_instance_reason
+                    )
                 )
                 continue
             qualname = (
@@ -1022,20 +1028,68 @@ def _rejected_native_marker_function(
     return function
 
 
-def _is_static_or_class_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """Report whether a method carries a @staticmethod/@classmethod decorator."""
-    for decorator in node.decorator_list:
-        name = dotted_name(decorator.func if isinstance(decorator, ast.Call) else decorator)
-        if name in ("staticmethod", "classmethod"):
-            return True
-    return False
+# Dunder methods Python treats as implicit static/class methods even without a
+# decorator: __new__ is an implicit staticmethod; __init_subclass__ and
+# __class_getitem__ are implicit classmethods. Wrapping any of them as a plain
+# function breaks Python's special dispatch (council round 10).
+_IMPLICIT_DESCRIPTOR_METHODS = frozenset(
+    {"__new__", "__init_subclass__", "__class_getitem__"}
+)
+# Callables whose result is a descriptor; a class-body `name = staticmethod(name)`
+# reassignment produces one just like the decorator form.
+_DESCRIPTOR_WRAPPERS = frozenset({"staticmethod", "classmethod", "property"})
 
 
-def _rejected_static_or_class_method(
+def _non_instance_method_reason(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, class_node: ast.ClassDef
+) -> str | None:
+    """Return why a native-marked method is not a plain instance method, else None.
+
+    Only a plain instance method can be safely replaced by the generated
+    wrapper; anything that carries or becomes a descriptor would have that
+    descriptor stripped (council round 10). Covers: any decorator besides the
+    native marker (``@property``/``@cached_property``/``@staticmethod``/
+    ``@classmethod``, aliased or not, and custom descriptors); the implicit
+    descriptor dunders; and a class-body ``name = staticmethod(name)`` style
+    reassignment.
+    """
+    extra = [
+        decorator
+        for decorator in node.decorator_list
+        if parse_native_marker(decorator) is None
+    ]
+    if extra:
+        names = ", ".join(
+            dotted_name(d.func if isinstance(d, ast.Call) else d) or "<decorator>"
+            for d in extra
+        )
+        return f"it carries a non-@rextio.native decorator ({names})"
+    if node.name in _IMPLICIT_DESCRIPTOR_METHODS:
+        return f"{node.name} is an implicit descriptor method"
+    for statement in class_node.body:
+        if not isinstance(statement, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == node.name
+            for target in statement.targets
+        ):
+            continue
+        value = statement.value
+        if isinstance(value, ast.Call):
+            call_name = dotted_name(value.func)
+            if call_name in _DESCRIPTOR_WRAPPERS or (
+                call_name is not None and call_name.split(".")[-1] in _DESCRIPTOR_WRAPPERS
+            ):
+                return f"it is reassigned to a descriptor ({call_name}) in the class body"
+    return None
+
+
+def _rejected_non_instance_method(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     module: ModuleAnalysis,
     class_name: str,
     target_language: str,
+    reason: str,
 ) -> FunctionAnalysis:
     qualname = (
         f"{module.module_name}.{class_name}.{node.name}"
@@ -1061,15 +1115,14 @@ def _rejected_static_or_class_method(
             code="RXT010",
             severity="error",
             message=(
-                "@rextio.native on a staticmethod/classmethod is not supported "
-                "(only regular instance methods are); the method stays on the "
-                "Python fallback"
+                f"@rextio.native is supported only on regular instance methods, "
+                f"but {reason}; the method stays on the Python fallback"
             ),
             file_path=function.file_path,
             line=node.lineno,
             column=node.col_offset,
             function_name=function.qualname,
-            suggestion="Remove @rextio.native, or convert it to a regular instance method.",
+            suggestion="Remove @rextio.native, or make it a plain instance method.",
         )
     )
     return function

@@ -197,10 +197,14 @@ semantics. Rextio reports `RXT080` for these functions.
 Runtime-backed native functions currently cover:
 
 - class/object behavior inside a marked native function
-- regular instance methods marked with `@rextio.native` (a `@staticmethod`
-  or `@classmethod` marked `@rextio.native` is rejected with RXT010 and
-  stays an ordinary Python method on the fallback — only instance methods
-  are supported)
+- regular instance methods marked with `@rextio.native` — ONLY plain
+  instance methods. A method that carries any other decorator
+  (`@staticmethod`/`@classmethod`/`@property`/`functools.cached_property`,
+  aliased or not), an implicit descriptor dunder (`__new__`,
+  `__init_subclass__`, `__class_getitem__`), or a class-body
+  `name = staticmethod(name)` reassignment is rejected with RXT010 and
+  stays an ordinary Python method on the fallback (wrapping it would strip
+  its descriptor)
 - `try` / `except` / `finally` outside the restricted native subset (built-in
   exception handlers only — see `docs/stability.md`)
 - `raise` and `assert`

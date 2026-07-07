@@ -22,6 +22,10 @@ def boom(x):
 
 def total(xs):
     return sum(xs)
+
+def do_exit(code):
+    import sys as _sys
+    _sys.exit(code)
 """,
         encoding="utf-8",
     )
@@ -146,7 +150,10 @@ def circular():
     assert completed.returncode == 0, completed.stderr
     responses = _responses(completed.stdout)
     assert responses[0] == {"ok": 10}
-    assert responses[1] == {"error": {"type": "SystemExit", "message": "3"}}
+    # Council round 10: a delegated SystemExit is forwarded as an exit frame
+    # (the binary honors the code); the dispatcher itself survives and keeps
+    # answering later calls.
+    assert responses[1] == {"exit": 3}
     assert responses[2]["error"]["type"] == "TypeError"
     assert responses[3]["error"]["type"] == "RecursionError"  # call recursion -> error frame
     assert responses[4]["error"]["type"] == "ValueError"  # json.dumps circular ref -> error frame
@@ -229,3 +236,26 @@ def test_render_is_deterministic_and_embeds_sorted_allowlist() -> None:
     assert first == second
     assert '["a.x", "b.y"]' in first
     assert f"PROTOCOL_VERSION = {PROTOCOL_VERSION}" in first
+
+
+def test_dispatcher_forwards_sys_exit_as_exit_frame(tmp_path: Path) -> None:
+    # Council round 10 (antigravity): a delegated function calling sys.exit()
+    # must forward its exit code as a distinct frame (so the binary can honor
+    # it), not become a generic error frame that always exits 1.
+    responses = _run_dispatcher(
+        tmp_path,
+        allowed=["fb.do_exit"],
+        requests=[
+            {"call": "fb.do_exit", "args": [0]},
+            {"call": "fb.do_exit", "args": [5]},
+        ],
+    )
+    assert responses == [{"exit": 0}, {"exit": 5}]
+
+
+def test_dispatcher_forwards_sys_exit_message_as_exit_1(tmp_path: Path) -> None:
+    # sys.exit("msg") exits 1 in CPython (the message goes to stderr).
+    responses = _run_dispatcher(
+        tmp_path, allowed=["fb.do_exit"], requests=[{"call": "fb.do_exit", "args": ["bye"]}]
+    )
+    assert responses == [{"exit": 1}]

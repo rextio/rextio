@@ -117,7 +117,21 @@ def _handle(request):
     args = request.get("args", [])
     try:
         result = _resolve(qualname)(*args)
-    except BaseException as exc:  # noqa: BLE001 -- forward ANY exception (incl. SystemExit/KeyboardInterrupt) to the caller instead of killing the long-lived dispatcher
+    except SystemExit as exc:
+        # A delegated function called sys.exit(); forward the exit code so the
+        # binary can honor it instead of mapping it to a generic error and
+        # always exiting 1 (council round 10). sys.exit() -> 0; sys.exit(n) ->
+        # n; sys.exit("msg") -> print msg to stderr and exit 1 (CPython rule).
+        code = exc.code
+        if code is None:
+            code = 0
+        elif not isinstance(code, int):
+            print(code, file=sys.stderr)
+            code = 1
+        return {{"exit": code}}
+    except KeyboardInterrupt:
+        return {{"exit": 130}}
+    except BaseException as exc:  # noqa: BLE001 -- forward ANY other exception to the caller instead of killing the long-lived dispatcher
         return _exc_frame(exc)
     return {{"ok": result}}
 

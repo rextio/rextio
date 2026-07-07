@@ -193,6 +193,12 @@ fn __rextio_exchange(
     }
     let response: serde_json::Value = serde_json::from_str(response_line.trim())
         .map_err(|e| __RextioExchange::Failed(RextioError::new("RuntimeError", e.to_string())))?;
+    if let Some(code) = response.get("exit").and_then(|v| v.as_i64()) {
+        // A delegated fallback function called sys.exit()/raised KeyboardInterrupt;
+        // terminate the whole process with that code, matching CPython
+        // (council round 10).
+        std::process::exit(code as i32);
+    }
     if let Some(ok) = response.get("ok") {
         return Ok(ok.clone());
     }

@@ -83,7 +83,7 @@ def render_wrapper_module(
     # Faithfully mirror the source module's public surface: its docstring, any
     # module-level names referenced by parameter defaults (which the star-import
     # misses when they are private or excluded from __all__), and its __all__.
-    lines.extend(_render_namespace_fidelity(source_tree))
+    lines.extend(_render_namespace_fidelity())
     lines.append("")
     for function in accepted:
         lines.extend(_render_fallback_binding(function, import_prefix, fallback_name, top_level is not None))
@@ -106,31 +106,24 @@ def render_wrapper_module(
     return "\n".join(lines)
 
 
-def _render_namespace_fidelity(source_tree: ast.Module) -> list[str]:
+def _render_namespace_fidelity() -> list[str]:
     """Mirror the source module's __doc__ and __all__ onto the wrapper.
 
     ``from ._fallback import *`` only carries the fallback module's PUBLIC
     names, so the module docstring is lost and an explicit ``__all__`` is not
-    propagated; mirror both from the fallback module reference. (Parameter
-    defaults are handled separately by copying __defaults__/__kwdefaults__ from
-    the fallback function - see _render_defaults_copy - so they are never
-    reproduced as expressions here.)
+    propagated; mirror both from the fallback module reference at RUNTIME.
+    Using a runtime ``hasattr`` guard (not an AST scan of top-level
+    assignments) also mirrors an ``__all__`` defined by control flow or an
+    import (``if ...: __all__ = [...]`` / ``from .x import __all__``) - council
+    round 10. (Parameter defaults are handled separately by copying
+    __defaults__/__kwdefaults__ from the fallback function - see
+    _render_defaults_copy - so they are never reproduced as expressions here.)
     """
-    lines = ['__doc__ = _rextio_fallback_module.__doc__']
-    if _has_module_all(source_tree):
-        lines.append("__all__ = list(_rextio_fallback_module.__all__)")
-    return lines
-
-
-def _has_module_all(tree: ast.Module) -> bool:
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            if any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
-                return True
-        elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name) and node.target.id == "__all__":
-                return True
-    return False
+    return [
+        "__doc__ = _rextio_fallback_module.__doc__",
+        'if hasattr(_rextio_fallback_module, "__all__"):',
+        "    __all__ = list(_rextio_fallback_module.__all__)",
+    ]
 
 
 def _fallback_module_import_lines(import_prefix: str, fallback_name: str) -> list[str]:
