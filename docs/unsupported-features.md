@@ -203,10 +203,12 @@ Runtime-backed native functions currently cover:
   aliased or not), an implicit descriptor dunder (`__new__`,
   `__init_subclass__`, `__class_getitem__`), a class-body reassignment of the
   method name after its definition (`name = staticmethod(name)` and any other
-  spelling — annotated, tuple/list-unpacked, or an aliased wrapper), or a
-  method defined in a **nested (inner) class** is rejected with RXT010 and
-  stays an ordinary Python method on the fallback (wrapping it would strip
-  its descriptor or drop the marker silently)
+  spelling — annotated, tuple/list-unpacked, aliased wrapper, walrus or
+  augmented assignment, including one nested inside class-body control flow
+  such as `if`/`for`/`try`), or a method defined in a **nested (inner) class**
+  (including a class nested under class-body control flow) is rejected with
+  RXT010 and stays an ordinary Python method on the fallback (wrapping it would
+  strip its descriptor or drop the marker silently)
 - `try` / `except` / `finally` outside the restricted native subset (built-in
   exception handlers only — see `docs/stability.md`)
 - `raise` and `assert`

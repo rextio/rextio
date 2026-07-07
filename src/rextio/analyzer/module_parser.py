@@ -986,11 +986,14 @@ def _reject_nested_class_methods(
     previously dropped silently -- neither accepted nor rejected, with no
     diagnostic. Emit an RXT010 diagnostic so the marker is reported as
     unsupported instead of being ignored, honoring the explicit-rejection
-    reporting contract (council round 11). Recurses to any nesting depth;
-    classes nested inside functions are out of scope.
+    reporting contract (council round 11). Recurses to any nesting depth.
+    Nested classes wrapped in class-body control flow (``if``/``for``/``try``/
+    ...) are found via ``_walk_class_scope`` too -- round 11's direct-children
+    scan missed them (council round 12). Classes nested inside functions are
+    out of scope.
     """
     rejected: list[FunctionAnalysis] = []
-    for node in class_node.body:
+    for node in _walk_class_scope(class_node.body):
         if not isinstance(node, ast.ClassDef):
             continue
         nested_path = f"{class_path}.{node.name}"
@@ -1000,7 +1003,19 @@ def _reject_nested_class_methods(
             marker = native_marker_for_function(child)
             if marker is None or has_exempt_marker(child):
                 continue
-            if not marker.error and not _native_marker_applies(marker, target_language):
+            if marker.error:
+                # Preserve the specific marker-shape error (e.g. an unsupported
+                # target) instead of only the nested-class message -- both would
+                # carry code RXT010 at the same site and de-dup to one, so route
+                # to the marker-error path so the user fixes the marker itself
+                # first (council round 12).
+                rejected.append(
+                    _rejected_native_marker_method(
+                        child, module, nested_path, marker, target_language
+                    )
+                )
+                continue
+            if not _native_marker_applies(marker, target_language):
                 continue
             rejected.append(
                 _rejected_nested_class_method(
@@ -1133,20 +1148,69 @@ def _target_binds_name(target: ast.expr, name: str) -> bool:
     return False
 
 
-def _statement_rebinds_name(statement: ast.stmt, name: str) -> bool:
-    """Return True if ``statement`` reassigns ``name`` at runtime.
+# Statement/expression nodes that open a new binding scope. A walk over a class
+# body must not descend into these -- their inner assignments and nested classes
+# bind that scope, not the enclosing class namespace -- but the boundary node is
+# still yielded so a nested class remains discoverable (council round 12).
+_SCOPE_BOUNDARY_NODES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.Lambda,
+)
 
-    Handles plain ``ast.Assign`` (including tuple/list unpacking and starred
-    targets) and annotated ``ast.AnnAssign``. A bare annotation with no value
-    (``name: T``) does not rebind the attribute, so it does not count.
+
+def _walk_class_scope(nodes: Iterable[ast.AST]) -> Iterable[ast.AST]:
+    """Yield every node reachable from ``nodes`` within one class scope.
+
+    Descends through compound statements (``if``/``for``/``while``/``with``/
+    ``try``/``match``) and expressions so a class-body assignment or nested
+    class wrapped in control flow is still found, but stops at nested
+    function/class/lambda scopes (yielding the boundary node itself, not its
+    body). Python executes a class body -- including its compound statements --
+    at class-definition time, so anything reached here binds the class
+    namespace; round 11's direct-children-only scan missed these (round 12).
     """
-    if isinstance(statement, ast.AnnAssign):
-        if statement.value is None:
-            return False
-        return isinstance(statement.target, ast.Name) and statement.target.id == name
-    if isinstance(statement, ast.Assign):
-        return any(_target_binds_name(target, name) for target in statement.targets)
+    for node in nodes:
+        yield node
+        if isinstance(node, _SCOPE_BOUNDARY_NODES):
+            continue
+        yield from _walk_class_scope(ast.iter_child_nodes(node))
+
+
+def _node_binds_name(node: ast.AST, name: str) -> bool:
+    """Return True if ``node`` is an assignment form that binds ``name``.
+
+    Covers plain assignment (incl. tuple/list unpacking and starred targets),
+    value-bearing annotated assignment, augmented assignment, and named
+    expressions (walrus). A bare annotation with no value (``name: T``) does
+    not rebind the attribute, so it does not count.
+    """
+    if isinstance(node, ast.Assign):
+        return any(_target_binds_name(target, name) for target in node.targets)
+    if isinstance(node, ast.AnnAssign):
+        return (
+            node.value is not None
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+        )
+    if isinstance(node, ast.AugAssign):
+        return _target_binds_name(node.target, name)
+    if isinstance(node, ast.NamedExpr):
+        return isinstance(node.target, ast.Name) and node.target.id == name
     return False
+
+
+def _statement_rebinds_name(statement: ast.stmt, name: str) -> bool:
+    """Return True if executing ``statement`` in a class body rebinds ``name``.
+
+    Descends into class-body compound statements and expressions (via
+    ``_walk_class_scope``) so a reassignment hidden in ``if``/``for``/``try``/
+    ``while``/``with`` -- or a walrus/augmented assignment -- is caught, not
+    just a direct-child ``Assign``/``AnnAssign`` (council round 12). Does not
+    descend into nested function/class/lambda scopes.
+    """
+    return any(_node_binds_name(node, name) for node in _walk_class_scope([statement]))
 
 
 def _non_instance_method_reason(

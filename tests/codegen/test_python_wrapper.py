@@ -459,6 +459,177 @@ class A:
         assert any(d.code == "RXT010" for d in by_qual[qual].diagnostics), qual
 
 
+def test_wrapper_rejects_reassignment_inside_class_body_control_flow(
+    tmp_path: Path,
+) -> None:
+    # Council round 12 (8 members): the round-11 reassignment scan iterated only
+    # the DIRECT children of the class body, so a descriptor reassignment nested
+    # inside a class-body compound statement (if/for/while/with/try) - or a
+    # walrus/augmented assignment - evaded it and wrongly ACCEPTed the method,
+    # reopening the descriptor-stripping crash. The scan now walks compound
+    # statements (up to nested-scope boundaries) and covers `:=`/`+=`.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+import contextlib
+
+def _mk(x: int) -> int:
+    return x
+
+class IfC:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    if True:
+        im = staticmethod(_mk)
+
+class ForC:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    for _ in range(1):
+        im = staticmethod(_mk)
+
+class TryC:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    try:
+        im = staticmethod(_mk)
+    except Exception:
+        pass
+
+class WalrusC:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    if (im := staticmethod(_mk)):
+        pass
+
+class AugC:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    im += 1
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    accepted = {f.qualname: f.accepted for m in analysis.modules for f in m.functions}
+    for cls in ("IfC", "ForC", "TryC", "WalrusC", "AugC"):
+        assert accepted[f"demo_pkg.mod.{cls}.im"] is False, cls
+    wrapper = render_wrapper_module(analysis.modules[0])
+    for cls in ("IfC", "ForC", "TryC", "WalrusC", "AugC"):
+        assert f"{cls}.im" not in wrapper, cls
+
+
+def test_reassignment_scan_no_false_positive_from_control_flow(tmp_path: Path) -> None:
+    # Council round 12: the compound-statement-aware scan must not over-reject.
+    # An UNRELATED name reassigned in a control-flow block, and a local variable
+    # of the same name inside a nested function (a separate scope), must both
+    # leave the plain instance method accepted.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+def _mk(x: int) -> int:
+    return x
+
+class Unrelated:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    if True:
+        other = staticmethod(_mk)
+
+class NestedScope:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    def _helper():
+        im = 5
+        return im
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    accepted = {f.qualname: f.accepted for m in analysis.modules for f in m.functions}
+    assert accepted["demo_pkg.mod.Unrelated.im"] is True
+    assert accepted["demo_pkg.mod.NestedScope.im"] is True
+
+
+def test_wrapper_rejects_native_method_in_control_flow_nested_class(
+    tmp_path: Path,
+) -> None:
+    # Council round 12 (codex): the round-11 nested-class rejection also scanned
+    # only DIRECT class-body children, so a class nested UNDER a class-body
+    # compound statement (if/for/try/...) was silently dropped again. The walk
+    # now finds it and emits RXT010.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+class IfOuter:
+    if True:
+        class Inner:
+            @rextio.native
+            def im(self, x: int) -> int:
+                return x + 1
+
+class TryOuter:
+    try:
+        class Inner:
+            @rextio.native
+            def im(self, x: int) -> int:
+                return x + 1
+    except Exception:
+        pass
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    by_qual = {f.qualname: f for m in analysis.modules for f in m.functions}
+    for qual in ("demo_pkg.mod.IfOuter.Inner.im", "demo_pkg.mod.TryOuter.Inner.im"):
+        assert qual in by_qual, qual
+        assert by_qual[qual].accepted is False, qual
+        assert any(d.code == "RXT010" for d in by_qual[qual].diagnostics), qual
+
+
+def test_nested_class_malformed_marker_reports_marker_error(tmp_path: Path) -> None:
+    # Council round 12 (glm, minimax): a malformed @rextio.native marker on a
+    # nested-class method was rejected with only the generic nested-class message,
+    # losing the specific marker-shape error (both carry code RXT010 at the same
+    # site, so they cannot coexist). The marker-error message is now preserved so
+    # the user fixes the marker itself first.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+class Outer:
+    class Inner:
+        @rextio.native(target="cobol")
+        def im(self, x: int) -> int:
+            return x + 1
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    by_qual = {f.qualname: f for m in analysis.modules for f in m.functions}
+    fn = by_qual["demo_pkg.mod.Outer.Inner.im"]
+    assert fn.accepted is False
+    messages = " ".join(d.message for d in fn.diagnostics)
+    assert "cobol" in messages, messages
+    assert "nested" not in messages, messages
+
+
 def test_wrapper_mirrors_control_flow_defined_all(tmp_path: Path) -> None:
     # Council round 10 (codex): __all__ defined by control flow (or import) was
     # missed by the AST heuristic; it is now mirrored at runtime.

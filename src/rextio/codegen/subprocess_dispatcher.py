@@ -146,8 +146,10 @@ def _serve(line):
     # Turn one request line into a response frame. ANY failure -- malformed JSON, a
     # non-dict request, a handler error, or a json.dumps failure (non-serializable
     # result, a non-finite float under allow_nan=False, RecursionError on a deeply
-    # nested result, OverflowError on a huge int) -- becomes an error frame, never
-    # an unhandled exception that would kill the long-lived dispatcher.
+    # nested result) -- becomes an error frame, never an unhandled exception that
+    # would kill the long-lived dispatcher. (A huge Python int serializes fine as a
+    # JSON number; it does not raise here. An exit code outside i64 range is a
+    # separate, documented limitation honored on the Rust side, not a json failure.)
     try:
         request = json.loads(line)
     except ValueError as exc:
