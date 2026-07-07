@@ -906,7 +906,18 @@ def _collect_native_methods(
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
             continue
-        for child in node.body:
+        direct_method_ids = {
+            id(child)
+            for child in node.body
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        # Walk the class scope (descending class-body control flow) so a method
+        # defined under `if`/`for`/`try` is found, not just direct children;
+        # round 12 migrated nested-class discovery to this walk but left method
+        # collection on direct children (council round 13). Nested-class methods
+        # are still handled separately by `_reject_nested_class_methods` (the
+        # walk stops at ClassDef boundaries).
+        for child in _walk_class_scope(node.body):
             if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             marker = native_marker_for_function(child)
@@ -918,6 +929,16 @@ def _collect_native_methods(
                 )
                 continue
             if not _native_marker_applies(marker, target_language):
+                continue
+            if id(child) not in direct_method_ids:
+                # Defined inside class-body control flow: its definition is
+                # conditional and the direct-child ordering the reassignment scan
+                # relies on does not apply, so it cannot be safely wrapped. Reject
+                # so it stays an ordinary Python method on the fallback and the
+                # marker is reported, not dropped silently (council round 13).
+                functions.append(
+                    _rejected_control_flow_method(child, module, node.name, target_language)
+                )
                 continue
             non_instance_reason = _non_instance_method_reason(child, node)
             if non_instance_reason is not None:
@@ -1072,6 +1093,52 @@ def _rejected_nested_class_method(
     return function
 
 
+def _rejected_control_flow_method(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    module: ModuleAnalysis,
+    class_name: str,
+    target_language: str,
+) -> FunctionAnalysis:
+    qualname = (
+        f"{module.module_name}.{class_name}.{node.name}"
+        if module.module_name
+        else f"{class_name}.{node.name}"
+    )
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=qualname,
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        is_native_candidate=True,
+        accepted=False,
+        calls=collect_call_sites(node, module.imports, module.logger_names),
+        native_target_language=target_language,
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
+    )
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT010",
+            severity="error",
+            message=(
+                "@rextio.native is supported only on methods defined directly in the "
+                "class body, but this method is defined inside class-body control flow "
+                "(if/for/while/with/try); it stays on the Python fallback"
+            ),
+            file_path=function.file_path,
+            line=node.lineno,
+            column=node.col_offset,
+            function_name=function.qualname,
+            suggestion=(
+                "Define the method directly in the class body, or remove @rextio.native."
+            ),
+        )
+    )
+    return function
+
+
 def _rejected_async_function(
     node: ast.AsyncFunctionDef,
     module: ModuleAnalysis,
@@ -1178,39 +1245,150 @@ def _walk_class_scope(nodes: Iterable[ast.AST]) -> Iterable[ast.AST]:
         yield from _walk_class_scope(ast.iter_child_nodes(node))
 
 
-def _node_binds_name(node: ast.AST, name: str) -> bool:
-    """Return True if ``node`` is an assignment form that binds ``name``.
+def _header_scope_exprs(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda,
+) -> list[ast.AST]:
+    """Return a def/class/lambda's sub-expressions evaluated in the enclosing scope.
 
-    Covers plain assignment (incl. tuple/list unpacking and starred targets),
-    value-bearing annotated assignment, augmented assignment, and named
-    expressions (walrus). A bare annotation with no value (``name: T``) does
-    not rebind the attribute, so it does not count.
+    These are decorators, base list, keyword args, parameter defaults, and
+    annotations -- a walrus in any of them binds the enclosing (class) scope
+    even though the node's body does not (council round 13).
     """
-    if isinstance(node, ast.Assign):
-        return any(_target_binds_name(target, name) for target in node.targets)
-    if isinstance(node, ast.AnnAssign):
-        return (
-            node.value is not None
-            and isinstance(node.target, ast.Name)
-            and node.target.id == name
-        )
-    if isinstance(node, ast.AugAssign):
-        return _target_binds_name(node.target, name)
-    if isinstance(node, ast.NamedExpr):
-        return isinstance(node.target, ast.Name) and node.target.id == name
-    return False
+    header: list[ast.AST] = list(getattr(node, "decorator_list", []))
+    if isinstance(node, ast.ClassDef):
+        header.extend(node.bases)
+        header.extend(keyword.value for keyword in node.keywords)
+        return header
+    arguments = node.args  # FunctionDef / AsyncFunctionDef / Lambda
+    header.extend(arguments.defaults)
+    header.extend(default for default in arguments.kw_defaults if default is not None)
+    if not isinstance(node, ast.Lambda):
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+            *((arguments.vararg,) if arguments.vararg else ()),
+            *((arguments.kwarg,) if arguments.kwarg else ()),
+        ):
+            if argument.annotation is not None:
+                header.append(argument.annotation)
+        if node.returns is not None:
+            header.append(node.returns)
+    return header
+
+
+def _expr_walrus_binds(node: ast.AST, name: str) -> bool:
+    """Return True if a walrus (``:=``) target binds ``name`` at the enclosing scope.
+
+    Does not enter a nested function/class/lambda BODY (its walruses bind that
+    scope), but does inspect the node's HEADER expressions, which are evaluated
+    in the enclosing scope (council round 13).
+    """
+    if isinstance(node, _SCOPE_BOUNDARY_NODES):
+        return any(_expr_walrus_binds(expr, name) for expr in _header_scope_exprs(node))
+    if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+        if node.target.id == name:
+            return True
+    return any(_expr_walrus_binds(child, name) for child in ast.iter_child_nodes(node))
+
+
+def _match_pattern_binds_name(pattern: ast.AST, name: str) -> bool:
+    """Return True if a match capture pattern binds ``name``.
+
+    Covers ``case x``, ``case [*x]``, ``case {**x}``, and ``case ... as x``.
+    """
+    captured = getattr(pattern, "name", None)
+    if isinstance(captured, str) and captured == name:
+        return True
+    rest = getattr(pattern, "rest", None)
+    if isinstance(rest, str) and rest == name:
+        return True
+    return any(_match_pattern_binds_name(child, name) for child in ast.iter_child_nodes(pattern))
+
+
+def _statements_bind_name(statements: Iterable[ast.stmt], name: str) -> bool:
+    return any(_statement_rebinds_name(statement, name) for statement in statements)
+
+
+_AST_TYPE_ALIAS = getattr(ast, "TypeAlias", None)  # Python 3.12+ `type X = ...`
 
 
 def _statement_rebinds_name(statement: ast.stmt, name: str) -> bool:
     """Return True if executing ``statement`` in a class body rebinds ``name``.
 
-    Descends into class-body compound statements and expressions (via
-    ``_walk_class_scope``) so a reassignment hidden in ``if``/``for``/``try``/
-    ``while``/``with`` -- or a walrus/augmented assignment -- is caught, not
-    just a direct-child ``Assign``/``AnnAssign`` (council round 12). Does not
-    descend into nested function/class/lambda scopes.
+    Comprehensive over Python's class-scope binding forms, mirroring the
+    module-scope enumeration in ``_collect_fidelity_shim_names``: plain/annotated
+    (value-bearing)/augmented assignment and walrus targets; ``for``/``with``/
+    ``except``-as; ``match`` captures; ``import``-as; ``del``; a later ``def``/
+    ``class`` of the same name; a ``type`` alias (3.12+); and a walrus in a
+    def/class HEADER (decorators, bases, defaults, annotations). Descends into
+    class-body compound statements but not into nested function/class/lambda
+    BODIES, whose bindings are local to that scope. Round 12's scan only handled
+    Assign/AnnAssign/AugAssign/NamedExpr and missed the rest (council round 13).
     """
-    return any(_node_binds_name(node, name) for node in _walk_class_scope([statement]))
+    # Walrus anywhere in this statement's expressions (incl. def/class headers).
+    if _expr_walrus_binds(statement, name):
+        return True
+    if isinstance(statement, ast.Assign):
+        return any(_target_binds_name(target, name) for target in statement.targets)
+    if isinstance(statement, ast.AnnAssign):
+        return statement.value is not None and _target_binds_name(statement.target, name)
+    if isinstance(statement, ast.AugAssign):
+        return _target_binds_name(statement.target, name)
+    if isinstance(statement, ast.Delete):
+        return any(_target_binds_name(target, name) for target in statement.targets)
+    if isinstance(statement, (ast.Import, ast.ImportFrom)):
+        return any(
+            (alias.asname or alias.name.split(".", 1)[0]) == name
+            for alias in statement.names
+        )
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        # A later def/class of the same name overrides the method (its header
+        # walrus was already handled above).
+        return statement.name == name
+    if _AST_TYPE_ALIAS is not None and isinstance(statement, _AST_TYPE_ALIAS):
+        alias_name = getattr(statement, "name", None)
+        return isinstance(alias_name, ast.Name) and alias_name.id == name
+    if isinstance(statement, (ast.For, ast.AsyncFor)):
+        return (
+            _target_binds_name(statement.target, name)
+            or _statements_bind_name(statement.body, name)
+            or _statements_bind_name(statement.orelse, name)
+        )
+    if isinstance(statement, (ast.With, ast.AsyncWith)):
+        if any(
+            item.optional_vars is not None
+            and _target_binds_name(item.optional_vars, name)
+            for item in statement.items
+        ):
+            return True
+        return _statements_bind_name(statement.body, name)
+    if isinstance(statement, ast.If):
+        return _statements_bind_name(statement.body, name) or _statements_bind_name(
+            statement.orelse, name
+        )
+    if isinstance(statement, ast.While):
+        return _statements_bind_name(statement.body, name) or _statements_bind_name(
+            statement.orelse, name
+        )
+    if isinstance(statement, (ast.Try, ast.TryStar)):
+        if any(handler.name == name for handler in statement.handlers):
+            return True
+        if _statements_bind_name(statement.body, name):
+            return True
+        if any(_statements_bind_name(handler.body, name) for handler in statement.handlers):
+            return True
+        return _statements_bind_name(statement.orelse, name) or _statements_bind_name(
+            statement.finalbody, name
+        )
+    if isinstance(statement, ast.Match):
+        for case in statement.cases:
+            if _match_pattern_binds_name(case.pattern, name):
+                return True
+            if _statements_bind_name(case.body, name):
+                return True
+        return False
+    return False
 
 
 def _non_instance_method_reason(

@@ -804,12 +804,15 @@ Runtime-backed native functions may cover:
   methods of a top-level class only; a method carrying any other decorator
   (`@staticmethod`/`@classmethod`/`@property`/`cached_property`, aliased or
   not), an implicit descriptor dunder (`__new__`/`__init_subclass__`/
-  `__class_getitem__`), a class-body reassignment of the method name after
-  its definition (any spelling — plain, annotated, tuple/list-unpacked,
-  aliased wrapper, walrus/augmented, including inside class-body control flow),
-  or a method in a nested (inner) class (including one under class-body control
-  flow) is rejected with RXT010 and stays on the Python fallback (wrapping it
-  would strip the descriptor or drop the marker silently)
+  `__class_getitem__`), a class-body rebinding of the method name after its
+  definition by ANY binding form (assignment and its variants; a `for`/`with`/
+  `except`-as target; a `match` capture; `import ... as`; `del`; a later
+  `def`/`class`/`type` of the same name; or a walrus in a def/class header —
+  including any of these inside class-body control flow), or a method in a
+  nested (inner) class, or a method defined inside class-body control flow is
+  rejected with RXT010 and stays on the Python fallback (wrapping it would
+  strip the descriptor, change its calling convention, or drop the marker
+  silently)
 * exception handling
 * context managers
 * `async` / `await`

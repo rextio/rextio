@@ -630,6 +630,179 @@ class Outer:
     assert "nested" not in messages, messages
 
 
+def test_wrapper_rejects_all_class_body_binding_forms(tmp_path: Path) -> None:
+    # Council round 13 (5 members): round 12's reassignment scan only recognized
+    # Assign/AnnAssign/AugAssign/NamedExpr, so every OTHER Python class-scope
+    # binding form that rebinds a method name after its def was wrongly ACCEPTED,
+    # reopening the silent CPython-equivalence break (the wrapper strips the real
+    # attribute). The scan now covers the full set, mirroring the module-scope
+    # enumerator: for/with/except-as, match captures, import-as, del, later
+    # def/class of the same name, and a walrus in a def/class header.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+import contextlib
+
+def _mk(x: int) -> int:
+    return x
+
+class ForT:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    for im in range(3):
+        pass
+
+class WithT:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    with contextlib.nullcontext(5) as im:
+        pass
+
+class ExceptT:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    try:
+        pass
+    except Exception as im:
+        pass
+
+class ImportT:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    import os as im
+
+class MatchT:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    match 5:
+        case im:
+            pass
+
+class DelT:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    del im
+
+class LaterDefT:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    def im(self):
+        return 9
+
+class HeaderWalrusT:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    def _helper(a=(im := 5)):
+        return a
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    accepted = {f.qualname: f.accepted for m in analysis.modules for f in m.functions}
+    for cls in (
+        "ForT",
+        "WithT",
+        "ExceptT",
+        "ImportT",
+        "MatchT",
+        "DelT",
+        "LaterDefT",
+        "HeaderWalrusT",
+    ):
+        assert accepted[f"demo_pkg.mod.{cls}.im"] is False, cls
+
+
+def test_binding_scan_no_false_positive_from_unrelated_bindings(tmp_path: Path) -> None:
+    # Council round 13: the comprehensive binding scan must not over-reject. An
+    # UNRELATED for/with/import/match binding, a comprehension iteration variable
+    # reusing the method name (bound in the comprehension's own scope), and a
+    # bare annotation must all leave the plain instance method accepted.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+import contextlib
+
+class UnrelatedFor:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    for j in range(3):
+        pass
+
+class UnrelatedImport:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    import os as osmod
+
+class ComprehensionTarget:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    data = [im for im in range(3)]
+
+class BareAnn:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    im: int
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    accepted = {f.qualname: f.accepted for m in analysis.modules for f in m.functions}
+    for cls in ("UnrelatedFor", "UnrelatedImport", "ComprehensionTarget", "BareAnn"):
+        assert accepted[f"demo_pkg.mod.{cls}.im"] is True, cls
+
+
+def test_wrapper_rejects_native_method_under_class_body_control_flow(
+    tmp_path: Path,
+) -> None:
+    # Council round 13 (antigravity): round 12 migrated nested-class discovery to
+    # the class-scope walk but left METHOD collection on direct children, so a
+    # @rextio.native method defined under class-body control flow was silently
+    # dropped (neither collected nor rejected, no diagnostic). It is now rejected
+    # with RXT010, honoring the honor-or-reject reporting contract.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+class IfMethod:
+    if True:
+        @rextio.native
+        def im(self, x: int) -> int:
+            return x + 1
+
+class ForMethod:
+    for _ in range(1):
+        @rextio.native
+        def im(self, x: int) -> int:
+            return x + 1
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    by_qual = {f.qualname: f for m in analysis.modules for f in m.functions}
+    for qual in ("demo_pkg.mod.IfMethod.im", "demo_pkg.mod.ForMethod.im"):
+        assert qual in by_qual, qual
+        assert by_qual[qual].accepted is False, qual
+        assert any(d.code == "RXT010" for d in by_qual[qual].diagnostics), qual
+
+
 def test_wrapper_mirrors_control_flow_defined_all(tmp_path: Path) -> None:
     # Council round 10 (codex): __all__ defined by control flow (or import) was
     # missed by the AST heuristic; it is now mirrored at runtime.
