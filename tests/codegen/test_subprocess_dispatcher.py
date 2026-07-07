@@ -259,3 +259,26 @@ def test_dispatcher_forwards_sys_exit_message_as_exit_1(tmp_path: Path) -> None:
         tmp_path, allowed=["fb.do_exit"], requests=[{"call": "fb.do_exit", "args": ["bye"]}]
     )
     assert responses == [{"exit": 1}]
+
+
+def test_dispatcher_normalizes_bool_exit_code_to_int(tmp_path: Path) -> None:
+    # Council round 11 (minimax): bool is an int subclass, so sys.exit(True)/
+    # sys.exit(False) previously serialized the exit frame as a JSON bool. The
+    # Rust client honors the frame via serde_json as_i64(), which rejects a
+    # bool, so the exit was silently dropped. The dispatcher must emit a plain
+    # JSON number (True -> 1, False -> 0) matching CPython's exit codes.
+    responses = _run_dispatcher(
+        tmp_path,
+        allowed=["fb.do_exit"],
+        requests=[
+            {"call": "fb.do_exit", "args": [True]},
+            {"call": "fb.do_exit", "args": [False]},
+        ],
+    )
+    assert responses == [{"exit": 1}, {"exit": 0}]
+    # The codes must be real ints, not bools (which would round-trip as
+    # `true`/`false` and slip past the Rust as_i64() check).
+    assert all(
+        type(frame["exit"]) is int and not isinstance(frame["exit"], bool)
+        for frame in responses
+    )

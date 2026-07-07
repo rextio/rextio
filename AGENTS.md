@@ -801,12 +801,14 @@ Runtime-backed native functions may cover:
 
 * class/object behavior inside a marked native function
 * regular instance methods marked with `@rextio.native` — plain instance
-  methods only; a method carrying any other decorator
+  methods of a top-level class only; a method carrying any other decorator
   (`@staticmethod`/`@classmethod`/`@property`/`cached_property`, aliased or
   not), an implicit descriptor dunder (`__new__`/`__init_subclass__`/
-  `__class_getitem__`), or a class-body descriptor reassignment is
-  rejected with RXT010 and stays on the Python fallback (wrapping it would
-  strip the descriptor)
+  `__class_getitem__`), a class-body reassignment of the method name after
+  its definition (any spelling — plain, annotated, tuple/list-unpacked, or an
+  aliased wrapper), or a method in a nested (inner) class is rejected with
+  RXT010 and stays on the Python fallback (wrapping it would strip the
+  descriptor or drop the marker silently)
 * exception handling
 * context managers
 * `async` / `await`

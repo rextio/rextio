@@ -125,7 +125,13 @@ def _handle(request):
         code = exc.code
         if code is None:
             code = 0
-        elif not isinstance(code, int):
+        elif isinstance(code, int):
+            # bool is an int subclass; sys.exit(True)/False would serialize as a
+            # JSON bool, which the Rust client's as_i64() rejects (the exit frame
+            # would fall through to a generic error). Normalize to a plain int so
+            # the code is always a JSON number (council round 11).
+            code = int(code)
+        else:
             print(code, file=sys.stderr)
             code = 1
         return {{"exit": code}}

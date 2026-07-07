@@ -333,6 +333,132 @@ class C:
         assert f"C.{name}" not in wrapper
 
 
+def test_wrapper_rejects_evasive_method_reassignment_spellings(tmp_path: Path) -> None:
+    # Council round 11 (kimi, glm): the round-10 class-body reassignment scan
+    # only matched a bare `name = staticmethod(name)` Assign whose call was the
+    # literal wrapper name. Three spellings evaded it and were wrongly accepted,
+    # emitting a wrapper that stripped the descriptor and crashed at call time:
+    #   - annotated assignment:   `im: staticmethod = staticmethod(im)`
+    #   - tuple/list unpacking:   `im, _ = staticmethod(im), 0`
+    #   - aliased wrapper name:   `sm = staticmethod; im = sm(im)`
+    # The scan now rejects ANY reassignment of the method name after its def.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+sm = staticmethod
+
+def _mk(x: int) -> int:
+    return x
+
+class Ann:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    im: staticmethod = staticmethod(_mk)
+
+class Unpack:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    im, _spare = staticmethod(_mk), 0
+
+class Alias:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    im = sm(im)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    accepted = {f.qualname: f.accepted for m in analysis.modules for f in m.functions}
+    for cls in ("Ann", "Unpack", "Alias"):
+        assert accepted[f"demo_pkg.mod.{cls}.im"] is False, cls
+    wrapper = render_wrapper_module(analysis.modules[0])
+    for cls in ("Ann", "Unpack", "Alias"):
+        assert f"{cls}.im" not in wrapper, cls
+
+
+def test_wrapper_accepts_plain_instance_method_despite_unrelated_reassignment(
+    tmp_path: Path,
+) -> None:
+    # Council round 11: the conservative reassignment scan must not false-reject
+    # a plain instance method when (a) an UNRELATED name is reassigned, (b) an
+    # assignment to the same name appears BEFORE the def (the def wins), or
+    # (c) a bare annotation with no value (which does not rebind) is present.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+def _helper(x: int) -> int:
+    return x
+
+class Unrelated:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    other = staticmethod(_helper)
+
+class PreDef:
+    im = staticmethod(_helper)
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+
+class BareAnn:
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+    im: int
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    accepted = {f.qualname: f.accepted for m in analysis.modules for f in m.functions}
+    for cls in ("Unrelated", "PreDef", "BareAnn"):
+        assert accepted[f"demo_pkg.mod.{cls}.im"] is True, cls
+
+
+def test_wrapper_rejects_native_method_in_nested_class(tmp_path: Path) -> None:
+    # Council round 11 (antigravity, kimi): a @rextio.native method inside a
+    # class nested in another class was collected by neither the analyzer nor
+    # the wrapper generator - the marker was dropped silently, neither honored
+    # nor rejected. It is now rejected with an RXT010 diagnostic (honor-or-
+    # reject reporting contract), at any nesting depth.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+class Outer:
+    class Inner:
+        @rextio.native
+        def im(self, x: int) -> int:
+            return x + 1
+
+class A:
+    class B:
+        class C:
+            @rextio.native
+            def deep(self, x: int) -> int:
+                return x
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    by_qual = {f.qualname: f for m in analysis.modules for f in m.functions}
+    for qual in ("demo_pkg.mod.Outer.Inner.im", "demo_pkg.mod.A.B.C.deep"):
+        assert qual in by_qual, qual
+        assert by_qual[qual].accepted is False, qual
+        assert any(d.code == "RXT010" for d in by_qual[qual].diagnostics), qual
+
+
 def test_wrapper_mirrors_control_flow_defined_all(tmp_path: Path) -> None:
     # Council round 10 (codex): __all__ defined by control flow (or import) was
     # missed by the AST heuristic; it is now mirrored at runtime.

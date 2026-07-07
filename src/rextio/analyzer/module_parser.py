@@ -967,7 +967,94 @@ def _collect_native_methods(
                 continue
             _add_runtime_semantics_warning(function, child)
             functions.append(function)
+        functions.extend(
+            _reject_nested_class_methods(node, node.name, module, target_language)
+        )
     return functions
+
+
+def _reject_nested_class_methods(
+    class_node: ast.ClassDef,
+    class_path: str,
+    module: ModuleAnalysis,
+    target_language: str,
+) -> list[FunctionAnalysis]:
+    """Reject @rextio.native markers on methods of classes nested in a class.
+
+    The analyzer and wrapper generator only collect methods of top-level
+    classes; a native marker on a method inside a nested (inner) class was
+    previously dropped silently -- neither accepted nor rejected, with no
+    diagnostic. Emit an RXT010 diagnostic so the marker is reported as
+    unsupported instead of being ignored, honoring the explicit-rejection
+    reporting contract (council round 11). Recurses to any nesting depth;
+    classes nested inside functions are out of scope.
+    """
+    rejected: list[FunctionAnalysis] = []
+    for node in class_node.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        nested_path = f"{class_path}.{node.name}"
+        for child in node.body:
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            marker = native_marker_for_function(child)
+            if marker is None or has_exempt_marker(child):
+                continue
+            if not marker.error and not _native_marker_applies(marker, target_language):
+                continue
+            rejected.append(
+                _rejected_nested_class_method(
+                    child, module, nested_path, target_language
+                )
+            )
+        rejected.extend(
+            _reject_nested_class_methods(node, nested_path, module, target_language)
+        )
+    return rejected
+
+
+def _rejected_nested_class_method(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    module: ModuleAnalysis,
+    class_path: str,
+    target_language: str,
+) -> FunctionAnalysis:
+    qualname = (
+        f"{module.module_name}.{class_path}.{node.name}"
+        if module.module_name
+        else f"{class_path}.{node.name}"
+    )
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=qualname,
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        is_native_candidate=True,
+        accepted=False,
+        calls=collect_call_sites(node, module.imports, module.logger_names),
+        native_target_language=target_language,
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
+    )
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT010",
+            severity="error",
+            message=(
+                "@rextio.native is supported only on methods of top-level classes, "
+                "but this method is defined in a nested (inner) class; it stays on "
+                "the Python fallback"
+            ),
+            file_path=function.file_path,
+            line=node.lineno,
+            column=node.col_offset,
+            function_name=function.qualname,
+            suggestion="Move the class to module top level, or remove @rextio.native.",
+        )
+    )
+    return function
 
 
 def _rejected_async_function(
@@ -1035,9 +1122,31 @@ def _rejected_native_marker_function(
 _IMPLICIT_DESCRIPTOR_METHODS = frozenset(
     {"__new__", "__init_subclass__", "__class_getitem__"}
 )
-# Callables whose result is a descriptor; a class-body `name = staticmethod(name)`
-# reassignment produces one just like the decorator form.
-_DESCRIPTOR_WRAPPERS = frozenset({"staticmethod", "classmethod", "property"})
+def _target_binds_name(target: ast.expr, name: str) -> bool:
+    """Return True if an assignment target binds ``name`` (bare, unpacked, starred)."""
+    if isinstance(target, ast.Name):
+        return target.id == name
+    if isinstance(target, ast.Starred):
+        return _target_binds_name(target.value, name)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return any(_target_binds_name(elt, name) for elt in target.elts)
+    return False
+
+
+def _statement_rebinds_name(statement: ast.stmt, name: str) -> bool:
+    """Return True if ``statement`` reassigns ``name`` at runtime.
+
+    Handles plain ``ast.Assign`` (including tuple/list unpacking and starred
+    targets) and annotated ``ast.AnnAssign``. A bare annotation with no value
+    (``name: T``) does not rebind the attribute, so it does not count.
+    """
+    if isinstance(statement, ast.AnnAssign):
+        if statement.value is None:
+            return False
+        return isinstance(statement.target, ast.Name) and statement.target.id == name
+    if isinstance(statement, ast.Assign):
+        return any(_target_binds_name(target, name) for target in statement.targets)
+    return False
 
 
 def _non_instance_method_reason(
@@ -1050,8 +1159,7 @@ def _non_instance_method_reason(
     descriptor stripped (council round 10). Covers: any decorator besides the
     native marker (``@property``/``@cached_property``/``@staticmethod``/
     ``@classmethod``, aliased or not, and custom descriptors); the implicit
-    descriptor dunders; and a class-body ``name = staticmethod(name)`` style
-    reassignment.
+    descriptor dunders; and a class-body reassignment of the method name.
     """
     extra = [
         decorator
@@ -1066,21 +1174,26 @@ def _non_instance_method_reason(
         return f"it carries a non-@rextio.native decorator ({names})"
     if node.name in _IMPLICIT_DESCRIPTOR_METHODS:
         return f"{node.name} is an implicit descriptor method"
+    # A class-body reassignment of the method name AFTER its definition makes the
+    # final class attribute something other than this plain method: a descriptor
+    # (``name = staticmethod(name)``, aliased or dotted), or any other binding.
+    # Wrapping it would strip/replace that binding, so reject conservatively --
+    # mirroring the decorator branch's "any non-native decorator => reject" stance
+    # so no new spelling (annotated, unpacked, aliased-wrapper) can slip through
+    # (council round 11). Only reassignments that lexically FOLLOW the definition
+    # count; an assignment before the def is overridden by the def itself.
+    seen_def = False
     for statement in class_node.body:
-        if not isinstance(statement, ast.Assign):
+        if statement is node:
+            seen_def = True
             continue
-        if not any(
-            isinstance(target, ast.Name) and target.id == node.name
-            for target in statement.targets
-        ):
+        if not seen_def:
             continue
-        value = statement.value
-        if isinstance(value, ast.Call):
-            call_name = dotted_name(value.func)
-            if call_name in _DESCRIPTOR_WRAPPERS or (
-                call_name is not None and call_name.split(".")[-1] in _DESCRIPTOR_WRAPPERS
-            ):
-                return f"it is reassigned to a descriptor ({call_name}) in the class body"
+        if _statement_rebinds_name(statement, node.name):
+            return (
+                "it is reassigned after its definition in the class body "
+                "(the final class attribute would not be this instance method)"
+            )
     return None
 
 
