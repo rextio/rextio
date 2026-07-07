@@ -216,7 +216,12 @@ def _render_wrapper_function(
     # flipping such a function to the fallback leg mid-run would silently change
     # its observable behavior (e.g. a native builtin float vs NumPy's float64
     # return, a documented per-leg divergence) after N calls (council round 8).
-    threshold_gate = "" if function.plugin_type_keys else _threshold_gate_lines(
+    # The exemption must match the `native-plugin` route predicate (claims OR
+    # signature type keys): a claim-only function -- one that claims a core-typed
+    # call site without plugin-typed params/returns -- has the same per-leg
+    # divergence and must be exempt too (council round 15).
+    is_plugin_routed = bool(function.plugin_claims or function.plugin_type_keys)
+    threshold_gate = "" if is_plugin_routed else _threshold_gate_lines(
         function, boundary_fallback_threshold, fallback_call
     )
     body = [

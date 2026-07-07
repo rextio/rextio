@@ -256,6 +256,11 @@ result equivalence with hypothesis — the same posture as core's own
   conversions and crates. `native_status` stays `accepted`. Native-to-native
   calls INTO a plugin-typed function are rejected in this release (RXT092):
   plugin-typed functions are Python-facing entry points.
+  Every `native-plugin` function (by claims OR type keys) is **exempt from the
+  boundary-fallback threshold**: it never flips to the Python fallback leg
+  mid-run, because the native and fallback legs may have documented per-leg
+  divergences (e.g. a native builtin `float` vs NumPy's `float64`) and switching
+  mid-run would silently change observable behavior.
 - Overlapping claims: if two active plugins both return `Claimed` for one
   site, core fails loudly (PluginError naming both plugins). Priority
   systems are deferred.

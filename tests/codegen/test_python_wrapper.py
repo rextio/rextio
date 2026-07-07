@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis
+from rextio.analyzer.plugin_claims import PluginClaim
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.codegen.python_wrapper.wrapper_gen import render_wrapper_module
 
@@ -903,3 +905,98 @@ def keep(x: int) -> int:
     wrapper = render_wrapper_module(analysis.modules[0])
     assert 'if hasattr(_rextio_fallback_module, "__all__"):' in wrapper
     compile(wrapper, "<wrapper>", "exec")
+
+
+def _plugin_claim() -> PluginClaim:
+    return PluginClaim(
+        plugin_id="demo-plugin",
+        rule_id="demo.dot",
+        kind="call",
+        target="numpy.dot",
+        line=4,
+        column=11,
+        result_type="float",
+        operand_types=("F64_1D", "F64_1D"),
+        end_line=4,
+        end_column=50,
+    )
+
+
+def _render_single_function_wrapper(
+    tmp_path: Path, function: FunctionAnalysis
+) -> str:
+    source = tmp_path / "math_ops.py"
+    source.write_text(
+        "import rextio\n"
+        "@rextio.native\n"
+        "def sum_squares(n: int) -> float:\n"
+        "    return numpy.dot(numpy.zeros(n), numpy.zeros(n))\n",
+        encoding="utf-8",
+    )
+    function.file_path = str(source)
+    module = ModuleAnalysis(
+        module_name="pure_math.math_ops",
+        file_path=str(source),
+        functions=[function],
+    )
+    return render_wrapper_module(module, boundary_fallback_threshold=7)
+
+
+def _claim_only_function() -> FunctionAnalysis:
+    return FunctionAnalysis(
+        name="sum_squares",
+        qualname="pure_math.math_ops.sum_squares",
+        module_name="pure_math.math_ops",
+        file_path="math_ops.py",
+        line=2,
+        column=0,
+        is_native_candidate=True,
+        accepted=True,
+        plugin_claims=[_plugin_claim()],
+        plugin_type_keys=[],
+    )
+
+
+def test_claim_only_plugin_function_is_exempt_from_boundary_threshold(
+    tmp_path: Path,
+) -> None:
+    # Council round 15 (codex): the boundary-fallback threshold exemption keyed
+    # only on `plugin_type_keys`, but a function is `native-plugin`-routed when it
+    # has plugin CLAIMS *or* plugin-typed signature keys. A claim-only function
+    # (claims a core-typed call site, no plugin-typed params/returns) was routed
+    # native-plugin yet still emitted `boundary_fallback_required`, so hitting the
+    # threshold flipped it to the fallback leg mid-run -- reintroducing the exact
+    # per-leg divergence (native float vs NumPy float64) the exemption prevents.
+    function = _claim_only_function()
+    assert function.route.startswith("native-plugin:")
+    assert function.plugin_type_keys == []
+    wrapper = _render_single_function_wrapper(tmp_path, function)
+    threshold_lines = [
+        line
+        for line in wrapper.splitlines()
+        if "_rextio_boundary_fallback_required(" in line and "import" not in line
+    ]
+    assert threshold_lines == [], threshold_lines
+
+
+def test_plain_native_function_keeps_boundary_threshold(tmp_path: Path) -> None:
+    # Council round 15: the exemption must NOT over-reach -- a plain native
+    # (non-plugin) function still gets the boundary-fallback threshold gate.
+    function = FunctionAnalysis(
+        name="sum_squares",
+        qualname="pure_math.math_ops.sum_squares",
+        module_name="pure_math.math_ops",
+        file_path="math_ops.py",
+        line=2,
+        column=0,
+        is_native_candidate=True,
+        accepted=True,
+        plugin_claims=[],
+        plugin_type_keys=[],
+    )
+    assert function.route == "native-direct"
+    wrapper = _render_single_function_wrapper(tmp_path, function)
+    assert any(
+        "_rextio_boundary_fallback_required(" in line and "import" not in line
+        for line in wrapper.splitlines()
+    )
