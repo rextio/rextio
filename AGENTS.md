@@ -808,8 +808,10 @@ Runtime-backed native functions may cover:
   definition by ANY binding form (assignment and its variants; a `for`/`with`/
   `except`-as target; a `match` capture; `import ... as`; `del`; a later
   `def`/`class`/`type` of the same name; or a walrus in a def/class header —
-  including any of these inside class-body control flow), or a method in a
-  nested (inner) class, or a method defined inside class-body control flow is
+  including any of these inside class-body control flow), a method whose name is
+  declared `global`/`nonlocal` in the class body, a method in a nested (inner)
+  class (at any depth, including under that class's control flow), or a method
+  defined inside class-body control flow is
   rejected with RXT010 and stays on the Python fallback (wrapping it would
   strip the descriptor, change its calling convention, or drop the marker
   silently)

@@ -208,10 +208,13 @@ Runtime-backed native functions currently cover:
   `import ... as name`, a `del name`, a later `def`/`class name`, a `type name`
   alias, or a walrus in a def/class header — including any of these nested
   inside class-body control flow (`if`/`for`/`while`/`with`/`try`/`match`); or a
-  method defined in a **nested (inner) class**; or a method defined **inside
-  class-body control flow** — is rejected with RXT010 and stays an ordinary
-  Python method on the fallback (wrapping it would strip its descriptor, change
-  its calling convention, or drop the marker silently)
+  method whose name is declared `global`/`nonlocal` in the class body (its def
+  then binds an outer scope, so the class attribute is never created); or a
+  method defined in a **nested (inner) class** (at any depth, including under
+  that class's control flow); or a method defined **inside class-body control
+  flow** — is rejected with RXT010 and stays an ordinary Python method on the
+  fallback (wrapping it would strip its descriptor, change its calling
+  convention, bind the wrong scope, or drop the marker silently)
 - `try` / `except` / `finally` outside the restricted native subset (built-in
   exception handlers only — see `docs/stability.md`)
 - `raise` and `assert`

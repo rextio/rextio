@@ -1018,7 +1018,13 @@ def _reject_nested_class_methods(
         if not isinstance(node, ast.ClassDef):
             continue
         nested_path = f"{class_path}.{node.name}"
-        for child in node.body:
+        # Walk the nested class body (descending its own control flow) so a
+        # native method defined under `if`/`for`/`try` inside the nested class is
+        # rejected too, not silently dropped -- round 13 applied this walk to
+        # top-level method collection but left the nested path on direct children
+        # (council round 14). The walk stops at ClassDef boundaries, so a
+        # deeper-nested class is reached only by the recursive call below.
+        for child in _walk_class_scope(node.body):
             if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             marker = native_marker_for_function(child)
@@ -1416,6 +1422,21 @@ def _non_instance_method_reason(
         return f"it carries a non-@rextio.native decorator ({names})"
     if node.name in _IMPLICIT_DESCRIPTOR_METHODS:
         return f"{node.name} is an implicit descriptor method"
+    # A `global name` / `nonlocal name` declaration anywhere in the class body
+    # redirects the method's own `def` to bind the module/enclosing scope, so the
+    # class attribute is never created -- CPython leaves `Cls.name` absent, and a
+    # generated wrapper resolving `<fallback>.Cls.name` would fail at import. The
+    # declaration must lexically precede the def (`global` after an assignment is
+    # a SyntaxError), so it is missed by the after-def reassignment scan below;
+    # check the whole class scope for it (council round 14).
+    if any(
+        isinstance(statement, (ast.Global, ast.Nonlocal)) and node.name in statement.names
+        for statement in _walk_class_scope(class_node.body)
+    ):
+        return (
+            f"{node.name} is declared global/nonlocal in the class body "
+            f"(its definition binds an outer scope, not a class attribute)"
+        )
     # A class-body reassignment of the method name AFTER its definition makes the
     # final class attribute something other than this plain method: a descriptor
     # (``name = staticmethod(name)``, aliased or dotted), or any other binding.

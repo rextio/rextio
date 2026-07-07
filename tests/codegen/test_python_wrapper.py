@@ -803,6 +803,85 @@ class ForMethod:
         assert any(d.code == "RXT010" for d in by_qual[qual].diagnostics), qual
 
 
+def test_wrapper_rejects_native_method_under_nested_class_control_flow(
+    tmp_path: Path,
+) -> None:
+    # Council round 14 (hy3, kimi): round 13 rejected control-flow methods for
+    # top-level classes but left `_reject_nested_class_methods` on direct
+    # children, so a native method under control flow INSIDE a nested class was
+    # silently dropped. It is now rejected with RXT010 at any nesting depth.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+class Outer:
+    class Inner:
+        if True:
+            @rextio.native
+            def im(self, x: int) -> int:
+                return x + 1
+
+class A:
+    class B:
+        for _ in range(1):
+            @rextio.native
+            def deep(self, x: int) -> int:
+                return x
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    by_qual = {f.qualname: f for m in analysis.modules for f in m.functions}
+    for qual in ("demo_pkg.mod.Outer.Inner.im", "demo_pkg.mod.A.B.deep"):
+        assert qual in by_qual, qual
+        assert by_qual[qual].accepted is False, qual
+        assert any(d.code == "RXT010" for d in by_qual[qual].diagnostics), qual
+
+
+def test_wrapper_rejects_method_declared_global_in_class_body(tmp_path: Path) -> None:
+    # Council round 14 (codex): a `global name` / `nonlocal name` declaration in a
+    # class body redirects the method's own def to bind an OUTER scope, so the
+    # class attribute is never created -- CPython leaves `Foo.im` absent. Round 13
+    # accepted it (the declaration precedes the def, so the after-def scan missed
+    # it), and the generated wrapper then failed at import resolving
+    # `<fallback>.Foo.im`. It is now rejected with RXT010. A `global` for an
+    # UNRELATED name must not reject the method.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+class GlobalIm:
+    global im
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+
+class GlobalOther:
+    global other
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 1
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    accepted = {f.qualname: f.accepted for m in analysis.modules for f in m.functions}
+    assert accepted["demo_pkg.mod.GlobalIm.im"] is False
+    assert any(
+        d.code == "RXT010"
+        for m in analysis.modules
+        for f in m.functions
+        if f.qualname == "demo_pkg.mod.GlobalIm.im"
+        for d in f.diagnostics
+    )
+    # `global other` does not touch `im`, so the plain instance method stays.
+    assert accepted["demo_pkg.mod.GlobalOther.im"] is True
+
+
 def test_wrapper_mirrors_control_flow_defined_all(tmp_path: Path) -> None:
     # Council round 10 (codex): __all__ defined by control flow (or import) was
     # missed by the AST heuristic; it is now mirrored at runtime.
