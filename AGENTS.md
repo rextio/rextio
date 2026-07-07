@@ -800,7 +800,9 @@ not a Rust speedup path.
 Runtime-backed native functions may cover:
 
 * class/object behavior inside a marked native function
-* regular instance methods marked with `@rextio.native`
+* regular instance methods marked with `@rextio.native` (static/class
+  methods marked `@rextio.native` are rejected with RXT010 and stay on the
+  Python fallback — wrapping them would strip the descriptor)
 * exception handling
 * context managers
 * `async` / `await`

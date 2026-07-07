@@ -184,7 +184,11 @@ fn __rextio_exchange(
         .stdout
         .read_line(&mut response_line)
         .map_err(|_| __RextioExchange::Dead)?;
-    if read == 0 {
+    if read == 0 || !response_line.ends_with('\\n') {
+        // A frame without a trailing newline means the dispatcher died
+        // mid-write; treat it as Dead so the bridge is dropped and the next
+        // call re-spawns, instead of surfacing a confusing JSON parse error
+        // (council round 9).
         return Err(__RextioExchange::Dead);
     }
     let response: serde_json::Value = serde_json::from_str(response_line.trim())

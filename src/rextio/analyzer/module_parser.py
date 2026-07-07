@@ -918,6 +918,17 @@ def _collect_native_methods(
                 continue
             if not _native_marker_applies(marker, target_language):
                 continue
+            if _is_static_or_class_method(child):
+                # Only regular instance methods are supported (AGENTS.md /
+                # docs/unsupported-features.md). A native shim for a
+                # static/classmethod would replace the class attribute with a
+                # plain function and strip the descriptor, breaking the calling
+                # convention; reject so it stays an ordinary Python method on
+                # the fallback (council round 9).
+                functions.append(
+                    _rejected_static_or_class_method(child, module, node.name, target_language)
+                )
+                continue
             qualname = (
                 f"{module.module_name}.{node.name}.{child.name}"
                 if module.module_name
@@ -1008,6 +1019,59 @@ def _rejected_native_marker_function(
         logger_names=module.logger_names,
     )
     _add_native_marker_diagnostic(function, node, marker)
+    return function
+
+
+def _is_static_or_class_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Report whether a method carries a @staticmethod/@classmethod decorator."""
+    for decorator in node.decorator_list:
+        name = dotted_name(decorator.func if isinstance(decorator, ast.Call) else decorator)
+        if name in ("staticmethod", "classmethod"):
+            return True
+    return False
+
+
+def _rejected_static_or_class_method(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    module: ModuleAnalysis,
+    class_name: str,
+    target_language: str,
+) -> FunctionAnalysis:
+    qualname = (
+        f"{module.module_name}.{class_name}.{node.name}"
+        if module.module_name
+        else f"{class_name}.{node.name}"
+    )
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=qualname,
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        is_native_candidate=True,
+        accepted=False,
+        calls=collect_call_sites(node, module.imports, module.logger_names),
+        native_target_language=target_language,
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
+    )
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT010",
+            severity="error",
+            message=(
+                "@rextio.native on a staticmethod/classmethod is not supported "
+                "(only regular instance methods are); the method stays on the "
+                "Python fallback"
+            ),
+            file_path=function.file_path,
+            line=node.lineno,
+            column=node.col_offset,
+            function_name=function.qualname,
+            suggestion="Remove @rextio.native, or convert it to a regular instance method.",
+        )
+    )
     return function
 
 

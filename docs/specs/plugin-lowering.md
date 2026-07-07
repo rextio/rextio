@@ -122,7 +122,13 @@ class LoweredExpr:
 - `ctx` (`LoweringContext`) provides the rendered Rust sub-expressions for
   the site's operands (already lowered by core or by prior plugin claims),
   the target function's identifier namespace (for fresh temporaries via
-  `ctx.fresh_name()`), and the active `TargetSpec`.
+  `ctx.fresh_name()`), and the active `TargetSpec`. A plugin-typed operand is
+  handed to the plugin as a **bare identifier** (no `.clone()`): the plugin
+  OWNS the borrow-vs-consume decision and must add `&` where it borrows.
+  Because the same operand can appear more than once at a site (e.g. `a + a`),
+  a `lower()` snippet MUST NOT consume (move) an operand — borrow it. A
+  consuming snippet on a repeated operand is a `use of moved value` error at
+  `cargo build`, so the failure is loud, not silent.
 - The emitted expression must follow core's error posture: fallible
   operations return `Result<_, RextioError>`-compatible expressions using
   the same error-raising helpers core codegen uses (exposed through `ctx`),

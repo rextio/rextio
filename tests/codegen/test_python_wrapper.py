@@ -145,8 +145,11 @@ def add(a: int, b: int = _PRIVATE_MAX) -> int:
     analysis = analyze_project(tmp_path)
     wrapper = render_wrapper_module(analysis.modules[0])
 
-    # Private default name is rebound from the fallback module reference.
-    assert "_PRIVATE_MAX = _rextio_fallback_module._PRIVATE_MAX" in wrapper
+    # Council round 9: defaults are copied from the fallback function's
+    # __defaults__ (not reproduced as expressions), so the private default
+    # name never appears in the wrapper source and cannot NameError.
+    assert "_PRIVATE_MAX" not in wrapper
+    assert "add.__defaults__ = _rextio_fallback_fn_add.__defaults__" in wrapper
     # Docstring and __all__ are mirrored.
     assert "__doc__ = _rextio_fallback_module.__doc__" in wrapper
     assert "__all__ = list(_rextio_fallback_module.__all__)" in wrapper
@@ -157,3 +160,94 @@ def add(a: int, b: int = _PRIVATE_MAX) -> int:
     # The whole wrapper is valid Python (defaults resolve, future import first).
     compile(wrapper, "<wrapper>", "exec")
 
+
+
+def test_wrapper_default_referencing_star_import_excluded_function(tmp_path: Path) -> None:
+    # Council round 9 (glm/codex): a default referencing an accepted function
+    # excluded from the fallback star-import (via __all__) that sorts AFTER the
+    # referencing function used to NameError the whole module at import,
+    # defeating the fallback. Defaults are now copied, not reproduced.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        '''"""m."""
+import rextio
+
+__all__ = ["aaa"]
+
+@rextio.native
+def zzz(x: int) -> int:
+    return x + 1
+
+@rextio.native
+def aaa(x: int = zzz(0)) -> int:
+    return x
+''',
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    wrapper = render_wrapper_module(analysis.modules[0])
+    # No reproduced default expression referencing zzz; compiles cleanly.
+    assert "= zzz(0)" not in wrapper
+    assert "aaa.__defaults__ = _rextio_fallback_fn_aaa.__defaults__" in wrapper
+    compile(wrapper, "<wrapper>", "exec")
+
+
+def test_wrapper_preserves_positional_only_marker(tmp_path: Path) -> None:
+    # Council round 9 (antigravity): dropping the `/` marker let the wrapper
+    # accept positional-only params as keywords, diverging from CPython.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+@rextio.native
+def po(a: int, b: int, /, c: int) -> int:
+    return a + b + c
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    wrapper = render_wrapper_module(analysis.modules[0])
+    assert "def po(a: int, b: int, /, c: int)" in wrapper
+
+
+def test_wrapper_rejects_static_and_class_methods(tmp_path: Path) -> None:
+    # Council round 9 (claude/codex): @rextio.native on a static/classmethod
+    # produced a wrapper that stripped the descriptor; the analyzer now rejects
+    # these (only instance methods are supported), so the wrapper never
+    # replaces them and their calling convention is preserved.
+    source = tmp_path / "src" / "demo_pkg" / "mod.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+class C:
+    @staticmethod
+    @rextio.native
+    def sm(x: int) -> int:
+        return x + 1
+
+    @classmethod
+    @rextio.native
+    def cm(cls, x: int) -> int:
+        return x + 2
+
+    @rextio.native
+    def im(self, x: int) -> int:
+        return x + 3
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path)
+    by_name = {f.qualname: f for m in analysis.modules for f in m.functions}
+    assert by_name["demo_pkg.mod.C.sm"].accepted is False
+    assert by_name["demo_pkg.mod.C.cm"].accepted is False
+    assert by_name["demo_pkg.mod.C.im"].accepted is True
+    # The rejected static/class methods are not wrapped (only C.im is).
+    wrapper = render_wrapper_module(analysis.modules[0])
+    assert "C.im" in wrapper
+    assert "C.sm" not in wrapper
+    assert "C.cm" not in wrapper

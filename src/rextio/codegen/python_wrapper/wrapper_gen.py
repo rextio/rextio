@@ -83,7 +83,7 @@ def render_wrapper_module(
     # Faithfully mirror the source module's public surface: its docstring, any
     # module-level names referenced by parameter defaults (which the star-import
     # misses when they are private or excluded from __all__), and its __all__.
-    lines.extend(_render_namespace_fidelity(source_tree, accepted, function_nodes))
+    lines.extend(_render_namespace_fidelity(source_tree))
     lines.append("")
     for function in accepted:
         lines.extend(_render_fallback_binding(function, import_prefix, fallback_name, top_level is not None))
@@ -96,6 +96,7 @@ def render_wrapper_module(
     for function in accepted:
         node = function_nodes[_function_node_key(function)]
         lines.extend(_render_wrapper_function(function, node, boundary_fallback_threshold))
+        lines.extend(_render_defaults_copy(function, node))
         lines.append("")
 
     for function in accepted:
@@ -105,76 +106,20 @@ def render_wrapper_module(
     return "\n".join(lines)
 
 
-def _render_namespace_fidelity(
-    source_tree: ast.Module,
-    accepted: list[FunctionAnalysis],
-    function_nodes: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
-) -> list[str]:
-    """Mirror the source module's __doc__, private default names, and __all__.
+def _render_namespace_fidelity(source_tree: ast.Module) -> list[str]:
+    """Mirror the source module's __doc__ and __all__ onto the wrapper.
 
     ``from ._fallback import *`` only carries the fallback module's PUBLIC
-    names, so (1) the module docstring is lost, (2) a private module-level name
-    used as a parameter default (``_MAX = 3; def f(n=_MAX)``) is absent and the
-    wrapper NameErrors at import — the sibling of the round-7 annotation bug,
-    since defaults are eagerly evaluated even under PEP 563 — and (3) an
-    explicit ``__all__`` is not propagated. This rebinds each from the fallback
-    module reference (council round 8).
+    names, so the module docstring is lost and an explicit ``__all__`` is not
+    propagated; mirror both from the fallback module reference. (Parameter
+    defaults are handled separately by copying __defaults__/__kwdefaults__ from
+    the fallback function - see _render_defaults_copy - so they are never
+    reproduced as expressions here.)
     """
     lines = ['__doc__ = _rextio_fallback_module.__doc__']
-    module_level_names = _module_level_names(source_tree)
-    accepted_names = {function.name for function in accepted}
-    default_names = _default_referenced_names(accepted, function_nodes)
-    # Only names actually defined at module level and not already bound as a
-    # wrapper function; builtins/keywords in defaults resolve on their own.
-    names_to_bind = sorted((default_names & module_level_names) - accepted_names)
-    for name in names_to_bind:
-        lines.append(f"{name} = _rextio_fallback_module.{name}")
     if _has_module_all(source_tree):
         lines.append("__all__ = list(_rextio_fallback_module.__all__)")
     return lines
-
-
-def _module_level_names(tree: ast.Module) -> set[str]:
-    """Names bound at the top level of the source module."""
-    names: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            for alias in node.names:
-                names.add(alias.asname or alias.name.split(".")[0])
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                names.update(_assign_target_names(target))
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            names.add(node.target.id)
-    return names
-
-
-def _assign_target_names(target: ast.expr) -> set[str]:
-    if isinstance(target, ast.Name):
-        return {target.id}
-    if isinstance(target, (ast.Tuple, ast.List)):
-        names: set[str] = set()
-        for element in target.elts:
-            names.update(_assign_target_names(element))
-        return names
-    return set()
-
-
-def _default_referenced_names(
-    accepted: list[FunctionAnalysis],
-    function_nodes: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
-) -> set[str]:
-    names: set[str] = set()
-    for function in accepted:
-        node = function_nodes[_function_node_key(function)]
-        defaults = [*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)]
-        for default in defaults:
-            for child in ast.walk(default):
-                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
-                    names.add(child.id)
-    return names
 
 
 def _has_module_all(tree: ast.Module) -> bool:
@@ -310,30 +255,60 @@ def _threshold_gate_lines(
     ]
 
 
+def _render_defaults_copy(
+    function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef
+) -> list[str]:
+    """Copy parameter defaults from the fallback function onto the wrapper.
+
+    The wrapper signature carries no default expressions; instead the exact
+    default OBJECTS are copied from the fallback function at runtime, so impure
+    defaults are evaluated once (in the fallback module) and mutable defaults
+    are the same object the source module would use (council round 9).
+    """
+    if not node.args.defaults and not any(node.args.kw_defaults):
+        return []
+    wrapper = function.name if not _is_method(function) else _wrapper_method_name(function)
+    fallback = _fallback_binding_name(function)
+    lines: list[str] = []
+    if node.args.defaults:
+        lines.append(f"{wrapper}.__defaults__ = {fallback}.__defaults__")
+    if any(default is not None for default in node.args.kw_defaults):
+        lines.append(f"{wrapper}.__kwdefaults__ = {fallback}.__kwdefaults__")
+    return lines
+
+
 def _signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    # Default VALUES are never reproduced in the wrapper signature; they are
+    # copied at runtime from the fallback function's __defaults__/__kwdefaults__
+    # (see _render_defaults_copy). Reproducing default EXPRESSIONS re-evaluated
+    # them at wrapper import (double side effects for impure defaults) and could
+    # NameError when a default referenced a name absent from the wrapper
+    # namespace (council round 9). The positional-only `/` marker IS emitted so
+    # the wrapper rejects keyword use of positional-only params exactly as the
+    # source does.
     parts: list[str] = []
-    positional = [*node.args.posonlyargs, *node.args.args]
-    defaults = [None] * (len(positional) - len(node.args.defaults)) + list(node.args.defaults)
-    for arg, default in zip(positional, defaults, strict=True):
-        parts.append(_render_arg(arg, default))
+    for arg in node.args.posonlyargs:
+        parts.append(_render_arg(arg))
+    if node.args.posonlyargs:
+        parts.append("/")
+    for arg in node.args.args:
+        parts.append(_render_arg(arg))
     if node.args.vararg is not None:
-        parts.append(f"*{_render_arg(node.args.vararg, None)}")
+        parts.append(f"*{_render_arg(node.args.vararg)}")
     if node.args.kwonlyargs:
         if node.args.vararg is None:
             parts.append("*")
-        for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults, strict=True):
-            parts.append(_render_arg(arg, default))
+        for arg in node.args.kwonlyargs:
+            parts.append(_render_arg(arg))
     if node.args.kwarg is not None:
-        parts.append(f"**{_render_arg(node.args.kwarg, None)}")
+        parts.append(f"**{_render_arg(node.args.kwarg)}")
     return ", ".join(parts)
 
 
-def _render_arg(arg: ast.arg, default: ast.expr | None) -> str:
+def _render_arg(arg: ast.arg) -> str:
     rendered = arg.arg
     if arg.annotation is not None:
         rendered += f": {ast.unparse(arg.annotation)}"
-    if default is not None:
-        rendered += f" = {ast.unparse(default)}"
     return rendered
 
 
