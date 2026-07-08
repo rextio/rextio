@@ -31,6 +31,13 @@ fields bump minor; renames/removals bump major. Consumers must tolerate unknown
 fields and check `contract_version` compatibility, degrading to generic guidance
 on mismatch.
 
+`1.0.0` covers the entire pre-release 0.1.1 line: fields added before the first
+tagged release (`plugin_type_keys`, rule records, RXT091/RXT092) did not bump
+the version because no consumer could have shipped against an earlier manifest
+generation. From the first release onward this shortcut is closed — **any
+post-release additive change MUST bump the contract minor version** so
+consumers can distinguish manifest generations.
+
 ## Route taxonomy
 
 Today classification is spread across `FunctionAnalysis` booleans
@@ -43,8 +50,8 @@ decided about promotion):
 | `route` | Meaning | Derivation (current model) |
 |---|---|---|
 | `native-direct` | Direct core-subset Rust lowering | `is_native_candidate and accepted and not native_runtime_semantics`, no plugin rule involved |
-| `native-plugin:<plugin_id>` | Lowered by a Rextio plugin (AOT Rust, Rextio contract) | accepted via a plugin rule record (new; requires plugin protocol v2) |
-| `native-shim` | RXT080 runtime-semantics shim (behavior-preserving, not a speedup) | `accepted and native_runtime_semantics` |
+| `native-plugin:<plugin_id>[+<plugin_id>...]` | Lowered by a Rextio plugin (AOT Rust, Rextio contract) | accepted via a plugin rule record (new; requires plugin protocol v2). When several plugins contribute (claimed sites and/or plugin-typed parameters from different plugins in one signature), their ids are joined with `+` in sorted order — consumers MUST parse the segment after `:` as a `+`-separated set, not a single id |
+| `native-shim` | RXT080 runtime-semantics shim (behavior-preserving, not a speedup) | `accepted and native_runtime_semantics`. Any `plugin_claims`/`plugin_type_keys` reported on a shim-routed function are informational only — the shim executes the Python fallback, so claims are never lowered |
 | `fallback-python` | Generated Python fallback | everything not otherwise labeled |
 | `fallback-accelerated:<tool>` | External accelerator on the fallback (its own semantics contract) | `external_accelerator` set (today: `"numba"`) |
 
@@ -105,6 +112,11 @@ can become native, and what should I do when it can't?"*
 Resolution is config-aware: it loads the project config (same
 CLI > env > `rextio.toml` > default chain), resolves active plugins via the
 existing `PluginRegistry`, and merges rule records from core and plugins.
+Note: resolving the registry imports and executes enabled plugin packages'
+module-level code — with plugins enabled, `capabilities` is configuration
+introspection but not side-effect-free. The command never analyzes project
+sources or writes report files. Output ordering is deterministic: core rules
+in registry order, then plugin rules and the `plugins` array sorted by id.
 
 ```json
 {
@@ -120,14 +132,23 @@ existing `PluginRegistry`, and merges rule records from core and plugins.
     "set_item_types": ["int", "bool", "str"]
   },
   "rules": [ <RuleRecord>, ... ],
-  "plugins": [ { "id": "rextio-numpy", "api_version": "1.0",
-                 "rules_provided": true }, ... ]
+  "plugins": [ { "id": "rextio-numpy", "version": "0.1.0",
+                 "api_version": "1.0", "rules_provided": true }, ... ]
 }
 ```
 
 `type_capabilities` is emitted from the existing single-source-of-truth
 constants in `src/rextio/capabilities.py`. `config_fingerprint` lets consumers
-cache the manifest keyed on (fingerprint, rextio version, plugin versions).
+cache the manifest keyed on (fingerprint, rextio version, plugin versions) —
+each plugin entry carries its distribution `version` (null when the provider
+has no entry-point distribution metadata — a null version is NOT cache-safe:
+consumers must treat manifests containing it as uncacheable or key on their
+own knowledge of that plugin's revision) so the key is computable from the
+manifest alone. The `plugins` array (each entry's `id` + `version`) IS the
+plugin-version component of the cache key; consumers MUST fold it into their
+key alongside `config_fingerprint` — the fingerprint itself hashes only the
+resolved config (which contains plugin ids, not versions). `--no-plugins` emits the core-only manifest without importing
+or executing any plugin package code.
 
 ### RuleRecord (L2 — required)
 
@@ -145,7 +166,9 @@ cache the manifest keyed on (fingerprint, rextio version, plugin versions).
 ```
 
 - `id`: stable slug, namespaced by provider (`core/...`, `rextio-numpy/...`).
-- `scope.kind`: `type` | `syntax` | `call` | `import` | `decorator`.
+- `scope.kind`: `type` | `syntax` | `call` | `binop` | `import` | `decorator`.
+  `binop` labels operator lowering surfaces (a plugin claiming `+`/`-`/`*`/`/`
+  sites); `call` is reserved for call-shaped sites.
 - `outcome`: `native` | `fallback` | `reject` | `shim` | `boundary`.
 - `diagnostic_code`: the RXT/RXTP code emitted when the rule fires (1:1 where
   possible; the registry in `diagnostic_codes.py` remains the code
@@ -188,8 +211,8 @@ class RextioPluginV2(Protocol):
     def describe(self, config: RextioConfig) -> RuleManifest: ...
         # -> list of RuleRecord (L2 required, L3 fields optional)
 
-    def lower(self, ir_node, ctx) -> LoweringResult: ...
-        # actual translation; out of scope for this spec
+    # Lowering hooks (type_vocabulary/claim/lower/crate_dependencies) are
+    # plugin API 1.1 - specified separately in plugin-lowering.md.
 ```
 
 - **Discovery** stays on the `rextio.plugins` entry-point group. A v2 plugin is

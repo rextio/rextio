@@ -59,6 +59,16 @@ class FakeNumpyLoweringPlugin:
                 guidance="Use float64 1-D arrays.",
                 stability="experimental",
             ),
+            RuleRecord(
+                id="rextio-numpy/elementwise-float64",
+                provider="rextio-numpy",
+                scope=RuleScope(kind="binop", pattern="element-wise + on float64 1-D arrays"),
+                constraint="Element-wise addition lowers to ndarray addition.",
+                outcome="native",
+                diagnostic_code="RXTP-NUMPY-001",
+                guidance="Use float64 1-D arrays.",
+                stability="experimental",
+            ),
         )
 
     def type_vocabulary(self) -> tuple[PluginType, ...]:
@@ -68,7 +78,7 @@ class FakeNumpyLoweringPlugin:
         if site.kind == "call" and site.target == "numpy.dot":
             return Claimed(rule_id="rextio-numpy/dot-float64", result_type="float")
         if site.kind == "binop" and site.target == "+":
-            return Claimed(rule_id="rextio-numpy/dot-float64", result_type=F64_ARR1.key)
+            return Claimed(rule_id="rextio-numpy/elementwise-float64", result_type=F64_ARR1.key)
         return NotCovered()
 
     def lower(self, site: ClaimSite, ctx) -> LoweredExpr:

@@ -237,6 +237,70 @@ def test_crate_pin_conflict_across_plugins_fails_load() -> None:
         )
 
 
+def test_core_reserved_crate_name_fails_load() -> None:
+    # Council round 4: spec section 5 REQUIRES plugin-vs-core crate
+    # collisions to fail up front; the loader previously only compared
+    # plugins against each other.
+    class PyO3Plugin(LoweringPlugin):
+        plugin_id = "rextio-other"
+
+        def to_rextio_plugin(self) -> RextioPlugin:
+            return RextioPlugin(id="rextio-other", name="Other")
+
+        def describe(self, config: RextioConfig) -> tuple[RuleRecord, ...]:
+            return ()
+
+        def type_vocabulary(self) -> tuple[PluginType, ...]:
+            return ()
+
+        def crate_dependencies(self) -> tuple[CrateDependency, ...]:
+            return (CrateDependency(name="pyo3", version="=0.30.0"),)
+
+    with pytest.raises(PluginError, match="reserved by the core-generated manifest"):
+        load(("rextio-other", PyO3Plugin()), enabled=("rextio-other",))
+
+
+def test_same_provider_duplicate_diagnostic_codes_fail_load() -> None:
+    # Council round 6 (codex): the uniqueness check only fired across
+    # providers; a plugin describing two records with the same code slipped
+    # through, making manifest remediation lookups ambiguous.
+    class DupCodePlugin(LoweringPlugin):
+        plugin_id = "rextio-other"
+
+        def to_rextio_plugin(self) -> RextioPlugin:
+            return RextioPlugin(id="rextio-other", name="Other")
+
+        def describe(self, config: RextioConfig) -> tuple[RuleRecord, ...]:
+            record = RuleRecord(
+                id="rextio-other/one",
+                provider="rextio-other",
+                scope=RuleScope(kind="call", pattern="x"),
+                constraint="c",
+                outcome="fallback",
+                diagnostic_code="RXTP-OTHER-001",
+                guidance="g",
+            )
+            second = RuleRecord(
+                id="rextio-other/two",
+                provider="rextio-other",
+                scope=RuleScope(kind="call", pattern="y"),
+                constraint="c",
+                outcome="fallback",
+                diagnostic_code="RXTP-OTHER-001",
+                guidance="g",
+            )
+            return (record, second)
+
+        def type_vocabulary(self) -> tuple[PluginType, ...]:
+            return ()
+
+        def crate_dependencies(self) -> tuple[CrateDependency, ...]:
+            return ()
+
+    with pytest.raises(PluginError, match="duplicate plugin diagnostic code"):
+        load(("rextio-other", DupCodePlugin()), enabled=("rextio-other",))
+
+
 def test_matching_crate_pins_across_plugins_are_allowed() -> None:
     class OtherPlugin(LoweringPlugin):
         plugin_id = "rextio-other"
@@ -265,7 +329,7 @@ def test_crate_dependency_requires_exact_pin(version: str) -> None:
 
 
 def test_claim_results_are_distinct_types() -> None:
-    assert Claimed(rule_id="rextio-numpy/x") != NotCovered()
+    assert Claimed(rule_id="rextio-numpy/x", result_type="float") != NotCovered()
     rejected = Rejected(
         diagnostic=Diagnostic(
             code="RXTP-NUMPY-010",
@@ -287,3 +351,56 @@ def test_registry_to_dict_serializes_lowering_surfaces_without_providers() -> No
         {"plugin_id": "rextio-numpy", "name": "ndarray", "version": "=0.16.1", "features": []}
     ]
     assert "providers" not in data
+
+
+def test_lowering_members_require_api_1_1() -> None:
+    # Council round-2 R5: a plugin declaring api_version 1.0 must not expose
+    # the 1.1 lowering members.
+    plugin = LoweringPlugin()
+    plugin.api_version = "1.0"
+    with pytest.raises(PluginError, match="requires api_version >= 1.1"):
+        load(("rextio-numpy", plugin))
+
+
+def test_duplicate_annotation_spelling_within_one_plugin_fails_load() -> None:
+    # Council round-2 R14: cross-plugin collisions were caught, same-plugin
+    # duplicates silently resolved first-wins.
+    class DupSpelling(LoweringPlugin):
+        def type_vocabulary(self) -> tuple[PluginType, ...]:
+            second = PluginType(
+                key="rextio-numpy/f64-other",
+                annotations=("rextio_numpy.types.F64Arr1",),
+                rust_type="ndarray::Array1<f64>",
+                conversion=F64_ARR1.conversion,
+            )
+            return (F64_ARR1, second)
+
+    with pytest.raises(PluginError, match="declares annotation .* on both"):
+        load(("rextio-numpy", DupSpelling()))
+
+
+@pytest.mark.parametrize(
+    "name",
+    ['ev"il', "has space", "with\nnewline", "brack[et", 'quo"te'],
+)
+def test_crate_dependency_rejects_unsafe_names(name: str) -> None:
+    # Council round 8: crate names are rendered as bare TOML keys, so an
+    # unvalidated name could break or inject the generated Cargo.toml.
+    with pytest.raises(ValueError, match="not a valid Cargo crate name"):
+        CrateDependency(name=name, version="=1.0.0")
+
+
+@pytest.mark.parametrize(
+    "feature",
+    ['a"b', "has space", "new\nline", "semi;colon"],
+)
+def test_crate_dependency_rejects_unsafe_features(feature: str) -> None:
+    with pytest.raises(ValueError, match="invalid feature name"):
+        CrateDependency(name="ndarray", version="=0.16.1", features=(feature,))
+
+
+def test_crate_dependency_accepts_valid_names_and_features() -> None:
+    dep = CrateDependency(
+        name="serde-json_2", version="=1.0.0", features=("derive", "dep/feat", "a?/b")
+    )
+    assert dep.name == "serde-json_2"

@@ -19,6 +19,7 @@ from rextio.analyzer.native_marker import (
     external_accelerator_for_function,
     has_exempt_marker,
     native_marker_for_function,
+    parse_native_marker,
 )
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.analyzer.top_level import analyze_native_top_level
@@ -631,6 +632,7 @@ def _is_auto_native_candidate(
         function.inferred_return_type = probe.inferred_return_type
         function.plugin_claims = list(probe.plugin_claims)
         function.plugin_claim_rejections = list(probe.plugin_claim_rejections)
+        function.plugin_type_keys = list(probe.plugin_type_keys)
         function.native_target_language = target_language
         # Carry the probe's non-error diagnostics (e.g. RXT090 divergence
         # notes); an accepted probe has no errors.
@@ -682,6 +684,7 @@ def _classify_native_function(
     function.inferred_return_type = probe.inferred_return_type
     function.plugin_claims = list(probe.plugin_claims)
     function.plugin_claim_rejections = list(probe.plugin_claim_rejections)
+    function.plugin_type_keys = list(probe.plugin_type_keys)
     if probe.accepted:
         # Carry the probe's non-error diagnostics (e.g. RXT090 divergence
         # notes) onto the real function; an accepted probe has no errors.
@@ -903,7 +906,18 @@ def _collect_native_methods(
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
             continue
-        for child in node.body:
+        direct_method_ids = {
+            id(child)
+            for child in node.body
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        # Walk the class scope (descending class-body control flow) so a method
+        # defined under `if`/`for`/`try` is found, not just direct children;
+        # round 12 migrated nested-class discovery to this walk but left method
+        # collection on direct children (council round 13). Nested-class methods
+        # are still handled separately by `_reject_nested_class_methods` (the
+        # walk stops at ClassDef boundaries).
+        for child in _walk_class_scope(node.body):
             if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             marker = native_marker_for_function(child)
@@ -915,6 +929,32 @@ def _collect_native_methods(
                 )
                 continue
             if not _native_marker_applies(marker, target_language):
+                continue
+            if id(child) not in direct_method_ids:
+                # Defined inside class-body control flow: its definition is
+                # conditional and the direct-child ordering the reassignment scan
+                # relies on does not apply, so it cannot be safely wrapped. Reject
+                # so it stays an ordinary Python method on the fallback and the
+                # marker is reported, not dropped silently (council round 13).
+                functions.append(
+                    _rejected_control_flow_method(child, module, node.name, target_language)
+                )
+                continue
+            non_instance_reason = _non_instance_method_reason(child, node)
+            if non_instance_reason is not None:
+                # Only regular instance methods are supported (AGENTS.md /
+                # docs/unsupported-features.md). A native shim for anything that
+                # carries a descriptor - a static/class/property method
+                # (aliased or not), an implicit-descriptor dunder, or a method
+                # reassigned to one in the class body - would replace the class
+                # attribute with a plain function and strip the descriptor,
+                # breaking the calling convention; reject so it stays an
+                # ordinary Python method on the fallback (council rounds 9-10).
+                functions.append(
+                    _rejected_non_instance_method(
+                        child, module, node.name, target_language, non_instance_reason
+                    )
+                )
                 continue
             qualname = (
                 f"{module.module_name}.{node.name}.{child.name}"
@@ -948,7 +988,161 @@ def _collect_native_methods(
                 continue
             _add_runtime_semantics_warning(function, child)
             functions.append(function)
+        functions.extend(
+            _reject_nested_class_methods(node, node.name, module, target_language)
+        )
     return functions
+
+
+def _reject_nested_class_methods(
+    class_node: ast.ClassDef,
+    class_path: str,
+    module: ModuleAnalysis,
+    target_language: str,
+) -> list[FunctionAnalysis]:
+    """Reject @rextio.native markers on methods of classes nested in a class.
+
+    The analyzer and wrapper generator only collect methods of top-level
+    classes; a native marker on a method inside a nested (inner) class was
+    previously dropped silently -- neither accepted nor rejected, with no
+    diagnostic. Emit an RXT010 diagnostic so the marker is reported as
+    unsupported instead of being ignored, honoring the explicit-rejection
+    reporting contract (council round 11). Recurses to any nesting depth.
+    Nested classes wrapped in class-body control flow (``if``/``for``/``try``/
+    ...) are found via ``_walk_class_scope`` too -- round 11's direct-children
+    scan missed them (council round 12). Classes nested inside functions are
+    out of scope.
+    """
+    rejected: list[FunctionAnalysis] = []
+    for node in _walk_class_scope(class_node.body):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        nested_path = f"{class_path}.{node.name}"
+        # Walk the nested class body (descending its own control flow) so a
+        # native method defined under `if`/`for`/`try` inside the nested class is
+        # rejected too, not silently dropped -- round 13 applied this walk to
+        # top-level method collection but left the nested path on direct children
+        # (council round 14). The walk stops at ClassDef boundaries, so a
+        # deeper-nested class is reached only by the recursive call below.
+        for child in _walk_class_scope(node.body):
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            marker = native_marker_for_function(child)
+            if marker is None or has_exempt_marker(child):
+                continue
+            if marker.error:
+                # Preserve the specific marker-shape error (e.g. an unsupported
+                # target) instead of only the nested-class message -- both would
+                # carry code RXT010 at the same site and de-dup to one, so route
+                # to the marker-error path so the user fixes the marker itself
+                # first (council round 12).
+                rejected.append(
+                    _rejected_native_marker_method(
+                        child, module, nested_path, marker, target_language
+                    )
+                )
+                continue
+            if not _native_marker_applies(marker, target_language):
+                continue
+            rejected.append(
+                _rejected_nested_class_method(
+                    child, module, nested_path, target_language
+                )
+            )
+        rejected.extend(
+            _reject_nested_class_methods(node, nested_path, module, target_language)
+        )
+    return rejected
+
+
+def _rejected_nested_class_method(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    module: ModuleAnalysis,
+    class_path: str,
+    target_language: str,
+) -> FunctionAnalysis:
+    qualname = (
+        f"{module.module_name}.{class_path}.{node.name}"
+        if module.module_name
+        else f"{class_path}.{node.name}"
+    )
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=qualname,
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        is_native_candidate=True,
+        accepted=False,
+        calls=collect_call_sites(node, module.imports, module.logger_names),
+        native_target_language=target_language,
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
+    )
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT010",
+            severity="error",
+            message=(
+                "@rextio.native is supported only on methods of top-level classes, "
+                "but this method is defined in a nested (inner) class; it stays on "
+                "the Python fallback"
+            ),
+            file_path=function.file_path,
+            line=node.lineno,
+            column=node.col_offset,
+            function_name=function.qualname,
+            suggestion="Move the class to module top level, or remove @rextio.native.",
+        )
+    )
+    return function
+
+
+def _rejected_control_flow_method(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    module: ModuleAnalysis,
+    class_name: str,
+    target_language: str,
+) -> FunctionAnalysis:
+    qualname = (
+        f"{module.module_name}.{class_name}.{node.name}"
+        if module.module_name
+        else f"{class_name}.{node.name}"
+    )
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=qualname,
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        is_native_candidate=True,
+        accepted=False,
+        calls=collect_call_sites(node, module.imports, module.logger_names),
+        native_target_language=target_language,
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
+    )
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT010",
+            severity="error",
+            message=(
+                "@rextio.native is supported only on methods defined directly in the "
+                "class body, but this method is defined inside class-body control flow "
+                "(if/for/while/with/try); it stays on the Python fallback"
+            ),
+            file_path=function.file_path,
+            line=node.lineno,
+            column=node.col_offset,
+            function_name=function.qualname,
+            suggestion=(
+                "Define the method directly in the class body, or remove @rextio.native."
+            ),
+        )
+    )
+    return function
 
 
 def _rejected_async_function(
@@ -1006,6 +1200,307 @@ def _rejected_native_marker_function(
         logger_names=module.logger_names,
     )
     _add_native_marker_diagnostic(function, node, marker)
+    return function
+
+
+# Dunder methods Python treats as implicit static/class methods even without a
+# decorator: __new__ is an implicit staticmethod; __init_subclass__ and
+# __class_getitem__ are implicit classmethods. Wrapping any of them as a plain
+# function breaks Python's special dispatch (council round 10).
+_IMPLICIT_DESCRIPTOR_METHODS = frozenset(
+    {"__new__", "__init_subclass__", "__class_getitem__"}
+)
+def _target_binds_name(target: ast.expr, name: str) -> bool:
+    """Return True if an assignment target binds ``name`` (bare, unpacked, starred)."""
+    if isinstance(target, ast.Name):
+        return target.id == name
+    if isinstance(target, ast.Starred):
+        return _target_binds_name(target.value, name)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return any(_target_binds_name(elt, name) for elt in target.elts)
+    return False
+
+
+# Statement/expression nodes that open a new binding scope. A walk over a class
+# body must not descend into these -- their inner assignments and nested classes
+# bind that scope, not the enclosing class namespace -- but the boundary node is
+# still yielded so a nested class remains discoverable (council round 12).
+_SCOPE_BOUNDARY_NODES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.Lambda,
+)
+
+
+def _walk_class_scope(nodes: Iterable[ast.AST]) -> Iterable[ast.AST]:
+    """Yield every node reachable from ``nodes`` within one class scope.
+
+    Descends through compound statements (``if``/``for``/``while``/``with``/
+    ``try``/``match``) and expressions so a class-body assignment or nested
+    class wrapped in control flow is still found, but stops at nested
+    function/class/lambda scopes (yielding the boundary node itself, not its
+    body). Python executes a class body -- including its compound statements --
+    at class-definition time, so anything reached here binds the class
+    namespace; round 11's direct-children-only scan missed these (round 12).
+    """
+    for node in nodes:
+        yield node
+        if isinstance(node, _SCOPE_BOUNDARY_NODES):
+            continue
+        yield from _walk_class_scope(ast.iter_child_nodes(node))
+
+
+def _header_scope_exprs(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda,
+) -> list[ast.AST]:
+    """Return a def/class/lambda's sub-expressions evaluated in the enclosing scope.
+
+    These are decorators, base list, keyword args, parameter defaults, and
+    annotations -- a walrus in any of them binds the enclosing (class) scope
+    even though the node's body does not (council round 13).
+    """
+    header: list[ast.AST] = list(getattr(node, "decorator_list", []))
+    if isinstance(node, ast.ClassDef):
+        header.extend(node.bases)
+        header.extend(keyword.value for keyword in node.keywords)
+        return header
+    arguments = node.args  # FunctionDef / AsyncFunctionDef / Lambda
+    header.extend(arguments.defaults)
+    header.extend(default for default in arguments.kw_defaults if default is not None)
+    if not isinstance(node, ast.Lambda):
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+            *((arguments.vararg,) if arguments.vararg else ()),
+            *((arguments.kwarg,) if arguments.kwarg else ()),
+        ):
+            if argument.annotation is not None:
+                header.append(argument.annotation)
+        if node.returns is not None:
+            header.append(node.returns)
+    return header
+
+
+def _expr_walrus_binds(node: ast.AST, name: str) -> bool:
+    """Return True if a walrus (``:=``) target binds ``name`` at the enclosing scope.
+
+    Does not enter a nested function/class/lambda BODY (its walruses bind that
+    scope), but does inspect the node's HEADER expressions, which are evaluated
+    in the enclosing scope (council round 13).
+    """
+    if isinstance(node, _SCOPE_BOUNDARY_NODES):
+        return any(_expr_walrus_binds(expr, name) for expr in _header_scope_exprs(node))
+    if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+        if node.target.id == name:
+            return True
+    return any(_expr_walrus_binds(child, name) for child in ast.iter_child_nodes(node))
+
+
+def _match_pattern_binds_name(pattern: ast.AST, name: str) -> bool:
+    """Return True if a match capture pattern binds ``name``.
+
+    Covers ``case x``, ``case [*x]``, ``case {**x}``, and ``case ... as x``.
+    """
+    captured = getattr(pattern, "name", None)
+    if isinstance(captured, str) and captured == name:
+        return True
+    rest = getattr(pattern, "rest", None)
+    if isinstance(rest, str) and rest == name:
+        return True
+    return any(_match_pattern_binds_name(child, name) for child in ast.iter_child_nodes(pattern))
+
+
+def _statements_bind_name(statements: Iterable[ast.stmt], name: str) -> bool:
+    return any(_statement_rebinds_name(statement, name) for statement in statements)
+
+
+_AST_TYPE_ALIAS = getattr(ast, "TypeAlias", None)  # Python 3.12+ `type X = ...`
+
+
+def _statement_rebinds_name(statement: ast.stmt, name: str) -> bool:
+    """Return True if executing ``statement`` in a class body rebinds ``name``.
+
+    Comprehensive over Python's class-scope binding forms, mirroring the
+    module-scope enumeration in ``_collect_fidelity_shim_names``: plain/annotated
+    (value-bearing)/augmented assignment and walrus targets; ``for``/``with``/
+    ``except``-as; ``match`` captures; ``import``-as; ``del``; a later ``def``/
+    ``class`` of the same name; a ``type`` alias (3.12+); and a walrus in a
+    def/class HEADER (decorators, bases, defaults, annotations). Descends into
+    class-body compound statements but not into nested function/class/lambda
+    BODIES, whose bindings are local to that scope. Round 12's scan only handled
+    Assign/AnnAssign/AugAssign/NamedExpr and missed the rest (council round 13).
+    """
+    # Walrus anywhere in this statement's expressions (incl. def/class headers).
+    if _expr_walrus_binds(statement, name):
+        return True
+    if isinstance(statement, ast.Assign):
+        return any(_target_binds_name(target, name) for target in statement.targets)
+    if isinstance(statement, ast.AnnAssign):
+        return statement.value is not None and _target_binds_name(statement.target, name)
+    if isinstance(statement, ast.AugAssign):
+        return _target_binds_name(statement.target, name)
+    if isinstance(statement, ast.Delete):
+        return any(_target_binds_name(target, name) for target in statement.targets)
+    if isinstance(statement, (ast.Import, ast.ImportFrom)):
+        return any(
+            (alias.asname or alias.name.split(".", 1)[0]) == name
+            for alias in statement.names
+        )
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        # A later def/class of the same name overrides the method (its header
+        # walrus was already handled above).
+        return statement.name == name
+    if _AST_TYPE_ALIAS is not None and isinstance(statement, _AST_TYPE_ALIAS):
+        alias_name = getattr(statement, "name", None)
+        return isinstance(alias_name, ast.Name) and alias_name.id == name
+    if isinstance(statement, (ast.For, ast.AsyncFor)):
+        return (
+            _target_binds_name(statement.target, name)
+            or _statements_bind_name(statement.body, name)
+            or _statements_bind_name(statement.orelse, name)
+        )
+    if isinstance(statement, (ast.With, ast.AsyncWith)):
+        if any(
+            item.optional_vars is not None
+            and _target_binds_name(item.optional_vars, name)
+            for item in statement.items
+        ):
+            return True
+        return _statements_bind_name(statement.body, name)
+    if isinstance(statement, ast.If):
+        return _statements_bind_name(statement.body, name) or _statements_bind_name(
+            statement.orelse, name
+        )
+    if isinstance(statement, ast.While):
+        return _statements_bind_name(statement.body, name) or _statements_bind_name(
+            statement.orelse, name
+        )
+    if isinstance(statement, (ast.Try, ast.TryStar)):
+        if any(handler.name == name for handler in statement.handlers):
+            return True
+        if _statements_bind_name(statement.body, name):
+            return True
+        if any(_statements_bind_name(handler.body, name) for handler in statement.handlers):
+            return True
+        return _statements_bind_name(statement.orelse, name) or _statements_bind_name(
+            statement.finalbody, name
+        )
+    if isinstance(statement, ast.Match):
+        for case in statement.cases:
+            if _match_pattern_binds_name(case.pattern, name):
+                return True
+            if _statements_bind_name(case.body, name):
+                return True
+        return False
+    return False
+
+
+def _non_instance_method_reason(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, class_node: ast.ClassDef
+) -> str | None:
+    """Return why a native-marked method is not a plain instance method, else None.
+
+    Only a plain instance method can be safely replaced by the generated
+    wrapper; anything that carries or becomes a descriptor would have that
+    descriptor stripped (council round 10). Covers: any decorator besides the
+    native marker (``@property``/``@cached_property``/``@staticmethod``/
+    ``@classmethod``, aliased or not, and custom descriptors); the implicit
+    descriptor dunders; and a class-body reassignment of the method name.
+    """
+    extra = [
+        decorator
+        for decorator in node.decorator_list
+        if parse_native_marker(decorator) is None
+    ]
+    if extra:
+        names = ", ".join(
+            dotted_name(d.func if isinstance(d, ast.Call) else d) or "<decorator>"
+            for d in extra
+        )
+        return f"it carries a non-@rextio.native decorator ({names})"
+    if node.name in _IMPLICIT_DESCRIPTOR_METHODS:
+        return f"{node.name} is an implicit descriptor method"
+    # A `global name` / `nonlocal name` declaration anywhere in the class body
+    # redirects the method's own `def` to bind the module/enclosing scope, so the
+    # class attribute is never created -- CPython leaves `Cls.name` absent, and a
+    # generated wrapper resolving `<fallback>.Cls.name` would fail at import. The
+    # declaration must lexically precede the def (`global` after an assignment is
+    # a SyntaxError), so it is missed by the after-def reassignment scan below;
+    # check the whole class scope for it (council round 14).
+    if any(
+        isinstance(statement, (ast.Global, ast.Nonlocal)) and node.name in statement.names
+        for statement in _walk_class_scope(class_node.body)
+    ):
+        return (
+            f"{node.name} is declared global/nonlocal in the class body "
+            f"(its definition binds an outer scope, not a class attribute)"
+        )
+    # A class-body reassignment of the method name AFTER its definition makes the
+    # final class attribute something other than this plain method: a descriptor
+    # (``name = staticmethod(name)``, aliased or dotted), or any other binding.
+    # Wrapping it would strip/replace that binding, so reject conservatively --
+    # mirroring the decorator branch's "any non-native decorator => reject" stance
+    # so no new spelling (annotated, unpacked, aliased-wrapper) can slip through
+    # (council round 11). Only reassignments that lexically FOLLOW the definition
+    # count; an assignment before the def is overridden by the def itself.
+    seen_def = False
+    for statement in class_node.body:
+        if statement is node:
+            seen_def = True
+            continue
+        if not seen_def:
+            continue
+        if _statement_rebinds_name(statement, node.name):
+            return (
+                "it is reassigned after its definition in the class body "
+                "(the final class attribute would not be this instance method)"
+            )
+    return None
+
+
+def _rejected_non_instance_method(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    module: ModuleAnalysis,
+    class_name: str,
+    target_language: str,
+    reason: str,
+) -> FunctionAnalysis:
+    qualname = (
+        f"{module.module_name}.{class_name}.{node.name}"
+        if module.module_name
+        else f"{class_name}.{node.name}"
+    )
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=qualname,
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        is_native_candidate=True,
+        accepted=False,
+        calls=collect_call_sites(node, module.imports, module.logger_names),
+        native_target_language=target_language,
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
+    )
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT010",
+            severity="error",
+            message=(
+                f"@rextio.native is supported only on regular instance methods, "
+                f"but {reason}; the method stays on the Python fallback"
+            ),
+            file_path=function.file_path,
+            line=node.lineno,
+            column=node.col_offset,
+            function_name=function.qualname,
+            suggestion="Remove @rextio.native, or make it a plain instance method.",
+        )
+    )
     return function
 
 

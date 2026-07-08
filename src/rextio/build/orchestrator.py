@@ -72,6 +72,14 @@ from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
 from rextio.targets.plan import TargetPlan, default_target_plan
 
 
+# Modules the generated fallback dispatcher imports at runtime; a project
+# module whose TOP-LEVEL name matches one of these would shadow it under the
+# dispatcher's sys.path[0] and break delegated fallback (council round 8).
+_DISPATCHER_RESERVED_TOP_LEVEL_NAMES = frozenset(
+    {"importlib", "json", "os", "sys", "types", "rextio"}
+)
+
+
 def _plugin_lowering_inputs(
     target_plan: TargetPlan,
 ) -> tuple[PluginTypeMaps | None, dict[str, object] | None, dict[str, RxtPluginType] | None]:
@@ -138,10 +146,11 @@ class GenerateResult:
     rejected_native_count: int
     native_source: NativeSourceResult
     rust_crate_source: NativeSourceResult
+    plugin_crate_dependencies: tuple[dict[str, object], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this result."""
-        return {
+        data: dict[str, object] = {
             "fallback": self.fallback,
             "boundary_fallback_threshold": self.boundary_fallback_threshold,
             "target": self.target_plan.to_dict(),
@@ -155,6 +164,13 @@ class GenerateResult:
             "native_source": self.native_source.to_dict(),
             "rust_crate_source": self.rust_crate_source.to_dict(),
         }
+        # Mirror build.json's plugin dependency report so the two reports stay
+        # consistent (council round 8).
+        if self.plugin_crate_dependencies:
+            data["plugin_crate_dependencies"] = [
+                dict(dependency) for dependency in self.plugin_crate_dependencies
+            ]
+        return data
 
 
 @dataclass(frozen=True)
@@ -340,7 +356,7 @@ def generate_source_artifact(
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
-    native_source, _plugin_crate_dependencies = _generate_native_source(
+    native_source, plugin_crate_dependencies = _generate_native_source(
         plan,
         layout,
         target_plan,
@@ -364,6 +380,7 @@ def generate_source_artifact(
         rejected_native_count=plan.native.rejected_count,
         native_source=native_source,
         rust_crate_source=rust_crate_source,
+        plugin_crate_dependencies=plugin_crate_dependencies,
     )
     (layout.reports_dir / "generate.json").write_text(
         json.dumps(
@@ -377,6 +394,18 @@ def generate_source_artifact(
     return result
 
 
+def _reset_report_files(reports_dir: Path) -> None:
+    """Clear stale reports so a run leaves only its own reports.
+
+    ``build`` writes build.json+check.json and ``generate`` writes
+    generate.json+check.json; without clearing, `generate` then `build` leaves
+    a stale generate.json beside a fresh build.json (council round 8).
+    """
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("build.json", "generate.json", "check.json"):
+        (reports_dir / name).unlink(missing_ok=True)
+
+
 def _prepare_generated_sources(layout: ArtifactLayout, target_plan: TargetPlan) -> None:
     _reset_generated_dir(layout.target_dir(target_plan.spec.language))
     _reset_generated_dir(layout.rust_crate_dir)
@@ -386,7 +415,7 @@ def _prepare_generated_sources(layout: ArtifactLayout, target_plan: TargetPlan) 
     else:
         layout.target_dir(target_plan.spec.language).mkdir(parents=True, exist_ok=True)
     layout.python_dir.mkdir(parents=True, exist_ok=True)
-    layout.reports_dir.mkdir(parents=True, exist_ok=True)
+    _reset_report_files(layout.reports_dir)
 
 
 def _write_check_report(layout: ArtifactLayout, analysis: ProjectAnalysis) -> None:
@@ -522,6 +551,19 @@ def _generate_and_build_rust_crate(
     )
 
 
+def _used_plugin_ids(analysis: ProjectAnalysis) -> set[str]:
+    """Plugin ids whose lowering an accepted native function actually uses.
+
+    From the claims (each carries its plugin id) and plugin-typed signatures
+    (the type key is namespaced ``<plugin_id>/<slug>``) of accepted functions.
+    """
+    used: set[str] = set()
+    for function in analysis.accepted_native_functions:
+        used.update(claim.plugin_id for claim in function.plugin_claims)
+        used.update(key.split("/", 1)[0] for key in function.plugin_type_keys)
+    return used
+
+
 def _generate_native_source(
     plan: BuildPlan,
     layout: ArtifactLayout,
@@ -568,12 +610,20 @@ def _generate_native_source(
     registry = target_plan.plugins
     extra_dependencies: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
     plugin_crate_dependencies: tuple[dict[str, object], ...] = ()
-    if registry.crate_dependencies and any(
-        function.plugin_lowered for function in module_ir.functions
-    ):
+    used_plugin_ids = _used_plugin_ids(plan.analysis)
+    if registry.crate_dependencies and used_plugin_ids:
+        # Only the plugins whose lowering an ACCEPTED function actually uses
+        # contribute crates; an enabled-but-unused plugin's dependency must not
+        # be injected (it could break an otherwise valid build and misrepresent
+        # the compiled artifact -- council round 8).
+        used_bindings = tuple(
+            binding
+            for binding in registry.crate_dependencies
+            if binding.plugin_id in used_plugin_ids
+        )
         extra_dependencies = tuple(
             (binding.dependency.name, binding.dependency.version, binding.dependency.features)
-            for binding in registry.crate_dependencies
+            for binding in used_bindings
         )
         plugin_crate_dependencies = tuple(
             {
@@ -582,7 +632,7 @@ def _generate_native_source(
                 "version": binding.dependency.version,
                 "features": list(binding.dependency.features),
             }
-            for binding in registry.crate_dependencies
+            for binding in used_bindings
         )
     _write_rust_project(layout, rust_source, extra_dependencies=extra_dependencies)
     return NativeSourceResult(
@@ -909,6 +959,17 @@ def _write_hybrid_runtime(
             raise RustCodegenError(
                 f"hybrid runtime source collision: project module {module.module_name!r} "
                 f"conflicts with the generated dispatcher {DISPATCHER_STEM!r}"
+            )
+        if parts[0] in _DISPATCHER_RESERVED_TOP_LEVEL_NAMES:
+            # runtime_dir is sys.path[0] at dispatch time, so a project module
+            # whose top-level name shadows a module the dispatcher imports
+            # (json/os/sys/importlib/types) - or the rextio package itself -
+            # would be found before the real one and crash the long-lived
+            # dispatcher on its first request (council round 8).
+            raise RustCodegenError(
+                f"hybrid runtime source collision: project module {module.module_name!r} "
+                f"shadows a name the fallback dispatcher relies on "
+                f"({parts[0]!r}); rename the module or build a wheel/PyO3 artifact"
             )
         target.parent.mkdir(parents=True, exist_ok=True)
         # Make every intermediate directory an importable package.

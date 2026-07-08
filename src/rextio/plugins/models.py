@@ -65,9 +65,10 @@ class RextioPlugin:
     external Python packages it covers (``packages``), which the analyzer uses to
     resolve those packages to the ``plugin`` import policy. A protocol-v2 plugin
     additionally *self-describes* declarative rule records through ``describe()``
-    (``rules_provided`` is True; see ``rextio.plugins.api``). No plugin injects
-    codegen rules or otherwise alters lowering; the analyzer remains the
-    authority on what lowers.
+    (``rules_provided`` is True; see ``rextio.plugins.api``). A plugin API 1.1
+    plugin additionally *lowers* covered constructs through claim()/lower()
+    (``lowering_provided`` is True) — the analyzer still decides which sites
+    are offered and remains the authority on acceptance.
     """
 
     id: str
@@ -79,6 +80,11 @@ class RextioPlugin:
     packages: tuple[str, ...] = ()
     source: str = "entry-point"
     package: str | None = None
+    # Distribution version of the providing package (from entry-point
+    # metadata) - part of the manifest cache key the tooling contract
+    # documents (council round 6: the manifest promised the key but did not
+    # supply the plugin-version component).
+    version: str | None = None
     entry_point: str | None = None
     # Protocol v2: True when the plugin self-describes rule records through
     # ``describe()``; the declared plugin-API version travels with it.
@@ -108,12 +114,14 @@ class RextioPlugin:
         source: str,
         package: str | None = None,
         entry_point: str | None = None,
+        version: str | None = None,
     ) -> RextioPlugin:
         """Return a copy of this plugin annotated with its discovery source."""
         return replace(
             self,
             source=source,
             package=package,
+            version=version,
             entry_point=entry_point,
         )
 
@@ -129,6 +137,7 @@ class RextioPlugin:
             "packages": list(self.packages),
             "source": self.source,
             "package": self.package,
+            "version": self.version,
             "entry_point": self.entry_point,
             "rules_provided": self.rules_provided,
             "api_version": self.api_version,

@@ -6,8 +6,11 @@ project, what can become native, and what should tooling suggest when it
 can't?". External consumers (agent skills, LSP servers, editor extensions)
 read the JSON form; the text form is a human summary.
 
-The manifest is pure introspection: it loads configuration and resolves the
-plugin registry but never analyzes project sources or writes report files.
+The manifest is pure introspection of configuration: it never analyzes
+project sources or writes report files. Resolving the plugin registry DOES
+import and execute enabled plugin packages' module-level code, however —
+plugins are compiler extensions, and building their manifest entries
+requires loading them (docs/specs/tooling-contract.md).
 """
 
 from __future__ import annotations
@@ -33,7 +36,8 @@ from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.config.schema import RextioConfig
 from rextio.contract import TOOLING_CONTRACT_VERSION
-from rextio.targets.plan import TargetPlan, TargetPlanError, create_target_plan
+from rextio.plugins.models import PluginRegistry
+from rextio.targets.plan import TargetPlan, TargetPlanError, create_target_plan, create_target_spec
 
 
 def config_fingerprint(config: RextioConfig) -> str:
@@ -43,15 +47,43 @@ def config_fingerprint(config: RextioConfig) -> str:
     versions): any change to the resolved config — from `rextio.toml`, an
     environment variable, or a CLI override — changes the fingerprint.
     """
-    canonical = json.dumps(asdict(config), sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(
+        asdict(config), sort_keys=True, separators=(",", ":"), default=_fingerprint_default
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _fingerprint_default(value: object) -> object:
+    """Normalize non-JSON-serializable config values for the fingerprint.
+
+    The config schema is primitives/dicts/tuples today, but a future Path or
+    Enum field would otherwise crash ``rextio capabilities`` (council round 8).
+    """
+    from enum import Enum
+    from pathlib import Path as _Path
+
+    if isinstance(value, _Path):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (set, frozenset)):
+        return sorted(value, key=repr)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "backslashreplace")
+    return repr(value)
 
 
 def build_manifest(
     project_root: Path, config: RextioConfig, target_plan: TargetPlan
 ) -> dict[str, object]:
     """Assemble the capability manifest dict for the resolved project state."""
-    rules = (*core_rule_records(), *target_plan.plugins.rule_records)
+    # Deterministic order regardless of entry-point discovery order: core
+    # records first (their in-registry order is canonical), then plugin
+    # records sorted by (provider, id) (council round 4).
+    plugin_rules = sorted(
+        target_plan.plugins.rule_records, key=lambda record: (record.provider, record.id)
+    )
+    rules = (*core_rule_records(), *plugin_rules)
     return {
         "contract_version": TOOLING_CONTRACT_VERSION,
         "rextio_version": __version__,
@@ -70,12 +102,18 @@ def build_manifest(
             {
                 "id": plugin.id,
                 "name": plugin.name,
+                # Distribution version: the manifest cache key is documented
+                # as (fingerprint, rextio version, plugin versions), so the
+                # manifest must supply the plugin-version component itself.
+                "version": plugin.version,
                 "packages": list(plugin.packages),
                 "rules_provided": plugin.rules_provided,
                 "api_version": plugin.api_version,
                 "lowering_provided": plugin.lowering_provided,
             }
-            for plugin in target_plan.plugins.active
+            # Sorted by id (not entry-point discovery order) so the manifest
+            # is byte-stable across environments, matching the rules array.
+            for plugin in sorted(target_plan.plugins.active, key=lambda plugin: (plugin.id, plugin.name))
         ],
     }
 
@@ -113,6 +151,11 @@ def run(args: Namespace) -> int:
     """Run the capabilities command; return the process exit code."""
     reporter = Reporter.from_args(args)
     project_root = Path(args.project_root).resolve()
+    if not project_root.is_dir():
+        # Without this a typo'd path silently reports default capabilities,
+        # which downstream tooling would cache as the project's contract.
+        reporter.error(f"RXT060 Configuration error: project root does not exist: {project_root}")
+        return 1
     try:
         config = override_config(
             load_config(project_root, environ=os.environ),
@@ -131,7 +174,18 @@ def run(args: Namespace) -> int:
                 ("policy", "native_top_level"): args.native_top_level,
             },
         )
-        target_plan = create_target_plan(project_root, config)
+        if getattr(args, "no_plugins", False):
+            # Core-only manifest: entry-point discovery itself imports and
+            # executes installed plugin packages, so --no-plugins must skip
+            # registry loading entirely, not merely disable plugins. The
+            # config override ALSO clears plugins.enabled so the emitted
+            # config_fingerprint differs from the plugin-loaded manifest -
+            # a consumer caching on the fingerprint must not collide the two
+            # views (council round 7).
+            config = override_config(config, {("plugins", "enabled"): ()})
+            target_plan = TargetPlan(spec=create_target_spec(config), plugins=PluginRegistry())
+        else:
+            target_plan = create_target_plan(project_root, config)
     except (ConfigError, TargetPlanError) as exc:
         reporter.error(f"RXT060 Configuration error: {exc}")
         return 1

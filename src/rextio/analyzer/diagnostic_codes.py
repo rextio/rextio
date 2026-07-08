@@ -53,6 +53,11 @@ _CODES: tuple[DiagnosticCode, ...] = (
         "Accelerator-decorated function may be plugin-lowerable if the decorator is removed",
         "experimental",
     ),
+    DiagnosticCode(
+        "RXT092",
+        "Native function calls a plugin-typed function (Python-facing entry point)",
+        "experimental",
+    ),
 )
 
 DIAGNOSTIC_CODES: dict[str, DiagnosticCode] = {entry.code: entry for entry in _CODES}

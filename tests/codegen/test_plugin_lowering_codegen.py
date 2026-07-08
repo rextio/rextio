@@ -220,6 +220,99 @@ def test_missing_provider_is_a_codegen_error(tmp_path: Path) -> None:
         generate_rust_module(module_ir, plugin_types_by_key=TYPES_BY_KEY)
 
 
+class MatmulProvider(NumpyProvider):
+    def claim(self, site: ClaimSite, config: RextioConfig):
+        if site.kind == "binop" and site.target == "@":
+            return Claimed(rule_id="rextio-numpy/dot-float64", result_type="float")
+        return super().claim(site, config)
+
+    def lower(self, site: ClaimSite, ctx: LoweringContext) -> LoweredExpr:
+        if site.kind == "binop" and site.target == "@":
+            return LoweredExpr(rust=f"{ctx.operands[0]}.dot(&{ctx.operands[1]})")
+        return super().lower(site, ctx)
+
+
+def test_claimed_matmul_lowers_through_generate(tmp_path: Path) -> None:
+    # Council round 7 (codex): the round-6 matmul fix was analyzer-only -
+    # check reported accepted/native-plugin but IR lowering still called
+    # lower_binary_op (no MatMult case) and generate failed. The claimed
+    # branch now takes its op label from the claim, so the whole pipeline
+    # must succeed, not just analysis.
+    write_module(
+        tmp_path,
+        """
+from rextio_numpy.types import F64Arr1
+
+def matmul(a: F64Arr1, b: F64Arr1) -> float:
+    return a @ b
+""",
+    )
+    analysis = analyze_with_plugin(tmp_path, MatmulProvider())
+    module_ir = lower_project(analysis, plugin_types=TYPE_MAPS)
+    source = generate_rust_module(
+        module_ir,
+        plugin_providers={PLUGIN_ID: MatmulProvider()},
+        plugin_types_by_key=TYPES_BY_KEY,
+    )
+    assert "fn myapp__kernels__matmul" in source
+    assert ".dot(&" in source
+
+
+def test_lower_receives_the_claimed_rule_id(tmp_path: Path) -> None:
+    # Council round 7 (codex): lower() previously received a bare ClaimSite
+    # without the claim's rule_id, so a plugin with two same-shape rules
+    # could not dispatch deterministically.
+    seen: list[tuple[str | None, str | None]] = []
+
+    class RecordingProvider(NumpyProvider):
+        def lower(self, site: ClaimSite, ctx: LoweringContext) -> LoweredExpr:
+            seen.append((site.rule_id, site.result_type))
+            return super().lower(site, ctx)
+
+    write_module(tmp_path, DOT_MODULE)
+    analysis = analyze_with_plugin(tmp_path, RecordingProvider())
+    module_ir = lower_project(analysis, plugin_types=TYPE_MAPS)
+    generate_rust_module(
+        module_ir,
+        plugin_providers={PLUGIN_ID: RecordingProvider()},
+        plugin_types_by_key=TYPES_BY_KEY,
+    )
+    assert ("rextio-numpy/dot-float64", "float") in seen
+
+
+def test_mixed_module_native_and_plugin_functions_generate_consistently(tmp_path: Path) -> None:
+    # Council round 8 (hy3): a module with both a core-native function and a
+    # plugin-lowered function must generate consistent PyO3 output; the core
+    # function stays crate-eligible while the plugin one needs the boundary.
+    write_module(
+        tmp_path,
+        """
+import numpy as np
+from rextio_numpy.types import F64Arr1
+
+def scalar(x: int, y: int) -> int:
+    return x + y
+
+def dot(a: F64Arr1, b: F64Arr1) -> float:
+    return np.dot(a, b)
+""",
+    )
+    analysis = analyze_with_plugin(tmp_path, NumpyProvider())
+    module_ir = lower_project(analysis, plugin_types=TYPE_MAPS)
+    plugin_lowered = {f.qualname: f.plugin_lowered for f in module_ir.functions}
+    assert plugin_lowered["myapp.kernels.scalar"] is False
+    assert plugin_lowered["myapp.kernels.dot"] is True
+
+    source = generate_rust_module(
+        module_ir,
+        plugin_providers={PLUGIN_ID: NumpyProvider()},
+        plugin_types_by_key=TYPES_BY_KEY,
+    )
+    assert "fn myapp__kernels__scalar" in source
+    assert "fn myapp__kernels__dot" in source
+    assert ".dot(&" in source
+
+
 def test_cargo_toml_appends_pinned_plugin_dependencies() -> None:
     rendered = render_cargo_toml(
         extra_dependencies=(
@@ -234,6 +327,31 @@ def test_cargo_toml_appends_pinned_plugin_dependencies() -> None:
     assert rendered.index('ndarray = "=0.16.1"') < rendered.index('numpy = {')
     # The core dependency block is unchanged.
     assert 'pyo3 = { version = "0.29", features = ["extension-module"] }' in rendered
+
+
+def test_cargo_toml_merges_duplicate_pins_across_plugins() -> None:
+    # Council round 5 (codex): two plugins pinning the same crate at the same
+    # version (allowed by the loader) must render ONE dependency entry - a
+    # duplicate TOML key is invalid and breaks cargo. Features are unioned.
+    import tomllib
+
+    rendered = render_cargo_toml(
+        extra_dependencies=(
+            ("numpy", "=0.29.0", ("half",)),
+            ("numpy", "=0.29.0", ("nalgebra",)),
+            ("rand", "=0.8.5", ()),
+            ("rand", "=0.8.5", ()),
+        )
+    )
+    parsed = tomllib.loads(rendered)  # raises on duplicate keys
+    assert parsed["dependencies"]["numpy"] == {
+        "version": "=0.29.0",
+        "features": ["half", "nalgebra"],
+    }
+    assert parsed["dependencies"]["rand"] == "=0.8.5"
+    assert rendered.count("numpy = ") == 1
+    # Features render in sorted order (determinism), not insertion order.
+    assert rendered.index('"half"') < rendered.index('"nalgebra"')
 
 
 def test_cargo_toml_without_extras_is_unchanged() -> None:

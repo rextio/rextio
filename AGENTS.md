@@ -800,7 +800,21 @@ not a Rust speedup path.
 Runtime-backed native functions may cover:
 
 * class/object behavior inside a marked native function
-* regular instance methods marked with `@rextio.native`
+* regular instance methods marked with `@rextio.native` — plain instance
+  methods of a top-level class only; a method carrying any other decorator
+  (`@staticmethod`/`@classmethod`/`@property`/`cached_property`, aliased or
+  not), an implicit descriptor dunder (`__new__`/`__init_subclass__`/
+  `__class_getitem__`), a class-body rebinding of the method name after its
+  definition by ANY binding form (assignment and its variants; a `for`/`with`/
+  `except`-as target; a `match` capture; `import ... as`; `del`; a later
+  `def`/`class`/`type` of the same name; or a walrus in a def/class header —
+  including any of these inside class-body control flow), a method whose name is
+  declared `global`/`nonlocal` in the class body, a method in a nested (inner)
+  class (at any depth, including under that class's control flow), or a method
+  defined inside class-body control flow is
+  rejected with RXT010 and stays on the Python fallback (wrapping it would
+  strip the descriptor, change its calling convention, or drop the marker
+  silently)
 * exception handling
 * context managers
 * `async` / `await`

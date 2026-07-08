@@ -10,7 +10,7 @@ newline-delimited JSON wire protocol, and maps a Python exception back to a
 
 from __future__ import annotations
 
-from rextio.codegen.subprocess_dispatcher import DISPATCHER_STEM
+from rextio.codegen.subprocess_dispatcher import DISPATCHER_STEM, PROTOCOL_VERSION
 
 # The runtime directory (dispatcher + fallback Python tree) is placed next to the
 # executable as ``<exe>.runtime`` by the build; the client resolves it from the
@@ -112,76 +112,132 @@ fn __rextio_resolve_python(runtime_dir: &std::path::Path, python: &str) -> std::
     }
 }
 
-fn __rextio_bridge() -> Result<&'static Mutex<RextioBridge>, RextioError> {
-    static BRIDGE: OnceLock<Result<Mutex<RextioBridge>, String>> = OnceLock::new();
-    let cell = BRIDGE.get_or_init(|| {
-        let runtime_dir = __rextio_runtime_dir()?;
-        {SPAWN_BLOCK}
-            // The dispatcher imports the fallback modules from this directory.
-            .current_dir(&runtime_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!(
-                "Rextio: failed to launch the Python dispatcher ({}); is the interpreter available?", e
-            ))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Rextio: dispatcher stdin unavailable".to_string())?;
-        let stdout = BufReader::new(
-            child
-                .stdout
-                .take()
-                .ok_or_else(|| "Rextio: dispatcher stdout unavailable".to_string())?,
-        );
-        Ok(Mutex::new(RextioBridge { _child: child, stdin, stdout }))
-    });
-    cell.as_ref()
-        .map_err(|e| RextioError::new("RuntimeError", e.as_str()))
+enum __RextioExchange {
+    // The dispatcher died mid-exchange; the caller drops the bridge so the
+    // NEXT delegated call re-spawns a fresh dispatcher (council round 8).
+    Dead,
+    Failed(RextioError),
 }
 
-fn __rextio_call_python(
-    qualname: &str,
-    args: Vec<serde_json::Value>,
-) -> Result<serde_json::Value, RextioError> {
-    let mut guard = __rextio_bridge()?
-        .lock()
-        .map_err(|_| RextioError::new("RuntimeError", "Rextio dispatcher mutex was poisoned"))?;
-    let bridge = &mut *guard;
+fn __rextio_spawn_bridge() -> Result<RextioBridge, String> {
+    let runtime_dir = __rextio_runtime_dir()?;
+    {SPAWN_BLOCK}
+        // The dispatcher imports the fallback modules from this directory.
+        .current_dir(&runtime_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!(
+            "Rextio: failed to launch the Python dispatcher ({}); is the interpreter available?", e
+        ))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Rextio: dispatcher stdin unavailable".to_string())?;
+    let mut stdout = BufReader::new(
+        child
+            .stdout
+            .take()
+            .ok_or_else(|| "Rextio: dispatcher stdout unavailable".to_string())?,
+    );
+    // Protocol handshake: the dispatcher's first frame declares its version so a
+    // binary/runtime version mismatch fails clearly instead of as cryptic JSON
+    // errors on the first real call (council round 8).
+    let mut handshake = String::new();
+    let read = stdout
+        .read_line(&mut handshake)
+        .map_err(|e| format!("Rextio: dispatcher handshake read failed: {}", e))?;
+    if read == 0 {
+        return Err("Rextio: the Python dispatcher exited before the protocol handshake".to_string());
+    }
+    let frame: serde_json::Value = serde_json::from_str(handshake.trim())
+        .map_err(|e| format!("Rextio: malformed dispatcher handshake frame: {}", e))?;
+    let version = frame.get("protocol").and_then(|v| v.as_u64());
+    if version != Some({PROTOCOL_VERSION}) {
+        return Err(format!(
+            "Rextio: dispatcher protocol mismatch (binary expects {}, dispatcher reported {:?}); rebuild the binary and its runtime together",
+            {PROTOCOL_VERSION}, version
+        ));
+    }
+    Ok(RextioBridge { _child: child, stdin, stdout })
+}
 
+fn __rextio_bridge() -> &'static Mutex<Option<RextioBridge>> {
+    static BRIDGE: OnceLock<Mutex<Option<RextioBridge>>> = OnceLock::new();
+    BRIDGE.get_or_init(|| Mutex::new(None))
+}
+
+fn __rextio_exchange(
+    bridge: &mut RextioBridge,
+    qualname: &str,
+    args: &[serde_json::Value],
+) -> Result<serde_json::Value, __RextioExchange> {
     let request = serde_json::json!({ "call": qualname, "args": args });
     let mut line = serde_json::to_string(&request)
-        .map_err(|e| RextioError::new("RuntimeError", e.to_string()))?;
+        .map_err(|e| __RextioExchange::Failed(RextioError::new("RuntimeError", e.to_string())))?;
     line.push('\\n');
-    bridge
-        .stdin
-        .write_all(line.as_bytes())
-        .map_err(|e| RextioError::new("RuntimeError", e.to_string()))?;
-    bridge
-        .stdin
-        .flush()
-        .map_err(|e| RextioError::new("RuntimeError", e.to_string()))?;
-
+    if bridge.stdin.write_all(line.as_bytes()).is_err() || bridge.stdin.flush().is_err() {
+        return Err(__RextioExchange::Dead);
+    }
     let mut response_line = String::new();
     let read = bridge
         .stdout
         .read_line(&mut response_line)
-        .map_err(|e| RextioError::new("RuntimeError", e.to_string()))?;
-    if read == 0 {
-        return Err(RextioError::new("RuntimeError", "the Python dispatcher exited unexpectedly"));
+        .map_err(|_| __RextioExchange::Dead)?;
+    if read == 0 || !response_line.ends_with('\\n') {
+        // A frame without a trailing newline means the dispatcher died
+        // mid-write; treat it as Dead so the bridge is dropped and the next
+        // call re-spawns, instead of surfacing a confusing JSON parse error
+        // (council round 9).
+        return Err(__RextioExchange::Dead);
     }
     let response: serde_json::Value = serde_json::from_str(response_line.trim())
-        .map_err(|e| RextioError::new("RuntimeError", e.to_string()))?;
+        .map_err(|e| __RextioExchange::Failed(RextioError::new("RuntimeError", e.to_string())))?;
+    if let Some(code) = response.get("exit").and_then(|v| v.as_i64()) {
+        // A delegated fallback function called sys.exit()/raised KeyboardInterrupt;
+        // terminate the whole process with that code, matching CPython
+        // (council round 10).
+        std::process::exit(code as i32);
+    }
     if let Some(ok) = response.get("ok") {
         return Ok(ok.clone());
     }
     if let Some(error) = response.get("error") {
         let kind = error.get("type").and_then(|v| v.as_str()).unwrap_or("RuntimeError");
         let message = error.get("message").and_then(|v| v.as_str()).unwrap_or("");
-        return Err(RextioError::new(kind, message));
+        return Err(__RextioExchange::Failed(RextioError::new(kind, message)));
     }
-    Err(RextioError::new("RuntimeError", "malformed response from the Python dispatcher"))
+    Err(__RextioExchange::Failed(RextioError::new(
+        "RuntimeError",
+        "malformed response from the Python dispatcher",
+    )))
+}
+
+fn __rextio_call_python(
+    qualname: &str,
+    args: Vec<serde_json::Value>,
+) -> Result<serde_json::Value, RextioError> {
+    let mut guard = __rextio_bridge()
+        .lock()
+        .map_err(|_| RextioError::new("RuntimeError", "Rextio dispatcher mutex was poisoned"))?;
+    if guard.is_none() {
+        *guard = Some(
+            __rextio_spawn_bridge().map_err(|e| RextioError::new("RuntimeError", e.as_str()))?,
+        );
+    }
+    let outcome = {
+        let bridge = guard.as_mut().expect("bridge just spawned");
+        __rextio_exchange(bridge, qualname, &args)
+    };
+    match outcome {
+        Ok(value) => Ok(value),
+        Err(__RextioExchange::Dead) => {
+            // Drop the dead bridge; the next delegated call spawns a fresh one.
+            *guard = None;
+            Err(RextioError::new("RuntimeError", "the Python dispatcher exited unexpectedly"))
+        }
+        Err(__RextioExchange::Failed(error)) => Err(error),
+    }
 }
 // ---- end IPC client -------------------------------------------------------
-'''.replace("{SPAWN_BLOCK}", spawn_block).replace("{RUNTIME_DIR_SUFFIX}", RUNTIME_DIR_SUFFIX).replace("{PYTHON_COMMAND}", baked)
+'''.replace("{SPAWN_BLOCK}", spawn_block).replace("{RUNTIME_DIR_SUFFIX}", RUNTIME_DIR_SUFFIX).replace("{PYTHON_COMMAND}", baked).replace("{PROTOCOL_VERSION}", str(PROTOCOL_VERSION))

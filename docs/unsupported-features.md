@@ -197,7 +197,24 @@ semantics. Rextio reports `RXT080` for these functions.
 Runtime-backed native functions currently cover:
 
 - class/object behavior inside a marked native function
-- regular instance methods marked with `@rextio.native`
+- regular instance methods marked with `@rextio.native` — ONLY plain
+  instance methods of a **top-level** class. A method that carries any other
+  decorator (`@staticmethod`/`@classmethod`/`@property`/`functools.cached_property`,
+  aliased or not), an implicit descriptor dunder (`__new__`,
+  `__init_subclass__`, `__class_getitem__`), a class-body rebinding of the
+  method name after its definition — by ANY binding form: `name = staticmethod(name)`
+  and its variants (annotated, tuple/list-unpacked, aliased wrapper, walrus,
+  augmented), a `for`/`with`/`except`-as target, a `match` capture, an
+  `import ... as name`, a `del name`, a later `def`/`class name`, a `type name`
+  alias, or a walrus in a def/class header — including any of these nested
+  inside class-body control flow (`if`/`for`/`while`/`with`/`try`/`match`); or a
+  method whose name is declared `global`/`nonlocal` in the class body (its def
+  then binds an outer scope, so the class attribute is never created); or a
+  method defined in a **nested (inner) class** (at any depth, including under
+  that class's control flow); or a method defined **inside class-body control
+  flow** — is rejected with RXT010 and stays an ordinary Python method on the
+  fallback (wrapping it would strip its descriptor, change its calling
+  convention, bind the wrong scope, or drop the marker silently)
 - `try` / `except` / `finally` outside the restricted native subset (built-in
   exception handlers only — see `docs/stability.md`)
 - `raise` and `assert`
@@ -311,6 +328,10 @@ or configure `[build] fallback_threshold = N` to embed the generated-code
 default. The runtime environment variable overrides that embedded default. Set
 the threshold to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable
 this automatic fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
+Plugin-routed functions (route `native-plugin:<id>`, whether from a plugin claim
+or a plugin-typed signature) are exempt from this automatic fallback: their
+native and fallback legs may have documented per-leg divergences, so they never
+flip mid-run.
 
 ## Experimental Scalar-Helper Embedding Boundary
 

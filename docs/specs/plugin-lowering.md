@@ -59,16 +59,31 @@ at analysis time, separately from emission:
 
 ```python
 def claim(self, site: ClaimSite, config: RextioConfig) -> ClaimResult: ...
-def lower(self, claimed: ClaimedSite, ctx: LoweringContext) -> LoweredExpr: ...
+def lower(self, claimed: ClaimSite, ctx: LoweringContext) -> LoweredExpr: ...
+# at lower() time the site carries the claim's own rule_id and result_type
 ```
 
-- `ClaimSite`: one candidate construct — a call or binary operation whose
+- `ClaimSite`: one candidate construct — a call or binary operation
+  (`+ - * / % @` — matmul is offered to plugins BEFORE core's arithmetic
+  allow-set rejects it, so a plugin may claim `@`). Calls written with
+  KEYWORD arguments are never offered (`operand_types` is positional);
+  a covered target reached with keywords falls back with core's RXT030.
+  One candidate construct whose
   operand/argument types include a plugin type or a covered symbol
   (`covers()` decides which sites are offered to which plugin). Carries the
-  resolved operand types, the dotted call target, and the source location.
+  resolved operand types and the dotted call target. The source-location
+  fields exist on the dataclass but are ZEROED (`file_path=""`, `line=0`,
+  `column=0`) for `claim()`/`lower()` calls — the determinism contract lets
+  core cache verdicts per site signature, so plugins must not key behavior
+  on location. Locations are re-attached by core when reporting.
 - `ClaimResult` is one of:
   - `Claimed(rule_id, result_type)` — the plugin will lower this site;
-    `rule_id` must be one of the plugin's rule records. `result_type` (a core
+    `rule_id` must be one of the plugin's rule records (enforced: a claim
+    with an unadvertised rule id from a describing plugin fails the
+    analysis with a PluginError). `result_type` is REQUIRED for expression
+    claims (enforced with a PluginError): without it the enclosing
+    expression stays untyped and the analyzer would report accepted for a
+    function it never finished typing. `result_type` (a core
     type name or plugin type key, or None for unknown) is the expression type
     the site produces, so the analyzer's inference keeps typing the enclosing
     expression. *(Amended during implementation: without it, claimed sites
@@ -107,13 +122,32 @@ class LoweredExpr:
 - `ctx` (`LoweringContext`) provides the rendered Rust sub-expressions for
   the site's operands (already lowered by core or by prior plugin claims),
   the target function's identifier namespace (for fresh temporaries via
-  `ctx.fresh_name()`), and the active `TargetSpec`.
+  `ctx.fresh_name()`), and the active `TargetSpec`. A plugin-typed operand is
+  handed to the plugin as a **bare identifier** (no `.clone()`): the plugin
+  OWNS the borrow-vs-consume decision and must add `&` where it borrows.
+  Because the same operand can appear more than once at a site (e.g. `a + a`),
+  a `lower()` snippet MUST NOT consume (move) an operand — borrow it. A
+  consuming snippet on a repeated operand is a `use of moved value` error at
+  `cargo build`, so the failure is loud, not silent.
 - The emitted expression must follow core's error posture: fallible
   operations return `Result<_, RextioError>`-compatible expressions using
   the same error-raising helpers core codegen uses (exposed through `ctx`),
   so a shape mismatch raises the CPython-comparable exception type.
 - Exposing core IR to plugins is **deferred**; nothing in this contract
   assumes plugins can see or produce IR nodes.
+- **Helper namespacing.** `helpers` items land at module level in one shared
+  generated file, deduplicated by exact text. Two plugins emitting a helper
+  with the same name but different text collide loudly at `cargo build`
+  (duplicate definition) — deliberate: a silent merge would pick one plugin's
+  semantics for both. To stay collision-free, prefix helper names with your
+  plugin id, e.g. `fn __rextio_numpy_dot_f64(...)`.
+- **Debugging plugin-emitted Rust.** The generated crate is kept on disk
+  under the project's `.rextio/build/` tree; when a plugin's emission
+  misbehaves, read the generated `src/lib.rs` there and run `cargo build`
+  directly in that directory for full rustc diagnostics. `rextio build`
+  surfaces codegen/build failures with the owning plugin id (see section 7);
+  the emitted expression appears verbatim in the generated function body, so
+  rustc's spans point into your `LoweredExpr.rust`/`helpers` text.
 
 ## 4. Boundary ABI: read-only in, owned out, no aliasing
 
@@ -131,13 +165,29 @@ class BoundaryConversion:
                        # e.g. "numpy::ToPyArray::to_pyarray(&{value}, py)"
 ```
 
+`param_expr` and `return_expr` are `str.format` templates (placeholders
+`{param}` / `{value}`), so any literal `{`/`}` in the Rust text — closures,
+struct literals, blocks — must be doubled (`{{` and `}}`) or formatting
+raises `KeyError`/`ValueError` at codegen.
+
 Normative rules for the initial surface:
 
-- Arguments are **read-only borrows**; generated code never mutates an
-  argument array in place. (For numpy: C-contiguous float64 only; a
-  non-contiguous or wrong-dtype array raises the wrapper's normal
-  warn-and-fallback path at runtime and is rejected at analysis when
-  statically known.)
+- Arguments cross the boundary as **read-only PyO3 views**; generated code
+  never mutates the caller's array in place. The plugin's ``param_expr``
+  decides what the function body actually operates on — in the initial
+  surface it is an **owned copy** (``as_array().to_owned()``), NOT a borrow:
+  every plugin-typed argument pays an O(n) materialization per call,
+  including arguments the body never reads. Plugin authors designing around
+  a "borrow" mental model will silently inherit that copy cost.
+  (For numpy: float64 1-D only; statically known mismatches are rejected at
+  analysis. **Non-contiguous (strided) arrays are accepted**: the read-only
+  view honors strides and the conversion materializes a contiguous owned
+  copy — certified behavior since round 4. A runtime value that violates the
+  declared plugin type — wrong dtype, wrong rank — raises the PyO3
+  conversion error in native mode; it does NOT fall back per call. Treat it
+  as a runtime type-contract violation, like passing a str to an int-typed
+  native function. A per-call conversion-failure fallback may be added
+  later.)
 - Returns transfer ownership of **newly allocated** values.
 - Plugin types NEVER cross the internal scalar boundary-call path (RXT075)
   and are never delegated by the Rust-executable dispatcher — the existing
@@ -158,7 +208,9 @@ New optional protocol member: `def crate_dependencies(self) -> tuple[CrateDepend
 Normative rules (all REQUIRED by this spec):
 
 - **Version pins are mandatory.** A dependency without an exact `=X.Y.Z` pin
-  fails plugin load (PluginError). A Cargo lockfile is NOT required.
+  fails plugin load (PluginError). A Cargo lockfile is NOT required. Two
+  plugins may pin the same crate at the same version; core merges them into
+  one manifest entry with the union of their feature sets.
 - **User consent:** plugin-injected crates are compiled only for plugins the
   user explicitly enabled (`[plugins] enabled` / `--enable-plugin`) — and the
   first build after a plugin's dependency set changes surfaces the injected
@@ -167,7 +219,13 @@ Normative rules (all REQUIRED by this spec):
   plugin-injected dependency as `{plugin_id, name, version, features}`.
 - Conflicts (two plugins pinning the same crate to different versions, or a
   plugin colliding with a core-generated dependency) fail the build up front
-  with a configuration-style error (RXT060 posture).
+  with a configuration-style error (RXT060 posture). The core-generated
+  manifests reserve these crate names, which plugins may not declare:
+  ``base64``, ``chrono``, ``log``, ``pyo3``, ``sha2``, ``serde``,
+  ``serde_json`` (the loader enforces the list — ``CORE_CRATE_NAMES``).
+  ``serde``/``serde_json`` are not in the extension crate's manifest today;
+  they are reserved because the hybrid executable's core-generated binary
+  crate declares them for the delegated-call wire protocol.
 
 ## 6. Verification: the plugin certification kit
 
@@ -179,6 +237,10 @@ result equivalence with hypothesis — the same posture as core's own
 
 - A lowering rule record SHOULD reference its certification status; rule
   records gain an optional `verified: bool` field (L2-compatible, additive).
+  When a rule's documented divergence makes bit-exact comparison impossible
+  (e.g. summation order), certification MAY use a tolerance-based comparator,
+  and the rule's `constraint` MUST state that tolerance — `verified` then
+  means "certified within the stated tolerance", not bit-equivalence.
 - Divergences must be documented per rule in `constraint` (the float
   summation-order divergence in RXTP-NUMPY-002/003 is the model) and follow
   the RXT090 posture: statically attributable ones may carry a per-function
@@ -188,9 +250,17 @@ result equivalence with hypothesis — the same posture as core's own
 
 ## 7. Routes, policies, and failure flow
 
-- A function with ≥1 plugin-lowered site gets route `native-plugin:<id>`
-  (even if other sites lowered through core rules). `native_status` stays
-  `accepted`.
+- A function with ≥1 plugin-claimed site OR a plugin-typed parameter/return
+  gets route `native-plugin:<id>` (even if other sites lowered through core
+  rules) — a signature-only plugin function still needs the plugin's boundary
+  conversions and crates. `native_status` stays `accepted`. Native-to-native
+  calls INTO a plugin-typed function are rejected in this release (RXT092):
+  plugin-typed functions are Python-facing entry points.
+  Every `native-plugin` function (by claims OR type keys) is **exempt from the
+  boundary-fallback threshold**: it never flips to the Python fallback leg
+  mid-run, because the native and fallback legs may have documented per-leg
+  divergences (e.g. a native builtin `float` vs NumPy's `float64`) and switching
+  mid-run would silently change observable behavior.
 - Overlapping claims: if two active plugins both return `Claimed` for one
   site, core fails loudly (PluginError naming both plugins). Priority
   systems are deferred.

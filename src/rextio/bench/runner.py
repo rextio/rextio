@@ -17,6 +17,7 @@ from typing import Any, get_args, get_origin, get_type_hints
 from rextio.analyzer.models import FunctionAnalysis, ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
+from rextio.plugins.loader import PluginError
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.fallback.module_copy import fallback_module_name
 from rextio.runtime.boundary_fallback import DISABLE_ENV as DISABLE_BOUNDARY_FALLBACK_ENV
@@ -66,18 +67,21 @@ def run_benchmark(
         target_plan = create_target_plan(project_root, config)
     except (ConfigError, TargetPlanError) as exc:
         raise BenchError(f"configuration error: {exc}") from exc
-    analysis = analyze_project(
-        project_root,
-        boundary_warnings=config.policy.boundary_warnings,
-        native_marker=config.policy.native_marker,
-        target_language=target_plan.spec.language,
-        native_top_level=config.policy.native_top_level,
-        imports_config=config.imports,
-        active_plugins=target_plan.plugins.active,
-        plugin_registry=target_plan.plugins,
-        plugin_config=config,
-        embedding_enabled=config.embedding.enabled,
-    )
+    try:
+        analysis = analyze_project(
+            project_root,
+            boundary_warnings=config.policy.boundary_warnings,
+            native_marker=config.policy.native_marker,
+            target_language=target_plan.spec.language,
+            native_top_level=config.policy.native_top_level,
+            imports_config=config.imports,
+            active_plugins=target_plan.plugins.active,
+            plugin_registry=target_plan.plugins,
+            plugin_config=config,
+            embedding_enabled=config.embedding.enabled,
+        )
+    except PluginError as exc:
+        raise BenchError(f"plugin error: {exc}") from exc
     function = _find_target(analysis, target)
     if function is None:
         raise BenchError(f"target function was not found: {target}")

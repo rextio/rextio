@@ -14,9 +14,11 @@ import ast
 from collections.abc import Mapping
 from dataclasses import replace
 
-from rextio.analyzer.models import FunctionAnalysis, PluginClaim
+from rextio.analyzer.models import FunctionAnalysis, PluginClaim, PluginClaimRejection
+from rextio.analyzer.native_marker import dotted_name
+from rextio.capabilities import DICT_KEY_TYPES, LIST_ITEM_TYPES, SET_ITEM_TYPES
 from rextio.config.schema import RextioConfig
-from rextio.plugins.api import Claimed, ClaimSite, NotCovered, Rejected
+from rextio.plugins.api import Claimed, ClaimSite, NotCovered, Rejected, plugin_code_segment
 from rextio.plugins.loader import PluginError
 from rextio.plugins.models import PluginRegistry
 
@@ -36,6 +38,18 @@ class ClaimEngine:
     def __init__(self, registry: PluginRegistry, config: RextioConfig) -> None:
         self._config = config
         self._providers = {binding.plugin_id: binding.provider for binding in registry.providers}
+        # Advertised rule ids per plugin: a describing plugin must claim
+        # within its own manifest (council round 5) so check.json claims
+        # always resolve to a capabilities rule. Plugins without records
+        # (e.g. minimal test providers) are exempt.
+        self._rule_ids: dict[str, set[str]] = {}
+        self._rule_kinds: dict[tuple[str, str], str] = {}
+        self._rule_codes: dict[str, set[str]] = {}
+        for record in registry.rule_records:
+            self._rule_ids.setdefault(record.provider, set()).add(record.id)
+            self._rule_kinds[(record.provider, record.id)] = record.scope.kind
+            if record.diagnostic_code is not None:
+                self._rule_codes.setdefault(record.provider, set()).add(record.diagnostic_code)
         # annotation spelling -> (plugin_id, plugin type key)
         self._annotations: dict[str, tuple[str, str]] = {}
         self._type_keys: set[str] = set()
@@ -65,7 +79,7 @@ class ClaimEngine:
         ``import rextio_numpy.types as t; t.F64Arr1`` both reach the
         vocabulary entry.
         """
-        dotted = _dotted_annotation(annotation)
+        dotted = dotted_name(annotation)
         if dotted is None:
             return None
         head, separator, tail = dotted.partition(".")
@@ -104,6 +118,9 @@ class ClaimEngine:
         right: str,
     ) -> tuple[bool, str | None]:
         """Offer a binary operation to the operand types' plugins."""
+        # The site target is the Python operator symbol (the spec's binop
+        # vocabulary); operators outside _BINOP_SYMBOLS (e.g. **, //, bit ops)
+        # are never offered and stay with core's own validation.
         symbol = _BINOP_SYMBOLS.get(type(op))
         if symbol is None:
             return False, None
@@ -199,10 +216,14 @@ class ClaimEngine:
             # at parse time would divert marked functions onto the RXT080 shim
             # and silently drop auto candidates, hiding the plugin's guidance.
             if not any(
-                existing.line == diagnostic.line and existing.column == diagnostic.column
+                existing.kind == site.kind
+                and existing.diagnostic.line == diagnostic.line
+                and existing.diagnostic.column == diagnostic.column
                 for existing in function.plugin_claim_rejections
             ):
-                function.plugin_claim_rejections.append(diagnostic)
+                function.plugin_claim_rejections.append(
+                    PluginClaimRejection(kind=site.kind, diagnostic=diagnostic)
+                )
             return True, None
         return False, None
 
@@ -222,21 +243,105 @@ class ClaimEngine:
             raise PluginError(
                 f"plugin {plugin_id!r} claim() must return Claimed, NotCovered, or Rejected"
             )
+        # Claim validation happens HERE, before the result is cached, so the
+        # cache never stores a verdict that is invalid by construction
+        # (council round 6).
+        if isinstance(result, Rejected):
+            expected_prefix = f"RXTP-{plugin_code_segment(plugin_id)}-"
+            if not result.diagnostic.code.startswith(expected_prefix):
+                # A plugin must reject within its own namespace; a core-shaped
+                # or foreign code would defeat the manifest's remediation
+                # lookup (council round 7).
+                raise PluginError(
+                    f"plugin {plugin_id!r} rejected site {site.target!r} with "
+                    f"diagnostic code {result.diagnostic.code!r}; plugin "
+                    f"rejections must use the {expected_prefix!r} namespace"
+                )
+            declared = self._rule_codes.get(plugin_id)
+            if declared is not None and result.diagnostic.code not in declared:
+                # The rejection code must resolve to one of the plugin's own
+                # rule records, or a manifest remediation lookup dangles
+                # (council round 8).
+                raise PluginError(
+                    f"plugin {plugin_id!r} rejected site {site.target!r} with "
+                    f"diagnostic code {result.diagnostic.code!r}, which is not "
+                    "declared by any of its rule records"
+                )
+        if isinstance(result, Claimed):
+            advertised = self._rule_ids.get(plugin_id)
+            if advertised is not None and result.rule_id not in advertised:
+                raise PluginError(
+                    f"plugin {plugin_id!r} claimed site {site.target!r} with rule id "
+                    f"{result.rule_id!r}, which is not among its described rule records"
+                )
+            rule_kind = self._rule_kinds.get((plugin_id, result.rule_id))
+            if rule_kind is not None and rule_kind != site.kind:
+                raise PluginError(
+                    f"plugin {plugin_id!r} claimed a {site.kind!r} site under rule "
+                    f"{result.rule_id!r}, whose scope kind is {rule_kind!r}"
+                )
+            if (
+                result.result_type is not None
+                and result.result_type not in self._type_keys
+                and not _is_known_core_type(result.result_type)
+            ):
+                # A bogus result type would pass analysis and only fail deep
+                # in codegen; the analyzer is the user-visible gate (council
+                # round 7).
+                raise PluginError(
+                    f"plugin {plugin_id!r} claimed site {site.target!r} with result "
+                    f"type {result.result_type!r}, which is neither a core type "
+                    "nor a registered plugin type key"
+                )
+            if result.result_type is None:
+                # Without a result type the enclosing expression stays
+                # untyped, return validation is skipped, and `check` reports
+                # accepted/native-plugin for a function the analyzer never
+                # finished typing (council round 6).
+                raise PluginError(
+                    f"plugin {plugin_id!r} claimed site {site.target!r} without a "
+                    "result_type; expression claims must state the type the "
+                    "site produces"
+                )
         self._cache[cache_key] = result
         return result
 
 
-def _dotted_annotation(node: ast.AST) -> str | None:
-    """Render a Name/Attribute annotation chain as a dotted string, or None."""
-    parts: list[str] = []
-    current = node
-    while isinstance(current, ast.Attribute):
-        parts.append(current.attr)
-        current = current.value
-    if not isinstance(current, ast.Name):
-        return None
-    parts.append(current.id)
-    return ".".join(reversed(parts))
+_CORE_RESULT_TYPES = frozenset(
+    {"int", "float", "bool", "str", "bytes", "None"}
+)
+
+
+def _is_known_core_type(type_name: str) -> bool:
+    """Report whether a claimed result type is a valid core scalar or container.
+
+    Container ELEMENT types are validated against the supported vocabulary, not
+    just the ``list[...]``/``dict[...]`` shape: previously any string with a
+    recognized prefix and a closing bracket passed, so ``list[object]`` or a
+    malformed ``list[`` was accepted at claim time and only failed deep in
+    codegen (council round 8).
+    """
+    normalized = type_name.replace(" ", "")
+    if normalized in _CORE_RESULT_TYPES:
+        return True
+    inner = _container_inner(normalized, "list[")
+    if inner is not None:
+        return inner in LIST_ITEM_TYPES
+    inner = _container_inner(normalized, "set[")
+    if inner is not None:
+        return inner in SET_ITEM_TYPES
+    inner = _container_inner(normalized, "dict[")
+    if inner is not None:
+        key, sep, value = inner.partition(",")
+        return bool(sep) and key in DICT_KEY_TYPES and value in _CORE_RESULT_TYPES
+    return False
+
+
+def _container_inner(type_name: str, prefix: str) -> str | None:
+    """Return the element string inside ``prefix...]``, or None if it does not match."""
+    if type_name.startswith(prefix) and type_name.endswith("]"):
+        return type_name[len(prefix):-1]
+    return None
 
 
 def _node_end(node: ast.AST) -> tuple[int | None, int | None]:

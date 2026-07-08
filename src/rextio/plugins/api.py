@@ -26,7 +26,11 @@ from rextio.analyzer.diagnostics import Diagnostic
 if TYPE_CHECKING:
     from rextio.config.schema import RextioConfig
 
-RULE_SCOPE_KINDS = frozenset({"type", "syntax", "call", "import", "decorator"})
+# "binop" describes operator lowering surfaces (ClaimSite kind "binop"), so a
+# plugin claiming `+`/`-`/`*`/`/` can label the rule accurately (council
+# round 4: the closed set had no vocabulary for operator rules and the
+# first-party numpy elementwise rule was mislabeled "call").
+RULE_SCOPE_KINDS = frozenset({"type", "syntax", "call", "binop", "import", "decorator"})
 RULE_OUTCOMES = frozenset({"native", "fallback", "reject", "shim", "boundary"})
 RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 
@@ -40,6 +44,13 @@ PLUGIN_API_VERSION = "1.1"
 # Crate dependency pins are exact by decree of the lowering spec: a plugin
 # without an exact pin fails to load.
 CRATE_PIN_PATTERN = re.compile(r"^=\d+\.\d+\.\d+$")
+# Cargo crate names: ASCII alphanumerics, `-` and `_` (crates.io rules).
+# Feature names additionally allow `/` and `.` for `dep/feature` and
+# `dep?/feature` style entries. Both are rendered as bare/quoted tokens
+# into Cargo.toml, so anything outside these sets could break or inject
+# TOML (council round 8).
+CRATE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+CRATE_FEATURE_PATTERN = re.compile(r"^[A-Za-z0-9_./?-]+$")
 
 # Plugin diagnostic codes are namespaced ``RXTP-<PLUGIN>-NNN`` where <PLUGIN>
 # is the plugin's code segment (its id, uppercased, with a leading "rextio-"
@@ -50,7 +61,14 @@ PLUGIN_DIAGNOSTIC_CODE_PATTERN = re.compile(r"^RXTP-([A-Z0-9]+)-\d{3}$")
 def plugin_code_segment(plugin_id: str) -> str:
     """Return the ``<PLUGIN>`` segment plugin diagnostic codes must carry."""
     stem = plugin_id[len("rextio-"):] if plugin_id.startswith("rextio-") else plugin_id
-    return re.sub(r"[^A-Z0-9]", "", stem.upper())
+    segment = re.sub(r"[^A-Z0-9]", "", stem.upper())
+    if not segment:
+        raise ValueError(
+            f"plugin id {plugin_id!r} yields an empty diagnostic-code segment; "
+            "plugin ids must contain at least one alphanumeric character "
+            "(after the optional 'rextio-' prefix)"
+        )
+    return segment
 
 
 @dataclass(frozen=True)
@@ -163,6 +181,10 @@ class BoundaryConversion:
     ``{value}`` in ``return_expr`` is the native result expression. Arguments
     are read-only borrows and returns transfer ownership of newly allocated
     values (docs/specs/plugin-lowering.md section 4).
+
+    Both expressions are ``str.format`` templates: literal braces in the Rust
+    text (closures, struct literals, blocks) must be doubled — ``{{`` and
+    ``}}`` — or formatting fails at codegen.
     """
 
     param_rust: str
@@ -206,12 +228,19 @@ class PluginType:
 
 @dataclass(frozen=True)
 class ClaimSite:
-    """One candidate construct offered to a plugin's ``claim``.
+    """One candidate construct offered to a plugin's ``claim`` or ``lower``.
 
     ``kind`` is ``call`` (dotted call target in ``target``) or ``binop``
     (operator token in ``target``); ``operand_types`` are the resolved operand
     or argument types in positional order (plugin type keys or core type
     names, ``None`` when unresolved).
+
+    At ``claim()`` time ``rule_id``/``result_type`` are ``None`` (the claim
+    has not happened yet). At ``lower()`` time core fills them with the
+    plugin's own claimed values, so a plugin with several same-shape rules
+    can dispatch its lowering deterministically by ``rule_id`` (council
+    round 7 — previously lower() had to re-infer the rule from
+    target/operands).
     """
 
     kind: str
@@ -220,10 +249,12 @@ class ClaimSite:
     file_path: str
     line: int
     column: int
+    rule_id: str | None = None
+    result_type: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this site."""
-        return {
+        data: dict[str, object] = {
             "kind": self.kind,
             "target": self.target,
             "operand_types": list(self.operand_types),
@@ -231,6 +262,11 @@ class ClaimSite:
             "line": self.line,
             "column": self.column,
         }
+        if self.rule_id is not None:
+            data["rule_id"] = self.rule_id
+        if self.result_type is not None:
+            data["result_type"] = self.result_type
+        return data
 
 
 @dataclass(frozen=True)
@@ -245,7 +281,9 @@ class Claimed:
     """
 
     rule_id: str
-    result_type: str | None = None
+    # REQUIRED for expression claims (the engine raises PluginError on None);
+    # no default so the omission fails at construction (council round 7).
+    result_type: str | None
 
 
 @dataclass(frozen=True)
@@ -303,12 +341,23 @@ class CrateDependency:
     features: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        """Validate the mandatory exact version pin (``=X.Y.Z``)."""
+        """Validate the crate name, exact version pin (``=X.Y.Z``), and features."""
+        if CRATE_NAME_PATTERN.match(self.name) is None:
+            raise ValueError(
+                f"crate dependency name {self.name!r} is not a valid Cargo crate "
+                "name (ASCII letters, digits, '-' and '_' only)"
+            )
         if CRATE_PIN_PATTERN.match(self.version) is None:
             raise ValueError(
                 f"crate dependency {self.name!r} must carry an exact version pin "
                 f"(=X.Y.Z), got {self.version!r}"
             )
+        for feature in self.features:
+            if CRATE_FEATURE_PATTERN.match(feature) is None:
+                raise ValueError(
+                    f"crate dependency {self.name!r} declares an invalid feature "
+                    f"name {feature!r}"
+                )
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this dependency."""
@@ -328,9 +377,9 @@ class RextioPluginV2(Protocol):
     recognizes v2 by the presence of a callable ``describe``. Metadata-only
     (v1) plugins keep loading unchanged and simply provide no rules.
 
-    The actual lowering hook (``lower``) is intentionally not part of this
-    protocol yet; rule records are declarative descriptions, and the analyzer
-    remains the authority on what lowers.
+    Rule records are declarative descriptions; the lowering hooks live on the
+    :class:`RextioLoweringPlugin` extension (plugin API 1.1). The analyzer
+    remains the authority on which sites are offered and accepted.
     """
 
     plugin_id: str

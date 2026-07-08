@@ -198,6 +198,15 @@ def lower_function(
             runtime_fallback_module=_runtime_fallback_module(module),
             runtime_attr_path=(runtime_original_name(function.qualname),),
         )
+    if _PLUGIN_STATE is not None:
+        # The module-global claim state is single-threaded and non-reentrant.
+        # A plugin lower() hook that re-triggered lowering would clobber the
+        # outer state on its inner finally; fail loudly rather than silently
+        # mis-resolve claims/plugin types (council round 8).
+        raise LoweringError(
+            "re-entrant plugin lowering detected: lower_function was called "
+            "while another lowering was in progress"
+        )
     _PLUGIN_STATE = _PluginLoweringState(
         claims={
             (claim.kind, claim.line, claim.column, claim.end_line, claim.end_column): claim
@@ -301,26 +310,13 @@ def _plugin_annotation_type(node: ast.AST) -> RxtPluginType | None:
     state = _PLUGIN_STATE
     if state is None or state.type_maps is None:
         return None
-    dotted = _dotted_annotation(node)
+    dotted = dotted_name(node)
     if dotted is None:
         return None
     head, separator, tail = dotted.partition(".")
     imported = state.imports.get(head)
     resolved = dotted if imported is None else (f"{imported}.{tail}" if separator else imported)
     return state.type_maps.by_spelling.get(resolved)
-
-
-def _dotted_annotation(node: ast.AST) -> str | None:
-    """Render a Name/Attribute annotation chain as a dotted string, or None."""
-    parts: list[str] = []
-    current = node
-    while isinstance(current, ast.Attribute):
-        parts.append(current.attr)
-        current = current.value
-    if not isinstance(current, ast.Name):
-        return None
-    parts.append(current.id)
-    return ".".join(reversed(parts))
 
 
 def _plugin_claim_ir(node: ast.AST, kind: str) -> PluginClaimIR | None:
@@ -546,10 +542,14 @@ def lower_expr(
         claim = _plugin_claim_ir(node, "binop")
         if claim is not None:
             # A plugin-claimed binop skips core operator validation; codegen
-            # hands the whole site to the claiming plugin's lower().
+            # hands the whole site to the claiming plugin's lower(). The op
+            # label comes from the CLAIM, not lower_binary_op: a claimed
+            # operator (e.g. `@`) need not be in core's operator map, and
+            # calling the core lowering here failed generate for a site check
+            # had already accepted (council round 7).
             return BinaryOpIR(
                 left=lower_expr(node.left, module, resolver),
-                op=lower_binary_op(node.op),
+                op=claim.target,
                 right=lower_expr(node.right, module, resolver),
                 claim=claim,
             )

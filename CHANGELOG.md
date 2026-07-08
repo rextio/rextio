@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.1 — 2026-07-06
+## 0.1.1 — 2026-07-07
 
 Contract-and-plugins release: the machine-readable tooling contract for
 external tooling (agent skills, LSP servers, editor extensions) and the
@@ -63,6 +63,56 @@ codegen behavior changed for plugin-free projects.
 - First consumer: the rextio-numpy plugin's initial float64 1-D surface
   (element-wise arithmetic, `numpy.dot`, whole-array `sum`/`mean`) is
   certified with this kit against CPython NumPy under real cargo builds.
+
+### Correctness and robustness hardening
+
+Semantics- and safety-focused fixes to the analyzer, the generated wrapper,
+the plugin pipeline, and the hybrid-executable delegate, verified end-to-end
+(generate → import → call, and against real cargo builds). None change behavior
+for a plugin-free project whose native candidates already compiled cleanly;
+they tighten the reject-to-fallback boundary so more edge cases stay on the
+CPython-equivalent fallback instead of being mis-accelerated.
+
+- `@rextio.native` on a **method** is now accepted only for a plain instance
+  method defined directly in a top-level class body whose name is never
+  rebound. Every other shape is rejected with `RXT010` and left on the Python
+  fallback with its original behavior intact: any non-native decorator
+  (`@staticmethod`/`@classmethod`/`@property`/`functools.cached_property`,
+  aliased or not); an implicit-descriptor dunder (`__new__`/`__init_subclass__`/
+  `__class_getitem__`); any class-body rebinding of the method name after its
+  definition — plain/annotated/augmented/walrus/tuple-unpack assignment, a
+  `for`/`with`/`except`-as target, a `match` capture, `import ... as`, `del`, a
+  later `def`/`class`/`type` of the same name, or a walrus in a def/class
+  header, including any of these nested inside class-body control flow; a method
+  in a nested (inner) class; a method defined inside class-body control flow;
+  and a method whose name is declared `global`/`nonlocal`. Previously several of
+  these were silently accepted and the generated wrapper could strip a
+  descriptor, change the calling convention, bind the wrong scope, or fail at
+  import.
+- Generated Python wrapper fidelity: annotations stay as PEP 563 strings (no
+  eager evaluation that could `NameError` on private or `__all__`-excluded
+  names); `__defaults__`/`__kwdefaults__`, `__doc__`, and `__all__` are mirrored
+  from the fallback at runtime (including an `__all__` defined by control flow or
+  import); the positional-only `/` marker is preserved; and runtime helpers are
+  aliased under a `_rextio_` prefix so they cannot be clobbered or leak through
+  `from module import *`.
+- Plugin lowering and routing: claim validation (result type required and
+  known, advertised rule ids, `RXTP-*` rejection codes namespaced and declared),
+  expression typing over plugin types, deterministic claim-to-IR matching,
+  same-site multi-plugin claim rejection, crate-pin format validation with a
+  core-crate-name collision guard, and deterministic merging of duplicate
+  cross-plugin pins. A claim-only plugin function (one that claims a core-typed
+  call site without plugin-typed parameters/returns) is now exempt from the
+  boundary-fallback threshold like a plugin-typed one, so it never flips to the
+  fallback leg mid-run and changes an observable per-leg divergence.
+- Hybrid-executable subprocess delegate: a protocol-version handshake and
+  dead-bridge re-spawn, and a delegated `sys.exit()`/`KeyboardInterrupt` is
+  forwarded as a distinct `{"exit": code}` frame that the Rust executable
+  honors with the right exit code (bool codes normalized to `0`/`1`) instead of
+  always exiting `1`.
+- Certification kit: dual-leg equivalence uses deep-copied arguments and sets
+  the native/fallback env before import; strided (non-contiguous) arrays are
+  certified for real rather than being silently flattened.
 
 ## 0.1.0 — 2026-07-04
 

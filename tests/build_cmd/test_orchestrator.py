@@ -1241,6 +1241,40 @@ def main(argv: list[str]) -> int:
         )
 
 
+def test_hybrid_runtime_rejects_stdlib_shadowing_module(tmp_path: Path) -> None:
+    # Council round 8 (qwen): runtime_dir is sys.path[0] at dispatch time, so a
+    # project module named after a module the dispatcher imports (json/os/sys/
+    # importlib/types) - or the rextio package - would shadow it and crash the
+    # dispatcher on its first request.
+    (tmp_path / "json.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def parse(value: str) -> int:
+    return len(value)
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+from json import parse
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return parse(argv[0])
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+
+    with pytest.raises(RustCodegenError, match="shadows a name the fallback dispatcher"):
+        orchestrator._write_hybrid_runtime(
+            tmp_path / "out.runtime", analysis, {"json.parse"}
+        )
+
+
 def test_entry_reachable_graph_captures_transitive_delegation(tmp_path: Path) -> None:
     # `main -> process (accepted native) -> slugify (delegated)`: the reachable-graph
     # walk must push the native hop and record the second-hop delegated callee, so

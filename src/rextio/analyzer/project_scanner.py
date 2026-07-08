@@ -154,7 +154,14 @@ def _note_plugin_lowerable_accelerated(
     so removing the decorator could promote the function to plugin-lowered,
     CPython-exact native code.
     """
-    rule_plugins = [plugin for plugin in active_plugins if plugin.rules_provided and plugin.packages]
+    rule_plugins = [
+        plugin
+        for plugin in active_plugins
+        # Require lowering, not just rule records: a describe-only plugin
+        # cannot lower anything, so removing the decorator would not
+        # promote the function through it (council round 8).
+        if plugin.rules_provided and plugin.lowering_provided and plugin.packages
+    ]
     if not rule_plugins:
         return
     for module in analysis.modules:
@@ -177,9 +184,10 @@ def _note_plugin_lowerable_accelerated(
                     code="RXT091",
                     severity="info",
                     message=(
-                        f"{function.external_accelerator}-decorated function may be "
-                        f"lowerable by an active Rextio plugin ({plugin_ids}) if the "
-                        "decorator is removed"
+                        f"{function.external_accelerator}-decorated function is in a "
+                        f"module importing a package covered by an active Rextio plugin "
+                        f"({plugin_ids}); it MAY be plugin-lowerable if the decorator is "
+                        "removed (import-based hint - the function body is not analyzed)"
                     ),
                     file_path=function.file_path,
                     line=function.line,

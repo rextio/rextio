@@ -60,6 +60,20 @@ class PluginClaim:
 
 
 @dataclass(frozen=True)
+class PluginClaimRejection:
+    """A plugin claim rejection pending boundary-pass delivery, with its site kind.
+
+    The kind matters for delivery: a call-site rejection replaces RXT030 in
+    the boundary pass's call loop, while a binop rejection has no CallSite and
+    must be attached unconditionally — including when it shares a start
+    position with a (claimed) call, e.g. ``np.dot(a, b) + c``.
+    """
+
+    kind: str
+    diagnostic: Diagnostic
+
+
+@dataclass(frozen=True)
 class CallSite:
     """A recorded call to another function, with its source location."""
 
@@ -217,7 +231,12 @@ class FunctionAnalysis:
     # Claim rejections recorded at inference time but attached by the boundary
     # pass (mirroring RXT030): parse-time errors would divert explicitly marked
     # functions onto the RXT080 shim and hide the plugin's guidance.
-    plugin_claim_rejections: list[Diagnostic] = field(default_factory=list)
+    plugin_claim_rejections: list[PluginClaimRejection] = field(default_factory=list)
+    # Plugin type keys resolved in this function's SIGNATURE (parameters or
+    # return). A function can need a plugin's boundary conversions and crates
+    # without any claimed body site (e.g. an identity function), so the
+    # native-plugin route derives from claims OR these keys.
+    plugin_type_keys: list[str] = field(default_factory=list)
     # Transient analysis state: the claim engine for active lowering plugins
     # (None when no lowering plugin is active). Never serialized or compared.
     claim_engine: ClaimEngine | None = field(default=None, repr=False, compare=False)
@@ -258,8 +277,11 @@ class FunctionAnalysis:
         if self.is_native_candidate and self.accepted:
             if self.native_runtime_semantics:
                 return "native-shim"
-            if self.plugin_claims:
-                plugin_ids = sorted({claim.plugin_id for claim in self.plugin_claims})
+            plugin_ids = sorted(
+                {claim.plugin_id for claim in self.plugin_claims}
+                | {key.split("/")[0] for key in self.plugin_type_keys}
+            )
+            if plugin_ids:
                 return f"native-plugin:{'+'.join(plugin_ids)}"
             return "native-direct"
         if self.external_accelerator is not None:
@@ -322,6 +344,7 @@ class FunctionAnalysis:
                 claim.to_dict()
                 for claim in sorted(self.plugin_claims, key=lambda c: (c.line, c.column))
             ],
+            "plugin_type_keys": sorted(self.plugin_type_keys),
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
         # Only present for functions kept off embedding for overflow safety, so the

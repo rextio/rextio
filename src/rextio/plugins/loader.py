@@ -104,6 +104,8 @@ def _plugin_type_bindings(plugin: RextioPlugin, provider: Any) -> tuple[PluginTy
     except Exception as exc:
         raise PluginError(f"plugin {plugin.id!r} type_vocabulary() failed: {exc}") from exc
     bindings: list[PluginTypeBinding] = []
+    seen_spellings: dict[str, str] = {}
+    seen_keys: set[str] = set()
     key_prefix = f"{plugin.id}/"
     for plugin_type in vocabulary:
         if not isinstance(plugin_type, PluginType):
@@ -118,6 +120,21 @@ def _plugin_type_bindings(plugin: RextioPlugin, provider: Any) -> tuple[PluginTy
             raise PluginError(
                 f"plugin {plugin.id!r} type {plugin_type.key!r} declares no annotation spellings"
             )
+        if plugin_type.key in seen_keys:
+            # Silent first-wins downstream (the orchestrator's by_key map)
+            # would hide a typo'd duplicate until codegen (council round 7).
+            raise PluginError(
+                f"plugin {plugin.id!r} declares plugin type key {plugin_type.key!r} twice"
+            )
+        seen_keys.add(plugin_type.key)
+        for spelling in plugin_type.annotations:
+            owner = seen_spellings.get(spelling)
+            if owner is not None:
+                raise PluginError(
+                    f"plugin {plugin.id!r} declares annotation {spelling!r} on both "
+                    f"{owner!r} and {plugin_type.key!r}"
+                )
+            seen_spellings[spelling] = plugin_type.key
         bindings.append(PluginTypeBinding(plugin_id=plugin.id, plugin_type=plugin_type))
     return tuple(bindings)
 
@@ -153,9 +170,20 @@ def _validate_type_annotations_unique(bindings: tuple[PluginTypeBinding, ...]) -
 
 
 def _validate_crate_pins_compatible(bindings: tuple[PluginCrateDependency, ...]) -> None:
+    from rextio.codegen.rust.cargo import CORE_CRATE_NAMES
+
     seen: dict[str, tuple[str, str]] = {}
     for binding in bindings:
         dependency = binding.dependency
+        if dependency.name in CORE_CRATE_NAMES:
+            # Spec section 5 requires plugin-vs-core collisions to fail up
+            # front with a configuration-style error, not a cargo resolver
+            # error later (council round 4).
+            raise PluginError(
+                f"plugin {binding.plugin_id!r} declares crate dependency "
+                f"{dependency.name!r}, which is reserved by the core-generated "
+                "manifest; plugins may not inject or re-pin core crates"
+            )
         previous = seen.get(dependency.name)
         if previous is not None and previous[1] != dependency.version:
             raise PluginError(
@@ -211,17 +239,45 @@ def _plugin_rule_records(
 
 
 def _validate_rule_codes_unique(records: tuple[RuleRecord, ...]) -> None:
+    seen_ids: dict[str, str] = {}
+    for record in records:
+        owner = seen_ids.get(record.id)
+        if owner is not None:
+            raise PluginError(
+                f"duplicate rule record id {record.id!r} declared by {owner!r} "
+                f"and {record.provider!r}"
+            )
+        seen_ids[record.id] = record.provider
+    # Two distinct plugin ids may collapse to one diagnostic-code segment
+    # (rextio-foo-bar and rextio-foobar both yield FOOBAR); the contract's
+    # RXTP-<PLUGIN>-NNN namespacing is only meaningful when a segment maps to
+    # exactly one provider (council round 7).
+    segment_owners: dict[str, str] = {}
+    for record in records:
+        segment = plugin_code_segment(record.provider)
+        owner = segment_owners.get(segment)
+        if owner is not None and owner != record.provider:
+            raise PluginError(
+                f"plugins {owner!r} and {record.provider!r} collapse to the same "
+                f"diagnostic-code segment {segment!r}; rename one so RXTP codes "
+                "stay unambiguous"
+            )
+        segment_owners.setdefault(segment, record.provider)
     seen: dict[str, str] = {}
     for record in records:
         if record.diagnostic_code is None:
             continue
         owner = seen.get(record.diagnostic_code)
-        if owner is not None and owner != record.provider:
+        if owner is not None:
+            # The tooling contract promises one rule record per diagnostic
+            # code; a same-provider duplicate previously slipped through
+            # (council round 6) and would make manifest remediation lookups
+            # ambiguous.
             raise PluginError(
                 f"duplicate plugin diagnostic code {record.diagnostic_code!r} "
                 f"declared by {owner!r} and {record.provider!r}"
             )
-        seen.setdefault(record.diagnostic_code, record.provider)
+        seen[record.diagnostic_code] = record.provider
 
 
 def _plugin_entry_points(entry_points: Iterable[Any] | None) -> tuple[Any, ...]:
@@ -255,12 +311,14 @@ def _load_entry_point_plugin(entry_point: Any) -> tuple[RextioPlugin, Any | None
     if hasattr(payload, "to_rextio_plugin"):
         payload = payload.to_rextio_plugin()
     package = _entry_point_package(entry_point)
+    version = _entry_point_version(entry_point)
     entry_point_ref = f"{ENTRY_POINT_GROUP}:{entry_point_name}"
     if isinstance(payload, RextioPlugin):
         plugin = payload.with_source_metadata(
             source="entry-point",
             package=package,
             entry_point=entry_point_ref,
+            version=version,
         )
     elif isinstance(payload, Mapping):
         plugin = _parse_plugin_metadata(
@@ -269,6 +327,7 @@ def _load_entry_point_plugin(entry_point: Any) -> tuple[RextioPlugin, Any | None
             source="entry-point",
             package=package,
             entry_point=entry_point_ref,
+            version=version,
         )
     else:
         raise PluginError(
@@ -319,7 +378,23 @@ def _lowering_provided(plugin: RextioPlugin, provider: Any) -> bool:
             f"plugin {plugin.id!r} implements {', '.join(implemented)} but is missing "
             f"{', '.join(missing)}; the lowering members arrive together (plugin API 1.1)"
         )
+    declared = str(getattr(provider, "api_version", ""))
+    if _version_tuple(declared) < (1, 1):
+        raise PluginError(
+            f"plugin {plugin.id!r} exposes lowering members but declares plugin-API "
+            f"{declared!r}; lowering requires api_version >= 1.1"
+        )
     return True
+
+
+def _version_tuple(version: str) -> tuple[int, int]:
+    parts = version.split(".")
+    try:
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return (0, 0)
+    return (major, minor)
 
 
 def _entry_point_package(entry_point: Any) -> str | None:
@@ -332,6 +407,13 @@ def _entry_point_package(entry_point: Any) -> str | None:
     return metadata_.get("Name")
 
 
+def _entry_point_version(entry_point: Any) -> str | None:
+    distribution = getattr(entry_point, "dist", None)
+    if distribution is None:
+        return None
+    return getattr(distribution, "version", None)
+
+
 def _parse_plugin_metadata(
     data: Mapping[str, Any],
     *,
@@ -339,6 +421,7 @@ def _parse_plugin_metadata(
     source: str,
     package: str | None = None,
     entry_point: str | None = None,
+    version: str | None = None,
 ) -> RextioPlugin:
     plugin_id = _optional_string(data, "id", default_id)
     target_language = _required_string(data, "target_language").lower()
@@ -370,6 +453,7 @@ def _parse_plugin_metadata(
         packages=_optional_string_tuple(data, "packages"),
         source=source,
         package=package,
+        version=version,
         entry_point=entry_point,
     )
 
@@ -385,7 +469,7 @@ def _validate_enabled_plugins(
         ids.add(plugin.id)
     missing = sorted(set(enabled) - ids)
     if missing:
-        raise PluginError(f"enabled plugin was not discovered: {missing[0]}")
+        raise PluginError(f"enabled plugins were not discovered: {', '.join(missing)}")
 
 
 def _plugin_enabled(plugin: RextioPlugin, enabled: tuple[str, ...]) -> bool:
