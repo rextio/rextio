@@ -65,31 +65,57 @@ def test_resolve_nuitka_prefers_explicit_then_python_module(tmp_path: Path) -> N
     assert error is None and via_python == [str(python), "-m", "nuitka"]
 
 
-def test_cargo_environment_carries_rustup_channel_and_pyo3_python(tmp_path: Path) -> None:
+def test_cargo_environment_carries_rustup_channel_and_pyo3_python(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("PYO3_PYTHON", raising=False)
     python = _script(tmp_path / "py" / "bin" / "python3", "echo Python 3.11.9")
     env = cargo_environment(ToolchainConfig(rust_toolchain="1.83", python=str(tmp_path / "py")))
     assert env["RUSTUP_TOOLCHAIN"] == "1.83"
     assert env["PYO3_PYTHON"] == str(python)
-    # No configured python: pin PyO3 to the build interpreter, not PATH.
+    # No configured python and no inherited PYO3_PYTHON: pin to build interpreter.
     default_env = cargo_environment(ToolchainConfig())
     assert default_env == {"PYO3_PYTHON": sys.executable}
 
 
-def test_cargo_environment_pyo3_python_defaults_to_build_interpreter(
-    tmp_path: Path,
+def test_cargo_environment_pyo3_python_precedence(
+    tmp_path: Path, monkeypatch
 ) -> None:
-    """Regression: artifact ABI must match the build interpreter.
+    """PYO3_PYTHON: configured > non-empty inherited > sys.executable.
 
-    Without PYO3_PYTHON, pyo3-build-config uses PATH python3, which may emit
-    bindings for a newer CPython than the process that tags/loads the .so.
+    The returned mapping is merged over os.environ by the build runner, so
+    preserving an inherited value means omitting the key from the overlay.
     """
+    python = _script(tmp_path / "py" / "bin" / "python3", "echo Python 3.11.9")
+    configured_path = str(python)
+    inherited = str(tmp_path / "inherited" / "python3")
+
+    # (1) Configured [toolchain] python wins over inherited and default.
+    monkeypatch.setenv("PYO3_PYTHON", inherited)
+    configured = cargo_environment(ToolchainConfig(python=str(tmp_path / "py")))
+    assert configured["PYO3_PYTHON"] == configured_path
+    assert configured["PYO3_PYTHON"] != inherited
+    assert configured["PYO3_PYTHON"] != sys.executable
+    # Merge semantics: overlay value is what cargo/maturin see.
+    merged = {**{"PYO3_PYTHON": inherited}, **configured}
+    assert merged["PYO3_PYTHON"] == configured_path
+
+    # (2) Non-empty inherited PYO3_PYTHON is preserved (omitted from overlay).
+    monkeypatch.setenv("PYO3_PYTHON", inherited)
+    preserved = cargo_environment(ToolchainConfig())
+    assert "PYO3_PYTHON" not in preserved
+    merged = {**{"PYO3_PYTHON": inherited}, **preserved}
+    assert merged["PYO3_PYTHON"] == inherited
+
+    # (3) Neither configured nor inherited → sys.executable.
+    monkeypatch.delenv("PYO3_PYTHON", raising=False)
     default_env = cargo_environment(ToolchainConfig())
     assert default_env["PYO3_PYTHON"] == sys.executable
 
-    python = _script(tmp_path / "py" / "bin" / "python3", "echo Python 3.11.9")
-    configured = cargo_environment(ToolchainConfig(python=str(tmp_path / "py")))
-    assert configured["PYO3_PYTHON"] == str(python)
-    assert configured["PYO3_PYTHON"] != sys.executable
+    # (4) Empty inherited string is treated as unset → sys.executable.
+    monkeypatch.setenv("PYO3_PYTHON", "")
+    empty_inherited = cargo_environment(ToolchainConfig())
+    assert empty_inherited["PYO3_PYTHON"] == sys.executable
 
 
 def test_version_pins_are_strict_and_support_specifiers(tmp_path: Path) -> None:

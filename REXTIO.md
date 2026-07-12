@@ -259,10 +259,13 @@ verifies their versions:
   extension compiles against it (`PYO3_PYTHON`), Nuitka runs inside it
   (`python -m nuitka`) unless `nuitka` is set explicitly, and the hybrid rust
   binary launches it for delegated calls (explicit `[executable] python`
-  still wins; `REXTIO_RUNTIME_PYTHON` overrides at run time). It must be a
-  CPython sharing the build interpreter's minor version - the analyzer
-  semantics, wheel tag, and Nuitka output are all bound to one interpreter,
-  and generated extensions target CPython only.
+  still wins; `REXTIO_RUNTIME_PYTHON` overrides at run time). When
+  `[toolchain] python` is unset the PyO3 build targets the running build
+  interpreter by default (an explicitly exported `PYO3_PYTHON` is respected;
+  PATH `python3` never influences codegen). It must be a CPython sharing
+  the build interpreter's minor version - the analyzer semantics, wheel
+  tag, and Nuitka output are all bound to one interpreter, and generated
+  extensions target CPython only.
 - `rust_toolchain` names a rustup channel (`stable`, `1.83`, ...); it is
   forwarded as `RUSTUP_TOOLCHAIN`, so a non-rustup cargo ignores it (pointing
   `[toolchain] cargo` at a non-rustup binary makes this setting a no-op).

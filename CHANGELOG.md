@@ -176,7 +176,10 @@ Initial public release (alpha stage) of Rextio as a local hybrid build tool.
   forwards a rustup channel; `[toolchain] python` drives the PyO3 build
   target (`PYO3_PYTHON`), Nuitka's interpreter (`python -m nuitka`), and the
   hybrid binary's delegated-call runtime, and must be a CPython sharing the
-  build interpreter's minor version.
+  build interpreter's minor version. For PyO3 specifically, when
+  `[toolchain] python` is unset the target defaults to the running build
+  interpreter (not PATH `python3`); an explicitly exported `PYO3_PYTHON` is
+  respected as an override.
 - `*_version` pins verify (never install) tool versions: bare pins are
   prefix matches, `==` is exact, `>=` is a minimum. A pin is enforced under
   the environment the build runs the tool with, exactly when the build uses
