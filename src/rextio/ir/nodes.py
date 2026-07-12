@@ -35,6 +35,34 @@ class TargetIR(IRNode):
 
 
 @dataclass(frozen=True)
+class PluginClaimIR(IRNode):
+    """A plugin's claim on a call/binop site, carried from analysis to codegen.
+
+    Mirrors the analyzer's ``PluginClaim`` minus the source location: codegen
+    re-offers the site to the claiming plugin's ``lower()`` with these fields
+    (docs/specs/plugin-lowering.md sections 2-3).
+    """
+
+    plugin_id: str
+    rule_id: str
+    kind: str
+    target: str
+    operand_types: tuple[str | None, ...]
+    result_type: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this node."""
+        return {
+            "plugin_id": self.plugin_id,
+            "rule_id": self.rule_id,
+            "kind": self.kind,
+            "target": self.target,
+            "operand_types": list(self.operand_types),
+            "result_type": self.result_type,
+        }
+
+
+@dataclass(frozen=True)
 class ModuleIR(IRNode):
     """A lowered module: the set of native functions it contributes."""
 
@@ -62,6 +90,10 @@ class FunctionIR(IRNode):
     has_boundary_calls: bool = False
     runtime_fallback_module: str | None = None
     runtime_attr_path: tuple[str, ...] = ()
+    # True when the function has plugin-claimed sites or plugin-typed
+    # parameters/return; such a function needs the PyO3 boundary (no
+    # pure-Rust crate form) and drives plugin crate-dependency injection.
+    plugin_lowered: bool = False
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this node."""
@@ -79,6 +111,8 @@ class FunctionIR(IRNode):
             data["runtime_attr_path"] = list(self.runtime_attr_path)
         if self.embedded:
             data["embedded"] = True
+        if self.plugin_lowered:
+            data["plugin_lowered"] = True
         return data
 
 
@@ -294,15 +328,21 @@ class BinaryOpIR(ExprIR):
     left: ExprIR
     op: str
     right: ExprIR
+    # Set when an active plugin claimed this site; codegen routes the whole
+    # expression through the plugin's lower() instead of the core rendering.
+    claim: PluginClaimIR | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this node."""
-        return {
+        data: dict[str, object] = {
             "kind": "binary",
             "left": self.left.to_dict(),
             "op": self.op,
             "right": self.right.to_dict(),
         }
+        if self.claim is not None:
+            data["claim"] = self.claim.to_dict()
+        return data
 
 
 @dataclass(frozen=True)
@@ -341,14 +381,20 @@ class CallIR(ExprIR):
 
     function: str
     args: list[ExprIR]
+    # Set when an active plugin claimed this site; codegen routes the whole
+    # expression through the plugin's lower() instead of the core rendering.
+    claim: PluginClaimIR | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this node."""
-        return {
+        data: dict[str, object] = {
             "kind": "call",
             "function": self.function,
             "args": [arg.to_dict() for arg in self.args],
         }
+        if self.claim is not None:
+            data["claim"] = self.claim.to_dict()
+        return data
 
 
 @dataclass(frozen=True)

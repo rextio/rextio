@@ -11,8 +11,66 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rextio.analyzer.diagnostics import Diagnostic
+from rextio.contract import TOOLING_CONTRACT_VERSION
+
+if TYPE_CHECKING:
+    from rextio.analyzer.plugin_claims import ClaimEngine
+
+
+@dataclass(frozen=True)
+class PluginClaim:
+    """A site inside a function that an active plugin claimed for lowering."""
+
+    plugin_id: str
+    rule_id: str
+    kind: str
+    target: str
+    line: int
+    column: int
+    result_type: str | None
+    # The resolved operand/argument types of the claimed site in positional
+    # order (plugin type keys or core type names, None when unresolved),
+    # carried through to codegen so lower() sees the same site claim() saw.
+    operand_types: tuple[str | None, ...] = ()
+    # End of the claimed node's source span. (line, column) alone is ambiguous:
+    # a BinOp starts at the same offset as its leftmost operand, so an
+    # expression like `np.dot(a, b) * factor` has the call AND the enclosing
+    # binop at one (line, column). IR lowering matches claims on the full
+    # (start, end, kind) signature to re-identify the exact node.
+    end_line: int | None = None
+    end_column: int | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this claim."""
+        return {
+            "plugin_id": self.plugin_id,
+            "rule_id": self.rule_id,
+            "kind": self.kind,
+            "target": self.target,
+            "line": self.line,
+            "column": self.column,
+            "end_line": self.end_line,
+            "end_column": self.end_column,
+            "result_type": self.result_type,
+            "operand_types": list(self.operand_types),
+        }
+
+
+@dataclass(frozen=True)
+class PluginClaimRejection:
+    """A plugin claim rejection pending boundary-pass delivery, with its site kind.
+
+    The kind matters for delivery: a call-site rejection replaces RXT030 in
+    the boundary pass's call loop, while a binop rejection has no CallSite and
+    must be attached unconditionally — including when it shares a start
+    position with a (claimed) call, e.g. ``np.dot(a, b) + c``.
+    """
+
+    kind: str
+    diagnostic: Diagnostic
 
 
 @dataclass(frozen=True)
@@ -166,6 +224,69 @@ class FunctionAnalysis:
     # (RXT070/RXT072/delegation), so typing a callee here can only ADD rejections,
     # never admit a call the boundary would refuse.
     call_return_types: dict[str, str] = field(default_factory=dict)
+    # Sites an active lowering plugin claimed (docs/specs/plugin-lowering.md);
+    # a claimed call is legal for the boundary pass and drives the
+    # native-plugin:<id> route.
+    plugin_claims: list[PluginClaim] = field(default_factory=list)
+    # Claim rejections recorded at inference time but attached by the boundary
+    # pass (mirroring RXT030): parse-time errors would divert explicitly marked
+    # functions onto the RXT080 shim and hide the plugin's guidance.
+    plugin_claim_rejections: list[PluginClaimRejection] = field(default_factory=list)
+    # Plugin type keys resolved in this function's SIGNATURE (parameters or
+    # return). A function can need a plugin's boundary conversions and crates
+    # without any claimed body site (e.g. an identity function), so the
+    # native-plugin route derives from claims OR these keys.
+    plugin_type_keys: list[str] = field(default_factory=list)
+    # Transient analysis state: the claim engine for active lowering plugins
+    # (None when no lowering plugin is active). Never serialized or compared.
+    claim_engine: ClaimEngine | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def native_status(self) -> str:
+        """The promotion verdict: ``accepted`` | ``rejected`` | ``not-candidate``.
+
+        Part of the tooling contract (docs/specs/tooling-contract.md). Orthogonal
+        to :attr:`route`: a rejected candidate still *executes* on the fallback,
+        so its route is ``fallback-python`` while its status is ``rejected``.
+        """
+        if self.is_native_candidate:
+            return "accepted" if self.accepted else "rejected"
+        return "not-candidate"
+
+    @property
+    def rejection_codes(self) -> list[str]:
+        """The sorted error-diagnostic codes explaining a rejection (else empty).
+
+        Part of the tooling contract. Only rejected candidates carry codes, so
+        consumers can key remediation guidance directly off this list.
+        """
+        if self.native_status != "rejected":
+            return []
+        return sorted({diagnostic.code for diagnostic in self.error_diagnostics})
+
+    @property
+    def route(self) -> str:
+        """The execution-route label defined by the tooling contract.
+
+        One of ``native-direct``, ``native-shim``, ``native-plugin:<id>``,
+        ``fallback-accelerated:<tool>``, or ``fallback-python``. A function
+        with at least one plugin-claimed site routes as plugin-lowered; in the
+        (rare) case of sites claimed by several plugins the ids are joined
+        with ``+`` in sorted order.
+        """
+        if self.is_native_candidate and self.accepted:
+            if self.native_runtime_semantics:
+                return "native-shim"
+            plugin_ids = sorted(
+                {claim.plugin_id for claim in self.plugin_claims}
+                | {key.split("/")[0] for key in self.plugin_type_keys}
+            )
+            if plugin_ids:
+                return f"native-plugin:{'+'.join(plugin_ids)}"
+            return "native-direct"
+        if self.external_accelerator is not None:
+            return f"fallback-accelerated:{self.external_accelerator}"
+        return "fallback-python"
 
     @property
     def error_diagnostics(self) -> list[Diagnostic]:
@@ -206,6 +327,9 @@ class FunctionAnalysis:
             "column": self.column,
             "is_native_candidate": self.is_native_candidate,
             "accepted": self.accepted,
+            "route": self.route,
+            "native_status": self.native_status,
+            "rejection_codes": self.rejection_codes,
             "explicitly_marked": self.explicitly_marked,
             "native_target_language": self.native_target_language,
             "native_runtime_semantics": self.native_runtime_semantics,
@@ -216,6 +340,11 @@ class FunctionAnalysis:
             "inferred_arg_types": dict(sorted(self.inferred_arg_types.items())),
             "inferred_return_type": self.inferred_return_type,
             "calls": [call.to_dict() for call in self.calls],
+            "plugin_claims": [
+                claim.to_dict()
+                for claim in sorted(self.plugin_claims, key=lambda c: (c.line, c.column))
+            ],
+            "plugin_type_keys": sorted(self.plugin_type_keys),
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
         # Only present for functions kept off embedding for overflow safety, so the
@@ -453,6 +582,7 @@ class ProjectAnalysis:
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of the whole project analysis."""
         return {
+            "contract_version": TOOLING_CONTRACT_VERSION,
             "project_root": str(self.project_root),
             "modules": [module.to_dict() for module in self.modules],
             "native_candidates": [function.qualname for function in self.native_candidates],

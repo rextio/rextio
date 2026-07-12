@@ -10,7 +10,9 @@ from pathlib import Path
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import generate_source_artifact
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
+from rextio.cli.check_cmd import write_check_report
 from rextio.cli.reporter import Reporter
+from rextio.plugins.loader import PluginError
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
@@ -51,20 +53,32 @@ def run(args: Namespace) -> int:
         return 1
 
     fallback = config.build.fallback_backend
-    analysis = analyze_project(
-        project_root,
-        boundary_warnings=config.policy.boundary_warnings,
-        native_marker=config.policy.native_marker,
-        target_language=target_plan.spec.language,
-        native_top_level=config.policy.native_top_level,
-        imports_config=config.imports,
-        active_plugins=target_plan.plugins.active,
-        embedding_enabled=config.embedding.enabled,
-    )
+    try:
+        analysis = analyze_project(
+            project_root,
+            boundary_warnings=config.policy.boundary_warnings,
+            native_marker=config.policy.native_marker,
+            target_language=target_plan.spec.language,
+            native_top_level=config.policy.native_top_level,
+            imports_config=config.imports,
+            active_plugins=target_plan.plugins.active,
+            plugin_registry=target_plan.plugins,
+            plugin_config=config,
+            embedding_enabled=config.embedding.enabled,
+        )
+    except PluginError as exc:
+        reporter.error(f"RXT060 Plugin error: {exc}")
+        return 1
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:
         reports_dir = project_root / ".rextio" / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
+        # Clear the other command's report and the prior check.json so the
+        # failed run does not leave mismatched reports behind, then write a
+        # check.json matching this build.json (council round 8).
+        for _stale in ("build.json", "generate.json", "check.json"):
+            (reports_dir / _stale).unlink(missing_ok=True)
+        write_check_report(project_root, analysis)
         (reports_dir / "generate.json").write_text(
             json.dumps(
                 {

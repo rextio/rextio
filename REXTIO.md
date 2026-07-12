@@ -1,10 +1,16 @@
-# Rextio 0.1.0 Notes
+# Rextio 0.1.1 Notes
 
 > **Security:** Rextio analyzes source, generates Rust, and runs external build
 > tools — treat it like a compiler and only build trusted projects. See
 > [`SECURITY.md`](./SECURITY.md) for the threat model and protections.
 
-Rextio 0.1.0 proves a focused hybrid build workflow:
+Rextio 0.1.1 adds the machine-readable tooling contract (`rextio
+capabilities`, route/status fields in `rextio check --format json`) and the
+plugin protocol that lets plugins describe and lower covered constructs (see
+[docs/specs/](./docs/README.md) and [CHANGELOG.md](./CHANGELOG.md)); the core
+workflow below is unchanged from 0.1.0.
+
+Rextio proves a focused hybrid build workflow:
 
 ```text
 Python source
@@ -253,10 +259,13 @@ verifies their versions:
   extension compiles against it (`PYO3_PYTHON`), Nuitka runs inside it
   (`python -m nuitka`) unless `nuitka` is set explicitly, and the hybrid rust
   binary launches it for delegated calls (explicit `[executable] python`
-  still wins; `REXTIO_RUNTIME_PYTHON` overrides at run time). It must be a
-  CPython sharing the build interpreter's minor version - the analyzer
-  semantics, wheel tag, and Nuitka output are all bound to one interpreter,
-  and generated extensions target CPython only.
+  still wins; `REXTIO_RUNTIME_PYTHON` overrides at run time). When
+  `[toolchain] python` is unset the PyO3 build targets the running build
+  interpreter by default (an explicitly exported `PYO3_PYTHON` is respected;
+  PATH `python3` never influences codegen). It must be a CPython sharing
+  the build interpreter's minor version - the analyzer semantics, wheel
+  tag, and Nuitka output are all bound to one interpreter, and generated
+  extensions target CPython only.
 - `rust_toolchain` names a rustup channel (`stable`, `1.83`, ...); it is
   forwarded as `RUSTUP_TOOLCHAIN`, so a non-rustup cargo ignores it (pointing
   `[toolchain] cargo` at a non-rustup binary makes this setting a no-op).
@@ -406,4 +415,7 @@ generated Python fallback path for that function. `rextio generate` and
 `[build] fallback_threshold = N`, to embed the generated-code default. The
 runtime environment variable overrides that embedded default. Set the threshold
 to `0` or set `REXTIO_DISABLE_BOUNDARY_FALLBACK=1` to disable this automatic
-fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold.
+fallback. `REXTIO_NATIVE_MODE=native` bypasses the threshold. Plugin-routed
+functions (route `native-plugin:<id>`) are exempt from the threshold — their
+native and fallback legs may have documented per-leg divergences, so they never
+flip to the fallback mid-run.

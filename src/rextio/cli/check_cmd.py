@@ -12,6 +12,7 @@ from rextio.analyzer.project_scanner import analyze_project
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
 from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
+from rextio.plugins.loader import PluginError
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
@@ -144,16 +145,24 @@ def run(args: Namespace) -> int:
     except (ConfigError, TargetPlanError) as exc:
         reporter.error(f"RXT060 Configuration error: {exc}")
         return 1
-    analysis = analyze_project(
-        project_root,
-        boundary_warnings=config.policy.boundary_warnings,
-        native_marker=config.policy.native_marker,
-        target_language=target_plan.spec.language,
-        native_top_level=config.policy.native_top_level,
-        imports_config=config.imports,
-        active_plugins=target_plan.plugins.active,
-        embedding_enabled=config.embedding.enabled,
-    )
+    try:
+        analysis = analyze_project(
+            project_root,
+            boundary_warnings=config.policy.boundary_warnings,
+            native_marker=config.policy.native_marker,
+            target_language=target_plan.spec.language,
+            native_top_level=config.policy.native_top_level,
+            imports_config=config.imports,
+            active_plugins=target_plan.plugins.active,
+            plugin_registry=target_plan.plugins,
+            plugin_config=config,
+            embedding_enabled=config.embedding.enabled,
+        )
+    except PluginError as exc:
+        # A lowering plugin misbehaved during the claim pass (crash, invalid
+        # result, or overlapping claims) - a configuration-style failure.
+        reporter.error(f"RXT060 Plugin error: {exc}")
+        return 1
     if not getattr(args, "no_report", False):
         write_check_report(project_root, analysis)
     reporter.print_result(text=format_check_report(analysis), data=analysis.to_dict())

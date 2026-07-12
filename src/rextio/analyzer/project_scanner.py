@@ -8,11 +8,13 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from rextio.analyzer.boundary import apply_boundary_checks
+from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.module_parser import module_name_for_path, parse_module
+from rextio.analyzer.plugin_claims import ClaimEngine
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
-from rextio.config.schema import ImportsConfig
-from rextio.plugins.models import RextioPlugin
+from rextio.config.schema import ImportsConfig, RextioConfig
+from rextio.plugins.models import PluginRegistry, RextioPlugin
 from rextio.targets.models import normalize_target_language
 
 IGNORED_PARTS = {
@@ -89,6 +91,8 @@ def analyze_project(
     active_plugins: Iterable[RextioPlugin] = (),
     embedding_enabled: bool = False,
     delegate_fallback: bool = False,
+    plugin_registry: PluginRegistry | None = None,
+    plugin_config: RextioConfig | None = None,
 ) -> ProjectAnalysis:
     """Analyze a project directory and return its ProjectAnalysis.
 
@@ -96,9 +100,17 @@ def analyze_project(
     direct-native function that calls a project function living on the Python
     fallback records it as a delegated call instead of being rejected, so the
     generated binary can invoke it through the external CPython dispatcher.
+
+    ``plugin_registry``/``plugin_config`` enable the plugin claim pass
+    (docs/specs/plugin-lowering.md): when the registry carries lowering
+    providers, their annotation vocabularies resolve and covered sites are
+    offered for claiming.
     """
     root = Path(project_root).resolve()
     target_language = normalize_target_language(target_language)
+    claim_engine: ClaimEngine | None = None
+    if plugin_registry is not None and plugin_registry.providers:
+        claim_engine = ClaimEngine(plugin_registry, plugin_config or RextioConfig())
     analysis = ProjectAnalysis(project_root=root)
     files = scan_python_files(root)
     project_modules = _project_module_names(files, root)
@@ -115,6 +127,7 @@ def analyze_project(
             active_plugins=active_plugins,
             embedding_enabled=embedding_enabled,
             project_return_types=project_return_types,
+            claim_engine=claim_engine,
         )
         for path in files
     ]
@@ -125,7 +138,69 @@ def analyze_project(
         delegate_fallback=delegate_fallback,
     )
     _strip_divergence_notes_from_non_native(analysis)
+    _note_plugin_lowerable_accelerated(analysis, tuple(active_plugins))
     return analysis
+
+
+def _note_plugin_lowerable_accelerated(
+    analysis: ProjectAnalysis, active_plugins: tuple[RextioPlugin, ...]
+) -> None:
+    """Attach the RXT091 hint to accelerator-decorated, plugin-covered functions.
+
+    Informational and non-rejecting: an accelerator decorator is the user's
+    explicit opt-in to that tool's semantics, so the function stays on the
+    ``fallback-accelerated`` route. The hint only notes that an active
+    rule-providing (v2) plugin covers a package the function's module imports,
+    so removing the decorator could promote the function to plugin-lowered,
+    CPython-exact native code.
+    """
+    rule_plugins = [
+        plugin
+        for plugin in active_plugins
+        # Require lowering, not just rule records: a describe-only plugin
+        # cannot lower anything, so removing the decorator would not
+        # promote the function through it (council round 8).
+        if plugin.rules_provided and plugin.lowering_provided and plugin.packages
+    ]
+    if not rule_plugins:
+        return
+    for module in analysis.modules:
+        imported_packages = {target.split(".")[0] for target in module.imports.values()}
+        if not imported_packages:
+            continue
+        for function in module.functions:
+            if function.external_accelerator is None:
+                continue
+            covering = [
+                plugin
+                for plugin in rule_plugins
+                if imported_packages.intersection(plugin.packages)
+            ]
+            if not covering:
+                continue
+            plugin_ids = ", ".join(sorted(plugin.id for plugin in covering))
+            function.add_diagnostic(
+                Diagnostic(
+                    code="RXT091",
+                    severity="info",
+                    message=(
+                        f"{function.external_accelerator}-decorated function is in a "
+                        f"module importing a package covered by an active Rextio plugin "
+                        f"({plugin_ids}); it MAY be plugin-lowerable if the decorator is "
+                        "removed (import-based hint - the function body is not analyzed)"
+                    ),
+                    file_path=function.file_path,
+                    line=function.line,
+                    column=function.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "The decorator is an explicit opt-in to the accelerator's "
+                        "semantics and is respected as-is. Remove it only if "
+                        "CPython-exact native lowering is preferred over "
+                        f"{function.external_accelerator} for this function."
+                    ),
+                )
+            )
 
 
 def _strip_divergence_notes_from_non_native(analysis: ProjectAnalysis) -> None:

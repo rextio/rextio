@@ -157,6 +157,27 @@ def _boundary_errors(
     diagnostics: list[Diagnostic] = []
     for call in function.calls:
         target = call.target
+        # A covering plugin's Rejected verdict wins over every other branch of
+        # this loop — checked FIRST so no early `continue` (internal-call
+        # allowlist, `.append`, dependency handling) can swallow it. Council
+        # round 4: a rejected `numpy.append` (matching the `.append` list
+        # special case) was recorded but never delivered, leaving the function
+        # accepted with an un-lowerable call. Claimed sites never carry a
+        # rejection (the engine records one only when no plugin claims), so
+        # this cannot misfire on legal claimed calls.
+        claim_rejection = next(
+            (
+                rejection.diagnostic
+                for rejection in function.plugin_claim_rejections
+                if rejection.kind == "call"
+                and rejection.diagnostic.line == call.line
+                and rejection.diagnostic.column == call.column
+            ),
+            None,
+        )
+        if claim_rejection is not None:
+            diagnostics.append(claim_rejection)
+            continue
         resolved = resolver.resolve(module, target)
         if target in SUPPORTED_INTERNAL_CALLS or target.endswith(".append"):
             continue
@@ -275,10 +296,46 @@ def _boundary_errors(
                 )
             )
             continue
+        if dependency is not None and dependency.plugin_type_keys:
+            # NOTE: a REJECTED plugin-typed callee is reported as RXT072
+            # (dependency rejected) by the earlier branch — deliberate:
+            # RXT092 marks calls into otherwise-healthy plugin-typed
+            # functions; tooling keying on RXT092 should also handle RXT072.
+            # A plugin-typed function compiles as a PyO3 boundary entry point
+            # (interpreter token + conversion parameter types); a native call
+            # into it would emit Rust with the wrong arity and types. In this
+            # release plugin-typed functions are Python-facing only.
+            diagnostics.append(
+                Diagnostic(
+                    code="RXT092",
+                    severity="error",
+                    message=(
+                        "native function calls a plugin-typed function: "
+                        f"{resolved.resolved_target}; plugin-typed functions are "
+                        "Python-facing entry points in this release"
+                    ),
+                    file_path=function.file_path,
+                    line=call.line,
+                    column=call.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "Call the plugin-typed function from Python fallback code, "
+                        "or inline the covered operations into this function."
+                    ),
+                )
+            )
+            continue
         if dependency is not None:
             diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
             continue
 
+        if any(
+            claim.kind == "call" and claim.line == call.line and claim.column == call.column
+            for claim in function.plugin_claims
+        ):
+            # An active lowering plugin claimed this call at analysis time
+            # (docs/specs/plugin-lowering.md): it is legal, the plugin emits it.
+            continue
         decision = decision_for_target(module, resolved.resolved_target)
         message, suggestion = _external_call_diagnostic_text(resolved.resolved_target, call.in_loop, decision)
         diagnostics.append(
@@ -293,6 +350,20 @@ def _boundary_errors(
                 suggestion=suggestion,
             )
         )
+    # Claim rejections recorded at sites that are not calls (binops have no
+    # CallSite) never match the loop above; attach them here so a plugin's
+    # Rejected verdict always rejects the function with its own guidance.
+    # Matching is KIND-aware: a rejected binop can share its start position
+    # with a claimed call (`np.dot(a, b) + c`), so position alone must not
+    # suppress delivery.
+    call_positions = {(call.line, call.column) for call in function.calls}
+    for rejection in function.plugin_claim_rejections:
+        if rejection.kind == "call" and (
+            rejection.diagnostic.line,
+            rejection.diagnostic.column,
+        ) in call_positions:
+            continue
+        diagnostics.append(rejection.diagnostic)
     return diagnostics
 
 
@@ -485,7 +556,8 @@ def _external_call_diagnostic_text(target: str, in_loop: bool, decision) -> tupl
         return (
             f"plugin-managed external package call is not lowered by this build: {target}",
             (
-                f"Ensure plugin {plugin!r} is active and provides a direct lowering rule for this call, "
+                f"Ensure plugin {plugin!r} is active and provides a direct lowering rule for this "
+                "call form (keyword-argument calls are never claimed - use positional arguments), "
                 "or keep the function on fallback."
             ),
         )

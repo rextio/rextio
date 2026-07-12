@@ -24,7 +24,9 @@ from rextio.build.toolchain import (
     resolve_tool,
 )
 from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
+from rextio.cli.check_cmd import write_check_report
 from rextio.cli.reporter import Reporter
+from rextio.plugins.loader import PluginError
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.config.schema import RextioConfig
 from rextio.fallback.nuitka import nuitka_unavailable_message
@@ -196,20 +198,34 @@ def run(args: Namespace) -> int:
                 reporter.error(version_error)
                 return 1
 
-    analysis = analyze_project(
-        project_root,
-        boundary_warnings=config.policy.boundary_warnings,
-        native_marker=config.policy.native_marker,
-        target_language=target_plan.spec.language,
-        native_top_level=config.policy.native_top_level,
-        imports_config=config.imports,
-        active_plugins=target_plan.plugins.active,
-        embedding_enabled=config.embedding.enabled,
-    )
+    try:
+        analysis = analyze_project(
+            project_root,
+            boundary_warnings=config.policy.boundary_warnings,
+            native_marker=config.policy.native_marker,
+            target_language=target_plan.spec.language,
+            native_top_level=config.policy.native_top_level,
+            imports_config=config.imports,
+            active_plugins=target_plan.plugins.active,
+            plugin_registry=target_plan.plugins,
+            plugin_config=config,
+            embedding_enabled=config.embedding.enabled,
+        )
+    except PluginError as exc:
+        # A lowering plugin misbehaved during the claim pass; report the stable
+        # RXT060 diagnostic instead of a raw traceback (council round 8).
+        reporter.error(f"RXT060 Plugin error: {exc}")
+        return 1
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:
         reports_dir = project_root / ".rextio" / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
+        # Clear the other command's report and the prior check.json so the
+        # failed run does not leave mismatched reports behind, then write a
+        # check.json matching this build.json (council round 8).
+        for _stale in ("build.json", "generate.json", "check.json"):
+            (reports_dir / _stale).unlink(missing_ok=True)
+        write_check_report(project_root, analysis)
         (reports_dir / "build.json").write_text(
             json.dumps(
                 {
@@ -249,22 +265,28 @@ def run(args: Namespace) -> int:
     # PyO3 native build (which keeps rejecting native->fallback calls).
     executable_analysis = None
     if config.executable.backend == "rust" and config.executable.entrypoint is not None:
-        executable_analysis = analyze_project(
-            project_root,
-            boundary_warnings=config.policy.boundary_warnings,
-            native_marker=config.policy.native_marker,
-            target_language=target_plan.spec.language,
-            native_top_level=config.policy.native_top_level,
-            imports_config=config.imports,
-            active_plugins=target_plan.plugins.active,
-            # Embedded helpers are ordinary direct-native crate functions now, so
-            # the executable graph honors the embedding opt-in: an eligible
-            # unmarked scalar helper compiles INTO the binary instead of being
-            # delegated per call over IPC (bench gate: embedding beats delegation
-            # by ~4-5 orders of magnitude per call).
-            embedding_enabled=config.embedding.enabled,
+        try:
+            executable_analysis = analyze_project(
+                project_root,
+                boundary_warnings=config.policy.boundary_warnings,
+                native_marker=config.policy.native_marker,
+                target_language=target_plan.spec.language,
+                native_top_level=config.policy.native_top_level,
+                imports_config=config.imports,
+                active_plugins=target_plan.plugins.active,
+                plugin_registry=target_plan.plugins,
+                plugin_config=config,
+                # Embedded helpers are ordinary direct-native crate functions now, so
+                # the executable graph honors the embedding opt-in: an eligible
+                # unmarked scalar helper compiles INTO the binary instead of being
+                # delegated per call over IPC (bench gate: embedding beats delegation
+                # by ~4-5 orders of magnitude per call).
+                embedding_enabled=config.embedding.enabled,
                 delegate_fallback=True,
-        )
+            )
+        except PluginError as exc:
+            reporter.error(f"RXT060 Plugin error: {exc}")
+            return 1
 
     result = build_hybrid_artifact(
         project_root,
@@ -305,6 +327,11 @@ def run(args: Namespace) -> int:
         )
     lines.append(f"  generated Python package tree: {result.layout.python_dir}")
     lines.append(f"  build artifact: {result.layout.build_python_dir}")
+    for dependency in result.plugin_crate_dependencies:
+        lines.append(
+            f"  plugin crate: {dependency['name']} {dependency['version']} "
+            f"({dependency['plugin_id']})"
+        )
     lines.append(f"  native build: {result.native_build.status}")
     lines.append(f"  rust importable crate: {result.rust_crate_build.status}")
     lines.append(f"  fallback packaging: {result.fallback_build.status}")

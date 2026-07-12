@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
+from rextio.codegen.rust.checked_arith import zero_division_messages
 from rextio.codegen.rust.generator import generate_rust_crate_module, generate_rust_module
 from rextio.ir.lowering import lower_project
 
@@ -921,11 +923,16 @@ def min_literal() -> int:
     )
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+    zde = zero_division_messages()
 
     # `%` raises ZeroDivisionError on a zero divisor, never panics on MIN % -1,
-    # and applies Python's floored-modulo sign correction.
+    # and applies Python's floored-modulo sign correction. Message text is
+    # probed from the build interpreter (CPython 3.14 unified all ZDE strings).
     assert "return Ok(__rextio_checked_rem(a, b)?);" in source
-    assert 'pyo3::exceptions::PyZeroDivisionError::new_err("integer modulo by zero")' in source
+    assert (
+        f'pyo3::exceptions::PyZeroDivisionError::new_err("{zde["int_mod"]}")'
+        in source
+    )
     assert "let r = a.checked_rem(b).unwrap_or(0);" in source
     assert "Ok(if r != 0 && (r ^ b) < 0 { r + b } else { r })" in source
     # Unary negation is checked so `-i64::MIN` raises OverflowError, not a panic.
@@ -951,10 +958,11 @@ def negate(a: int) -> int:
     )
 
     source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
+    zde = zero_division_messages()
 
     assert "return Ok(__rextio_checked_rem(a, b)?);" in source
     assert "return Ok(__rextio_checked_neg(a)?);" in source
-    assert 'RextioError::new("ZeroDivisionError", "integer modulo by zero")' in source
+    assert f'RextioError::new("ZeroDivisionError", "{zde["int_mod"]}")' in source
     assert "fn __rextio_checked_neg(a: i64) -> Result<i64, RextioError> {" in source
 
 
@@ -1033,6 +1041,41 @@ def total(xs: list[int]) -> int:
     assert "try_fold(0i64, |acc, x| acc.checked_add(x)" in source
 
 
+def test_zero_division_messages_probe_matches_running_interpreter() -> None:
+    """Pin the probe helper against known CPython message families.
+
+    3.14 unified every ZeroDivisionError string to ``division by zero``; older
+    versions keep per-op wording (and 3.12/3.13 changed float ``%`` to
+    ``float modulo by zero``). The probe must track the running interpreter
+    exactly — that is what codegen embeds into the native artifact.
+    """
+    def _probe(op: object) -> str:
+        try:
+            op()  # type: ignore[operator]
+        except ZeroDivisionError as exc:
+            return str(exc)
+        raise AssertionError("expected ZeroDivisionError")
+
+    zde = zero_division_messages()
+    assert set(zde) == {"int_mod", "float_div", "float_mod"}
+    assert zde["int_mod"] == _probe(lambda: 1 % 0)
+    assert zde["float_div"] == _probe(lambda: 1.0 / 0.0)
+    assert zde["float_mod"] == _probe(lambda: 1.0 % 0.0)
+
+    if sys.version_info >= (3, 14):
+        assert zde["int_mod"] == "division by zero"
+        assert zde["float_div"] == "division by zero"
+        assert zde["float_mod"] == "division by zero"
+        assert len({zde["int_mod"], zde["float_div"], zde["float_mod"]}) == 1
+    else:
+        # Pre-3.14: messages differ by op (exact wording still version-specific
+        # within this range; the per-op inequality is the pin).
+        assert zde["int_mod"] != zde["float_div"]
+        assert "modulo" in zde["int_mod"]
+        assert "division" in zde["float_div"]
+        assert "modulo" in zde["float_mod"]
+
+
 def test_float_division_and_modulo_raise_zero_division(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         """
@@ -1050,13 +1093,21 @@ def modulo(a: float, b: float) -> float:
     )
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
+    zde = zero_division_messages()
 
     # Python raises ZeroDivisionError for float `/0.0` and `%0.0` (Rust returns
-    # inf/NaN), and float `%` is floored like the integer case.
+    # inf/NaN), and float `%` is floored like the integer case. Message text is
+    # probed from the build interpreter.
     assert "return Ok(__rextio_checked_fdiv(a, b)?);" in source
     assert "return Ok(__rextio_checked_frem(a, b)?);" in source
-    assert 'pyo3::exceptions::PyZeroDivisionError::new_err("float division by zero")' in source
-    assert 'pyo3::exceptions::PyZeroDivisionError::new_err("float modulo")' in source
+    assert (
+        f'pyo3::exceptions::PyZeroDivisionError::new_err("{zde["float_div"]}")'
+        in source
+    )
+    assert (
+        f'pyo3::exceptions::PyZeroDivisionError::new_err("{zde["float_mod"]}")'
+        in source
+    )
     # Floored modulo with CPython's signed-zero rule (zero takes the divisor's sign).
     assert "Ok(if r == 0.0 { (0.0_f64).copysign(b) }" in source
     assert "else if (r < 0.0) != (b < 0.0) { r + b }" in source
@@ -1072,9 +1123,10 @@ def divide(a: float, b: float) -> float:
     )
 
     source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
+    zde = zero_division_messages()
 
     assert "return Ok(__rextio_checked_fdiv(a, b)?);" in source
-    assert 'RextioError::new("ZeroDivisionError", "float division by zero")' in source
+    assert f'RextioError::new("ZeroDivisionError", "{zde["float_div"]}")' in source
 
 
 def test_math_floor_ceil_trunc_use_checked_conversion(tmp_path: Path) -> None:
@@ -1619,10 +1671,11 @@ def at(xs: list[int], i: int) -> int:
     )
 
     source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
+    zde = zero_division_messages()
 
     assert "kind: String," in source
     assert 'write!(f, "{}: {}", self.kind, self.message)' in source
-    assert 'RextioError::new("ZeroDivisionError", "integer modulo by zero")' in source
+    assert f'RextioError::new("ZeroDivisionError", "{zde["int_mod"]}")' in source
     assert 'RextioError::new("IndexError", "list index out of range")' in source
 
 

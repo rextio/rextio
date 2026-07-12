@@ -97,7 +97,9 @@ UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.TryStar,
     ast.FloorDiv,
     ast.Pow,
-    ast.MatMult,
+    # ast.MatMult deliberately NOT here: `@` must reach _infer_binop_type so
+    # a covering plugin can claim it (council round 6); non-claimed `@` is
+    # rejected there by the operator allow-set with the same message.
     ast.BitAnd,
     ast.BitXor,
     ast.LShift,
@@ -351,6 +353,10 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                 )
             )
         elif arg.annotation is not None and not is_supported_type(arg.annotation):
+            plugin_key = _plugin_annotation_key(function, arg.annotation)
+            if plugin_key is not None:
+                _record_plugin_type_key(function, plugin_key)
+                continue
             function.add_diagnostic(
                 Diagnostic(
                     code="RXT002",
@@ -378,6 +384,11 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
             )
         )
     elif node.returns is not None and not is_supported_type(node.returns):
+        plugin_key = _plugin_annotation_key(function, node.returns)
+        if plugin_key is not None:
+            _record_plugin_type_key(function, plugin_key)
+            _validate_plugin_signature_names(node, function)
+            return
         function.add_diagnostic(
             Diagnostic(
                 code="RXT003",
@@ -390,11 +401,78 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
                 suggestion="Use a supported 0.1.0 scalar or collection type.",
             )
         )
+    _validate_plugin_signature_names(node, function)
+
+
+def _validate_plugin_signature_names(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
+    """Reject any binding of the name ``py`` in a plugin-typed function.
+
+    Plugin-typed PyO3 functions receive the injected interpreter token
+    ``py: pyo3::Python<'py>``; a user parameter with the same name would emit
+    a duplicate parameter, and a LOCAL named ``py`` (assignment, walrus, or
+    loop target — council round 5) shadows the token in the generated body,
+    so the return conversion resolves to the wrong binding and cargo fails.
+    """
+    if not function.plugin_type_keys:
+        return
+    args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    for arg in args:
+        if arg.arg == "py":
+            function.add_diagnostic(
+                Diagnostic(
+                    code="RXT011",
+                    severity="error",
+                    message=(
+                        "parameter name 'py' collides with the interpreter token "
+                        "injected for plugin-typed functions"
+                    ),
+                    file_path=function.file_path,
+                    line=arg.lineno,
+                    column=arg.col_offset,
+                    function_name=function.qualname,
+                    suggestion="Rename the parameter (any name other than 'py').",
+                )
+            )
+    for child in _walk_skipping_scopes(node):
+        if (
+            isinstance(child, ast.Name)
+            and isinstance(child.ctx, ast.Store)
+            and child.id == "py"
+        ):
+            function.add_diagnostic(
+                Diagnostic(
+                    code="RXT011",
+                    severity="error",
+                    message=(
+                        "local name 'py' shadows the interpreter token injected "
+                        "for plugin-typed functions"
+                    ),
+                    file_path=function.file_path,
+                    line=child.lineno,
+                    column=child.col_offset,
+                    function_name=function.qualname,
+                    suggestion="Rename the variable (any name other than 'py').",
+                )
+            )
+
+
+def _plugin_annotation_key(function: FunctionAnalysis, annotation: ast.AST) -> str | None:
+    """Resolve an annotation to an active plugin's type key, or None."""
+    if function.claim_engine is None:
+        return None
+    return function.claim_engine.resolve_annotation(annotation, function.imports)
+
+
+def _record_plugin_type_key(function: FunctionAnalysis, plugin_key: str) -> None:
+    """Record a plugin type resolved in the signature (drives the plugin route)."""
+    if plugin_key not in function.plugin_type_keys:
+        function.plugin_type_keys.append(plugin_key)
 
 
 def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
     type_env = _initial_type_env(node, function)
     return_type = _return_type_name(node, function)
+    _validate_plugin_alias_escape(node, function, type_env)
     for statement in node.body:
         _validate_statement_types(statement, function, type_env, return_type)
         for child in ast.walk(statement):
@@ -408,6 +486,180 @@ def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
                 _validate_call(function, child)
     _validate_mutable_ownership_patterns(node, function)
     _validate_return_paths(node, function, return_type)
+
+
+_ALIAS_SCOPE_BARRIERS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def _validate_plugin_alias_escape(
+    node: ast.FunctionDef,
+    function: FunctionAnalysis,
+    type_env: dict[str, str],
+) -> None:
+    """Reject returning an alias of a plugin-typed parameter.
+
+    The Python fallback of ``return a`` returns the caller's own array object
+    (identity is preserved; later mutations are shared), while the native leg
+    returns a newly allocated copy — a silent aliasing divergence.
+
+    Statements are processed in source order (``ast.walk``'s breadth-first
+    order visited top-level returns before nested assignments — council
+    round 4). Straight-line rebinding to a non-alias value clears a name's
+    alias status (``a = a + b; return a`` is legal: both legs return a fresh
+    value); bindings inside conditional/looping blocks only ever ADD alias
+    status, to a fixpoint, because the analyzer cannot prove which path runs.
+    Nested function/class scopes are skipped — their names are not this
+    function's names (and nested defs are rejected by the subset anyway).
+
+    Tracked binding forms: Assign/AnnAssign name targets, walrus targets, and
+    (defensively) for/with name targets. AugAssign is deliberately absent:
+    in-place augmented assignment on plugin-typed values is rejected outright
+    by the AugAssign statement guard, and on core types it cannot create a
+    plugin alias. Tuple-unpacking targets and other shapes that could carry a
+    plugin value are rejected by separate subset guards before this walker's
+    verdict matters.
+    """
+    engine = function.claim_engine
+    if engine is None:
+        return
+    aliases = {
+        arg
+        for arg, type_name in type_env.items()
+        if engine.is_plugin_type(type_name)
+    }
+    if not aliases:
+        return
+    _check_alias_statements(node.body, function, aliases)
+
+
+def _check_alias_statements(
+    statements: list[ast.stmt], function: FunctionAnalysis, aliases: set[str]
+) -> None:
+    for statement in statements:
+        if isinstance(statement, _ALIAS_SCOPE_BARRIERS):
+            continue
+        if isinstance(statement, ast.Return):
+            _check_alias_return(statement, function, aliases)
+            continue
+        if any(isinstance(child, ast.stmt) for child in ast.walk(statement) if child is not statement):
+            # Compound statement (if/for/while/try/with/...): absorb every
+            # binding anywhere in the subtree additively to a fixpoint (loop
+            # bodies re-run, so late bindings feed earlier ones), then check
+            # the subtree's returns against the final set.
+            _absorb_conditional_aliases(statement, aliases)
+            for child in _walk_skipping_scopes(statement):
+                if isinstance(child, ast.Return):
+                    _check_alias_return(child, function, aliases)
+            continue
+        _apply_straight_line_bindings(statement, aliases)
+
+
+def _check_alias_return(
+    statement: ast.Return, function: FunctionAnalysis, aliases: set[str]
+) -> None:
+    if isinstance(statement.value, ast.Name) and statement.value.id in aliases:
+        _add_unsupported_syntax(
+            function,
+            statement,
+            "returning a plugin-typed parameter (or a possible alias of one) "
+            "diverges: the fallback returns the caller's own object "
+            "while the native path returns a copy; compute a new value "
+            "or keep the function on the Python fallback",
+        )
+
+
+def _apply_straight_line_bindings(statement: ast.stmt, aliases: set[str]) -> None:
+    """Update alias statuses for one unconditionally executed simple statement."""
+    bindings: list[tuple[list[str], ast.expr]] = []
+    if isinstance(statement, ast.Assign):
+        names = [target.id for target in statement.targets if isinstance(target, ast.Name)]
+        if names:
+            bindings.append((names, statement.value))
+    elif isinstance(statement, ast.AnnAssign):
+        if statement.value is not None and isinstance(statement.target, ast.Name):
+            bindings.append(([statement.target.id], statement.value))
+    for names, value in bindings:
+        resolved = _unwrap_named_expr(value)
+        if isinstance(resolved, ast.Name) and resolved.id in aliases:
+            aliases.update(names)
+        else:
+            # Rebound to a computed value: both legs bind a fresh object, so
+            # the name is no longer an alias on this (unconditional) path.
+            aliases.difference_update(names)
+    # Walrus targets anywhere in the statement bind additively (most
+    # plugin-typed walrus shapes are rejected by other subset guards; this
+    # is defense in depth).
+    _absorb_walrus_bindings(statement, aliases)
+
+
+def _absorb_conditional_aliases(statement: ast.stmt, aliases: set[str]) -> None:
+    """Grow the alias set over a compound subtree to a fixpoint (adds only).
+
+    Adds-only is deliberate: bindings under a condition/loop may or may not
+    execute, so they can never CLEAR a name's alias status (the other path
+    keeps the alias live) — this also covers walrus targets, which can sit
+    in conditionally evaluated expression positions. ``for``/``with``-target
+    bindings of plugin values are rejected by other subset guards before this
+    walker matters; they are absorbed here only as defense in depth.
+    Convergence: the set only grows and is bounded by the function's local
+    names, and the AST is immutable, so the fixpoint terminates.
+    """
+    changed = True
+    while changed:
+        changed = False
+        for child in _walk_skipping_scopes(statement):
+            names: list[str] = []
+            value: ast.expr | None = None
+            if isinstance(child, ast.Assign):
+                names = [target.id for target in child.targets if isinstance(target, ast.Name)]
+                value = child.value
+            elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                names = [child.target.id]
+                value = child.value
+            elif isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+                names = [child.target.id]
+                value = child.value
+            elif isinstance(child, (ast.For, ast.AsyncFor)) and isinstance(child.target, ast.Name):
+                names = [child.target.id]
+                value = child.iter
+            elif isinstance(child, ast.withitem) and isinstance(child.optional_vars, ast.Name):
+                names = [child.optional_vars.id]
+                value = child.context_expr
+            if value is None:
+                continue
+            resolved = _unwrap_named_expr(value)
+            if isinstance(resolved, ast.Name) and resolved.id in aliases:
+                for name in names:
+                    if name not in aliases:
+                        aliases.add(name)
+                        changed = True
+
+
+def _absorb_walrus_bindings(statement: ast.stmt, aliases: set[str]) -> None:
+    for child in _walk_skipping_scopes(statement):
+        if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+            resolved = _unwrap_named_expr(child.value)
+            if isinstance(resolved, ast.Name) and resolved.id in aliases:
+                aliases.add(child.target.id)
+
+
+def _unwrap_named_expr(value: ast.expr) -> ast.expr:
+    """Resolve ``(b := a)`` chains to the underlying value expression."""
+    while isinstance(value, ast.NamedExpr):
+        value = value.value
+    return value
+
+
+def _walk_skipping_scopes(node: ast.AST):
+    """Yield descendant nodes without descending into nested scopes."""
+    stack: list[ast.AST] = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        for child in ast.iter_child_nodes(current):
+            if isinstance(child, _ALIAS_SCOPE_BARRIERS):
+                continue
+            stack.append(child)
 
 
 def _validate_return_paths(
@@ -455,6 +707,11 @@ def _initial_type_env(node: ast.FunctionDef, function: FunctionAnalysis) -> dict
     for arg in args:
         if arg.annotation is not None and is_supported_type(arg.annotation):
             env[arg.arg] = annotation_name(arg.annotation)
+        elif (
+            arg.annotation is not None
+            and (plugin_key := _plugin_annotation_key(function, arg.annotation)) is not None
+        ):
+            env[arg.arg] = plugin_key
         elif arg.arg in function.inferred_arg_types:
             env[arg.arg] = function.inferred_arg_types[arg.arg]
     return env
@@ -571,6 +828,19 @@ def _validate_statement_types(
             _add_unsupported_syntax(function, node.target, "augmented assignment targets must be local names")
             return
         target_type = _infer_expr_type(node.target, function, env)
+        engine = function.claim_engine
+        if engine is not None and engine.is_plugin_type(target_type):
+            # NumPy's `a += b` mutates the array in place, visibly through
+            # every alias including the caller's reference; the native lowering
+            # rebinds a fresh value, so the semantics cannot be preserved.
+            _add_unsupported_syntax(
+                function,
+                node,
+                "in-place augmented assignment on a plugin-typed value cannot "
+                "preserve NumPy's aliasing semantics; use a plain assignment "
+                "with a new value or keep the function on the Python fallback",
+            )
+            return
         value_type = _infer_expr_type(node.value, function, env)
         result_type = _infer_binop_type(node.op, target_type, value_type, function, node)
         if result_type is not None:
@@ -1023,6 +1293,10 @@ def _validate_type_match(
 def _return_type_name(node: ast.FunctionDef, function: FunctionAnalysis) -> str | None:
     if node.returns is not None and is_supported_type(node.returns):
         return annotation_name(node.returns)
+    if node.returns is not None:
+        plugin_key = _plugin_annotation_key(function, node.returns)
+        if plugin_key is not None:
+            return plugin_key
     return function.inferred_return_type
 
 
@@ -1980,6 +2254,21 @@ def _infer_expr_type(
                 f"indexing a {value_type} value is not supported in native functions",
             )
             return None
+        engine = function.claim_engine
+        if engine is not None and engine.is_plugin_type(value_type):
+            # Without this, a plugin-typed subscript fell through to codegen's
+            # generic sequence indexing — an unclaimed, uncertified native
+            # surface with core's IndexError semantics instead of the
+            # library's (council round 5). Plugins have no subscript claim
+            # vocabulary in this release, so the site always rejects.
+            _add_unsupported_syntax(
+                function,
+                node,
+                f"indexing a plugin-typed value ({value_type}) is not covered "
+                "by any plugin rule; compute the element with a covered "
+                "operation or keep the function on the Python fallback",
+            )
+            return None
         return None
     return None
 
@@ -2582,7 +2871,18 @@ def _infer_call_type(
         return None
     if _is_append_call(node):
         return _infer_append_call_type(node, function, env)
-    return function.call_return_types.get(target) if target is not None else None
+    if target is None:
+        return None
+    known_return = function.call_return_types.get(target)
+    if known_return is not None:
+        return known_return
+    if function.claim_engine is not None and not node.keywords:
+        handled, claim_type = function.claim_engine.claim_call(
+            function, node, target, tuple(infer_arg(arg) for arg in node.args)
+        )
+        if handled:
+            return claim_type
+    return None
 
 
 def _format_arg_unprintable_reason(arg_type: str | None) -> str | None:
@@ -2860,6 +3160,21 @@ def _infer_binop_type(
     function: FunctionAnalysis,
     node: ast.AST,
 ) -> str | None:
+    engine = function.claim_engine
+    if (
+        engine is not None
+        and left is not None
+        and right is not None
+        and (engine.is_plugin_type(left) or engine.is_plugin_type(right))
+    ):
+        # Offered BEFORE core's operator allow-set: otherwise `a @ b` (and
+        # any future operator in _BINOP_SYMBOLS beyond core's arithmetic
+        # set) would be rejected by core before the covering plugin ever saw
+        # the site (council round 6). claim_binop itself ignores operators
+        # outside the claim vocabulary.
+        handled, claim_type = engine.claim_binop(function, node, op, left, right)
+        if handled:
+            return claim_type
     if not isinstance(op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod)):
         _add_unsupported_syntax(
             function,
@@ -3076,7 +3391,24 @@ def _validate_compare_types(
                 "ordering comparisons (<, <=, >, >=) on dict/set operands are not "
                 "supported in native functions",
             )
-        if (
+        engine = function.claim_engine
+        if engine is not None and (
+            engine.is_plugin_type(left_type) or engine.is_plugin_type(right_type)
+        ):
+            # Same-plugin-type pairs passed _types_comparable (equal type
+            # strings), lowered to a raw Rust comparison, and COMPILED for
+            # ndarray: scalar bool natively vs NumPy's elementwise bool array
+            # on the fallback - a silent divergence (council round 6, 7/8
+            # reviewers). Plugins have no comparison claim vocabulary this
+            # release, so the site always rejects.
+            _add_unsupported_syntax(
+                function,
+                node,
+                "comparing plugin-typed values is not covered by any plugin "
+                "rule; compute the result with a covered operation or keep "
+                "the function on the Python fallback",
+            )
+        elif (
             left_type is not None
             and right_type is not None
             and not _types_comparable(left_type, right_type)
@@ -3378,7 +3710,8 @@ def _unsupported_message(node: ast.AST) -> str:
         (
             ast.FloorDiv,
             ast.Pow,
-            ast.MatMult,
+            # MatMult is absent: `@` is claimable, so its rejection message is
+            # owned exclusively by _infer_binop_type's operator allow-set.
             ast.BitAnd,
             ast.BitXor,
             ast.LShift,

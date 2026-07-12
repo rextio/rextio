@@ -4,18 +4,71 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from rextio.plugins.api import CoverageDecl, CrateDependency, PluginType, RuleRecord
 from rextio.targets.models import TargetSpec
 
 
 @dataclass(frozen=True)
+class PluginCoverage:
+    """An active plugin's coverage declaration, tagged with its plugin id."""
+
+    plugin_id: str
+    coverage: CoverageDecl
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this object."""
+        return {"plugin_id": self.plugin_id, "coverage": self.coverage.to_dict()}
+
+
+@dataclass(frozen=True)
+class PluginTypeBinding:
+    """A plugin-provided type, tagged with its owning plugin id."""
+
+    plugin_id: str
+    plugin_type: PluginType
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this object."""
+        return {"plugin_id": self.plugin_id, "type": self.plugin_type.to_dict()}
+
+
+@dataclass(frozen=True)
+class PluginCrateDependency:
+    """A plugin-injected crate dependency, tagged with its owning plugin id."""
+
+    plugin_id: str
+    dependency: CrateDependency
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this object."""
+        return {"plugin_id": self.plugin_id, **self.dependency.to_dict()}
+
+
+@dataclass(frozen=True)
+class PluginProviderBinding:
+    """A live lowering-capable provider object, kept for claim/lower calls.
+
+    Never serialized: the provider is runtime state, not report data. Present
+    only for active plugins that implement the lowering members.
+    """
+
+    plugin_id: str
+    provider: object
+
+
+@dataclass(frozen=True)
 class RextioPlugin:
-    """A Rextio plugin is **metadata only**.
+    """A Rextio plugin's resolved metadata.
 
     A plugin declares (a) target compatibility — source/target language, target
     versions, and target build options, used by :meth:`matches` — and (b) the
     external Python packages it covers (``packages``), which the analyzer uses to
-    resolve those packages to the ``plugin`` import policy. Plugins do **not** inject
-    codegen rules or otherwise alter lowering; that is intentionally out of scope.
+    resolve those packages to the ``plugin`` import policy. A protocol-v2 plugin
+    additionally *self-describes* declarative rule records through ``describe()``
+    (``rules_provided`` is True; see ``rextio.plugins.api``). A plugin API 1.1
+    plugin additionally *lowers* covered constructs through claim()/lower()
+    (``lowering_provided`` is True) — the analyzer still decides which sites
+    are offered and remains the authority on acceptance.
     """
 
     id: str
@@ -27,7 +80,19 @@ class RextioPlugin:
     packages: tuple[str, ...] = ()
     source: str = "entry-point"
     package: str | None = None
+    # Distribution version of the providing package (from entry-point
+    # metadata) - part of the manifest cache key the tooling contract
+    # documents (council round 6: the manifest promised the key but did not
+    # supply the plugin-version component).
+    version: str | None = None
     entry_point: str | None = None
+    # Protocol v2: True when the plugin self-describes rule records through
+    # ``describe()``; the declared plugin-API version travels with it.
+    rules_provided: bool = False
+    api_version: str | None = None
+    # Plugin API 1.1: True when the plugin implements the lowering members
+    # (type_vocabulary/claim/lower/crate_dependencies).
+    lowering_provided: bool = False
 
     def matches(self, target: TargetSpec) -> bool:
         """Report whether this plugin applies to the given target spec."""
@@ -49,12 +114,14 @@ class RextioPlugin:
         source: str,
         package: str | None = None,
         entry_point: str | None = None,
+        version: str | None = None,
     ) -> RextioPlugin:
         """Return a copy of this plugin annotated with its discovery source."""
         return replace(
             self,
             source=source,
             package=package,
+            version=version,
             entry_point=entry_point,
         )
 
@@ -70,22 +137,48 @@ class RextioPlugin:
             "packages": list(self.packages),
             "source": self.source,
             "package": self.package,
+            "version": self.version,
             "entry_point": self.entry_point,
+            "rules_provided": self.rules_provided,
+            "api_version": self.api_version,
+            "lowering_provided": self.lowering_provided,
         }
 
 
 @dataclass(frozen=True)
 class PluginRegistry:
-    """The set of discovered and active plugins."""
+    """The set of discovered and active plugins, plus their v2 self-descriptions."""
 
     enabled: tuple[str, ...] = ()
     discovered: tuple[RextioPlugin, ...] = ()
     active: tuple[RextioPlugin, ...] = ()
+    # Rule records described by active v2 plugins (provider = plugin id),
+    # already validated by the loader. Empty when only v1 plugins are active.
+    rule_records: tuple[RuleRecord, ...] = ()
+    coverages: tuple[PluginCoverage, ...] = ()
+    # Plugin API 1.1 lowering surfaces, validated by the loader. ``providers``
+    # holds the live objects for claim/lower calls and is never serialized.
+    types: tuple[PluginTypeBinding, ...] = ()
+    crate_dependencies: tuple[PluginCrateDependency, ...] = ()
+    providers: tuple[PluginProviderBinding, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
-        """Return the JSON-serializable dict form of this object."""
-        return {
+        """Return the JSON-serializable dict form of this object.
+
+        The v2 fields are emitted only when present, so reports for
+        metadata-only plugin sets keep their existing shape.
+        """
+        data: dict[str, object] = {
             "enabled": list(self.enabled),
             "discovered": [plugin.to_dict() for plugin in self.discovered],
             "active": [plugin.to_dict() for plugin in self.active],
         }
+        if self.rule_records:
+            data["rule_records"] = [record.to_dict() for record in self.rule_records]
+        if self.coverages:
+            data["coverages"] = [coverage.to_dict() for coverage in self.coverages]
+        if self.types:
+            data["types"] = [binding.to_dict() for binding in self.types]
+        if self.crate_dependencies:
+            data["crate_dependencies"] = [binding.to_dict() for binding in self.crate_dependencies]
+        return data

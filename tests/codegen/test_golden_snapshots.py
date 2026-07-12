@@ -3,18 +3,42 @@
 The generator claims deterministic output; these tests pin the generated Rust for
 representative inputs against committed golden files so any unintended change to
 codegen is caught in review. Regenerate with ``REXTIO_UPDATE_GOLDEN=1 pytest``.
+
+ZeroDivisionError message strings in generated helpers are probed from the
+build interpreter (CPython 3.14 unified them to ``division by zero``; older
+versions keep per-op wording). Golden comparison normalizes those message
+literals so the committed goldens stay portable across interpreters while
+still pinning structure and the rest of the emission.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
+from rextio.codegen.rust.checked_arith import zero_division_messages
 from rextio.codegen.rust.generator import generate_rust_crate_module, generate_rust_module
 from rextio.ir.lowering import lower_project
 
 _GOLDEN_DIR = Path(__file__).parent / "golden"
+
+# Historical hardcodes that may appear only in committed goldens, plus every
+# message the running interpreter actually probes. Longest-first so a prefix
+# like "float modulo" cannot swallow "float modulo by zero".
+_HISTORICAL_ZDE_MESSAGES = (
+    "integer modulo by zero",
+    "float division by zero",
+    "float modulo by zero",
+    "float modulo",
+    "division by zero",
+)
+
+_ZDE_NEW_ERR = re.compile(
+    r'(PyZeroDivisionError::new_err\(")([^"]*)("\))'
+    r'|(RextioError::new\("ZeroDivisionError", ")([^"]*)("\))'
+)
 
 # A single module exercising arithmetic, control flow, list/dict/set, indexing,
 # comprehensions, native-to-native calls, and string handling.
@@ -93,6 +117,31 @@ def _normalize_newlines(text: str) -> str:
     return text.replace("\r\n", "\n")
 
 
+def _stabilize_zero_div_messages(text: str) -> str:
+    """Replace interpreter-dependent ZeroDivisionError message literals.
+
+    Codegen embeds messages probed from the build interpreter. Committed
+    goldens may carry any historical CPython wording; normalize both sides
+    of the comparison so only non-message structure is pinned.
+    """
+    messages = set(_HISTORICAL_ZDE_MESSAGES)
+    messages.update(zero_division_messages().values())
+
+    def _repl(match: re.Match[str]) -> str:
+        if match.group(1) is not None:
+            return f'{match.group(1)}__REXTIO_ZDE__{match.group(3)}'
+        return f'{match.group(4)}__REXTIO_ZDE__{match.group(6)}'
+
+    # Only rewrite known message tokens so unrelated string literals stay exact.
+    def _maybe_repl(match: re.Match[str]) -> str:
+        msg = match.group(2) if match.group(1) is not None else match.group(5)
+        if msg in messages:
+            return _repl(match)
+        return match.group(0)
+
+    return _ZDE_NEW_ERR.sub(_maybe_repl, text)
+
+
 def _assert_golden(name: str, generated: str) -> None:
     golden_path = _GOLDEN_DIR / name
     if os.environ.get("REXTIO_UPDATE_GOLDEN") == "1":
@@ -103,7 +152,9 @@ def _assert_golden(name: str, generated: str) -> None:
         f"missing golden file {golden_path}; run REXTIO_UPDATE_GOLDEN=1 pytest to create it"
     )
     expected = golden_path.read_text(encoding="utf-8")
-    assert _normalize_newlines(generated) == _normalize_newlines(expected), (
+    assert _stabilize_zero_div_messages(_normalize_newlines(generated)) == (
+        _stabilize_zero_div_messages(_normalize_newlines(expected))
+    ), (
         f"generated Rust diverged from {name}; if intended, regenerate with "
         "REXTIO_UPDATE_GOLDEN=1 pytest"
     )

@@ -117,7 +117,27 @@ def _handle(request):
     args = request.get("args", [])
     try:
         result = _resolve(qualname)(*args)
-    except BaseException as exc:  # noqa: BLE001 -- forward ANY exception (incl. SystemExit/KeyboardInterrupt) to the caller instead of killing the long-lived dispatcher
+    except SystemExit as exc:
+        # A delegated function called sys.exit(); forward the exit code so the
+        # binary can honor it instead of mapping it to a generic error and
+        # always exiting 1 (council round 10). sys.exit() -> 0; sys.exit(n) ->
+        # n; sys.exit("msg") -> print msg to stderr and exit 1 (CPython rule).
+        code = exc.code
+        if code is None:
+            code = 0
+        elif isinstance(code, int):
+            # bool is an int subclass; sys.exit(True)/False would serialize as a
+            # JSON bool, which the Rust client's as_i64() rejects (the exit frame
+            # would fall through to a generic error). Normalize to a plain int so
+            # the code is always a JSON number (council round 11).
+            code = int(code)
+        else:
+            print(code, file=sys.stderr)
+            code = 1
+        return {{"exit": code}}
+    except KeyboardInterrupt:
+        return {{"exit": 130}}
+    except BaseException as exc:  # noqa: BLE001 -- forward ANY other exception to the caller instead of killing the long-lived dispatcher
         return _exc_frame(exc)
     return {{"ok": result}}
 
@@ -126,8 +146,10 @@ def _serve(line):
     # Turn one request line into a response frame. ANY failure -- malformed JSON, a
     # non-dict request, a handler error, or a json.dumps failure (non-serializable
     # result, a non-finite float under allow_nan=False, RecursionError on a deeply
-    # nested result, OverflowError on a huge int) -- becomes an error frame, never
-    # an unhandled exception that would kill the long-lived dispatcher.
+    # nested result) -- becomes an error frame, never an unhandled exception that
+    # would kill the long-lived dispatcher. (A huge Python int serializes fine as a
+    # JSON number; it does not raise here. An exit code outside i64 range is a
+    # separate, documented limitation honored on the Rust side, not a json failure.)
     try:
         request = json.loads(line)
     except ValueError as exc:
@@ -152,6 +174,12 @@ def main():
     # Make rextio importable for the reconstructed modules AFTER the redirect, so a
     # real rextio package's import-time output can never land on the protocol stream.
     _ensure_rextio()
+    # Handshake: the client verifies this protocol version before any call so a
+    # dispatcher/binary version mismatch fails with a clear message instead of
+    # cryptic JSON/schema errors (council round 8).
+    protocol.write(json.dumps({{"protocol": PROTOCOL_VERSION}}))
+    protocol.write("\\n")
+    protocol.flush()
     for line in sys.stdin:
         line = line.strip()
         if not line:

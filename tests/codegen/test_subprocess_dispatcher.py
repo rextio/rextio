@@ -22,6 +22,10 @@ def boom(x):
 
 def total(xs):
     return sum(xs)
+
+def do_exit(code):
+    import sys as _sys
+    _sys.exit(code)
 """,
         encoding="utf-8",
     )
@@ -38,7 +42,14 @@ def total(xs):
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
-    return [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    return _responses(completed.stdout)
+
+
+def _responses(stdout: str) -> list[dict]:
+    """Parse call responses, consuming the leading protocol handshake frame."""
+    frames = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+    assert frames and frames[0] == {"protocol": PROTOCOL_VERSION}, frames[:1]
+    return frames[1:]
 
 
 def test_dispatcher_serves_calls_errors_and_denies_unlisted(tmp_path: Path) -> None:
@@ -78,7 +89,7 @@ def test_dispatcher_reports_invalid_json_request(tmp_path: Path) -> None:
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
-    response = json.loads(completed.stdout.splitlines()[0])
+    response = _responses(completed.stdout)[0]
     assert response["error"]["type"] == "ValueError"
 
 
@@ -137,9 +148,12 @@ def circular():
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
-    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    responses = _responses(completed.stdout)
     assert responses[0] == {"ok": 10}
-    assert responses[1] == {"error": {"type": "SystemExit", "message": "3"}}
+    # Council round 10: a delegated SystemExit is forwarded as an exit frame
+    # (the binary honors the code); the dispatcher itself survives and keeps
+    # answering later calls.
+    assert responses[1] == {"exit": 3}
     assert responses[2]["error"]["type"] == "TypeError"
     assert responses[3]["error"]["type"] == "RecursionError"  # call recursion -> error frame
     assert responses[4]["error"]["type"] == "ValueError"  # json.dumps circular ref -> error frame
@@ -183,7 +197,7 @@ def raise_bad():
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
-    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    responses = _responses(completed.stdout)
     assert responses[0]["error"]["type"] == "Bad"  # __str__ raising did not crash the dispatcher
     assert responses[1]["error"]["type"] == "AttributeError"  # non-dict request handled
     assert responses[2] == {"ok": 42}  # dispatcher still alive after both poison inputs
@@ -213,7 +227,7 @@ def slug(text):
         timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout.splitlines()[0]) == {"ok": "hello-world"}
+    assert _responses(completed.stdout)[0] == {"ok": "hello-world"}
 
 
 def test_render_is_deterministic_and_embeds_sorted_allowlist() -> None:
@@ -222,3 +236,49 @@ def test_render_is_deterministic_and_embeds_sorted_allowlist() -> None:
     assert first == second
     assert '["a.x", "b.y"]' in first
     assert f"PROTOCOL_VERSION = {PROTOCOL_VERSION}" in first
+
+
+def test_dispatcher_forwards_sys_exit_as_exit_frame(tmp_path: Path) -> None:
+    # Council round 10 (antigravity): a delegated function calling sys.exit()
+    # must forward its exit code as a distinct frame (so the binary can honor
+    # it), not become a generic error frame that always exits 1.
+    responses = _run_dispatcher(
+        tmp_path,
+        allowed=["fb.do_exit"],
+        requests=[
+            {"call": "fb.do_exit", "args": [0]},
+            {"call": "fb.do_exit", "args": [5]},
+        ],
+    )
+    assert responses == [{"exit": 0}, {"exit": 5}]
+
+
+def test_dispatcher_forwards_sys_exit_message_as_exit_1(tmp_path: Path) -> None:
+    # sys.exit("msg") exits 1 in CPython (the message goes to stderr).
+    responses = _run_dispatcher(
+        tmp_path, allowed=["fb.do_exit"], requests=[{"call": "fb.do_exit", "args": ["bye"]}]
+    )
+    assert responses == [{"exit": 1}]
+
+
+def test_dispatcher_normalizes_bool_exit_code_to_int(tmp_path: Path) -> None:
+    # Council round 11 (minimax): bool is an int subclass, so sys.exit(True)/
+    # sys.exit(False) previously serialized the exit frame as a JSON bool. The
+    # Rust client honors the frame via serde_json as_i64(), which rejects a
+    # bool, so the exit was silently dropped. The dispatcher must emit a plain
+    # JSON number (True -> 1, False -> 0) matching CPython's exit codes.
+    responses = _run_dispatcher(
+        tmp_path,
+        allowed=["fb.do_exit"],
+        requests=[
+            {"call": "fb.do_exit", "args": [True]},
+            {"call": "fb.do_exit", "args": [False]},
+        ],
+    )
+    assert responses == [{"exit": 1}, {"exit": 0}]
+    # The codes must be real ints, not bools (which would round-trip as
+    # `true`/`false` and slip past the Rust as_i64() check).
+    assert all(
+        type(frame["exit"]) is int and not isinstance(frame["exit"], bool)
+        for frame in responses
+    )

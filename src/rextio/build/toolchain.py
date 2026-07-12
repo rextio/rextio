@@ -131,18 +131,41 @@ def cargo_environment(toolchain: ToolchainConfig) -> dict[str, str]:
     """Environment for PyO3 extension builds (cargo or maturin).
 
     Extends :func:`rust_environment` with PYO3_PYTHON so the PyO3 build
-    targets the configured interpreter instead of whatever `python3` is
-    first on PATH, and with CARGO so maturin (which discovers cargo itself)
-    runs the configured cargo rather than the first one on PATH.
+    targets a known interpreter instead of whatever ``python3`` is first on
+    PATH, and with CARGO so maturin (which discovers cargo itself) runs the
+    configured cargo rather than the first one on PATH.
+
+    PYO3_PYTHON precedence (the returned mapping is merged *over*
+    ``os.environ`` by the build runner):
+
+    1. Configured ``[toolchain] python`` wins and is always set in the overlay.
+    2. Else a non-empty inherited ``os.environ["PYO3_PYTHON"]`` is preserved
+       by *omitting* the key from the overlay (merge keeps the export).
+    3. Else default to the running build interpreter (``sys.executable``).
+
+    Invariant: default is the build interpreter; an explicitly exported
+    ``PYO3_PYTHON`` is respected; PATH ``python3`` never influences PyO3
+    codegen. The native artifact ABI must match the interpreter the wheel
+    and module tags are generated for.
     """
     env = rust_environment(toolchain)
     if toolchain.cargo is not None:
         cargo, _error = resolve_tool("cargo", toolchain.cargo)
         if cargo is not None:
             env["CARGO"] = cargo
+    # Prefer explicit [toolchain] python; else keep a non-empty inherited
+    # PYO3_PYTHON (omit from the overlay so merge-over-os.environ preserves
+    # it); else pin PyO3 to the build interpreter. Without a pin,
+    # pyo3-build-config falls back to PATH python3, which may differ in
+    # minor version from the process that tags and loads the extension.
     python, _error = resolve_python(toolchain)
     if python is not None:
         env["PYO3_PYTHON"] = python
+    else:
+        inherited = os.environ.get("PYO3_PYTHON")
+        if not inherited:
+            # Unset or empty: treat as no override; default to build interpreter.
+            env["PYO3_PYTHON"] = sys.executable
     return env
 
 

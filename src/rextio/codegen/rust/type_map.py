@@ -11,6 +11,7 @@ from rextio.ir.types import (
     RxtList,
     RxtNone,
     RxtOptional,
+    RxtPluginType,
     RxtPyObject,
     RxtSet,
     RxtStr,
@@ -58,4 +59,6 @@ def rust_type(rxt_type: RxtType) -> str:
         return f"HashMap<{rust_type(rxt_type.key_type)}, {rust_type(rxt_type.value_type)}>"
     if isinstance(rxt_type, RxtOptional):
         return f"Option<{rust_type(rxt_type.item_type)}>"
+    if isinstance(rxt_type, RxtPluginType):
+        return rxt_type.native_rust
     raise TypeError(f"unsupported Rextio type for Rust: {type(rxt_type).__name__}")

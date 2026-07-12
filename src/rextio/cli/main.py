@@ -10,14 +10,22 @@ from collections.abc import Sequence
 
 from rextio.__about__ import __version__
 from rextio.limits import MAX_BUILD_TIMEOUT_SECONDS
-from rextio.cli import bench_cmd, build_cmd, check_cmd, clean_cmd, generate_cmd, init_cmd
+from rextio.cli import (
+    bench_cmd,
+    build_cmd,
+    capabilities_cmd,
+    check_cmd,
+    clean_cmd,
+    generate_cmd,
+    init_cmd,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argparse parser for the rextio CLI."""
     parser = argparse.ArgumentParser(
         prog="rextio",
-        description="Rextio 0.1.0 hybrid build tool.",
+        description="Rextio hybrid build tool.",
     )
     parser.add_argument(
         "--version",
@@ -63,6 +71,41 @@ def build_parser() -> argparse.ArgumentParser:
     _add_policy_options(check_parser)
     _add_output_options(check_parser)
     check_parser.set_defaults(handler=check_cmd.run)
+
+    capabilities_parser = subparsers.add_parser(
+        "capabilities",
+        help="Print the machine-readable capability manifest (experimental).",
+    )
+    capabilities_parser.add_argument(
+        "project_root", nargs="?", default=".", help="Project root to describe."
+    )
+    capabilities_parser.add_argument(
+        "--no-plugins",
+        action="store_true",
+        help=(
+            "Emit the core-only manifest without importing or executing any "
+            "plugin package code (resolving enabled plugins runs their "
+            "module-level code)."
+        ),
+    )
+    capabilities_parser.add_argument(
+        "--native-backend",
+        "--target-language",
+        dest="native_backend",
+        choices=("rust",),
+        default=None,
+        help=(
+            "Native target language (0.1.0 implements rust). Overrides "
+            "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
+            "and [build] native_backend."
+        ),
+    )
+    _add_target_options(capabilities_parser)
+    _add_import_options(capabilities_parser)
+    _add_embedding_options(capabilities_parser)
+    _add_policy_options(capabilities_parser)
+    _add_output_options(capabilities_parser)
+    capabilities_parser.set_defaults(handler=capabilities_cmd.run)
 
     build_parser_ = subparsers.add_parser("build", help="Build a hybrid artifact.")
     build_parser_.add_argument("project_root", nargs="?", default=".", help="Project root to build.")

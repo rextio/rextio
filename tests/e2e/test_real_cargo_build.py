@@ -79,7 +79,7 @@ def rejected(x: int) -> int:
     # Runs natively with an in-process boundary call into `helper`.
     assert module.rejected(5) == 15
 
-    monkeypatch.setattr(module, "_native_add", lambda a, b: a + b + 100)
+    monkeypatch.setattr(module, "_rextio_native_fn_add", lambda a, b: a + b + 100)
     assert module.add(2, 3) == 105
 
     monkeypatch.setenv("REXTIO_NATIVE_MODE", "fallback")

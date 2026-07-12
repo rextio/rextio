@@ -4,7 +4,7 @@
 
 **把符合條件的 typed Python 函式編譯為 Rust，其餘一切保留在 Python fallback 上。**
 
-Rextio 0.1.0 是面向 Python 專案的 alpha 階段本地建置工具。它找出可以安全
+Rextio 0.1.1 是面向 Python 專案的 alpha 階段本地建置工具。它找出可以安全
 下沉到 Rust 的帶型別 Python 函式，用 PyO3 提前（ahead-of-time）編譯它們，
 其餘部分全部繼續透過產生的 Python fallback 程式碼運行 — import 路徑與
 行為保持不變。
@@ -65,7 +65,8 @@ assert format_result(14) == "score=14"
 | 指令 | 作用 |
 | --- | --- |
 | `rextio init` | 建立 `rextio.toml`、`REXTIO.md` 和 `.rextioignore`。 |
-| `rextio check` | 分析 native 候選並輸出診斷。 |
+| `rextio check` | 分析 native 候選並輸出診斷（結構化 JSON 用 `--format json`）。 |
+| `rextio capabilities` | 輸出機器可讀的 capability manifest: 受支援的型別、帶指引的提升規則、以及啟用的外掛（experimental）。 |
 | `rextio generate` | 只寫出產生的 Rust/Python 原始碼，不編譯。 |
 | `rextio build` | 產生、編譯、打包並寫出建置報告。 |
 | `rextio bench` | 比較一個函式的 Python fallback 與 Rust native 耗時。 |
@@ -258,7 +259,7 @@ CLI 參數 > 環境變數 > rextio.toml > 內建預設值
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.0 中唯一實作的 native 目標是 Rust。
+0.1.1 中唯一實作的 native 目標是 Rust。
 
 Rextio 外掛是用 `pip` 或 `uv` 等工具安裝的普通 Python 套件。外掛套件透過
 `rextio.plugins` entry point 群組暴露中繼資料，包括它涵蓋的 Python 套件
@@ -279,9 +280,12 @@ default_external_policy = "fallback"
 "known_pkg" = { policy = "plugin", plugin = "known-rust" }
 ```
 
-支援的套件策略是 `fallback`、`analyze`、`try-native`、`plugin`。具體的
-第三方外掛變換和一般依賴下沉不隨 0.1.0 捆綁；`try-native` 是顯式的
-規劃策略，沒有安全的 direct 下沉時仍會 fallback。
+支援的套件策略是 `fallback`、`analyze`、`try-native`、`plugin`。從 0.1.1
+起，外掛還可以描述並直接*下沉*其覆蓋的構造（plugin API 1.1 — 參見
+[plugin lowering 規範](docs/specs/plugin-lowering.md)）；first-party 的
+[rextio-numpy](https://github.com/rextio/rextio-numpy) 外掛實作了經過認證
+的初始 float64 1-D 表面。一般依賴下沉不隨發行版捆綁；`try-native` 是顯式
+的規劃策略，沒有安全的 direct 下沉時仍會 fallback。
 
 ## Native 選擇
 
@@ -360,7 +364,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.0 刻意支援一個小的 subset。這個 subset 就是以 native
+Rextio 0.1.1 刻意支援一個小的 subset。這個 subset 就是以 native
 Rust 執行的程式碼。
 
 支援的型別:
@@ -496,10 +500,13 @@ plain Python（`.py` 繼續被 import），樹的其餘部分用 Nuitka 編譯�
 在第一次呼叫。帶型別的純量程式碼優先用 `@rextio.native`，NumPy/陣列核心
 用 Numba，並注意非常小的函式在任何加速器下都會輸給呼叫邊界成本。
 
-我們計畫推出一個 Rextio 外掛，目標是把基於 NumPy 的 Python 轉換為 AOT
-編譯的 native Rust。屆時 NumPy 程式碼將有兩條可選路徑（透過 Rextio 外掛做
-AOT 編譯，或在 Python fallback 內用 Numba 做 JIT），未來版本也可能提供
-兩者取捨的指南; 目前一切尚未確定。
+first-party 的 [rextio-numpy](https://github.com/rextio/rextio-numpy) 外掛
+把經過認證的初始 NumPy 表面（float64 1-D 逐元素算術、`numpy.dot`、整個
+陣列的 `sum`/`mean`）轉換為 AOT 編譯的 native Rust。因此 NumPy 程式碼現在
+有兩條路徑: 對已覆蓋表面用 Rextio 外掛做 AOT 編譯，或在 Python fallback
+內用 Numba 做 JIT。當兩者都適用時，顯式的 `@numba.*` 裝飾器優先，analyzer
+會輸出資訊性的 RXT091 註記; 關於路徑取捨的更完整指南將隨外掛表面的成長
+而逐步明確。
 
 ## 範例
 

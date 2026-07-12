@@ -11,7 +11,7 @@ from pathlib import Path
 from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.models import FunctionAnalysis, ProjectAnalysis
 from rextio.analyzer.native_marker import external_accelerator_for_source
-from rextio.ir.types import normalize_type_name
+from rextio.ir.types import RxtPluginType, normalize_type_name
 from rextio.build.cargo_builder import (
     NativeBuildResult,
     build_native_extension_with_cargo,
@@ -64,12 +64,56 @@ from rextio.fallback.cpython import (
 )
 from rextio.fallback.nuitka import build_nuitka_fallback
 from rextio.ir.nodes import ModuleIR
-from rextio.ir.lowering import LoweringError, lower_project
+from rextio.ir.lowering import LoweringError, PluginTypeMaps, lower_project
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.partition.build_plan import BuildPlan, create_build_plan
 from rextio.partition.fallback_plan import FallbackPlan
 from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
 from rextio.targets.plan import TargetPlan, default_target_plan
+
+
+# Modules the generated fallback dispatcher imports at runtime; a project
+# module whose TOP-LEVEL name matches one of these would shadow it under the
+# dispatcher's sys.path[0] and break delegated fallback (council round 8).
+_DISPATCHER_RESERVED_TOP_LEVEL_NAMES = frozenset(
+    {"importlib", "json", "os", "sys", "types", "rextio"}
+)
+
+
+def _plugin_lowering_inputs(
+    target_plan: TargetPlan,
+) -> tuple[PluginTypeMaps | None, dict[str, object] | None, dict[str, RxtPluginType] | None]:
+    """Build the lowering/codegen plugin inputs from the target plan's registry.
+
+    Returns ``(plugin_type_maps, plugin_providers, plugin_types_by_key)``, all
+    None when no active plugin provides lowering. The ``RxtPluginType``
+    instances are constructed once per plugin type key and shared by both
+    maps, so identity/equality checks agree across lowering and codegen.
+    """
+    registry = target_plan.plugins
+    if not registry.providers:
+        return None, None, None
+    by_key: dict[str, RxtPluginType] = {}
+    by_spelling: dict[str, RxtPluginType] = {}
+    for binding in registry.types:
+        plugin_type = binding.plugin_type
+        rxt_type = by_key.get(plugin_type.key)
+        if rxt_type is None:
+            rxt_type = RxtPluginType(
+                key=plugin_type.key,
+                native_rust=plugin_type.rust_type,
+                param_rust=plugin_type.conversion.param_rust,
+                param_expr=plugin_type.conversion.param_expr,
+                return_rust=plugin_type.conversion.return_rust,
+                return_expr=plugin_type.conversion.return_expr,
+            )
+            by_key[plugin_type.key] = rxt_type
+        for spelling in plugin_type.annotations:
+            by_spelling[spelling] = rxt_type
+    providers: dict[str, object] = {
+        binding.plugin_id: binding.provider for binding in registry.providers
+    }
+    return PluginTypeMaps(by_key=by_key, by_spelling=by_spelling), providers, by_key
 
 
 @dataclass(frozen=True)
@@ -102,10 +146,11 @@ class GenerateResult:
     rejected_native_count: int
     native_source: NativeSourceResult
     rust_crate_source: NativeSourceResult
+    plugin_crate_dependencies: tuple[dict[str, object], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this result."""
-        return {
+        data: dict[str, object] = {
             "fallback": self.fallback,
             "boundary_fallback_threshold": self.boundary_fallback_threshold,
             "target": self.target_plan.to_dict(),
@@ -119,6 +164,13 @@ class GenerateResult:
             "native_source": self.native_source.to_dict(),
             "rust_crate_source": self.rust_crate_source.to_dict(),
         }
+        # Mirror build.json's plugin dependency report so the two reports stay
+        # consistent (council round 8).
+        if self.plugin_crate_dependencies:
+            data["plugin_crate_dependencies"] = [
+                dict(dependency) for dependency in self.plugin_crate_dependencies
+            ]
+        return data
 
 
 @dataclass(frozen=True)
@@ -137,10 +189,18 @@ class BuildResult:
     wheel_build: WheelBuildResult
     executable_build: ExecutableBuildResult
     rust_crate_build: RustCrateBuildResult
+    # Plugin-injected crate dependencies actually compiled into the native
+    # extension: {"plugin_id", "name", "version", "features"} dicts
+    # (docs/specs/plugin-lowering.md section 5). Empty for plugin-free builds.
+    plugin_crate_dependencies: tuple[dict[str, object], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
-        """Return the JSON-serializable dict form of this result."""
-        return {
+        """Return the JSON-serializable dict form of this result.
+
+        ``plugin_crate_dependencies`` is emitted only when non-empty, so
+        ``build.json`` keeps its existing shape for plugin-free builds.
+        """
+        data: dict[str, object] = {
             "fallback": self.fallback,
             "boundary_fallback_threshold": self.boundary_fallback_threshold,
             "target": self.target_plan.to_dict(),
@@ -158,6 +218,11 @@ class BuildResult:
             "executable_build": self.executable_build.to_dict(),
             "rust_crate_build": self.rust_crate_build.to_dict(),
         }
+        if self.plugin_crate_dependencies:
+            data["plugin_crate_dependencies"] = [
+                dict(dependency) for dependency in self.plugin_crate_dependencies
+            ]
+        return data
 
 
 def build_hybrid_artifact(
@@ -198,7 +263,7 @@ def build_hybrid_artifact(
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
-    native_build = _generate_and_build_native(
+    native_build, plugin_crate_dependencies = _generate_and_build_native(
         plan,
         layout,
         build_tool,
@@ -233,6 +298,7 @@ def build_hybrid_artifact(
         executable_analysis,
         executable_python,
         executable_hybrid_runtime,
+        target_plan,
         build_timeout=build_timeout_seconds,
         toolchain=toolchain,
     )
@@ -250,6 +316,7 @@ def build_hybrid_artifact(
         wheel_build=wheel_build,
         executable_build=executable_build,
         rust_crate_build=rust_crate_build,
+        plugin_crate_dependencies=plugin_crate_dependencies,
     )
     (layout.reports_dir / "build.json").write_text(
         json.dumps(
@@ -289,7 +356,7 @@ def generate_source_artifact(
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
-    native_source = _generate_native_source(
+    native_source, plugin_crate_dependencies = _generate_native_source(
         plan,
         layout,
         target_plan,
@@ -313,6 +380,7 @@ def generate_source_artifact(
         rejected_native_count=plan.native.rejected_count,
         native_source=native_source,
         rust_crate_source=rust_crate_source,
+        plugin_crate_dependencies=plugin_crate_dependencies,
     )
     (layout.reports_dir / "generate.json").write_text(
         json.dumps(
@@ -326,6 +394,18 @@ def generate_source_artifact(
     return result
 
 
+def _reset_report_files(reports_dir: Path) -> None:
+    """Clear stale reports so a run leaves only its own reports.
+
+    ``build`` writes build.json+check.json and ``generate`` writes
+    generate.json+check.json; without clearing, `generate` then `build` leaves
+    a stale generate.json beside a fresh build.json (council round 8).
+    """
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("build.json", "generate.json", "check.json"):
+        (reports_dir / name).unlink(missing_ok=True)
+
+
 def _prepare_generated_sources(layout: ArtifactLayout, target_plan: TargetPlan) -> None:
     _reset_generated_dir(layout.target_dir(target_plan.spec.language))
     _reset_generated_dir(layout.rust_crate_dir)
@@ -335,7 +415,7 @@ def _prepare_generated_sources(layout: ArtifactLayout, target_plan: TargetPlan) 
     else:
         layout.target_dir(target_plan.spec.language).mkdir(parents=True, exist_ok=True)
     layout.python_dir.mkdir(parents=True, exist_ok=True)
-    layout.reports_dir.mkdir(parents=True, exist_ok=True)
+    _reset_report_files(layout.reports_dir)
 
 
 def _write_check_report(layout: ArtifactLayout, analysis: ProjectAnalysis) -> None:
@@ -403,10 +483,10 @@ def _generate_and_build_native(
     embedding_enabled: bool,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
-) -> NativeBuildResult:
+) -> tuple[NativeBuildResult, tuple[dict[str, object], ...]]:
     if not plan.native.has_native_artifacts:
-        return skipped_native_build("No accepted native functions were found.")
-    native_source = _generate_native_source(
+        return skipped_native_build("No accepted native functions were found."), ()
+    native_source, plugin_crate_dependencies = _generate_native_source(
         plan,
         layout,
         target_plan,
@@ -420,10 +500,13 @@ def _generate_and_build_native(
                 "RXT050 Codegen failure while generating native target code. "
                 f"Cause: {native_source.message}. Fallback Python files were still generated."
             ),
-        )
+        ), ()
 
     if target_plan.spec.language == "rust":
-        return _build_native_with_selected_tool(layout, build_tool, build_timeout, toolchain)
+        return (
+            _build_native_with_selected_tool(layout, build_tool, build_timeout, toolchain),
+            plugin_crate_dependencies,
+        )
     return NativeBuildResult(
         status="failed",
         tool=target_plan.spec.language,
@@ -431,7 +514,7 @@ def _generate_and_build_native(
             "RXT060 Build failed while compiling generated native module. "
             f"Cause: target language {target_plan.spec.language!r} is not implemented."
         ),
-    )
+    ), ()
 
 
 def _generate_and_build_rust_crate(
@@ -468,18 +551,37 @@ def _generate_and_build_rust_crate(
     )
 
 
+def _used_plugin_ids(analysis: ProjectAnalysis) -> set[str]:
+    """Plugin ids whose lowering an accepted native function actually uses.
+
+    From the claims (each carries its plugin id) and plugin-typed signatures
+    (the type key is namespaced ``<plugin_id>/<slug>``) of accepted functions.
+    """
+    used: set[str] = set()
+    for function in analysis.accepted_native_functions:
+        used.update(claim.plugin_id for claim in function.plugin_claims)
+        used.update(key.split("/", 1)[0] for key in function.plugin_type_keys)
+    return used
+
+
 def _generate_native_source(
     plan: BuildPlan,
     layout: ArtifactLayout,
     target_plan: TargetPlan,
     *,
     embedding_enabled: bool = False,
-) -> NativeSourceResult:
+) -> tuple[NativeSourceResult, tuple[dict[str, object], ...]]:
+    """Generate the PyO3 extension source; return (result, plugin crate deps).
+
+    The second element lists the plugin-injected crate dependencies actually
+    written into the generated Cargo.toml (empty unless the lowered module
+    contains a plugin-lowered function), for the build report.
+    """
     if not plan.native.has_native_artifacts:
         return NativeSourceResult(
             status="skipped",
             message="No accepted native functions were found.",
-        )
+        ), ()
     if target_plan.spec.language != "rust":
         return NativeSourceResult(
             status="failed",
@@ -487,25 +589,57 @@ def _generate_native_source(
                 f"target language {target_plan.spec.language!r} is configurable, but no "
                 "codegen backend is implemented for it yet"
             ),
-        )
+        ), ()
+    plugin_types, plugin_providers, plugin_types_by_key = _plugin_lowering_inputs(target_plan)
     try:
-        module_ir = lower_project(plan.analysis, include_embedding=embedding_enabled)
+        module_ir = lower_project(
+            plan.analysis, include_embedding=embedding_enabled, plugin_types=plugin_types
+        )
         rust_source = generate_rust_module(
             module_ir,
             boundary_call_return_types=_boundary_call_return_types(plan.analysis),
+            plugin_providers=plugin_providers,
+            plugin_types_by_key=plugin_types_by_key,
         )
     except (LoweringError, RustCodegenError) as exc:
         return NativeSourceResult(
             status="failed",
             message=str(exc),
-        )
+        ), ()
 
-    _write_rust_project(layout, rust_source)
+    registry = target_plan.plugins
+    extra_dependencies: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+    plugin_crate_dependencies: tuple[dict[str, object], ...] = ()
+    used_plugin_ids = _used_plugin_ids(plan.analysis)
+    if registry.crate_dependencies and used_plugin_ids:
+        # Only the plugins whose lowering an ACCEPTED function actually uses
+        # contribute crates; an enabled-but-unused plugin's dependency must not
+        # be injected (it could break an otherwise valid build and misrepresent
+        # the compiled artifact -- council round 8).
+        used_bindings = tuple(
+            binding
+            for binding in registry.crate_dependencies
+            if binding.plugin_id in used_plugin_ids
+        )
+        extra_dependencies = tuple(
+            (binding.dependency.name, binding.dependency.version, binding.dependency.features)
+            for binding in used_bindings
+        )
+        plugin_crate_dependencies = tuple(
+            {
+                "plugin_id": binding.plugin_id,
+                "name": binding.dependency.name,
+                "version": binding.dependency.version,
+                "features": list(binding.dependency.features),
+            }
+            for binding in used_bindings
+        )
+    _write_rust_project(layout, rust_source, extra_dependencies=extra_dependencies)
     return NativeSourceResult(
         status="generated",
         message="Generated Rust source for accepted native functions.",
         path=str(layout.rust_src_dir / "lib.rs"),
-    )
+    ), plugin_crate_dependencies
 
 
 def _generate_rust_crate_source(
@@ -536,8 +670,14 @@ def _generate_rust_crate_source(
         )
     try:
         # Include embedded helpers: an exported native function may call one, and
-        # the crate must carry the callee it references.
-        module_ir = lower_project(plan.analysis, include_embedding=True)
+        # the crate must carry the callee it references. Plugin types are passed
+        # so plugin-typed signatures lower; plugin-lowered functions are then
+        # excluded from the crate (they have no pure-Rust form), so the crate
+        # needs no providers and no cargo dependency injection.
+        plugin_types, _plugin_providers, _plugin_types_by_key = _plugin_lowering_inputs(
+            target_plan
+        )
+        module_ir = lower_project(plan.analysis, include_embedding=True, plugin_types=plugin_types)
         rust_source = generate_rust_crate_module(module_ir)
     except (LoweringError, RustCodegenError) as exc:
         return NativeSourceResult(
@@ -605,6 +745,7 @@ def _build_executable_artifact(
     executable_analysis: ProjectAnalysis,
     executable_python: str | None,
     executable_hybrid_runtime: str,
+    target_plan: TargetPlan,
     *,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
@@ -622,6 +763,7 @@ def _build_executable_artifact(
             executable_name,
             executable_python,
             executable_hybrid_runtime,
+            target_plan,
             build_timeout=build_timeout,
             toolchain=toolchain,
         )
@@ -818,6 +960,17 @@ def _write_hybrid_runtime(
                 f"hybrid runtime source collision: project module {module.module_name!r} "
                 f"conflicts with the generated dispatcher {DISPATCHER_STEM!r}"
             )
+        if parts[0] in _DISPATCHER_RESERVED_TOP_LEVEL_NAMES:
+            # runtime_dir is sys.path[0] at dispatch time, so a project module
+            # whose top-level name shadows a module the dispatcher imports
+            # (json/os/sys/importlib/types) - or the rextio package itself -
+            # would be found before the real one and crash the long-lived
+            # dispatcher on its first request (council round 8).
+            raise RustCodegenError(
+                f"hybrid runtime source collision: project module {module.module_name!r} "
+                f"shadows a name the fallback dispatcher relies on "
+                f"({parts[0]!r}); rename the module or build a wheel/PyO3 artifact"
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         # Make every intermediate directory an importable package.
         package_dir = runtime_dir
@@ -917,6 +1070,7 @@ def _build_rust_executable_artifact(
     executable_name: str | None,
     executable_python: str | None,
     hybrid_runtime: str,
+    target_plan: TargetPlan | None = None,
     *,
     build_timeout: float,
     toolchain: ToolchainConfig | None = None,
@@ -969,7 +1123,17 @@ def _build_rust_executable_artifact(
                 backend="rust",
             )
     try:
-        module_ir = _filter_module_ir(lower_project(analysis, include_embedding=True), reachable_qualnames)
+        # Plugin types let plugin-typed signatures lower; plugin-lowered
+        # functions have no pure-Rust form, so the crate renderer's exclusion
+        # and mode guard keep them out of the binary (never delegated either:
+        # plugin types never cross the delegation wire).
+        plugin_types, _plugin_providers, _plugin_types_by_key = _plugin_lowering_inputs(
+            target_plan or default_target_plan()
+        )
+        module_ir = _filter_module_ir(
+            lower_project(analysis, include_embedding=True, plugin_types=plugin_types),
+            reachable_qualnames,
+        )
         main_rs = generate_rust_main_binary(
             module_ir,
             entry_qualname,
@@ -1101,10 +1265,14 @@ def _build_native_with_selected_tool(
     )
 
 
-def _write_rust_project(layout: ArtifactLayout, rust_source: str) -> None:
+def _write_rust_project(
+    layout: ArtifactLayout,
+    rust_source: str,
+    extra_dependencies: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
+) -> None:
     layout.rust_src_dir.mkdir(parents=True, exist_ok=True)
     (layout.rust_dir / "Cargo.toml").write_text(
-        render_cargo_toml(),
+        render_cargo_toml(extra_dependencies=extra_dependencies),
         encoding="utf-8",
     )
     (layout.rust_dir / "pyproject.toml").write_text(render_pyproject_toml(), encoding="utf-8")

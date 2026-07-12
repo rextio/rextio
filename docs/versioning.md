@@ -1,7 +1,7 @@
 # Versioning policy
 
 Rextio follows [Semantic Versioning 2.0.0](https://semver.org/), with the
-explicit pre-1.0 caveats below. The current release is **0.1.0**, an alpha-stage release.
+explicit pre-1.0 caveats below. The current release is **0.1.1**, an alpha-stage release.
 
 ## Pre-1.0 (0.x): what "alpha" means
 
