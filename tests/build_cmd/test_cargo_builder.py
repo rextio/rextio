@@ -87,3 +87,35 @@ def test_cargo_build_receives_toolchain_environment(tmp_path, monkeypatch):
     dump = env_dump.read_text(encoding="utf-8")
     assert "RUSTUP_TOOLCHAIN=1.83" in dump
     assert f"PYO3_PYTHON={fake_python}" in dump
+
+
+def test_cargo_build_defaults_pyo3_python_to_build_interpreter(tmp_path, monkeypatch):
+    """Without [toolchain] python, cargo still gets PYO3_PYTHON=sys.executable."""
+    import stat
+
+    from rextio.build.cargo_builder import build_native_extension_with_cargo
+    from rextio.config.schema import ToolchainConfig
+
+    env_dump = tmp_path / "env-dump.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cargo = bin_dir / "cargo"
+    cargo.write_text(
+        "#!/bin/sh\n"
+        f'echo "PYO3_PYTHON=$PYO3_PYTHON" > "{env_dump}"\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    cargo.chmod(cargo.stat().st_mode | stat.S_IEXEC)
+
+    rust_dir = tmp_path / "rust"
+    rust_dir.mkdir()
+    result = build_native_extension_with_cargo(
+        rust_dir,
+        tmp_path / "python",
+        toolchain=ToolchainConfig(cargo=str(cargo)),
+    )
+
+    assert result.status == "failed"
+    dump = env_dump.read_text(encoding="utf-8")
+    assert f"PYO3_PYTHON={sys.executable}" in dump

@@ -70,7 +70,26 @@ def test_cargo_environment_carries_rustup_channel_and_pyo3_python(tmp_path: Path
     env = cargo_environment(ToolchainConfig(rust_toolchain="1.83", python=str(tmp_path / "py")))
     assert env["RUSTUP_TOOLCHAIN"] == "1.83"
     assert env["PYO3_PYTHON"] == str(python)
-    assert cargo_environment(ToolchainConfig()) == {}
+    # No configured python: pin PyO3 to the build interpreter, not PATH.
+    default_env = cargo_environment(ToolchainConfig())
+    assert default_env == {"PYO3_PYTHON": sys.executable}
+
+
+def test_cargo_environment_pyo3_python_defaults_to_build_interpreter(
+    tmp_path: Path,
+) -> None:
+    """Regression: artifact ABI must match the build interpreter.
+
+    Without PYO3_PYTHON, pyo3-build-config uses PATH python3, which may emit
+    bindings for a newer CPython than the process that tags/loads the .so.
+    """
+    default_env = cargo_environment(ToolchainConfig())
+    assert default_env["PYO3_PYTHON"] == sys.executable
+
+    python = _script(tmp_path / "py" / "bin" / "python3", "echo Python 3.11.9")
+    configured = cargo_environment(ToolchainConfig(python=str(tmp_path / "py")))
+    assert configured["PYO3_PYTHON"] == str(python)
+    assert configured["PYO3_PYTHON"] != sys.executable
 
 
 def test_version_pins_are_strict_and_support_specifiers(tmp_path: Path) -> None:

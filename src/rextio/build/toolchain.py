@@ -131,18 +131,29 @@ def cargo_environment(toolchain: ToolchainConfig) -> dict[str, str]:
     """Environment for PyO3 extension builds (cargo or maturin).
 
     Extends :func:`rust_environment` with PYO3_PYTHON so the PyO3 build
-    targets the configured interpreter instead of whatever `python3` is
-    first on PATH, and with CARGO so maturin (which discovers cargo itself)
-    runs the configured cargo rather than the first one on PATH.
+    targets the build interpreter (or a configured override) instead of
+    whatever `python3` is first on PATH, and with CARGO so maturin (which
+    discovers cargo itself) runs the configured cargo rather than the first
+    one on PATH.
+
+    Invariant: the native artifact ABI must match the interpreter the wheel
+    and module tags are generated for. PATH must not influence PyO3 codegen.
     """
     env = rust_environment(toolchain)
     if toolchain.cargo is not None:
         cargo, _error = resolve_tool("cargo", toolchain.cargo)
         if cargo is not None:
             env["CARGO"] = cargo
+    # Prefer an explicit [toolchain] python; otherwise pin PyO3 to the build
+    # interpreter (sys.executable). Without this, pyo3-build-config falls back
+    # to PATH python3, which may differ in minor version from the process that
+    # tags and loads the extension — producing a cpython-XYZ tag that fails
+    # dlopen on XYZ-only C-API symbols.
     python, _error = resolve_python(toolchain)
     if python is not None:
         env["PYO3_PYTHON"] = python
+    else:
+        env["PYO3_PYTHON"] = sys.executable
     return env
 
 
