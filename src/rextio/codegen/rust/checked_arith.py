@@ -9,12 +9,47 @@ module emits exactly those.
 
 from __future__ import annotations
 
+from functools import lru_cache
+from typing import Callable
+
 # Order is fixed so emitted helpers are deterministic regardless of use order.
 _CHECKED_BINOP_METHOD = {"add": "checked_add", "sub": "checked_sub", "mul": "checked_mul"}
 _CHECKED_HELPER_ORDER = (
     "add", "sub", "mul", "rem", "neg", "abs", "sum", "fdiv", "frem", "f2i",
     "mnonneg", "mpositive", "munit", "mlogbase", "repr_float", "repr_str", "fixed6",
 )
+
+
+@lru_cache(maxsize=1)
+def zero_division_messages() -> dict[str, str]:
+    """Probe the running build interpreter for ZeroDivisionError message strings.
+
+    CPython's ZeroDivisionError messages are not stable across versions:
+
+    * 3.11: int ``%`` → ``integer modulo by zero``; float ``/`` →
+      ``float division by zero``; float ``%`` → ``float modulo``
+    * 3.12/3.13: float ``%`` became ``float modulo by zero``
+    * 3.14+: all ops unified to ``division by zero``
+
+    Hardcoding a per-version table would drift again on the next CPython change.
+    Instead, derive each message at generation time via try/except on the
+    build interpreter. The native artifact is bound to that interpreter
+    (same invariant as ``PYO3_PYTHON``), so the embedded messages match the
+    fallback leg that certification and users compare against.
+    """
+
+    def _probe(op: Callable[[], object]) -> str:
+        try:
+            op()
+        except ZeroDivisionError as exc:
+            return str(exc)
+        raise RuntimeError("expected ZeroDivisionError from probe operation")
+
+    return {
+        "int_mod": _probe(lambda: 1 % 0),
+        "float_div": _probe(lambda: 1.0 / 0.0),
+        "float_mod": _probe(lambda: 1.0 % 0.0),
+    }
 
 
 def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
@@ -43,6 +78,15 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
         if mode == "pyo3":
             return f'pyo3::exceptions::PyValueError::new_err("{message}")'
         return f'RextioError::new("ValueError", "{message}")'
+
+    # Messages come from the build interpreter (see zero_division_messages).
+    # math.log(x, base==1) raises the same string as float true-division by
+    # zero in CPython (it is implemented as log(x)/log(base)), so mlogbase
+    # reuses float_div.
+    zde = zero_division_messages()
+    int_mod_msg = zde["int_mod"]
+    float_div_msg = zde["float_div"]
+    float_mod_msg = zde["float_mod"]
 
     ret = "PyResult<i64>" if mode == "pyo3" else "Result<i64, RextioError>"
     fret = "PyResult<f64>" if mode == "pyo3" else "Result<f64, RextioError>"
@@ -189,14 +233,15 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
             # Rust's `checked_rem` is truncated (it takes the dividend's sign), so
             # `-7 % 3` is 2 in Python but -1 in Rust. Correct the sign when the
             # truncated remainder and the divisor differ in sign. `a % 0` is a
-            # ZeroDivisionError. `checked_rem` returns `None` only for the single
-            # overflowing case `i64::MIN % -1`, whose remainder is 0 in both
-            # Python and Rust, so `unwrap_or(0)` is exact there (not a catch-all).
-            # `|r| < |b|`, so the `r + b` correction cannot overflow.
+            # ZeroDivisionError (message from zero_division_messages). `checked_rem`
+            # returns `None` only for the single overflowing case `i64::MIN % -1`,
+            # whose remainder is 0 in both Python and Rust, so `unwrap_or(0)` is
+            # exact there (not a catch-all). `|r| < |b|`, so the `r + b`
+            # correction cannot overflow.
             lines.extend(
                 [
                     f"fn {fn}(a: i64, b: i64) -> {ret} {{",
-                    f'    if b == 0 {{ return Err({zero_div_err("integer modulo by zero")}); }}',
+                    f'    if b == 0 {{ return Err({zero_div_err(int_mod_msg)}); }}',
                     "    let r = a.checked_rem(b).unwrap_or(0);",
                     "    Ok(if r != 0 && (r ^ b) < 0 { r + b } else { r })",
                     "}",
@@ -235,11 +280,12 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
                 ]
             )
         elif name == "fdiv":
-            # Python raises ZeroDivisionError for `x / 0.0`; Rust returns inf/NaN.
+            # Python raises ZeroDivisionError for `x / 0.0` (message from
+            # zero_division_messages); Rust returns inf/NaN.
             lines.extend(
                 [
                     f"fn {fn}(a: f64, b: f64) -> {fret} {{",
-                    f'    if b == 0.0 {{ return Err({zero_div_err("float division by zero")}); }}',
+                    f'    if b == 0.0 {{ return Err({zero_div_err(float_div_msg)}); }}',
                     "    Ok(a / b)",
                     "}",
                     "",
@@ -267,16 +313,18 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
                 ]
             )
         elif name == "frem":
-            # Python raises ZeroDivisionError for `x % 0.0` (message "float
-            # modulo"), and float `%` is floored (the result takes the divisor's
-            # sign) like the integer case, whereas Rust `%` is truncated. Mirror
-            # CPython's `float_rem`: when the remainder is exactly zero, the result
-            # is zero with the *divisor's* sign (`copysign(0.0, b)`), not the
-            # dividend's sign that Rust's `fmod` would keep.
+            # Python raises ZeroDivisionError for `x % 0.0` (message from
+            # zero_division_messages; was "float modulo" on 3.11, "float modulo
+            # by zero" on 3.12/3.13, unified on 3.14+), and float `%` is floored
+            # (the result takes the divisor's sign) like the integer case,
+            # whereas Rust `%` is truncated. Mirror CPython's `float_rem`: when
+            # the remainder is exactly zero, the result is zero with the
+            # *divisor's* sign (`copysign(0.0, b)`), not the dividend's sign that
+            # Rust's `fmod` would keep.
             lines.extend(
                 [
                     f"fn {fn}(a: f64, b: f64) -> {fret} {{",
-                    f'    if b == 0.0 {{ return Err({zero_div_err("float modulo")}); }}',
+                    f'    if b == 0.0 {{ return Err({zero_div_err(float_mod_msg)}); }}',
                     "    let r = a % b;",
                     "    Ok(if r == 0.0 { (0.0_f64).copysign(b) }",
                     "       else if (r < 0.0) != (b < 0.0) { r + b }",
@@ -313,14 +361,15 @@ def checked_arith_helpers(used: set[str], mode: str) -> list[str]:
             )
         elif name == "mlogbase":
             # `math.log(x, base)` base domain: CPython raises ZeroDivisionError
-            # for base == 1 (log(1) is 0) and ValueError for base <= 0 (which
-            # includes -inf). A nan or +inf base is valid (returns nan / 0.0), so
-            # those pass through.
+            # for base == 1 (log(1) is 0; implemented as log(x)/log(base), so the
+            # message matches float true-division — float_div_msg) and ValueError
+            # for base <= 0 (which includes -inf). A nan or +inf base is valid
+            # (returns nan / 0.0), so those pass through.
             lines.extend(
                 [
                     f"fn {fn}(value: f64) -> {fret} {{",
                     "    if value == 1.0 {",
-                    f'        Err({zero_div_err("float division by zero")})',
+                    f"        Err({zero_div_err(float_div_msg)})",
                     "    } else if value <= 0.0 {",
                     f'        Err({value_err("math domain error")})',
                     "    } else {",
