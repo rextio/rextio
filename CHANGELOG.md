@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.1 — 2026-07-07
+## 0.1.1 — 2026-07-12
 
 Contract-and-plugins release: the machine-readable tooling contract for
 external tooling (agent skills, LSP servers, editor extensions) and the
