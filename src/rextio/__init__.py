@@ -23,7 +23,7 @@ def native(func: F | None = None, *, target: str | None = None) -> F | Callable[
     """Mark a function as a Rextio native compilation candidate.
 
     ``target`` optionally pins the native target language; it must be one of
-    the supported target languages (``rust`` in 0.1.0). The decorator applies
+    the supported target languages (currently only ``rust``). The decorator applies
     to functions and methods, not classes.
     """
     normalized_target = _normalize_target(target)

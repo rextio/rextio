@@ -6,6 +6,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
+from rextio.__about__ import __version__
 from rextio.config.schema import RextioConfig
 from rextio.plugins.loader import PluginError, load_plugin_registry
 from rextio.plugins.models import PluginRegistry
@@ -61,7 +62,7 @@ def create_target_spec(config: RextioConfig) -> TargetSpec:
         # toolchain version or pass build options.
         warnings.warn(
             "[target].version and [target].build_options are accepted but have no "
-            "effect in 0.1.0; they are reserved for a future release.",
+            f"effect in {__version__}; they are reserved for a future release.",
             RuntimeWarning,
             stacklevel=2,
         )

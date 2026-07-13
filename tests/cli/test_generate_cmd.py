@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from pathlib import Path
 from typing import Any
 
+from rextio.__about__ import __version__
 from rextio.cli.main import main
 
 
@@ -264,10 +266,10 @@ def add(a: int, b: int) -> int:
         encoding="utf-8",
     )
 
-    # [target].version has no effect in 0.1.0 (reserved): the warning is an
-    # expected side effect of this fixture, asserted here instead of leaking
-    # into the run summary.
-    with pytest.warns(RuntimeWarning, match="no effect in 0.1.0"):
+    # [target].version has no effect in the current release (reserved): the
+    # warning is an expected side effect of this fixture, asserted here instead
+    # of leaking into the run summary. The version is sourced from __about__.
+    with pytest.warns(RuntimeWarning, match=f"no effect in {re.escape(__version__)}"):
         exit_code = main(["generate", str(tmp_path)])
 
     captured = capsys.readouterr()

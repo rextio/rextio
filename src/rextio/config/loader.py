@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
+from rextio.__about__ import __version__
 from rextio.limits import MAX_BUILD_TIMEOUT_SECONDS
 from rextio.config.defaults import DEFAULT_CONFIG
 from rextio.config.schema import (
@@ -295,9 +296,9 @@ def _validate_config_values(
     )
     _require_value("policy", "native_marker", policy["native_marker"], {"auto", "decorator"})
     if policy["require_type_hints"] is not True:
-        raise ConfigError("0.1.0 requires [policy] require_type_hints = true")
+        raise ConfigError(f"{__version__} requires [policy] require_type_hints = true")
     if policy["allow_dynamic_features"] is not False:
-        raise ConfigError("0.1.0 does not support [policy] allow_dynamic_features = true")
+        raise ConfigError(f"{__version__} does not support [policy] allow_dynamic_features = true")
 
 
 def _require_string(section: str, key: str, value: Any) -> None:

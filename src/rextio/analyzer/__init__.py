@@ -1,1 +1,1 @@
-"""Static analysis for Rextio 0.1.0."""
+"""Static analysis for Rextio."""

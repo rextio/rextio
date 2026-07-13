@@ -49,6 +49,16 @@ on `rextio-lsp` or `rextio-numpy`.
   providers retain legacy keyword-not-offered semantics and never receive
   leaves-mode data. See `docs/specs/plugin-lowering.md`.
 
+### Diagnostics and CLI
+
+- User-visible release-version strings now derive from
+  `rextio.__about__.__version__` instead of a hardcoded `0.1.0` /
+  `0.1.0-alpha`. This fixes stale version text in RXT diagnostic suggestions and
+  messages, `rextio` CLI `--help` output, config-validation errors, target-spec
+  warnings, and the `rextio init` `REXTIO.md` template, so they track the
+  installed version. Wording of version-agnostic messages was reworded to the
+  "native subset" where no version belongs.
+
 ### Documentation
 
 - Hybrid Rust executable (subprocess delegate): document that a delegated

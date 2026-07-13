@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust",),
         default=None,
         help=(
-            "Native target language (0.1.0 implements rust). Overrides "
+            f"Native target language ({__version__} implements rust). Overrides "
             "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
@@ -95,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust",),
         default=None,
         help=(
-            "Native target language (0.1.0 implements rust). Overrides "
+            f"Native target language ({__version__} implements rust). Overrides "
             "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
@@ -118,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust",),
         default=None,
         help=(
-            "Native target language (0.1.0 implements rust). Overrides "
+            f"Native target language ({__version__} implements rust). Overrides "
             "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
@@ -158,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--rust-binding",
         choices=("pyo3",),
         default=None,
-        help="Rust binding backend (0.1.0 supports pyo3 only). "
+        help=f"Rust binding backend ({__version__} supports pyo3 only). "
         "Overrides REXTIO_RUST_BINDING and [rust] binding.",
     )
     build_parser_.add_argument(
@@ -246,7 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust",),
         default=None,
         help=(
-            "Native target language (0.1.0 implements rust). Overrides "
+            f"Native target language ({__version__} implements rust). Overrides "
             "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
