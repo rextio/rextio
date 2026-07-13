@@ -171,9 +171,14 @@ rextio build . --entrypoint=myapp.cli:main --executable-backend=rust
 
 This compiles a native binary (`dist/<name>`) whose `main` runs in Rust. The
 entrypoint must be an accepted direct-native `def main(argv: list[str]) -> int`:
-`argv` mirrors `sys.argv` (the program path at index 0), the returned `int` is the
-process exit code, and a raised error is printed CPython-style (`OverflowError:
-...`) to stderr with a non-zero exit. Requires Cargo.
+`argv` mirrors `sys.argv` (the program path at index 0). The supported Python
+`int` return is lowered as Rust `i64`; generated `main` casts that `i64` to
+`i32` before `std::process::exit`, so values outside the `i32` range are
+truncated to the low 32 bits. POSIX observers generally receive only the low 8
+bits of the status, while Windows retains a 32-bit status representation.
+Prefer `0..255` for portable exit codes. A raised error is printed
+CPython-style (`OverflowError: ...`) to stderr with a non-zero exit. Requires
+Cargo.
 
 When the entrypoint calls a project function that stays on the Python fallback
 (code outside the Rust subset), Rextio delegates that call to an external CPython

@@ -29,6 +29,35 @@ from rextio.plugins.models import RextioPlugin
 from rextio.targets.models import normalize_target_language
 
 
+def _syntax_error_column(exc: SyntaxError, source: str) -> int | None:
+    """Normalize ``SyntaxError.offset`` to the diagnostic column contract.
+
+    CPython's ``SyntaxError.offset`` is a **1-based Unicode code-point** index
+    into the error line. Every AST-derived diagnostic ``column`` is a **0-based
+    UTF-8 byte** offset into that line. Convert a present offset into the UTF-8
+    byte length of the prefix before the error site; return ``None`` when the
+    runtime supplies no meaningful offset (do not invent precision).
+    """
+    offset = exc.offset
+    if offset is None or offset < 1:
+        return None
+
+    line_text = exc.text
+    if line_text is None:
+        lineno = exc.lineno
+        if lineno is None or lineno < 1:
+            return None
+        lines = source.splitlines(keepends=True)
+        if lineno > len(lines):
+            return None
+        line_text = lines[lineno - 1]
+
+    # 1-based code-point index -> prefix before the error site. String slicing
+    # clamps past end-of-line (CPython sometimes reports EOF offsets that way).
+    prefix = line_text[: offset - 1]
+    return len(prefix.encode("utf-8"))
+
+
 def parse_module(
     path: Path,
     project_root: Path,
@@ -51,8 +80,11 @@ def parse_module(
     target_language = normalize_target_language(target_language)
     module_name = module_name_for_path(path, project_root)
     module = ModuleAnalysis(module_name=module_name, file_path=str(path))
+    # Read once so SyntaxError location normalization can fall back to the same
+    # source the parser saw (do not re-read the file after a failed parse).
+    source = path.read_text(encoding="utf-8")
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = ast.parse(source, filename=str(path))
     except SyntaxError as exc:
         module.diagnostics.append(
             Diagnostic(
@@ -61,7 +93,7 @@ def parse_module(
                 message=f"Python parse error: {exc.msg}",
                 file_path=str(path),
                 line=exc.lineno,
-                column=exc.offset,
+                column=_syntax_error_column(exc, source),
             )
         )
         return module
