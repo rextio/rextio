@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Documentation
+
+- Hybrid Rust executable (subprocess delegate): document that a delegated
+  `SystemExit` / `sys.exit(n)` int code is honored only when representable as
+  a signed `i64` (Rust client `serde_json::Value::as_i64`). After consume the
+  value is cast to `i32` and OS process-status width applies — prefer portable
+  `0..255`. Python ints outside signed `i64` still serialize on the wire but
+  are not faithfully modeled as process exits: the client surfaces a
+  malformed-response `RuntimeError` rather than terminating with the intended
+  status (not CPython-equivalent for oversized codes). This is distinct from
+  direct-native `main` return semantics (compile-time `int`→`i64` lowering,
+  then the same `i64`→`i32` / platform truncation). See README and
+  `docs/unsupported-features.md`.
+
 ### Tooling contract 2.0.0 (protocol, not a package release)
 
 - **Breaking protocol change:** `contract_version` advances to `2.0.0`.
@@ -125,8 +139,10 @@ CPython-equivalent fallback instead of being mis-accelerated.
 - Hybrid-executable subprocess delegate: a protocol-version handshake and
   dead-bridge re-spawn, and a delegated `sys.exit()`/`KeyboardInterrupt` is
   forwarded as a distinct `{"exit": code}` frame that the Rust executable
-  honors with the right exit code (bool codes normalized to `0`/`1`) instead of
-  always exiting `1`.
+  honors when the int code is representable as signed `i64` (bool codes
+  normalized to `0`/`1`; then cast to `i32` / platform status width — prefer
+  `0..255`) instead of always exiting `1`. Python ints outside signed `i64`
+  are not CPython-equivalent on this path (see Unreleased documentation).
 - Certification kit: dual-leg equivalence uses deep-copied arguments and sets
   the native/fallback env before import; strided (non-contiguous) arrays are
   certified for real rather than being silently flattened.

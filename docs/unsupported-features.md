@@ -574,11 +574,32 @@ native entry that depends on one is rejected and not built, so delegation never
 silently changes shim semantics. A delegated function's own stdout/stderr is
 redirected to the binary's stderr so it cannot corrupt the wire protocol (which
 owns stdout), and the long-lived dispatcher is hardened to survive any single
-request — a delegated `SystemExit`/`KeyboardInterrupt`, an exception whose
-`__str__` raises, and a non-serializable / non-finite / too-deep / too-large result
-all become an error frame rather than killing it. The runtime does not require
+request rather than dying mid-session: a delegated `SystemExit` (including
+`sys.exit(...)`) becomes a distinct `{"exit": code}` frame (bool codes
+normalized to plain ints `0`/`1`; a non-int code prints to stderr and becomes
+exit `1`, matching CPython); `KeyboardInterrupt` becomes `{"exit": 130}`; an
+exception whose `__str__` raises, and a non-serializable / non-finite /
+too-deep / too-large result, become error frames. The runtime does not require
 `rextio` to be installed — the dispatcher supplies a minimal decorator stub when it
 is absent.
+
+Known limitation — delegated `SystemExit` int range (subprocess hybrid only):
+the Rust client honors `{"exit": code}` only when `code` is representable as a
+signed `i64` (`serde_json::Value::as_i64`). After it is consumed, the client
+casts that `i64` to `i32` and calls `std::process::exit`, so OS process-status
+width still applies (POSIX observers generally see the low 8 bits; Windows
+retains a 32-bit status). Prefer portable `0..255`. A Python `int` outside
+signed `i64` is still emitted as a JSON number by the dispatcher, but
+`as_i64` fails, so the client does **not** treat the frame as an exit: the
+exchange surfaces a `RuntimeError` (`malformed response from the Python
+dispatcher`), which the binary prints CPython-style and exits non-zero — it
+does not silently ignore the frame, and it does not terminate with the
+oversized code. This is not CPython-equivalent for oversized exit codes.
+Distinguish this from **direct-native** `main`: that path lowers the supported
+Python `int` return to Rust `i64` at compile time (subset rules apply; values
+outside `i64` are not a runtime wire concern) and then applies the same
+`i64`→`i32` / platform status truncation documented for the native executable
+entrypoint. Do not claim that every delegated `sys.exit` code is honored.
 
 Known limitation: a fallback callee annotated `-> None` is delegated for its side
 effects (called as a bare statement); using its result in a value position (for

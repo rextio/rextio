@@ -195,6 +195,19 @@ silently dropped. A delegated function's own stdout/stderr appears on the binary
 (the binary's stdout carries the wire protocol). A function on the RXT080 runtime
 shim is not delegated: an entry that depends on one is rejected, not built.
 
+Delegated `SystemExit` (including `sys.exit(n)`) is a separate path from
+direct-native `main`'s return code. The Python dispatcher forwards an int exit
+as `{"exit": code}` (bool codes normalized to `0`/`1`); the Rust client honors
+that frame only when the code is representable as a signed `i64`
+(`serde_json::Value::as_i64`). Once consumed, the value is cast to `i32` before
+`std::process::exit`, so platform process-status width still applies — prefer
+`0..255` for portable codes, as with direct-native `main`. A Python `int`
+outside signed `i64` still serializes as a JSON number on the wire, but the
+client cannot consume it as an exit code: the exchange fails with a
+malformed-response `RuntimeError` (printed CPython-style, non-zero exit) rather
+than terminating with the intended status. Oversized delegated exit codes are
+therefore not CPython-equivalent and must not be assumed to round-trip.
+
 `--executable-python` pins the interpreter the binary launches (a name on `PATH`,
 an absolute path, or a path relative to `<binary>.runtime` to bundle one);
 `REXTIO_RUNTIME_PYTHON` overrides it at run time on the target machine.
