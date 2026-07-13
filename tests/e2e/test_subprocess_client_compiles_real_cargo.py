@@ -10,7 +10,9 @@ from rextio.codegen.rust.cargo import render_binary_cargo_toml
 from rextio.codegen.rust.subprocess_client import render_subprocess_client
 
 
-@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required to compile the IPC client")
+@pytest.mark.skipif(
+    shutil.which("cargo") is None, reason="cargo is required to compile the IPC client"
+)
 def test_subprocess_client_compiles(tmp_path: Path) -> None:
     # The IPC client is non-trivial Rust (disjoint field borrows through a
     # MutexGuard, OnceLock, serde_json); compile it against a minimal RextioError

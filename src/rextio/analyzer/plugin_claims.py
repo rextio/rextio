@@ -192,9 +192,7 @@ class ClaimEngine:
         """Report whether a type-environment entry is a plugin type key."""
         return type_name is not None and type_name in self._type_keys
 
-    def resolve_annotation(
-        self, annotation: ast.AST, imports: Mapping[str, str]
-    ) -> str | None:
+    def resolve_annotation(self, annotation: ast.AST, imports: Mapping[str, str]) -> str | None:
         """Resolve an annotation node to a plugin type key, or None.
 
         The dotted spelling is resolved through the module's import map, so
@@ -340,14 +338,10 @@ class ClaimEngine:
         )
         return self._offer(function, site, plugin_ids, _node_end(node))
 
-    def _call_plugins(
-        self, target: str, operand_types: tuple[str | None, ...]
-    ) -> tuple[str, ...]:
+    def _call_plugins(self, target: str, operand_types: tuple[str | None, ...]) -> tuple[str, ...]:
         package = target.split(".")[0]
         matched = {
-            plugin_id
-            for plugin_id, packages in self._packages.items()
-            if package in packages
+            plugin_id for plugin_id, packages in self._packages.items() if package in packages
         }
         # A call whose operands carry a plugin type is also that plugin's business
         # (e.g. a covered helper reached through a re-export the packages miss).
@@ -421,18 +415,14 @@ class ClaimEngine:
                 left_node, result_type=left_type, type_of=type_of, counter=counter
             )
             if isinstance(left_node, ast.AST)
-            else ClaimExpr(
-                kind="leaf", result_type=left_type, leaf_index=0, leaf_kind="opaque"
-            )
+            else ClaimExpr(kind="leaf", result_type=left_type, leaf_index=0, leaf_kind="opaque")
         )
         right_expr = (
             self._build_expr_node(
                 right_node, result_type=right_type, type_of=type_of, counter=counter
             )
             if isinstance(right_node, ast.AST)
-            else ClaimExpr(
-                kind="leaf", result_type=right_type, leaf_index=1, leaf_kind="opaque"
-            )
+            else ClaimExpr(kind="leaf", result_type=right_type, leaf_index=1, leaf_kind="opaque")
         )
         return ClaimExpr(
             kind="binop",
@@ -457,7 +447,9 @@ class ClaimEngine:
                 if lit.value is None:
                     lit_type = "None"
                 elif isinstance(lit.value, tuple):
-                    lit_type = f"tuple[{', '.join('int' for _ in lit.value)}]" if lit.value else "tuple"
+                    lit_type = (
+                        f"tuple[{', '.join('int' for _ in lit.value)}]" if lit.value else "tuple"
+                    )
                 else:
                     lit_type = "int"
             return ClaimExpr(kind="literal", result_type=lit_type, literal=lit)
@@ -719,9 +711,7 @@ class ClaimEngine:
         return result
 
 
-_CORE_RESULT_TYPES = frozenset(
-    {"int", "float", "bool", "str", "bytes", "None"}
-)
+_CORE_RESULT_TYPES = frozenset({"int", "float", "bool", "str", "bytes", "None"})
 
 
 def _is_known_core_type(type_name: str) -> bool:
@@ -752,7 +742,7 @@ def _is_known_core_type(type_name: str) -> bool:
 def _container_inner(type_name: str, prefix: str) -> str | None:
     """Return the element string inside ``prefix...]``, or None if it does not match."""
     if type_name.startswith(prefix) and type_name.endswith("]"):
-        return type_name[len(prefix):-1]
+        return type_name[len(prefix) : -1]
     return None
 
 

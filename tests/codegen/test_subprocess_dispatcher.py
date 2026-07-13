@@ -184,9 +184,12 @@ def raise_bad():
     dispatcher = tmp_path / "dispatcher.py"
     dispatcher.write_text(render_dispatcher_script(["fb.ok", "fb.raise_bad"]), encoding="utf-8")
     stdin = (
-        json.dumps({"call": "fb.raise_bad", "args": []}) + "\n"
-        + json.dumps([1, 2, 3]) + "\n"  # a valid-JSON but non-dict request
-        + json.dumps({"call": "fb.ok", "args": [40, 2]}) + "\n"
+        json.dumps({"call": "fb.raise_bad", "args": []})
+        + "\n"
+        + json.dumps([1, 2, 3])
+        + "\n"  # a valid-JSON but non-dict request
+        + json.dumps({"call": "fb.ok", "args": [40, 2]})
+        + "\n"
     )
     completed = subprocess.run(
         [sys.executable, str(dispatcher)],
@@ -279,6 +282,5 @@ def test_dispatcher_normalizes_bool_exit_code_to_int(tmp_path: Path) -> None:
     # The codes must be real ints, not bools (which would round-trip as
     # `true`/`false` and slip past the Rust as_i64() check).
     assert all(
-        type(frame["exit"]) is int and not isinstance(frame["exit"], bool)
-        for frame in responses
+        type(frame["exit"]) is int and not isinstance(frame["exit"], bool) for frame in responses
     )

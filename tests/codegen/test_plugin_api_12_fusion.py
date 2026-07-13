@@ -278,7 +278,9 @@ def reduce(a: F64Arr1) -> float:
         plugin_providers={PLUGIN_ID: provider},
         plugin_types_by_key=TYPES_BY_KEY,
     )
-    assert provider.seen_keywords == [(("axis", {"is_literal": True, "value_kind": "int", "value": 0}),)]
+    assert provider.seen_keywords == [
+        (("axis", {"is_literal": True, "value_kind": "int", "value": 0}),)
+    ]
     assert "sum_axis(0)" in source
 
 

@@ -38,12 +38,8 @@ class NativePlan:
             "accepted": [function.qualname for function in self.accepted_functions],
             "rejected": [function.qualname for function in self.rejected_functions],
             "embedding": [function.qualname for function in self.embedded_functions],
-            "accepted_top_levels": [
-                top_level.qualname for top_level in self.accepted_top_levels
-            ],
-            "rejected_top_levels": [
-                top_level.qualname for top_level in self.rejected_top_levels
-            ],
+            "accepted_top_levels": [top_level.qualname for top_level in self.accepted_top_levels],
+            "rejected_top_levels": [top_level.qualname for top_level in self.rejected_top_levels],
         }
 
 

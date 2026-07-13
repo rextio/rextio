@@ -14,4 +14,3 @@ def classify_function(function: FunctionAnalysis) -> FunctionPartition:
     if function.is_native_candidate and function.accepted:
         return "native"
     return "fallback"
-

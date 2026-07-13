@@ -78,10 +78,7 @@ def _statement_calls(statement: StatementIR, functions: dict[str, FunctionIR]) -
     if isinstance(statement, AppendIR):
         return _expr_calls(statement.value, functions)
     if isinstance(statement, DictSetIR):
-        return (
-            _expr_calls(statement.key, functions)
-            | _expr_calls(statement.value, functions)
-        )
+        return _expr_calls(statement.key, functions) | _expr_calls(statement.value, functions)
     if isinstance(statement, ReturnIR):
         return _expr_calls(statement.value, functions) if statement.value is not None else set()
     if isinstance(statement, IfIR):

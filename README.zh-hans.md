@@ -4,10 +4,11 @@
 
 **把符合条件的 typed Python 函数编译为 Rust，其余一切保留在 Python fallback 上。**
 
-Rextio 0.1.1 是面向 Python 项目的 alpha 阶段本地构建工具。它找出可以安全
-下沉到 Rust 的带类型 Python 函数，用 PyO3 提前（ahead-of-time）编译它们，
-其余部分全部继续通过生成的 Python fallback 代码运行 — import 路径与行为
-保持不变。
+Rextio 0.1.2 是面向 Python 项目的 alpha 阶段本地构建工具（本分支上的
+发布候选 — **尚未发布到 PyPI**；最新已发布包为 **0.1.1**）。它找出可以
+安全下沉到 Rust 的带类型 Python 函数，用 PyO3 提前（ahead-of-time）编译
+它们，其余部分全部继续通过生成的 Python fallback 代码运行 — import 路径
+与行为保持不变。
 
 ```text
 带类型的 Python 项目
@@ -258,7 +259,7 @@ CLI 参数 > 环境变量 > rextio.toml > 内置默认值
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.1 中唯一实现的 native 目标是 Rust。
+0.1.2 中唯一实现的 native 目标是 Rust。
 
 Rextio 插件是用 `pip` 或 `uv` 等工具安装的普通 Python 包。插件包通过
 `rextio.plugins` entry point 组暴露元数据，包括它覆盖的 Python 包名。
@@ -362,7 +363,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.1 刻意支持一个小的 subset。这个 subset 就是以 native
+Rextio 0.1.2 刻意支持一个小的 subset。这个 subset 就是以 native
 Rust 运行的代码。
 
 支持的类型:

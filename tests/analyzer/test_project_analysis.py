@@ -314,7 +314,9 @@ def last_positive(xs: list[int]) -> int:
 
     analysis = analyze_project(tmp_path, native_marker="decorator")
 
-    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.last_positive"]
+    assert [function.qualname for function in analysis.rejected_native_functions] == [
+        "app.last_positive"
+    ]
     diagnostic = analysis.rejected_native_functions[0].error_diagnostics[0]
     assert diagnostic.code == "RXT011"
     assert "non-ASCII" in diagnostic.message
@@ -363,7 +365,9 @@ def __rextio_helper(x: int) -> int:
 
     analysis = analyze_project(tmp_path, native_marker="decorator")
 
-    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.__rextio_helper"]
+    assert [function.qualname for function in analysis.rejected_native_functions] == [
+        "app.__rextio_helper"
+    ]
     assert analysis.rejected_native_functions[0].error_diagnostics[0].code == "RXT011"
 
 
@@ -698,7 +702,10 @@ label: str = "ok"
     assert [top_level.qualname for top_level in analysis.rejected_native_top_levels] == [
         "app.__rextio_top_level__"
     ]
-    assert "share one supported value type" in analysis.rejected_native_top_levels[0].error_diagnostics[0].message
+    assert (
+        "share one supported value type"
+        in analysis.rejected_native_top_levels[0].error_diagnostics[0].message
+    )
 
 
 def test_rejects_top_level_for_loop_to_preserve_module_scope(tmp_path: Path) -> None:
@@ -717,7 +724,9 @@ for i in range(5):
     assert [top_level.qualname for top_level in analysis.rejected_native_top_levels] == [
         "app.__rextio_top_level__"
     ]
-    assert "top-level for loops" in analysis.rejected_native_top_levels[0].error_diagnostics[0].message
+    assert (
+        "top-level for loops" in analysis.rejected_native_top_levels[0].error_diagnostics[0].message
+    )
 
 
 def test_auto_discovers_contextually_inferred_unannotated_functions(tmp_path: Path) -> None:
@@ -818,9 +827,7 @@ def add(a: int, b: int) -> int:
     analysis = analyze_project(tmp_path)
 
     assert [function.qualname for function in analysis.accepted_native_functions] == ["app.add"]
-    assert "app.keep_python" not in [
-        function.qualname for function in analysis.native_candidates
-    ]
+    assert "app.keep_python" not in [function.qualname for function in analysis.native_candidates]
     assert analysis.diagnostics == []
 
 
@@ -899,9 +906,7 @@ def compute(xs: list[float]) -> float:
     analysis = analyze_project(tmp_path)
 
     assert "RXT070" in {diagnostic.code for diagnostic in analysis.diagnostics}
-    assert [function.qualname for function in analysis.rejected_native_functions] == [
-        "app.compute"
-    ]
+    assert [function.qualname for function in analysis.rejected_native_functions] == ["app.compute"]
 
 
 def test_decorator_policy_disables_auto_discovery(tmp_path: Path) -> None:
@@ -1047,9 +1052,7 @@ async def super(x: int) -> int:
         for f in analysis.rejected_native_functions
         if f.qualname in {"crate", "super"}
     )
-    assert not any(
-        f.qualname in {"crate", "super"} for f in analysis.accepted_native_functions
-    )
+    assert not any(f.qualname in {"crate", "super"} for f in analysis.accepted_native_functions)
 
 
 def test_runtime_shim_promotes_dynamic_function_with_unrepresentable_param_name(
@@ -1981,9 +1984,7 @@ def keyword_bad(x: int) -> int:
     analysis = analyze_project(tmp_path)
 
     assert "RXT010" in {diagnostic.code for diagnostic in analysis.diagnostics}
-    assert [function.qualname for function in analysis.accepted_native_functions] == [
-        "app.square"
-    ]
+    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.square"]
     assert [function.qualname for function in analysis.rejected_native_functions] == [
         "app.keyword_bad"
     ]
@@ -3108,9 +3109,7 @@ def via_sibling_name(helper: list[int]) -> int:
     analysis = analyze_project(tmp_path, native_marker="decorator")
 
     direct_native = {
-        f.qualname
-        for f in analysis.accepted_native_functions
-        if not f.native_runtime_semantics
+        f.qualname for f in analysis.accepted_native_functions if not f.native_runtime_semantics
     }
     assert "app.via_builtin_name" in direct_native
     assert "app.via_sibling_name" in direct_native
@@ -3158,9 +3157,7 @@ def normal_math(x: float) -> float:
     analysis = analyze_project(tmp_path, native_marker="decorator")
 
     direct_native = {
-        f.qualname
-        for f in analysis.accepted_native_functions
-        if not f.native_runtime_semantics
+        f.qualname for f in analysis.accepted_native_functions if not f.native_runtime_semantics
     }
     # The shadowed-module receivers must not be lowered as direct native calls.
     assert "app.math_shadow" not in direct_native
@@ -3202,9 +3199,7 @@ def alias_not_shadowed(math: float) -> float:
     analysis = analyze_project(tmp_path, native_marker="decorator")
 
     direct_native = {
-        f.qualname
-        for f in analysis.accepted_native_functions
-        if not f.native_runtime_semantics
+        f.qualname for f in analysis.accepted_native_functions if not f.native_runtime_semantics
     }
     assert "app.alias_math_shadow" not in direct_native
     assert "app.alias_hashlib_chain_shadow" not in direct_native
@@ -3403,7 +3398,9 @@ def process_all(xs: list[float]) -> list[float]:
 
     analysis = analyze_project(tmp_path)
 
-    assert [function.qualname for function in analysis.accepted_native_functions] == ["app.score_one"]
+    assert [function.qualname for function in analysis.accepted_native_functions] == [
+        "app.score_one"
+    ]
     assert [diagnostic.code for diagnostic in analysis.boundary_warnings] == ["RXT073"]
     assert "enumerate(xs)" in analysis.boundary_warnings[0].suggestion
     assert "zip(xs, ys)" in analysis.boundary_warnings[0].suggestion
@@ -3753,7 +3750,10 @@ def compute(a: float, b: float) -> float:
     # Both are embedding-eligible: embedded helpers lower through the checked
     # native path, so float `/` raises ZeroDivisionError like any native
     # function.
-    assert [function.qualname for function in analysis.embedding_candidates] == ["app.fdiv", "app.fmul"]
+    assert [function.qualname for function in analysis.embedding_candidates] == [
+        "app.fdiv",
+        "app.fmul",
+    ]
 
 
 def test_rejects_len_on_scalar(tmp_path: Path) -> None:
@@ -3890,10 +3890,7 @@ def return_in_try(xs: list[int]) -> int:
         "app.custom_handler",
         "app.return_in_try",
     }
-    assert all(
-        function.native_runtime_semantics
-        for function in analysis.accepted_native_functions
-    )
+    assert all(function.native_runtime_semantics for function in analysis.accepted_native_functions)
 
 
 def test_reports_all_boundary_errors_per_function(tmp_path: Path) -> None:
@@ -4388,7 +4385,9 @@ def main(argv: list[str]) -> int:
 
     assert not main.accepted
     assert main.delegated_call_targets == set()
-    assert any("operator is not supported" in diagnostic.message for diagnostic in main.error_diagnostics)
+    assert any(
+        "operator is not supported" in diagnostic.message for diagnostic in main.error_diagnostics
+    )
 
 
 def test_delegate_fallback_types_pyi_stub_returns_across_modules(tmp_path: Path) -> None:
@@ -4407,9 +4406,7 @@ def slugify(text):
     return text.lower()
 """,
     )
-    (tmp_path / "helpers.pyi").write_text(
-        "def slugify(text: str) -> str: ...\n", encoding="utf-8"
-    )
+    (tmp_path / "helpers.pyi").write_text("def slugify(text: str) -> str: ...\n", encoding="utf-8")
     write_module(
         tmp_path,
         "app.py",
@@ -4779,9 +4776,7 @@ def test_project_local_numba_module_is_not_mislabeled(tmp_path: Path) -> None:
     # A PROJECT-LOCAL module named `numba` is the user's code: resolving
     # `@numba.njit` through it must not label the function as the external
     # Numba accelerator (recognition consults the project's module names).
-    (tmp_path / "numba.py").write_text(
-        "def njit(func):\n    return func\n", encoding="utf-8"
-    )
+    (tmp_path / "numba.py").write_text("def njit(func):\n    return func\n", encoding="utf-8")
     write_module(
         tmp_path,
         "app.py",
@@ -4797,6 +4792,7 @@ def helper(x: int) -> int:
     analysis = analyze_project(tmp_path, native_marker="auto")
     helper = next(f for m in analysis.modules for f in m.functions if f.name == "helper")
     assert helper.external_accelerator is None
+
 
 @pytest.mark.parametrize(
     ("shape", "source"),
@@ -4875,10 +4871,14 @@ def helper(x: int) -> int:
 """
     assert external_accelerator_for_source(source) is None
 
+
 @pytest.mark.parametrize(
     ("shape", "body"),
     [
-        ("for_loop", "    out: list[int] = []\n    for x in xs:\n        out.append(x)\n    return out\n"),
+        (
+            "for_loop",
+            "    out: list[int] = []\n    for x in xs:\n        out.append(x)\n    return out\n",
+        ),
         ("comprehension", "    return [x for x in xs]\n"),
     ],
 )
@@ -4923,6 +4923,7 @@ def f(xs: list[int]) -> set[int]:
     analysis = analyze_project(tmp_path, native_marker="decorator")
     function = next(f for m in analysis.modules for f in m.functions)
     assert function.accepted
+
 
 def test_bytes_decode_direct_native_carries_divergence_note(tmp_path: Path) -> None:
     # bytes.decode() on the direct native path raises ValueError where CPython
@@ -5028,6 +5029,7 @@ def dec(b: bytes) -> str:
     assert function.native_runtime_semantics
     assert not [d for d in function.diagnostics if d.code == "RXT090"]
 
+
 @pytest.mark.parametrize(
     ("shape", "source"),
     [
@@ -5096,6 +5098,7 @@ def f(x: int) -> int:
     assert external_accelerator_for_source(source, frozenset({"numba"})) is None
     assert external_accelerator_for_source(source, frozenset({"app"})) == "numba"
 
+
 def test_source_scan_accelerator_binding_survives_scope_collisions() -> None:
     # The whole-tree walk flattens scopes: a nested `import local_numba as
     # numba` must not overwrite the top-level `import numba` binding that a
@@ -5128,11 +5131,18 @@ def test_project_local_namespace_package_numba_is_recognized(tmp_path: Path) -> 
     (tmp_path / "app.py").write_text("import numba\n", encoding="utf-8")
     assert "numba" in project_module_names_for_tree(tmp_path)
 
+
 @pytest.mark.parametrize(
     ("shape", "body"),
     [
-        ("enumerate", "    total = 0\n    for i, x in enumerate(xs):\n        total = total + i\n    return total\n"),
-        ("zip", "    total = 0\n    for a, b in zip(xs, xs):\n        total = total + a + b\n    return total\n"),
+        (
+            "enumerate",
+            "    total = 0\n    for i, x in enumerate(xs):\n        total = total + i\n    return total\n",
+        ),
+        (
+            "zip",
+            "    total = 0\n    for a, b in zip(xs, xs):\n        total = total + a + b\n    return total\n",
+        ),
     ],
 )
 def test_enumerate_and_zip_over_sets_explain_the_real_reason(
@@ -5158,6 +5168,7 @@ def f(xs: set[int]) -> int:
     # Every diagnostic is the dedicated set message (one per offending
     # argument) - no generic "list only" or name-scope cascade noise.
     assert messages and all("iterating a set" in m for m in messages), messages
+
 
 @pytest.mark.parametrize(
     "body_import",
@@ -5215,6 +5226,7 @@ def f(xs: list[float]) -> float:
     assert not function.accepted
     assert not function.native_runtime_semantics
 
+
 @pytest.mark.parametrize(
     ("shape", "prelude"),
     [
@@ -5271,13 +5283,17 @@ def f(xs: list[float]) -> float:
     assert function.accepted
     assert function.native_runtime_semantics
 
+
 @pytest.mark.parametrize(
     ("shape", "prelude"),
     [
         ("walrus", "from statistics import mean\n\n(mean := len)\n"),
         ("relative-import", "from statistics import mean\nfrom .helpers import mean\n"),
         ("relative-star", "from statistics import mean\nfrom .helpers import *\n"),
-        ("decorator-walrus", "from statistics import mean\n\n@(mean := staticmethod)\nclass C:\n    pass\n"),
+        (
+            "decorator-walrus",
+            "from statistics import mean\n\n@(mean := staticmethod)\nclass C:\n    pass\n",
+        ),
         (
             "match-capture",
             "from statistics import mean\n\nmatch 1:\n    case mean:\n        pass\n",

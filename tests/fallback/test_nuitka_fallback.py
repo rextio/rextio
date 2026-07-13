@@ -29,7 +29,9 @@ def _fake_nuitka(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return log
 
 
-def test_numba_modules_are_kept_plain_python(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_numba_modules_are_kept_plain_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # A fallback module whose functions carry a recognized external-accelerator
     # decorator must NOT be Nuitka-compiled: a compiled sibling would shadow the
     # .py and the tool (e.g. Numba) needs the original bytecode at runtime.
@@ -83,6 +85,7 @@ def test_all_modules_accelerated_still_reports_built(
     assert not log.exists()  # no compilation was invoked
     assert "Kept as plain Python for external accelerators" in result.message
 
+
 def test_mixed_module_wrapper_compiles_while_fallback_copy_stays_plain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -131,6 +134,7 @@ def fast(x: int) -> int:
     assert not (python_dir / "hb" / "_fallback_mixed.so").exists()
     assert "hb/mixed.py (fallback copy)" in result.message
 
+
 def test_project_local_numba_module_is_compiled_normally(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -138,9 +142,7 @@ def test_project_local_numba_module_is_compiled_normally(
     # accelerator: nothing may be skipped, and both modules compile.
     python_dir = tmp_path / "python"
     python_dir.mkdir()
-    (python_dir / "numba.py").write_text(
-        "def njit(func):\n    return func\n", encoding="utf-8"
-    )
+    (python_dir / "numba.py").write_text("def njit(func):\n    return func\n", encoding="utf-8")
     (python_dir / "app.py").write_text(
         "import numba\n\n@numba.njit\ndef f(x: int) -> int:\n    return x\n",
         encoding="utf-8",
@@ -164,7 +166,9 @@ def test_pre_2_nuitka_fails_the_fallback_build(
     bin_dir = tmp_path / "old-nuitka-bin"
     bin_dir.mkdir()
     nuitka = bin_dir / "nuitka"
-    nuitka.write_text("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 1.9.7; exit 0; fi\n", encoding="utf-8")
+    nuitka.write_text(
+        '#!/bin/sh\nif [ "$1" = --version ]; then echo 1.9.7; exit 0; fi\n', encoding="utf-8"
+    )
     nuitka.chmod(nuitka.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
 

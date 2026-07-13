@@ -178,9 +178,7 @@ def _analyze(tmp_path: Path, source: str):
     (tmp_path / "app.py").write_text(source, encoding="utf-8")
     analysis = analyze_project(tmp_path)
     # The corpus must actually be accepted, otherwise the contract is vacuous.
-    assert not analysis.has_error_diagnostics, [
-        d.to_dict() for d in analysis.error_diagnostics
-    ]
+    assert not analysis.has_error_diagnostics, [d.to_dict() for d in analysis.error_diagnostics]
     assert analysis.accepted_native_functions, "module produced no accepted native functions"
     return analysis
 
@@ -199,8 +197,7 @@ def test_direct_rust_functions_emit_importable_crate(name: str, tmp_path: Path) 
     analysis = _analyze(tmp_path, _CORPUS[name])
     # Sanity-check the corpus curation: these modules must be direct-Rust.
     assert all(
-        not function.native_runtime_semantics
-        for function in analysis.accepted_native_functions
+        not function.native_runtime_semantics for function in analysis.accepted_native_functions
     ), "direct corpus module unexpectedly routed to the runtime-semantics shim"
     source = generate_rust_crate_module(lower_project(analyze_project(tmp_path)))
     assert source.strip()
@@ -208,9 +205,7 @@ def test_direct_rust_functions_emit_importable_crate(name: str, tmp_path: Path) 
 
 
 @pytest.mark.parametrize("name", sorted(_SHIM_CORPUS))
-def test_runtime_shim_modules_are_excluded_from_importable_crate(
-    name: str, tmp_path: Path
-) -> None:
+def test_runtime_shim_modules_are_excluded_from_importable_crate(name: str, tmp_path: Path) -> None:
     analysis = _analyze(tmp_path, _SHIM_CORPUS[name])
     # Confirm these really are runtime-shim functions (RXT080), not direct-Rust.
     for function in analysis.accepted_native_functions:

@@ -20,9 +20,7 @@ def test_real_cargo_string_literal_escaping_round_trips(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    (tmp_path / "rextio.toml").write_text(
-        '[rust]\nbuild_tool = "cargo"\n', encoding="utf-8"
-    )
+    (tmp_path / "rextio.toml").write_text('[rust]\nbuild_tool = "cargo"\n', encoding="utf-8")
     source = tmp_path / "src" / "escape_app" / "text.py"
     source.parent.mkdir(parents=True)
     (source.parent / "__init__.py").write_text("", encoding="utf-8")
@@ -30,10 +28,7 @@ def test_real_cargo_string_literal_escaping_round_trips(
     # astral char as a real scalar value, not surrogate escapes); the source file
     # is written as UTF-8.
     source.write_text(
-        "import rextio\n\n"
-        "@rextio.native\n"
-        "def motto() -> str:\n"
-        f"    return {_MOTTO!r}\n",
+        f"import rextio\n\n@rextio.native\ndef motto() -> str:\n    return {_MOTTO!r}\n",
         encoding="utf-8",
     )
 

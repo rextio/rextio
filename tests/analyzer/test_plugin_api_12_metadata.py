@@ -130,9 +130,7 @@ def test_extract_claim_literal_shapes() -> None:
         is_literal=True, value=None
     )
     assert extract_claim_literal(ast.Constant(value=0)) == ClaimLiteral(is_literal=True, value=0)
-    assert extract_claim_literal(ast.Constant(value=-3)) == ClaimLiteral(
-        is_literal=True, value=-3
-    )
+    assert extract_claim_literal(ast.Constant(value=-3)) == ClaimLiteral(is_literal=True, value=-3)
     assert extract_claim_literal(ast.Constant(value=True)) is NON_LITERAL or (
         extract_claim_literal(ast.Constant(value=True)).is_literal is False
     )
@@ -237,9 +235,7 @@ def reduce_neg(a: F64Arr1) -> float:
     )
     function = function_named(analysis, "myapp.kernels.reduce_neg")
     assert function.accepted is True
-    assert function.plugin_claims[0].keywords[0].literal == ClaimLiteral(
-        is_literal=True, value=-1
-    )
+    assert function.plugin_claims[0].keywords[0].literal == ClaimLiteral(is_literal=True, value=-1)
 
 
 def test_dynamic_keyword_fails_closed(tmp_path: Path) -> None:
@@ -293,7 +289,9 @@ def bad(a: F64Arr1, **kwargs) -> float:
     function = function_named(analysis, "myapp.kernels.bad")
     assert function.accepted is False
     # No claim recorded for dynamic kwargs sites.
-    assert all(claim.target != "numpy.sum" or not claim.keywords for claim in function.plugin_claims)
+    assert all(
+        claim.target != "numpy.sum" or not claim.keywords for claim in function.plugin_claims
+    )
 
 
 def test_cache_keys_distinguish_metadata_and_trees() -> None:
@@ -347,12 +345,8 @@ def test_cache_keys_distinguish_metadata_and_trees() -> None:
             kind="binop",
             target="+",
             children=(
-                ClaimExpr(
-                    kind="leaf", leaf_index=0, result_type=F64_KEY, leaf_kind="name"
-                ),
-                ClaimExpr(
-                    kind="leaf", leaf_index=1, result_type=F64_KEY, leaf_kind="name"
-                ),
+                ClaimExpr(kind="leaf", leaf_index=0, result_type=F64_KEY, leaf_kind="name"),
+                ClaimExpr(kind="leaf", leaf_index=1, result_type=F64_KEY, leaf_kind="name"),
             ),
         ),
     )
@@ -386,9 +380,7 @@ def test_cache_keys_distinguish_metadata_and_trees() -> None:
                         ),
                     ),
                 ),
-                ClaimExpr(
-                    kind="leaf", leaf_index=2, result_type=F64_KEY, leaf_kind="name"
-                ),
+                ClaimExpr(kind="leaf", leaf_index=2, result_type=F64_KEY, leaf_kind="name"),
             ),
         ),
     )
@@ -422,11 +414,7 @@ def test_claim_site_to_dict_includes_metadata() -> None:
         expression=ClaimExpr(
             kind="call",
             target="numpy.sum",
-            children=(
-                ClaimExpr(
-                    kind="leaf", leaf_index=0, result_type=F64_KEY, leaf_kind="name"
-                ),
-            ),
+            children=(ClaimExpr(kind="leaf", leaf_index=0, result_type=F64_KEY, leaf_kind="name"),),
             keywords=(
                 KeywordArg(
                     name="axis", arg_type="int", literal=ClaimLiteral(is_literal=True, value=0)
@@ -537,9 +525,7 @@ def names_only(a: F64Arr1, b: F64Arr1) -> F64Arr1:
     assert left.to_dict()["leaf_kind"] == "name"
 
     # Manually build an opaque leaf (subscript-style fail-closed leaf).
-    opaque = ClaimExpr(
-        kind="leaf", leaf_index=0, result_type=F64_KEY, leaf_kind="opaque"
-    )
+    opaque = ClaimExpr(kind="leaf", leaf_index=0, result_type=F64_KEY, leaf_kind="opaque")
     assert opaque.leaf_kind == "opaque"
     assert opaque.to_dict()["leaf_kind"] == "opaque"
 
@@ -771,9 +757,7 @@ def test_leaves_mode_rejects_opaque_tree() -> None:
         ("axis='x'", "string"),
     ],
 )
-def test_non_int_keyword_constants_fail_closed(
-    tmp_path: Path, source_kw: str, label: str
-) -> None:
+def test_non_int_keyword_constants_fail_closed(tmp_path: Path, source_kw: str, label: str) -> None:
     """bool/float/str keyword constants are non-literal and never offered."""
 
     class Greedy12(MetadataCapturingProvider):
@@ -869,9 +853,7 @@ def reduce(a: F64Arr1) -> float:
     return np.sum(a, axis=0)
 """,
     )
-    analysis = analyze_project(
-        tmp_path, plugin_registry=registry, plugin_config=RextioConfig()
-    )
+    analysis = analyze_project(tmp_path, plugin_registry=registry, plugin_config=RextioConfig())
     function = function_named(analysis, "myapp.kernels.reduce")
     # Keyword call is never offered to 1.1; 1.2 may claim it.
     assert p11.sites == []

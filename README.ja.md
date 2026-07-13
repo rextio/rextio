@@ -5,10 +5,12 @@
 **適格な typed Python 関数を Rust にコンパイルし、それ以外はすべて
 Python fallback のまま動かします。**
 
-Rextio 0.1.1 は Python プロジェクト向けの alpha 段階ローカルビルドツール
-です。型付きの Python 関数のうち安全に Rust へ下ろせるものを見つけて
-PyO3 で事前（ahead-of-time）コンパイルし、それ以外はすべて生成された
-Python fallback コードで動かし続けます — import パスも動作もそのままです。
+Rextio 0.1.2 は Python プロジェクト向けの alpha 段階ローカルビルドツール
+です（このブランチのリリース候補 — **まだ PyPI には公開されていません**;
+最新の公開パッケージは **0.1.1**）。型付きの Python 関数のうち安全に
+Rust へ下ろせるものを見つけて PyO3 で事前（ahead-of-time）コンパイルし、
+それ以外はすべて生成された Python fallback コードで動かし続けます —
+import パスも動作もそのままです。
 
 ```text
 型付き Python プロジェクト
@@ -272,7 +274,7 @@ CLI パラメータ > 環境変数 > rextio.toml > 組み込みデフォルト
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.1 で実装済みの native ターゲットは Rust だけです。
+0.1.2 で実装済みの native ターゲットは Rust だけです。
 
 Rextio プラグインは `pip` や `uv` などでインストールする普通の Python
 パッケージです。プラグインパッケージは、対象とする Python パッケージ名を
@@ -385,7 +387,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.1 は意図的に小さな subset をサポートします。この subset が
+Rextio 0.1.2 は意図的に小さな subset をサポートします。この subset が
 native Rust として実行されるコードです。
 
 サポートされる型:

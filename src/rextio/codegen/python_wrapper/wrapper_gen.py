@@ -38,10 +38,14 @@ def render_wrapper_module(
     if not accepted and top_level is None:
         raise ValueError(f"module has no accepted native functions: {module.module_name}")
 
-    source_tree = ast.parse(Path(module.file_path).read_text(encoding="utf-8"), filename=module.file_path)
+    source_tree = ast.parse(
+        Path(module.file_path).read_text(encoding="utf-8"), filename=module.file_path
+    )
     function_nodes = _function_nodes_from_tree(source_tree)
     fallback_name = fallback_module_name(module)
-    import_prefix = "." if "." in module.module_name or Path(module.file_path).name == "__init__.py" else ""
+    import_prefix = (
+        "." if "." in module.module_name or Path(module.file_path).name == "__init__.py" else ""
+    )
     lines = [
         GENERATED_PYTHON_HEADER,
         "",
@@ -86,7 +90,9 @@ def render_wrapper_module(
     lines.extend(_render_namespace_fidelity())
     lines.append("")
     for function in accepted:
-        lines.extend(_render_fallback_binding(function, import_prefix, fallback_name, top_level is not None))
+        lines.extend(
+            _render_fallback_binding(function, import_prefix, fallback_name, top_level is not None)
+        )
     lines.append("")
 
     for function in accepted:
@@ -221,8 +227,10 @@ def _render_wrapper_function(
     # call site without plugin-typed params/returns -- has the same per-leg
     # divergence and must be exempt too (council round 15).
     is_plugin_routed = bool(function.plugin_claims or function.plugin_type_keys)
-    threshold_gate = "" if is_plugin_routed else _threshold_gate_lines(
-        function, boundary_fallback_threshold, fallback_call
+    threshold_gate = (
+        ""
+        if is_plugin_routed
+        else _threshold_gate_lines(function, boundary_fallback_threshold, fallback_call)
     )
     body = [
         f"{prefix} {wrapper_name}({signature}){_return_annotation(node)}:",
@@ -326,7 +334,9 @@ def _call_args(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     return ", ".join(args)
 
 
-def _native_call_args(function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+def _native_call_args(
+    function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef
+) -> str:
     # All natively-supported argument types pass through the PyO3 boundary as-is.
     # (set[float] has no native lowering -- it stays on the Python fallback
     # or the runtime shim -- so no
@@ -344,7 +354,9 @@ def _is_set_type(type_name: str | None) -> bool:
     return type_name is not None and type_name.startswith("set[") and type_name.endswith("]")
 
 
-def _return_type_name(function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+def _return_type_name(
+    function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef
+) -> str | None:
     return _annotation_name(node.returns) or function.inferred_return_type
 
 
@@ -357,7 +369,9 @@ def _annotation_name(node: ast.AST | None) -> str | None:
         return None
 
 
-def _function_nodes_from_tree(tree: ast.Module) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+def _function_nodes_from_tree(
+    tree: ast.Module,
+) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     nodes: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -431,5 +445,5 @@ def _is_method(function: FunctionAnalysis) -> bool:
 
 def _local_qualname(function: FunctionAnalysis) -> str:
     if function.module_name and function.qualname.startswith(f"{function.module_name}."):
-        return function.qualname[len(function.module_name) + 1:]
+        return function.qualname[len(function.module_name) + 1 :]
     return function.qualname

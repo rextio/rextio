@@ -36,9 +36,7 @@ def test_route_native_direct() -> None:
 
 
 def test_route_native_shim() -> None:
-    function = make_function(
-        is_native_candidate=True, accepted=True, native_runtime_semantics=True
-    )
+    function = make_function(is_native_candidate=True, accepted=True, native_runtime_semantics=True)
     assert function.route == "native-shim"
     assert function.native_status == "accepted"
 

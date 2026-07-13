@@ -30,9 +30,9 @@ def add(a: int, b: int) -> int:
     exit_code = main(["generate", str(tmp_path), "--fallback=cpython"])
 
     capsys.readouterr()
-    rust_source = (
-        tmp_path / ".rextio" / "generated" / "rust" / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
+    rust_source = (tmp_path / ".rextio" / "generated" / "rust" / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
     fallback_source = (
         tmp_path / ".rextio" / "generated" / "python" / "_fallback_app.py"
     ).read_text(encoding="utf-8")
@@ -96,9 +96,7 @@ def rejected(xs: list[int]) -> int:
     assert report["accepted_native_count"] == 1
     assert report["rejected_native_count"] == 1
     assert rust_source.exists()
-    assert "fn app__add(a: i64, b: i64) -> PyResult<i64>" in rust_source.read_text(
-        encoding="utf-8"
-    )
+    assert "fn app__add(a: i64, b: i64) -> PyResult<i64>" in rust_source.read_text(encoding="utf-8")
     assert "fn rejected" not in rust_source.read_text(encoding="utf-8")
     assert wrapper.exists()
     assert fallback.exists()
@@ -168,9 +166,9 @@ def add(a: int, b: int) -> int:
     report = json.loads(
         (tmp_path / ".rextio" / "reports" / "generate.json").read_text(encoding="utf-8")
     )
-    wrapper_source = (
-        tmp_path / ".rextio" / "generated" / "python" / "app.py"
-    ).read_text(encoding="utf-8")
+    wrapper_source = (tmp_path / ".rextio" / "generated" / "python" / "app.py").read_text(
+        encoding="utf-8"
+    )
 
     assert exit_code == 0
     assert "boundary fallback threshold: 3" in captured.out
@@ -201,9 +199,9 @@ def add(a: int, b: int) -> int:
     report = json.loads(
         (tmp_path / ".rextio" / "reports" / "generate.json").read_text(encoding="utf-8")
     )
-    wrapper_source = (
-        tmp_path / ".rextio" / "generated" / "python" / "app.py"
-    ).read_text(encoding="utf-8")
+    wrapper_source = (tmp_path / ".rextio" / "generated" / "python" / "app.py").read_text(
+        encoding="utf-8"
+    )
 
     assert exit_code == 0
     assert "fallback: nuitka" in captured.out

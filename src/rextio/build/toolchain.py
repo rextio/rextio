@@ -61,8 +61,7 @@ def resolve_tool(name: str, configured: str | None) -> tuple[str | None, str | N
         not_executable.append(str(candidate))
     if not_executable:
         return None, (
-            f"[toolchain] {name} resolved to {', '.join(not_executable)}, "
-            "which is not executable."
+            f"[toolchain] {name} resolved to {', '.join(not_executable)}, which is not executable."
         )
     if base.is_dir():
         return None, (
@@ -246,8 +245,7 @@ def check_version_pin(
     if _satisfies(_version_tuple(reported), pin):
         return None
     return (
-        f"{display} reports version {reported}, which does not satisfy the "
-        f"[toolchain] pin {pin!r}."
+        f"{display} reports version {reported}, which does not satisfy the [toolchain] pin {pin!r}."
     )
 
 

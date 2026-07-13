@@ -34,6 +34,5 @@ def test_inert_target_keys_warn() -> None:
         warnings.simplefilter("always")
         create_target_spec(config)
     assert any(
-        issubclass(w.category, RuntimeWarning) and "no effect" in str(w.message)
-        for w in caught
+        issubclass(w.category, RuntimeWarning) and "no effect" in str(w.message) for w in caught
     )

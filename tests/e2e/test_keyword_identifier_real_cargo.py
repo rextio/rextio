@@ -34,7 +34,9 @@ def test_real_cargo_rust_keyword_identifiers_compile_and_run(
 
     assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
     capsys.readouterr()
-    report = json.loads((tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8"))
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
     assert report["native_build"]["status"] == "built"
 
     monkeypatch.setenv("REXTIO_NATIVE_MODE", "native")

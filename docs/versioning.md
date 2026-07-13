@@ -1,7 +1,9 @@
 # Versioning policy
 
 Rextio follows [Semantic Versioning 2.0.0](https://semver.org/), with the
-explicit pre-1.0 caveats below. The current release is **0.1.1**, an alpha-stage release.
+explicit pre-1.0 caveats below. The package version on this branch is
+**0.1.2** (release candidate — not tagged or uploaded to PyPI yet). The
+latest **published** PyPI release remains **0.1.1**.
 
 ## Pre-1.0 (0.x): what "alpha" means
 

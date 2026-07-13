@@ -75,14 +75,18 @@ versions (rextio / rextio-lsp) ship on their own schedules.
 | contract `2.x` (UTF-8 column) | majors `{1,2}` with dual map | Correct via standardized branch |
 | contract `2.x` | major-1-only | **Unsupported major** → degraded guidance; do not treat as supported. Residual risk: pre-dual-map servers may still render a range using the old RXT000 special case |
 
-**Recommended release order**
+**Release-order gate (required for a correct pairing)**
 
-1. Ship a consumer that supports majors `{1, 2}` with version-aware RXT000
-   mapping (new rextio-lsp).
-2. Then ship a producer that emits `contract_version` `2.0.0` (new rextio core).
+1. Deploy dual-map **rextio-lsp 0.1.1** (contract majors `{1, 2}` with
+   version-aware RXT000 mapping) **first, or at the same time as** core.
+2. Then (or simultaneously) publish core **0.1.2**, which emits
+   `contract_version` `2.0.0`.
 
-Shipping core first is survivable (old major-1-only LSP degrades rather than
-claiming full support) but dual-map LSP-first is the safer pairing.
+**Core must not publish alone first.** A contract-`2.x` producer against
+major-1-only rextio-lsp 0.1.0 is an unsupported pairing (degraded guidance at
+best; residual risk of mis-rendered RXT000 ranges if a server still applies
+the old special case). Core has no runtime dependency on rextio-lsp — the
+gate is a deployment ordering constraint, not a package dependency.
 
 ## Route taxonomy
 
@@ -167,7 +171,7 @@ in registry order, then plugin rules and the `plugins` array sorted by id.
 ```json
 {
   "contract_version": "2.0.0",
-  "rextio_version": "0.1.1",
+  "rextio_version": "0.1.2",
   "project_root": "/abs/path",
   "config_fingerprint": "<sha256 of resolved config>",
   "target": { "language": "rust" },
@@ -283,13 +287,16 @@ class RextioPluginV2(Protocol):
 
 ## Rollout
 
-1. 0.1.1: land route fields + `contract_version` `1.0.0` in check JSON; add
-   `capabilities` command with core rules only; add RXT091 to the registry;
-   document in `docs/stability.md` as experimental.
+1. **0.1.1 (published on PyPI):** land route fields + `contract_version`
+   `1.0.0` in check JSON; add `capabilities` command with core rules only; add
+   RXT091 to the registry; document in `docs/stability.md` as experimental.
 2. rextio-numpy becomes the first `describe()` implementation; its rule records
    validate the plugin merge path.
-3. Contract `2.0.0`: normalize `RXT000` columns to 0-based UTF-8 byte offsets;
-   consumers that support only major 1 must degrade; dual-map consumers keep
-   mapping both 1.x and 2.x correctly (see §Compatibility and release ordering).
+3. **0.1.2 RC (this line; not yet tagged/uploaded):** contract `2.0.0` —
+   normalize `RXT000` columns to 0-based UTF-8 byte offsets. **Release-order
+   gate:** dual-map rextio-lsp 0.1.1 first or simultaneous; core must not
+   publish alone first (see §Compatibility and release ordering). Consumers
+   that support only major 1 must degrade; dual-map consumers keep mapping
+   both 1.x and 2.x correctly.
 4. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

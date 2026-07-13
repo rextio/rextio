@@ -134,11 +134,7 @@ def add(a: int, b: int) -> int:
     for module_name in list(sys.modules):
         if module_name == "rextio" or module_name.startswith("rextio."):
             monkeypatch.delitem(sys.modules, module_name, raising=False)
-    pruned_path = [
-        path
-        for path in sys.path
-        if not _same_path(path, REPO_SRC)
-    ]
+    pruned_path = [path for path in sys.path if not _same_path(path, REPO_SRC)]
     monkeypatch.setattr(sys, "path", [str(build_python), *pruned_path])
     importlib.invalidate_caches()
 

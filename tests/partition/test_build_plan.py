@@ -28,7 +28,9 @@ def rejected(xs: list[int]) -> int:
 
     analysis = analyze_project(tmp_path, native_marker="decorator")
     plan = create_build_plan(analysis, "cpython")
-    functions = {function.name: function for module in analysis.modules for function in module.functions}
+    functions = {
+        function.name: function for module in analysis.modules for function in module.functions
+    }
 
     assert [function.qualname for function in plan.native.accepted_functions] == ["app.add"]
     assert [function.qualname for function in plan.native.rejected_functions] == ["app.rejected"]

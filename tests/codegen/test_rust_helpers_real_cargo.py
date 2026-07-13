@@ -51,16 +51,31 @@ def test_text_helpers_match_cpython(tmp_path: Path) -> None:
     # thresholds, tie-breaking, control-char escaping, %f nan spelling) so an
     # emission change cannot silently regress them - the codegen unit tests
     # only assert that the helpers are referenced.
-    helper = "\n".join(
-        checked_arith_helpers({"repr_float", "repr_str", "fixed6"}, "crate")
-    )
+    helper = "\n".join(checked_arith_helpers({"repr_float", "repr_str", "fixed6"}, "crate"))
 
     float_cases = [
-        0.0, -0.0, 1.0, -1.5, 0.1, 1e15, 9999999999999998.0, 1e16,
-        1.2345678901234567e17, 1e100, 0.0001, 0.00001, 1.5e-5, 5e-324,
-        -2.5e-10, 3.14159, 1e308, -1e-308,
+        0.0,
+        -0.0,
+        1.0,
+        -1.5,
+        0.1,
+        1e15,
+        9999999999999998.0,
+        1e16,
+        1.2345678901234567e17,
+        1e100,
+        0.0001,
+        0.00001,
+        1.5e-5,
+        5e-324,
+        -2.5e-10,
+        3.14159,
+        1e308,
+        -1e-308,
         2.7907518603480913e14,  # Ryu/Gay shortest-repr tie-break case
-        math.nan, math.inf, -math.inf,
+        math.nan,
+        math.inf,
+        -math.inf,
     ]
     rng = random.Random(39)
     while len(float_cases) < 220:
@@ -69,10 +84,23 @@ def test_text_helpers_match_cpython(tmp_path: Path) -> None:
             float_cases.append(value)
 
     str_cases = [
-        "plain", "it's", 'say "hi"', "both ' and \"", "tab\there",
-        "line\nbreak", "cr\rhere", "back\\slash", "ctrl\x01x", "null\x00",
-        "\x1b[31m", "del\x7f", "c1\x85", "c1end\x9f", "nbsp\xa0",
-        "유니코드", "",
+        "plain",
+        "it's",
+        'say "hi"',
+        "both ' and \"",
+        "tab\there",
+        "line\nbreak",
+        "cr\rhere",
+        "back\\slash",
+        "ctrl\x01x",
+        "null\x00",
+        "\x1b[31m",
+        "del\x7f",
+        "c1\x85",
+        "c1end\x9f",
+        "nbsp\xa0",
+        "유니코드",
+        "",
     ]
     # Documented divergence pinned in the OTHER direction: characters above
     # U+00A0 that CPython repr would escape pass through natively
@@ -82,32 +110,44 @@ def test_text_helpers_match_cpython(tmp_path: Path) -> None:
         ("sep\u2028next", "'sep\u2028next'"),
     ]
     fixed6_cases = [
-        1.5, 0.0, -0.0, 1e10, -2.25, 1e-8,
+        1.5,
+        0.0,
+        -0.0,
+        1e10,
+        -2.25,
+        1e-8,
         # Near-boundary values (not exact binary ties, but adjacent to the
         # 6th-decimal rounding edge):
-        2.5e-7, 3.5e-7, 0.1234565, 0.1234575, 1.0000005, 123456.4999995,
+        2.5e-7,
+        3.5e-7,
+        0.1234565,
+        0.1234575,
+        1.0000005,
+        123456.4999995,
         # EXACT binary ties: odd multiples of 2^-7 terminate at the 7th
         # decimal digit with a literal 5, so %f's 6-decimal rounding hits a
         # true round-half-even case (probed: CPython and Rust agree).
-        0.0078125, 0.0234375, 0.0390625, 0.1171875,
-        math.nan, math.inf, -math.inf,
+        0.0078125,
+        0.0234375,
+        0.0390625,
+        0.1171875,
+        math.nan,
+        math.inf,
+        -math.inf,
     ]
 
     repr_float_rows = "\n".join(
-        f'        ({_rust_f64_literal(v)}, {_rust_str_literal(repr(v))}),'
-        for v in float_cases
+        f"        ({_rust_f64_literal(v)}, {_rust_str_literal(repr(v))})," for v in float_cases
     )
     repr_str_rows = "\n".join(
-        f'        ({_rust_str_literal(v)}, {_rust_str_literal(repr(v))}),'
-        for v in str_cases
+        f"        ({_rust_str_literal(v)}, {_rust_str_literal(repr(v))})," for v in str_cases
     )
     repr_str_rows += "\n" + "\n".join(
-        f'        ({_rust_str_literal(value)}, {_rust_str_literal(expected)}),'
+        f"        ({_rust_str_literal(value)}, {_rust_str_literal(expected)}),"
         for value, expected in divergent_str_cases
     )
     fixed6_rows = "\n".join(
-        f'        ({_rust_f64_literal(v)}, {_rust_str_literal("%f" % v)}),'
-        for v in fixed6_cases
+        f"        ({_rust_f64_literal(v)}, {_rust_str_literal('%f' % v)})," for v in fixed6_cases
     )
 
     main_rs = f"""{helper}

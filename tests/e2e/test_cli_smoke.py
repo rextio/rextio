@@ -72,7 +72,9 @@ def add(a: int, b: int) -> int:
     generate = _run([str(rextio), "generate", str(project_root), "--fallback=cpython"], env=env)
     assert "Rextio generate" in generate.stdout
     assert (project_root / ".rextio" / "generated" / "rust" / "src" / "lib.rs").exists()
-    assert (project_root / ".rextio" / "generated" / "python" / "smoke_pkg" / "math_ops.py").exists()
+    assert (
+        project_root / ".rextio" / "generated" / "python" / "smoke_pkg" / "math_ops.py"
+    ).exists()
     assert not (project_root / ".rextio" / "build").exists()
 
     build = _run([str(rextio), "build", str(project_root), "--fallback=cpython"], env=env)

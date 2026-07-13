@@ -51,7 +51,9 @@ def load_plugin_registry(
     plugins' ``describe()``; when omitted (legacy callers), plugins describe
     against a default configuration.
     """
-    loaded = tuple(_load_entry_point_plugin(entry_point) for entry_point in _plugin_entry_points(entry_points))
+    loaded = tuple(
+        _load_entry_point_plugin(entry_point) for entry_point in _plugin_entry_points(entry_points)
+    )
     discovered = tuple(plugin for plugin, _provider in loaded)
     _validate_enabled_plugins(discovered, config.enabled)
     active_pairs = tuple(
@@ -341,9 +343,7 @@ def _load_entry_point_plugin(entry_point: Any) -> tuple[RextioPlugin, Any | None
 def _annotate_v2_plugin(plugin: RextioPlugin, provider: Any) -> RextioPlugin:
     provider_id = getattr(provider, "plugin_id", None)
     if provider_id is not None and provider_id != plugin.id:
-        raise PluginError(
-            f"plugin {plugin.id!r} declares a mismatched plugin_id {provider_id!r}"
-        )
+        raise PluginError(f"plugin {plugin.id!r} declares a mismatched plugin_id {provider_id!r}")
     api_version = getattr(provider, "api_version", None)
     if not isinstance(api_version, str) or not api_version:
         raise PluginError(f"plugin {plugin.id!r} must declare a plugin-API api_version string")
@@ -433,7 +433,9 @@ def _parse_plugin_metadata(
         )
     source_language = _optional_string(data, "source_language", "python").lower()
     if source_language != "python":
-        raise PluginError(f"unsupported plugin source_language for {plugin_id!r}: {source_language!r}")
+        raise PluginError(
+            f"unsupported plugin source_language for {plugin_id!r}: {source_language!r}"
+        )
     if "rules" in data:
         warnings.warn(
             f"Rextio plugin {plugin_id!r} (entry-point group {ENTRY_POINT_GROUP!r}) "

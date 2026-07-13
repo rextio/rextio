@@ -32,4 +32,3 @@ def create_build_plan(analysis: ProjectAnalysis, fallback_backend: str) -> Build
         native=create_native_plan(analysis),
         fallback=create_fallback_plan(analysis, fallback_backend),
     )
-

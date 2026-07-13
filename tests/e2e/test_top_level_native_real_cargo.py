@@ -55,9 +55,7 @@ def read_total() -> int:
 
     assert exit_code == 0
     assert report["accepted_native_count"] == 1
-    assert report["plan"]["native"]["accepted_top_levels"] == [
-        "top_app.state.__rextio_top_level__"
-    ]
+    assert report["plan"]["native"]["accepted_top_levels"] == ["top_app.state.__rextio_top_level__"]
     assert report["native_build"]["status"] == "built"
     assert elided_fallback.exists()
     assert "while i < 5" not in elided_fallback.read_text(encoding="utf-8")

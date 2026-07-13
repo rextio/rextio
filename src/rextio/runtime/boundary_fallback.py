@@ -23,7 +23,9 @@ class _BoundaryFallbackState:
 _STATE = _BoundaryFallbackState()
 
 
-def boundary_fallback_threshold(default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD) -> int:
+def boundary_fallback_threshold(
+    default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+) -> int:
     """Return the effective boundary-fallback threshold."""
     raw_value = os.environ.get(THRESHOLD_ENV)
     if raw_value is None or raw_value == "":
@@ -37,7 +39,9 @@ def boundary_fallback_threshold(default_threshold: int = DEFAULT_BOUNDARY_FALLBA
     return value
 
 
-def boundary_fallback_disabled(default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD) -> bool:
+def boundary_fallback_disabled(
+    default_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+) -> bool:
     """Report whether boundary fallback is disabled."""
     return env_truthy(DISABLE_ENV) or boundary_fallback_threshold(default_threshold) == 0
 

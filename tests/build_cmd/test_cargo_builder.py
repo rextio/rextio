@@ -78,9 +78,7 @@ def test_cargo_build_receives_toolchain_environment(tmp_path, monkeypatch):
     result = build_native_extension_with_cargo(
         rust_dir,
         tmp_path / "python",
-        toolchain=ToolchainConfig(
-            cargo=str(cargo), rust_toolchain="1.83", python=str(fake_python)
-        ),
+        toolchain=ToolchainConfig(cargo=str(cargo), rust_toolchain="1.83", python=str(fake_python)),
     )
 
     assert result.status == "failed"  # the fake exits 1; the env dump is the point
@@ -101,9 +99,7 @@ def test_cargo_build_defaults_pyo3_python_to_build_interpreter(tmp_path, monkeyp
     bin_dir.mkdir()
     cargo = bin_dir / "cargo"
     cargo.write_text(
-        "#!/bin/sh\n"
-        f'echo "PYO3_PYTHON=$PYO3_PYTHON" > "{env_dump}"\n'
-        "exit 1\n",
+        f'#!/bin/sh\necho "PYO3_PYTHON=$PYO3_PYTHON" > "{env_dump}"\nexit 1\n',
         encoding="utf-8",
     )
     cargo.chmod(cargo.stat().st_mode | stat.S_IEXEC)

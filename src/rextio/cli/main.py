@@ -108,7 +108,9 @@ def build_parser() -> argparse.ArgumentParser:
     capabilities_parser.set_defaults(handler=capabilities_cmd.run)
 
     build_parser_ = subparsers.add_parser("build", help="Build a hybrid artifact.")
-    build_parser_.add_argument("project_root", nargs="?", default=".", help="Project root to build.")
+    build_parser_.add_argument(
+        "project_root", nargs="?", default=".", help="Project root to build."
+    )
     build_parser_.add_argument(
         "--native-backend",
         "--target-language",
@@ -424,7 +426,11 @@ def _add_target_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_toolchain_options(parser: argparse.ArgumentParser) -> None:
-    for tool, env in (("cargo", "REXTIO_CARGO"), ("maturin", "REXTIO_MATURIN"), ("nuitka", "REXTIO_NUITKA")):
+    for tool, env in (
+        ("cargo", "REXTIO_CARGO"),
+        ("maturin", "REXTIO_MATURIN"),
+        ("nuitka", "REXTIO_NUITKA"),
+    ):
         parser.add_argument(
             f"--{tool}",
             default=None,
@@ -460,7 +466,7 @@ def _add_toolchain_options(parser: argparse.ArgumentParser) -> None:
             f"--{tool}-version",
             default=None,
             help=(
-                f"Verification pin for the resolved {tool} (\"X.Y\" prefix, or ==/>= "
+                f'Verification pin for the resolved {tool} ("X.Y" prefix, or ==/>= '
                 f"specifier). Verifies only - never installs. Overrides {env} and "
                 f"[toolchain] {tool}_version."
             ),

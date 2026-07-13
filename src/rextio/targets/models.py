@@ -35,4 +35,3 @@ class TargetSpec:
 def normalize_target_language(value: str) -> str:
     """Normalize a target language string (strip + lowercase)."""
     return value.strip().lower()
-

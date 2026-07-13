@@ -77,7 +77,11 @@ def scaled_total(xs: list[int]) -> int:
 
     monkeypatch.setenv("REXTIO_NATIVE_MODE", "native")
     monkeypatch.syspath_prepend(str(tmp_path / ".rextio" / "build" / "python"))
-    for module_name in ("_rextio_native", "overflow_app.math_ops", "overflow_app._fallback_math_ops"):
+    for module_name in (
+        "_rextio_native",
+        "overflow_app.math_ops",
+        "overflow_app._fallback_math_ops",
+    ):
         sys.modules.pop(module_name, None)
     importlib.invalidate_caches()
     module = importlib.import_module("overflow_app.math_ops")

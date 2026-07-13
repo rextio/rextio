@@ -15,9 +15,7 @@ def _install_fake_native(monkeypatch, functions: dict[str, Callable]) -> None:
             return functions.get(function_name)
         return None
 
-    monkeypatch.setattr(
-        "rextio.runtime.native_loader.load_native_function", _fake_loader
-    )
+    monkeypatch.setattr("rextio.runtime.native_loader.load_native_function", _fake_loader)
 
 
 def test_bench_compares_fallback_and_native(

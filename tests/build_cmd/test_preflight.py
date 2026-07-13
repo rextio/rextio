@@ -23,7 +23,9 @@ def test_cargo_required_even_when_only_maturin_is_present(
 ) -> None:
     # maturin wraps cargo/rustc, so cargo is still required.
     monkeypatch.setattr(
-        toolchain_mod.shutil, "which", lambda name: "/usr/bin/maturin" if name == "maturin" else None
+        toolchain_mod.shutil,
+        "which",
+        lambda name: "/usr/bin/maturin" if name == "maturin" else None,
     )
     missing = preflight.missing_build_tools(native_backend="rust")
     assert [tool.name for tool in missing] == ["Rust toolchain"]
@@ -84,4 +86,7 @@ def test_nuitka_version_error_reads_stderr_and_prefixed_lines(tmp_path) -> None:
     assert stderr_error is not None and "too old" in stderr_error
     prefixed_error = nuitka_version_error([_fake_nuitka_printing(tmp_path, "Nuitka 1.9.7")])
     assert prefixed_error is not None and "too old" in prefixed_error
-    assert nuitka_version_error([_fake_nuitka_printing(tmp_path, "Nuitka 2.4.8", to_stderr=True)]) is None
+    assert (
+        nuitka_version_error([_fake_nuitka_printing(tmp_path, "Nuitka 2.4.8", to_stderr=True)])
+        is None
+    )

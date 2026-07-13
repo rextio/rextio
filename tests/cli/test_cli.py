@@ -24,7 +24,8 @@ def _installed_rextio_filters() -> list[tuple]:
     return [
         f
         for f in warnings.filters
-        if f[2] is DeprecationWarning and getattr(f[3], "pattern", f[3]) == _REXTIO_DEPRECATION_MODULE
+        if f[2] is DeprecationWarning
+        and getattr(f[3], "pattern", f[3]) == _REXTIO_DEPRECATION_MODULE
     ]
 
 
@@ -60,7 +61,9 @@ def test_main_surfaces_plugin_rules_deprecation(
         # the rextio "default" filter, which must win over this ignore for rextio modules.
         warnings.resetwarnings()
         warnings.simplefilter("ignore", DeprecationWarning)
-        monkeypatch.setattr(warnings, "showwarning", lambda message, *a, **k: shown.append(str(message)))
+        monkeypatch.setattr(
+            warnings, "showwarning", lambda message, *a, **k: shown.append(str(message))
+        )
         exit_code = main(["check", str(tmp_path), "--no-report"])
 
     assert exit_code == 0
@@ -110,14 +113,22 @@ def test_deprecation_filter_presence_handles_str_and_none_module_elements() -> N
         filters = cast("list[Any]", warnings.filters)
         filters[:] = [
             ("default", None, DeprecationWarning, None, 0),  # module is None
-            ("default", None, DeprecationWarning, "rextio_extra", 0),  # module is a non-matching str
+            (
+                "default",
+                None,
+                DeprecationWarning,
+                "rextio_extra",
+                0,
+            ),  # module is a non-matching str
         ]
         assert _rextio_deprecation_filter_present() is False
         filters.insert(0, ("default", None, DeprecationWarning, _REXTIO_DEPRECATION_MODULE, 0))
         assert _rextio_deprecation_filter_present() is True
 
 
-@pytest.mark.parametrize("bad", ["inf", "nan", "0", "-1", "abc", str(MAX_BUILD_TIMEOUT_SECONDS + 1)])
+@pytest.mark.parametrize(
+    "bad", ["inf", "nan", "0", "-1", "abc", str(MAX_BUILD_TIMEOUT_SECONDS + 1)]
+)
 def test_build_timeout_cli_validator_rejects(bad: str) -> None:
     # The --build-timeout argparse type must reject inf/nan/non-positive/over-cap.
     with pytest.raises(argparse.ArgumentTypeError):
@@ -125,7 +136,9 @@ def test_build_timeout_cli_validator_rejects(bad: str) -> None:
 
 
 def test_build_timeout_cli_validator_accepts_valid_value() -> None:
-    assert _positive_number(str(DEFAULT_BUILD_TIMEOUT_SECONDS)) == float(DEFAULT_BUILD_TIMEOUT_SECONDS)
+    assert _positive_number(str(DEFAULT_BUILD_TIMEOUT_SECONDS)) == float(
+        DEFAULT_BUILD_TIMEOUT_SECONDS
+    )
     assert _positive_number(str(MAX_BUILD_TIMEOUT_SECONDS)) == float(MAX_BUILD_TIMEOUT_SECONDS)
 
 
@@ -162,7 +175,9 @@ def add(a: int, b: int) -> int:
 
     captured = capsys.readouterr()
     data = json.loads(captured.out)
-    report = json.loads((tmp_path / ".rextio" / "reports" / "check.json").read_text(encoding="utf-8"))
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "check.json").read_text(encoding="utf-8")
+    )
 
     assert exit_code == 0
     assert data["accepted_native"] == ["app.add"]

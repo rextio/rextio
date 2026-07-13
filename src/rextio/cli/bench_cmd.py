@@ -41,8 +41,7 @@ def write_bench_report(project_root: Path, result: BenchResult) -> Path:
     reports_dir.mkdir(parents=True, exist_ok=True)
     report_path = reports_dir / "bench.json"
     report_path.write_text(
-        json.dumps({"status": "benchmarked", **result.to_dict()}, indent=2, sort_keys=True)
-        + "\n",
+        json.dumps({"status": "benchmarked", **result.to_dict()}, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return report_path

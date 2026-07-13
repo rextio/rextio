@@ -283,7 +283,9 @@ def type_from_annotation(node: ast.AST | None) -> RxtType:
         if node.value.id == "set":
             return RxtSet(type_from_annotation(node.slice))
         if node.value.id == "tuple":
-            return RxtTuple(tuple(type_from_annotation(item) for item in _tuple_slice_items(node.slice)))
+            return RxtTuple(
+                tuple(type_from_annotation(item) for item in _tuple_slice_items(node.slice))
+            )
         if node.value.id == "dict":
             items = _tuple_slice_items(node.slice)
             if len(items) == 2:
@@ -299,7 +301,10 @@ def type_from_string(value: str) -> RxtType:
 
 def _optional_inner(node: ast.AST) -> ast.AST | None:
     """Return the inner annotation of an ``Optional[...]`` / ``X | None``, else None."""
-    if isinstance(node, ast.Subscript) and _annotation_dotted_name(node.value) in {"Optional", "typing.Optional"}:
+    if isinstance(node, ast.Subscript) and _annotation_dotted_name(node.value) in {
+        "Optional",
+        "typing.Optional",
+    }:
         return node.slice
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         left_is_none = _is_none_annotation(node.left)
@@ -313,9 +318,8 @@ def _optional_inner(node: ast.AST) -> ast.AST | None:
 
 def _is_none_annotation(node: ast.AST) -> bool:
     """Report whether the annotation node denotes ``None``."""
-    return (
-        (isinstance(node, ast.Name) and node.id == "None")
-        or (isinstance(node, ast.Constant) and node.value is None)
+    return (isinstance(node, ast.Name) and node.id == "None") or (
+        isinstance(node, ast.Constant) and node.value is None
     )
 
 

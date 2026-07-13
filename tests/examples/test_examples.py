@@ -25,9 +25,7 @@ def test_pure_math_example_has_required_native_candidates() -> None:
 
 
 def test_pure_math_readme_documents_benchmark_flow() -> None:
-    readme = (REPO_ROOT / "examples" / "pure_math" / "README.md").read_text(
-        encoding="utf-8"
-    )
+    readme = (REPO_ROOT / "examples" / "pure_math" / "README.md").read_text(encoding="utf-8")
 
     assert "rextio bench pure_math.math_ops.sum_squares" in readme
     assert "speedup ratio" in readme
@@ -92,9 +90,7 @@ def test_examples_build_and_import_from_hybrid_artifacts(
 
         capsys.readouterr()
         report = json.loads(
-            (project_root / ".rextio" / "reports" / "build.json").read_text(
-                encoding="utf-8"
-            )
+            (project_root / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
         )
         assert exit_code == 0
         assert report["status"] == "built"

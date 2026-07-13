@@ -14,6 +14,7 @@ import ast
 from rextio.analyzer.native_marker import dotted_name
 from rextio.capabilities import DICT_KEY_TYPES, JSON_VALUE_TYPES, SET_ITEM_TYPES
 
+
 def _is_list_type(value: str | None) -> bool:
     return value is not None and value.startswith("list[") and value.endswith("]")
 
@@ -38,7 +39,10 @@ def _is_supported_dict_value_type(value: str) -> bool:
         item_type = _list_item_type(value)
         return item_type is not None and _is_supported_list_item_type(item_type)
     if value is not None and _is_tuple_type(value):
-        return all(item_type in {"int", "float", "bool", "str", "bytes"} for item_type in _tuple_item_types(value))
+        return all(
+            item_type in {"int", "float", "bool", "str", "bytes"}
+            for item_type in _tuple_item_types(value)
+        )
     if value is not None and _is_dict_type(value):
         key_type, value_type = _dict_item_types(value)
         return (
@@ -59,7 +63,10 @@ def _is_supported_signature_type(value: str) -> bool:
         item_type = _list_item_type(value)
         return item_type is not None and _is_supported_list_item_type(item_type)
     if value is not None and _is_tuple_type(value):
-        return all(item_type in {"int", "float", "bool", "str", "bytes"} for item_type in _tuple_item_types(value))
+        return all(
+            item_type in {"int", "float", "bool", "str", "bytes"}
+            for item_type in _tuple_item_types(value)
+        )
     if value is not None and _is_dict_type(value):
         key_type, value_type = _dict_item_types(value)
         return (
@@ -160,7 +167,11 @@ def _split_type_args(value: str) -> list[str]:
 
 
 def _constant_int(node: ast.AST) -> int | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+    if (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, int)
+        and not isinstance(node.value, bool)
+    ):
         return node.value
     return None
 
@@ -168,7 +179,11 @@ def _constant_int(node: ast.AST) -> int | None:
 def _mutated_collection_names(node: ast.FunctionDef) -> set[str]:
     names: set[str] = set()
     for child in ast.walk(node):
-        if isinstance(child, ast.Call) and _is_append_call(child) and isinstance(child.func, ast.Attribute):
+        if (
+            isinstance(child, ast.Call)
+            and _is_append_call(child)
+            and isinstance(child.func, ast.Attribute)
+        ):
             receiver = child.func.value
             if isinstance(receiver, ast.Name):
                 names.add(receiver.id)

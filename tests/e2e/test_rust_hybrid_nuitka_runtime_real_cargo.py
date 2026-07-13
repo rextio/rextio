@@ -39,7 +39,9 @@ def main(argv: list[str]) -> int:
             "--hybrid-runtime=nuitka",
         ]
     )
-    report = json.loads((tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8"))
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
     executable = report["executable_build"]
 
     if shutil.which("nuitka") is None:

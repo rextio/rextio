@@ -9,7 +9,11 @@ from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.build.orchestrator import generate_source_artifact
-from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
+from rextio.cli.config_overrides import (
+    key_value_overrides,
+    package_policy_overrides,
+    tuple_overrides,
+)
 from rextio.cli.check_cmd import write_check_report
 from rextio.cli.reporter import Reporter
 from rextio.plugins.loader import PluginError
@@ -113,7 +117,9 @@ def run(args: Namespace) -> int:
     lines.append(f"  active plugins: {len(target_plan.plugins.active)}")
     lines.append(f"  fallback: {fallback}")
     lines.append(f"  boundary fallback threshold: {config.build.fallback_threshold}")
-    lines.append(f"  experimental helper embedding: {'enabled' if config.embedding.enabled else 'disabled'}")
+    lines.append(
+        f"  experimental helper embedding: {'enabled' if config.embedding.enabled else 'disabled'}"
+    )
     lines.append(f"  accepted native functions: {result.accepted_native_count}")
     lines.append(f"  rejected native functions: {result.rejected_native_count}")
     lines.append(f"  embedding candidates: {len(result.plan.native.embedded_functions)}")

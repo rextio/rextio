@@ -1,8 +1,10 @@
 # Feature stability
 
-Rextio **0.1.0** is an alpha-stage release. This page is the source of truth for which features are
-covered by the [versioning policy](versioning.md)'s stability promises and which are
-experimental (correct-but-incomplete, and free to change).
+Rextio **0.1.2** is an alpha-stage package version (release candidate on this
+branch; latest published PyPI release is **0.1.1**). This page is the source of
+truth for which features are covered by the [versioning policy](versioning.md)'s
+stability promises and which are experimental (correct-but-incomplete, and free
+to change).
 
 Tiers:
 
@@ -54,7 +56,7 @@ Tiers:
 | Rust-importable crate artifact | Experimental | `--rust-importable` / `--rust-crate-name`. Exposes accepted direct-Rust functions as a Cargo path dependency. |
 | Plugins | Experimental | Entry-point plugins declare target compatibility and the external packages they cover. Protocol v2 (see [the tooling contract](specs/tooling-contract.md)) lets a plugin additionally *self-describe* declarative rule records via `describe()`/`covers()` — surfaced in `rextio capabilities` with `RXTP-<PLUGIN>-NNN` diagnostic namespacing, and enabling the informational RXT091 plugin-lowerable hint on accelerator-decorated functions. A plugin API 1.1+ plugin may also lower covered constructs through the claim/lower hooks; 1.2 adds version-gated keyword/literal metadata, fusion expression trees, and `operand_mode` direct|leaves ([plugin lowering spec](specs/plugin-lowering.md)). API 1.1 providers keep legacy keyword-not-offered semantics. The analyzer decides which sites are offered and remains the acceptance authority. |
 | Tooling-contract JSON fields | Experimental | `rextio check --format json` (and `.rextio/reports/check.json`) carries a top-level `contract_version` (currently `2.0.0`) plus per-function `route`, `native_status`, and `rejection_codes`, as specified in [the tooling contract](specs/tooling-contract.md). Contract `2.0.0` broke `RXT000` column semantics (now 0-based UTF-8 bytes like every other diagnostic); the shape may still be refined until the contract is promoted to stable. |
-| `rextio capabilities` command | Experimental | Prints the config-resolved capability manifest from [the tooling contract](specs/tooling-contract.md): the supported type matrix, the core rule records (constraint + diagnostic code + guidance per rule), a `config_fingerprint` for consumer caching, and the active plugins. Core rules only until plugin protocol v2 lands; introspection-only (no source analysis, no report files). |
+| `rextio capabilities` command | Experimental | Prints the config-resolved capability manifest from [the tooling contract](specs/tooling-contract.md): the supported type matrix, core and active-plugin rule records (constraint + diagnostic code + guidance per rule), a `config_fingerprint` for consumer caching, and the active plugins. Introspection-only (no source analysis, no report files). |
 
 ## Planned (not implemented)
 

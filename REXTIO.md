@@ -1,14 +1,26 @@
-# Rextio 0.1.1 Notes
+# Rextio 0.1.2 Notes
 
 > **Security:** Rextio analyzes source, generates Rust, and runs external build
 > tools — treat it like a compiler and only build trusted projects. See
 > [`SECURITY.md`](./SECURITY.md) for the threat model and protections.
 
-Rextio 0.1.1 adds the machine-readable tooling contract (`rextio
+> **Release status:** Package version **0.1.2** on this branch is a **release
+> candidate** — not tagged and not uploaded to PyPI. The latest published
+> package remains **0.1.1**. Tooling contract **2.0.0** ships with this line;
+> dual-map **rextio-lsp 0.1.1** must deploy first or simultaneously — core
+> must not publish alone first (see
+> [docs/specs/tooling-contract.md](./docs/specs/tooling-contract.md)).
+
+Rextio 0.1.1 added the machine-readable tooling contract (`rextio
 capabilities`, route/status fields in `rextio check --format json`) and the
-plugin protocol that lets plugins describe and lower covered constructs (see
-[docs/specs/](./docs/README.md) and [CHANGELOG.md](./CHANGELOG.md)); the core
-workflow below is unchanged from 0.1.0.
+plugin protocol that lets plugins describe and lower covered constructs.
+**0.1.2** (this RC) advances the tooling contract to **2.0.0** (RXT000
+columns are 0-based UTF-8 bytes like every other diagnostic) and ships
+backward-compatible plugin API **1.2** (static literal/ordered keyword
+metadata, structured `ClaimExpr` trees, leaves-mode lowering for downstream
+axis/fusion plugins). See [docs/specs/](./docs/README.md) and
+[CHANGELOG.md](./CHANGELOG.md); the core workflow below is unchanged from
+0.1.0.
 
 Rextio proves a focused hybrid build workflow:
 

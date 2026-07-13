@@ -5,10 +5,12 @@
 **Compiles eligible typed Python functions to Rust and keeps everything
 else on the Python fallback.**
 
-Rextio 0.1.1 is an alpha-stage local build tool for Python projects. It finds
-typed Python functions that can be safely lowered to Rust, compiles them
-ahead of time with PyO3, and keeps everything else running through generated
-Python fallback code - same imports, same behavior.
+Rextio 0.1.2 is an alpha-stage local build tool for Python projects (release
+candidate on this branch — **not yet published** to PyPI; the latest released
+package is **0.1.1**). It finds typed Python functions that can be safely
+lowered to Rust, compiles them ahead of time with PyO3, and keeps everything
+else running through generated Python fallback code - same imports, same
+behavior.
 
 ```text
 typed Python project
@@ -284,7 +286,7 @@ Common settings:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Rust is the only implemented native target in 0.1.1.
+Rust is the only implemented native target in 0.1.2.
 
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry
@@ -310,11 +312,17 @@ default_external_policy = "fallback"
 The supported package policies are `fallback`, `analyze`, `try-native`, and
 `plugin`. Since 0.1.1 a plugin can also describe and *lower* covered
 constructs (plugin API 1.1 — see
-[the plugin lowering spec](docs/specs/plugin-lowering.md)); the first-party
-[rextio-numpy](https://github.com/rextio/rextio-numpy) plugin implements an
-initial certified float64 1-D surface. General dependency lowering is not
-bundled; `try-native` is an explicit planning policy and still falls back
-when no safe direct lowering exists.
+[the plugin lowering spec](docs/specs/plugin-lowering.md)); 0.1.2 adds
+backward-compatible plugin API **1.2** static literal/ordered keyword
+metadata, structured `ClaimExpr` trees, and leaves-mode lowering used by
+axis/fusion plugins. The first-party
+[rextio-numpy](https://github.com/rextio/rextio-numpy) plugin is installed
+separately (core has no reverse dependency on it): **PyPI 0.1.0** is the
+published initial certified float64 1-D surface; the **untagged 0.1.1 RC**
+expands that surface with literal-axis/fusion work and requires core
+**>= 0.1.2** — do not treat either line as the other's release state.
+General dependency lowering is not bundled; `try-native` is an explicit
+planning policy and still falls back when no safe direct lowering exists.
 
 ## Native Selection
 
@@ -397,7 +405,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## Supported Direct Rust Subset
 
-Rextio 0.1.1 supports a deliberately small subset. This is the code
+Rextio 0.1.2 supports a deliberately small subset. This is the code
 that runs as native Rust.
 
 Supported types include:
@@ -553,9 +561,13 @@ code and Numba for NumPy/array kernels, and note that very small functions
 lose to call-boundary costs under any accelerator.
 
 The first-party [rextio-numpy](https://github.com/rextio/rextio-numpy)
-plugin translates an initial certified NumPy surface (float64 1-D
-element-wise arithmetic, `numpy.dot`, whole-array `sum`/`mean`) into
-AOT-compiled native Rust, so NumPy code now has two routes - Rextio-plugin
+plugin translates covered NumPy into AOT-compiled native Rust. **Published
+rextio-numpy 0.1.0** covers the initial certified float64 1-D surface
+(element-wise arithmetic, `numpy.dot`, whole-array `sum`/`mean`). The
+**untagged rextio-numpy 0.1.1 RC** expands that surface with
+literal-axis/fusion lowering that needs core plugin API 1.2
+(**core >= 0.1.2**); it is not the published package and must not be
+confused with 0.1.0. NumPy code therefore has two routes - Rextio-plugin
 AOT compilation for the covered surface, or Numba JIT inside the Python
 fallback. When both apply, an explicit `@numba.*` decorator wins and the
 analyzer emits an informational RXT091 note; broader guidance on choosing

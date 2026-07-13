@@ -62,7 +62,7 @@ PLUGIN_DIAGNOSTIC_CODE_PATTERN = re.compile(r"^RXTP-([A-Z0-9]+)-\d{3}$")
 
 def plugin_code_segment(plugin_id: str) -> str:
     """Return the ``<PLUGIN>`` segment plugin diagnostic codes must carry."""
-    stem = plugin_id[len("rextio-"):] if plugin_id.startswith("rextio-") else plugin_id
+    stem = plugin_id[len("rextio-") :] if plugin_id.startswith("rextio-") else plugin_id
     segment = re.sub(r"[^A-Z0-9]", "", stem.upper())
     if not segment:
         raise ValueError(
@@ -264,13 +264,9 @@ class ClaimLiteral:
         if isinstance(self.value, tuple):
             for item in self.value:
                 if isinstance(item, bool) or not isinstance(item, int):
-                    raise ValueError(
-                        "int_tuple ClaimLiteral values must contain only ints"
-                    )
+                    raise ValueError("int_tuple ClaimLiteral values must contain only ints")
             return
-        raise ValueError(
-            f"unsupported ClaimLiteral value type: {type(self.value).__name__}"
-        )
+        raise ValueError(f"unsupported ClaimLiteral value type: {type(self.value).__name__}")
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this literal."""
@@ -604,8 +600,7 @@ class CrateDependency:
         for feature in self.features:
             if CRATE_FEATURE_PATTERN.match(feature) is None:
                 raise ValueError(
-                    f"crate dependency {self.name!r} declares an invalid feature "
-                    f"name {feature!r}"
+                    f"crate dependency {self.name!r} declares an invalid feature name {feature!r}"
                 )
 
     def to_dict(self) -> dict[str, object]:

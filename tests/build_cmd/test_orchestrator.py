@@ -358,9 +358,9 @@ def add(a: int, b: int) -> int:
     report = json.loads(
         (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
-    wrapper_source = (
-        tmp_path / ".rextio" / "build" / "python" / "app.py"
-    ).read_text(encoding="utf-8")
+    wrapper_source = (tmp_path / ".rextio" / "build" / "python" / "app.py").read_text(
+        encoding="utf-8"
+    )
 
     assert exit_code == 0
     assert "boundary fallback threshold: 4" in captured.out
@@ -411,9 +411,9 @@ def add(a: int, b: int) -> int:
         (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
     executable = tmp_path / "dist" / "config-tool.pyz"
-    wrapper_source = (
-        tmp_path / ".rextio" / "build" / "python" / "demo_cli" / "app.py"
-    ).read_text(encoding="utf-8")
+    wrapper_source = (tmp_path / ".rextio" / "build" / "python" / "demo_cli" / "app.py").read_text(
+        encoding="utf-8"
+    )
 
     assert exit_code == 0
     assert "boundary fallback threshold: 6" in captured.out
@@ -1270,9 +1270,7 @@ def main(argv: list[str]) -> int:
     analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
 
     with pytest.raises(RustCodegenError, match="shadows a name the fallback dispatcher"):
-        orchestrator._write_hybrid_runtime(
-            tmp_path / "out.runtime", analysis, {"json.parse"}
-        )
+        orchestrator._write_hybrid_runtime(tmp_path / "out.runtime", analysis, {"json.parse"})
 
 
 def test_entry_reachable_graph_captures_transitive_delegation(tmp_path: Path) -> None:
@@ -1545,9 +1543,7 @@ def test_build_rejects_pre_2_nuitka_for_executable_backend_before_analysis(
 ) -> None:
     # --executable-backend=nuitka fails as fast as --fallback=nuitka does.
     _old_nuitka_on_path(tmp_path, monkeypatch)
-    (tmp_path / "app.py").write_text(
-        "def main() -> int:\n    return 0\n", encoding="utf-8"
-    )
+    (tmp_path / "app.py").write_text("def main() -> int:\n    return 0\n", encoding="utf-8")
 
     exit_code = main(
         [
@@ -1584,9 +1580,7 @@ def test_hybrid_runtime_with_old_nuitka_is_not_gated_before_analysis(
     monkeypatch.setenv(
         "PATH", f"{bin_dir}{os.pathsep}{fake_cargo.parent}{os.pathsep}{os.environ.get('PATH', '')}"
     )
-    (tmp_path / "app.py").write_text(
-        "def main() -> int:\n    return 0\n", encoding="utf-8"
-    )
+    (tmp_path / "app.py").write_text("def main() -> int:\n    return 0\n", encoding="utf-8")
 
     # The exit code is deliberately not pinned: this test proves only that
     # the pre-analysis gate does not fire; the build may still fail later
@@ -1619,9 +1613,7 @@ def test_nuitka_backend_without_entrypoint_is_not_gated(
     # Untyped on purpose: no native candidates, so requires_native_build()
     # is False, the orchestrator skips the cargo build, and the only way to
     # fail early would be the (unwanted) version gate.
-    (tmp_path / "app.py").write_text(
-        "def add(a, b):\n    return a + b\n", encoding="utf-8"
-    )
+    (tmp_path / "app.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
 
     main(["build", str(tmp_path), "--fallback=cpython", "--executable-backend=nuitka"])
 
@@ -1682,13 +1674,9 @@ def test_nuitka_version_pin_mismatch_fails_the_gate(
     )
     nuitka.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
-    (tmp_path / "app.py").write_text(
-        "def add(a, b):\n    return a + b\n", encoding="utf-8"
-    )
+    (tmp_path / "app.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
 
-    exit_code = main(
-        ["build", str(tmp_path), "--fallback=nuitka", "--nuitka-version=2.6"]
-    )
+    exit_code = main(["build", str(tmp_path), "--fallback=nuitka", "--nuitka-version=2.6"])
 
     captured = capsys.readouterr()
     assert exit_code == 1
@@ -1749,9 +1737,7 @@ def test_cargo_pin_is_not_probed_for_pure_python_builds(
     # even when cargo is entirely absent.
     monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
     (tmp_path / "empty-bin").mkdir()
-    (tmp_path / "app.py").write_text(
-        "def add(a, b):\n    return a + b\n", encoding="utf-8"
-    )
+    (tmp_path / "app.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
 
     exit_code = main(["build", str(tmp_path), "--cargo-version=1.85"])
 

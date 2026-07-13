@@ -227,9 +227,7 @@ def test_build_timeout_seconds_precedence(tmp_path: Path) -> None:
 def test_build_timeout_seconds_rejects_non_positive(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"REXTIO_BUILD_TIMEOUT"):
         load_config(tmp_path, environ={"REXTIO_BUILD_TIMEOUT": "0"})
-    (tmp_path / "rextio.toml").write_text(
-        "[build]\nbuild_timeout_seconds = -5\n", encoding="utf-8"
-    )
+    (tmp_path / "rextio.toml").write_text("[build]\nbuild_timeout_seconds = -5\n", encoding="utf-8")
     with pytest.raises(ConfigError, match=r"build_timeout_seconds"):
         load_config(tmp_path)
 
@@ -435,8 +433,6 @@ native_marker = "always"
 
     with pytest.raises(ConfigError, match=r"native_marker"):
         load_config(tmp_path)
-
-
 
 
 def test_load_config_ignores_unknown_environment_variables(tmp_path: Path) -> None:

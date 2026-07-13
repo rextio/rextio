@@ -35,7 +35,11 @@ def is_embedding_candidate(
         return False, "embedding candidates currently require int or float arguments"
     if any(arg_type != return_type for arg_type in arg_types.values()):
         return False, "embedding candidates currently require arguments to match the return type"
-    if len(node.body) != 1 or not isinstance(node.body[0], ast.Return) or node.body[0].value is None:
+    if (
+        len(node.body) != 1
+        or not isinstance(node.body[0], ast.Return)
+        or node.body[0].value is None
+    ):
         return False, "embedding candidates currently require a single return expression"
     if not _is_supported_expr(node.body[0].value, set(arg_types), return_type):
         return False, "embedding candidates currently support only scalar arithmetic expressions"
@@ -87,10 +91,11 @@ def _is_supported_expr(node: ast.AST, names: set[str], return_type: str) -> bool
         # raises ZeroDivisionError.
         if return_type == "int" and not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Mod)):
             return False
-        if return_type == "float" and not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+        if return_type == "float" and not isinstance(
+            node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)
+        ):
             return False
-        return (
-            _is_supported_expr(node.left, names, return_type)
-            and _is_supported_expr(node.right, names, return_type)
+        return _is_supported_expr(node.left, names, return_type) and _is_supported_expr(
+            node.right, names, return_type
         )
     return False

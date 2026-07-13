@@ -12,7 +12,9 @@ def key_value_overrides(values: list[tuple[str, str]] | None) -> dict[str, str] 
     return dict(values)
 
 
-def package_policy_overrides(values: list[tuple[str, str]] | None) -> dict[str, dict[str, object]] | None:
+def package_policy_overrides(
+    values: list[tuple[str, str]] | None,
+) -> dict[str, dict[str, object]] | None:
     """Convert repeated PACKAGE=POLICY flags into a per-package override mapping, or None."""
     if values is None:
         return None

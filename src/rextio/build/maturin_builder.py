@@ -83,8 +83,7 @@ def build_native_extension_with_maturin(
             status="failed",
             tool="maturin",
             message=(
-                "RXT060 Build failed after maturin completed. "
-                "Cause: generated wheel was not found."
+                "RXT060 Build failed after maturin completed. Cause: generated wheel was not found."
             ),
             command=command,
             stdout=_tail(completed.stdout),
@@ -139,7 +138,9 @@ def _extract_native_extension(wheel: Path, python_dir: Path) -> Path | None:
 
 
 def _is_native_extension(filename: str) -> bool:
-    return filename.startswith("_rextio_native") and filename.endswith((".so", ".pyd", ".dll", ".dylib"))
+    return filename.startswith("_rextio_native") and filename.endswith(
+        (".so", ".pyd", ".dll", ".dylib")
+    )
 
 
 def _tail(value: str, limit: int = 4000) -> str:

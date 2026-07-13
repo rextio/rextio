@@ -1,6 +1,48 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 — 2026-07-13 (release candidate)
+
+**Release candidate only.** Package version is `0.1.2` on the core `0.1.2`
+branch; this line is **not tagged, not uploaded to PyPI, and not a published
+release**. The latest released package on PyPI remains **0.1.1** (2026-07-12).
+Do not treat `pip install rextio` as installing this RC until a formal 0.1.2
+publish.
+
+**Release-order gate (tooling contract 2.0):** dual-map **rextio-lsp 0.1.1**
+(contract majors `{1, 2}`) must be deployed **first or simultaneously** with
+core 0.1.2. Core **must not** publish alone first: a contract-`2.0.0` producer
+against major-1-only LSP mis-pairs RXT000 columns. See
+`docs/specs/tooling-contract.md`. Core has no runtime dependency on
+`rextio-lsp` or `rextio-numpy`.
+
+### Tooling contract 2.0.0 (protocol)
+
+- **Breaking protocol change:** `contract_version` advances to `2.0.0`.
+  `RXT000` (syntax-error) diagnostic `column` is now a **0-based UTF-8 byte
+  offset** into the line, matching every other diagnostic and `ast.col_offset`.
+  Contract `1.x` (PyPI 0.1.1) left `RXT000.column` as CPython's 1-based Unicode
+  code-point `SyntaxError.offset`.
+- Major (not minor) so consumers that gate only on major 1 refuse the
+  unsupported path instead of silently mis-mapping RXT000. See
+  `docs/specs/tooling-contract.md` (positions, compatibility, release
+  ordering).
+
+### Plugin API 1.2 (backward-compatible)
+
+- Additive plugin API **1.2** on the same major as 1.1 (API 1.1 plugins keep
+  loading). Core advertises `PLUGIN_API_VERSION = "1.2"`.
+- **Static literal / ordered keyword metadata** on claim sites
+  (`operand_literals`, ordered `keywords`) for version-gated offers to API
+  ≥ 1.2 providers.
+- **Structured `ClaimExpr` trees** so plugins can reason about nested covered
+  expressions without seeing core IR.
+- **Leaves-mode lowering** (`operand_mode` `direct` | `leaves` with
+  `leaf_operands` on `LoweringContext`) for fusion-aware expression emission —
+  the Wave 2 surface that enables and is used by the already-implemented but
+  **untagged** rextio-numpy **0.1.1 RC** literal-axis / fusion work (not
+  published on PyPI; the published rextio-numpy line remains 0.1.0). API 1.1
+  providers retain legacy keyword-not-offered semantics and never receive
+  leaves-mode data. See `docs/specs/plugin-lowering.md`.
 
 ### Documentation
 
@@ -15,21 +57,6 @@
   direct-native `main` return semantics (compile-time `int`→`i64` lowering,
   then the same `i64`→`i32` / platform truncation). See README and
   `docs/unsupported-features.md`.
-
-### Tooling contract 2.0.0 (protocol, not a package release)
-
-- **Breaking protocol change:** `contract_version` advances to `2.0.0`.
-  `RXT000` (syntax-error) diagnostic `column` is now a **0-based UTF-8 byte
-  offset** into the line, matching every other diagnostic and `ast.col_offset`.
-  Contract `1.x` left `RXT000.column` as CPython's 1-based Unicode code-point
-  `SyntaxError.offset`.
-- Major (not minor) so consumers that gate only on major 1 refuse the
-  unsupported path instead of silently mis-mapping RXT000. See
-  `docs/specs/tooling-contract.md` (positions, compatibility, release
-  ordering). Recommended: ship dual-map rextio-lsp (majors `{1,2}`) before
-  this producer.
-- Package version remains unreleased on the `0.1.2` line; this entry is the
-  contract discriminator only.
 
 ## 0.1.1 — 2026-07-12
 
@@ -142,7 +169,7 @@ CPython-equivalent fallback instead of being mis-accelerated.
   honors when the int code is representable as signed `i64` (bool codes
   normalized to `0`/`1`; then cast to `i32` / platform status width — prefer
   `0..255`) instead of always exiting `1`. Python ints outside signed `i64`
-  are not CPython-equivalent on this path (see Unreleased documentation).
+  are not CPython-equivalent on this path (see 0.1.2 documentation).
 - Certification kit: dual-leg equivalence uses deep-copied arguments and sets
   the native/fallback env before import; strided (non-contiguous) arrays are
   certified for real rather than being silently flattened.

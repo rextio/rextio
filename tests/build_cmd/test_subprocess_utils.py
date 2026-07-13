@@ -51,9 +51,7 @@ def test_run_build_tool_terminates_the_whole_process_tree(tmp_path) -> None:
     # grandchild records its PID; after the timeout it must no longer be alive.
     pid_file = tmp_path / "grandchild.pid"
     grandchild = (
-        "import os, time; "
-        f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); "
-        "time.sleep(60)"
+        f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)"
     )
     parent = (
         "import subprocess, sys, time; "
@@ -200,7 +198,9 @@ def test_run_build_tool_timeout_is_bounded_when_a_grandchild_escapes_the_group(
                 pass
 
 
-@pytest.mark.skipif(os.name != "posix", reason="reaps the captured child via POSIX os.kill/os.waitpid")
+@pytest.mark.skipif(
+    os.name != "posix", reason="reaps the captured child via POSIX os.kill/os.waitpid"
+)
 def test_run_build_tool_forges_returncode_when_the_child_cannot_be_reaped(
     tmp_path, monkeypatch
 ) -> None:

@@ -474,7 +474,12 @@ class ProjectAnalysis:
     def native_candidates(self) -> list[FunctionAnalysis]:
         """All native-candidate functions across modules, sorted by qualname."""
         return sorted(
-            [function for module in self.modules for function in module.functions if function.is_native_candidate],
+            [
+                function
+                for module in self.modules
+                for function in module.functions
+                if function.is_native_candidate
+            ],
             key=lambda function: function.qualname,
         )
 
@@ -538,9 +543,7 @@ class ProjectAnalysis:
         and a project with embedding candidates but no accepted native produces no
         native artifact and must still build its pure-Python fallback.
         """
-        return bool(
-            self.accepted_native_functions or self.accepted_native_top_levels
-        )
+        return bool(self.accepted_native_functions or self.accepted_native_top_levels)
 
     @property
     def rejected_native_top_levels(self) -> list[TopLevelAnalysis]:

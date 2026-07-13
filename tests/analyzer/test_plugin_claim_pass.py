@@ -374,9 +374,10 @@ def fresh(a: F64Arr1, b: F64Arr1) -> F64Arr1:
     for name in ("identity", "renamed"):
         function = function_named(analysis, f"myapp.kernels.{name}")
         assert function.accepted is False, name
-        assert any(
-            "alias" in diagnostic.message for diagnostic in function.error_diagnostics
-        ), (name, function.diagnostics)
+        assert any("alias" in diagnostic.message for diagnostic in function.error_diagnostics), (
+            name,
+            function.diagnostics,
+        )
     fresh = function_named(analysis, "myapp.kernels.fresh")
     assert fresh.accepted is True
 
@@ -455,9 +456,10 @@ def cond_rebind_still_alias(a: F64Arr1, b: F64Arr1, flag: bool) -> F64Arr1:
     for name in rejected:
         function = function_named(analysis, f"myapp.kernels.{name}")
         assert function.accepted is False, name
-        assert any(
-            "alias" in diagnostic.message for diagnostic in function.error_diagnostics
-        ), (name, function.diagnostics)
+        assert any("alias" in diagnostic.message for diagnostic in function.error_diagnostics), (
+            name,
+            function.diagnostics,
+        )
     # Straight-line rebinding to a computed value clears alias status: both
     # legs bind a fresh object, so returning the name is legal.
     for name in ("rebound_param", "rebound_alias"):
@@ -494,8 +496,7 @@ def accumulate(a: F64Arr1, b: F64Arr1) -> float:
     function = function_named(analysis, "myapp.kernels.accumulate")
     assert function.accepted is False
     assert any(
-        "aliasing semantics" in diagnostic.message
-        for diagnostic in function.error_diagnostics
+        "aliasing semantics" in diagnostic.message for diagnostic in function.error_diagnostics
     ), function.diagnostics
 
 
@@ -569,12 +570,8 @@ def test_claim_cache_distinguishes_unresolved_operand_types(tmp_path: Path) -> N
     node = ast.parse("numpy.dot(a, b)").body[0].value
 
     unresolved = engine.claim_call(function, node, "numpy.dot", (None, F64_ARR1.key))
-    resolved = engine.claim_call(
-        function, node, "numpy.dot", (F64_ARR1.key, F64_ARR1.key)
-    )
-    cached = engine.claim_call(
-        function, node, "numpy.dot", (F64_ARR1.key, F64_ARR1.key)
-    )
+    resolved = engine.claim_call(function, node, "numpy.dot", (F64_ARR1.key, F64_ARR1.key))
+    cached = engine.claim_call(function, node, "numpy.dot", (F64_ARR1.key, F64_ARR1.key))
 
     assert unresolved == (False, None)
     assert resolved == (True, "float")
@@ -605,7 +602,10 @@ def test_two_plugins_types_in_one_signature_join_the_route(tmp_path: Path) -> No
         enabled=registry.enabled,
         discovered=registry.discovered,
         active=registry.active,
-        types=(*registry.types, PluginTypeBinding(plugin_id="rextio-other", plugin_type=other_type)),
+        types=(
+            *registry.types,
+            PluginTypeBinding(plugin_id="rextio-other", plugin_type=other_type),
+        ),
         providers=registry.providers,
     )
     write_module(

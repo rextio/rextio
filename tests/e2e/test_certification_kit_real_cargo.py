@@ -10,7 +10,7 @@ from rextio.plugins.testing import build_certification_project
 @pytest.fixture(scope="module")
 def certified_project(tmp_path_factory: pytest.TempPathFactory):
     root = tmp_path_factory.mktemp("certkit")
-    (root / "rextio.toml").write_text("[rust]\nbuild_tool = \"cargo\"\n", encoding="utf-8")
+    (root / "rextio.toml").write_text('[rust]\nbuild_tool = "cargo"\n', encoding="utf-8")
     source = root / "src" / "cert_app" / "mathy.py"
     source.parent.mkdir(parents=True)
     (source.parent / "__init__.py").write_text("", encoding="utf-8")

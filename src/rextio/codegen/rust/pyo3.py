@@ -12,9 +12,11 @@ def render_pyo3_module(
     extra_prelude: list[str] | None = None,
 ) -> str:
     """Render the PyO3 module registration wiring for the generated functions."""
-    exports = exported_functions if exported_functions is not None else [
-        rust_name for rust_name, _function_source in functions
-    ]
+    exports = (
+        exported_functions
+        if exported_functions is not None
+        else [rust_name for rust_name, _function_source in functions]
+    )
     lines = [
         GENERATED_HEADER,
         "",

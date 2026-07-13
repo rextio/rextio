@@ -3,10 +3,11 @@
 Thanks for your interest in Rextio. This guide covers the development setup, the
 quality gates your change must pass, and the conventions we follow.
 
-Rextio **0.1.0** is an alpha-stage release. The supported subset is intentionally small and the
-public surface is still moving; see [docs/stability.md](docs/stability.md) for what
-is stable versus experimental, and [docs/versioning.md](docs/versioning.md) for the
-versioning policy.
+Rextio **0.1.2** is an alpha-stage package version (release candidate on this
+branch; latest published PyPI release is **0.1.1**). The supported subset is
+intentionally small and the public surface is still moving; see
+[docs/stability.md](docs/stability.md) for what is stable versus experimental,
+and [docs/versioning.md](docs/versioning.md) for the versioning policy.
 
 ## Development setup
 

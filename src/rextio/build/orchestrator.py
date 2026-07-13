@@ -547,7 +547,11 @@ def _generate_and_build_rust_crate(
             ),
         )
     return build_importable_rust_crate(
-        layout.rust_crate_dir, layout.dist_dir, crate_name, timeout=build_timeout, toolchain=toolchain
+        layout.rust_crate_dir,
+        layout.dist_dir,
+        crate_name,
+        timeout=build_timeout,
+        toolchain=toolchain,
     )
 
 
@@ -674,9 +678,7 @@ def _generate_rust_crate_source(
         # so plugin-typed signatures lower; plugin-lowered functions are then
         # excluded from the crate (they have no pure-Rust form), so the crate
         # needs no providers and no cargo dependency injection.
-        plugin_types, _plugin_providers, _plugin_types_by_key = _plugin_lowering_inputs(
-            target_plan
-        )
+        plugin_types, _plugin_providers, _plugin_types_by_key = _plugin_lowering_inputs(target_plan)
         module_ir = lower_project(plan.analysis, include_embedding=True, plugin_types=plugin_types)
         rust_source = generate_rust_crate_module(module_ir)
     except (LoweringError, RustCodegenError) as exc:
@@ -707,7 +709,9 @@ def _build_fallback_backend(
         # so this builder's own probe is only reachable here for programmatic
         # callers. The hybrid dispatcher (_build_nuitka_dispatcher) is NOT
         # pre-gated and keeps its own point-of-use probe.
-        return build_nuitka_fallback(layout.build_python_dir, timeout=build_timeout, toolchain=toolchain)
+        return build_nuitka_fallback(
+            layout.build_python_dir, timeout=build_timeout, toolchain=toolchain
+        )
     return FallbackBuildResult(
         status="failed",
         backend=fallback,
@@ -824,9 +828,7 @@ def _boundary_call_return_types(analysis: ProjectAnalysis) -> dict[str, str]:
 
 def _scalar_callee_return_types(analysis: ProjectAnalysis, targets_attr: str) -> dict[str, str]:
     by_qualname = {
-        function.qualname: function
-        for module in analysis.modules
-        for function in module.functions
+        function.qualname: function for module in analysis.modules for function in module.functions
     }
     delegated: dict[str, str] = {}
     for module in analysis.modules:
@@ -858,9 +860,7 @@ def _entrypoint_reachable_native_graph(
 ) -> tuple[set[str], dict[str, str]]:
     """Return direct-native functions and delegated callees reachable from entry."""
     by_qualname = {
-        function.qualname: function
-        for module in analysis.modules
-        for function in module.functions
+        function.qualname: function for module in analysis.modules for function in module.functions
     }
     modules_by_name = {module.module_name: module for module in analysis.modules}
     entry = by_qualname.get(entry_qualname)
@@ -945,7 +945,9 @@ def _write_hybrid_runtime(
         render_dispatcher_script(sorted(allowed_qualnames)), encoding="utf-8"
     )
     for module in analysis.modules:
-        parts = module.module_name.split(".") if module.module_name else [Path(module.file_path).stem]
+        parts = (
+            module.module_name.split(".") if module.module_name else [Path(module.file_path).stem]
+        )
         source_path = Path(module.file_path)
         if source_path.name == "__init__.py":
             target = runtime_dir.joinpath(*parts, "__init__.py")
@@ -1007,9 +1009,7 @@ def _externally_accelerated_runtime_modules(analysis: ProjectAnalysis) -> list[s
     return sorted(accelerated)
 
 
-def _delegation_python(
-    executable_python: str | None, toolchain: ToolchainConfig | None
-) -> str:
+def _delegation_python(executable_python: str | None, toolchain: ToolchainConfig | None) -> str:
     """Return the interpreter command baked into the hybrid binary for delegated calls.
 
     Explicit [executable] python wins; otherwise the [toolchain] python keeps
@@ -1163,7 +1163,12 @@ def _build_rust_executable_artifact(
     (layout.rust_bin_src_dir / "main.rs").write_text(main_rs, encoding="utf-8")
 
     result = build_rust_executable(
-        crate_dir, layout.dist_dir, binary_name, entrypoint, timeout=build_timeout, toolchain=toolchain
+        crate_dir,
+        layout.dist_dir,
+        binary_name,
+        entrypoint,
+        timeout=build_timeout,
+        toolchain=toolchain,
     )
     if result.status == "built" and hybrid:
         # Ship the dispatcher + project source as `<binary>.runtime` next to the

@@ -84,7 +84,9 @@ def sum_total(xs: list[int]) -> int:
 # to _SOURCE plus ONLY the appended function: the shared prefix is what lets
 # the pyo3 and crate goldens cover the same base constructs without drift
 # (pinned by test_pyo3_only_source_extends_the_shared_source).
-_SOURCE_PYO3_ONLY = _SOURCE + """
+_SOURCE_PYO3_ONLY = (
+    _SOURCE
+    + """
 @rextio.native
 def safe_mod(a: int, b: int) -> int:
     out = 0
@@ -102,6 +104,7 @@ def offset(x: int) -> int:
 def shifted(x: int) -> int:
     return offset(x) * 2
 """
+)
 
 
 def _write_project(tmp_path: Path, source: str = _SOURCE) -> Path:
@@ -129,8 +132,8 @@ def _stabilize_zero_div_messages(text: str) -> str:
 
     def _repl(match: re.Match[str]) -> str:
         if match.group(1) is not None:
-            return f'{match.group(1)}__REXTIO_ZDE__{match.group(3)}'
-        return f'{match.group(4)}__REXTIO_ZDE__{match.group(6)}'
+            return f"{match.group(1)}__REXTIO_ZDE__{match.group(3)}"
+        return f"{match.group(4)}__REXTIO_ZDE__{match.group(6)}"
 
     # Only rewrite known message tokens so unrelated string literals stay exact.
     def _maybe_repl(match: re.Match[str]) -> str:

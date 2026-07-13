@@ -75,15 +75,15 @@ def _classify(stem: str) -> str | None:
 
 
 @pytest.hookimpl(tryfirst=True)
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     cargo = shutil.which("cargo")
     nuitka = shutil.which("nuitka")
     maturin = shutil.which("maturin")
     skip_cargo = pytest.mark.skip(reason="cargo is required for this real-toolchain e2e")
     skip_nuitka = pytest.mark.skip(reason="nuitka is required for this real-toolchain e2e")
-    skip_maturin = pytest.mark.skip(reason="maturin and cargo are required for this real-toolchain e2e")
+    skip_maturin = pytest.mark.skip(
+        reason="maturin and cargo are required for this real-toolchain e2e"
+    )
 
     unclassified: list[str] = []
     for item in items:

@@ -72,7 +72,16 @@ from rextio.capabilities import (
 )
 from rextio.exceptions import is_supported_builtin_exception
 
-DYNAMIC_FEATURES = {"getattr", "setattr", "hasattr", "globals", "locals", "eval", "exec", "__import__"}
+DYNAMIC_FEATURES = {
+    "getattr",
+    "setattr",
+    "hasattr",
+    "globals",
+    "locals",
+    "eval",
+    "exec",
+    "__import__",
+}
 
 UNSUPPORTED_SYNTAX: tuple[type[ast.AST], ...] = (
     ast.AsyncFunctionDef,
@@ -193,8 +202,7 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
             continue  # handled by `_misused_underscore_node` above
         if name in RUST_RAW_INCOMPATIBLE:
             message = (
-                f"identifier '{name}' is a Rust keyword that cannot be carried as a "
-                "raw identifier"
+                f"identifier '{name}' is a Rust keyword that cannot be carried as a raw identifier"
             )
             suggestion = (
                 f"Rename '{name}' (a Rust keyword `r#` cannot escape) or keep this "
@@ -210,10 +218,10 @@ def _validate_identifiers(node: ast.FunctionDef, function: FunctionAnalysis) -> 
                 "keep this function on Python fallback."
             )
         elif not (name.isascii() and name.isidentifier()):
-            message = f"identifier '{name}' uses non-ASCII characters not supported in generated Rust"
-            suggestion = (
-                f"Use an ASCII name for '{name}' or keep this function on Python fallback."
+            message = (
+                f"identifier '{name}' uses non-ASCII characters not supported in generated Rust"
             )
+            suggestion = f"Use an ASCII name for '{name}' or keep this function on Python fallback."
         else:
             continue
         _add_identifier_diagnostic(function, where, message, suggestion)
@@ -434,11 +442,7 @@ def _validate_plugin_signature_names(node: ast.FunctionDef, function: FunctionAn
                 )
             )
     for child in _walk_skipping_scopes(node):
-        if (
-            isinstance(child, ast.Name)
-            and isinstance(child.ctx, ast.Store)
-            and child.id == "py"
-        ):
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store) and child.id == "py":
             function.add_diagnostic(
                 Diagnostic(
                     code="RXT011",
@@ -522,11 +526,7 @@ def _validate_plugin_alias_escape(
     engine = function.claim_engine
     if engine is None:
         return
-    aliases = {
-        arg
-        for arg, type_name in type_env.items()
-        if engine.is_plugin_type(type_name)
-    }
+    aliases = {arg for arg, type_name in type_env.items() if engine.is_plugin_type(type_name)}
     if not aliases:
         return
     _check_alias_statements(node.body, function, aliases)
@@ -541,7 +541,9 @@ def _check_alias_statements(
         if isinstance(statement, ast.Return):
             _check_alias_return(statement, function, aliases)
             continue
-        if any(isinstance(child, ast.stmt) for child in ast.walk(statement) if child is not statement):
+        if any(
+            isinstance(child, ast.stmt) for child in ast.walk(statement) if child is not statement
+        ):
             # Compound statement (if/for/while/try/with/...): absorb every
             # binding anywhere in the subtree additively to a fixpoint (loop
             # bodies re-run, so late bindings feed earlier ones), then check
@@ -796,7 +798,9 @@ def _validate_statement_types(
         return
     if isinstance(node, ast.AnnAssign):
         if not isinstance(node.target, ast.Name):
-            _add_unsupported_syntax(function, node.target, "annotated assignment targets must be local names")
+            _add_unsupported_syntax(
+                function, node.target, "annotated assignment targets must be local names"
+            )
             return
         annotated_type = (
             annotation_name(node.annotation)
@@ -825,7 +829,9 @@ def _validate_statement_types(
         return
     if isinstance(node, ast.AugAssign):
         if not isinstance(node.target, ast.Name):
-            _add_unsupported_syntax(function, node.target, "augmented assignment targets must be local names")
+            _add_unsupported_syntax(
+                function, node.target, "augmented assignment targets must be local names"
+            )
             return
         target_type = _infer_expr_type(node.target, function, env)
         engine = function.claim_engine
@@ -961,9 +967,7 @@ def _validate_try(
     Python fallback (or the RXT080 runtime shim when explicitly ``@rextio.native``).
     """
     if node.orelse:
-        _add_unsupported_syntax(
-            function, node, "try ... else is not supported in native functions"
-        )
+        _add_unsupported_syntax(function, node, "try ... else is not supported in native functions")
         return
     if not node.handlers and not node.finalbody:
         _add_unsupported_syntax(
@@ -1042,9 +1046,7 @@ def _add_finally_context_divergence_note(
     # `finally` block, so it must be surfaced per function like the
     # bytes.decode note. The project scanner strips it from functions that do
     # not end up on the direct native path.
-    if any(
-        d.code == "RXT090" and d.message == _FINALLY_CONTEXT_NOTE for d in function.diagnostics
-    ):
+    if any(d.code == "RXT090" and d.message == _FINALLY_CONTEXT_NOTE for d in function.diagnostics):
         return
     function.add_diagnostic(
         Diagnostic(
@@ -1112,8 +1114,7 @@ def _validate_mutable_ownership_patterns(node: ast.FunctionDef, function: Functi
     if not mutation_names:
         return
     parameter_names = {
-        arg.arg
-        for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+        arg.arg for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
     }
     mutated_parameters = sorted(parameter_names & mutation_names)
     if mutated_parameters:
@@ -1149,7 +1150,9 @@ def _validate_mutable_ownership_in_statements(
             _validate_mutated_container_captures(statement.value, function, env, mutation_names)
             for target in statement.targets:
                 if isinstance(target, ast.Name):
-                    _validate_mutable_alias_assignment(target, statement.value, function, env, mutation_names)
+                    _validate_mutable_alias_assignment(
+                        target, statement.value, function, env, mutation_names
+                    )
                     if value_type is not None:
                         env[target.id] = value_type
             continue
@@ -1189,8 +1192,12 @@ def _validate_mutable_ownership_in_statements(
             continue
         if isinstance(statement, ast.If):
             _infer_expr_type(statement.test, function, env)
-            _validate_mutable_ownership_in_statements(statement.body, function, dict(env), mutation_names)
-            _validate_mutable_ownership_in_statements(statement.orelse, function, dict(env), mutation_names)
+            _validate_mutable_ownership_in_statements(
+                statement.body, function, dict(env), mutation_names
+            )
+            _validate_mutable_ownership_in_statements(
+                statement.orelse, function, dict(env), mutation_names
+            )
             continue
         if isinstance(statement, ast.For):
             body_env = dict(env)
@@ -1213,14 +1220,22 @@ def _validate_mutable_ownership_in_statements(
                     body_env,
                 )
             _validate_mutated_container_captures(statement.iter, function, env, mutation_names)
-            _validate_mutable_ownership_in_statements(statement.body, function, body_env, mutation_names)
-            _validate_mutable_ownership_in_statements(statement.orelse, function, dict(env), mutation_names)
+            _validate_mutable_ownership_in_statements(
+                statement.body, function, body_env, mutation_names
+            )
+            _validate_mutable_ownership_in_statements(
+                statement.orelse, function, dict(env), mutation_names
+            )
             continue
         if isinstance(statement, ast.While):
             _infer_expr_type(statement.test, function, env)
             _validate_mutated_container_captures(statement.test, function, env, mutation_names)
-            _validate_mutable_ownership_in_statements(statement.body, function, dict(env), mutation_names)
-            _validate_mutable_ownership_in_statements(statement.orelse, function, dict(env), mutation_names)
+            _validate_mutable_ownership_in_statements(
+                statement.body, function, dict(env), mutation_names
+            )
+            _validate_mutable_ownership_in_statements(
+                statement.orelse, function, dict(env), mutation_names
+            )
 
 
 def _validate_mutable_alias_assignment(
@@ -1315,9 +1330,29 @@ def _infer_missing_signature_from_context(
 # the local, so a local shadow of one of these names must reject the function.
 _SHADOWABLE_BUILTIN_CALLS = frozenset(
     {
-        "abs", "all", "any", "bool", "bytes", "dict", "enumerate", "float", "frozenset",
-        "int", "len", "list", "max", "min", "print", "range", "reversed", "set",
-        "sorted", "str", "sum", "tuple", "zip",
+        "abs",
+        "all",
+        "any",
+        "bool",
+        "bytes",
+        "dict",
+        "enumerate",
+        "float",
+        "frozenset",
+        "int",
+        "len",
+        "list",
+        "max",
+        "min",
+        "print",
+        "range",
+        "reversed",
+        "set",
+        "sorted",
+        "str",
+        "sum",
+        "tuple",
+        "zip",
     }
 )
 
@@ -1534,7 +1569,9 @@ class _SignatureInferencer:
                 self.bind_target(target, value_type)
             return
         if isinstance(node, ast.AnnAssign):
-            annotated = annotation_name(node.annotation) if is_supported_type(node.annotation) else None
+            annotated = (
+                annotation_name(node.annotation) if is_supported_type(node.annotation) else None
+            )
             self.bind_target(node.target, annotated)
             if node.value is not None:
                 self.infer_expr(node.value, annotated)
@@ -1630,7 +1667,9 @@ class _SignatureInferencer:
                 self.infer_expr(node.operand, "bool")
                 return "bool"
             if isinstance(node.op, ast.USub):
-                return self.infer_expr(node.operand, expected if expected in NUMERIC_TYPES else None)
+                return self.infer_expr(
+                    node.operand, expected if expected in NUMERIC_TYPES else None
+                )
             return None
         if isinstance(node, ast.Compare):
             self.infer_compare(node)
@@ -1689,8 +1728,7 @@ class _SignatureInferencer:
             # module-level assignment (`len = 5` at module scope) rebinds it, so a
             # bare call would lower to the wrong callable.
             shadowed_by_binding = (
-                func.id in self.local_names
-                or func.id in self.function.module_assigned_names
+                func.id in self.local_names or func.id in self.function.module_assigned_names
             )
             return resolves_to_callable and shadowed_by_binding
         # Attribute / chained call. `canonical_call_target` resolves the call the way
@@ -1916,20 +1954,27 @@ class _SignatureInferencer:
         return None
 
     def infer_list_comprehension(self, node: ast.ListComp) -> str | None:
-        item_type = self.with_comprehension_generators(node.generators, lambda: self.infer_expr(node.elt))
+        item_type = self.with_comprehension_generators(
+            node.generators, lambda: self.infer_expr(node.elt)
+        )
         return f"list[{item_type}]" if item_type is not None else None
 
     def infer_dict_comprehension(self, node: ast.DictComp) -> str | None:
         def infer_items() -> tuple[str | None, str | None]:
             return self.infer_expr(node.key), self.infer_expr(node.value)
 
-        key_type, value_type = self.with_comprehension_generators(node.generators, infer_items) or (None, None)
+        key_type, value_type = self.with_comprehension_generators(node.generators, infer_items) or (
+            None,
+            None,
+        )
         if key_type is not None and value_type is not None:
             return f"dict[{key_type}, {value_type}]"
         return None
 
     def infer_set_comprehension(self, node: ast.SetComp) -> str | None:
-        item_type = self.with_comprehension_generators(node.generators, lambda: self.infer_expr(node.elt))
+        item_type = self.with_comprehension_generators(
+            node.generators, lambda: self.infer_expr(node.elt)
+        )
         return f"set[{item_type}]" if item_type is not None else None
 
     def with_comprehension_generators(self, generators: list[ast.comprehension], callback):
@@ -1973,7 +2018,10 @@ class _SignatureInferencer:
         if isinstance(target, ast.Name):
             return [self.known.get(target.id)]
         if isinstance(target, ast.Tuple):
-            return [self.known.get(item.id) if isinstance(item, ast.Name) else None for item in target.elts]
+            return [
+                self.known.get(item.id) if isinstance(item, ast.Name) else None
+                for item in target.elts
+            ]
         return []
 
     def bind_loop_target(self, target: ast.AST, item_types: list[str]) -> None:
@@ -2240,7 +2288,9 @@ def _infer_expr_type(
             key_type, value_item_type = _dict_item_types(value_type)
             slice_type = infer_child(node.slice)
             if slice_type != key_type:
-                _add_unsupported_syntax(function, node.slice, f"dict keys must be {key_type}, got {slice_type}")
+                _add_unsupported_syntax(
+                    function, node.slice, f"dict keys must be {key_type}, got {slice_type}"
+                )
                 return None
             return value_item_type
         if value_type in {"str", "bytes"}:
@@ -2364,7 +2414,9 @@ def _infer_dict_type(
 
     key_types = [_infer_expr_type(key, function, env) for key in node.keys if key is not None]
     value_types = [_infer_expr_type(value, function, env) for value in node.values]
-    if any(key_type is None for key_type in key_types) or any(value_type is None for value_type in value_types):
+    if any(key_type is None for key_type in key_types) or any(
+        value_type is None for value_type in value_types
+    ):
         return None
     unique_key_types = set(key_types)
     if len(unique_key_types) != 1:
@@ -2372,7 +2424,9 @@ def _infer_dict_type(
         return None
     key_type = key_types[0]
     if key_type not in DICT_KEY_TYPES:
-        _add_unsupported_syntax(function, node, f"dict keys must be int, bool, or str, got {key_type}")
+        _add_unsupported_syntax(
+            function, node, f"dict keys must be int, bool, or str, got {key_type}"
+        )
         return None
     unique_value_types = set(value_types)
     if len(unique_value_types) != 1:
@@ -2395,7 +2449,9 @@ def _infer_list_comprehension_type(
     binding_env: dict[str, str],
     active_targets: set[str],
 ) -> str | None:
-    comp_env = _bind_comprehension_generators(node.generators, function, env, binding_env, active_targets)
+    comp_env = _bind_comprehension_generators(
+        node.generators, function, env, binding_env, active_targets
+    )
     if comp_env is None:
         return None
     item_type = _infer_expr_type(
@@ -2425,7 +2481,9 @@ def _infer_dict_comprehension_type(
     binding_env: dict[str, str],
     active_targets: set[str],
 ) -> str | None:
-    comp_env = _bind_comprehension_generators(node.generators, function, env, binding_env, active_targets)
+    comp_env = _bind_comprehension_generators(
+        node.generators, function, env, binding_env, active_targets
+    )
     if comp_env is None:
         return None
     comprehension_targets = active_targets | _comprehension_target_names(node.generators)
@@ -2446,7 +2504,9 @@ def _infer_dict_comprehension_type(
         active_comprehension_targets=comprehension_targets,
     )
     if key_type not in DICT_KEY_TYPES:
-        _add_unsupported_syntax(function, node.key, f"dict comprehension keys must be int, bool, or str, got {key_type}")
+        _add_unsupported_syntax(
+            function, node.key, f"dict comprehension keys must be int, bool, or str, got {key_type}"
+        )
         return None
     if value_type is None or not _is_supported_dict_value_type(value_type):
         _add_unsupported_syntax(
@@ -2465,7 +2525,9 @@ def _infer_set_comprehension_type(
     binding_env: dict[str, str],
     active_targets: set[str],
 ) -> str | None:
-    comp_env = _bind_comprehension_generators(node.generators, function, env, binding_env, active_targets)
+    comp_env = _bind_comprehension_generators(
+        node.generators, function, env, binding_env, active_targets
+    )
     if comp_env is None:
         return None
     item_type = _infer_expr_type(
@@ -2557,7 +2619,9 @@ def _infer_named_expr_type(
         )
         return None
     if not isinstance(node.target, ast.Name):
-        _add_unsupported_syntax(function, node.target, "assignment expression targets must be local names")
+        _add_unsupported_syntax(
+            function, node.target, "assignment expression targets must be local names"
+        )
         return None
     if node.target.id in active_targets:
         _add_unsupported_syntax(
@@ -2691,7 +2755,9 @@ def _infer_call_type(
             return None
         if item_type in {"int", "bool", "str"}:
             return arg_type
-        _add_unsupported_syntax(function, node, f"sorted requires list[int|bool|str], got {arg_type}")
+        _add_unsupported_syntax(
+            function, node, f"sorted requires list[int|bool|str], got {arg_type}"
+        )
         return None
     if target == "reversed":
         if not _require_arg_count("reversed", node, function, {1}):
@@ -2699,7 +2765,9 @@ def _infer_call_type(
         arg_type = infer_arg(node.args[0])
         if _list_item_type(arg_type) is not None:
             return arg_type
-        _add_unsupported_syntax(function, node, f"reversed requires a supported list, got {arg_type}")
+        _add_unsupported_syntax(
+            function, node, f"reversed requires a supported list, got {arg_type}"
+        )
         return None
     if target == "range":
         # `range` only has a native lowering as a `for`-loop iterable (handled by
@@ -2748,7 +2816,9 @@ def _infer_call_type(
         item_type = _list_item_type(arg_type)
         if item_type in NUMERIC_TYPES:
             return item_type
-        _add_unsupported_syntax(function, node, f"sum requires list[int] or list[float], got {arg_type}")
+        _add_unsupported_syntax(
+            function, node, f"sum requires list[int] or list[float], got {arg_type}"
+        )
         return None
     if target == "math.log":
         if not _require_arg_count(target, node, function, {1, 2}):
@@ -2890,8 +2960,7 @@ def _infer_call_type(
         # as a list, so reusing that name would collide under mypy.
         claim_operand_types: tuple[str | None, ...] = tuple(positional_arg_types)
         arg_type_by_id = {
-            id(arg): arg_type
-            for arg, arg_type in zip(node.args, claim_operand_types, strict=True)
+            id(arg): arg_type for arg, arg_type in zip(node.args, claim_operand_types, strict=True)
         }
         keyword_types: dict[int, str | None] = {}
         for keyword in node.keywords:
@@ -2973,7 +3042,9 @@ def _infer_effect_call_type(
     if node.keywords:
         return None
     if target != "print" and len(node.args) < 1:
-        _add_unsupported_syntax(function, node, f"{target} requires at least one positional argument")
+        _add_unsupported_syntax(
+            function, node, f"{target} requires at least one positional argument"
+        )
         return None
     arg_types: list[str | None] = []
     for arg in node.args:
@@ -3051,7 +3122,9 @@ def _infer_append_call_type(
     item_type = _list_item_type(receiver_type)
     value_type = _infer_expr_type(node.args[0], function, env)
     if item_type is None:
-        _add_unsupported_syntax(function, node, f"append receiver must be list[...], got {receiver_type}")
+        _add_unsupported_syntax(
+            function, node, f"append receiver must be list[...], got {receiver_type}"
+        )
         return None
     if value_type is not None and value_type != item_type:
         _add_unsupported_syntax(
@@ -3072,7 +3145,9 @@ def _infer_str_method_type(
     receiver = _call_receiver(node)
     receiver_type = _infer_expr_type(receiver, function, env) if receiver is not None else None
     if receiver_type != "str":
-        _add_unsupported_syntax(function, node, f"{target} receiver must be str, got {receiver_type}")
+        _add_unsupported_syntax(
+            function, node, f"{target} receiver must be str, got {receiver_type}"
+        )
         return None
     if target in {"str.lower", "str.upper", "str.encode"}:
         if not _require_arg_count(target, node, function, {0}):
@@ -3105,7 +3180,9 @@ def _infer_bytes_method_type(
     receiver = _call_receiver(node)
     receiver_type = _infer_expr_type(receiver, function, env) if receiver is not None else None
     if receiver_type != "bytes":
-        _add_unsupported_syntax(function, node, f"{target} receiver must be bytes, got {receiver_type}")
+        _add_unsupported_syntax(
+            function, node, f"{target} receiver must be bytes, got {receiver_type}"
+        )
         return None
     if target == "bytes.decode":
         if not _require_arg_count(target, node, function, {0}):
@@ -3153,7 +3230,9 @@ def _infer_list_method_type(
     receiver_type = _infer_expr_type(receiver, function, env) if receiver is not None else None
     item_type = _list_item_type(receiver_type)
     if item_type is None:
-        _add_unsupported_syntax(function, node, f"{target} receiver must be a supported list, got {receiver_type}")
+        _add_unsupported_syntax(
+            function, node, f"{target} receiver must be a supported list, got {receiver_type}"
+        )
         return None
     if target == "list.copy":
         if not _require_arg_count(target, node, function, {0}):
@@ -3181,7 +3260,9 @@ def _infer_list_method_type(
         arg_type = _infer_expr_type(node.args[0], function, env)
         if arg_type == item_type:
             return "int"
-        _add_unsupported_syntax(function, node.args[0], f"{target} argument must be {item_type}, got {arg_type}")
+        _add_unsupported_syntax(
+            function, node.args[0], f"{target} argument must be {item_type}, got {arg_type}"
+        )
         return None
     return None
 
@@ -3220,11 +3301,7 @@ def _type_of_for_claim(
         if lit.value is None:
             return "None"
         if isinstance(lit.value, tuple):
-            return (
-                f"tuple[{', '.join('int' for _ in lit.value)}]"
-                if lit.value
-                else "tuple"
-            )
+            return f"tuple[{', '.join('int' for _ in lit.value)}]" if lit.value else "tuple"
         return "int"
     return None
 
@@ -3326,9 +3403,7 @@ def _is_sized_type(type_name: str) -> bool:
     containers map to ``.len()``. ``tuple`` is excluded: a Rust tuple has no
     ``.len()`` method, so ``len(tuple)`` is kept on the Python fallback.
     """
-    return type_name in {"str", "bytes"} or type_name.startswith(
-        ("list[", "set[", "dict[")
-    )
+    return type_name in {"str", "bytes"} or type_name.startswith(("list[", "set[", "dict["))
 
 
 def _is_none_literal(node: ast.AST) -> bool:
@@ -3676,14 +3751,22 @@ def _validate_dict_set(
         return
     target_type = _infer_expr_type(target.value, function, env)
     if not _is_dict_type(target_type):
-        _add_unsupported_syntax(function, target, f"subscript assignment requires a supported dict, got {target_type}")
+        _add_unsupported_syntax(
+            function, target, f"subscript assignment requires a supported dict, got {target_type}"
+        )
         return
     key_type, value_type = _dict_item_types(target_type)
     slice_type = _infer_expr_type(target.slice, function, env)
     assigned_type = _infer_expr_type(value, function, env)
     if slice_type != key_type:
-        _add_unsupported_syntax(function, target.slice, f"dict assignment key must be {key_type}, got {slice_type}")
-    if assigned_type is not None and value_type is not None and not _types_assignable(assigned_type, value_type):
+        _add_unsupported_syntax(
+            function, target.slice, f"dict assignment key must be {key_type}, got {slice_type}"
+        )
+    if (
+        assigned_type is not None
+        and value_type is not None
+        and not _types_assignable(assigned_type, value_type)
+    ):
         _add_unsupported_syntax(
             function,
             value,
