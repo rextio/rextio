@@ -53,9 +53,9 @@ def compute(x: float) -> float:
     report = json.loads(
         (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
-    lib_rs = (
-        tmp_path / ".rextio" / "generated" / "rust" / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
+    lib_rs = (tmp_path / ".rextio" / "generated" / "rust" / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
 
     assert exit_code == 0
     assert report["native_build"]["status"] == "built"

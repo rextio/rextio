@@ -9,7 +9,11 @@ from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
+from rextio.cli.config_overrides import (
+    key_value_overrides,
+    package_policy_overrides,
+    tuple_overrides,
+)
 from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.plugins.loader import PluginError

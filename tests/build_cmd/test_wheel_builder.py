@@ -13,7 +13,9 @@ def test_build_artifact_wheel_is_deterministic_and_records_files(tmp_path: Path)
     dist_dir = tmp_path / "dist"
     (python_dir / "pkg").mkdir(parents=True)
     (python_dir / "pkg" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
-    (python_dir / "pkg" / "mod.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (python_dir / "pkg" / "mod.py").write_text(
+        "def add(a, b):\n    return a + b\n", encoding="utf-8"
+    )
 
     first = build_artifact_wheel(tmp_path / "Demo Project", python_dir, dist_dir)
     first_bytes = Path(first.path or "").read_bytes()
@@ -41,7 +43,9 @@ def test_build_artifact_wheel_uses_platform_tag_for_native_extension(tmp_path: P
     python_dir = tmp_path / "python"
     dist_dir = tmp_path / "dist"
     python_dir.mkdir()
-    native_name = f"_rextio_native.cpython-{sys.version_info.major}{sys.version_info.minor}-darwin.so"
+    native_name = (
+        f"_rextio_native.cpython-{sys.version_info.major}{sys.version_info.minor}-darwin.so"
+    )
     (python_dir / native_name).write_bytes(b"fake native extension")
 
     result = build_artifact_wheel(tmp_path / "Native Project", python_dir, dist_dir)
@@ -55,6 +59,7 @@ def test_build_artifact_wheel_uses_platform_tag_for_native_extension(tmp_path: P
 
     assert "Root-Is-Purelib: false" in wheel
     assert f"Tag: {python_tag}-{python_tag}-{platform_tag}" in wheel
+
 
 def test_nuitka_compiled_modules_ship_without_shadowed_py(tmp_path: Path) -> None:
     # After a nuitka fallback build the tree holds `module.py` AND its compiled
@@ -87,6 +92,7 @@ def test_nuitka_compiled_modules_ship_without_shadowed_py(tmp_path: Path) -> Non
     assert "hb/__init__.py" in names
     record = [name for name in names if name.endswith("RECORD")]
     assert record  # metadata still written
+
 
 def test_ctypes_payload_does_not_shadow_its_python_wrapper(tmp_path: Path) -> None:
     # A .dylib/.dll next to a same-stem .py is a ctypes payload, not an

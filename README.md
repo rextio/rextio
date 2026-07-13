@@ -5,10 +5,12 @@
 **Compiles eligible typed Python functions to Rust and keeps everything
 else on the Python fallback.**
 
-Rextio 0.1.1 is an alpha-stage local build tool for Python projects. It finds
-typed Python functions that can be safely lowered to Rust, compiles them
-ahead of time with PyO3, and keeps everything else running through generated
-Python fallback code - same imports, same behavior.
+Rextio 0.1.2 is an alpha-stage local build tool for Python projects (published
+to PyPI on 2026-07-14, superseding the previous **0.1.1** release). It finds
+typed Python functions that can be safely
+lowered to Rust, compiles them ahead of time with PyO3, and keeps everything
+else running through generated Python fallback code - same imports, same
+behavior.
 
 ```text
 typed Python project
@@ -171,9 +173,14 @@ rextio build . --entrypoint=myapp.cli:main --executable-backend=rust
 
 This compiles a native binary (`dist/<name>`) whose `main` runs in Rust. The
 entrypoint must be an accepted direct-native `def main(argv: list[str]) -> int`:
-`argv` mirrors `sys.argv` (the program path at index 0), the returned `int` is the
-process exit code, and a raised error is printed CPython-style (`OverflowError:
-...`) to stderr with a non-zero exit. Requires Cargo.
+`argv` mirrors `sys.argv` (the program path at index 0). The supported Python
+`int` return is lowered as Rust `i64`; generated `main` casts that `i64` to
+`i32` before `std::process::exit`, so values outside the `i32` range are
+truncated to the low 32 bits. POSIX observers generally receive only the low 8
+bits of the status, while Windows retains a 32-bit status representation.
+Prefer `0..255` for portable exit codes. A raised error is printed
+CPython-style (`OverflowError: ...`) to stderr with a non-zero exit. Requires
+Cargo.
 
 When the entrypoint calls a project function that stays on the Python fallback
 (code outside the Rust subset), Rextio delegates that call to an external CPython
@@ -189,6 +196,19 @@ silently), and a non-finite float (`NaN`/`Infinity`) is rejected rather than
 silently dropped. A delegated function's own stdout/stderr appears on the binary's stderr
 (the binary's stdout carries the wire protocol). A function on the RXT080 runtime
 shim is not delegated: an entry that depends on one is rejected, not built.
+
+Delegated `SystemExit` (including `sys.exit(n)`) is a separate path from
+direct-native `main`'s return code. The Python dispatcher forwards an int exit
+as `{"exit": code}` (bool codes normalized to `0`/`1`); the Rust client honors
+that frame only when the code is representable as a signed `i64`
+(`serde_json::Value::as_i64`). Once consumed, the value is cast to `i32` before
+`std::process::exit`, so platform process-status width still applies — prefer
+`0..255` for portable codes, as with direct-native `main`. A Python `int`
+outside signed `i64` still serializes as a JSON number on the wire, but the
+client cannot consume it as an exit code: the exchange fails with a
+malformed-response `RuntimeError` (printed CPython-style, non-zero exit) rather
+than terminating with the intended status. Oversized delegated exit codes are
+therefore not CPython-equivalent and must not be assumed to round-trip.
 
 `--executable-python` pins the interpreter the binary launches (a name on `PATH`,
 an absolute path, or a path relative to `<binary>.runtime` to bundle one);
@@ -266,7 +286,7 @@ Common settings:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Rust is the only implemented native target in 0.1.1.
+Rust is the only implemented native target in 0.1.2.
 
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry
@@ -292,11 +312,22 @@ default_external_policy = "fallback"
 The supported package policies are `fallback`, `analyze`, `try-native`, and
 `plugin`. Since 0.1.1 a plugin can also describe and *lower* covered
 constructs (plugin API 1.1 — see
-[the plugin lowering spec](docs/specs/plugin-lowering.md)); the first-party
-[rextio-numpy](https://github.com/rextio/rextio-numpy) plugin implements an
-initial certified float64 1-D surface. General dependency lowering is not
-bundled; `try-native` is an explicit planning policy and still falls back
-when no safe direct lowering exists.
+[the plugin lowering spec](docs/specs/plugin-lowering.md)); 0.1.2 adds
+backward-compatible plugin API **1.2** with two distinct roles:
+**static literal/ordered keyword metadata** enables literal-axis
+claims/lowering, and **structured `ClaimExpr` trees plus leaves-mode
+lowering** enable fusion. The first-party
+[rextio-numpy](https://github.com/rextio/rextio-numpy) plugin is installed
+separately (core has no reverse dependency on it): **PyPI 0.1.0** is the
+published initial certified float64 1-D surface; the **untagged 0.1.1 RC**
+expands that surface with literal-axis *and* fusion work (each on its own
+API 1.2 surface) and requires core **>= 0.1.2** — do not treat either line
+as the other's release state.
+**Strict related-package publish order:** rextio-lsp 0.1.1 → core 0.1.2 →
+rextio-numpy 0.1.1 (not simultaneous; see
+[the tooling contract](docs/specs/tooling-contract.md)).
+General dependency lowering is not bundled; `try-native` is an explicit
+planning policy and still falls back when no safe direct lowering exists.
 
 ## Native Selection
 
@@ -379,7 +410,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## Supported Direct Rust Subset
 
-Rextio 0.1.1 supports a deliberately small subset. This is the code
+Rextio 0.1.2 supports a deliberately small subset. This is the code
 that runs as native Rust.
 
 Supported types include:
@@ -535,13 +566,20 @@ code and Numba for NumPy/array kernels, and note that very small functions
 lose to call-boundary costs under any accelerator.
 
 The first-party [rextio-numpy](https://github.com/rextio/rextio-numpy)
-plugin translates an initial certified NumPy surface (float64 1-D
-element-wise arithmetic, `numpy.dot`, whole-array `sum`/`mean`) into
-AOT-compiled native Rust, so NumPy code now has two routes - Rextio-plugin
-AOT compilation for the covered surface, or Numba JIT inside the Python
-fallback. When both apply, an explicit `@numba.*` decorator wins and the
-analyzer emits an informational RXT091 note; broader guidance on choosing
-between the routes will firm up as the plugin surface grows.
+plugin translates covered NumPy into AOT-compiled native Rust. **Published
+rextio-numpy 0.1.0** covers the initial certified float64 1-D surface
+(element-wise arithmetic, `numpy.dot`, whole-array `sum`/`mean`). The
+**untagged rextio-numpy 0.1.1 RC** expands that surface using core plugin
+API 1.2 (**core >= 0.1.2**): literal-axis claims via static
+keyword/literal metadata, and fusion via `ClaimExpr` + leaves-mode — not
+via leaves mode alone. It is not the published package and must not be
+confused with 0.1.0. Publish order for that RC is after dual-map
+**rextio-lsp 0.1.1** and **core 0.1.2**. NumPy code therefore has two
+routes - Rextio-plugin AOT compilation for the covered surface, or Numba
+JIT inside the Python fallback. When both apply, an explicit `@numba.*`
+decorator wins and the analyzer emits an informational RXT091 note;
+broader guidance on choosing between the routes will firm up as the plugin
+surface grows.
 
 ## Examples
 

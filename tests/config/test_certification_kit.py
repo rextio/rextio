@@ -83,9 +83,7 @@ def _write_check_report(tmp_path: Path, qualname: str, route: str, status: str) 
         "modules": [
             {
                 "module_name": module_name,
-                "functions": [
-                    {"qualname": qualname, "route": route, "native_status": status}
-                ],
+                "functions": [{"qualname": qualname, "route": route, "native_status": status}],
             }
         ]
     }
@@ -215,6 +213,6 @@ def test_copy_args_overrides_deepcopy(tmp_path: Path, monkeypatch: pytest.Monkey
         equals=default_equals,
         copy_args=preserving_copy,
     )
-    monkeypatch.setattr(checker, "_load_function", lambda: (lambda items: len(items)))
+    monkeypatch.setattr(checker, "_load_function", lambda: lambda items: len(items))
     assert checker([1, 2, 3]) == 3
     assert len(copies) == 2  # one per leg

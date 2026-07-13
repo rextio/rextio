@@ -29,7 +29,7 @@ from rextio.codegen.rust.rust_format import (
 )
 from rextio.codegen.rust.type_map import rust_type
 from rextio.analyzer.logging_format import python_logging_format_segments
-from rextio.plugins.api import ClaimSite, LoweredExpr, LoweringContext
+from rextio.plugins.api import ClaimExpr, ClaimSite, LoweredExpr, LoweringContext
 from rextio.ir.nodes import (
     AppendIR,
     AssignIR,
@@ -90,6 +90,16 @@ from rextio.ir.types import (
 # `__all__` is declared so this pure refactor leaves the module's wildcard-export
 # surface exactly as it was before the split.
 
+
+def _plugin_api_at_least(version: str, major: int, minor: int) -> bool:
+    """Return True when a plugin-API version string is at least major.minor."""
+    parts = version.split(".")
+    try:
+        ver_major = int(parts[0])
+        ver_minor = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return False
+    return (ver_major, ver_minor) >= (major, minor)
 
 
 def generate_rust_module(
@@ -215,9 +225,7 @@ def _crate_excluded_qualnames(module_ir: ModuleIR) -> set[str]:
     }
     if not excluded:
         return excluded
-    candidates = [
-        function for function in module_ir.functions if function.qualname not in excluded
-    ]
+    candidates = [function for function in module_ir.functions if function.qualname not in excluded]
     calls_by_qualname = {
         function.qualname: _called_function_names(function) for function in candidates
     }
@@ -232,8 +240,7 @@ def _crate_excluded_qualnames(module_ir: ModuleIR) -> set[str]:
             for excluded_qualname in excluded:
                 dependency = functions_by_qualname[excluded_qualname]
                 if excluded_qualname in targets or (
-                    dependency.module_name == function.module_name
-                    and dependency.name in targets
+                    dependency.module_name == function.module_name and dependency.name in targets
                 ):
                     excluded.add(function.qualname)
                     changed = True
@@ -262,12 +269,12 @@ def generate_rust_crate_module(
     # a call to a function the crate does not emit, so it is excluded too.
     excluded = _crate_excluded_qualnames(module_ir)
     direct_functions = [
-        function
-        for function in module_ir.functions
-        if function.qualname not in excluded
+        function for function in module_ir.functions if function.qualname not in excluded
     ]
     if not direct_functions:
-        raise RustCodegenError("no direct Rust native functions are available for a Rust-importable crate")
+        raise RustCodegenError(
+            "no direct Rust native functions are available for a Rust-importable crate"
+        )
     names_by_qualname = {
         function.qualname: rust_identifier(native_function_name(function.qualname))
         for function in direct_functions
@@ -342,7 +349,7 @@ def generate_rust_main_binary(
             "        Ok(code) => std::process::exit(code as i32),",
             "        Err(err) => {",
             "            // `Display` renders `TypeName: message` (CPython-style).",
-            "            eprintln!(\"{}\", err);",
+            '            eprintln!("{}", err);',
             "            std::process::exit(1);",
             "        }",
             "    }",
@@ -484,7 +491,7 @@ def _render_importable_crate_module(
         "#[derive(Debug, Clone, PartialEq, Eq)]",
         "pub struct RextioError {",
         "    // The CPython exception type name this error corresponds to (e.g.",
-        "    // \"OverflowError\"), so a consumer can render a Python-style message.",
+        '    // "OverflowError"), so a consumer can render a Python-style message.',
         "    kind: String,",
         "    message: String,",
         "}",
@@ -506,7 +513,7 @@ def _render_importable_crate_module(
         "impl std::fmt::Display for RextioError {",
         "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {",
         "        // CPython-style `TypeName: message`.",
-        "        write!(f, \"{}: {}\", self.kind, self.message)",
+        '        write!(f, "{}: {}", self.kind, self.message)',
         "    }",
         "}",
         "",
@@ -662,8 +669,13 @@ class _FunctionRenderer:
             if target in self.declared:
                 return [*lines, f"{prefix}{emit} = {value};"]
             self.declared.add(target)
-            if statement.target_type is not None and _needs_local_type_annotation(statement.value, statement.target_type):
-                return [*lines, f"{prefix}let mut {emit}: {rust_type(statement.target_type)} = {value};"]
+            if statement.target_type is not None and _needs_local_type_annotation(
+                statement.value, statement.target_type
+            ):
+                return [
+                    *lines,
+                    f"{prefix}let mut {emit}: {rust_type(statement.target_type)} = {value};",
+                ]
             return [*lines, f"{prefix}let mut {emit} = {value};"]
         if isinstance(statement, DictSetIR):
             # Python evaluates the RHS value before the subscript key for
@@ -679,14 +691,14 @@ class _FunctionRenderer:
             return [
                 *lines,
                 f"{prefix}{rust_identifier(statement.target.id)}.insert("
-                f"{strip_wrapping_parens(self.render_call_arg(statement.key))}, {value_tmp});"
+                f"{strip_wrapping_parens(self.render_call_arg(statement.key))}, {value_tmp});",
             ]
         if isinstance(statement, AppendIR):
             lines = self.named_expr_prelude(statement.value, indent)
             return [
                 *lines,
                 f"{prefix}{rust_identifier(statement.target.id)}.push("
-                f"{strip_wrapping_parens(self.render_call_arg(statement.value))});"
+                f"{strip_wrapping_parens(self.render_call_arg(statement.value))});",
             ]
         if isinstance(statement, EffectCallIR):
             lines = self.named_expr_prelude(statement.call, indent)
@@ -729,16 +741,13 @@ class _FunctionRenderer:
             iterable = self.render_iterable(statement.iterable)
             lines = [
                 *lines,
-                f"{prefix}for {self.render_loop_target(statement.target)} "
-                f"in {iterable} {{"
+                f"{prefix}for {self.render_loop_target(statement.target)} in {iterable} {{",
             ]
             self.declared.update(target_names(statement.target))
             # Bind the loop variable's type for the body so type-directed
             # rendering (e.g. checked integer arithmetic on `acc += x`) sees the
             # element type, mirroring the comprehension-generator path.
-            self.bind_target_types(
-                statement.target, self.iterable_target_types(statement.iterable)
-            )
+            self.bind_target_types(statement.target, self.iterable_target_types(statement.iterable))
             lines.extend(self.render_block(statement.body, indent + 1))
             lines.append(f"{prefix}}}")
             return lines
@@ -788,9 +797,7 @@ class _FunctionRenderer:
         if statement.handlers:
             for position, handler in enumerate(statement.handlers):
                 pyo3_exception = BUILTIN_EXCEPTION_TO_PYO3[handler.exception]
-                guard = (
-                    f"Python::attach(|py| {err}.is_instance_of::<{pyo3_exception}>(py))"
-                )
+                guard = f"Python::attach(|py| {err}.is_instance_of::<{pyo3_exception}>(py))"
                 keyword = "if" if position == 0 else "} else if"
                 lines.append(f"{_indent(indent + 3)}{keyword} {guard} {{")
                 lines.extend(self.render_block(handler.body, indent + 4))
@@ -891,7 +898,9 @@ class _FunctionRenderer:
             lines = ["{"]
             lines.append("    let mut set = HashSet::new();")
             for item in expr.items:
-                lines.append(f"    set.insert({strip_wrapping_parens(self.render_call_arg(item))});")
+                lines.append(
+                    f"    set.insert({strip_wrapping_parens(self.render_call_arg(item))});"
+                )
             lines.append("    set")
             lines.append("}")
             return "\n".join(lines)
@@ -989,9 +998,7 @@ class _FunctionRenderer:
         generator = generators[index - 1]
         prefix = _indent(index)
         iterable = self.render_iterable(generator.iterable)
-        lines = [
-            f"{prefix}for {self.render_loop_target(generator.target)} in {iterable} {{"
-        ]
+        lines = [f"{prefix}for {self.render_loop_target(generator.target)} in {iterable} {{"]
         saved_types = dict(self.variable_types)
         self.bind_target_types(generator.target, self.iterable_target_types(generator.iterable))
         if generator.conditions:
@@ -1042,10 +1049,7 @@ class _FunctionRenderer:
             self.render_call_arg(expr.value),
         )
         if target in self.maybe_bound_types:
-            return (
-                f"{{ {emit} = Some({value}); "
-                f"{self.render_maybe_bound_name(target)} }}"
-            )
+            return f"{{ {emit} = Some({value}); {self.render_maybe_bound_name(target)} }}"
         return f"{{ {emit} = {value}; {emit}.clone() }}"
 
     def render_maybe_bound_name(self, name: str) -> str:
@@ -1406,10 +1410,20 @@ class _FunctionRenderer:
     def render_plugin_claim(self, claim: PluginClaimIR, operand_exprs: list[ExprIR]) -> str:
         """Render a plugin-claimed site by delegating to the plugin's ``lower()``.
 
-        Core renders the operand sub-expressions and hands them to the
-        claiming provider through a :class:`LoweringContext`; the plugin
-        returns one Rust expression plus its support items
+        Core renders operand sub-expressions per ``claim.operand_mode`` and
+        hands them to the claiming provider through a :class:`LoweringContext`;
+        the plugin returns one Rust expression plus its support items
         (docs/specs/plugin-lowering.md section 3).
+
+        * ``direct`` (default) — only classic direct child operands; never
+          computes ``leaf_operands`` (no nested-fusion side effects for 1.1).
+        * ``leaves`` — only non-literal leaves by LTR ``leaf_index``; never
+          renders direct children (no nested plugin lower / intermediate
+          arrays). Fail closed if the tree cannot be aligned safely.
+
+        Codegen also enforces provider API version: ``api_version < 1.2``
+        providers always receive a legacy :class:`ClaimSite` (empty 1.2
+        metadata), never get ``leaf_operands``, and cannot use leaves-mode IR.
         """
         if self.mode != "pyo3":
             raise RustCodegenError(
@@ -1421,23 +1435,80 @@ class _FunctionRenderer:
                 f"no active lowering provider for plugin {claim.plugin_id!r} "
                 f"(claimed site {claim.target!r} in {self.function.qualname})"
             )
-        operands = tuple(self._render_plugin_operand(arg) for arg in operand_exprs)
-        site = ClaimSite(
-            kind=claim.kind,
-            target=claim.target,
-            operand_types=claim.operand_types,
-            file_path="",
-            line=0,
-            column=0,
-            # lower() receives the claim's own verdict so plugins with
-            # several same-shape rules can dispatch by rule id.
-            rule_id=claim.rule_id,
-            result_type=claim.result_type,
-        )
+        mode = claim.operand_mode
+        if mode not in {"direct", "leaves"}:
+            raise RustCodegenError(
+                f"plugin {claim.plugin_id!r} claim on {claim.target!r} in "
+                f"{self.function.qualname} has unsupported operand_mode {mode!r}; "
+                "expected 'direct' or 'leaves'"
+            )
+        provider_api = str(getattr(provider, "api_version", "1.0") or "1.0")
+        is_api_12 = _plugin_api_at_least(provider_api, 1, 2)
+        if not is_api_12:
+            # Defense in depth: even if analysis projected 1.2 fields onto IR,
+            # a legacy provider must not observe them or trigger leaf rendering.
+            if mode == "leaves":
+                raise RustCodegenError(
+                    f"plugin {claim.plugin_id!r} (api_version {provider_api!r}) "
+                    f"cannot lower site {claim.target!r} with operand_mode='leaves'; "
+                    "leaves mode requires api_version >= 1.2"
+                )
+            operands = tuple(self._render_plugin_operand(arg) for arg in operand_exprs)
+            leaf_operands: tuple[str, ...] = ()
+            site = ClaimSite(
+                kind=claim.kind,
+                target=claim.target,
+                operand_types=claim.operand_types,
+                file_path="",
+                line=0,
+                column=0,
+                rule_id=claim.rule_id,
+                result_type=claim.result_type,
+            )
+        elif mode == "leaves":
+            leaf_result = self._render_fusion_leaf_operands(claim.expression, operand_exprs)
+            if leaf_result is None:
+                raise RustCodegenError(
+                    f"plugin {claim.plugin_id!r} claimed site {claim.target!r} with "
+                    "operand_mode='leaves' but leaf operands could not be collected "
+                    f"safely in {self.function.qualname}"
+                )
+            leaf_operands = leaf_result  # may be () for all-literal leaves-safe trees
+            operands = ()
+            site = ClaimSite(
+                kind=claim.kind,
+                target=claim.target,
+                operand_types=claim.operand_types,
+                file_path="",
+                line=0,
+                column=0,
+                rule_id=claim.rule_id,
+                result_type=claim.result_type,
+                operand_literals=tuple(claim.operand_literals),
+                keywords=tuple(claim.keywords),
+                expression=claim.expression,
+            )
+        else:
+            operands = tuple(self._render_plugin_operand(arg) for arg in operand_exprs)
+            leaf_operands = ()
+            site = ClaimSite(
+                kind=claim.kind,
+                target=claim.target,
+                operand_types=claim.operand_types,
+                file_path="",
+                line=0,
+                column=0,
+                rule_id=claim.rule_id,
+                result_type=claim.result_type,
+                operand_literals=tuple(claim.operand_literals),
+                keywords=tuple(claim.keywords),
+                expression=claim.expression,
+            )
         ctx = LoweringContext(
             operands=operands,
             target_language="rust",
             fresh_name=self.next_temp,
+            leaf_operands=leaf_operands,
         )
         try:
             lowered = provider.lower(site, ctx)  # type: ignore[attr-defined]
@@ -1456,6 +1527,95 @@ class _FunctionRenderer:
         for helper in lowered.helpers:
             self.plugin_helpers.setdefault(helper)
         return f"({lowered.rust})"
+
+    def _render_fusion_leaf_operands(
+        self,
+        expression: ClaimExpr | None,
+        operand_exprs: list[ExprIR],
+    ) -> tuple[str, ...] | None:
+        """Render non-literal leaves in LTR ``leaf_index`` encounter order.
+
+        Returns:
+        * ``tuple[str, ...]`` on success, including ``()`` for a valid
+          leaves-safe all-literal expression (no non-literal leaves).
+        * ``None`` on alignment / index-sequence mismatch (fail closed).
+
+        The LTR DFS encounter sequence of ``leaf_index`` values must be
+        exactly ``0..n-1`` (no swaps, duplicates, or gaps). Nested plugin
+        claims are never invoked — intermediate structure is walked without
+        calling lower().
+        """
+        if expression is None:
+            return None
+        by_index: dict[int, ExprIR] = {}
+        encounter: list[int] = []
+        if not self._collect_leaves_by_index(expression, operand_exprs, by_index, encounter):
+            return None
+        # Encounter order itself must be 0..n-1 (not merely the set of keys).
+        if encounter != list(range(len(encounter))):
+            return None
+        return tuple(self._render_plugin_operand(by_index[i]) for i in encounter)
+
+    def _collect_leaves_by_index(
+        self,
+        expression: ClaimExpr,
+        operand_exprs: list[ExprIR] | ExprIR,
+        by_index: dict[int, ExprIR],
+        encounter: list[int],
+    ) -> bool:
+        """Fill ``by_index`` / ``encounter`` from a ClaimExpr tree; False on mismatch."""
+        if expression.kind == "literal":
+            return True
+        if expression.kind == "leaf":
+            if expression.leaf_index is None:
+                return False
+            if expression.leaf_index in by_index:
+                return False  # duplicate index
+            if isinstance(operand_exprs, list):
+                if len(operand_exprs) != 1:
+                    return False
+                ir_node: ExprIR = operand_exprs[0]
+            else:
+                ir_node = operand_exprs
+            # Opaque/name leaves must be terminals in IR (no nested claim structure).
+            if isinstance(ir_node, (BinaryOpIR, CallIR)):
+                return False
+            by_index[expression.leaf_index] = ir_node
+            encounter.append(expression.leaf_index)
+            return True
+        if expression.kind == "binop":
+            if len(expression.children) != 2:
+                return False
+            if isinstance(operand_exprs, list):
+                if len(operand_exprs) != 2:
+                    return False
+                left_ir, right_ir = operand_exprs[0], operand_exprs[1]
+            elif isinstance(operand_exprs, BinaryOpIR):
+                left_ir, right_ir = operand_exprs.left, operand_exprs.right
+            else:
+                return False
+            return self._collect_leaves_by_index(
+                expression.children[0], left_ir, by_index, encounter
+            ) and self._collect_leaves_by_index(
+                expression.children[1], right_ir, by_index, encounter
+            )
+        if expression.kind == "call":
+            # Root call: children align with positional args only.
+            if isinstance(operand_exprs, list):
+                if len(operand_exprs) != len(expression.children):
+                    return False
+                args = operand_exprs
+            elif isinstance(operand_exprs, CallIR):
+                if len(operand_exprs.args) != len(expression.children):
+                    return False
+                args = operand_exprs.args
+            else:
+                return False
+            for child_expr, arg_ir in zip(expression.children, args, strict=True):
+                if not self._collect_leaves_by_index(child_expr, arg_ir, by_index, encounter):
+                    return False
+            return True
+        return False
 
     def render_call(self, expr: CallIR) -> str:
         if expr.claim is not None:
@@ -1510,13 +1670,17 @@ class _FunctionRenderer:
             return "std::f64::consts::PI"
         if expr.function == "math.e" and not expr.args:
             return "std::f64::consts::E"
-        if expr.function in {
-            "math.atan",
-            "math.cos",
-            "math.exp",
-            "math.sin",
-            "math.tan",
-        } and len(expr.args) == 1:
+        if (
+            expr.function
+            in {
+                "math.atan",
+                "math.cos",
+                "math.exp",
+                "math.sin",
+                "math.tan",
+            }
+            and len(expr.args) == 1
+        ):
             method = expr.function.rsplit(".", 1)[1]
             return f"({self.render_expr(expr.args[0])}).{method}()"
         # Domain-error-prone math functions: CPython raises ValueError only for
@@ -1598,7 +1762,7 @@ class _FunctionRenderer:
                 ".as_secs_f64()"
             )
         if expr.function == "hashlib.sha256.hexdigest" and len(expr.args) == 1:
-            return f"format!(\"{{:x}}\", sha2::Sha256::digest(&{strip_wrapping_parens(self.render_call_arg(expr.args[0]))}))"
+            return f'format!("{{:x}}", sha2::Sha256::digest(&{strip_wrapping_parens(self.render_call_arg(expr.args[0]))}))'
         if expr.function == "base64.b64encode" and len(expr.args) == 1:
             return (
                 "base64::engine::general_purpose::STANDARD"
@@ -1628,7 +1792,7 @@ class _FunctionRenderer:
         lines: list[str] = []
         json_values: list[str] = []
         to_value = (
-            'serde_json::to_value(&{name})'
+            "serde_json::to_value(&{name})"
             '.map_err(|e| RextioError::new("RuntimeError", e.to_string()))?'
         )
         for arg in expr.args:
@@ -1710,8 +1874,7 @@ class _FunctionRenderer:
         caller = self.function.qualname
         target = expr.function
         call_stmt = (
-            'let __rextio_bval = __rextio_bhook.call1(('
-            f'"{caller}", "{target}", {args_tuple}))?;'
+            f'let __rextio_bval = __rextio_bhook.call1(("{caller}", "{target}", {args_tuple}))?;'
         )
         # Resolved per call: PyModule::import is a sys.modules hit after the
         # first import, and per-call resolution is what keeps monkeypatched
@@ -1750,10 +1913,7 @@ class _FunctionRenderer:
             # with None while the fallback computes with the real value - a
             # SILENT divergence. Raising converts the annotation lie into a
             # loud error instead.
-            err = (
-                f'pyo3::exceptions::PyTypeError::new_err('
-                f'"{target} was expected to return None")'
-            )
+            err = f'pyo3::exceptions::PyTypeError::new_err("{target} was expected to return None")'
             closure = (
                 "Python::attach(|py| -> PyResult<()> { "
                 f"{prologue} {call_stmt} "
@@ -1763,9 +1923,7 @@ class _FunctionRenderer:
         # The analyzer's _is_delegatable gate authorizes only immutable
         # scalars; reject anything else so a regression there is a clean
         # build failure rather than a silent aliasing-severing copy.
-        raise RustCodegenError(
-            f"boundary call return type is not supported: {return_type_name}"
-        )
+        raise RustCodegenError(f"boundary call return type is not supported: {return_type_name}")
 
     def _convert_json_value(self, value_var: str, type_name: str, qualname: str) -> str:
         """Rust expression converting the already-bound JSON ``value_var`` to a type."""
@@ -1833,10 +1991,7 @@ class _FunctionRenderer:
             # message, so it would require threading the decode-position data
             # (`str::from_utf8(...).valid_up_to()`) through to the wrapper boundary
             # where `py` is available. Valid UTF-8 decodes identically.
-            return (
-                f"String::from_utf8({receiver})"
-                f"{self.map_err_to_error()}"
-            )
+            return f"String::from_utf8({receiver}){self.map_err_to_error()}"
         if expr.function in {"str.startswith", "str.endswith"} and len(expr.args) == 2:
             method = "starts_with" if expr.function == "str.startswith" else "ends_with"
             value = strip_wrapping_parens(self.render_call_arg(expr.args[1]))
@@ -1845,7 +2000,9 @@ class _FunctionRenderer:
             old = strip_wrapping_parens(self.render_call_arg(expr.args[1]))
             new = strip_wrapping_parens(self.render_call_arg(expr.args[2]))
             return f"{receiver}.replace(&{old}, &{new})"
-        raise RustCodegenError(f"unsupported string/bytes method during Rust codegen: {expr.function}")
+        raise RustCodegenError(
+            f"unsupported string/bytes method during Rust codegen: {expr.function}"
+        )
 
     def render_list_method(self, expr: CallIR) -> str:
         receiver = strip_wrapping_parens(self.render_call_arg(expr.args[0]))
@@ -1971,7 +2128,11 @@ class _FunctionRenderer:
             if same_type(actual_type, expected_type.item_type):
                 return f"Some({strip_expr_if_safe(expr, rendered)})"
             return rendered
-        if isinstance(expected_type, RxtNone) and isinstance(expr, LiteralIR) and expr.value is None:
+        if (
+            isinstance(expected_type, RxtNone)
+            and isinstance(expr, LiteralIR)
+            and expr.value is None
+        ):
             return "()"
         return self.render_expr(expr)
 
@@ -2188,26 +2349,20 @@ class _FunctionRenderer:
         if not args:
             if allow_empty:
                 return f"{macro}()"
-            return f"{macro}(\"\")"
+            return f'{macro}("")'
         placeholders = " ".join(self.format_placeholder(arg) for arg in args)
         rendered_args = ", ".join(self.render_format_arg(arg) for arg in args)
         return f"{macro}({rust_string_literal(placeholders)}, {rendered_args})"
 
     def render_logging_macro(self, macro: str, args: list[ExprIR]) -> str:
-        if (
-            len(args) > 1
-            and isinstance(args[0], LiteralIR)
-            and isinstance(args[0].value, str)
-        ):
+        if len(args) > 1 and isinstance(args[0], LiteralIR) and isinstance(args[0].value, str):
             converted = python_logging_format_segments(args[0].value)
             if converted is not None:
                 segments, specifiers = converted
                 if len(specifiers) == len(args) - 1:
                     parts: list[str] = [segments[0]]
                     rendered_args: list[str] = []
-                    for spec, arg, segment in zip(
-                        specifiers, args[1:], segments[1:], strict=True
-                    ):
+                    for spec, arg, segment in zip(specifiers, args[1:], segments[1:], strict=True):
                         arg_type = self.infer_expr_type(arg)
                         rendered = strip_wrapping_parens(self.render_call_arg(arg))
                         if spec == "f":
@@ -2272,16 +2427,13 @@ class _FunctionRenderer:
             # `str | None | None`); guard the invariant explicitly.
             if isinstance(expr_type.item_type, RxtOptional):
                 raise RustCodegenError(
-                    "nested Optional has no native text lowering "
-                    "(analyzer gate out of sync)"
+                    "nested Optional has no native text lowering (analyzer gate out of sync)"
                 )
             payload = self.next_temp("__rextio_some")
             if isinstance(expr_type.item_type, RxtStr):
                 inner = f"{payload}.clone()"
             else:
-                inner = self.render_container_repr_leaf(
-                    expr_type.item_type, payload, by_ref=True
-                )
+                inner = self.render_container_repr_leaf(expr_type.item_type, payload, by_ref=True)
             return (
                 f"(match &({rendered}) {{ "
                 f'None => "None".to_string(), '
@@ -2339,9 +2491,7 @@ class _FunctionRenderer:
         if isinstance(expr_type, RxtTuple):
             source = value if not by_ref else f"(*{value})"
             fields = [
-                self.render_container_repr_leaf(
-                    item_type, f"({source}).{index}", by_ref=False
-                )
+                self.render_container_repr_leaf(item_type, f"({source}).{index}", by_ref=False)
                 for index, item_type in enumerate(expr_type.item_types)
             ]
             if len(fields) == 1:
@@ -2350,17 +2500,12 @@ class _FunctionRenderer:
             return f'format!("({placeholders})", {", ".join(fields)})'
         if isinstance(expr_type, RxtOptional):
             payload = self.next_temp("__rextio_some")
-            inner = self.render_container_repr_leaf(
-                expr_type.item_type, payload, by_ref=True
-            )
+            inner = self.render_container_repr_leaf(expr_type.item_type, payload, by_ref=True)
             return (
-                f"(match &({value}) {{ "
-                f"None => \"None\".to_string(), "
-                f"Some({payload}) => {inner} }})"
+                f'(match &({value}) {{ None => "None".to_string(), Some({payload}) => {inner} }})'
             )
         raise RustCodegenError(
-            f"container repr of type {expr_type!r} is not composable "
-            "(analyzer gate out of sync)"
+            f"container repr of type {expr_type!r} is not composable (analyzer gate out of sync)"
         )
 
     def render_container_repr_leaf(self, expr_type: RxtType, value: str, *, by_ref: bool) -> str:
@@ -2537,7 +2682,11 @@ def target_names(target: TargetIR) -> set[str]:
 
 def literal_int(expr: ExprIR) -> int | None:
     """Return the integer value of an expression if it is an int literal, else None."""
-    if isinstance(expr, LiteralIR) and isinstance(expr.value, int) and not isinstance(expr.value, bool):
+    if (
+        isinstance(expr, LiteralIR)
+        and isinstance(expr.value, int)
+        and not isinstance(expr.value, bool)
+    ):
         return expr.value
     return None
 

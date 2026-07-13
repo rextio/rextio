@@ -96,7 +96,9 @@ class _PluginLoweringState:
     """Per-function plugin state consulted while lowering one function."""
 
     # (line, column) of the claimed AST node -> the analyzer claim.
-    claims: dict[tuple[str, int, int, int | None, int | None], PluginClaim] = field(default_factory=dict)
+    claims: dict[tuple[str, int, int, int | None, int | None], PluginClaim] = field(
+        default_factory=dict
+    )
     type_maps: PluginTypeMaps | None = None
     # The function's resolved import map (visible name -> dotted target),
     # used to resolve plugin annotation spellings like the claim engine does.
@@ -147,7 +149,9 @@ def lower_project(
         )
         module = _module_for_top_level(analysis, top_level)
         if module is None:
-            raise LoweringError(f"module was not found for accepted top level: {top_level.qualname}")
+            raise LoweringError(
+                f"module was not found for accepted top level: {top_level.qualname}"
+            )
         functions.append(lower_top_level(top_level, tree, module, resolver))
     return module_from_functions(functions)
 
@@ -217,10 +221,7 @@ def lower_function(
     )
     try:
         args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
-        params = [
-            ParamIR(name=arg.arg, type=_argument_type(function, arg))
-            for arg in args
-        ]
+        params = [ParamIR(name=arg.arg, type=_argument_type(function, arg)) for arg in args]
         return_type = _return_type(function, node)
         plugin_lowered = (
             bool(function.plugin_claims)
@@ -250,15 +251,14 @@ def lower_top_level(
 ) -> FunctionIR:
     """Lower supported module top-level initialization into a synthetic ``FunctionIR``."""
     if top_level.export_value_type is None:
-        raise LoweringError(f"missing export value type for top-level native init: {top_level.qualname}")
+        raise LoweringError(
+            f"missing export value type for top-level native init: {top_level.qualname}"
+        )
     statements = lower_block(collect_native_top_level_statements(tree), module, resolver).statements
     statements.append(
         ReturnIR(
             DictIR(
-                items=[
-                    (LiteralIR(name), NameIR(name))
-                    for name in sorted(top_level.assigned_types)
-                ]
+                items=[(LiteralIR(name), NameIR(name)) for name in sorted(top_level.assigned_types)]
             )
         )
     )
@@ -284,7 +284,9 @@ def _argument_type(function: FunctionAnalysis, arg: ast.arg) -> RxtType:
     return type_from_string(inferred)
 
 
-def _return_type(function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef) -> RxtType:
+def _return_type(
+    function: FunctionAnalysis, node: ast.FunctionDef | ast.AsyncFunctionDef
+) -> RxtType:
     if node.returns is not None:
         plugin_type = _plugin_annotation_type(node.returns)
         if plugin_type is not None:
@@ -352,6 +354,10 @@ def _plugin_claim_ir(node: ast.AST, kind: str) -> PluginClaimIR | None:
         target=claim.target,
         operand_types=claim.operand_types,
         result_type=claim.result_type,
+        operand_literals=claim.operand_literals,
+        keywords=claim.keywords,
+        expression=claim.expression,
+        operand_mode=claim.operand_mode,
     )
 
 
@@ -369,7 +375,7 @@ def _runtime_fallback_module(module: ModuleAnalysis) -> str:
 
 def _function_node_key(function: FunctionAnalysis) -> str:
     if function.module_name and function.qualname.startswith(f"{function.module_name}."):
-        return function.qualname[len(function.module_name) + 1:]
+        return function.qualname[len(function.module_name) + 1 :]
     return function.qualname
 
 
@@ -434,7 +440,9 @@ def lower_statement(
             if not isinstance(call, CallIR):
                 raise LoweringError("effect call did not lower to a call expression")
             return EffectCallIR(call=call)
-        raise LoweringError(f"unsupported expression statement during IR lowering: {type(node.value).__name__}")
+        raise LoweringError(
+            f"unsupported expression statement during IR lowering: {type(node.value).__name__}"
+        )
     if isinstance(node, ast.Break):
         return BreakIR()
     if isinstance(node, ast.Continue):
@@ -569,7 +577,9 @@ def lower_expr(
         return CompareIR(
             left=lower_expr(node.left, module, resolver),
             ops=[lower_compare_op(op) for op in node.ops],
-            comparators=[lower_expr(comparator, module, resolver) for comparator in node.comparators],
+            comparators=[
+                lower_expr(comparator, module, resolver) for comparator in node.comparators
+            ],
         )
     if isinstance(node, ast.Call):
         claim = _plugin_claim_ir(node, "call")
@@ -720,7 +730,11 @@ def _lower_call_args(
     module: ModuleAnalysis,
     resolver: FunctionResolver,
 ) -> list[ExprIR]:
-    if target in STR_METHOD_TARGETS or target in LIST_METHOD_TARGETS or target in BYTES_METHOD_TARGETS:
+    if (
+        target in STR_METHOD_TARGETS
+        or target in LIST_METHOD_TARGETS
+        or target in BYTES_METHOD_TARGETS
+    ):
         if not isinstance(node.func, ast.Attribute):
             raise LoweringError(f"{target} receiver cannot be lowered")
         return [

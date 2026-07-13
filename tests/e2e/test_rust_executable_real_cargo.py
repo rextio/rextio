@@ -11,7 +11,9 @@ import pytest
 from rextio.cli.main import main
 
 
-@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for the Rust executable e2e")
+@pytest.mark.skipif(
+    shutil.which("cargo") is None, reason="cargo is required for the Rust executable e2e"
+)
 def test_real_cargo_builds_rust_main_executable_and_it_runs(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -55,7 +57,9 @@ def main(argv: list[str]) -> int:
     assert exit_code == 0
     capsys.readouterr()
 
-    report = json.loads((tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8"))
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
     executable = report["executable_build"]
     assert executable["status"] == "built", executable
     assert executable["backend"] == "rust"
@@ -89,7 +93,9 @@ def main(argv: list[str]) -> int:
         assert "ValueError: command-line argument is not valid UTF-8" in invalid.stderr
 
 
-@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for the Rust executable e2e")
+@pytest.mark.skipif(
+    shutil.which("cargo") is None, reason="cargo is required for the Rust executable e2e"
+)
 def test_rust_main_executable_with_embedding_config_embeds_unmarked_helper(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -135,7 +141,9 @@ def main(argv: list[str]) -> int:
     assert exit_code == 0
     capsys.readouterr()
 
-    report = json.loads((tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8"))
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
     executable = report["executable_build"]
     assert executable["status"] == "built", executable
     binary = Path(executable["path"])

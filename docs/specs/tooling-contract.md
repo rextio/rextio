@@ -1,6 +1,7 @@
 # Spec: Machine-Readable Tooling Contract
 
-Status: **draft** (targets 0.1.1, experimental tier)
+Status: **draft** (experimental tier; current producer `contract_version` is
+`2.0.0`)
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
 ## Purpose
@@ -16,27 +17,84 @@ consume instead:
    manifest** of a project (core subset rules + active plugin rules).
 4. A **plugin self-description protocol** so plugin rules appear in the manifest.
 
-Everything here is additive. Existing `check.json` consumers keep working.
-
 ## Contract versioning
 
-Both JSON surfaces gain a top-level field:
+Both JSON surfaces carry a top-level field:
 
 ```json
-{ "contract_version": "1.0.0" }
+{ "contract_version": "2.0.0" }
 ```
 
-SemVer over the *contract*, independent of the rextio package version. Additive
-fields bump minor; renames/removals bump major. Consumers must tolerate unknown
-fields and check `contract_version` compatibility, degrading to generic guidance
-on mismatch.
+SemVer over the *contract* (shape **and** position semantics), independent of
+the rextio package version. Additive fields bump minor; renames, removals, or
+semantics changes that would mislead old consumers bump major. Consumers must
+tolerate unknown fields and check `contract_version` compatibility, degrading
+to generic guidance when the major is outside what they support.
 
-`1.0.0` covers the entire pre-release 0.1.1 line: fields added before the first
+| Version | Meaning |
+|---|---|
+| `1.0.0` | First public producer line (rextio 0.1.1). Route/status fields + capability manifest. **Exception:** `RXT000` (syntax-error) `column` was CPython `SyntaxError.offset` — a **1-based Unicode code-point** index — not the UTF-8 byte offset used by every other diagnostic. |
+| `2.0.0` | **Breaking position semantics.** Every diagnostic `column` / `end_column`, including `RXT000`, is a **0-based UTF-8 byte offset** into the line (`ast.col_offset` convention). No field renames. |
+
+Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
+on the contract **major** and applied a special-case RXT000 code-point map.
+A minor bump (`1.1.0`) would be silently accepted and would **misplace**
+RXT000 under the new UTF-8 producer. A major forces major-1-only consumers to
+the unsupported/degraded path instead of a false “supported” mapping.
+
+`1.0.0` covered the entire pre-release 0.1.1 line: fields added before the first
 tagged release (`plugin_type_keys`, rule records, RXT091/RXT092) did not bump
 the version because no consumer could have shipped against an earlier manifest
-generation. From the first release onward this shortcut is closed — **any
-post-release additive change MUST bump the contract minor version** so
-consumers can distinguish manifest generations.
+generation. From the first release onward that shortcut is closed — **any
+post-release additive change MUST bump the contract minor**, and **any
+incompatible position or field semantics change MUST bump the major**.
+
+### Positions
+
+- `line` / `end_line`: **1-based** (Python `ast` line numbers).
+- `column` / `end_column`: **0-based UTF-8 byte offsets** into that line
+  (Python `ast.col_offset` / `end_col_offset`), for **every** diagnostic code
+  under contract `2.x`.
+- A missing/null position (CPython can emit `None` for some `SyntaxError`
+  locations) serializes as JSON `null`; consumers should coerce to safe
+  defaults rather than aborting the whole report.
+
+LSP and other UTF-16 editors must convert byte offsets to UTF-16 code units
+using the document line text. Do not treat columns as code points or as
+UTF-16 units.
+
+### Compatibility and release ordering
+
+This is a **protocol** contract change, not a package SemVer claim. Package
+versions (rextio / rextio-lsp) ship on their own schedules.
+
+| Producer (core) | Consumer (LSP) | RXT000 placement |
+|---|---|---|
+| contract `1.x` (legacy column) | major-1-only (rextio-lsp 0.1.0) | Correct via legacy code-point special case |
+| contract `1.x` | majors `{1,2}` with dual map | Correct via legacy branch |
+| contract `2.x` (UTF-8 column) | majors `{1,2}` with dual map | Correct via standardized branch |
+| contract `2.x` | major-1-only | **Unsupported major** → degraded guidance; do not treat as supported. Residual risk: pre-dual-map servers may still render a range using the old RXT000 special case |
+
+**Release-order gate (required; strict sequence, not simultaneous)**
+
+Publish related packages in this order only:
+
+1. **rextio-lsp 0.1.1 first** — dual-map consumer for contract majors `{1, 2}`
+   with version-aware RXT000 mapping. Must be available before any
+   contract-`2.x` core is published.
+2. **Core 0.1.2 second** — emits `contract_version` `2.0.0`.
+3. **rextio-numpy 0.1.1 third** — plugin API 1.2 consumer (literal-axis /
+   fusion / leaves-mode surface). Must not publish before core ships API 1.2.
+
+Do **not** ship LSP simultaneously with or after core, and do **not** ship
+rextio-numpy 0.1.1 before core 0.1.2. Core has no runtime dependency on
+rextio-lsp or rextio-numpy — these are deployment ordering constraints, not
+package dependencies.
+
+**Core must not publish alone first.** A contract-`2.x` producer against
+major-1-only rextio-lsp 0.1.0 is an unsupported pairing (degraded guidance at
+best; residual risk of mis-rendered RXT000 ranges if a server still applies
+the old special case).
 
 ## Route taxonomy
 
@@ -120,8 +178,8 @@ in registry order, then plugin rules and the `plugins` array sorted by id.
 
 ```json
 {
-  "contract_version": "1.0.0",
-  "rextio_version": "0.1.1",
+  "contract_version": "2.0.0",
+  "rextio_version": "0.1.2",
   "project_root": "/abs/path",
   "config_fingerprint": "<sha256 of resolved config>",
   "target": { "language": "rust" },
@@ -212,7 +270,7 @@ class RextioPluginV2(Protocol):
         # -> list of RuleRecord (L2 required, L3 fields optional)
 
     # Lowering hooks (type_vocabulary/claim/lower/crate_dependencies) are
-    # plugin API 1.1 - specified separately in plugin-lowering.md.
+    # plugin API 1.1+ (1.2 additive claim metadata) - specified separately in plugin-lowering.md.
 ```
 
 - **Discovery** stays on the `rextio.plugins` entry-point group. A v2 plugin is
@@ -237,10 +295,16 @@ class RextioPluginV2(Protocol):
 
 ## Rollout
 
-1. 0.1.1: land route fields + `contract_version` in check JSON; add
-   `capabilities` command with core rules only; add RXT091 to the registry;
-   document in `docs/stability.md` as experimental.
+1. **0.1.1 (published on PyPI):** land route fields + `contract_version`
+   `1.0.0` in check JSON; add `capabilities` command with core rules only; add
+   RXT091 to the registry; document in `docs/stability.md` as experimental.
 2. rextio-numpy becomes the first `describe()` implementation; its rule records
    validate the plugin merge path.
-3. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
+3. **0.1.2 RC (this line; not yet tagged/uploaded):** contract `2.0.0` —
+   normalize `RXT000` columns to 0-based UTF-8 byte offsets. **Release-order
+   gate (strict):** rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 (see
+   §Compatibility and release ordering). Core must not publish alone first;
+   numpy 0.1.1 must not publish before core. Consumers that support only major
+   1 must degrade; dual-map consumers keep mapping both 1.x and 2.x correctly.
+4. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

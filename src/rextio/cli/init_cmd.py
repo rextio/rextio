@@ -5,6 +5,7 @@ from __future__ import annotations
 from argparse import Namespace
 from pathlib import Path
 
+from rextio.__about__ import __version__
 from rextio.cli.reporter import Reporter
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS
 
@@ -62,9 +63,9 @@ boundary_warnings = true
 native_top_level = false
 """
 
-DEFAULT_REXTIO_MD = """# Rextio Project
+DEFAULT_REXTIO_MD = f"""# Rextio Project
 
-This project is configured for the Rextio 0.1.0 alpha-stage workflow.
+This project is configured for the Rextio {__version__} alpha-stage workflow.
 
 Rextio discovers eligible typed Python functions automatically. To require
 explicit markers, set `[policy] native_marker = "decorator"` and mark functions

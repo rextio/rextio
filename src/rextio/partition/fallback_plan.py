@@ -30,9 +30,7 @@ class FallbackModulePlan:
         return {
             "module": self.module.module_name,
             "needs_wrapper": self.needs_wrapper,
-            "accepted_native": [
-                function.qualname for function in self.accepted_native_functions
-            ],
+            "accepted_native": [function.qualname for function in self.accepted_native_functions],
             "accepted_native_top_level": (
                 self.accepted_native_top_level.qualname
                 if self.accepted_native_top_level is not None

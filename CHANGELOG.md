@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.1.2 — 2026-07-14
+
+**Published release.** Package version `0.1.2` is tagged and published to PyPI
+on 2026-07-14, and is now the latest released core package, superseding
+**0.1.1** (2026-07-12). `pip install rextio` installs 0.1.2.
+
+**Release-order gate (tooling contract 2.0; strict sequence):** publish
+related packages in this order only — **rextio-lsp 0.1.1** (dual-map contract
+majors `{1, 2}`) **first**, then **core 0.1.2**, then **rextio-numpy 0.1.1**
+(plugin API 1.2 consumer). Do not ship LSP simultaneously with or after core,
+and do not ship rextio-numpy 0.1.1 before core. Core **must not** publish alone
+first: a contract-`2.0.0` producer against major-1-only LSP mis-pairs RXT000
+columns. See `docs/specs/tooling-contract.md`. Core has no runtime dependency
+on `rextio-lsp` or `rextio-numpy`.
+
+### Tooling contract 2.0.0 (protocol)
+
+- **Breaking protocol change:** `contract_version` advances to `2.0.0`.
+  `RXT000` (syntax-error) diagnostic `column` is now a **0-based UTF-8 byte
+  offset** into the line, matching every other diagnostic and `ast.col_offset`.
+  Contract `1.x` (PyPI 0.1.1) left `RXT000.column` as CPython's 1-based Unicode
+  code-point `SyntaxError.offset`.
+- Major (not minor) so consumers that gate only on major 1 refuse the
+  unsupported path instead of silently mis-mapping RXT000. See
+  `docs/specs/tooling-contract.md` (positions, compatibility, release
+  ordering).
+
+### Plugin API 1.2 (backward-compatible)
+
+- Additive plugin API **1.2** on the same major as 1.1 (API 1.1 plugins keep
+  loading). Core advertises `PLUGIN_API_VERSION = "1.2"`.
+- **Static literal / ordered keyword metadata** on claim sites
+  (`operand_literals`, ordered `keywords`) for version-gated offers to API
+  ≥ 1.2 providers. This surface **enables literal-axis claims and lowering**
+  (for example `axis=0` keyword literals).
+- **Structured `ClaimExpr` trees** so plugins can reason about nested covered
+  expressions without seeing core IR.
+- **Leaves-mode lowering** (`operand_mode` `direct` | `leaves` with
+  `leaf_operands` on `LoweringContext`) **enables fusion-aware** expression
+  emission (one helper over non-literal leaves of a multi-op tree). Leaves
+  mode is the fusion path; it is **not** the literal-axis path.
+- Together these Wave 2 surfaces are used by the already-implemented but
+  **untagged** rextio-numpy **0.1.1 RC** (literal-axis *and* fusion work; not
+  published on PyPI; the published rextio-numpy line remains 0.1.0). API 1.1
+  providers retain legacy keyword-not-offered semantics and never receive
+  leaves-mode data. See `docs/specs/plugin-lowering.md`.
+
+### Diagnostics and CLI
+
+- User-visible release-version strings now derive from
+  `rextio.__about__.__version__` instead of a hardcoded `0.1.0` /
+  `0.1.0-alpha`. This fixes stale version text in RXT diagnostic suggestions and
+  messages, `rextio` CLI `--help` output, config-validation errors, target-spec
+  warnings, and the `rextio init` `REXTIO.md` template, so they track the
+  installed version. Wording of version-agnostic messages was reworded to the
+  "native subset" where no version belongs.
+
+### Documentation
+
+- Hybrid Rust executable (subprocess delegate): document that a delegated
+  `SystemExit` / `sys.exit(n)` int code is honored only when representable as
+  a signed `i64` (Rust client `serde_json::Value::as_i64`). After consume the
+  value is cast to `i32` and OS process-status width applies — prefer portable
+  `0..255`. Python ints outside signed `i64` still serialize on the wire but
+  are not faithfully modeled as process exits: the client surfaces a
+  malformed-response `RuntimeError` rather than terminating with the intended
+  status (not CPython-equivalent for oversized codes). This is distinct from
+  direct-native `main` return semantics (compile-time `int`→`i64` lowering,
+  then the same `i64`→`i32` / platform truncation). See README and
+  `docs/unsupported-features.md`.
+
 ## 0.1.1 — 2026-07-12
 
 Contract-and-plugins release: the machine-readable tooling contract for
@@ -108,8 +179,10 @@ CPython-equivalent fallback instead of being mis-accelerated.
 - Hybrid-executable subprocess delegate: a protocol-version handshake and
   dead-bridge re-spawn, and a delegated `sys.exit()`/`KeyboardInterrupt` is
   forwarded as a distinct `{"exit": code}` frame that the Rust executable
-  honors with the right exit code (bool codes normalized to `0`/`1`) instead of
-  always exiting `1`.
+  honors when the int code is representable as signed `i64` (bool codes
+  normalized to `0`/`1`; then cast to `i32` / platform status width — prefer
+  `0..255`) instead of always exiting `1`. Python ints outside signed `i64`
+  are not CPython-equivalent on this path (see 0.1.2 documentation).
 - Certification kit: dual-leg equivalence uses deep-copied arguments and sets
   the native/fallback env before import; strided (non-contiguous) arrays are
   certified for real rather than being silently flattened.

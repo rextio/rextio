@@ -89,7 +89,9 @@ def build_certification_project(
     report_path = root / ".rextio" / "reports" / "build.json"
     report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
     if exit_code != 0:
-        raise CertificationError(f"rextio build failed for {root} (exit {exit_code}): {report.get('status')}")
+        raise CertificationError(
+            f"rextio build failed for {root} (exit {exit_code}): {report.get('status')}"
+        )
     native_build = report.get("native_build") or {}
     if native_build.get("status") != "built":
         raise CertificationError(
@@ -320,9 +322,7 @@ class EquivalenceChecker:
     ) -> None:
         if self.args_equals is None:
             return
-        for index, (native_arg, fallback_arg) in enumerate(
-            zip(native_args, fallback_args)
-        ):
+        for index, (native_arg, fallback_arg) in enumerate(zip(native_args, fallback_args)):
             if not self.args_equals(native_arg, fallback_arg):
                 raise CertificationError(
                     f"{self._site()} argument {index} diverged after the call for "

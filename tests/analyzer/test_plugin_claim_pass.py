@@ -87,7 +87,7 @@ def make_registry(*providers: object) -> PluginRegistry:
                 name=plugin_id,
                 packages=("numpy",),
                 rules_provided=True,
-                api_version="1.1",
+                api_version=getattr(provider, "api_version", "1.1"),
                 lowering_provided=True,
             )
         )
@@ -195,6 +195,46 @@ def mean(a: F64Arr1) -> float:
     rejection = next(d for d in function.diagnostics if d.code == "RXTP-NUMPY-010")
     assert rejection.function_name == "myapp.kernels.mean"
     assert rejection.line > 0
+    assert not any(d.code == "RXT030" for d in function.diagnostics)
+
+
+def test_rejected_keyword_call_delivers_plugin_diagnostic_not_rxt010(
+    tmp_path: Path,
+) -> None:
+    # Plugin API 1.2 regression: Rejected keyword calls (e.g. np.mean(a, axis=0))
+    # must keep the deferred plugin diagnostic and must NOT be replaced by
+    # generic RXT010 keyword rejection (which previously demoted auto
+    # candidates to silent not-candidate with empty rejections).
+    # Keyword offers are gated to api_version >= 1.2.
+    class RejectingMean12(NumpyProvider):
+        api_version = "1.2"
+
+    write_module(
+        tmp_path,
+        """
+import numpy as np
+from rextio_numpy.types import F64Arr1
+
+def mean(a: F64Arr1) -> float:
+    return np.mean(a, axis=0)
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=make_registry(RejectingMean12()),
+        plugin_config=RextioConfig(),
+    )
+
+    function = function_named(analysis, "myapp.kernels.mean")
+    assert function.native_status == "rejected"
+    assert function.route == "fallback-python"
+    assert "RXTP-NUMPY-010" in function.rejection_codes
+    assert function.plugin_claim_rejections
+    assert function.plugin_claim_rejections[0].kind == "call"
+    assert function.plugin_claim_rejections[0].end_line is not None
+    assert function.plugin_claim_rejections[0].end_column is not None
+    assert any(d.code == "RXTP-NUMPY-010" for d in function.diagnostics)
+    assert not any(d.code == "RXT010" for d in function.diagnostics)
     assert not any(d.code == "RXT030" for d in function.diagnostics)
 
 
@@ -334,9 +374,10 @@ def fresh(a: F64Arr1, b: F64Arr1) -> F64Arr1:
     for name in ("identity", "renamed"):
         function = function_named(analysis, f"myapp.kernels.{name}")
         assert function.accepted is False, name
-        assert any(
-            "alias" in diagnostic.message for diagnostic in function.error_diagnostics
-        ), (name, function.diagnostics)
+        assert any("alias" in diagnostic.message for diagnostic in function.error_diagnostics), (
+            name,
+            function.diagnostics,
+        )
     fresh = function_named(analysis, "myapp.kernels.fresh")
     assert fresh.accepted is True
 
@@ -415,9 +456,10 @@ def cond_rebind_still_alias(a: F64Arr1, b: F64Arr1, flag: bool) -> F64Arr1:
     for name in rejected:
         function = function_named(analysis, f"myapp.kernels.{name}")
         assert function.accepted is False, name
-        assert any(
-            "alias" in diagnostic.message for diagnostic in function.error_diagnostics
-        ), (name, function.diagnostics)
+        assert any("alias" in diagnostic.message for diagnostic in function.error_diagnostics), (
+            name,
+            function.diagnostics,
+        )
     # Straight-line rebinding to a computed value clears alias status: both
     # legs bind a fresh object, so returning the name is legal.
     for name in ("rebound_param", "rebound_alias"):
@@ -454,8 +496,7 @@ def accumulate(a: F64Arr1, b: F64Arr1) -> float:
     function = function_named(analysis, "myapp.kernels.accumulate")
     assert function.accepted is False
     assert any(
-        "aliasing semantics" in diagnostic.message
-        for diagnostic in function.error_diagnostics
+        "aliasing semantics" in diagnostic.message for diagnostic in function.error_diagnostics
     ), function.diagnostics
 
 
@@ -529,12 +570,8 @@ def test_claim_cache_distinguishes_unresolved_operand_types(tmp_path: Path) -> N
     node = ast.parse("numpy.dot(a, b)").body[0].value
 
     unresolved = engine.claim_call(function, node, "numpy.dot", (None, F64_ARR1.key))
-    resolved = engine.claim_call(
-        function, node, "numpy.dot", (F64_ARR1.key, F64_ARR1.key)
-    )
-    cached = engine.claim_call(
-        function, node, "numpy.dot", (F64_ARR1.key, F64_ARR1.key)
-    )
+    resolved = engine.claim_call(function, node, "numpy.dot", (F64_ARR1.key, F64_ARR1.key))
+    cached = engine.claim_call(function, node, "numpy.dot", (F64_ARR1.key, F64_ARR1.key))
 
     assert unresolved == (False, None)
     assert resolved == (True, "float")
@@ -565,7 +602,10 @@ def test_two_plugins_types_in_one_signature_join_the_route(tmp_path: Path) -> No
         enabled=registry.enabled,
         discovered=registry.discovered,
         active=registry.active,
-        types=(*registry.types, PluginTypeBinding(plugin_id="rextio-other", plugin_type=other_type)),
+        types=(
+            *registry.types,
+            PluginTypeBinding(plugin_id="rextio-other", plugin_type=other_type),
+        ),
         providers=registry.providers,
     )
     write_module(

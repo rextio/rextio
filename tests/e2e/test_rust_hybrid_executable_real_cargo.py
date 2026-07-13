@@ -10,7 +10,9 @@ import pytest
 from rextio.cli.main import main
 
 
-@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for the hybrid executable e2e")
+@pytest.mark.skipif(
+    shutil.which("cargo") is None, reason="cargo is required for the hybrid executable e2e"
+)
 def test_rust_hybrid_executable_delegates_fallback_to_cpython(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -55,7 +57,9 @@ def main(argv: list[str]) -> int:
     assert exit_code == 0
     capsys.readouterr()
 
-    report = json.loads((tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8"))
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
     executable = report["executable_build"]
     assert executable["status"] == "built", executable
     binary = Path(executable["path"])
@@ -94,7 +98,9 @@ def main(argv: list[str]) -> int:
     assert "dispatcher" in bad_python.stderr
 
 
-@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for the hybrid executable e2e")
+@pytest.mark.skipif(
+    shutil.which("cargo") is None, reason="cargo is required for the hybrid executable e2e"
+)
 def test_rust_hybrid_executable_delegates_none_literal_argument(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -131,7 +137,9 @@ def main(argv: list[str]) -> int:
     assert exit_code == 0
     capsys.readouterr()
 
-    report = json.loads((tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8"))
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
     executable = report["executable_build"]
     assert executable["status"] == "built", executable
     binary = Path(executable["path"])
@@ -141,7 +149,9 @@ def main(argv: list[str]) -> int:
     assert completed.returncode == 7
 
 
-@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for the hybrid executable e2e")
+@pytest.mark.skipif(
+    shutil.which("cargo") is None, reason="cargo is required for the hybrid executable e2e"
+)
 def test_rust_hybrid_executable_runs_side_effecting_none_argument(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -191,7 +201,9 @@ def main(argv: list[str]) -> int:
     assert exit_code == 0
     capsys.readouterr()
 
-    report = json.loads((tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8"))
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
     executable = report["executable_build"]
     assert executable["status"] == "built", executable
     completed = subprocess.run([executable["path"]], capture_output=True, text=True, timeout=60)

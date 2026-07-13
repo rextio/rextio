@@ -324,7 +324,7 @@ def test_cargo_toml_appends_pinned_plugin_dependencies() -> None:
     assert 'ndarray = "=0.16.1"' in rendered
     assert 'numpy = { version = "=0.27.1", features = ["half"] }' in rendered
     # Sorted by name: ndarray before numpy.
-    assert rendered.index('ndarray = "=0.16.1"') < rendered.index('numpy = {')
+    assert rendered.index('ndarray = "=0.16.1"') < rendered.index("numpy = {")
     # The core dependency block is unchanged.
     assert 'pyo3 = { version = "0.29", features = ["extension-module"] }' in rendered
 
@@ -380,6 +380,7 @@ def square(x: float) -> float:
     assert baseline == with_plugin_args
     assert "ndarray" not in baseline
     assert "<'py>" not in baseline
+
 
 SCALED_DOT_MODULE = """
 from rextio_numpy.types import F64Arr1

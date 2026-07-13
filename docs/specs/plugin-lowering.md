@@ -1,6 +1,6 @@
 # Spec: Plugin Lowering (claim/lower Hook)
 
-Status: **draft** (targets 0.1.1, experimental tier; plugin API 1.0 → 1.1)
+Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2)
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
 
@@ -65,29 +65,92 @@ def lower(self, claimed: ClaimSite, ctx: LoweringContext) -> LoweredExpr: ...
 
 - `ClaimSite`: one candidate construct — a call or binary operation
   (`+ - * / % @` — matmul is offered to plugins BEFORE core's arithmetic
-  allow-set rejects it, so a plugin may claim `@`). Calls written with
-  KEYWORD arguments are never offered (`operand_types` is positional);
-  a covered target reached with keywords falls back with core's RXT030.
-  One candidate construct whose
-  operand/argument types include a plugin type or a covered symbol
+  allow-set rejects it, so a plugin may claim `@`). One candidate construct
+  whose operand/argument types include a plugin type or a covered symbol
   (`covers()` decides which sites are offered to which plugin). Carries the
   resolved operand types and the dotted call target. The source-location
   fields exist on the dataclass but are ZEROED (`file_path=""`, `line=0`,
   `column=0`) for `claim()`/`lower()` calls — the determinism contract lets
   core cache verdicts per site signature, so plugins must not key behavior
   on location. Locations are re-attached by core when reporting.
+
+  **Plugin API 1.2 additive fields** (all optional/defaulted; 1.1 providers
+  remain source- and behavior-compatible):
+
+  * `operand_literals: tuple[ClaimLiteral, ...]` — per-positional static
+    literal metadata aligned with `operand_types`. A `ClaimLiteral` is
+    either non-literal (`is_literal=False`) or a supported static shape
+    extracted without executing user code: signed `int` (not `bool`),
+    literal `None`, or a tuple of signed ints (NumPy `axis=` work).
+    **Literal `None` is distinct from non-literal / absent.**
+  * `keywords: tuple[KeywordArg, ...]` — ordered keyword arguments on call
+    sites (`name`, optional resolved `arg_type`, and `literal`). A missing
+    keyword is simply absent from the tuple; that is distinct from a
+    present keyword whose value is literal `None`. Calls with dynamic
+    `**kwargs` / unnamed keywords are **not offered** (fail closed to the
+    pre-1.2 keyword rejection path). Named keywords with non-literal
+    (runtime) values are also **never offered** — current `CallIR`/
+    `LoweringContext` cannot represent runtime keyword operands (reserved
+    for a future API).
+  * `expression: ClaimExpr | None` — a frozen structured tree of nested
+    eligible call/binop nodes, literals, and leaves. Core builds it only
+    when the nested structure is representable safely; otherwise the site
+    stays flat (fail closed). Leaves carry a `leaf_index` into
+    `LoweringContext.leaf_operands` at lower time, and a `leaf_kind` of
+    `"name"` (simple `ast.Name`) or `"opaque"` (subscript / other
+    non-literal leaf). Fusion providers can accept only `"name"` leaves
+    and reject unsafe trees. Numeric `ClaimLiteral` nodes use
+    `kind="literal"`, not leaf kinds.
+
+  Claim-cache keys include these fields so sites that differ only in
+  keywords, literals, or tree shape never share a verdict.
+  `ClaimSite.to_dict()` omits empty/absent 1.2 keys so a site built with
+  only legacy fields keeps the exact pre-1.2 dict shape.
+
+  **API version gate:** all 1.2 analyzer behavior (keyword offers, claim
+  metadata, expression trees, `operand_mode="leaves"`) is restricted to
+  providers with `api_version >= 1.2`. API 1.1 providers retain legacy
+  semantics: calls with any keyword are never offered; claim/lower sites
+  they see have empty 1.2 metadata; codegen never computes `leaf_operands`
+  for their claims.
+
+  **Keyword-call policy (fail closed):**
+
+  * `**kwargs` / unnamed keywords are never offered.
+  * Named keywords with non-literal (runtime) values are never offered —
+    current `CallIR`/`LoweringContext` cannot represent runtime keyword
+    operands. Runtime keyword operands are reserved for a future API.
+  * Named keywords with supported static literals (`None`, signed int,
+    int tuples) are offered only to API ≥ 1.2 providers.
+  * Positional arguments are inferred before ordered keyword values
+    (Python evaluation order).
+  * `Claimed` **or** `Rejected` plugin-managed keyword calls suppress
+    generic RXT010 (matched by kind + full start/end span). `NotCovered`
+    / unoffered keyword calls keep pre-1.2 RXT010/fallback. A plugin
+    `Rejected` on a keyword call is deferred and delivered — it must not
+    become a silent not-candidate.
+
+  **Expression trees:** root call trees and nested binop / name / literal
+  trees only. Nested `ast.Call` nodes are always opaque atomic leaves
+  (never expanded). An expression containing opaque/unsafe leaves is not
+  eligible for `operand_mode="leaves"`.
+
+  **`Claimed.operand_mode`:** closed set `direct` | `leaves` (default
+  `direct`). Only API ≥ 1.2 may return `leaves`; `leaves` requires a
+  leaves-safe expression (name leaves / literals / binops only). Invalid
+  leaves claims fail closed with `PluginError`.
 - `ClaimResult` is one of:
   - `Claimed(rule_id, result_type)` — the plugin will lower this site;
     `rule_id` must be one of the plugin's rule records (enforced: a claim
     with an unadvertised rule id from a describing plugin fails the
-    analysis with a PluginError). `result_type` is REQUIRED for expression
-    claims (enforced with a PluginError): without it the enclosing
-    expression stays untyped and the analyzer would report accepted for a
-    function it never finished typing. `result_type` (a core
-    type name or plugin type key, or None for unknown) is the expression type
-    the site produces, so the analyzer's inference keeps typing the enclosing
-    expression. *(Amended during implementation: without it, claimed sites
-    were untyped.)*
+    analysis with a PluginError). `result_type` is **required** for
+    expression claims: a core type name or a registered plugin type key.
+    `None` is **rejected** with `PluginError` (the enclosing expression
+    would otherwise stay untyped and the analyzer would report accepted
+    for a function it never finished typing). The type must be known —
+    core validates it against the core type matrix and the plugin's
+    registered type keys. *(Amended during implementation: without a
+    required `result_type`, claimed sites were untyped.)*
   - `NotCovered()` — not this plugin's business; core continues as if the
     plugin did not exist (usually → candidate rejection via core rules).
   - `Rejected(diagnostic)` — covered but not lowerable; the RXTP diagnostic
@@ -100,7 +163,12 @@ def lower(self, claimed: ClaimSite, ctx: LoweringContext) -> LoweredExpr: ...
   types, config), `claim` MUST return the same result every time it is
   called. Core MAY call `claim` once and cache, or call it in both phases;
   a plugin MUST NOT base the decision on ambient state. `lower` is called
-  exactly once per claimed site, only for functions that stayed accepted.
+  exactly once per **effective / non-subsumed** claimed site, only for
+  functions that stayed accepted. Analysis may still record descendant
+  claims under a multi-op tree; when an ancestor claims with
+  `operand_mode="leaves"`, those descendant claims are **subsumed** and
+  intentionally not lowered (no nested `lower()`, fresh names, helpers, or
+  uses from the descendants).
 - A function containing a `Rejected` or unclaimable plugin-type site is
   rejected/falls back as a whole (core's usual bottom-up propagation,
   RXT072 unchanged).
@@ -119,20 +187,66 @@ class LoweredExpr:
                                      # deduplicated by exact text
 ```
 
-- `ctx` (`LoweringContext`) provides the rendered Rust sub-expressions for
-  the site's operands (already lowered by core or by prior plugin claims),
-  the target function's identifier namespace (for fresh temporaries via
-  `ctx.fresh_name()`), and the active `TargetSpec`. A plugin-typed operand is
-  handed to the plugin as a **bare identifier** (no `.clone()`): the plugin
-  OWNS the borrow-vs-consume decision and must add `&` where it borrows.
-  Because the same operand can appear more than once at a site (e.g. `a + a`),
-  a `lower()` snippet MUST NOT consume (move) an operand — borrow it. A
-  consuming snippet on a repeated operand is a `use of moved value` error at
-  `cargo build`, so the failure is loud, not silent.
-- The emitted expression must follow core's error posture: fallible
-  operations return `Result<_, RextioError>`-compatible expressions using
-  the same error-raising helpers core codegen uses (exposed through `ctx`),
-  so a shape mismatch raises the CPython-comparable exception type.
+- `ctx` (`LoweringContext`) is a small, closed surface. It exposes only:
+
+  * `operands: tuple[str, ...]` — rendered Rust sub-expressions for the
+    site's direct child operands/arguments (already lowered by core or by
+    prior plugin claims), in positional order. Empty under
+    `operand_mode="leaves"`.
+  * `target_language: str` — the active codegen backend name (`"rust"` in
+    0.1.x). This is a language id string, **not** an active `TargetSpec`
+    object and not a build/profile options bag.
+  * `fresh_name: Callable[[str], str]` — allocates a fresh temporary
+    identifier in the enclosing function's namespace from a given prefix.
+  * `leaf_operands: tuple[str, ...]` (plugin API 1.2; default `()`) —
+    rendered non-literal leaves of `ClaimSite.expression` when
+    `operand_mode="leaves"`. Empty under `direct`, or when the tree has no
+    non-literal leaves.
+
+  `LoweringContext` does **not** expose core error-raising helpers, IR
+  nodes, or a `TargetSpec`. A plugin-typed operand is handed to the plugin
+  as a **bare identifier** (no `.clone()`): the plugin OWNS the
+  borrow-vs-consume decision and must add `&` where it borrows. Because
+  the same operand can appear more than once at a site (e.g. `a + a`), a
+  `lower()` snippet MUST NOT consume (move) an operand — borrow it. A
+  consuming snippet on a repeated operand is a `use of moved value` error
+  at `cargo build`, so the failure is loud, not silent.
+
+  **Plugin API 1.2 operand modes (never eagerly render both):**
+
+  * `operand_mode="direct"` (default) — only classic direct child operands
+    in `ctx.operands`; `ctx.leaf_operands` is always empty. Nested claimed
+    children may lower independently (1.1 nesting unchanged).
+  * `operand_mode="leaves"` — only non-literal leaves from
+    `ClaimSite.expression`, ordered by LTR DFS `leaf_index` **encounter
+    sequence** into `ctx.leaf_operands`. The encounter sequence must be
+    exactly `0..n-1` (swaps, duplicates, and gaps fail closed). A valid
+    all-literal leaves-safe tree yields `ctx.leaf_operands=()` (success,
+    not failure). `ctx.operands` is always empty. Nested plugin `lower()`
+    is not invoked for intermediate structure (subsumed descendant claims
+    stay on the analysis record but are not codegen'd). Fusion-aware
+    providers claim an outer multi-op expression (e.g. `a*b + c*d - e`)
+    and emit **one** helper from those leaves. Alignment failure fails
+    codegen rather than silently nesting. Unknown `operand_mode` values
+    fail closed with a codegen error (never coerced to `direct`).
+  * **Codegen API-version defense:** even if IR carries 1.2 fields, a
+    provider with `api_version < 1.2` always receives a legacy `ClaimSite`
+    (empty 1.2 metadata), never gets `leaf_operands`, and cannot lower
+    leaves-mode IR.
+- Plugin authors emit only through `LoweredExpr` fields: `rust` (one
+  expression, no trailing `;`), `uses` (deduplicated `use` lines), and
+  `helpers` (module-level items, deduplicated by exact text). Core owns
+  statements, control flow, temporary binding of the expression result,
+  and how the surrounding function propagates errors.
+- **Backend contract (0.1.2):** plugin lowering is **PyO3-extension-only**.
+  Codegen runs `lower()` only for the PyO3 extension module; plugin-lowered
+  functions are excluded from the pure-Rust importable crate (no
+  `RextioError` plugin-lowering path exists today). Fallible plugin output
+  must therefore be compatible with the ambient **`PyResult<_>`** and PyO3
+  exception types (for example a helper that returns `PyResult<_>`, or an
+  expression that uses `?` / `map_err` into a PyO3 error). Core does
+  **not** pass error-raising helper callables through `ctx`; plugins write
+  the Rust text they need into `rust` / `helpers` / `uses`.
 - Exposing core IR to plugins is **deferred**; nothing in this contract
   assumes plugins can see or produce IR nodes.
 - **Helper namespacing.** `helpers` items land at module level in one shared
@@ -273,13 +387,28 @@ result equivalence with hypothesis — the same posture as core's own
   hint on accelerator-decorated functions is unchanged (decorator still
   wins: explicit decorator > plugin > fallback).
 
-## 8. Versioning and rollout (0.1.1)
+## 8. Versioning and rollout (0.1.1 / 1.2 additive)
 
-- `PLUGIN_API_VERSION` bumps **1.0 → 1.1**; all new members are optional, so
-  1.0 describe-only plugins keep loading (major must still match). A plugin
-  that implements `lower` without `claim` (or vice versa) fails load.
-- Everything in this spec ships in the **0.1.1 line** (owner decision) as
-  Experimental, alongside the existing contract surfaces.
+- `PLUGIN_API_VERSION` bumps **1.0 → 1.1** for the lowering members; all new
+  members are optional, so 1.0 describe-only plugins keep loading (major
+  must still match). A plugin that implements `lower` without `claim` (or
+  vice versa) fails load.
+- **Plugin API 1.2** (additive, same major): extends `ClaimSite` with
+  `operand_literals` / `keywords` / `expression` and `LoweringContext` with
+  `leaf_operands`. Defaults keep 1.1 providers source- and
+  behavior-compatible. Core advertises `PLUGIN_API_VERSION = "1.2"`; plugins
+  may still declare `api_version = "1.1"`.
+- Everything in the 1.1 surface ships in the **0.1.1 line** as Experimental.
+  The 1.2 claim metadata / fusion tree surface ships on the **0.1.2** core
+  line without a package major bump (Wave 2 core gate; Wave 3 package
+  release is separate).
+- **Related-package publish order** for the 1.2 consumer surface (strict, not
+  simultaneous): **rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1**. The
+  untagged rextio-numpy 0.1.1 RC (literal-axis / fusion / leaves-mode) requires
+  core plugin API 1.2 and must not publish before core 0.1.2. Published
+  rextio-numpy remains **0.1.0** until that order is followed. See
+  [tooling-contract.md](tooling-contract.md) §Compatibility and release
+  ordering.
 - Implementation slices, in order:
   1. Plugin API additions (`PluginType`, `ClaimSite`/`ClaimResult`,
      `LoweredExpr`, `BoundaryConversion`, `CrateDependency`) + loader
@@ -291,6 +420,8 @@ result equivalence with hypothesis — the same posture as core's own
   4. Certification kit + the agreed vertical slice in rextio-numpy:
      `numpy.dot(a, b)` on float64 1-D end to end (claim → lower → ndarray/
      rust-numpy injection → cargo build → hypothesis equivalence).
+  5. **Wave 2 (1.2):** claim-site literal/keyword metadata, structured
+     `ClaimExpr` trees, fusion `leaf_operands` at lower, additive docs/tests.
 
 ## Non-goals
 

@@ -134,11 +134,13 @@ STATISTICS_TARGETS = {
 # using one rides the RXT080 runtime shim, an auto-discovered one stays on
 # the Python fallback - regardless of import form (attribute or bare
 # from-import name).
-RUNTIME_FIDELITY_TARGETS = frozenset({
-    *JSON_TARGETS,
-    *STATISTICS_TARGETS,
-    "base64.b64decode",
-})
+RUNTIME_FIDELITY_TARGETS = frozenset(
+    {
+        *JSON_TARGETS,
+        *STATISTICS_TARGETS,
+        "base64.b64decode",
+    }
+)
 
 TIME_TARGETS = {
     "time.time",

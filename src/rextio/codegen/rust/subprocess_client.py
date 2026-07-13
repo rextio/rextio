@@ -28,7 +28,9 @@ def _rust_string_literal(value: str) -> str:
 NUITKA_DISPATCHER_NAME = DISPATCHER_STEM
 
 
-def render_subprocess_client(python_command: str = "python3", *, nuitka_dispatcher: bool = False) -> str:
+def render_subprocess_client(
+    python_command: str = "python3", *, nuitka_dispatcher: bool = False
+) -> str:
     """Return the Rust source for the ``__rextio_call_python`` IPC client.
 
     In the default (source) mode the binary launches ``python3`` on
@@ -43,18 +45,19 @@ def render_subprocess_client(python_command: str = "python3", *, nuitka_dispatch
         # Nuitka appends the OS executable extension, so add `EXE_SUFFIX` (``.exe`` on
         # Windows, empty elsewhere) to find the compiled dispatcher.
         spawn_block = (
-            f'let mut child = Command::new(runtime_dir.join('
+            f"let mut child = Command::new(runtime_dir.join("
             f'format!("{NUITKA_DISPATCHER_NAME}{{}}", std::env::consts::EXE_SUFFIX)))'
         )
     else:
         spawn_block = (
             'let python = std::env::var("REXTIO_RUNTIME_PYTHON")'
             '.unwrap_or_else(|_| "{PYTHON_COMMAND}".to_string());\n'
-            '        let python_path = __rextio_resolve_python(&runtime_dir, &python);\n'
+            "        let python_path = __rextio_resolve_python(&runtime_dir, &python);\n"
             '        let mut child = Command::new(python_path).arg(runtime_dir.join("'
             + f'{DISPATCHER_STEM}.py"))'
         )
-    return '''
+    return (
+        """
 // ---- Rextio subprocess-hybrid IPC client ----------------------------------
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -240,4 +243,8 @@ fn __rextio_call_python(
     }
 }
 // ---- end IPC client -------------------------------------------------------
-'''.replace("{SPAWN_BLOCK}", spawn_block).replace("{RUNTIME_DIR_SUFFIX}", RUNTIME_DIR_SUFFIX).replace("{PYTHON_COMMAND}", baked).replace("{PROTOCOL_VERSION}", str(PROTOCOL_VERSION))
+""".replace("{SPAWN_BLOCK}", spawn_block)
+        .replace("{RUNTIME_DIR_SUFFIX}", RUNTIME_DIR_SUFFIX)
+        .replace("{PYTHON_COMMAND}", baked)
+        .replace("{PROTOCOL_VERSION}", str(PROTOCOL_VERSION))
+    )

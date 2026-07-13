@@ -196,7 +196,11 @@ def external_accelerator_for_source(
         # over-skip - the safe direction. This also makes the result
         # independent of ast.walk's traversal order.
         current = imports.get(visible)
-        if current is not None and resolves_to_accelerator(current) and not resolves_to_accelerator(target):
+        if (
+            current is not None
+            and resolves_to_accelerator(current)
+            and not resolves_to_accelerator(target)
+        ):
             return
         imports[visible] = target
 
@@ -214,7 +218,7 @@ def external_accelerator_for_source(
                     for qualname in _EXTERNAL_ACCELERATOR_QUALNAMES:
                         prefix = f"{node.module}."
                         if qualname.startswith(prefix):
-                            visible = qualname[len(prefix):].split(".", 1)[0]
+                            visible = qualname[len(prefix) :].split(".", 1)[0]
                             bind(visible, f"{node.module}.{visible}")
                     continue
                 visible = alias.asname or alias.name

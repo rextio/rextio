@@ -117,7 +117,7 @@ def _display_module_path(relative: Path) -> str:
     """
     name = relative.name
     if name.startswith("_fallback_") and name.endswith(".py"):
-        original = f"{name[len('_fallback_'):-len('.py')]}.py"
+        original = f"{name[len('_fallback_') : -len('.py')]}.py"
         return (relative.parent / original).as_posix() + " (fallback copy)"
     return relative.as_posix()
 

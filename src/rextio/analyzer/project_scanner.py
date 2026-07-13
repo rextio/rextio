@@ -172,9 +172,7 @@ def _note_plugin_lowerable_accelerated(
             if function.external_accelerator is None:
                 continue
             covering = [
-                plugin
-                for plugin in rule_plugins
-                if imported_packages.intersection(plugin.packages)
+                plugin for plugin in rule_plugins if imported_packages.intersection(plugin.packages)
             ]
             if not covering:
                 continue
@@ -215,9 +213,7 @@ def _strip_divergence_notes_from_non_native(analysis: ProjectAnalysis) -> None:
             direct_native = function.accepted and not function.native_runtime_semantics
             if not direct_native:
                 function.diagnostics = [
-                    diagnostic
-                    for diagnostic in function.diagnostics
-                    if diagnostic.code != "RXT090"
+                    diagnostic for diagnostic in function.diagnostics if diagnostic.code != "RXT090"
                 ]
 
 

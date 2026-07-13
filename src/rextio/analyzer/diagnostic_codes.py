@@ -40,8 +40,12 @@ _CODES: tuple[DiagnosticCode, ...] = (
     DiagnosticCode("RXT072", "Native dependency rejected, so the caller must fall back"),
     DiagnosticCode("RXT073", "Native function call inside a Python loop may erase the speedup"),
     DiagnosticCode("RXT074", "Auto-discovered function depends on a runtime-shim native"),
-    DiagnosticCode("RXT075", "Native function performs a scalar boundary call to the Python fallback"),
-    DiagnosticCode("RXT076", "Scalar boundary call inside a native loop keeps the caller on fallback"),
+    DiagnosticCode(
+        "RXT075", "Native function performs a scalar boundary call to the Python fallback"
+    ),
+    DiagnosticCode(
+        "RXT076", "Scalar boundary call inside a native loop keeps the caller on fallback"
+    ),
     DiagnosticCode("RXT080", "Function uses the Python runtime-semantics shim", "experimental"),
     DiagnosticCode(
         "RXT090",

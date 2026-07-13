@@ -135,9 +135,7 @@ def compute(x: float) -> float:
         encoding="utf-8",
     )
 
-    analysis = analyze_project(
-        tmp_path, native_marker="decorator", embedding_enabled=True
-    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", embedding_enabled=True)
     source = generate_rust_module(lower_project(analysis, include_embedding=True))
 
     assert "fn r#loop(" in source
@@ -503,7 +501,9 @@ def unit_ret(x: int) -> None:
     assert "return Ok(pair.0.clone());" in source
     assert "fn app__make_pair(x: i64, y: f64) -> PyResult<(i64, f64)> {" in source
     assert "return Ok((x, y));" in source
-    assert "fn app__read_score(scores: HashMap<String, i64>, key: String) -> PyResult<i64> {" in source
+    assert (
+        "fn app__read_score(scores: HashMap<String, i64>, key: String) -> PyResult<i64> {" in source
+    )
     assert "= &scores;" in source
     assert "PyKeyError::new_err(__rextio_key" in source
     assert "let mut weights: HashMap<String, f64> = HashMap::new();" in source
@@ -543,8 +543,7 @@ def dot(xs: list[float], ys: list[float]) -> float:
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
     assert (
-        "for (i, x) in xs.iter().cloned().enumerate()"
-        ".map(|(i, value)| (i as i64, value)) {"
+        "for (i, x) in xs.iter().cloned().enumerate().map(|(i, value)| (i as i64, value)) {"
     ) in source
     assert "out.push(__rextio_checked_add(i, x)?);" in source
     assert "for (x, y) in xs.iter().cloned().zip(ys.iter().cloned()) {" in source
@@ -612,8 +611,7 @@ def last_positive(xs: list[int]) -> int:
     assert "for x in row.iter().cloned() {" in source
     assert "__rextio_list_1.push(app__inc(x.clone())?);" in source
     assert (
-        "for (i, x) in xs.iter().cloned().enumerate()"
-        ".map(|(i, value)| (i as i64, value)) {"
+        "for (i, x) in xs.iter().cloned().enumerate().map(|(i, value)| (i as i64, value)) {"
     ) in source
     assert "fn app__labels(xs: Vec<String>) -> PyResult<HashMap<String, String>> {" in source
     assert "__rextio_dict_1.insert(x.clone(), x.clone());" in source
@@ -870,12 +868,14 @@ def truth(flags: list[bool]) -> bool:
 
     source = generate_rust_module(lower_project(analyze_project(tmp_path)))
 
-    assert ".to_lowercase().replace(&String::from(\"a\"), &String::from(\"b\")).to_uppercase()" in source
+    assert (
+        '.to_lowercase().replace(&String::from("a"), &String::from("b")).to_uppercase()' in source
+    )
     assert "values.sort();" in source
     assert ".iter().filter(|item| *item == &__rextio_needle" in source
     assert ".count() as i64 }" in source
     assert ".position(|item| item == &__rextio_needle" in source
-    assert "format!(\"{:x}\", sha2::Sha256::digest(&" in source
+    assert 'format!("{:x}", sha2::Sha256::digest(&' in source
     assert "base64::engine::general_purpose::STANDARD.encode" in source
     assert "std::f64::consts::PI" in source
     assert ".atan2(1.0)" in source
@@ -929,10 +929,7 @@ def min_literal() -> int:
     # and applies Python's floored-modulo sign correction. Message text is
     # probed from the build interpreter (CPython 3.14 unified all ZDE strings).
     assert "return Ok(__rextio_checked_rem(a, b)?);" in source
-    assert (
-        f'pyo3::exceptions::PyZeroDivisionError::new_err("{zde["int_mod"]}")'
-        in source
-    )
+    assert f'pyo3::exceptions::PyZeroDivisionError::new_err("{zde["int_mod"]}")' in source
     assert "let r = a.checked_rem(b).unwrap_or(0);" in source
     assert "Ok(if r != 0 && (r ^ b) < 0 { r + b } else { r })" in source
     # Unary negation is checked so `-i64::MIN` raises OverflowError, not a panic.
@@ -1049,6 +1046,7 @@ def test_zero_division_messages_probe_matches_running_interpreter() -> None:
     ``float modulo by zero``). The probe must track the running interpreter
     exactly — that is what codegen embeds into the native artifact.
     """
+
     def _probe(op: object) -> str:
         try:
             op()  # type: ignore[operator]
@@ -1100,14 +1098,8 @@ def modulo(a: float, b: float) -> float:
     # probed from the build interpreter.
     assert "return Ok(__rextio_checked_fdiv(a, b)?);" in source
     assert "return Ok(__rextio_checked_frem(a, b)?);" in source
-    assert (
-        f'pyo3::exceptions::PyZeroDivisionError::new_err("{zde["float_div"]}")'
-        in source
-    )
-    assert (
-        f'pyo3::exceptions::PyZeroDivisionError::new_err("{zde["float_mod"]}")'
-        in source
-    )
+    assert f'pyo3::exceptions::PyZeroDivisionError::new_err("{zde["float_div"]}")' in source
+    assert f'pyo3::exceptions::PyZeroDivisionError::new_err("{zde["float_mod"]}")' in source
     # Floored modulo with CPython's signed-zero rule (zero takes the divisor's sign).
     assert "Ok(if r == 0.0 { (0.0_f64).copysign(b) }" in source
     assert "else if (r < 0.0) != (b < 0.0) { r + b }" in source
@@ -1445,8 +1437,7 @@ def at(xs: list[int], i: int) -> int:
     assert ">= 0 &&" in source
     assert "checked_add(" in source
     assert (
-        ", _ => None })"
-        '.ok_or_else(|| RextioError::new("IndexError", "list index out of range"))? }'
+        ', _ => None }).ok_or_else(|| RextioError::new("IndexError", "list index out of range"))? }'
     ) in source
     assert "pyo3" not in source
 
@@ -1933,6 +1924,7 @@ def test_crate_exception_name_rejects_unmapped_kind() -> None:
     with pytest.raises(RustCodegenError, match="unmapped crate error kind"):
         _crate_exception_name("not-a-kind")
 
+
 def test_print_and_logging_format_bool_and_float_like_cpython(tmp_path: Path) -> None:
     # print/logging of bool and float must be textually CPython-exact: bools
     # render True/False (Rust Display gives true/false) and floats go through
@@ -1963,6 +1955,7 @@ def emit(flag: bool, x: float, n: int) -> None:
     assert "__rextio_fixed6(" in code  # %f of float (nan -> "nan")
     assert "((flag.clone()) as i64)" in code  # %d of bool -> 1/0
     assert 'println!("{} {} {}"' in code
+
 
 def test_logging_percent_matrix_rejects_inexact_combinations(tmp_path: Path) -> None:
     # %f of a bool would need `bool as f64` (invalid Rust, E0606); %d of a
@@ -2027,4 +2020,6 @@ def bad_set(s: set[int]) -> None:
     code = generate_rust_module(lower_project(analysis))
     assert "__rextio_repr_str(" in code  # str inside containers is quoted
     assert '"None".to_string()' in code  # Optional composes None
-    assert "{:?}" not in [seg for line in code.splitlines() if "println" in line for seg in [line]][0]
+    assert (
+        "{:?}" not in [seg for line in code.splitlines() if "println" in line for seg in [line]][0]
+    )

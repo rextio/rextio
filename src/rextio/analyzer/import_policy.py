@@ -115,11 +115,7 @@ def decision_for_target(module: ModuleAnalysis, target: str) -> ImportPolicyDeci
 
 
 def _matching_package_policy(target: str, config: ImportsConfig):
-    matches = [
-        package
-        for package in config.packages
-        if _target_matches_package(target, package)
-    ]
+    matches = [package for package in config.packages if _target_matches_package(target, package)]
     if not matches:
         return None, None
     package = max(matches, key=len)

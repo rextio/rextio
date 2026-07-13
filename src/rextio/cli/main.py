@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust",),
         default=None,
         help=(
-            "Native target language (0.1.0 implements rust). Overrides "
+            f"Native target language ({__version__} implements rust). Overrides "
             "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
@@ -95,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust",),
         default=None,
         help=(
-            "Native target language (0.1.0 implements rust). Overrides "
+            f"Native target language ({__version__} implements rust). Overrides "
             "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
@@ -108,7 +108,9 @@ def build_parser() -> argparse.ArgumentParser:
     capabilities_parser.set_defaults(handler=capabilities_cmd.run)
 
     build_parser_ = subparsers.add_parser("build", help="Build a hybrid artifact.")
-    build_parser_.add_argument("project_root", nargs="?", default=".", help="Project root to build.")
+    build_parser_.add_argument(
+        "project_root", nargs="?", default=".", help="Project root to build."
+    )
     build_parser_.add_argument(
         "--native-backend",
         "--target-language",
@@ -116,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust",),
         default=None,
         help=(
-            "Native target language (0.1.0 implements rust). Overrides "
+            f"Native target language ({__version__} implements rust). Overrides "
             "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
@@ -156,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--rust-binding",
         choices=("pyo3",),
         default=None,
-        help="Rust binding backend (0.1.0 supports pyo3 only). "
+        help=f"Rust binding backend ({__version__} supports pyo3 only). "
         "Overrides REXTIO_RUST_BINDING and [rust] binding.",
     )
     build_parser_.add_argument(
@@ -244,7 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("rust",),
         default=None,
         help=(
-            "Native target language (0.1.0 implements rust). Overrides "
+            f"Native target language ({__version__} implements rust). Overrides "
             "REXTIO_TARGET_LANGUAGE, REXTIO_NATIVE_BACKEND, "
             "and [build] native_backend."
         ),
@@ -424,7 +426,11 @@ def _add_target_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_toolchain_options(parser: argparse.ArgumentParser) -> None:
-    for tool, env in (("cargo", "REXTIO_CARGO"), ("maturin", "REXTIO_MATURIN"), ("nuitka", "REXTIO_NUITKA")):
+    for tool, env in (
+        ("cargo", "REXTIO_CARGO"),
+        ("maturin", "REXTIO_MATURIN"),
+        ("nuitka", "REXTIO_NUITKA"),
+    ):
         parser.add_argument(
             f"--{tool}",
             default=None,
@@ -460,7 +466,7 @@ def _add_toolchain_options(parser: argparse.ArgumentParser) -> None:
             f"--{tool}-version",
             default=None,
             help=(
-                f"Verification pin for the resolved {tool} (\"X.Y\" prefix, or ==/>= "
+                f'Verification pin for the resolved {tool} ("X.Y" prefix, or ==/>= '
                 f"specifier). Verifies only - never installs. Overrides {env} and "
                 f"[toolchain] {tool}_version."
             ),

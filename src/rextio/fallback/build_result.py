@@ -37,4 +37,3 @@ def cpython_fallback_build_result() -> FallbackBuildResult:
         backend="cpython",
         message="CPython fallback package tree was copied.",
     )
-

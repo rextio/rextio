@@ -1,9 +1,13 @@
-# Security model — Rextio 0.1.0
+# Security model — Rextio 0.1.x
 
 Rextio turns typed Python into Rust/PyO3 native artifacts: it analyzes your
 source, generates Rust, and invokes external build tools. That makes its trust
 surface larger than an ordinary library, so this document states the threat
 model and the protections in place.
+
+This document applies to the Core **0.1.x** line. Package version on the
+current branch is **0.1.2** (release candidate — not tagged or uploaded to
+PyPI); the latest published PyPI release is **0.1.1**.
 
 ## Trust boundary
 
@@ -68,8 +72,9 @@ external toolchain on your machine.
 
 ## Reporting
 
-This is 0.1.0, an alpha-stage release. Report sensitive vulnerabilities privately through
-GitHub's private vulnerability reporting
+This is the alpha-stage **0.1.x** line (published Core 0.1.1; 0.1.2 is an
+unreleased release candidate on this branch). Report sensitive vulnerabilities
+privately through GitHub's private vulnerability reporting
 (<https://github.com/rextio/rextio/security/advisories/new>) - do not file
 them as public issues. Non-sensitive hardening suggestions can be ordinary
 GitHub issues labeled `security`. There is no formal embargo process yet;

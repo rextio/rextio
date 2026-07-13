@@ -26,7 +26,9 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/argument-annotation-required",
                 provider="core",
-                scope=RuleScope(kind="type", pattern="function parameter without a type annotation"),
+                scope=RuleScope(
+                    kind="type", pattern="function parameter without a type annotation"
+                ),
                 constraint="Native lowering needs every parameter type resolved; an unannotated parameter cannot be typed in Rust.",
                 outcome="fallback",
                 diagnostic_code="RXT001",
@@ -35,7 +37,10 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/unsupported-argument-type",
                 provider="core",
-                scope=RuleScope(kind="type", pattern="parameter annotated with a type outside the supported subset"),
+                scope=RuleScope(
+                    kind="type",
+                    pattern="parameter annotated with a type outside the supported subset",
+                ),
                 constraint="Only the supported type subset lowers to Rust; anything else keeps the function on the Python fallback.",
                 outcome="fallback",
                 diagnostic_code="RXT002",
@@ -53,7 +58,9 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/return-annotation-required",
                 provider="core",
-                scope=RuleScope(kind="type", pattern="missing or unsupported return type annotation"),
+                scope=RuleScope(
+                    kind="type", pattern="missing or unsupported return type annotation"
+                ),
                 constraint="The return type must be annotated and inside the supported subset for native lowering.",
                 outcome="fallback",
                 diagnostic_code="RXT003",
@@ -62,7 +69,10 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/unsupported-syntax",
                 provider="core",
-                scope=RuleScope(kind="syntax", pattern="statement or expression outside the supported subset, or an invalid @rextio.native marker"),
+                scope=RuleScope(
+                    kind="syntax",
+                    pattern="statement or expression outside the supported subset, or an invalid @rextio.native marker",
+                ),
                 constraint="Only the documented syntax subset lowers directly (assignment, arithmetic, if/while/for, comprehensions, restricted try/except).",
                 outcome="fallback",
                 diagnostic_code="RXT010",
@@ -71,7 +81,9 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/rust-identifier",
                 provider="core",
-                scope=RuleScope(kind="syntax", pattern="identifier not representable in generated Rust"),
+                scope=RuleScope(
+                    kind="syntax", pattern="identifier not representable in generated Rust"
+                ),
                 constraint="Identifiers must be expressible in Rust (raw-identifier escaping covers most keywords, but not all names).",
                 outcome="fallback",
                 diagnostic_code="RXT011",
@@ -80,7 +92,10 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/dynamic-feature",
                 provider="core",
-                scope=RuleScope(kind="syntax", pattern="dynamic Python feature (dynamic attributes, exec/eval, reflection)"),
+                scope=RuleScope(
+                    kind="syntax",
+                    pattern="dynamic Python feature (dynamic attributes, exec/eval, reflection)",
+                ),
                 constraint="Dynamic features have no static Rust equivalent; explicitly marked functions may ride the runtime shim instead.",
                 outcome="fallback",
                 diagnostic_code="RXT020",
@@ -89,7 +104,10 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/unsupported-external-call",
                 provider="core",
-                scope=RuleScope(kind="call", pattern="call to an unsupported builtin, stdlib, or external function"),
+                scope=RuleScope(
+                    kind="call",
+                    pattern="call to an unsupported builtin, stdlib, or external function",
+                ),
                 constraint="A direct-native function may call only accepted native functions, supported builtins, and supported stdlib functions.",
                 outcome="fallback",
                 diagnostic_code="RXT030",
@@ -142,7 +160,9 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/native-calls-fallback",
                 provider="core",
-                scope=RuleScope(kind="call", pattern="native candidate calls a fallback-only project function"),
+                scope=RuleScope(
+                    kind="call", pattern="native candidate calls a fallback-only project function"
+                ),
                 constraint="Native-to-fallback calls are rejected, except the explicit scalar boundary-call path (see core/scalar-boundary-call).",
                 outcome="reject",
                 diagnostic_code="RXT070",
@@ -151,7 +171,9 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/native-dependency-rejected",
                 provider="core",
-                scope=RuleScope(kind="call", pattern="native candidate depends on a rejected candidate"),
+                scope=RuleScope(
+                    kind="call", pattern="native candidate depends on a rejected candidate"
+                ),
                 constraint="If a callee is rejected, its native callers cannot stay native either.",
                 outcome="fallback",
                 diagnostic_code="RXT072",
@@ -160,7 +182,9 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/python-loop-calls-native",
                 provider="core",
-                scope=RuleScope(kind="call", pattern="Python loop repeatedly calling a native function"),
+                scope=RuleScope(
+                    kind="call", pattern="Python loop repeatedly calling a native function"
+                ),
                 constraint="Each iteration crosses the Python/native boundary; crossings count toward the per-function demotion threshold.",
                 outcome="boundary",
                 diagnostic_code="RXT073",
@@ -169,7 +193,10 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/auto-candidate-shim-dependency",
                 provider="core",
-                scope=RuleScope(kind="call", pattern="auto-discovered candidate depends on a runtime-shim native"),
+                scope=RuleScope(
+                    kind="call",
+                    pattern="auto-discovered candidate depends on a runtime-shim native",
+                ),
                 constraint="Auto-discovered candidates must not silently depend on the shim path; only explicit markers opt into shim semantics.",
                 outcome="fallback",
                 diagnostic_code="RXT074",
@@ -178,7 +205,10 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/scalar-boundary-call",
                 provider="core",
-                scope=RuleScope(kind="call", pattern="explicitly marked native calls a fallback-only function with an all-scalar signature"),
+                scope=RuleScope(
+                    kind="call",
+                    pattern="explicitly marked native calls a fallback-only function with an all-scalar signature",
+                ),
                 constraint="The call runs in-process on the interpreter: values and exceptions are CPython-exact, containers never cross, and each crossing counts toward the demotion threshold.",
                 outcome="boundary",
                 diagnostic_code="RXT075",
@@ -187,7 +217,10 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/boundary-call-in-loop",
                 provider="core",
-                scope=RuleScope(kind="call", pattern="scalar boundary call inside a native loop, comprehension body, or while-loop test"),
+                scope=RuleScope(
+                    kind="call",
+                    pattern="scalar boundary call inside a native loop, comprehension body, or while-loop test",
+                ),
                 constraint="A per-iteration interpreter round-trip would erase the native speedup, so the caller stays on the fallback.",
                 outcome="fallback",
                 diagnostic_code="RXT076",
@@ -196,7 +229,10 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/runtime-semantics-shim",
                 provider="core",
-                scope=RuleScope(kind="syntax", pattern="explicitly marked function using classes, exceptions, context managers, async, generators, or dynamic attributes"),
+                scope=RuleScope(
+                    kind="syntax",
+                    pattern="explicitly marked function using classes, exceptions, context managers, async, generators, or dynamic attributes",
+                ),
                 constraint="The function compiles to a PyO3 shim that calls the generated Python fallback: behavior-preserving, not a speedup.",
                 outcome="shim",
                 diagnostic_code="RXT080",
@@ -206,7 +242,10 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/documented-divergence-note",
                 provider="core",
-                scope=RuleScope(kind="call", pattern="direct-native function relying on a documented, statically attributable divergence (e.g. bytes.decode error type)"),
+                scope=RuleScope(
+                    kind="call",
+                    pattern="direct-native function relying on a documented, statically attributable divergence (e.g. bytes.decode error type)",
+                ),
                 constraint="The function stays native; the note marks a known, documented deviation from CPython behavior.",
                 outcome="native",
                 diagnostic_code="RXT090",
@@ -216,7 +255,10 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
             RuleRecord(
                 id="core/external-accelerator-decorator",
                 provider="core",
-                scope=RuleScope(kind="decorator", pattern="@numba.jit / @numba.njit / @numba.vectorize / @numba.guvectorize"),
+                scope=RuleScope(
+                    kind="decorator",
+                    pattern="@numba.jit / @numba.njit / @numba.vectorize / @numba.guvectorize",
+                ),
                 constraint="A recognized external-accelerator decorator is the user's explicit opt-in to that tool's semantics; the function is excluded from native discovery and stays on the fallback route without a diagnostic.",
                 outcome="fallback",
                 diagnostic_code=None,

@@ -179,7 +179,14 @@ def show_opt_str(x: str | None) -> None:
     module = importlib.import_module("containerfmt_app.render")
 
     cases = [
-        (["a", "it's", 'say "hi"', ""], [True, False], [1.0, 1e16, -0.0], [[1, 2], []], (7, "x"), None),
+        (
+            ["a", "it's", 'say "hi"', ""],
+            [True, False],
+            [1.0, 1e16, -0.0],
+            [[1, 2], []],
+            (7, "x"),
+            None,
+        ),
         ([], [], [], [], (0, ""), 5),
     ]
     capfd.readouterr()

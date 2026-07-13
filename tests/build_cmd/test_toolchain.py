@@ -78,9 +78,7 @@ def test_cargo_environment_carries_rustup_channel_and_pyo3_python(
     assert default_env == {"PYO3_PYTHON": sys.executable}
 
 
-def test_cargo_environment_pyo3_python_precedence(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_cargo_environment_pyo3_python_precedence(tmp_path: Path, monkeypatch) -> None:
     """PYO3_PYTHON: configured > non-empty inherited > sys.executable.
 
     The returned mapping is merged over os.environ by the build runner, so
@@ -291,9 +289,7 @@ def test_pinned_missing_maturin_fails_strictly_instead_of_falling_back(
     assert "maturin was not found" not in result.message
 
 
-def test_relative_dotdot_traverses_symlinks_in_path_order(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_relative_dotdot_traverses_symlinks_in_path_order(tmp_path: Path, monkeypatch) -> None:
     # "link/../cargo" must reach the target the KERNEL reaches (follow the
     # link, then go up): deep/cargo. A lexical collapse would instead look
     # for tmp_path/cargo, which does not exist.

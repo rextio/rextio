@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
+from rextio.__about__ import __version__
 from rextio.limits import MAX_BUILD_TIMEOUT_SECONDS
 from rextio.config.defaults import DEFAULT_CONFIG
 from rextio.config.schema import (
@@ -263,7 +264,9 @@ def _validate_config_values(
     _require_optional_string("executable", "entrypoint", executable["entrypoint"])
     _require_optional_string("executable", "name", executable["name"])
     _require_optional_string("executable", "python", executable["python"])
-    _require_value("executable", "hybrid_runtime", executable["hybrid_runtime"], {"source", "nuitka"})
+    _require_value(
+        "executable", "hybrid_runtime", executable["hybrid_runtime"], {"source", "nuitka"}
+    )
     _require_string("executable", "backend", executable["backend"])
     _require_string("executable", "nuitka_mode", executable["nuitka_mode"])
     for tool_key in ("cargo", "maturin", "nuitka", "python", "rust_toolchain"):
@@ -288,12 +291,14 @@ def _validate_config_values(
         {"analyze", "fallback", "try-native"},
     )
     _require_value("executable", "backend", executable["backend"], {"zipapp", "nuitka", "rust"})
-    _require_value("executable", "nuitka_mode", executable["nuitka_mode"], {"standalone", "onefile"})
+    _require_value(
+        "executable", "nuitka_mode", executable["nuitka_mode"], {"standalone", "onefile"}
+    )
     _require_value("policy", "native_marker", policy["native_marker"], {"auto", "decorator"})
     if policy["require_type_hints"] is not True:
-        raise ConfigError("0.1.0 requires [policy] require_type_hints = true")
+        raise ConfigError(f"{__version__} requires [policy] require_type_hints = true")
     if policy["allow_dynamic_features"] is not False:
-        raise ConfigError("0.1.0 does not support [policy] allow_dynamic_features = true")
+        raise ConfigError(f"{__version__} does not support [policy] allow_dynamic_features = true")
 
 
 def _require_string(section: str, key: str, value: Any) -> None:
@@ -326,8 +331,8 @@ def _require_optional_version_pin(section: str, key: str, value: Any) -> None:
         return
     if not re.fullmatch(VERSION_PIN_PATTERN, value):
         raise ConfigError(
-            f"[{section}].{key} must be a version pin like \"1.85\", \"==2.6.1\", "
-            f"or \">=3.13\", got {value!r}"
+            f'[{section}].{key} must be a version pin like "1.85", "==2.6.1", '
+            f'or ">=3.13", got {value!r}'
         )
 
 
@@ -378,18 +383,27 @@ def _require_package_policy_map(section: str, key: str, value: Any) -> None:
             unknown = set(raw_policy) - {"policy", "plugin", "max_depth"}
             if unknown:
                 unknown_key = sorted(unknown)[0]
-                raise ConfigError(f"unsupported config key: [{section}.{key}.{package}].{unknown_key}")
+                raise ConfigError(
+                    f"unsupported config key: [{section}.{key}.{package}].{unknown_key}"
+                )
             policy = raw_policy.get("policy", "fallback")
             plugin = raw_policy.get("plugin")
             max_depth = raw_policy.get("max_depth", 0)
         else:
             raise ConfigError(f"[{section}].{key}.{package} must be a string or table")
-        _require_value(f"{section}.{key}.{package}", "policy", policy, {"analyze", "fallback", "plugin", "try-native"})
+        _require_value(
+            f"{section}.{key}.{package}",
+            "policy",
+            policy,
+            {"analyze", "fallback", "plugin", "try-native"},
+        )
         if plugin is not None:
             _require_string(f"{section}.{key}.{package}", "plugin", plugin)
         _require_non_negative_int(f"{section}.{key}.{package}", "max_depth", max_depth)
         if policy == "plugin" and not plugin:
-            raise ConfigError(f"[{section}].{key}.{package}.plugin is required when policy = \"plugin\"")
+            raise ConfigError(
+                f'[{section}].{key}.{package}.plugin is required when policy = "plugin"'
+            )
 
 
 def _require_string_list(section: str, key: str, value: Any) -> None:
@@ -445,17 +459,23 @@ def _parse_environment_value(env_name: str, raw_value: str, kind: str) -> object
         try:
             return int(raw_value)
         except ValueError as exc:
-            raise ConfigError(f"environment variable {env_name} must be a non-negative integer") from exc
+            raise ConfigError(
+                f"environment variable {env_name} must be a non-negative integer"
+            ) from exc
     if kind == "positive_number":
         try:
             number = float(raw_value)
         except ValueError as exc:
-            raise ConfigError(f"environment variable {env_name} must be a finite positive number") from exc
+            raise ConfigError(
+                f"environment variable {env_name} must be a finite positive number"
+            ) from exc
         # `float()` accepts "inf"/"nan"; reject them so the timeout stays meaningful.
         if not math.isfinite(number) or number <= 0:
             raise ConfigError(f"environment variable {env_name} must be a finite positive number")
         if number > MAX_BUILD_TIMEOUT_SECONDS:
-            raise ConfigError(f"environment variable {env_name} must be at most {MAX_BUILD_TIMEOUT_SECONDS:g}")
+            raise ConfigError(
+                f"environment variable {env_name} must be at most {MAX_BUILD_TIMEOUT_SECONDS:g}"
+            )
         return number
     if kind == "string_map":
         return _parse_string_map(env_name, raw_value)
@@ -493,10 +513,14 @@ def _parse_package_policy_map(raw_value: str) -> dict[str, dict[str, object]]:
     values: dict[str, dict[str, object]] = {}
     for item in _parse_string_list(raw_value, separator=","):
         if "=" not in item:
-            raise ConfigError("environment variable REXTIO_IMPORTS_PACKAGES must use PACKAGE=POLICY entries")
+            raise ConfigError(
+                "environment variable REXTIO_IMPORTS_PACKAGES must use PACKAGE=POLICY entries"
+            )
         package, policy = item.split("=", 1)
         if not package:
-            raise ConfigError("environment variable REXTIO_IMPORTS_PACKAGES must not contain empty package names")
+            raise ConfigError(
+                "environment variable REXTIO_IMPORTS_PACKAGES must not contain empty package names"
+            )
         if policy == "plugin":
             raise ConfigError(
                 f"REXTIO_IMPORTS_PACKAGES {package}=plugin is not supported: the 'plugin' "

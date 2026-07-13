@@ -8,7 +8,12 @@ import stat
 import sys
 import zipapp
 from rextio.build.preflight import nuitka_toolchain_error
-from rextio.build.toolchain import resolve_nuitka_command, resolve_tool, rust_environment, rust_pin_error
+from rextio.build.toolchain import (
+    resolve_nuitka_command,
+    resolve_tool,
+    rust_environment,
+    rust_pin_error,
+)
 from rextio.config.schema import ToolchainConfig
 from rextio.analyzer.native_marker import (
     external_accelerator_for_source,
@@ -413,7 +418,7 @@ def _externally_accelerated_modules(python_dir: Path) -> list[str]:
         if external_accelerator_for_source(source, project_modules) is not None:
             name = relative.name
             if name.startswith("_fallback_") and name.endswith(".py"):
-                original = f"{name[len('_fallback_'):-len('.py')]}.py"
+                original = f"{name[len('_fallback_') : -len('.py')]}.py"
                 found.append((relative.parent / original).as_posix() + " (fallback copy)")
             else:
                 found.append(relative.as_posix())

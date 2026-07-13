@@ -185,7 +185,9 @@ def _boundary_errors(
         if embedding_enabled and dependency is not None and dependency.is_embedding_candidate:
             # embedding candidates are lowered to a typed native inner function just like
             # accepted native siblings, so the same call-compatibility check applies.
-            diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
+            diagnostics.extend(
+                _native_arg_type_errors(module, function, call, dependency, resolver)
+            )
             continue
         if (
             delegate_fallback
@@ -225,8 +227,7 @@ def _boundary_errors(
                         code="RXT076",
                         severity="error",
                         message=(
-                            "scalar boundary call inside a native loop: "
-                            f"{resolved.resolved_target}"
+                            f"scalar boundary call inside a native loop: {resolved.resolved_target}"
                         ),
                         file_path=function.file_path,
                         line=call.line,
@@ -326,7 +327,9 @@ def _boundary_errors(
             )
             continue
         if dependency is not None:
-            diagnostics.extend(_native_arg_type_errors(module, function, call, dependency, resolver))
+            diagnostics.extend(
+                _native_arg_type_errors(module, function, call, dependency, resolver)
+            )
             continue
 
         if any(
@@ -337,7 +340,9 @@ def _boundary_errors(
             # (docs/specs/plugin-lowering.md): it is legal, the plugin emits it.
             continue
         decision = decision_for_target(module, resolved.resolved_target)
-        message, suggestion = _external_call_diagnostic_text(resolved.resolved_target, call.in_loop, decision)
+        message, suggestion = _external_call_diagnostic_text(
+            resolved.resolved_target, call.in_loop, decision
+        )
         diagnostics.append(
             Diagnostic(
                 code="RXT030",
@@ -358,10 +363,14 @@ def _boundary_errors(
     # suppress delivery.
     call_positions = {(call.line, call.column) for call in function.calls}
     for rejection in function.plugin_claim_rejections:
-        if rejection.kind == "call" and (
-            rejection.diagnostic.line,
-            rejection.diagnostic.column,
-        ) in call_positions:
+        if (
+            rejection.kind == "call"
+            and (
+                rejection.diagnostic.line,
+                rejection.diagnostic.column,
+            )
+            in call_positions
+        ):
             continue
         diagnostics.append(rejection.diagnostic)
     return diagnostics
@@ -564,16 +573,22 @@ def _external_call_diagnostic_text(target: str, in_loop: bool, decision) -> tupl
     if decision.policy == "try-native":
         return (
             f"external package call requires experimental dependency lowering and remains fallback: {target}",
-            _external_package_suggestion(in_loop, "dependency lowering is opt-in and not available for this call"),
+            _external_package_suggestion(
+                in_loop, "dependency lowering is opt-in and not available for this call"
+            ),
         )
     if decision.policy == "analyze":
         return (
             f"external package call is analyze-only and remains fallback: {target}",
-            _external_package_suggestion(in_loop, "switch this package to try-native only if it is pure Python and safe"),
+            _external_package_suggestion(
+                in_loop, "switch this package to try-native only if it is pure Python and safe"
+            ),
         )
     return (
         f"external package call uses fallback import policy: {target}",
-        _external_package_suggestion(in_loop, "add a Rextio plugin or explicit try-native package policy if needed"),
+        _external_package_suggestion(
+            in_loop, "add a Rextio plugin or explicit try-native package policy if needed"
+        ),
     )
 
 

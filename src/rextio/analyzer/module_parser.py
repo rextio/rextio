@@ -29,6 +29,35 @@ from rextio.plugins.models import RextioPlugin
 from rextio.targets.models import normalize_target_language
 
 
+def _syntax_error_column(exc: SyntaxError, source: str) -> int | None:
+    """Normalize ``SyntaxError.offset`` to the diagnostic column contract.
+
+    CPython's ``SyntaxError.offset`` is a **1-based Unicode code-point** index
+    into the error line. Every AST-derived diagnostic ``column`` is a **0-based
+    UTF-8 byte** offset into that line. Convert a present offset into the UTF-8
+    byte length of the prefix before the error site; return ``None`` when the
+    runtime supplies no meaningful offset (do not invent precision).
+    """
+    offset = exc.offset
+    if offset is None or offset < 1:
+        return None
+
+    line_text = exc.text
+    if line_text is None:
+        lineno = exc.lineno
+        if lineno is None or lineno < 1:
+            return None
+        lines = source.splitlines(keepends=True)
+        if lineno > len(lines):
+            return None
+        line_text = lines[lineno - 1]
+
+    # 1-based code-point index -> prefix before the error site. String slicing
+    # clamps past end-of-line (CPython sometimes reports EOF offsets that way).
+    prefix = line_text[: offset - 1]
+    return len(prefix.encode("utf-8"))
+
+
 def parse_module(
     path: Path,
     project_root: Path,
@@ -51,8 +80,11 @@ def parse_module(
     target_language = normalize_target_language(target_language)
     module_name = module_name_for_path(path, project_root)
     module = ModuleAnalysis(module_name=module_name, file_path=str(path))
+    # Read once so SyntaxError location normalization can fall back to the same
+    # source the parser saw (do not re-read the file after a failed parse).
+    source = path.read_text(encoding="utf-8")
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = ast.parse(source, filename=str(path))
     except SyntaxError as exc:
         module.diagnostics.append(
             Diagnostic(
@@ -61,7 +93,7 @@ def parse_module(
                 message=f"Python parse error: {exc.msg}",
                 file_path=str(path),
                 line=exc.lineno,
-                column=exc.offset,
+                column=_syntax_error_column(exc, source),
             )
         )
         return module
@@ -320,11 +352,7 @@ def _collect_fidelity_shim_names(tree: ast.Module) -> frozenset[str]:
                     walk(case.body)
 
     walk(tree.body)
-    return frozenset(
-        name
-        for name, target in final.items()
-        if target in RUNTIME_FIDELITY_TARGETS
-    )
+    return frozenset(name for name, target in final.items() if target in RUNTIME_FIDELITY_TARGETS)
 
 
 def _collect_module_assigned_names(tree: ast.Module) -> frozenset[str]:
@@ -443,9 +471,7 @@ def _collect_module_functions(
     # shadow check can detect a local that rebinds any sibling function — including
     # forward-referenced or unannotated ones absent from return_types.
     module_function_names: set[str] = {
-        item.name
-        for item in tree.body
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        item.name for item in tree.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     # Every name bound by a module-level assignment. A module global rebinds the
     # builtin/import/sibling of the same name for all functions in the module
@@ -462,7 +488,9 @@ def _collect_module_functions(
                         _rejected_native_marker_function(node, module, marker, target_language)
                     )
                 elif _native_marker_applies(marker, target_language):
-                    functions.append(_runtime_semantics_function(node, module, marker, target_language))
+                    functions.append(
+                        _runtime_semantics_function(node, module, marker, target_language)
+                    )
             continue
         if not isinstance(node, ast.FunctionDef):
             continue
@@ -925,7 +953,9 @@ def _collect_native_methods(
                 continue
             if marker.error:
                 functions.append(
-                    _rejected_native_marker_method(child, module, node.name, marker, target_language)
+                    _rejected_native_marker_method(
+                        child, module, node.name, marker, target_language
+                    )
                 )
                 continue
             if not _native_marker_applies(marker, target_language):
@@ -988,9 +1018,7 @@ def _collect_native_methods(
                 continue
             _add_runtime_semantics_warning(function, child)
             functions.append(function)
-        functions.extend(
-            _reject_nested_class_methods(node, node.name, module, target_language)
-        )
+        functions.extend(_reject_nested_class_methods(node, node.name, module, target_language))
     return functions
 
 
@@ -1045,13 +1073,9 @@ def _reject_nested_class_methods(
             if not _native_marker_applies(marker, target_language):
                 continue
             rejected.append(
-                _rejected_nested_class_method(
-                    child, module, nested_path, target_language
-                )
+                _rejected_nested_class_method(child, module, nested_path, target_language)
             )
-        rejected.extend(
-            _reject_nested_class_methods(node, nested_path, module, target_language)
-        )
+        rejected.extend(_reject_nested_class_methods(node, nested_path, module, target_language))
     return rejected
 
 
@@ -1137,9 +1161,7 @@ def _rejected_control_flow_method(
             line=node.lineno,
             column=node.col_offset,
             function_name=function.qualname,
-            suggestion=(
-                "Define the method directly in the class body, or remove @rextio.native."
-            ),
+            suggestion=("Define the method directly in the class body, or remove @rextio.native."),
         )
     )
     return function
@@ -1207,9 +1229,9 @@ def _rejected_native_marker_function(
 # decorator: __new__ is an implicit staticmethod; __init_subclass__ and
 # __class_getitem__ are implicit classmethods. Wrapping any of them as a plain
 # function breaks Python's special dispatch (council round 10).
-_IMPLICIT_DESCRIPTOR_METHODS = frozenset(
-    {"__new__", "__init_subclass__", "__class_getitem__"}
-)
+_IMPLICIT_DESCRIPTOR_METHODS = frozenset({"__new__", "__init_subclass__", "__class_getitem__"})
+
+
 def _target_binds_name(target: ast.expr, name: str) -> bool:
     """Return True if an assignment target binds ``name`` (bare, unpacked, starred)."""
     if isinstance(target, ast.Name):
@@ -1345,8 +1367,7 @@ def _statement_rebinds_name(statement: ast.stmt, name: str) -> bool:
         return any(_target_binds_name(target, name) for target in statement.targets)
     if isinstance(statement, (ast.Import, ast.ImportFrom)):
         return any(
-            (alias.asname or alias.name.split(".", 1)[0]) == name
-            for alias in statement.names
+            (alias.asname or alias.name.split(".", 1)[0]) == name for alias in statement.names
         )
     if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         # A later def/class of the same name overrides the method (its header
@@ -1363,8 +1384,7 @@ def _statement_rebinds_name(statement: ast.stmt, name: str) -> bool:
         )
     if isinstance(statement, (ast.With, ast.AsyncWith)):
         if any(
-            item.optional_vars is not None
-            and _target_binds_name(item.optional_vars, name)
+            item.optional_vars is not None and _target_binds_name(item.optional_vars, name)
             for item in statement.items
         ):
             return True
@@ -1410,14 +1430,11 @@ def _non_instance_method_reason(
     descriptor dunders; and a class-body reassignment of the method name.
     """
     extra = [
-        decorator
-        for decorator in node.decorator_list
-        if parse_native_marker(decorator) is None
+        decorator for decorator in node.decorator_list if parse_native_marker(decorator) is None
     ]
     if extra:
         names = ", ".join(
-            dotted_name(d.func if isinstance(d, ast.Call) else d) or "<decorator>"
-            for d in extra
+            dotted_name(d.func if isinstance(d, ast.Call) else d) or "<decorator>" for d in extra
         )
         return f"it carries a non-@rextio.native decorator ({names})"
     if node.name in _IMPLICIT_DESCRIPTOR_METHODS:

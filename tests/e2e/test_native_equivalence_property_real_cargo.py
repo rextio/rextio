@@ -67,9 +67,7 @@ def _ref_modulo(a: int, b: int) -> int:
 @pytest.fixture(scope="module")
 def native_ops(tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
     tmp = tmp_path_factory.mktemp("equiv")
-    (tmp / "rextio.toml").write_text(
-        '[rust]\nbuild_tool = "cargo"\n', encoding="utf-8"
-    )
+    (tmp / "rextio.toml").write_text('[rust]\nbuild_tool = "cargo"\n', encoding="utf-8")
     source = tmp / "src" / "equiv_app" / "math_ops.py"
     source.parent.mkdir(parents=True)
     (source.parent / "__init__.py").write_text("", encoding="utf-8")

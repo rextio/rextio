@@ -46,7 +46,11 @@ def _display_type(node: ast.AST | None) -> str | None:
     optional_inner = _optional_inner(node)
     if optional_inner is not None:
         inner_display = _display_type(optional_inner)
-        if inner_display is not None and inner_display != "None" and not _is_optional_display(inner_display):
+        if (
+            inner_display is not None
+            and inner_display != "None"
+            and not _is_optional_display(inner_display)
+        ):
             return f"Optional[{inner_display}]"
         return None
     if isinstance(node, ast.Subscript):
@@ -96,7 +100,10 @@ def _is_supported_tuple_item(node: ast.AST) -> bool:
 
 
 def _optional_inner(node: ast.AST) -> ast.AST | None:
-    if isinstance(node, ast.Subscript) and _annotation_dotted_name(node.value) in {"Optional", "typing.Optional"}:
+    if isinstance(node, ast.Subscript) and _annotation_dotted_name(node.value) in {
+        "Optional",
+        "typing.Optional",
+    }:
         return node.slice
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         left_is_none = _is_none_annotation(node.left)
@@ -109,9 +116,8 @@ def _optional_inner(node: ast.AST) -> ast.AST | None:
 
 
 def _is_none_annotation(node: ast.AST) -> bool:
-    return (
-        (isinstance(node, ast.Name) and node.id == "None")
-        or (isinstance(node, ast.Constant) and node.value is None)
+    return (isinstance(node, ast.Name) and node.id == "None") or (
+        isinstance(node, ast.Constant) and node.value is None
     )
 
 

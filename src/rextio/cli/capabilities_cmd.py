@@ -31,7 +31,11 @@ from rextio.capabilities import (
     SCALAR_TYPES,
     SET_ITEM_TYPES,
 )
-from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
+from rextio.cli.config_overrides import (
+    key_value_overrides,
+    package_policy_overrides,
+    tuple_overrides,
+)
 from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.config.schema import RextioConfig
@@ -113,7 +117,9 @@ def build_manifest(
             }
             # Sorted by id (not entry-point discovery order) so the manifest
             # is byte-stable across environments, matching the rules array.
-            for plugin in sorted(target_plan.plugins.active, key=lambda plugin: (plugin.id, plugin.name))
+            for plugin in sorted(
+                target_plan.plugins.active, key=lambda plugin: (plugin.id, plugin.name)
+            )
         ],
     }
 

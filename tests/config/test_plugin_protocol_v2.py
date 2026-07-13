@@ -76,9 +76,7 @@ def test_v2_plugin_provides_rules_and_coverage() -> None:
     assert plugin.rules_provided is True
     assert plugin.api_version == "1.0"
     assert plugin.packages == ("numpy",)  # merged from coverage
-    assert [record.id for record in registry.rule_records] == [
-        "rextio-numpy/elementwise-float64"
-    ]
+    assert [record.id for record in registry.rule_records] == ["rextio-numpy/elementwise-float64"]
     # The loader stamps the provider with the plugin id regardless of input.
     assert registry.rule_records[0].provider == "rextio-numpy"
     assert registry.coverages[0].plugin_id == "rextio-numpy"

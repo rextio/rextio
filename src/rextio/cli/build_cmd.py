@@ -23,7 +23,11 @@ from rextio.build.toolchain import (
     resolve_python,
     resolve_tool,
 )
-from rextio.cli.config_overrides import key_value_overrides, package_policy_overrides, tuple_overrides
+from rextio.cli.config_overrides import (
+    key_value_overrides,
+    package_policy_overrides,
+    tuple_overrides,
+)
 from rextio.cli.check_cmd import write_check_report
 from rextio.cli.reporter import Reporter
 from rextio.plugins.loader import PluginError
@@ -55,9 +59,7 @@ def _toolchain_preflight_error(config: RextioConfig) -> str | None:
             return python_toolchain_issue
     elif toolchain.python_version is not None:
         # No configured interpreter: the pin describes the build interpreter.
-        python_toolchain_issue = python_toolchain_error(
-            sys.executable, toolchain.python_version
-        )
+        python_toolchain_issue = python_toolchain_error(sys.executable, toolchain.python_version)
         if python_toolchain_issue is not None:
             return python_toolchain_issue
     # Configured (not merely pinned) cargo/maturin paths must resolve even if
@@ -314,7 +316,9 @@ def run(args: Namespace) -> int:
     lines.append(f"  active plugins: {len(target_plan.plugins.active)}")
     lines.append(f"  fallback: {fallback}")
     lines.append(f"  boundary fallback threshold: {config.build.fallback_threshold}")
-    lines.append(f"  experimental helper embedding: {'enabled' if config.embedding.enabled else 'disabled'}")
+    lines.append(
+        f"  experimental helper embedding: {'enabled' if config.embedding.enabled else 'disabled'}"
+    )
     lines.append(f"  rust build tool: {config.rust.build_tool}")
     lines.append(f"  accepted native functions: {result.accepted_native_count}")
     lines.append(f"  rejected native functions: {result.rejected_native_count}")
