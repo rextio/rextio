@@ -281,10 +281,16 @@ default_external_policy = "fallback"
 
 支持的包策略是 `fallback`、`analyze`、`try-native`、`plugin`。从 0.1.1
 起，插件还可以描述并直接*下沉*其覆盖的构造（plugin API 1.1 — 参见
-[plugin lowering 规范](docs/specs/plugin-lowering.md)）；first-party 的
-[rextio-numpy](https://github.com/rextio/rextio-numpy) 插件实现了经过认证
-的初始 float64 1-D 表面。一般依赖下沉不随发行版捆绑；`try-native` 是显式
-的规划策略，没有安全的 direct 下沉时仍会 fallback。
+[plugin lowering 规范](docs/specs/plugin-lowering.md)）；0.1.2 增加向后
+兼容的 plugin API **1.2**（静态字面量/有序关键字元数据、结构化
+`ClaimExpr` 树、leaves 模式下沉）。first-party 的
+[rextio-numpy](https://github.com/rextio/rextio-numpy) 插件需单独安装
+（core 无反向依赖）：**PyPI 0.1.0** 是已发布的初始认证 float64 1-D 表面；
+**未打标签的 0.1.1 RC** 扩展 literal-axis/fusion，并需要 **core >= 0.1.2**。
+相关包的**严格发布顺序**为 rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy
+0.1.1（不可同时发布；见 [tooling contract](docs/specs/tooling-contract.md)）。
+一般依赖下沉不随发行版捆绑；`try-native` 是显式的规划策略，没有安全的
+direct 下沉时仍会 fallback。
 
 ## Native 选择
 
@@ -499,12 +505,15 @@ Nuitka *可执行文件*（`--executable-backend=nuitka`）与
 并注意非常小的函数在任何加速器下都会输给调用边界成本。
 
 first-party 的 [rextio-numpy](https://github.com/rextio/rextio-numpy) 插件
-把经过认证的初始 NumPy 表面（float64 1-D 逐元素算术、`numpy.dot`、整个
-数组的 `sum`/`mean`）转换为 AOT 编译的 native Rust。因此 NumPy 代码现在
-有两条路径: 对已覆盖表面用 Rextio 插件做 AOT 编译，或在 Python fallback
-内用 Numba 做 JIT。当两者都适用时，显式的 `@numba.*` 装饰器优先，analyzer
-会输出信息性的 RXT091 注记; 关于路径取舍的更完整指南将随插件表面的成长
-而逐步明确。
+将覆盖的 NumPy 转换为 AOT 编译的 native Rust。**已发布 rextio-numpy 0.1.0**
+覆盖初始认证 float64 1-D 表面（逐元素算术、`numpy.dot`、整个数组的
+`sum`/`mean`）。**未打标签的 rextio-numpy 0.1.1 RC** 扩展需要 core plugin
+API 1.2（**core >= 0.1.2**）的 literal-axis/fusion 下沉；它不是已发布包，
+勿与 0.1.0 混淆。该 RC 的发布顺序在 dual-map **rextio-lsp 0.1.1** 与
+**core 0.1.2** 之后。因此 NumPy 代码有两条路径: 对已覆盖表面用 Rextio
+插件做 AOT 编译，或在 Python fallback 内用 Numba 做 JIT。当两者都适用时，
+显式的 `@numba.*` 装饰器优先，analyzer 会输出信息性的 RXT091 注记; 关于
+路径取舍的更完整指南将随插件表面的成长而逐步明确。
 
 ## 示例
 

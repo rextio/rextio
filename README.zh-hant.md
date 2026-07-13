@@ -283,10 +283,16 @@ default_external_policy = "fallback"
 
 支援的套件策略是 `fallback`、`analyze`、`try-native`、`plugin`。從 0.1.1
 起，外掛還可以描述並直接*下沉*其覆蓋的構造（plugin API 1.1 — 參見
-[plugin lowering 規範](docs/specs/plugin-lowering.md)）；first-party 的
-[rextio-numpy](https://github.com/rextio/rextio-numpy) 外掛實作了經過認證
-的初始 float64 1-D 表面。一般依賴下沉不隨發行版捆綁；`try-native` 是顯式
-的規劃策略，沒有安全的 direct 下沉時仍會 fallback。
+[plugin lowering 規範](docs/specs/plugin-lowering.md)）；0.1.2 增加向後
+相容的 plugin API **1.2**（靜態字面量/有序關鍵字元資料、結構化
+`ClaimExpr` 樹、leaves 模式下沉）。first-party 的
+[rextio-numpy](https://github.com/rextio/rextio-numpy) 外掛需單獨安裝
+（core 無反向依賴）：**PyPI 0.1.0** 是已發佈的初始認證 float64 1-D 表面；
+**未打標籤的 0.1.1 RC** 擴展 literal-axis/fusion，並需要 **core >= 0.1.2**。
+相關套件的**嚴格發佈順序**為 rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy
+0.1.1（不可同時發佈；見 [tooling contract](docs/specs/tooling-contract.md)）。
+一般依賴下沉不隨發行版捆綁；`try-native` 是顯式的規劃策略，沒有安全的
+direct 下沉時仍會 fallback。
 
 ## Native 選擇
 
@@ -502,12 +508,15 @@ plain Python（`.py` 繼續被 import），樹的其餘部分用 Nuitka 編譯�
 用 Numba，並注意非常小的函式在任何加速器下都會輸給呼叫邊界成本。
 
 first-party 的 [rextio-numpy](https://github.com/rextio/rextio-numpy) 外掛
-把經過認證的初始 NumPy 表面（float64 1-D 逐元素算術、`numpy.dot`、整個
-陣列的 `sum`/`mean`）轉換為 AOT 編譯的 native Rust。因此 NumPy 程式碼現在
-有兩條路徑: 對已覆蓋表面用 Rextio 外掛做 AOT 編譯，或在 Python fallback
-內用 Numba 做 JIT。當兩者都適用時，顯式的 `@numba.*` 裝飾器優先，analyzer
-會輸出資訊性的 RXT091 註記; 關於路徑取捨的更完整指南將隨外掛表面的成長
-而逐步明確。
+將覆蓋的 NumPy 轉換為 AOT 編譯的 native Rust。**已發佈 rextio-numpy 0.1.0**
+覆蓋初始認證 float64 1-D 表面（逐元素算術、`numpy.dot`、整個陣列的
+`sum`/`mean`）。**未打標籤的 rextio-numpy 0.1.1 RC** 擴展需要 core plugin
+API 1.2（**core >= 0.1.2**）的 literal-axis/fusion 下沉；它不是已發佈套件，
+勿與 0.1.0 混淆。該 RC 的發佈順序在 dual-map **rextio-lsp 0.1.1** 與
+**core 0.1.2** 之後。因此 NumPy 程式碼有兩條路徑: 對已覆蓋表面用 Rextio
+外掛做 AOT 編譯，或在 Python fallback 內用 Numba 做 JIT。當兩者都適用時，
+顯式的 `@numba.*` 裝飾器優先，analyzer 會輸出資訊性的 RXT091 註記; 關於
+路徑取捨的更完整指南將隨外掛表面的成長而逐步明確。
 
 ## 範例
 

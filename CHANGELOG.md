@@ -8,12 +8,14 @@ release**. The latest released package on PyPI remains **0.1.1** (2026-07-12).
 Do not treat `pip install rextio` as installing this RC until a formal 0.1.2
 publish.
 
-**Release-order gate (tooling contract 2.0):** dual-map **rextio-lsp 0.1.1**
-(contract majors `{1, 2}`) must be deployed **first or simultaneously** with
-core 0.1.2. Core **must not** publish alone first: a contract-`2.0.0` producer
-against major-1-only LSP mis-pairs RXT000 columns. See
-`docs/specs/tooling-contract.md`. Core has no runtime dependency on
-`rextio-lsp` or `rextio-numpy`.
+**Release-order gate (tooling contract 2.0; strict sequence):** publish
+related packages in this order only — **rextio-lsp 0.1.1** (dual-map contract
+majors `{1, 2}`) **first**, then **core 0.1.2**, then **rextio-numpy 0.1.1**
+(plugin API 1.2 consumer). Do not ship LSP simultaneously with or after core,
+and do not ship rextio-numpy 0.1.1 before core. Core **must not** publish alone
+first: a contract-`2.0.0` producer against major-1-only LSP mis-pairs RXT000
+columns. See `docs/specs/tooling-contract.md`. Core has no runtime dependency
+on `rextio-lsp` or `rextio-numpy`.
 
 ### Tooling contract 2.0.0 (protocol)
 
@@ -33,13 +35,16 @@ against major-1-only LSP mis-pairs RXT000 columns. See
   loading). Core advertises `PLUGIN_API_VERSION = "1.2"`.
 - **Static literal / ordered keyword metadata** on claim sites
   (`operand_literals`, ordered `keywords`) for version-gated offers to API
-  ≥ 1.2 providers.
+  ≥ 1.2 providers. This surface **enables literal-axis claims and lowering**
+  (for example `axis=0` keyword literals).
 - **Structured `ClaimExpr` trees** so plugins can reason about nested covered
   expressions without seeing core IR.
 - **Leaves-mode lowering** (`operand_mode` `direct` | `leaves` with
-  `leaf_operands` on `LoweringContext`) for fusion-aware expression emission —
-  the Wave 2 surface that enables and is used by the already-implemented but
-  **untagged** rextio-numpy **0.1.1 RC** literal-axis / fusion work (not
+  `leaf_operands` on `LoweringContext`) **enables fusion-aware** expression
+  emission (one helper over non-literal leaves of a multi-op tree). Leaves
+  mode is the fusion path; it is **not** the literal-axis path.
+- Together these Wave 2 surfaces are used by the already-implemented but
+  **untagged** rextio-numpy **0.1.1 RC** (literal-axis *and* fusion work; not
   published on PyPI; the published rextio-numpy line remains 0.1.0). API 1.1
   providers retain legacy keyword-not-offered semantics and never receive
   leaves-mode data. See `docs/specs/plugin-lowering.md`.

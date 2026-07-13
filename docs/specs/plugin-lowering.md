@@ -143,14 +143,14 @@ def lower(self, claimed: ClaimSite, ctx: LoweringContext) -> LoweredExpr: ...
   - `Claimed(rule_id, result_type)` — the plugin will lower this site;
     `rule_id` must be one of the plugin's rule records (enforced: a claim
     with an unadvertised rule id from a describing plugin fails the
-    analysis with a PluginError). `result_type` is REQUIRED for expression
-    claims (enforced with a PluginError): without it the enclosing
-    expression stays untyped and the analyzer would report accepted for a
-    function it never finished typing. `result_type` (a core
-    type name or plugin type key, or None for unknown) is the expression type
-    the site produces, so the analyzer's inference keeps typing the enclosing
-    expression. *(Amended during implementation: without it, claimed sites
-    were untyped.)*
+    analysis with a PluginError). `result_type` is **required** for
+    expression claims: a core type name or a registered plugin type key.
+    `None` is **rejected** with `PluginError` (the enclosing expression
+    would otherwise stay untyped and the analyzer would report accepted
+    for a function it never finished typing). The type must be known —
+    core validates it against the core type matrix and the plugin's
+    registered type keys. *(Amended during implementation: without a
+    required `result_type`, claimed sites were untyped.)*
   - `NotCovered()` — not this plugin's business; core continues as if the
     plugin did not exist (usually → candidate rejection via core rules).
   - `Rejected(diagnostic)` — covered but not lowerable; the RXTP diagnostic
@@ -187,16 +187,30 @@ class LoweredExpr:
                                      # deduplicated by exact text
 ```
 
-- `ctx` (`LoweringContext`) provides the rendered Rust sub-expressions for
-  the site's operands (already lowered by core or by prior plugin claims),
-  the target function's identifier namespace (for fresh temporaries via
-  `ctx.fresh_name()`), and the active `TargetSpec`. A plugin-typed operand is
-  handed to the plugin as a **bare identifier** (no `.clone()`): the plugin
-  OWNS the borrow-vs-consume decision and must add `&` where it borrows.
-  Because the same operand can appear more than once at a site (e.g. `a + a`),
-  a `lower()` snippet MUST NOT consume (move) an operand — borrow it. A
-  consuming snippet on a repeated operand is a `use of moved value` error at
-  `cargo build`, so the failure is loud, not silent.
+- `ctx` (`LoweringContext`) is a small, closed surface. It exposes only:
+
+  * `operands: tuple[str, ...]` — rendered Rust sub-expressions for the
+    site's direct child operands/arguments (already lowered by core or by
+    prior plugin claims), in positional order. Empty under
+    `operand_mode="leaves"`.
+  * `target_language: str` — the active codegen backend name (`"rust"` in
+    0.1.x). This is a language id string, **not** an active `TargetSpec`
+    object and not a build/profile options bag.
+  * `fresh_name: Callable[[str], str]` — allocates a fresh temporary
+    identifier in the enclosing function's namespace from a given prefix.
+  * `leaf_operands: tuple[str, ...]` (plugin API 1.2; default `()`) —
+    rendered non-literal leaves of `ClaimSite.expression` when
+    `operand_mode="leaves"`. Empty under `direct`, or when the tree has no
+    non-literal leaves.
+
+  `LoweringContext` does **not** expose core error-raising helpers, IR
+  nodes, or a `TargetSpec`. A plugin-typed operand is handed to the plugin
+  as a **bare identifier** (no `.clone()`): the plugin OWNS the
+  borrow-vs-consume decision and must add `&` where it borrows. Because
+  the same operand can appear more than once at a site (e.g. `a + a`), a
+  `lower()` snippet MUST NOT consume (move) an operand — borrow it. A
+  consuming snippet on a repeated operand is a `use of moved value` error
+  at `cargo build`, so the failure is loud, not silent.
 
   **Plugin API 1.2 operand modes (never eagerly render both):**
 
@@ -219,10 +233,20 @@ class LoweredExpr:
     provider with `api_version < 1.2` always receives a legacy `ClaimSite`
     (empty 1.2 metadata), never gets `leaf_operands`, and cannot lower
     leaves-mode IR.
-- The emitted expression must follow core's error posture: fallible
-  operations return `Result<_, RextioError>`-compatible expressions using
-  the same error-raising helpers core codegen uses (exposed through `ctx`),
-  so a shape mismatch raises the CPython-comparable exception type.
+- Plugin authors emit only through `LoweredExpr` fields: `rust` (one
+  expression, no trailing `;`), `uses` (deduplicated `use` lines), and
+  `helpers` (module-level items, deduplicated by exact text). Core owns
+  statements, control flow, temporary binding of the expression result,
+  and how the surrounding function propagates errors.
+- **Backend contract (0.1.2):** plugin lowering is **PyO3-extension-only**.
+  Codegen runs `lower()` only for the PyO3 extension module; plugin-lowered
+  functions are excluded from the pure-Rust importable crate (no
+  `RextioError` plugin-lowering path exists today). Fallible plugin output
+  must therefore be compatible with the ambient **`PyResult<_>`** and PyO3
+  exception types (for example a helper that returns `PyResult<_>`, or an
+  expression that uses `?` / `map_err` into a PyO3 error). Core does
+  **not** pass error-raising helper callables through `ctx`; plugins write
+  the Rust text they need into `rust` / `helpers` / `uses`.
 - Exposing core IR to plugins is **deferred**; nothing in this contract
   assumes plugins can see or produce IR nodes.
 - **Helper namespacing.** `helpers` items land at module level in one shared
@@ -378,6 +402,13 @@ result equivalence with hypothesis — the same posture as core's own
   The 1.2 claim metadata / fusion tree surface ships on the **0.1.2** core
   line without a package major bump (Wave 2 core gate; Wave 3 package
   release is separate).
+- **Related-package publish order** for the 1.2 consumer surface (strict, not
+  simultaneous): **rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1**. The
+  untagged rextio-numpy 0.1.1 RC (literal-axis / fusion / leaves-mode) requires
+  core plugin API 1.2 and must not publish before core 0.1.2. Published
+  rextio-numpy remains **0.1.0** until that order is followed. See
+  [tooling-contract.md](tooling-contract.md) §Compatibility and release
+  ordering.
 - Implementation slices, in order:
   1. Plugin API additions (`PluginType`, `ClaimSite`/`ClaimResult`,
      `LoweredExpr`, `BoundaryConversion`, `CrateDependency`) + loader

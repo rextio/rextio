@@ -9,8 +9,8 @@ An index of the project's documentation. See the top-level
   for every feature in the 0.1.x line.
 - [Versioning policy](versioning.md) — SemVer with the pre-1.0 caveats and the
   definition of the public contract.
-- [Unsupported features](unsupported-features.md) — the boundaries of the 0.1.0
-  supported subset.
+- [Unsupported features](unsupported-features.md) — the boundaries of the 0.1.x
+  supported subset (current package line: 0.1.2 RC; published PyPI: 0.1.1).
 
 ## Specs
 
@@ -18,8 +18,8 @@ An index of the project's documentation. See the top-level
   (producer `contract_version` `2.0.0` on the 0.1.2 line; `1.0.0` was PyPI
   0.1.1): route taxonomy, `check --json` extensions, the
   `capabilities --json` manifest, and the plugin self-description protocol
-  consumed by agent skills, LSP, and editor tooling. Dual-map rextio-lsp
-  0.1.1 must deploy before or with core 0.1.2.
+  consumed by agent skills, LSP, and editor tooling. **Strict publish order:**
+  rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 (not simultaneous).
 - [Plugin lowering](specs/plugin-lowering.md) — draft (0.1.1+; plugin API 1.1
   on PyPI 0.1.1, **1.2** additive on the 0.1.2 line): the claim/lower hook
   that lets plugins translate covered constructs to Rust — plugin annotation

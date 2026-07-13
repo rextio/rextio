@@ -313,14 +313,19 @@ The supported package policies are `fallback`, `analyze`, `try-native`, and
 `plugin`. Since 0.1.1 a plugin can also describe and *lower* covered
 constructs (plugin API 1.1 — see
 [the plugin lowering spec](docs/specs/plugin-lowering.md)); 0.1.2 adds
-backward-compatible plugin API **1.2** static literal/ordered keyword
-metadata, structured `ClaimExpr` trees, and leaves-mode lowering used by
-axis/fusion plugins. The first-party
+backward-compatible plugin API **1.2** with two distinct roles:
+**static literal/ordered keyword metadata** enables literal-axis
+claims/lowering, and **structured `ClaimExpr` trees plus leaves-mode
+lowering** enable fusion. The first-party
 [rextio-numpy](https://github.com/rextio/rextio-numpy) plugin is installed
 separately (core has no reverse dependency on it): **PyPI 0.1.0** is the
 published initial certified float64 1-D surface; the **untagged 0.1.1 RC**
-expands that surface with literal-axis/fusion work and requires core
-**>= 0.1.2** — do not treat either line as the other's release state.
+expands that surface with literal-axis *and* fusion work (each on its own
+API 1.2 surface) and requires core **>= 0.1.2** — do not treat either line
+as the other's release state.
+**Strict related-package publish order:** rextio-lsp 0.1.1 → core 0.1.2 →
+rextio-numpy 0.1.1 (not simultaneous; see
+[the tooling contract](docs/specs/tooling-contract.md)).
 General dependency lowering is not bundled; `try-native` is an explicit
 planning policy and still falls back when no safe direct lowering exists.
 
@@ -564,14 +569,17 @@ The first-party [rextio-numpy](https://github.com/rextio/rextio-numpy)
 plugin translates covered NumPy into AOT-compiled native Rust. **Published
 rextio-numpy 0.1.0** covers the initial certified float64 1-D surface
 (element-wise arithmetic, `numpy.dot`, whole-array `sum`/`mean`). The
-**untagged rextio-numpy 0.1.1 RC** expands that surface with
-literal-axis/fusion lowering that needs core plugin API 1.2
-(**core >= 0.1.2**); it is not the published package and must not be
-confused with 0.1.0. NumPy code therefore has two routes - Rextio-plugin
-AOT compilation for the covered surface, or Numba JIT inside the Python
-fallback. When both apply, an explicit `@numba.*` decorator wins and the
-analyzer emits an informational RXT091 note; broader guidance on choosing
-between the routes will firm up as the plugin surface grows.
+**untagged rextio-numpy 0.1.1 RC** expands that surface using core plugin
+API 1.2 (**core >= 0.1.2**): literal-axis claims via static
+keyword/literal metadata, and fusion via `ClaimExpr` + leaves-mode — not
+via leaves mode alone. It is not the published package and must not be
+confused with 0.1.0. Publish order for that RC is after dual-map
+**rextio-lsp 0.1.1** and **core 0.1.2**. NumPy code therefore has two
+routes - Rextio-plugin AOT compilation for the covered surface, or Numba
+JIT inside the Python fallback. When both apply, an explicit `@numba.*`
+decorator wins and the analyzer emits an informational RXT091 note;
+broader guidance on choosing between the routes will firm up as the plugin
+surface grows.
 
 ## Examples
 

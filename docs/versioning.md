@@ -3,7 +3,10 @@
 Rextio follows [Semantic Versioning 2.0.0](https://semver.org/), with the
 explicit pre-1.0 caveats below. The package version on this branch is
 **0.1.2** (release candidate — not tagged or uploaded to PyPI yet). The
-latest **published** PyPI release remains **0.1.1**.
+latest **published** PyPI release remains **0.1.1**. Related-package
+integration order for this line is strict (not simultaneous): rextio-lsp
+0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 — see
+[tooling-contract.md](specs/tooling-contract.md).
 
 ## Pre-1.0 (0.x): what "alpha" means
 

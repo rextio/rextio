@@ -8,6 +8,9 @@ branch; latest published PyPI release is **0.1.1**). The supported subset is
 intentionally small and the public surface is still moving; see
 [docs/stability.md](docs/stability.md) for what is stable versus experimental,
 and [docs/versioning.md](docs/versioning.md) for the versioning policy.
+Related-package publish order for this line is strict: rextio-lsp 0.1.1 →
+core 0.1.2 → rextio-numpy 0.1.1 (see
+[docs/specs/tooling-contract.md](docs/specs/tooling-contract.md)).
 
 ## Development setup
 

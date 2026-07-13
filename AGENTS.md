@@ -1,10 +1,19 @@
-# AGENTS.md
+# Rextio Core Development Guide (0.1.x)
 
-# Rextio 0.1.0 Development Guide
+This repository implements **Rextio Core**, a hybrid build tool for Python
+projects. Package version on this branch is **0.1.2** (release candidate —
+not tagged or uploaded to PyPI). The latest **published** PyPI release is
+**0.1.1** (2026-07-12).
 
-This repository implements **Rextio 0.1.0**, the first alpha release of Rextio.
+The original **0.1.0** design and product scope below remain the foundation of
+the alpha line (historical design record — do not rewrite those sections as if
+0.1.0 were never shipped). **0.1.1** (published) added the machine-readable
+tooling contract and plugin API 1.1 claim/lower hooks. **0.1.2** (this RC)
+advances the tooling contract to **2.0.0**, ships backward-compatible plugin
+API **1.2** (static keyword/literal metadata for literal-axis; structured
+`ClaimExpr` plus leaves-mode for fusion), and keeps the hybrid workflow below.
 
-Rextio 0.1.0 is a hybrid build tool for Python projects:
+Rextio is a hybrid build tool for Python projects:
 
 > Write typed Python. Compile eligible functions to Rust AOT native modules. Package the rest as safe CPython/Nuitka fallback.
 
@@ -19,6 +28,63 @@ Python source
   -> CPython/Nuitka fallback packaging for the rest
   -> import-compatible hybrid artifact
 ```
+
+---
+
+## 0. Current release status (0.1.2 RC)
+
+Facts for agents working on this branch (evidenced by package metadata and
+code on the `0.1.2` line):
+
+| Item | Value |
+| --- | --- |
+| Package version | `0.1.2` (`rextio.__about__.__version__`) — **RC only** |
+| Published PyPI Core | **0.1.1** (stable on PyPI as of 2026-07-12) |
+| Tooling contract | `TOOLING_CONTRACT_VERSION = "2.0.0"` (`rextio.contract`) |
+| Plugin API | `PLUGIN_API_VERSION = "1.2"` (`rextio.plugins.api`) |
+| Capabilities CLI | `rextio capabilities` — config-resolved capability manifest (experimental) |
+
+**Strict integration and release order** for related packages (not simultaneous):
+
+1. **rextio-lsp 0.1.1** first (dual-map contract majors `{1, 2}`)
+2. **Core 0.1.2** second (contract `2.0.0` + plugin API 1.2)
+3. **rextio-numpy 0.1.1** third (API 1.2 consumer: literal-axis / fusion /
+   leaves-mode surface)
+
+Core must not publish alone before dual-map LSP is available. rextio-numpy
+0.1.1 must not publish before Core 0.1.2. Core has no runtime dependency on
+`rextio-lsp` or `rextio-numpy`. Specs: `docs/specs/tooling-contract.md`,
+`docs/specs/plugin-lowering.md`.
+
+**Plugin API 1.2 (implemented on this branch):** additive over 1.1, with two
+distinct roles (do not conflate them):
+
+* **Literal-axis path:** static literal / ordered keyword metadata
+  (`operand_literals`, `keywords`) enables claims such as `axis=0`.
+* **Fusion path:** structured `ClaimExpr` trees plus `operand_mode`
+  `direct` | `leaves` (`leaf_operands` on the lowering context) enable
+  fusion-aware emission. Leaves-mode is **not** the literal-axis path.
+
+API 1.1 providers keep loading; leaves-mode and keyword offers are
+version-gated to providers with `api_version >= 1.2`.
+
+**Tooling contract 2.0.0 (implemented on this branch):** every diagnostic
+`column` / `end_column`, including `RXT000`, is a 0-based UTF-8 byte offset
+(`ast.col_offset`). Contract `1.x` (PyPI Core 0.1.1) left `RXT000` as CPython
+1-based Unicode code-point `SyntaxError.offset`.
+
+**Tag/upload gate (before publishing Core 0.1.2):** remove or rewrite
+transient RC wording in `README.md`, `CHANGELOG.md`, `AGENTS.md`,
+`CLAUDE.md`, and the localized READMEs (`README.ja.md`, `README.ko.md`,
+`README.zh-hans.md`, `README.zh-hant.md`) that still say release candidate,
+untagged/unuploaded, not on PyPI, or that the latest published package is
+**0.1.1**. Keep historical changelog entries and design records; only the
+current-release framing needs to become “0.1.2 is published.”
+
+Prefer current docs (`README.md`, `CHANGELOG.md`, `docs/stability.md`,
+`docs/specs/`) for release facts. Prefer the historical sections below for
+the original 0.1.0 MVP design constraints and subset rules that still govern
+the alpha line.
 
 ---
 
@@ -332,11 +398,14 @@ Do not prematurely move the analyzer, boundary checker, or code generator into R
 
 ## 6. 0.1.0 CLI Commands
 
-Implement these commands first:
+Implement these commands first (historical 0.1.0 surface). **0.1.1+** also
+ships `rextio capabilities` (experimental tooling-contract manifest; see
+§0 and `docs/specs/tooling-contract.md`):
 
 ```text
 rextio init
 rextio check
+rextio capabilities
 rextio generate
 rextio build
 rextio bench
@@ -528,6 +597,18 @@ analyzer must reject markers naming other targets. Rextio plugins must be ordina
 installed with tools such as `pip` or `uv`. Each plugin package exposes metadata
 through the `rextio.plugins` entry point group, and projects opt into plugin ids
 with `[plugins] enabled` or `--enable-plugin`.
+
+**Plugin protocol evolution (current Core line):**
+
+* **API 1.0 / protocol v2 describe path (0.1.1):** `describe()` / `covers()`
+  self-description; rule records merge into `rextio capabilities`.
+* **API 1.1 (0.1.1 published):** all-or-nothing lowering members
+  (`type_vocabulary`, `claim`, `lower`, `crate_dependencies`); claimed
+  functions route as `native-plugin:<id>`.
+* **API 1.2 (0.1.2 RC, additive):** static keyword/literal metadata for
+  literal-axis claims; structured `ClaimExpr` plus leaves-mode for fusion
+  (see §0 and `docs/specs/plugin-lowering.md`). Core advertises
+  `PLUGIN_API_VERSION = "1.2"`; major must still match for load.
 
 Import handling must stay conservative in 0.1.0:
 
@@ -1660,6 +1741,10 @@ generated Rust projects.
 ---
 
 ## 22. 0.1.0 Completion Criteria
+
+Historical checklist for the original 0.1.0 MVP (kept as design record).
+Published Core **0.1.1** and unreleased **0.1.2 RC** build on this baseline;
+see §0, `CHANGELOG.md`, and `docs/stability.md` for post-0.1.0 surfaces.
 
 0.1.0 is complete only when all of these are true:
 

@@ -488,11 +488,11 @@ OPERAND_MODES = frozenset({"direct", "leaves"})
 class Claimed:
     """The plugin will lower this site under the given rule.
 
-    ``result_type`` is the expression type the claimed site produces (a core
-    type name or a plugin type key), so the analyzer's inference can keep
-    typing the enclosing expression; ``None`` means unknown. (Spec amendment:
-    added to the shape shown in docs/specs/plugin-lowering.md section 2 —
-    without it, claimed sites would be untyped in the analyzer.)
+    ``result_type`` is the expression type the claimed site produces. It must
+    be a non-``None`` known core type name or a registered plugin type key so
+    the analyzer can type the enclosing expression. Analysis **rejects**
+    ``None`` and unknown types with :class:`~rextio.plugins.loader.PluginError`.
+    See docs/specs/plugin-lowering.md section 2.
 
     Plugin API 1.2: ``operand_mode`` selects how codegen feeds
     :class:`LoweringContext`:

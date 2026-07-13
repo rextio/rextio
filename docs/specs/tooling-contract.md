@@ -75,18 +75,26 @@ versions (rextio / rextio-lsp) ship on their own schedules.
 | contract `2.x` (UTF-8 column) | majors `{1,2}` with dual map | Correct via standardized branch |
 | contract `2.x` | major-1-only | **Unsupported major** → degraded guidance; do not treat as supported. Residual risk: pre-dual-map servers may still render a range using the old RXT000 special case |
 
-**Release-order gate (required for a correct pairing)**
+**Release-order gate (required; strict sequence, not simultaneous)**
 
-1. Deploy dual-map **rextio-lsp 0.1.1** (contract majors `{1, 2}` with
-   version-aware RXT000 mapping) **first, or at the same time as** core.
-2. Then (or simultaneously) publish core **0.1.2**, which emits
-   `contract_version` `2.0.0`.
+Publish related packages in this order only:
+
+1. **rextio-lsp 0.1.1 first** — dual-map consumer for contract majors `{1, 2}`
+   with version-aware RXT000 mapping. Must be available before any
+   contract-`2.x` core is published.
+2. **Core 0.1.2 second** — emits `contract_version` `2.0.0`.
+3. **rextio-numpy 0.1.1 third** — plugin API 1.2 consumer (literal-axis /
+   fusion / leaves-mode surface). Must not publish before core ships API 1.2.
+
+Do **not** ship LSP simultaneously with or after core, and do **not** ship
+rextio-numpy 0.1.1 before core 0.1.2. Core has no runtime dependency on
+rextio-lsp or rextio-numpy — these are deployment ordering constraints, not
+package dependencies.
 
 **Core must not publish alone first.** A contract-`2.x` producer against
 major-1-only rextio-lsp 0.1.0 is an unsupported pairing (degraded guidance at
 best; residual risk of mis-rendered RXT000 ranges if a server still applies
-the old special case). Core has no runtime dependency on rextio-lsp — the
-gate is a deployment ordering constraint, not a package dependency.
+the old special case).
 
 ## Route taxonomy
 
@@ -294,9 +302,9 @@ class RextioPluginV2(Protocol):
    validate the plugin merge path.
 3. **0.1.2 RC (this line; not yet tagged/uploaded):** contract `2.0.0` —
    normalize `RXT000` columns to 0-based UTF-8 byte offsets. **Release-order
-   gate:** dual-map rextio-lsp 0.1.1 first or simultaneous; core must not
-   publish alone first (see §Compatibility and release ordering). Consumers
-   that support only major 1 must degrade; dual-map consumers keep mapping
-   both 1.x and 2.x correctly.
+   gate (strict):** rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 (see
+   §Compatibility and release ordering). Core must not publish alone first;
+   numpy 0.1.1 must not publish before core. Consumers that support only major
+   1 must degrade; dual-map consumers keep mapping both 1.x and 2.x correctly.
 4. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

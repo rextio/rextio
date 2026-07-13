@@ -1,8 +1,13 @@
-# Unsupported Features in 0.1.0
+# Unsupported Features in 0.1.x
 
-Rextio 0.1.0 is a focused, alpha-stage hybrid build tool. It compiles eligible Python
-functions with statically resolved types to Rust native modules and keeps the
-rest of the project as Python fallback.
+Rextio is a focused, alpha-stage hybrid build tool. The current package line is
+**0.1.2** (release candidate on this branch; latest published PyPI package is
+**0.1.1**). The direct-Rust subset and boundary rules below still rest on the
+original **0.1.0** design; historical “0.1.0” wording in later sections is
+preserved as design scope, not as a claim that 0.1.0 is the only shipped
+version. Rextio compiles eligible Python functions with statically resolved
+types to Rust native modules and keeps the rest of the project as Python
+fallback.
 
 Unsupported native features are not bugs in the fallback path. When a native
 candidate uses unsupported syntax, unsupported types, or unsafe boundaries,

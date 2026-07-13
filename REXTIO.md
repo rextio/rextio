@@ -6,10 +6,11 @@
 
 > **Release status:** Package version **0.1.2** on this branch is a **release
 > candidate** — not tagged and not uploaded to PyPI. The latest published
-> package remains **0.1.1**. Tooling contract **2.0.0** ships with this line;
-> dual-map **rextio-lsp 0.1.1** must deploy first or simultaneously — core
-> must not publish alone first (see
-> [docs/specs/tooling-contract.md](./docs/specs/tooling-contract.md)).
+> package remains **0.1.1**. Tooling contract **2.0.0** and plugin API **1.2**
+> ship with this line. **Strict integration order:** rextio-lsp 0.1.1 → core
+> 0.1.2 → rextio-numpy 0.1.1 (LSP first; core must not publish alone first;
+> numpy 0.1.1 after core). See
+> [docs/specs/tooling-contract.md](./docs/specs/tooling-contract.md).
 
 Rextio 0.1.1 added the machine-readable tooling contract (`rextio
 capabilities`, route/status fields in `rextio check --format json`) and the
