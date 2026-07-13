@@ -1,14 +1,14 @@
 # Rextio Core Development Guide (0.1.x)
 
 This repository implements **Rextio Core**, a hybrid build tool for Python
-projects. Package version on this branch is **0.1.2** (release candidate —
-not tagged or uploaded to PyPI). The latest **published** PyPI release is
-**0.1.1** (2026-07-12).
+projects. Package version on this branch is **0.1.2**, the latest **published**
+PyPI release (tagged and uploaded on 2026-07-14, superseding **0.1.1** from
+2026-07-12).
 
 The original **0.1.0** design and product scope below remain the foundation of
 the alpha line (historical design record — do not rewrite those sections as if
 0.1.0 were never shipped). **0.1.1** (published) added the machine-readable
-tooling contract and plugin API 1.1 claim/lower hooks. **0.1.2** (this RC)
+tooling contract and plugin API 1.1 claim/lower hooks. **0.1.2** (published)
 advances the tooling contract to **2.0.0**, ships backward-compatible plugin
 API **1.2** (static keyword/literal metadata for literal-axis; structured
 `ClaimExpr` plus leaves-mode for fusion), and keeps the hybrid workflow below.
@@ -31,15 +31,15 @@ Python source
 
 ---
 
-## 0. Current release status (0.1.2 RC)
+## 0. Current release status (0.1.2 published)
 
 Facts for agents working on this branch (evidenced by package metadata and
 code on the `0.1.2` line):
 
 | Item | Value |
 | --- | --- |
-| Package version | `0.1.2` (`rextio.__about__.__version__`) — **RC only** |
-| Published PyPI Core | **0.1.1** (stable on PyPI as of 2026-07-12) |
+| Package version | `0.1.2` (`rextio.__about__.__version__`) — **published** |
+| Published PyPI Core | **0.1.2** (released on PyPI 2026-07-14; supersedes 0.1.1 from 2026-07-12) |
 | Tooling contract | `TOOLING_CONTRACT_VERSION = "2.0.0"` (`rextio.contract`) |
 | Plugin API | `PLUGIN_API_VERSION = "1.2"` (`rextio.plugins.api`) |
 | Capabilities CLI | `rextio capabilities` — config-resolved capability manifest (experimental) |
@@ -73,13 +73,13 @@ version-gated to providers with `api_version >= 1.2`.
 (`ast.col_offset`). Contract `1.x` (PyPI Core 0.1.1) left `RXT000` as CPython
 1-based Unicode code-point `SyntaxError.offset`.
 
-**Tag/upload gate (before publishing Core 0.1.2):** remove or rewrite
-transient RC wording in `README.md`, `CHANGELOG.md`, `AGENTS.md`,
-`CLAUDE.md`, and the localized READMEs (`README.ja.md`, `README.ko.md`,
-`README.zh-hans.md`, `README.zh-hant.md`) that still say release candidate,
-untagged/unuploaded, not on PyPI, or that the latest published package is
-**0.1.1**. Keep historical changelog entries and design records; only the
-current-release framing needs to become “0.1.2 is published.”
+**Tag/upload gate (satisfied for Core 0.1.2 on 2026-07-14):** the transient RC
+wording in `README.md`, `CHANGELOG.md`, `AGENTS.md`, and the localized READMEs
+(`README.ja.md`, `README.ko.md`, `README.zh-hans.md`, `README.zh-hant.md`) has
+been rewritten so the current-release framing reads “0.1.2 is published.”
+Historical changelog entries and design records are preserved. Do not
+reintroduce release-candidate, untagged/unuploaded, not-on-PyPI, or
+“latest published Core is 0.1.1” framing for Core 0.1.2.
 
 Prefer current docs (`README.md`, `CHANGELOG.md`, `docs/stability.md`,
 `docs/specs/`) for release facts. Prefer the historical sections below for
@@ -605,7 +605,7 @@ with `[plugins] enabled` or `--enable-plugin`.
 * **API 1.1 (0.1.1 published):** all-or-nothing lowering members
   (`type_vocabulary`, `claim`, `lower`, `crate_dependencies`); claimed
   functions route as `native-plugin:<id>`.
-* **API 1.2 (0.1.2 RC, additive):** static keyword/literal metadata for
+* **API 1.2 (0.1.2, additive):** static keyword/literal metadata for
   literal-axis claims; structured `ClaimExpr` plus leaves-mode for fusion
   (see §0 and `docs/specs/plugin-lowering.md`). Core advertises
   `PLUGIN_API_VERSION = "1.2"`; major must still match for load.
@@ -1743,7 +1743,7 @@ generated Rust projects.
 ## 22. 0.1.0 Completion Criteria
 
 Historical checklist for the original 0.1.0 MVP (kept as design record).
-Published Core **0.1.1** and unreleased **0.1.2 RC** build on this baseline;
+Published Core **0.1.1** and **0.1.2** build on this baseline;
 see §0, `CHANGELOG.md`, and `docs/stability.md` for post-0.1.0 surfaces.
 
 0.1.0 is complete only when all of these are true:

@@ -1,12 +1,10 @@
 # Changelog
 
-## 0.1.2 — 2026-07-13 (release candidate)
+## 0.1.2 — 2026-07-14
 
-**Release candidate only.** Package version is `0.1.2` on the core `0.1.2`
-branch; this line is **not tagged, not uploaded to PyPI, and not a published
-release**. The latest released package on PyPI remains **0.1.1** (2026-07-12).
-Do not treat `pip install rextio` as installing this RC until a formal 0.1.2
-publish.
+**Published release.** Package version `0.1.2` is tagged and published to PyPI
+on 2026-07-14, and is now the latest released core package, superseding
+**0.1.1** (2026-07-12). `pip install rextio` installs 0.1.2.
 
 **Release-order gate (tooling contract 2.0; strict sequence):** publish
 related packages in this order only — **rextio-lsp 0.1.1** (dual-map contract

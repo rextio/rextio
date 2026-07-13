@@ -4,8 +4,8 @@
 
 **把符合条件的 typed Python 函数编译为 Rust，其余一切保留在 Python fallback 上。**
 
-Rextio 0.1.2 是面向 Python 项目的 alpha 阶段本地构建工具（本分支上的
-发布候选 — **尚未发布到 PyPI**；最新已发布包为 **0.1.1**）。它找出可以
+Rextio 0.1.2 是面向 Python 项目的 alpha 阶段本地构建工具（已于 2026-07-14
+发布到 PyPI，取代此前的 **0.1.1** 版本）。它找出可以
 安全下沉到 Rust 的带类型 Python 函数，用 PyO3 提前（ahead-of-time）编译
 它们，其余部分全部继续通过生成的 Python fallback 代码运行 — import 路径
 与行为保持不变。

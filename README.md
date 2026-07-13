@@ -5,9 +5,9 @@
 **Compiles eligible typed Python functions to Rust and keeps everything
 else on the Python fallback.**
 
-Rextio 0.1.2 is an alpha-stage local build tool for Python projects (release
-candidate on this branch — **not yet published** to PyPI; the latest released
-package is **0.1.1**). It finds typed Python functions that can be safely
+Rextio 0.1.2 is an alpha-stage local build tool for Python projects (published
+to PyPI on 2026-07-14, superseding the previous **0.1.1** release). It finds
+typed Python functions that can be safely
 lowered to Rust, compiles them ahead of time with PyO3, and keeps everything
 else running through generated Python fallback code - same imports, same
 behavior.
