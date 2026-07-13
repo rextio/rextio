@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Tooling contract 2.0.0 (protocol, not a package release)
+
+- **Breaking protocol change:** `contract_version` advances to `2.0.0`.
+  `RXT000` (syntax-error) diagnostic `column` is now a **0-based UTF-8 byte
+  offset** into the line, matching every other diagnostic and `ast.col_offset`.
+  Contract `1.x` left `RXT000.column` as CPython's 1-based Unicode code-point
+  `SyntaxError.offset`.
+- Major (not minor) so consumers that gate only on major 1 refuse the
+  unsupported path instead of silently mis-mapping RXT000. See
+  `docs/specs/tooling-contract.md` (positions, compatibility, release
+  ordering). Recommended: ship dual-map rextio-lsp (majors `{1,2}`) before
+  this producer.
+- Package version remains unreleased on the `0.1.2` line; this entry is the
+  contract discriminator only.
+
 ## 0.1.1 — 2026-07-12
 
 Contract-and-plugins release: the machine-readable tooling contract for
