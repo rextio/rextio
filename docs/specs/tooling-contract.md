@@ -258,7 +258,7 @@ class RextioPluginV2(Protocol):
         # -> list of RuleRecord (L2 required, L3 fields optional)
 
     # Lowering hooks (type_vocabulary/claim/lower/crate_dependencies) are
-    # plugin API 1.1 - specified separately in plugin-lowering.md.
+    # plugin API 1.1+ (1.2 additive claim metadata) - specified separately in plugin-lowering.md.
 ```
 
 - **Discovery** stays on the `rextio.plugins` entry-point group. A v2 plugin is

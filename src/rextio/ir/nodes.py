@@ -9,9 +9,12 @@ directly.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rextio.ir.types import RxtType
+
+if TYPE_CHECKING:
+    from rextio.plugins.api import ClaimExpr, ClaimLiteral, KeywordArg
 
 
 class IRNode:
@@ -41,6 +44,10 @@ class PluginClaimIR(IRNode):
     Mirrors the analyzer's ``PluginClaim`` minus the source location: codegen
     re-offers the site to the claiming plugin's ``lower()`` with these fields
     (docs/specs/plugin-lowering.md sections 2-3).
+
+    Plugin API 1.2 fields (``operand_literals``, ``keywords``, ``expression``,
+    ``operand_mode``) are optional and default empty/None/``"direct"`` so
+    1.1-shaped claims still lower.
     """
 
     plugin_id: str
@@ -49,10 +56,14 @@ class PluginClaimIR(IRNode):
     target: str
     operand_types: tuple[str | None, ...]
     result_type: str | None
+    operand_literals: tuple[ClaimLiteral, ...] = ()
+    keywords: tuple[KeywordArg, ...] = ()
+    expression: ClaimExpr | None = None
+    operand_mode: str = "direct"
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this node."""
-        return {
+        data: dict[str, object] = {
             "plugin_id": self.plugin_id,
             "rule_id": self.rule_id,
             "kind": self.kind,
@@ -60,6 +71,15 @@ class PluginClaimIR(IRNode):
             "operand_types": list(self.operand_types),
             "result_type": self.result_type,
         }
+        if self.operand_literals:
+            data["operand_literals"] = [lit.to_dict() for lit in self.operand_literals]
+        if self.keywords:
+            data["keywords"] = [keyword.to_dict() for keyword in self.keywords]
+        if self.expression is not None:
+            data["expression"] = self.expression.to_dict()
+        if self.operand_mode != "direct":
+            data["operand_mode"] = self.operand_mode
+        return data
 
 
 @dataclass(frozen=True)

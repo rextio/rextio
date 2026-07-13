@@ -18,6 +18,7 @@ from rextio.contract import TOOLING_CONTRACT_VERSION
 
 if TYPE_CHECKING:
     from rextio.analyzer.plugin_claims import ClaimEngine
+    from rextio.plugins.api import ClaimExpr, ClaimLiteral, KeywordArg
 
 
 @dataclass(frozen=True)
@@ -42,10 +43,16 @@ class PluginClaim:
     # (start, end, kind) signature to re-identify the exact node.
     end_line: int | None = None
     end_column: int | None = None
+    # Plugin API 1.2 claim metadata (defaults keep 1.1 report shape additive).
+    operand_literals: tuple[ClaimLiteral, ...] = ()
+    keywords: tuple[KeywordArg, ...] = ()
+    expression: ClaimExpr | None = None
+    # How codegen feeds lower(): "direct" (default) or "leaves" (fusion).
+    operand_mode: str = "direct"
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this claim."""
-        return {
+        data: dict[str, object] = {
             "plugin_id": self.plugin_id,
             "rule_id": self.rule_id,
             "kind": self.kind,
@@ -57,6 +64,16 @@ class PluginClaim:
             "result_type": self.result_type,
             "operand_types": list(self.operand_types),
         }
+        # Serialize 1.2 metadata when present so check.json is stable/cache-safe.
+        if self.operand_literals:
+            data["operand_literals"] = [lit.to_dict() for lit in self.operand_literals]
+        if self.keywords:
+            data["keywords"] = [keyword.to_dict() for keyword in self.keywords]
+        if self.expression is not None:
+            data["expression"] = self.expression.to_dict()
+        if self.operand_mode != "direct":
+            data["operand_mode"] = self.operand_mode
+        return data
 
 
 @dataclass(frozen=True)
@@ -67,10 +84,16 @@ class PluginClaimRejection:
     the boundary pass's call loop, while a binop rejection has no CallSite and
     must be attached unconditionally — including when it shares a start
     position with a (claimed) call, e.g. ``np.dot(a, b) + c``.
+
+    ``end_line``/``end_column`` complete the source span so keyword-call RXT010
+    suppression can match Claimed and Rejected plugin-managed sites by the
+    same full (kind, start, end) signature as claims (plugin API 1.2).
     """
 
     kind: str
     diagnostic: Diagnostic
+    end_line: int | None = None
+    end_column: int | None = None
 
 
 @dataclass(frozen=True)

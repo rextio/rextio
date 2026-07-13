@@ -2153,7 +2153,7 @@ def _infer_expr_type(
     if isinstance(node, ast.BinOp):
         left = infer_child(node.left)
         right = infer_child(node.right)
-        return _infer_binop_type(node.op, left, right, function, node)
+        return _infer_binop_type(node.op, left, right, function, node, env)
     if (
         isinstance(node, ast.UnaryOp)
         and isinstance(node.op, ast.USub)
@@ -2621,8 +2621,12 @@ def _infer_call_type(
             active_comprehension_targets=active_targets,
         )
 
+    # First-pass positional inference (side effects: diagnostics, env binds).
+    # Preserve results so later paths (including plugin claims) do not re-infer
+    # positionals — evaluation order is each positional once, then keywords.
+    positional_arg_types: list[str | None] = []
     for arg in node.args:
-        infer_arg(arg)
+        positional_arg_types.append(infer_arg(arg))
 
     target = canonical_call_target(node, function.imports, function.logger_names)
     if target is None:
@@ -2876,9 +2880,38 @@ def _infer_call_type(
     known_return = function.call_return_types.get(target)
     if known_return is not None:
         return known_return
-    if function.claim_engine is not None and not node.keywords:
+    if function.claim_engine is not None:
+        # Plugin API 1.2: offer keyword calls with literal metadata (gated by
+        # provider api_version inside claim_call). Reuse first-pass positional
+        # results (do not re-infer); then infer ordered keyword values.
+        # Dynamic **kwargs / non-literal keywords fail closed inside claim_call.
+        # Map by id so a known None result is distinct from "not present".
+        # Distinct name: earlier branches in this function assign `arg_types`
+        # as a list, so reusing that name would collide under mypy.
+        claim_operand_types: tuple[str | None, ...] = tuple(positional_arg_types)
+        arg_type_by_id = {
+            id(arg): arg_type
+            for arg, arg_type in zip(node.args, claim_operand_types, strict=True)
+        }
+        keyword_types: dict[int, str | None] = {}
+        for keyword in node.keywords:
+            if keyword.arg is not None:
+                keyword_types[id(keyword.value)] = infer_arg(keyword.value)
+
+        def type_of(child: ast.AST) -> str | None:
+            child_id = id(child)
+            if child_id in arg_type_by_id:
+                return arg_type_by_id[child_id]
+            if child_id in keyword_types:
+                return keyword_types[child_id]
+            return _type_of_for_claim(child, function, env)
+
         handled, claim_type = function.claim_engine.claim_call(
-            function, node, target, tuple(infer_arg(arg) for arg in node.args)
+            function,
+            node,
+            target,
+            claim_operand_types,
+            type_of=type_of,
         )
         if handled:
             return claim_type
@@ -3153,12 +3186,56 @@ def _infer_list_method_type(
     return None
 
 
+def _type_of_for_claim(
+    node: ast.AST,
+    function: FunctionAnalysis,
+    env: dict[str, str] | None,
+) -> str | None:
+    """Best-effort type lookup for claim expression trees without re-claiming.
+
+    Prefer names from the local type env, then already-recorded plugin claims
+    matched by source span, then supported static literals. Does not re-enter
+    full expression inference (which would re-offer claims and duplicate
+    diagnostics).
+    """
+    if isinstance(node, ast.Name) and env is not None:
+        return env.get(node.id)
+    lineno = getattr(node, "lineno", None)
+    col = getattr(node, "col_offset", None)
+    end_line = getattr(node, "end_lineno", None)
+    end_col = getattr(node, "end_col_offset", None)
+    if lineno is not None and col is not None:
+        for claim in function.plugin_claims:
+            if (
+                claim.line == lineno
+                and claim.column == col
+                and claim.end_line == end_line
+                and claim.end_column == end_col
+            ):
+                return claim.result_type
+    from rextio.analyzer.plugin_claims import extract_claim_literal
+
+    lit = extract_claim_literal(node)
+    if lit.is_literal:
+        if lit.value is None:
+            return "None"
+        if isinstance(lit.value, tuple):
+            return (
+                f"tuple[{', '.join('int' for _ in lit.value)}]"
+                if lit.value
+                else "tuple"
+            )
+        return "int"
+    return None
+
+
 def _infer_binop_type(
     op: ast.operator,
     left: str | None,
     right: str | None,
     function: FunctionAnalysis,
     node: ast.AST,
+    env: dict[str, str] | None = None,
 ) -> str | None:
     engine = function.claim_engine
     if (
@@ -3172,7 +3249,14 @@ def _infer_binop_type(
         # set) would be rejected by core before the covering plugin ever saw
         # the site (council round 6). claim_binop itself ignores operators
         # outside the claim vocabulary.
-        handled, claim_type = engine.claim_binop(function, node, op, left, right)
+        handled, claim_type = engine.claim_binop(
+            function,
+            node,
+            op,
+            left,
+            right,
+            type_of=lambda child: _type_of_for_claim(child, function, env),
+        )
         if handled:
             return claim_type
     if not isinstance(op, (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod)):
@@ -3650,9 +3734,47 @@ def _require_arg_count(
     return False
 
 
+def _call_was_plugin_managed(function: FunctionAnalysis, node: ast.Call) -> bool:
+    """Whether a plugin Claimed OR Rejected this call (kind + full source span).
+
+    Plugin API 1.2: both Claimed and Rejected keyword sites are plugin-managed
+    and must suppress the generic RXT010 keyword rejection so the deferred
+    plugin diagnostic (or the claim) is not replaced/lost. Matching uses the
+    full (kind, start, end) span — start alone is ambiguous when a BinOp and
+    its leftmost call share an offset. NotCovered sites are not managed and
+    keep pre-1.2 RXT010/fallback behavior.
+    """
+    lineno = getattr(node, "lineno", None)
+    col = getattr(node, "col_offset", None)
+    end_line = getattr(node, "end_lineno", None)
+    end_col = getattr(node, "end_col_offset", None)
+    if lineno is None or col is None:
+        return False
+    if any(
+        claim.kind == "call"
+        and claim.line == lineno
+        and claim.column == col
+        and claim.end_line == end_line
+        and claim.end_column == end_col
+        for claim in function.plugin_claims
+    ):
+        return True
+    return any(
+        rejection.kind == "call"
+        and rejection.diagnostic.line == lineno
+        and rejection.diagnostic.column == col
+        and rejection.end_line == end_line
+        and rejection.end_column == end_col
+        for rejection in function.plugin_claim_rejections
+    )
+
+
 def _validate_call(function: FunctionAnalysis, node: ast.Call) -> None:
     if node.keywords:
-        _add_unsupported_syntax(function, node, "keyword call arguments are not supported")
+        # Plugin API 1.2: Claimed OR Rejected keyword calls are plugin-managed
+        # (e.g. axis=0). NotCovered / unoffered keyword calls keep pre-1.2 RXT010.
+        if not _call_was_plugin_managed(function, node):
+            _add_unsupported_syntax(function, node, "keyword call arguments are not supported")
 
     target = canonical_call_target(node, function.imports, function.logger_names)
     if target is None:

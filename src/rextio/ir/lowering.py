@@ -352,6 +352,10 @@ def _plugin_claim_ir(node: ast.AST, kind: str) -> PluginClaimIR | None:
         target=claim.target,
         operand_types=claim.operand_types,
         result_type=claim.result_type,
+        operand_literals=claim.operand_literals,
+        keywords=claim.keywords,
+        expression=claim.expression,
+        operand_mode=claim.operand_mode,
     )
 
 

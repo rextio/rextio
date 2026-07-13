@@ -29,7 +29,7 @@ from rextio.codegen.rust.rust_format import (
 )
 from rextio.codegen.rust.type_map import rust_type
 from rextio.analyzer.logging_format import python_logging_format_segments
-from rextio.plugins.api import ClaimSite, LoweredExpr, LoweringContext
+from rextio.plugins.api import ClaimExpr, ClaimSite, LoweredExpr, LoweringContext
 from rextio.ir.nodes import (
     AppendIR,
     AssignIR,
@@ -90,6 +90,16 @@ from rextio.ir.types import (
 # `__all__` is declared so this pure refactor leaves the module's wildcard-export
 # surface exactly as it was before the split.
 
+
+def _plugin_api_at_least(version: str, major: int, minor: int) -> bool:
+    """Return True when a plugin-API version string is at least major.minor."""
+    parts = version.split(".")
+    try:
+        ver_major = int(parts[0])
+        ver_minor = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return False
+    return (ver_major, ver_minor) >= (major, minor)
 
 
 def generate_rust_module(
@@ -1406,10 +1416,20 @@ class _FunctionRenderer:
     def render_plugin_claim(self, claim: PluginClaimIR, operand_exprs: list[ExprIR]) -> str:
         """Render a plugin-claimed site by delegating to the plugin's ``lower()``.
 
-        Core renders the operand sub-expressions and hands them to the
-        claiming provider through a :class:`LoweringContext`; the plugin
-        returns one Rust expression plus its support items
+        Core renders operand sub-expressions per ``claim.operand_mode`` and
+        hands them to the claiming provider through a :class:`LoweringContext`;
+        the plugin returns one Rust expression plus its support items
         (docs/specs/plugin-lowering.md section 3).
+
+        * ``direct`` (default) — only classic direct child operands; never
+          computes ``leaf_operands`` (no nested-fusion side effects for 1.1).
+        * ``leaves`` — only non-literal leaves by LTR ``leaf_index``; never
+          renders direct children (no nested plugin lower / intermediate
+          arrays). Fail closed if the tree cannot be aligned safely.
+
+        Codegen also enforces provider API version: ``api_version < 1.2``
+        providers always receive a legacy :class:`ClaimSite` (empty 1.2
+        metadata), never get ``leaf_operands``, and cannot use leaves-mode IR.
         """
         if self.mode != "pyo3":
             raise RustCodegenError(
@@ -1421,23 +1441,80 @@ class _FunctionRenderer:
                 f"no active lowering provider for plugin {claim.plugin_id!r} "
                 f"(claimed site {claim.target!r} in {self.function.qualname})"
             )
-        operands = tuple(self._render_plugin_operand(arg) for arg in operand_exprs)
-        site = ClaimSite(
-            kind=claim.kind,
-            target=claim.target,
-            operand_types=claim.operand_types,
-            file_path="",
-            line=0,
-            column=0,
-            # lower() receives the claim's own verdict so plugins with
-            # several same-shape rules can dispatch by rule id.
-            rule_id=claim.rule_id,
-            result_type=claim.result_type,
-        )
+        mode = claim.operand_mode
+        if mode not in {"direct", "leaves"}:
+            raise RustCodegenError(
+                f"plugin {claim.plugin_id!r} claim on {claim.target!r} in "
+                f"{self.function.qualname} has unsupported operand_mode {mode!r}; "
+                "expected 'direct' or 'leaves'"
+            )
+        provider_api = str(getattr(provider, "api_version", "1.0") or "1.0")
+        is_api_12 = _plugin_api_at_least(provider_api, 1, 2)
+        if not is_api_12:
+            # Defense in depth: even if analysis projected 1.2 fields onto IR,
+            # a legacy provider must not observe them or trigger leaf rendering.
+            if mode == "leaves":
+                raise RustCodegenError(
+                    f"plugin {claim.plugin_id!r} (api_version {provider_api!r}) "
+                    f"cannot lower site {claim.target!r} with operand_mode='leaves'; "
+                    "leaves mode requires api_version >= 1.2"
+                )
+            operands = tuple(self._render_plugin_operand(arg) for arg in operand_exprs)
+            leaf_operands: tuple[str, ...] = ()
+            site = ClaimSite(
+                kind=claim.kind,
+                target=claim.target,
+                operand_types=claim.operand_types,
+                file_path="",
+                line=0,
+                column=0,
+                rule_id=claim.rule_id,
+                result_type=claim.result_type,
+            )
+        elif mode == "leaves":
+            leaf_result = self._render_fusion_leaf_operands(claim.expression, operand_exprs)
+            if leaf_result is None:
+                raise RustCodegenError(
+                    f"plugin {claim.plugin_id!r} claimed site {claim.target!r} with "
+                    "operand_mode='leaves' but leaf operands could not be collected "
+                    f"safely in {self.function.qualname}"
+                )
+            leaf_operands = leaf_result  # may be () for all-literal leaves-safe trees
+            operands = ()
+            site = ClaimSite(
+                kind=claim.kind,
+                target=claim.target,
+                operand_types=claim.operand_types,
+                file_path="",
+                line=0,
+                column=0,
+                rule_id=claim.rule_id,
+                result_type=claim.result_type,
+                operand_literals=tuple(claim.operand_literals),
+                keywords=tuple(claim.keywords),
+                expression=claim.expression,
+            )
+        else:
+            operands = tuple(self._render_plugin_operand(arg) for arg in operand_exprs)
+            leaf_operands = ()
+            site = ClaimSite(
+                kind=claim.kind,
+                target=claim.target,
+                operand_types=claim.operand_types,
+                file_path="",
+                line=0,
+                column=0,
+                rule_id=claim.rule_id,
+                result_type=claim.result_type,
+                operand_literals=tuple(claim.operand_literals),
+                keywords=tuple(claim.keywords),
+                expression=claim.expression,
+            )
         ctx = LoweringContext(
             operands=operands,
             target_language="rust",
             fresh_name=self.next_temp,
+            leaf_operands=leaf_operands,
         )
         try:
             lowered = provider.lower(site, ctx)  # type: ignore[attr-defined]
@@ -1456,6 +1533,99 @@ class _FunctionRenderer:
         for helper in lowered.helpers:
             self.plugin_helpers.setdefault(helper)
         return f"({lowered.rust})"
+
+    def _render_fusion_leaf_operands(
+        self,
+        expression: ClaimExpr | None,
+        operand_exprs: list[ExprIR],
+    ) -> tuple[str, ...] | None:
+        """Render non-literal leaves in LTR ``leaf_index`` encounter order.
+
+        Returns:
+        * ``tuple[str, ...]`` on success, including ``()`` for a valid
+          leaves-safe all-literal expression (no non-literal leaves).
+        * ``None`` on alignment / index-sequence mismatch (fail closed).
+
+        The LTR DFS encounter sequence of ``leaf_index`` values must be
+        exactly ``0..n-1`` (no swaps, duplicates, or gaps). Nested plugin
+        claims are never invoked — intermediate structure is walked without
+        calling lower().
+        """
+        if expression is None:
+            return None
+        by_index: dict[int, ExprIR] = {}
+        encounter: list[int] = []
+        if not self._collect_leaves_by_index(
+            expression, operand_exprs, by_index, encounter
+        ):
+            return None
+        # Encounter order itself must be 0..n-1 (not merely the set of keys).
+        if encounter != list(range(len(encounter))):
+            return None
+        return tuple(self._render_plugin_operand(by_index[i]) for i in encounter)
+
+    def _collect_leaves_by_index(
+        self,
+        expression: ClaimExpr,
+        operand_exprs: list[ExprIR] | ExprIR,
+        by_index: dict[int, ExprIR],
+        encounter: list[int],
+    ) -> bool:
+        """Fill ``by_index`` / ``encounter`` from a ClaimExpr tree; False on mismatch."""
+        if expression.kind == "literal":
+            return True
+        if expression.kind == "leaf":
+            if expression.leaf_index is None:
+                return False
+            if expression.leaf_index in by_index:
+                return False  # duplicate index
+            if isinstance(operand_exprs, list):
+                if len(operand_exprs) != 1:
+                    return False
+                ir_node: ExprIR = operand_exprs[0]
+            else:
+                ir_node = operand_exprs
+            # Opaque/name leaves must be terminals in IR (no nested claim structure).
+            if isinstance(ir_node, (BinaryOpIR, CallIR)):
+                return False
+            by_index[expression.leaf_index] = ir_node
+            encounter.append(expression.leaf_index)
+            return True
+        if expression.kind == "binop":
+            if len(expression.children) != 2:
+                return False
+            if isinstance(operand_exprs, list):
+                if len(operand_exprs) != 2:
+                    return False
+                left_ir, right_ir = operand_exprs[0], operand_exprs[1]
+            elif isinstance(operand_exprs, BinaryOpIR):
+                left_ir, right_ir = operand_exprs.left, operand_exprs.right
+            else:
+                return False
+            return self._collect_leaves_by_index(
+                expression.children[0], left_ir, by_index, encounter
+            ) and self._collect_leaves_by_index(
+                expression.children[1], right_ir, by_index, encounter
+            )
+        if expression.kind == "call":
+            # Root call: children align with positional args only.
+            if isinstance(operand_exprs, list):
+                if len(operand_exprs) != len(expression.children):
+                    return False
+                args = operand_exprs
+            elif isinstance(operand_exprs, CallIR):
+                if len(operand_exprs.args) != len(expression.children):
+                    return False
+                args = operand_exprs.args
+            else:
+                return False
+            for child_expr, arg_ir in zip(expression.children, args, strict=True):
+                if not self._collect_leaves_by_index(
+                    child_expr, arg_ir, by_index, encounter
+                ):
+                    return False
+            return True
+        return False
 
     def render_call(self, expr: CallIR) -> str:
         if expr.claim is not None:

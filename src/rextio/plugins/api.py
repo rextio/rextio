@@ -38,8 +38,10 @@ RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 # surface: a v2 plugin declares the api_version it was built against, and the
 # loader accepts it when the major version matches. 1.1 added the optional
 # lowering members (type_vocabulary/claim/lower/crate_dependencies) from
-# docs/specs/plugin-lowering.md.
-PLUGIN_API_VERSION = "1.1"
+# docs/specs/plugin-lowering.md. 1.2 adds optional claim-site literal/keyword
+# metadata and structured expression trees for fusion-aware lowering; 1.1
+# providers remain source- and behavior-compatible (all new fields default).
+PLUGIN_API_VERSION = "1.2"
 
 # Crate dependency pins are exact by decree of the lowering spec: a plugin
 # without an exact pin fails to load.
@@ -227,6 +229,198 @@ class PluginType:
 
 
 @dataclass(frozen=True)
+class ClaimLiteral:
+    """Static literal metadata extractable without executing user code.
+
+    Distinguishes three states for a claim-site argument or keyword value:
+
+    * ``is_literal=False`` — not a supported static literal (dynamic name,
+      call, unsupported constant shape, …). ``value`` is always ``None``.
+    * ``is_literal=True, value=None`` — the Python literal ``None`` (distinct
+      from "not a literal").
+    * ``is_literal=True, value=<int | tuple[int, ...]>`` — a signed int
+      (not ``bool``) or a tuple of signed ints, the shapes needed for NumPy
+      ``axis=`` work.
+
+    Floats, bools, strings, bytes, and other constants are non-literal on
+    this surface. Values are never produced by executing user code.
+    """
+
+    is_literal: bool = False
+    value: int | None | tuple[int, ...] = None
+
+    def __post_init__(self) -> None:
+        """Validate the literal shape against the closed 1.2 surface."""
+        if not self.is_literal:
+            if self.value is not None:
+                raise ValueError("non-literal ClaimLiteral must have value=None")
+            return
+        if self.value is None:
+            return
+        if isinstance(self.value, bool):
+            raise ValueError("bool is not a supported ClaimLiteral int")
+        if isinstance(self.value, int):
+            return
+        if isinstance(self.value, tuple):
+            for item in self.value:
+                if isinstance(item, bool) or not isinstance(item, int):
+                    raise ValueError(
+                        "int_tuple ClaimLiteral values must contain only ints"
+                    )
+            return
+        raise ValueError(
+            f"unsupported ClaimLiteral value type: {type(self.value).__name__}"
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this literal."""
+        if not self.is_literal:
+            return {"is_literal": False}
+        if self.value is None:
+            return {"is_literal": True, "value_kind": "none", "value": None}
+        if isinstance(self.value, tuple):
+            return {
+                "is_literal": True,
+                "value_kind": "int_tuple",
+                "value": list(self.value),
+            }
+        return {"is_literal": True, "value_kind": "int", "value": self.value}
+
+
+# Shared non-literal sentinel (immutable); prefer this over constructing a
+# fresh ClaimLiteral() at every non-literal site for cache-key stability.
+NON_LITERAL = ClaimLiteral()
+
+
+@dataclass(frozen=True)
+class KeywordArg:
+    """One ordered keyword argument on a claim site.
+
+    ``name`` is the keyword spelling; ``arg_type`` is the resolved value type
+    (plugin type key or core type name, ``None`` when unresolved);
+    ``literal`` carries static-literal metadata (see :class:`ClaimLiteral`).
+    A missing keyword is simply absent from the site's ``keywords`` tuple —
+    that is distinct from a present keyword whose value is literal ``None``.
+    """
+
+    name: str
+    arg_type: str | None = None
+    literal: ClaimLiteral = NON_LITERAL
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this keyword argument."""
+        return {
+            "name": self.name,
+            "arg_type": self.arg_type,
+            "literal": self.literal.to_dict(),
+        }
+
+
+# Closed sets for ClaimExpr structural validation (plugin API 1.2).
+CLAIM_EXPR_KINDS = frozenset({"leaf", "literal", "call", "binop"})
+CLAIM_EXPR_LEAF_KINDS = frozenset({"name", "opaque"})
+
+
+@dataclass(frozen=True)
+class ClaimExpr:
+    """Structured expression tree carried from claim through IR to lower.
+
+    ``kind`` is one of:
+
+    * ``"leaf"`` — a non-literal leaf sub-expression. ``leaf_index`` indexes
+      into :attr:`LoweringContext.leaf_operands` at lower time.
+      ``leaf_kind`` is ``"name"`` for a simple ``ast.Name`` leaf or
+      ``"opaque"`` for any other non-literal leaf (subscript, attribute,
+      nested structure that could not be expanded safely, …). Fusion
+      providers can accept only ``name`` leaves and reject unsafe trees.
+    * ``"literal"`` — a supported static literal (see :class:`ClaimLiteral`).
+    * ``"call"`` — nested call; ``target`` is the dotted name, ``children``
+      are positional args in order, ``keywords`` are ordered keyword args.
+    * ``"binop"`` — nested binary op; ``target`` is the operator symbol,
+      ``children`` are ``(left, right)``.
+
+    Trees are frozen and ordered so claim-cache keys and ``to_dict`` output
+    are deterministic. Core builds the tree only for eligible nested
+    call/binop structure; anything it cannot represent safely becomes an
+    opaque ``"leaf"`` (fail closed to the pre-1.2 flat site).
+    """
+
+    kind: str
+    target: str = ""
+    result_type: str | None = None
+    children: tuple["ClaimExpr", ...] = ()
+    keywords: tuple[KeywordArg, ...] = ()
+    literal: ClaimLiteral = NON_LITERAL
+    leaf_index: int | None = None
+    # Only meaningful for kind=="leaf": "name" | "opaque". None on non-leaves.
+    leaf_kind: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate closed-set kinds and structural invariants (fail early)."""
+        if self.kind not in CLAIM_EXPR_KINDS:
+            options = ", ".join(sorted(CLAIM_EXPR_KINDS))
+            raise ValueError(f"unsupported ClaimExpr kind: {self.kind!r}. Use {options}.")
+        if self.kind == "leaf":
+            if self.leaf_index is None or self.leaf_index < 0:
+                raise ValueError(
+                    f"ClaimExpr leaf requires a non-negative leaf_index, got {self.leaf_index!r}"
+                )
+            if self.leaf_kind not in CLAIM_EXPR_LEAF_KINDS:
+                options = ", ".join(sorted(CLAIM_EXPR_LEAF_KINDS))
+                raise ValueError(
+                    f"ClaimExpr leaf requires leaf_kind in {{{options}}}, got {self.leaf_kind!r}"
+                )
+            if self.children:
+                raise ValueError("ClaimExpr leaf must not have children")
+            if self.keywords:
+                raise ValueError("ClaimExpr leaf must not have keywords")
+            if self.literal.is_literal:
+                raise ValueError("ClaimExpr leaf must not carry a literal; use kind='literal'")
+            return
+        if self.leaf_kind is not None:
+            raise ValueError(
+                f"ClaimExpr kind {self.kind!r} must not set leaf_kind (got {self.leaf_kind!r})"
+            )
+        if self.leaf_index is not None:
+            raise ValueError(
+                f"ClaimExpr kind {self.kind!r} must not set leaf_index (got {self.leaf_index!r})"
+            )
+        if self.kind == "literal":
+            if not self.literal.is_literal:
+                raise ValueError("ClaimExpr literal requires literal.is_literal=True")
+            if self.children:
+                raise ValueError("ClaimExpr literal must not have children")
+            if self.keywords:
+                raise ValueError("ClaimExpr literal must not have keywords")
+            return
+        if self.kind == "binop":
+            if len(self.children) != 2:
+                raise ValueError(
+                    f"ClaimExpr binop requires exactly 2 children, got {len(self.children)}"
+                )
+            if self.keywords:
+                raise ValueError("ClaimExpr binop must not have keywords")
+            return
+        # kind == "call"
+        if self.literal.is_literal:
+            raise ValueError("ClaimExpr call must not carry a literal payload")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable dict form of this expression node."""
+        data: dict[str, object] = {
+            "kind": self.kind,
+            "target": self.target,
+            "result_type": self.result_type,
+            "children": [child.to_dict() for child in self.children],
+            "keywords": [keyword.to_dict() for keyword in self.keywords],
+            "literal": self.literal.to_dict(),
+            "leaf_index": self.leaf_index,
+            "leaf_kind": self.leaf_kind,
+        }
+        return data
+
+
+@dataclass(frozen=True)
 class ClaimSite:
     """One candidate construct offered to a plugin's ``claim`` or ``lower``.
 
@@ -241,6 +435,14 @@ class ClaimSite:
     can dispatch its lowering deterministically by ``rule_id`` (council
     round 7 — previously lower() had to re-infer the rule from
     target/operands).
+
+    Plugin API 1.2 additions (all optional / defaulted for 1.1 compatibility):
+
+    * ``operand_literals`` — per-positional :class:`ClaimLiteral` metadata
+      aligned with ``operand_types``.
+    * ``keywords`` — ordered keyword arguments (calls only; empty for binops).
+    * ``expression`` — structured :class:`ClaimExpr` tree for the site, when
+      core can represent the nested eligible call/binop structure safely.
     """
 
     kind: str
@@ -251,9 +453,16 @@ class ClaimSite:
     column: int
     rule_id: str | None = None
     result_type: str | None = None
+    operand_literals: tuple[ClaimLiteral, ...] = ()
+    keywords: tuple[KeywordArg, ...] = ()
+    expression: ClaimExpr | None = None
 
     def to_dict(self) -> dict[str, object]:
-        """Return the JSON-serializable dict form of this site."""
+        """Return the JSON-serializable dict form of this site.
+
+        Plugin API 1.2 keys are omitted when empty/None so a site built with
+        only legacy 1.1 fields keeps the exact pre-1.2 dict shape.
+        """
         data: dict[str, object] = {
             "kind": self.kind,
             "target": self.target,
@@ -266,7 +475,17 @@ class ClaimSite:
             data["rule_id"] = self.rule_id
         if self.result_type is not None:
             data["result_type"] = self.result_type
+        if self.operand_literals:
+            data["operand_literals"] = [lit.to_dict() for lit in self.operand_literals]
+        if self.keywords:
+            data["keywords"] = [keyword.to_dict() for keyword in self.keywords]
+        if self.expression is not None:
+            data["expression"] = self.expression.to_dict()
         return data
+
+
+# Closed set for Claimed.operand_mode (plugin API 1.2).
+OPERAND_MODES = frozenset({"direct", "leaves"})
 
 
 @dataclass(frozen=True)
@@ -278,12 +497,32 @@ class Claimed:
     typing the enclosing expression; ``None`` means unknown. (Spec amendment:
     added to the shape shown in docs/specs/plugin-lowering.md section 2 —
     without it, claimed sites would be untyped in the analyzer.)
+
+    Plugin API 1.2: ``operand_mode`` selects how codegen feeds
+    :class:`LoweringContext`:
+
+    * ``"direct"`` (default, 1.1-compatible) — render classic direct child
+      operands into ``ctx.operands``; ``ctx.leaf_operands`` is empty.
+    * ``"leaves"`` — render only non-literal leaves of ``ClaimSite.expression``
+      into ``ctx.leaf_operands`` (by ``leaf_index``); ``ctx.operands`` is empty.
+      Requires ``api_version >= 1.2`` and a leaves-safe expression tree
+      (name leaves / literals / binops only; no opaque leaves). Invalid
+      leaves claims fail closed with PluginError.
     """
 
     rule_id: str
     # REQUIRED for expression claims (the engine raises PluginError on None);
     # no default so the omission fails at construction (council round 7).
     result_type: str | None
+    operand_mode: str = "direct"
+
+    def __post_init__(self) -> None:
+        """Validate operand_mode against the closed set."""
+        if self.operand_mode not in OPERAND_MODES:
+            options = ", ".join(sorted(OPERAND_MODES))
+            raise ValueError(
+                f"unsupported Claimed.operand_mode: {self.operand_mode!r}. Use {options}."
+            )
 
 
 @dataclass(frozen=True)
@@ -325,11 +564,21 @@ class LoweringContext:
     prior plugin claims); ``target_language`` names the active codegen backend
     (``"rust"``); ``fresh_name`` allocates a fresh temporary identifier in the
     enclosing function's namespace from a given prefix.
+
+    Plugin API 1.2 addition (defaulted for 1.1 compatibility):
+
+    * ``leaf_operands`` — rendered Rust sub-expressions for non-literal
+      leaves of :attr:`ClaimSite.expression`, in left-to-right
+      ``leaf_index`` order. Empty when the site has no structured expression
+      or only literal leaves. Fusion-aware providers use these to emit one
+      helper call without intermediate plugin array results; 1.1 providers
+      keep using ``operands`` unchanged.
     """
 
     operands: tuple[str, ...]
     target_language: str
     fresh_name: Callable[[str], str]
+    leaf_operands: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
