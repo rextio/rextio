@@ -175,7 +175,7 @@ def add(a: int, b: int) -> int:
     assert exit_code == 0
     assert "boundary fallback threshold: 3" in captured.out
     assert report["boundary_fallback_threshold"] == 3
-    assert 'boundary_fallback_required("app.add", 3)' in wrapper_source
+    assert '_rextio_dispatch_capture_4("app.add", 3)' in wrapper_source
 
 
 def test_generate_uses_configured_fallback_and_threshold(tmp_path: Path, capsys) -> None:
@@ -210,7 +210,7 @@ def add(a: int, b: int) -> int:
     assert "boundary fallback threshold: 9" in captured.out
     assert report["fallback"] == "nuitka"
     assert report["boundary_fallback_threshold"] == 9
-    assert 'boundary_fallback_required("app.add", 9)' in wrapper_source
+    assert '_rextio_dispatch_capture_4("app.add", 9)' in wrapper_source
 
 
 class FakeEntryPoint:

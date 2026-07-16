@@ -134,6 +134,14 @@ def kernel(x: float) -> float:
     data = analysis.to_dict()
 
     assert data["contract_version"] == TOOLING_CONTRACT_VERSION
+    # Current producer is 2.1.0 (additive over core 0.1.2's 2.0.0 shape).
+    assert data["contract_version"] == "2.1.0"
+    assert TOOLING_CONTRACT_VERSION.split(".", 1)[0] == "2"
+
+    # Contract 2.1.0 always serializes logger_group_targets on each module.
+    for module in data["modules"]:  # type: ignore[union-attr]
+        assert "logger_group_targets" in module
+        assert isinstance(module["logger_group_targets"], dict)
 
     functions = {
         function["qualname"]: function

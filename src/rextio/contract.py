@@ -14,9 +14,12 @@ the ``.rextio/reports/check.json`` report) and ``rextio capabilities``.
 
 from __future__ import annotations
 
-# 2.0.0 is a *protocol* contract major (not a package release claim). It breaks
-# RXT000 column semantics so every diagnostic column is a 0-based UTF-8 byte
-# offset (ast.col_offset convention). Contract 1.x left RXT000 as CPython's
-# 1-based Unicode code-point SyntaxError.offset. See
-# docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.0.0"
+# Protocol SemVer (not a package release claim). Major 2 broke RXT000 column
+# semantics so every diagnostic column is a 0-based UTF-8 byte offset
+# (ast.col_offset convention); contract 1.x left RXT000 as CPython's 1-based
+# Unicode code-point SyntaxError.offset. Core 0.1.2 emitted 2.0.0. Core 0.1.3
+# emits 2.1.0 for additive producer-shape fields (plugin_claims.receiver /
+# callables when present; always-on module.logger_group_targets). Same major
+# remains compatible with dual-map 2.x consumers that tolerate unknown fields.
+# See docs/specs/tooling-contract.md §Contract versioning and §Positions.
+TOOLING_CONTRACT_VERSION = "2.1.0"

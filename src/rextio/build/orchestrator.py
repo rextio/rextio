@@ -99,14 +99,30 @@ def _plugin_lowering_inputs(
         plugin_type = binding.plugin_type
         rxt_type = by_key.get(plugin_type.key)
         if rxt_type is None:
-            rxt_type = RxtPluginType(
-                key=plugin_type.key,
-                native_rust=plugin_type.rust_type,
-                param_rust=plugin_type.conversion.param_rust,
-                param_expr=plugin_type.conversion.param_expr,
-                return_rust=plugin_type.conversion.return_rust,
-                return_expr=plugin_type.conversion.return_expr,
-            )
+            conversion = plugin_type.conversion
+            if conversion is None:
+                # Resident type (plugin API 1.3): opaque native-only value, no
+                # Python boundary conversion. The conversion fields stay empty,
+                # but the type may still OWN a named Rust struct through its
+                # module support.
+                rxt_type = RxtPluginType(
+                    key=plugin_type.key,
+                    native_rust=plugin_type.rust_type,
+                    resident=True,
+                    uses=plugin_type.uses,
+                    helpers=plugin_type.helpers,
+                )
+            else:
+                rxt_type = RxtPluginType(
+                    key=plugin_type.key,
+                    native_rust=plugin_type.rust_type,
+                    param_rust=conversion.param_rust,
+                    param_expr=conversion.param_expr,
+                    return_rust=conversion.return_rust,
+                    return_expr=conversion.return_expr,
+                    uses=plugin_type.uses,
+                    helpers=plugin_type.helpers,
+                )
             by_key[plugin_type.key] = rxt_type
         for spelling in plugin_type.annotations:
             by_spelling[spelling] = rxt_type

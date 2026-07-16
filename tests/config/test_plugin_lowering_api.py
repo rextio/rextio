@@ -353,6 +353,73 @@ def test_registry_to_dict_serializes_lowering_surfaces_without_providers() -> No
     assert "providers" not in data
 
 
+def test_materialized_plugin_type_to_dict_keeps_exact_legacy_byte_shape() -> None:
+    # A materialized (1.1/1.2) PluginType must serialize byte-for-byte as before
+    # plugin API 1.3: NO ``resident`` key, and the exact legacy key order.
+    data = F64_ARR1.to_dict()
+    assert list(data.keys()) == ["key", "annotations", "rust_type", "conversion"]
+    assert "resident" not in data
+    assert data == {
+        "key": "rextio-numpy/f64-1d",
+        "annotations": ["rextio_numpy.types.F64Arr1"],
+        "rust_type": "ndarray::Array1<f64>",
+        "conversion": {
+            "param_rust": "numpy::PyReadonlyArray1<'py, f64>",
+            "param_expr": "{param}.as_array().to_owned()",
+            "return_rust": "pyo3::Bound<'py, numpy::PyArray1<f64>>",
+            "return_expr": "numpy::ToPyArray::to_pyarray(&{value}, py)",
+        },
+    }
+
+
+def test_resident_plugin_type_to_dict_adds_resident_true_and_null_conversion() -> None:
+    # Only a resident (plugin API 1.3) PluginType adds ``resident: true`` and a
+    # ``conversion: null``.
+    resident = PluginType(
+        key="rextio-graph/graph",
+        annotations=("rextio_graph.types.Graph",),
+        rust_type="GraphData",
+        conversion=None,
+    )
+    data = resident.to_dict()
+    assert data == {
+        "key": "rextio-graph/graph",
+        "annotations": ["rextio_graph.types.Graph"],
+        "rust_type": "GraphData",
+        "resident": True,
+        "conversion": None,
+    }
+
+
+def test_rxt_plugin_type_to_dict_byte_shape_by_residency() -> None:
+    # The IR type mirrors the surface contract: a materialized RxtPluginType keeps
+    # its exact legacy dict (no ``resident`` key); a resident one adds it.
+    from rextio.ir.types import RxtPluginType
+
+    materialized = RxtPluginType(
+        key="rextio-numpy/f64-1d",
+        native_rust="ndarray::Array1<f64>",
+        param_rust="numpy::PyReadonlyArray1<'py, f64>",
+        param_expr="{param}.as_array().to_owned()",
+        return_rust="pyo3::Bound<'py, numpy::PyArray1<f64>>",
+        return_expr="numpy::ToPyArray::to_pyarray(&{value}, py)",
+    )
+    assert materialized.to_dict() == {
+        "kind": "plugin",
+        "key": "rextio-numpy/f64-1d",
+        "native_rust": "ndarray::Array1<f64>",
+    }
+    assert "resident" not in materialized.to_dict()
+
+    resident = RxtPluginType(key="rextio-graph/graph", native_rust="GraphData", resident=True)
+    assert resident.to_dict() == {
+        "kind": "plugin",
+        "key": "rextio-graph/graph",
+        "native_rust": "GraphData",
+        "resident": True,
+    }
+
+
 def test_lowering_members_require_api_1_1() -> None:
     # Council round-2 R5: a plugin declaring api_version 1.0 must not expose
     # the 1.1 lowering members.

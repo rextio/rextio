@@ -81,12 +81,18 @@ def analyze_native_top_level(tree: ast.Module, module: ModuleAnalysis) -> TopLev
         is_native_candidate=True,
         imports=dict(module.imports),
         logger_names=module.logger_names,
+        module_bindings=module.module_bindings,
+        project_mutations=module.project_mutations,
+        project_modules=module.project_modules,
     )
     validator_module = ModuleAnalysis(
         module_name=module.module_name,
         file_path=module.file_path,
         imports=dict(module.imports),
         import_policies=module.import_policies,
+        module_bindings=module.module_bindings,
+        project_mutations=module.project_mutations,
+        project_modules=module.project_modules,
     )
     env: dict[str, str] = {}
     assigned_names: set[str] = set()

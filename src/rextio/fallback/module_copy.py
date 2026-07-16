@@ -60,14 +60,37 @@ def write_native_top_level_fallback_module(module: ModuleAnalysis, python_root: 
 
 
 def render_native_top_level_fallback_module(module: ModuleAnalysis) -> str:
-    """Render the source of a native-top-level fallback module."""
+    """Render an elided fallback while preserving source definition lines.
+
+    Method identity guards compare ``co_firstlineno`` with the analyzed source.
+    Re-unparsing the residual AST renumbered every function/class after an
+    elided initializer.  Replace each converted statement span with a harmless
+    statement of the same byte/line footprint instead, and put the generated
+    marker at EOF so every surviving definition keeps its original line.
+    """
     source = Path(module.file_path).read_text(encoding="utf-8")
     tree = ast.parse(source, filename=module.file_path)
-    converted = set(collect_native_top_level_statements(tree))
-    tree.body = [statement for statement in tree.body if statement not in converted]
-    ast.fix_missing_locations(tree)
-    body = ast.unparse(tree) if tree.body else ""
-    return f"{GENERATED_PYTHON_HEADER}\n\n{body}\n"
+    lines = [bytearray(line.encode("utf-8")) for line in source.splitlines(keepends=True)]
+    for statement in collect_native_top_level_statements(tree):
+        start_line = statement.lineno - 1
+        end_line = (statement.end_lineno or statement.lineno) - 1
+        start_column = statement.col_offset
+        end_column = statement.end_col_offset or 0
+        for line_number in range(start_line, end_line + 1):
+            line = lines[line_number]
+            content_end = len(line.rstrip(b"\r\n"))
+            lower = start_column if line_number == start_line else 0
+            upper = end_column if line_number == end_line else content_end
+            line[lower:upper] = b" " * max(upper - lower, 0)
+        first_line = lines[start_line]
+        first_content_end = len(first_line.rstrip(b"\r\n"))
+        first_upper = end_column if start_line == end_line else first_content_end
+        width = max(first_upper - start_column, 0)
+        replacement = b"pass" if width >= 4 else b"0"
+        first_line[start_column : start_column + len(replacement)] = replacement
+    body = b"".join(lines).decode("utf-8")
+    separator = "\n" if body.endswith(("\n", "\r")) else "\n\n"
+    return f"{body}{separator}{GENERATED_PYTHON_HEADER}\n"
 
 
 def copy_plain_module(module: ModuleAnalysis, python_root: Path) -> Path:

@@ -105,6 +105,7 @@ def _plugin_type_bindings(plugin: RextioPlugin, provider: Any) -> tuple[PluginTy
         vocabulary = provider.type_vocabulary()
     except Exception as exc:
         raise PluginError(f"plugin {plugin.id!r} type_vocabulary() failed: {exc}") from exc
+    provider_api = _version_tuple(str(getattr(provider, "api_version", "") or ""))
     bindings: list[PluginTypeBinding] = []
     seen_spellings: dict[str, str] = {}
     seen_keys: set[str] = set()
@@ -113,6 +114,27 @@ def _plugin_type_bindings(plugin: RextioPlugin, provider: Any) -> tuple[PluginTy
         if not isinstance(plugin_type, PluginType):
             raise PluginError(
                 f"plugin {plugin.id!r} type_vocabulary() must yield PluginType objects"
+            )
+        if plugin_type.is_resident and provider_api < (1, 3):
+            # Resident (opaque, no-boundary) types are a plugin API 1.3 feature;
+            # a lower-versioned provider declaring one would silently escape the
+            # native-only invariant its codegen path was never built for.
+            raise PluginError(
+                f"plugin {plugin.id!r} type {plugin_type.key!r} is resident "
+                "(conversion=None) but declares plugin-API "
+                f"{'.'.join(str(part) for part in provider_api)!r}; resident types "
+                "require api_version >= 1.3"
+            )
+        if (plugin_type.uses or plugin_type.helpers) and provider_api < (1, 3):
+            # Type-level module support (uses/helpers on a PluginType) is a
+            # plugin API 1.3 feature; a lower-versioned provider declaring it
+            # would emit unowned module items on a codegen path its version was
+            # never built for.
+            raise PluginError(
+                f"plugin {plugin.id!r} type {plugin_type.key!r} declares module "
+                "support (uses/helpers) but declares plugin-API "
+                f"{'.'.join(str(part) for part in provider_api)!r}; type-level "
+                "support requires api_version >= 1.3"
             )
         if not plugin_type.key.startswith(key_prefix):
             raise PluginError(

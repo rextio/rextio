@@ -1325,8 +1325,9 @@ def read_value(x: object) -> object:
     assert "#[pyfunction(signature = (*args, **kwargs))]" in source
     assert "fn app__read_value(" in source
     assert "rextio_call_python_runtime(" in source
-    assert '"_fallback_app"' in source
-    assert '"_rextio_original_app__read_value"' in source
+    assert '"app"' in source
+    assert '"rextio.runtime.original_registry"' in source
+    assert "        0," in source
 
 
 def test_runtime_shim_with_keyword_param_emits_generic_signature(tmp_path: Path) -> None:

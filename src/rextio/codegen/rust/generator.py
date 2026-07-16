@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 
 from rextio.codegen.native_names import native_function_name
 from rextio.exceptions import BUILTIN_EXCEPTION_TO_PYO3
@@ -29,7 +30,13 @@ from rextio.codegen.rust.rust_format import (
 )
 from rextio.codegen.rust.type_map import rust_type
 from rextio.analyzer.logging_format import python_logging_format_segments
-from rextio.plugins.api import ClaimExpr, ClaimSite, LoweredExpr, LoweringContext
+from rextio.plugins.api import (
+    CallableMeta,
+    ClaimExpr,
+    ClaimSite,
+    LoweredExpr,
+    LoweringContext,
+)
 from rextio.ir.nodes import (
     AppendIR,
     AssignIR,
@@ -55,6 +62,7 @@ from rextio.ir.nodes import (
     ModuleIR,
     NameIR,
     NamedExprIR,
+    ParamIR,
     PluginClaimIR,
     ReturnIR,
     SetComprehensionIR,
@@ -150,9 +158,11 @@ def generate_rust_module(
                     mode="pyo3",
                     used_helpers=used_helpers,
                     boundary_call_return_types=boundary_call_return_types,
-                    # An embedded helper compiles as a plain
-                    # internal function: callable from native code, not exported.
-                    pyo3_exported=not function.embedded,
+                    # An embedded helper — or a resident-signature native-only
+                    # helper (opaque plugin values, plugin API 1.3) — compiles as
+                    # a plain internal function: callable from native code, never
+                    # a #[pyfunction] export.
+                    pyo3_exported=not function.embedded and not _has_resident_signature(function),
                     plugin_providers=plugin_providers,
                     plugin_types_by_key=plugin_types_by_key,
                     plugin_uses=plugin_uses,
@@ -165,7 +175,7 @@ def generate_rust_module(
     exported = [
         names_by_qualname[function.qualname]
         for function in module_ir.functions
-        if not function.embedded
+        if not function.embedded and not _has_resident_signature(function)
     ]
     prelude: list[str] = []
     prelude.extend(sorted(plugin_uses))
@@ -424,10 +434,17 @@ def rust_identifier(value: str) -> str:
 
 
 def _render_runtime_semantics_function(function: FunctionIR) -> str:
-    if function.runtime_fallback_module is None or not function.runtime_attr_path:
+    if function.runtime_fallback_module is None or len(function.runtime_attr_path) != 1:
         raise RustCodegenError(f"missing runtime fallback metadata for {function.qualname}")
     rust_name = rust_identifier(native_function_name(function.qualname))
-    attr_path = ", ".join(rust_string_literal(item) for item in function.runtime_attr_path)
+    try:
+        ordinal = int(function.runtime_attr_path[0])
+    except ValueError:
+        raise RustCodegenError(
+            f"invalid runtime-original ordinal for {function.qualname}"
+        ) from None
+    if ordinal < 0:
+        raise RustCodegenError(f"invalid runtime-original ordinal for {function.qualname}")
     return "\n".join(
         [
             "#[pyfunction(signature = (*args, **kwargs))]",
@@ -439,7 +456,7 @@ def _render_runtime_semantics_function(function: FunctionIR) -> str:
             "    rextio_call_python_runtime(",
             "        py,",
             f"        {rust_string_literal(function.runtime_fallback_module)},",
-            f"        &[{attr_path}],",
+            f"        {ordinal},",
             "        args,",
             "        kwargs,",
             "    )",
@@ -563,6 +580,16 @@ class _FunctionRenderer:
         self.boundary_call_return_types = boundary_call_return_types or {}
         self.declared = {param.name for param in function.params}
         self.variable_types = {param.name: param.type for param in function.params}
+        # Resident (opaque, native-only — plugin API 1.3) parameters are passed
+        # by shared reference (``&T``), so the caller keeps ownership and can
+        # reuse the value or pass it again (safe native-to-native chaining). A
+        # name in this set is therefore ALREADY a ``&T`` binding: re-passing it
+        # native-to-native reborrows it rather than taking a fresh borrow.
+        self._resident_param_names = frozenset(
+            param.name
+            for param in function.params
+            if isinstance(param.type, RxtPluginType) and param.type.resident
+        )
         self.maybe_bound_types: dict[str, RxtType] = {}
         self.temp_index = 0
         # Checked-arithmetic helper names (e.g. "add", "neg") used by this
@@ -582,11 +609,29 @@ class _FunctionRenderer:
             raise RustCodegenError(
                 f"plugin-lowered function has no pure-Rust form: {self.function.qualname}"
             )
+        # Register the module support OWNED by the plugin types in this
+        # function's signature BEFORE the body renders, so a signature-only
+        # accepted function (plugin-typed parameter/return, zero claims) still
+        # emits the `use`/helper items its boundary conversion or named native
+        # type references. Collecting first also means a helper that ALSO
+        # arrives from a claim's LoweredExpr deduplicates to one item.
+        self._collect_signature_type_support()
         assigned_names = _assigned_names(self.function.body)
+        # Only MATERIALIZED plugin types (with a boundary conversion) drive the
+        # PyO3 boundary signature: they arrive as their PyO3 param type and
+        # convert in the prologue, and return through the conversion expression.
+        # RESIDENT plugin types (opaque, native-only — plugin API 1.3) have no
+        # conversion: they render as their plain native Rust type in both the
+        # ordinary function path and native-to-native calls, and such functions
+        # are never PyO3-exported (see _render_pyo3_module).
         plugin_params = [
-            param for param in self.function.params if isinstance(param.type, RxtPluginType)
+            param
+            for param in self.function.params
+            if isinstance(param.type, RxtPluginType) and not param.type.resident
         ]
-        plugin_return = isinstance(self.function.return_type, RxtPluginType)
+        plugin_return = isinstance(self.function.return_type, RxtPluginType) and not (
+            self.function.return_type.resident
+        )
         rust_name = rust_identifier(native_function_name(self.function.qualname))
         prologue: list[str] = []
         if self.mode == "pyo3" and (plugin_params or plugin_return):
@@ -597,7 +642,13 @@ class _FunctionRenderer:
             param_parts = ["py: pyo3::Python<'py>"]
             for param in self.function.params:
                 name = rust_identifier(param.name)
-                if isinstance(param.type, RxtPluginType):
+                if isinstance(param.type, RxtPluginType) and param.type.resident:
+                    # A resident parameter has no boundary conversion; it is a
+                    # native-only value passed by shared reference (`&T`). Such a
+                    # function is never PyO3-exported, but it may still reach the
+                    # pyo3 branch if it ALSO carries a materialized plugin param.
+                    param_parts.append(f"{name}: &{param.type.native_rust}")
+                elif isinstance(param.type, RxtPluginType):
                     # The prologue rebinds the converted native value under the
                     # same name (mut when reassigned); the signature parameter
                     # itself is consumed once and never needs mut.
@@ -626,7 +677,7 @@ class _FunctionRenderer:
         else:
             params = ", ".join(
                 f"{'mut ' if param.name in assigned_names else ''}"
-                f"{rust_identifier(param.name)}: {rust_type(param.type)}"
+                f"{rust_identifier(param.name)}: {self._param_signature_rust(param)}"
                 for param in self.function.params
             )
             return_type = rust_type(self.function.return_type)
@@ -644,6 +695,25 @@ class _FunctionRenderer:
             lines.append(f"{_indent(1)}Ok({default_return(return_type)})")
         lines.append("}")
         return "\n".join(lines)
+
+    def _collect_signature_type_support(self) -> None:
+        """Merge module support owned by plugin types in this function's signature.
+
+        Support is collected ONLY from plugin types that appear DIRECTLY as a
+        parameter or the return type — an unused registered type contributes
+        nothing. ``uses`` deduplicate through the module set; ``helpers``
+        deduplicate by exact text through the insertion-ordered collector, so a
+        type reused across parameter and return (or a helper that also arrives
+        from a ``LoweredExpr``) is emitted exactly once. Ordering is
+        deterministic: parameters in signature order, then the return type.
+        """
+        signature_types: list[RxtType] = [param.type for param in self.function.params]
+        signature_types.append(self.function.return_type)
+        for signature_type in signature_types:
+            if isinstance(signature_type, RxtPluginType):
+                self.plugin_uses.update(signature_type.uses)
+                for helper in signature_type.helpers:
+                    self.plugin_helpers.setdefault(helper)
 
     def render_block(self, block: BlockIR, indent: int) -> list[str]:
         lines: list[str] = []
@@ -721,9 +791,15 @@ class _FunctionRenderer:
                 statement.value,
                 self.render_expr_with_expected(statement.value, self.function.return_type),
             )
-            if self.mode == "pyo3" and isinstance(self.function.return_type, RxtPluginType):
-                # A plugin-typed return crosses the boundary through the
-                # plugin's conversion expression (owned, newly allocated).
+            if (
+                self.mode == "pyo3"
+                and isinstance(self.function.return_type, RxtPluginType)
+                and not self.function.return_type.resident
+            ):
+                # A materialized plugin-typed return crosses the boundary through
+                # the plugin's conversion expression (owned, newly allocated). A
+                # resident return has no conversion: it is an internal native-only
+                # value returned as-is to a native caller.
                 value = self.function.return_type.return_expr.format(value=value)
             return [*lines, f"{prefix}return Ok({value});"]
         if isinstance(statement, IfIR):
@@ -1407,7 +1483,12 @@ class _FunctionRenderer:
         # always divergence-free by construction.
         return " && ".join(parts)
 
-    def render_plugin_claim(self, claim: PluginClaimIR, operand_exprs: list[ExprIR]) -> str:
+    def render_plugin_claim(
+        self,
+        claim: PluginClaimIR,
+        operand_exprs: list[ExprIR],
+        receiver_expr: ExprIR | None = None,
+    ) -> str:
         """Render a plugin-claimed site by delegating to the plugin's ``lower()``.
 
         Core renders operand sub-expressions per ``claim.operand_mode`` and
@@ -1504,11 +1585,22 @@ class _FunctionRenderer:
                 keywords=tuple(claim.keywords),
                 expression=claim.expression,
             )
+        # Plugin API 1.3 receiver/callable metadata: only a >= 1.3 provider ever
+        # observes them; a legacy provider always sees the pre-1.3 site shape.
+        is_api_13 = _plugin_api_at_least(provider_api, 1, 3)
+        receiver_binding: str | None = None
+        ctx_receiver: str | None = None
+        if is_api_13:
+            resolved_callables = self._resolve_callable_symbols(claim.callables)
+            site = replace(site, receiver=claim.receiver, callables=resolved_callables)
+            if receiver_expr is not None:
+                ctx_receiver, receiver_binding = self._render_claim_receiver(claim, receiver_expr)
         ctx = LoweringContext(
             operands=operands,
             target_language="rust",
             fresh_name=self.next_temp,
             leaf_operands=leaf_operands,
+            receiver=ctx_receiver,
         )
         try:
             lowered = provider.lower(site, ctx)  # type: ignore[attr-defined]
@@ -1526,7 +1618,58 @@ class _FunctionRenderer:
         self.plugin_uses.update(lowered.uses)
         for helper in lowered.helpers:
             self.plugin_helpers.setdefault(helper)
+        if receiver_binding is not None:
+            # A non-safe receiver is bound to a single-use temporary evaluated
+            # ONCE, before the operands (which appear inside ``lowered.rust``),
+            # matching Python receiver-then-args evaluation order. The block is
+            # itself an expression, so it composes anywhere the claim result does.
+            return f"{{ {receiver_binding} ({lowered.rust}) }}"
         return f"({lowered.rust})"
+
+    def _resolve_callable_symbols(
+        self, callables: tuple["CallableMeta", ...]
+    ) -> tuple["CallableMeta", ...]:
+        """Fill ``native_symbol`` for callables that name a generated native helper.
+
+        A callable's native symbol is set only when it is a proven accepted
+        scalar native function (``accepts_native``) AND an accepted native helper
+        was actually generated for its qualname in this module (present in
+        ``native_names_by_qualname``). Every other callable keeps
+        ``native_symbol=None`` — the plugin then falls back to the closed body or
+        rejects (fail closed).
+        """
+        if not callables:
+            return callables
+        resolved: list[CallableMeta] = []
+        for meta in callables:
+            symbol = self.native_names_by_qualname.get(meta.qualname)
+            if meta.accepts_native and symbol is not None:
+                resolved.append(replace(meta, native_symbol=symbol))
+            else:
+                resolved.append(meta)
+        return tuple(resolved)
+
+    def _render_claim_receiver(
+        self, claim: PluginClaimIR, receiver_expr: ExprIR
+    ) -> tuple[str, str | None]:
+        """Render a method claim's receiver, guaranteeing a single evaluation.
+
+        Returns ``(ctx_receiver, binding)``. Core ALWAYS evaluates the receiver
+        exactly once, in Python order, before the call operands:
+
+        * a side-effect-free receiver (a plain local name — ``ReceiverMeta.is_safe``)
+          is passed through as a bare reference, with no binding; and
+        * any other receiver is bound to a fresh single-use temporary
+          (``let __recv = <expr>;``) and the temporary name is handed to the
+          provider, so a descriptor/``__getattr__``/``__getitem__``/call in the
+          receiver runs exactly once.
+        """
+        rendered = strip_wrapping_parens(self.render_expr(receiver_expr))
+        receiver_meta = claim.receiver
+        if receiver_meta is not None and receiver_meta.is_safe:
+            return rendered, None
+        temp = self.next_temp("__rextio_recv")
+        return temp, f"let {temp} = {rendered};"
 
     def _render_fusion_leaf_operands(
         self,
@@ -1619,7 +1762,7 @@ class _FunctionRenderer:
 
     def render_call(self, expr: CallIR) -> str:
         if expr.claim is not None:
-            return self.render_plugin_claim(expr.claim, expr.args)
+            return self.render_plugin_claim(expr.claim, expr.args, expr.receiver)
         if expr.function == "len" and len(expr.args) == 1:
             # CPython `len(str)` counts Unicode code points; Rust `String::len`
             # returns the UTF-8 byte length, so a `str` argument must use
@@ -1772,7 +1915,7 @@ class _FunctionRenderer:
         if rust_name is None:
             rust_name = self.native_names.get((self.function.module_name, expr.function))
         if rust_name is not None:
-            args = ", ".join(self.render_call_arg(arg) for arg in expr.args)
+            args = ", ".join(self._render_native_call_arg(arg) for arg in expr.args)
             return f"{rust_name}({args})?"
         if expr.function in self.delegated_return_types:
             return self._render_delegated_call(expr)
@@ -2088,6 +2231,57 @@ class _FunctionRenderer:
                 return self.render_expr(expr)
             return f"{rust_identifier(expr.id)}.clone()"
         return self.render_expr(expr)
+
+    def _param_signature_rust(self, param: ParamIR) -> str:
+        """Render a parameter's Rust signature type.
+
+        A resident (opaque, native-only — plugin API 1.3) parameter is passed by
+        SHARED REFERENCE (``&T``): the caller keeps ownership, so the value can be
+        reused or handed to another helper after the call (safe native-to-native
+        chaining), and a resident type never needs to be ``Clone``. Every other
+        parameter renders as its plain owned Rust type.
+        """
+        if isinstance(param.type, RxtPluginType) and param.type.resident:
+            return f"&{param.type.native_rust}"
+        return rust_type(param.type)
+
+    def _render_native_call_arg(self, expr: ExprIR) -> str:
+        """Render an argument to a native-to-native call.
+
+        A resident plugin value (opaque, native-only — plugin API 1.3) is passed
+        by SHARED REFERENCE so the caller keeps ownership: it is NEVER moved and
+        NEVER cloned (a resident type need not implement ``Clone``). This holds
+        for EVERY resident-valued argument expression, not just a bare name:
+
+        * an owned resident LOCAL is borrowed (``&name``) so the producer keeps
+          it and may reuse it after the call;
+        * a resident PARAMETER is already a ``&T`` binding, so it is reborrowed
+          by passing it through unchanged (never ``&&T``);
+        * a resident-valued TEMPORARY — a plugin-produced value passed directly
+          (``extend(rextio_graph.new(nodes), n)``) or a nested native helper
+          call returning a resident value (``extend(extend(g, a), b)``) — is
+          rendered once and its temporary borrowed (``&(...)``). The temporary
+          lives to the end of the enclosing statement, so borrowing it is
+          well-formed; it is evaluated exactly once, in order, with no clone and
+          nothing to move.
+
+        The ``&(...)`` wrapping parenthesizes the rendered expression so a
+        trailing ``?`` (a native call renders ``helper(...)?``) or any complex
+        expression binds to the borrow correctly. Every non-resident argument
+        keeps the existing clone-on-name behaviour.
+        """
+        if isinstance(expr, NameIR):
+            if expr.id not in self.maybe_bound_types:
+                value_type = self.infer_expr_type(expr)
+                if isinstance(value_type, RxtPluginType) and value_type.resident:
+                    if expr.id in self._resident_param_names:
+                        return rust_identifier(expr.id)
+                    return f"&{rust_identifier(expr.id)}"
+            return self.render_call_arg(expr)
+        value_type = self.infer_expr_type(expr)
+        if isinstance(value_type, RxtPluginType) and value_type.resident:
+            return f"&({strip_wrapping_parens(self.render_expr(expr))})"
+        return self.render_call_arg(expr)
 
     def _render_plugin_operand(self, expr: ExprIR) -> str:
         """Render a plugin-claim operand, borrowing plugin-typed names.
@@ -2696,6 +2890,20 @@ def same_type(left: RxtType | None, right: RxtType | None) -> bool:
     if left is None or right is None:
         return False
     return left.to_dict() == right.to_dict()
+
+
+def _has_resident_signature(function: FunctionIR) -> bool:
+    """Whether a function's signature carries a resident (native-only) plugin type.
+
+    Such a function has no valid Python boundary (a resident value has no
+    conversion), so it is compiled as an internal native-only helper and never
+    PyO3-exported (plugin API 1.3).
+    """
+    if isinstance(function.return_type, RxtPluginType) and function.return_type.resident:
+        return True
+    return any(
+        isinstance(param.type, RxtPluginType) and param.type.resident for param in function.params
+    )
 
 
 def is_copy_rust_type(value_type: RxtType | None) -> bool:

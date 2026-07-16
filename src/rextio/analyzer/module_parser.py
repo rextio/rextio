@@ -3,12 +3,36 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from rextio.analyzer.common_calls import canonical_call_target, is_logging_get_logger_call
-from rextio.analyzer.common_calls import RUNTIME_FIDELITY_TARGETS
+from rextio.analyzer.callable_metadata import project_final_binding_kinds
+from rextio.analyzer.common_calls import (
+    MUTATION_WATCHED_EXTERNAL_MODULES,
+    RUNTIME_FIDELITY_TARGETS,
+    canonical_call_target,
+    is_logging_get_logger_call,
+)
+from rextio.analyzer.executable_identity import (
+    class_construction_stability_reason,
+    executable_ast_fingerprint,
+)
+from rextio.analyzer.final_bindings import (
+    _EMPTY_MUTATIONS,
+    BindingKind,
+    ModuleBindings,
+    ProjectBindings,
+    LoggerNameValues,
+    ProjectMutations,
+    build_module_bindings,
+    collect_module_mutations,
+    definition_is_final,
+    logger_call_group_targets,
+    logger_object_target,
+    marker_decorator_is_proven,
+    static_logger_name_values,
+)
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.import_policy import classify_import_policies
 from rextio.analyzer.embedding import is_embedding_candidate
@@ -17,9 +41,8 @@ from rextio.analyzer.native_marker import (
     NativeMarker,
     dotted_name,
     external_accelerator_for_function,
-    has_exempt_marker,
-    native_marker_for_function,
     parse_native_marker,
+    parse_native_marker_shape,
 )
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.analyzer.top_level import analyze_native_top_level
@@ -70,6 +93,8 @@ def parse_module(
     embedding_enabled: bool = False,
     project_return_types: dict[str, str] | None = None,
     claim_engine: object | None = None,
+    project_mutations: ProjectMutations | None = None,
+    project_bindings: ProjectBindings | None = None,
 ) -> ModuleAnalysis:
     """Parse a module file into a ModuleAnalysis (functions, imports, top level).
 
@@ -98,10 +123,58 @@ def parse_module(
         )
         return module
 
+    effective_project_modules = project_modules or ({module_name} if module_name else set())
+    module.project_modules = frozenset(effective_project_modules)
+    if project_mutations is None:
+        effective_mutations = ProjectMutations({}, frozenset())
+        while True:
+            specific, unknown = collect_module_mutations(
+                tree,
+                {},
+                effective_project_modules,
+                module_name=module_name,
+                watched_modules=MUTATION_WATCHED_EXTERNAL_MODULES,
+                is_package_module=path.name == "__init__.py",
+                known_mutations=effective_mutations,
+            )
+            merged_specific = {
+                receiver: frozenset(paths)
+                for receiver, paths in effective_mutations.by_module.items()
+            }
+            for receiver, paths in specific.items():
+                merged_specific[receiver] = merged_specific.get(receiver, frozenset()) | frozenset(
+                    paths
+                )
+            merged = ProjectMutations(
+                merged_specific,
+                effective_mutations.unknown_modules | frozenset(unknown),
+            )
+            if merged == effective_mutations:
+                break
+            effective_mutations = merged
+    else:
+        effective_mutations = project_mutations
+
+    # Reuse the single shared project-wide final-binding authority when available
+    # (built once by ``analyze_project``); otherwise build this module's bindings
+    # locally so a standalone ``parse_module`` call stays self-contained (P1-4).
+    module_bindings = (
+        project_bindings.for_module(module_name)
+        if project_bindings is not None
+        else build_module_bindings(
+            tree,
+            module_name,
+            project_mutations=effective_mutations,
+            project_modules=effective_project_modules,
+        )
+    )
+    module.module_bindings = module_bindings
+    module.project_mutations = effective_mutations
     module.imports = _collect_imports(
         tree,
         module_name=module_name,
         is_package_module=path.name == "__init__.py",
+        module_bindings=module_bindings,
     )
     module.import_policies = classify_import_policies(
         module.imports,
@@ -110,7 +183,13 @@ def parse_module(
         imports_config=imports_config,
         active_plugins=active_plugins,
     )
-    module.logger_names = _collect_logger_names(tree, module.imports)
+    module.logger_names, module.logger_group_targets = _collect_logger_bindings(
+        tree,
+        module.imports,
+        module_bindings,
+        module.project_mutations,
+        effective_project_modules,
+    )
     stub_signatures = _load_stub_signatures(path)
     module.functions = _collect_module_functions(
         tree,
@@ -120,10 +199,20 @@ def parse_module(
         target_language,
         embedding_enabled,
         project_return_types or {},
-        project_modules or set(),
+        effective_project_modules,
         claim_engine,
+        effective_mutations,
+        module_bindings,
     )
-    module.functions.extend(_collect_native_methods(tree, module, target_language))
+    module.functions.extend(
+        _collect_native_methods(
+            tree,
+            module,
+            target_language,
+            module_bindings,
+            effective_mutations,
+        )
+    )
     if native_top_level:
         module.top_level = analyze_native_top_level(tree, module)
     return module
@@ -152,14 +241,29 @@ def _collect_imports(
     tree: ast.Module,
     module_name: str,
     is_package_module: bool,
+    module_bindings: ModuleBindings | None = None,
 ) -> dict[str, str]:
     imports: dict[str, str] = {}
     for node in tree.body:
         if isinstance(node, ast.Import):
             for alias in node.names:
-                visible = alias.asname or alias.name.split(".", 1)[0]
-                imports[visible] = alias.name
+                if alias.asname:
+                    # `import pkg.sub as s` binds the visible name to the full target.
+                    imports[alias.asname] = alias.name
+                else:
+                    # `import pkg.sub` binds ONLY the top package `pkg -> pkg` (Python
+                    # does not bind `pkg.sub` to the visible name); a later
+                    # `pkg.sub.good()` resolves through the package prefix. Binding
+                    # `pkg -> pkg.sub` here produced a bogus `pkg.sub.sub.good` target
+                    # and rejected a valid call (director follow-up 7, P1-1). Matches
+                    # the shared final-binding authority's `import` handling.
+                    top = alias.name.split(".", 1)[0]
+                    imports[top] = top
         elif isinstance(node, ast.ImportFrom):
+            if node.module == "__future__" and not node.level:
+                # `from __future__ import annotations` binds no runtime name; it must
+                # not enter the import map (director follow-up 7, P1-3).
+                continue
             base_module = _resolve_import_from_base(
                 module_name,
                 node.module,
@@ -171,7 +275,18 @@ def _collect_imports(
             for alias in node.names:
                 visible = alias.asname or alias.name
                 imports[visible] = f"{base_module}.{alias.name}" if base_module else alias.name
-    return imports
+    # The import map must reflect each name's FINAL source-order module binding
+    # (the shared plugin-API-1.3 authority): an alias overwritten by a later
+    # def/class/assignment/``del`` — or a conditional binder that may rebind it —
+    # no longer resolves to the import, and a later restoring import wins. Keeping
+    # a stale ``sin -> math.sin`` after a project ``def sin`` would let core lower a
+    # math call Python never makes, so drop every non-``import`` final binding here.
+    bindings = module_bindings or build_module_bindings(tree, module_name)
+    return {
+        name: target
+        for name, target in imports.items()
+        if bindings.lookup(name).kind is BindingKind.IMPORT
+    }
 
 
 def _collect_fidelity_shim_names(tree: ast.Module) -> frozenset[str]:
@@ -411,15 +526,188 @@ def _collect_module_assigned_names(tree: ast.Module) -> frozenset[str]:
     return frozenset(names)
 
 
-def _collect_logger_names(tree: ast.Module, imports: dict[str, str]) -> tuple[str, ...]:
+def _logger_constant_rebinds(node: ast.stmt) -> tuple[frozenset[str], bool]:
+    """Return module names a statement may rebind before a logger factory.
+
+    Logger-name constants are a source-order MUST fact.  A conditional store,
+    import, definition, or deletion therefore invalidates the previous exact
+    value even when it is not a plain top-level ``Assign``.  Nested callable
+    bodies are deferred and excluded; their definition-time header expressions
+    are still visited.  A star import can replace any existing spelling and is
+    represented by the boolean result.
+    """
+
+    class RebindVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.names: set[str] = set()
+            self.unknown_star = False
+
+        def visit_Name(self, candidate: ast.Name) -> None:
+            if isinstance(candidate.ctx, (ast.Store, ast.Del)):
+                self.names.add(candidate.id)
+
+        def visit_Import(self, candidate: ast.Import) -> None:
+            for imported in candidate.names:
+                self.names.add(imported.asname or imported.name.split(".", 1)[0])
+
+        def visit_ImportFrom(self, candidate: ast.ImportFrom) -> None:
+            for imported in candidate.names:
+                if imported.name == "*":
+                    self.unknown_star = True
+                else:
+                    self.names.add(imported.asname or imported.name)
+
+        def visit_FunctionDef(self, candidate: ast.FunctionDef) -> None:
+            self.names.add(candidate.name)
+            self._visit_function_header(candidate)
+
+        def visit_AsyncFunctionDef(self, candidate: ast.AsyncFunctionDef) -> None:
+            self.names.add(candidate.name)
+            self._visit_function_header(candidate)
+
+        def _visit_function_header(self, candidate: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            for decorator in candidate.decorator_list:
+                self.visit(decorator)
+            for default in candidate.args.defaults:
+                self.visit(default)
+            for kw_default in candidate.args.kw_defaults:
+                if kw_default is not None:
+                    self.visit(kw_default)
+            for argument in (
+                *candidate.args.posonlyargs,
+                *candidate.args.args,
+                *candidate.args.kwonlyargs,
+                *((candidate.args.vararg,) if candidate.args.vararg else ()),
+                *((candidate.args.kwarg,) if candidate.args.kwarg else ()),
+            ):
+                if argument.annotation is not None:
+                    self.visit(argument.annotation)
+            if candidate.returns is not None:
+                self.visit(candidate.returns)
+
+        def visit_Lambda(self, candidate: ast.Lambda) -> None:
+            for default in candidate.args.defaults:
+                self.visit(default)
+            for kw_default in candidate.args.kw_defaults:
+                if kw_default is not None:
+                    self.visit(kw_default)
+
+        def visit_ClassDef(self, candidate: ast.ClassDef) -> None:
+            self.names.add(candidate.name)
+            for decorator in candidate.decorator_list:
+                self.visit(decorator)
+            for base in candidate.bases:
+                self.visit(base)
+            for keyword in candidate.keywords:
+                self.visit(keyword.value)
+
+        def visit_ExceptHandler(self, candidate: ast.ExceptHandler) -> None:
+            if candidate.name is not None:
+                self.names.add(candidate.name)
+            self.generic_visit(candidate)
+
+        def visit_MatchAs(self, candidate: ast.MatchAs) -> None:
+            if candidate.name is not None:
+                self.names.add(candidate.name)
+            if candidate.pattern is not None:
+                self.visit(candidate.pattern)
+
+        def visit_MatchStar(self, candidate: ast.MatchStar) -> None:
+            if candidate.name is not None:
+                self.names.add(candidate.name)
+
+        def visit_MatchMapping(self, candidate: ast.MatchMapping) -> None:
+            if candidate.rest is not None:
+                self.names.add(candidate.rest)
+            self.generic_visit(candidate)
+
+        def _visit_comprehension(self, candidate: ast.AST) -> None:
+            generators = candidate.generators  # type: ignore[attr-defined]
+            for generator in generators:
+                self.visit(generator.iter)
+                for condition in generator.ifs:
+                    self.visit(condition)
+
+        def visit_ListComp(self, candidate: ast.ListComp) -> None:
+            self._visit_comprehension(candidate)
+            self.visit(candidate.elt)
+
+        def visit_SetComp(self, candidate: ast.SetComp) -> None:
+            self._visit_comprehension(candidate)
+            self.visit(candidate.elt)
+
+        def visit_GeneratorExp(self, candidate: ast.GeneratorExp) -> None:
+            self._visit_comprehension(candidate)
+            self.visit(candidate.elt)
+
+        def visit_DictComp(self, candidate: ast.DictComp) -> None:
+            self._visit_comprehension(candidate)
+            self.visit(candidate.key)
+            self.visit(candidate.value)
+
+    visitor = RebindVisitor()
+    visitor.visit(node)
+    return frozenset(visitor.names), visitor.unknown_star
+
+
+def _collect_logger_bindings(
+    tree: ast.Module,
+    imports: dict[str, str],
+    module_bindings: ModuleBindings,
+    project_mutations: ProjectMutations,
+    project_modules: Collection[str],
+) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    """Collect only exact final logger bindings from a clean stdlib constructor."""
+    if project_mutations.target_is_mutated("logging.getLogger"):
+        return (), {}
     names: set[str] = set()
+    groups_by_name: dict[str, tuple[str, ...]] = {}
+    constants: dict[str, LoggerNameValues] = {"__name__": frozenset({module_bindings.module_name})}
     for node in tree.body:
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if isinstance(target, ast.Name) and is_logging_get_logger_call(node.value, imports):
-            names.add(target.id)
-    return tuple(sorted(names))
+        rebound, unknown_star = _logger_constant_rebinds(node)
+        if unknown_star:
+            constants = {name: None for name in constants}
+        else:
+            for name in rebound:
+                constants[name] = None
+
+        if isinstance(node, ast.Assign):
+            value = static_logger_name_values(node.value, constants)
+            for assignment_target in node.targets:
+                if isinstance(assignment_target, ast.Name):
+                    constants[assignment_target.id] = value
+            if len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            groups = (
+                logger_call_group_targets(
+                    node.value,
+                    module_bindings.module_name,
+                    constants,
+                )
+                if isinstance(node.value, ast.Call)
+                else ()
+            )
+            if (
+                isinstance(target, ast.Name)
+                and is_logging_get_logger_call(node.value, imports, project_modules)
+                and module_bindings.lookup(target.id).kind is BindingKind.VALUE
+                and module_bindings.lookup(target.id).matches_origin(target)
+                and not any(project_mutations.target_is_mutated(group) for group in groups)
+                and not project_mutations.target_is_mutated(
+                    logger_object_target(module_bindings.module_name, target.id)
+                )
+            ):
+                names.add(target.id)
+                groups_by_name[target.id] = groups
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.value is not None
+        ):
+            constants[node.target.id] = static_logger_name_values(node.value, constants)
+    ordered = tuple(sorted(names))
+    return ordered, {name: groups_by_name[name] for name in ordered}
 
 
 def _resolve_import_from_base(
@@ -456,6 +744,8 @@ def _collect_module_functions(
     project_return_types: dict[str, str],
     project_modules: set[str],
     claim_engine: object | None = None,
+    project_mutations: ProjectMutations = _EMPTY_MUTATIONS,
+    module_bindings: ModuleBindings | None = None,
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
     # Module-level map of function name -> annotated return type, so the signature
@@ -478,15 +768,35 @@ def _collect_module_functions(
     # (e.g. `len = 5` makes `len(xs)` a TypeError), so the shadow checker treats a
     # call to such a name as shadowed.
     module_assigned_names = _collect_module_assigned_names(tree)
+    if module_bindings is None:
+        module_bindings = build_module_bindings(tree, module.module_name)
+    module_final_bindings = project_final_binding_kinds(module_bindings)
+    module.module_bindings = module_bindings
     fidelity_shim_names = _collect_fidelity_shim_names(tree)
     for node in tree.body:
         if isinstance(node, ast.AsyncFunctionDef):
-            marker = native_marker_for_function(node)
-            if marker is not None and not has_exempt_marker(node):
+            marker = _proven_native_marker(node, module_bindings)
+            raw_marker = next(
+                (
+                    parsed
+                    for decorator in node.decorator_list
+                    if (parsed := parse_native_marker(decorator)) is not None
+                ),
+                None,
+            )
+            marker_identity_unproven = marker is None and raw_marker is not None
+            if marker_identity_unproven:
+                marker = _unproven_marker_identity()
+            if marker is not None and not _has_proven_exempt_marker(node, module_bindings):
                 if marker.error:
-                    functions.append(
-                        _rejected_native_marker_function(node, module, marker, target_language)
+                    rejected = _rejected_native_marker_function(
+                        node, module, marker, target_language
                     )
+                    if marker_identity_unproven:
+                        rejected.is_native_candidate = False
+                        rejected.explicitly_marked = False
+                        rejected.native_target_language = None
+                    functions.append(rejected)
                 elif _native_marker_applies(marker, target_language):
                     functions.append(
                         _runtime_semantics_function(node, module, marker, target_language)
@@ -495,9 +805,20 @@ def _collect_module_functions(
         if not isinstance(node, ast.FunctionDef):
             continue
         calls = collect_call_sites(node, module.imports, module.logger_names)
-        has_exempt = has_exempt_marker(node)
-        marker = native_marker_for_function(node)
-        has_marker = marker is not None
+        has_exempt = _has_proven_exempt_marker(node, module_bindings)
+        marker = _proven_native_marker(node, module_bindings)
+        raw_marker = next(
+            (
+                parsed
+                for decorator in node.decorator_list
+                if (parsed := parse_native_marker(decorator)) is not None
+            ),
+            None,
+        )
+        marker_identity_unproven = marker is None and raw_marker is not None
+        if marker_identity_unproven:
+            marker = _unproven_marker_identity()
+        has_marker = marker is not None and not marker_identity_unproven
         stub_signature = stub_signatures.get(node.name, StubSignature())
         function = FunctionAnalysis(
             name=node.name,
@@ -508,6 +829,7 @@ def _collect_module_functions(
             column=node.col_offset,
             is_native_candidate=has_marker,
             explicitly_marked=has_marker,
+            source_ast_fingerprint=executable_ast_fingerprint(node),
             calls=calls,
             inferred_arg_types=dict(stub_signature.arg_types),
             inferred_return_type=stub_signature.return_type,
@@ -518,6 +840,11 @@ def _collect_module_functions(
             imports=dict(module.imports),
             logger_names=module.logger_names,
             module_assigned_names=module_assigned_names,
+            module_function_names=frozenset(module_function_names),
+            module_final_bindings=module_final_bindings,
+            module_bindings=module_bindings,
+            project_mutations=project_mutations,
+            project_modules=frozenset(project_modules),
             call_return_types={**project_return_types, **return_types},
         )
         function.claim_engine = claim_engine  # type: ignore[assignment]
@@ -529,6 +856,8 @@ def _collect_module_functions(
             function.native_target_language = None
         elif marker is not None and marker.error:
             _add_native_marker_diagnostic(function, node, marker)
+            if marker_identity_unproven:
+                function.native_target_language = None
         elif marker is not None and not _native_marker_applies(marker, target_language):
             function.is_native_candidate = False
         elif has_marker:
@@ -601,6 +930,11 @@ def _mark_embedding_candidate(
         imports=dict(function.imports),
         logger_names=function.logger_names,
         module_assigned_names=function.module_assigned_names,
+        module_function_names=function.module_function_names,
+        module_final_bindings=function.module_final_bindings,
+        module_bindings=function.module_bindings,
+        project_mutations=function.project_mutations,
+        project_modules=function.project_modules,
         call_return_types=dict(function.call_return_types),
     )
     validate_native_function(node, probe, return_types, module_function_names)
@@ -645,6 +979,11 @@ def _is_auto_native_candidate(
         imports=dict(function.imports),
         logger_names=function.logger_names,
         module_assigned_names=function.module_assigned_names,
+        module_function_names=function.module_function_names,
+        module_final_bindings=function.module_final_bindings,
+        module_bindings=function.module_bindings,
+        project_mutations=function.project_mutations,
+        project_modules=function.project_modules,
         call_return_types=dict(function.call_return_types),
         claim_engine=function.claim_engine,
     )
@@ -661,6 +1000,15 @@ def _is_auto_native_candidate(
         function.plugin_claims = list(probe.plugin_claims)
         function.plugin_claim_rejections = list(probe.plugin_claim_rejections)
         function.plugin_type_keys = list(probe.plugin_type_keys)
+        function.positional_param_names = probe.positional_param_names
+        function.signature_plugin_keys = dict(probe.signature_plugin_keys)
+        function.has_resident_signature = probe.has_resident_signature
+        function.has_materialized_plugin_type = probe.has_materialized_plugin_type
+        function.declared_schemas = dict(probe.declared_schemas)
+        # Also preserve the probe's local-binding scope on the accepted auto-native
+        # path (declared_schemas above was already copied here) so both accepted
+        # routes retain the same analysis facts consistently (WP-4).
+        function.local_binding_names = probe.local_binding_names
         function.native_target_language = target_language
         # Carry the probe's non-error diagnostics (e.g. RXT090 divergence
         # notes); an accepted probe has no errors.
@@ -698,6 +1046,11 @@ def _classify_native_function(
         imports=dict(function.imports),
         logger_names=function.logger_names,
         module_assigned_names=function.module_assigned_names,
+        module_function_names=function.module_function_names,
+        module_final_bindings=function.module_final_bindings,
+        module_bindings=function.module_bindings,
+        project_mutations=function.project_mutations,
+        project_modules=function.project_modules,
         call_return_types=dict(function.call_return_types),
         claim_engine=function.claim_engine,
     )
@@ -713,12 +1066,34 @@ def _classify_native_function(
     function.plugin_claims = list(probe.plugin_claims)
     function.plugin_claim_rejections = list(probe.plugin_claim_rejections)
     function.plugin_type_keys = list(probe.plugin_type_keys)
+    function.positional_param_names = probe.positional_param_names
+    function.signature_plugin_keys = dict(probe.signature_plugin_keys)
+    function.has_resident_signature = probe.has_resident_signature
+    function.has_materialized_plugin_type = probe.has_materialized_plugin_type
+    # Signature-level analysis facts (computed before/at body validation, so valid
+    # for accepted, rejected, and shim probes alike): copy them unconditionally so
+    # the finalized analysis never silently loses the probe's local-binding scope or
+    # declared schemas — deliberately including the RXT080 shim path, whose generic
+    # body ignores them but whose FunctionAnalysis should still be complete (WP-4).
+    function.local_binding_names = probe.local_binding_names
+    function.declared_schemas = dict(probe.declared_schemas)
     if probe.accepted:
         # Carry the probe's non-error diagnostics (e.g. RXT090 divergence
         # notes) onto the real function; an accepted probe has no errors.
         for diagnostic in probe.diagnostics:
             function.add_diagnostic(diagnostic)
         function.accepted = True
+        return
+    if _has_source_mutated_receiver_call(node, function):
+        # A receiver whose module-visible object/method state was changed cannot
+        # enter either direct codegen or the generic runtime-semantics promotion.
+        # In particular, logger calls erase the Python receiver when recognized;
+        # accepting the same spelling after its proof was invalidated would make
+        # route selection depend on whether validation happened before or after
+        # logger canonicalization.  Keep the explicit candidate on Python fallback.
+        for diagnostic in probe.diagnostics:
+            function.add_diagnostic(diagnostic)
+        function.accepted = False
         return
     if not _requires_runtime_semantics(node, fidelity_shim_names):
         for diagnostic in probe.diagnostics:
@@ -738,6 +1113,23 @@ def _classify_native_function(
     function.native_runtime_semantics = True
     function.accepted = True
     _add_runtime_semantics_warning(function, node)
+
+
+def _has_source_mutated_receiver_call(
+    node: ast.FunctionDef,
+    function: FunctionAnalysis,
+) -> bool:
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call) or not isinstance(child.func, ast.Attribute):
+            continue
+        receiver = child.func.value
+        if not isinstance(receiver, ast.Name):
+            continue
+        if function.project_mutations.target_is_mutated(
+            logger_object_target(function.module_name, receiver.id)
+        ):
+            return True
+    return False
 
 
 def _requires_runtime_semantics(
@@ -812,11 +1204,14 @@ def _runtime_semantics_function(
         is_native_candidate=True,
         accepted=True,
         explicitly_marked=True,
+        source_ast_fingerprint=executable_ast_fingerprint(node),
         calls=[],
         native_target_language=_marker_target_language(marker, target_language),
         native_runtime_semantics=True,
         imports=dict(module.imports),
         logger_names=module.logger_names,
+        module_bindings=module.module_bindings,
+        project_mutations=module.project_mutations,
     )
     # The shim emits `fn {name}`; a function name that can't be lowered (non-raw-able
     # keyword / non-ASCII / `_`) keeps it on Python fallback even though the body
@@ -861,6 +1256,44 @@ def _add_runtime_semantics_warning(
             ),
         )
     )
+
+
+def _unproven_marker_identity() -> NativeMarker:
+    """Return a deterministic rejection for marker-shaped but unproven syntax."""
+    return NativeMarker(
+        error=(
+            "@rextio.native spelling does not resolve to the exact real "
+            "Rextio marker at decorator execution time"
+        )
+    )
+
+
+def _proven_native_marker(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    bindings: ModuleBindings | None,
+) -> NativeMarker | None:
+    """Return only a syntactically valid *identity-proven* Rextio marker."""
+    if bindings is None:
+        return None
+    for decorator in node.decorator_list:
+        if marker_decorator_is_proven(decorator, bindings, "native"):
+            return parse_native_marker_shape(decorator)
+    return None
+
+
+def _has_proven_exempt_marker(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    bindings: ModuleBindings | None,
+) -> bool:
+    """Whether an exact real ``rextio.exempt`` binding decorates ``node``."""
+    if bindings is None:
+        return False
+    for decorator in node.decorator_list:
+        if isinstance(decorator, ast.Call):
+            continue
+        if marker_decorator_is_proven(decorator, bindings, "exempt"):
+            return True
+    return False
 
 
 def _native_marker_applies(marker: NativeMarker, target_language: str) -> bool:
@@ -925,15 +1358,74 @@ def _load_stub_signatures(path: Path) -> dict[str, StubSignature]:
     return signatures
 
 
+def _class_construction_instability_reason(
+    node: ast.ClassDef,
+    module_bindings: ModuleBindings,
+    project_mutations: ProjectMutations,
+) -> str | None:
+    """Return why native method installation cannot trust this runtime class.
+
+    The experimental method surface intentionally proves only ordinary class
+    construction: no class decorator, custom base, metaclass/keyword, dynamic
+    descriptor, or executing class-body control flow.  Those hooks can replace
+    or delete a method after its syntactic ``def`` even when the class name and
+    class-body final-binding table look exact.
+    """
+    return class_construction_stability_reason(
+        node,
+        module_bindings,
+        project_mutations=project_mutations,
+    )
+
+
 def _collect_native_methods(
     tree: ast.Module,
     module: ModuleAnalysis,
     target_language: str,
+    module_bindings: ModuleBindings | None = None,
+    project_mutations: ProjectMutations = _EMPTY_MUTATIONS,
 ) -> list[FunctionAnalysis]:
     functions: list[FunctionAnalysis] = []
+    if module_bindings is None:
+        module_bindings = build_module_bindings(tree, module.module_name)
+    trusted_outer_functions = {
+        statement.name: statement
+        for statement in tree.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and not statement.decorator_list
+        and definition_is_final(
+            module_bindings,
+            statement.name,
+            BindingKind.FUNCTION,
+            statement.lineno,
+            statement.col_offset,
+        )
+    }
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
             continue
+        # The class must be the module's EXACT final CLASS binding (a later
+        # duplicate `class`, or a class overwritten by an assignment/`del`/
+        # conditional binder, means Python resolves a different object). And each
+        # method must be the class body's final binding for its name — build the
+        # class-namespace final bindings from the same source-order authority so a
+        # later method/assignment/`del`/conditional in the class body invalidates
+        # an earlier method (director follow-up 7, P0-2).
+        class_is_final = definition_is_final(
+            module_bindings, node.name, BindingKind.CLASS, node.lineno, node.col_offset
+        )
+        class_instability = _class_construction_instability_reason(
+            node,
+            module_bindings,
+            project_mutations,
+        )
+        class_bindings = build_module_bindings(
+            ast.Module(body=node.body, type_ignores=[]),
+            module.module_name,
+            trusted_marker_sites=module_bindings.proven_marker_sites,
+            trusted_annotation_targets=module_bindings.trusted_annotation_targets,
+            trusted_function_bindings=trusted_outer_functions,
+        )
         direct_method_ids = {
             id(child)
             for child in node.body
@@ -948,15 +1440,28 @@ def _collect_native_methods(
         for child in _walk_class_scope(node.body):
             if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            marker = native_marker_for_function(child)
-            if marker is None or has_exempt_marker(child):
+            marker = _proven_native_marker(child, module_bindings)
+            raw_marker = next(
+                (
+                    parsed
+                    for decorator in child.decorator_list
+                    if (parsed := parse_native_marker(decorator)) is not None
+                ),
+                None,
+            )
+            marker_identity_unproven = marker is None and raw_marker is not None
+            if marker_identity_unproven:
+                marker = _unproven_marker_identity()
+            if marker is None or _has_proven_exempt_marker(child, module_bindings):
                 continue
             if marker.error:
-                functions.append(
-                    _rejected_native_marker_method(
-                        child, module, node.name, marker, target_language
-                    )
+                rejected = _rejected_native_marker_method(
+                    child, module, node.name, marker, target_language
                 )
+                if marker_identity_unproven:
+                    rejected.is_native_candidate = False
+                    rejected.native_target_language = None
+                functions.append(rejected)
                 continue
             if not _native_marker_applies(marker, target_language):
                 continue
@@ -970,7 +1475,7 @@ def _collect_native_methods(
                     _rejected_control_flow_method(child, module, node.name, target_language)
                 )
                 continue
-            non_instance_reason = _non_instance_method_reason(child, node)
+            non_instance_reason = _non_instance_method_reason(child, node, module_bindings)
             if non_instance_reason is not None:
                 # Only regular instance methods are supported (AGENTS.md /
                 # docs/unsupported-features.md). A native shim for anything that
@@ -983,6 +1488,41 @@ def _collect_native_methods(
                 functions.append(
                     _rejected_non_instance_method(
                         child, module, node.name, target_language, non_instance_reason
+                    )
+                )
+                continue
+            if not class_is_final:
+                functions.append(
+                    _rejected_stale_class_method(
+                        child,
+                        node,
+                        module,
+                        module_bindings,
+                        f"class {node.name!r} is not the module's final class binding",
+                    )
+                )
+                continue
+            if class_instability is not None:
+                functions.append(
+                    _rejected_stale_class_method(
+                        child,
+                        node,
+                        module,
+                        module_bindings,
+                        class_instability,
+                    )
+                )
+                continue
+            if not definition_is_final(
+                class_bindings, child.name, BindingKind.FUNCTION, child.lineno, child.col_offset
+            ):
+                functions.append(
+                    _rejected_stale_class_method(
+                        child,
+                        node,
+                        module,
+                        module_bindings,
+                        f"method {child.name!r} is not the class body's final binding",
                     )
                 )
                 continue
@@ -1001,11 +1541,17 @@ def _collect_native_methods(
                 is_native_candidate=True,
                 accepted=True,
                 explicitly_marked=True,
+                source_ast_fingerprint=executable_ast_fingerprint(child),
                 calls=collect_call_sites(child, module.imports, module.logger_names),
                 native_target_language=_marker_target_language(marker, target_language),
                 native_runtime_semantics=True,
                 imports=dict(module.imports),
                 logger_names=module.logger_names,
+                module_bindings=module_bindings,
+                project_mutations=project_mutations,
+                enclosing_class_name=node.name,
+                enclosing_class_line=node.lineno,
+                enclosing_class_column=node.col_offset,
             )
             # The class-method shim emits `fn {name}(py, args, kwargs)` like the
             # module-level shim, so the method name must be representable in Rust;
@@ -1055,8 +1601,19 @@ def _reject_nested_class_methods(
         for child in _walk_class_scope(node.body):
             if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            marker = native_marker_for_function(child)
-            if marker is None or has_exempt_marker(child):
+            marker = _proven_native_marker(child, module.module_bindings)
+            raw_marker = next(
+                (
+                    parsed
+                    for decorator in child.decorator_list
+                    if (parsed := parse_native_marker(decorator)) is not None
+                ),
+                None,
+            )
+            marker_identity_unproven = marker is None and raw_marker is not None
+            if marker_identity_unproven:
+                marker = _unproven_marker_identity()
+            if marker is None or _has_proven_exempt_marker(child, module.module_bindings):
                 continue
             if marker.error:
                 # Preserve the specific marker-shape error (e.g. an unsupported
@@ -1064,11 +1621,13 @@ def _reject_nested_class_methods(
                 # carry code RXT010 at the same site and de-dup to one, so route
                 # to the marker-error path so the user fixes the marker itself
                 # first (council round 12).
-                rejected.append(
-                    _rejected_native_marker_method(
-                        child, module, nested_path, marker, target_language
-                    )
+                function = _rejected_native_marker_method(
+                    child, module, nested_path, marker, target_language
                 )
+                if marker_identity_unproven:
+                    function.is_native_candidate = False
+                    function.native_target_language = None
+                rejected.append(function)
                 continue
             if not _native_marker_applies(marker, target_language):
                 continue
@@ -1162,6 +1721,65 @@ def _rejected_control_flow_method(
             column=node.col_offset,
             function_name=function.qualname,
             suggestion=("Define the method directly in the class body, or remove @rextio.native."),
+        )
+    )
+    return function
+
+
+def _rejected_stale_class_method(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    class_node: ast.ClassDef,
+    module: ModuleAnalysis,
+    module_bindings: ModuleBindings,
+    reason: str,
+) -> FunctionAnalysis:
+    """Build a rejection for a method whose class/method is not the final binding.
+
+    Python resolves the name to a different class / attribute (a later duplicate
+    ``class``, a ``class`` overwritten by an assignment/``del``, or a later
+    method/assignment/``del`` in the class body), so installing this method would
+    add a stale or missing attribute and diverge from CPython — fail closed to the
+    Python fallback (plugin API 1.3, WP-4, director follow-up 7 P0-2).
+    """
+    qualname = (
+        f"{module.module_name}.{class_node.name}.{node.name}"
+        if module.module_name
+        else f"{class_node.name}.{node.name}"
+    )
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=qualname,
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        is_native_candidate=True,
+        accepted=False,
+        calls=collect_call_sites(node, module.imports, module.logger_names),
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
+        module_bindings=module_bindings,
+        enclosing_class_name=class_node.name,
+        enclosing_class_line=class_node.lineno,
+        enclosing_class_column=class_node.col_offset,
+    )
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT010",
+            severity="error",
+            message=(
+                f"native method {qualname} is not installable: {reason}; Python resolves "
+                "a different class or attribute, so the wrapper would install a stale or "
+                "missing method"
+            ),
+            file_path=function.file_path,
+            line=node.lineno,
+            column=node.col_offset,
+            function_name=function.qualname,
+            suggestion=(
+                "Remove the duplicate/overwriting class or method binding, or leave the "
+                "method on the Python fallback."
+            ),
         )
     )
     return function
@@ -1418,7 +2036,9 @@ def _statement_rebinds_name(statement: ast.stmt, name: str) -> bool:
 
 
 def _non_instance_method_reason(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, class_node: ast.ClassDef
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    class_node: ast.ClassDef,
+    module_bindings: ModuleBindings,
 ) -> str | None:
     """Return why a native-marked method is not a plain instance method, else None.
 
@@ -1430,7 +2050,9 @@ def _non_instance_method_reason(
     descriptor dunders; and a class-body reassignment of the method name.
     """
     extra = [
-        decorator for decorator in node.decorator_list if parse_native_marker(decorator) is None
+        decorator
+        for decorator in node.decorator_list
+        if not marker_decorator_is_proven(decorator, module_bindings, "native")
     ]
     if extra:
         names = ", ".join(

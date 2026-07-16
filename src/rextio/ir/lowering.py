@@ -13,16 +13,32 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from rextio.analyzer.call_resolution import FunctionResolver
+from rextio.analyzer.executable_identity import (
+    class_construction_stability_reason,
+    executable_ast_fingerprint,
+    native_marker_identity_reason,
+)
+from rextio.analyzer.final_bindings import (
+    BindingKind,
+    ModuleBindings,
+    build_module_bindings,
+    definition_is_final,
+    logger_group_target,
+    logger_object_target,
+)
 from rextio.analyzer.common_calls import (
     COMMON_DIRECT_RUST_CALLS,
     HASHLIB_CHAIN_TARGETS,
+    IMPORT_QUALIFIED_STDLIB_TARGETS,
     LIST_METHOD_TARGETS,
+    LOGGING_CANONICAL_TARGETS,
     MATH_CONSTANT_TARGETS,
     STR_METHOD_TARGETS,
     BYTES_METHOD_TARGETS,
     canonical_attribute_target,
     canonical_call_target,
     is_supported_effect_call,
+    stdlib_receiver_is_proven_import,
 )
 from rextio.analyzer.models import (
     FunctionAnalysis,
@@ -33,8 +49,6 @@ from rextio.analyzer.models import (
 )
 from rextio.analyzer.native_marker import dotted_name
 from rextio.analyzer.top_level import collect_native_top_level_statements
-from rextio.codegen.native_names import runtime_original_name
-from rextio.fallback.module_copy import fallback_module_name
 from rextio.ir.module import module_from_functions
 from rextio.ir.nodes import (
     AppendIR,
@@ -121,7 +135,7 @@ def lower_project(
 ) -> ModuleIR:
     """Lower every accepted native function (and embedding candidate, if included) to a module IR."""
     functions: list[FunctionIR] = []
-    nodes_by_file: dict[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+    nodes_by_file: dict[str, _FunctionSource] = {}
     module_trees_by_file: dict[str, ast.Module] = {}
     resolver = FunctionResolver(analysis)
     for function in analysis.accepted_native_functions:
@@ -159,17 +173,26 @@ def lower_project(
 def _lower_analysis_function(
     function: FunctionAnalysis,
     analysis: ProjectAnalysis,
-    nodes_by_file: dict[str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]],
+    nodes_by_file: dict[str, _FunctionSource],
     resolver: FunctionResolver,
     *,
     embedded: bool = False,
     plugin_types: PluginTypeMaps | None = None,
 ) -> FunctionIR:
-    nodes = nodes_by_file.setdefault(function.file_path, _function_nodes(Path(function.file_path)))
-    node = nodes.get(_function_node_key(function))
-    if node is None:
+    source = nodes_by_file.setdefault(
+        function.file_path,
+        _function_nodes(
+            Path(function.file_path),
+            function.module_name,
+            analysis,
+        ),
+    )
+    origin = source.origins.get(_function_node_key(function))
+    if origin is None:
         kind = "embedding candidate" if embedded else "accepted native function"
         raise LoweringError(f"{kind} was not found: {function.qualname}")
+    node = origin.node
+    _require_exact_function_origin(function, origin, analysis, source.bindings)
     module = analysis.module_for_function(function)
     if module is None:
         raise LoweringError(f"module was not found for function: {function.qualname}")
@@ -190,6 +213,27 @@ def lower_function(
     """Lower a single analyzed native function (signature + body) to a ``FunctionIR``."""
     global _PLUGIN_STATE
     if function.native_runtime_semantics:
+        runtime_functions = sorted(
+            (
+                candidate
+                for candidate in module.functions
+                if candidate.is_native_candidate
+                and candidate.accepted
+                and candidate.native_runtime_semantics
+                and not candidate.has_resident_signature
+            ),
+            key=lambda candidate: candidate.qualname,
+        )
+        try:
+            runtime_ordinal = next(
+                index
+                for index, candidate in enumerate(runtime_functions)
+                if candidate.qualname == function.qualname
+            )
+        except StopIteration:
+            raise LoweringError(
+                f"runtime-semantics function has no bootstrap ordinal: {function.qualname}"
+            ) from None
         return FunctionIR(
             name=function.name,
             qualname=function.qualname,
@@ -199,8 +243,8 @@ def lower_function(
             body=BlockIR(statements=[]),
             native_runtime_semantics=True,
             embedded=embedded,
-            runtime_fallback_module=_runtime_fallback_module(module),
-            runtime_attr_path=(runtime_original_name(function.qualname),),
+            runtime_fallback_module=module.module_name,
+            runtime_attr_path=(str(runtime_ordinal),),
         )
     if _PLUGIN_STATE is not None:
         # The module-global claim state is single-threaded and non-reentrant.
@@ -312,6 +356,11 @@ def _plugin_annotation_type(node: ast.AST) -> RxtPluginType | None:
     state = _PLUGIN_STATE
     if state is None or state.type_maps is None:
         return None
+    # A schema-parameterized plugin annotation ``Frame[Row]`` (plugin API 1.3)
+    # resolves to the SAME plugin type as bare ``Frame``: the ``[Row]`` subscript
+    # only carries the declared-schema association and never changes the type.
+    if isinstance(node, ast.Subscript):
+        node = node.value
     dotted = dotted_name(node)
     if dotted is None:
         return None
@@ -358,19 +407,9 @@ def _plugin_claim_ir(node: ast.AST, kind: str) -> PluginClaimIR | None:
         keywords=claim.keywords,
         expression=claim.expression,
         operand_mode=claim.operand_mode,
+        receiver=claim.receiver,
+        callables=claim.callables,
     )
-
-
-def _runtime_fallback_module(module: ModuleAnalysis) -> str:
-    name = fallback_module_name(module)
-    if not module.module_name:
-        return name
-    if Path(module.file_path).name == "__init__.py":
-        return f"{module.module_name}.{name}"
-    parent, separator, _leaf = module.module_name.rpartition(".")
-    if separator:
-        return f"{parent}.{name}"
-    return name
 
 
 def _function_node_key(function: FunctionAnalysis) -> str:
@@ -512,6 +551,21 @@ def lower_expr(
     if isinstance(node, ast.Attribute):
         target = canonical_attribute_target(node, module.imports)
         if target in MATH_CONSTANT_TARGETS:
+            if module.project_mutations.target_is_mutated(target):
+                raise LoweringError(
+                    f"stdlib constant target was mutated during module execution: {target}"
+                )
+            if not stdlib_receiver_is_proven_import(
+                node,
+                module.imports,
+                project_modules=module.project_modules,
+            ):
+                # Defensive: the analyzer fails closed on a never-imported / shadowed
+                # stdlib constant, so reaching here with an unproven receiver is a
+                # bug — raise loudly rather than emit a stale `std::f64::consts::*`.
+                raise LoweringError(
+                    f"stdlib constant receiver is not a proven import: {ast.unparse(node)}"
+                )
             return CallIR(function=target, args=[])
         raise LoweringError(f"unsupported attribute during IR lowering: {ast.unparse(node)}")
     if isinstance(node, ast.List):
@@ -586,17 +640,40 @@ def lower_expr(
         if claim is not None:
             # A plugin-claimed call skips the normal target resolution: the
             # claim carries the dotted target, and keyword arguments are
-            # never claimed, so the positional args are the whole site.
+            # never claimed, so the positional args are the whole site. For a
+            # method claim (``obj.method(...)``) the receiver value is lowered
+            # separately onto ``CallIR.receiver`` — it is NOT a positional arg —
+            # so codegen can evaluate it exactly once, in Python order, before
+            # the operands (plugin API 1.3).
+            receiver_expr: ExprIR | None = None
+            if claim.receiver is not None and isinstance(node.func, ast.Attribute):
+                receiver_expr = lower_expr(node.func.value, module, resolver)
             return CallIR(
                 function=claim.target,
                 args=[lower_expr(arg, module, resolver) for arg in node.args],
                 claim=claim,
+                receiver=receiver_expr,
             )
         target = canonical_call_target(node, module.imports, module.logger_names)
         if target is None:
             target = dotted_name(node.func)
         if target is None:
             raise LoweringError("dynamic calls cannot be lowered to Rextio IR")
+        if target in LOGGING_CANONICAL_TARGETS.values():
+            _require_logging_call_provenance(node, module)
+        if target in IMPORT_QUALIFIED_STDLIB_TARGETS and not stdlib_receiver_is_proven_import(
+            node.func,
+            module.imports,
+            project_modules=module.project_modules,
+        ):
+            # Defensive: the analyzer fails closed on a never-imported / shadowed
+            # stdlib call, so reaching here with an unproven receiver is a bug —
+            # raise loudly rather than emit a stale static stdlib call.
+            raise LoweringError(f"stdlib call receiver is not a proven import: {ast.unparse(node)}")
+        if module.project_mutations.target_is_mutated(target):
+            raise LoweringError(
+                f"statically lowered call target was mutated during module execution: {target}"
+            )
         args = _lower_call_args(node, target, module, resolver)
         return CallIR(
             function=_lower_call_target(target, module, resolver),
@@ -613,6 +690,60 @@ def lower_expr(
             value=lower_expr(node.value, module, resolver),
         )
     raise LoweringError(f"unsupported expression during IR lowering: {type(node).__name__}")
+
+
+def _require_logging_call_provenance(node: ast.Call, module: ModuleAnalysis) -> None:
+    """Defensively prove the receiver erased by native logging lowering.
+
+    Both ``logging.info(...)`` and ``from logging import info; info(...)`` must
+    resolve through the module's final import map to the genuine stdlib module.
+    ``logger.info(...)`` is the one exception: the receiver must be an exact
+    logger name collected from a clean ``logging.getLogger`` assignment, and
+    neither that object nor its process-global, name-keyed logger cache group
+    may have been mutated during module execution.
+
+    The analyzer enforces the same rules before accepting a function.  Keeping
+    the checks here is intentional defense in depth: a stale or malformed
+    accepted record must fail loudly instead of erasing a project-local
+    ``logging`` receiver and emitting Rust logging calls.
+    """
+    func = node.func
+    if (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id in module.logger_names
+    ):
+        receiver = func.value.id
+        guarded_targets = (
+            "logging.getLogger",
+            *module.logger_group_targets.get(
+                receiver,
+                (logger_group_target(module.module_name),),
+            ),
+            logger_object_target(module.module_name, receiver),
+        )
+        mutated = next(
+            (
+                candidate
+                for candidate in guarded_targets
+                if module.project_mutations.target_is_mutated(candidate)
+            ),
+            None,
+        )
+        if mutated is not None:
+            raise LoweringError(
+                f"logger receiver provenance was invalidated by module execution: {mutated}"
+            )
+        return
+
+    if not stdlib_receiver_is_proven_import(
+        func,
+        module.imports,
+        project_modules=module.project_modules,
+    ):
+        raise LoweringError(
+            f"logging call receiver is not a proven stdlib import: {ast.unparse(node)}"
+        )
 
 
 def lower_name_target(node: ast.AST) -> NameIR:
@@ -702,6 +833,15 @@ def _lower_call_target(
     module: ModuleAnalysis,
     resolver: FunctionResolver,
 ) -> str:
+    # A same-module project function shadows a builtin/stdlib spelling of the same
+    # name (``def abs`` -> a bare ``abs(x)`` calls the sibling, not the builtin), so
+    # resolve the project function FIRST and only fall back to the builtin
+    # short-circuit when no project function is reached — otherwise codegen would
+    # emit the checked builtin instead of the sibling native symbol that analysis
+    # typed and that Python actually calls.
+    resolved = resolver.resolve(module, target)
+    if resolved.function is not None:
+        return resolved.function.qualname
     if target in {
         "abs",
         "len",
@@ -718,10 +858,7 @@ def _lower_call_target(
         *COMMON_DIRECT_RUST_CALLS,
     }:
         return target
-    resolved = resolver.resolve(module, target)
-    if resolved.function is None:
-        return resolved.resolved_target
-    return resolved.function.qualname
+    return resolved.resolved_target
 
 
 def _lower_call_args(
@@ -772,17 +909,155 @@ def _lower_bool_op(
     return current
 
 
-def _function_nodes(path: Path) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+@dataclass(frozen=True)
+class _FunctionNodeOrigin:
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    enclosing_class: ast.ClassDef | None = None
+
+
+@dataclass(frozen=True)
+class _FunctionSource:
+    origins: dict[str, _FunctionNodeOrigin]
+    bindings: ModuleBindings
+
+
+def _require_exact_function_origin(
+    function: FunctionAnalysis,
+    origin: _FunctionNodeOrigin,
+    analysis: ProjectAnalysis,
+    current_bindings: ModuleBindings,
+) -> None:
+    """Defensively prove an accepted record still names its exact source def."""
+    node = origin.node
+    if (node.lineno, node.col_offset) != (function.line, function.column):
+        raise LoweringError(
+            f"accepted function origin does not match the source AST: {function.qualname}"
+        )
+    if (
+        function.source_ast_fingerprint is None
+        or executable_ast_fingerprint(node) != function.source_ast_fingerprint
+    ):
+        raise LoweringError(
+            f"accepted function source AST changed after analysis: {function.qualname}"
+        )
+    if analysis.project_mutations.target_is_mutated(function.qualname):
+        raise LoweringError(
+            f"accepted function target was mutated during module execution: {function.qualname}"
+        )
+    analyzed_bindings = analysis.project_bindings.for_module(function.module_name)
+    marker_reason = native_marker_identity_reason(
+        node, current_bindings, explicitly_marked=function.explicitly_marked
+    ) or native_marker_identity_reason(
+        node, analyzed_bindings, explicitly_marked=function.explicitly_marked
+    )
+    if marker_reason is not None:
+        raise LoweringError(
+            f"accepted function native marker identity is unproven: "
+            f"{function.qualname}: {marker_reason}"
+        )
+    if function.enclosing_class_name is None:
+        if origin.enclosing_class is not None or not definition_is_final(
+            current_bindings,
+            function.name,
+            BindingKind.FUNCTION,
+            function.line,
+            function.column,
+        ):
+            raise LoweringError(
+                f"accepted function is not its module's exact final binding: {function.qualname}"
+            )
+        return
+    class_node = origin.enclosing_class
+    if (
+        class_node is None
+        or class_node.name != function.enclosing_class_name
+        or (class_node.lineno, class_node.col_offset)
+        != (function.enclosing_class_line, function.enclosing_class_column)
+        or not definition_is_final(
+            current_bindings,
+            class_node.name,
+            BindingKind.CLASS,
+            class_node.lineno,
+            class_node.col_offset,
+        )
+    ):
+        raise LoweringError(
+            f"accepted method does not belong to the exact final class: {function.qualname}"
+        )
+    class_reason = class_construction_stability_reason(
+        class_node,
+        current_bindings,
+        project_mutations=analysis.project_mutations,
+    ) or class_construction_stability_reason(
+        class_node,
+        analyzed_bindings,
+        project_mutations=analysis.project_mutations,
+    )
+    if class_reason is not None:
+        raise LoweringError(
+            f"accepted method class construction is unproven: {function.qualname}: {class_reason}"
+        )
+    outer_tree = ast.parse(
+        Path(function.file_path).read_text(encoding="utf-8"), filename=function.file_path
+    )
+    class_bindings = build_module_bindings(
+        ast.Module(body=class_node.body, type_ignores=[]),
+        function.module_name,
+        trusted_marker_sites=current_bindings.proven_marker_sites,
+        trusted_annotation_targets=current_bindings.trusted_annotation_targets,
+        trusted_function_bindings={
+            statement.name: statement
+            for statement in outer_tree.body
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not statement.decorator_list
+            and definition_is_final(
+                current_bindings,
+                statement.name,
+                BindingKind.FUNCTION,
+                statement.lineno,
+                statement.col_offset,
+            )
+        },
+    )
+    if not definition_is_final(
+        class_bindings,
+        function.name,
+        BindingKind.FUNCTION,
+        function.line,
+        function.column,
+    ):
+        raise LoweringError(
+            f"accepted method is not the class body's exact final binding: {function.qualname}"
+        )
+
+
+def _function_nodes(
+    path: Path,
+    module_name: str,
+    analysis: ProjectAnalysis,
+) -> _FunctionSource:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    nodes: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    nodes: dict[str, _FunctionNodeOrigin] = {}
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            nodes[node.name] = node
+            nodes[node.name] = _FunctionNodeOrigin(node)
         elif isinstance(node, ast.ClassDef):
             for child in node.body:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    nodes[f"{node.name}.{child.name}"] = child
-    return nodes
+                    nodes[f"{node.name}.{child.name}"] = _FunctionNodeOrigin(child, node)
+    project_modules = {name.split(".", 1)[0] for name in analysis.project_bindings.by_module}
+    return _FunctionSource(
+        nodes,
+        build_module_bindings(
+            tree,
+            module_name,
+            project_mutations=analysis.project_mutations,
+            project_modules=project_modules,
+            trusted_annotation_targets=analysis.project_bindings.for_module(
+                module_name
+            ).trusted_annotation_targets,
+        ),
+    )
 
 
 def _module_tree(path: Path) -> ast.Module:

@@ -53,11 +53,6 @@ def test_analyzer_diagnostics_and_suggestions_use_shared_version(tmp_path: Path)
         """
 import rextio
 
-@extra_decorator
-@rextio.native
-def bad_decorator(x: int) -> int:
-    return x
-
 @rextio.native
 def bad_arg(x: complex) -> int:
     return 1
@@ -85,6 +80,15 @@ def boolean_operands(a: int, b: int) -> bool:
 @rextio.native
 def not_operand(x: int) -> bool:
     return not x
+
+# Keep the deliberately unproven decorator last: executing it can mutate the
+# imported rextio module object, so hardened source-order marker identity must
+# conservatively distrust later @rextio.native sites.  This regression exercises
+# message versioning, not cross-definition effect poisoning.
+@rextio.native
+@extra_decorator
+def bad_decorator(x: int) -> int:
+    return x
 """,
     )
 

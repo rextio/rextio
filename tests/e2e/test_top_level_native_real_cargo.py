@@ -83,6 +83,87 @@ def read_total() -> int:
     assert "top_app._fallback_state" in sys.modules
 
 
+@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for native e2e")
+def test_native_top_level_collisions_preserve_final_class_and_function_bindings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[rust]
+build_tool = "cargo"
+
+[policy]
+native_marker = "decorator"
+native_top_level = true
+""",
+        encoding="utf-8",
+    )
+    source = tmp_path / "collision_app.py"
+    source.write_text(
+        """
+import rextio
+
+C_before: int = 7
+
+class C_before:
+    @rextio.native
+    def m(self, value: int) -> int:
+        return value + 1
+
+class C_after:
+    @rextio.native
+    def m(self, value: int) -> int:
+        return value + 2
+
+C_after: int = 7
+
+foo_before: int = 7
+
+@rextio.native
+def foo_before(value: int) -> int:
+    return value + 3
+
+@rextio.native
+def foo_after(value: int) -> int:
+    return value + 4
+
+foo_after: int = 7
+""",
+        encoding="utf-8",
+    )
+
+    assert main(["build", str(tmp_path), "--fallback=cpython"]) == 0
+    capsys.readouterr()
+    build_python = tmp_path / ".rextio" / "build" / "python"
+    monkeypatch.syspath_prepend(str(build_python))
+    importlib.invalidate_caches()
+
+    def import_fresh():
+        for name in (
+            "_rextio_native",
+            "collision_app",
+            "_fallback_collision_app",
+            "_native_top_level_fallback_collision_app",
+        ):
+            sys.modules.pop(name, None)
+        return importlib.import_module("collision_app")
+
+    native_module = import_fresh()
+    assert native_module.C_before().m(3) == 4
+    assert native_module.foo_before(3) == 6
+    assert native_module.C_after == 7
+    assert native_module.foo_after == 7
+
+    monkeypatch.setenv("REXTIO_NATIVE_MODE", "fallback")
+    fallback_module = import_fresh()
+    assert fallback_module.C_before().m(3) == 4
+    assert fallback_module.foo_before(3) == 6
+    assert fallback_module.C_after == 7
+    assert fallback_module.foo_after == 7
+
+
 def _drop_modules() -> None:
     for module_name in (
         "_rextio_native",

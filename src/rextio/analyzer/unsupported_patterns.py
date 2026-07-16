@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import ast
+import math
+from collections.abc import Collection
 
 from rextio.__about__ import __version__
 from rextio.analyzer.common_calls import (
     BASE64_TARGETS,
     BYTES_METHOD_TARGETS,
     DATETIME_ISOFORMAT_TARGETS,
-    DATETIME_NOW_TARGETS,
     DATETIME_TIMESTAMP_TARGETS,
     HASHLIB_CHAIN_TARGETS,
-    HASHLIB_INTERNAL_TARGETS,
     JSON_TARGETS,
     LIST_METHOD_TARGETS,
     LOGGING_CANONICAL_TARGETS,
@@ -21,17 +21,26 @@ from rextio.analyzer.common_calls import (
     MATH_FLOAT_TO_BOOL_TARGETS,
     MATH_FLOAT_TO_INT_TARGETS,
     MATH_FLOAT_UNARY_TARGETS,
+    IMPORT_QUALIFIED_STDLIB_TARGETS,
     STATISTICS_TARGETS,
     STR_METHOD_TARGETS,
     TIME_TARGETS,
     canonical_attribute_target,
     canonical_call_target,
     is_supported_effect_call,
+    stdlib_receiver_is_proven_import,
+)
+from rextio.analyzer.callable_metadata import FINAL_BINDING_FUNCTION
+from rextio.analyzer.final_bindings import (
+    BindingKind,
+    head_binding_blocks,
+    logger_object_target,
+    marker_decorator_is_proven,
 )
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.logging_format import python_logging_format_segments
 from rextio.analyzer.models import FunctionAnalysis
-from rextio.analyzer.native_marker import dotted_name, is_native_decorator
+from rextio.analyzer.native_marker import dotted_name
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.codegen.native_names import RESERVED_NATIVE_PREFIX, native_function_name
 from rextio.codegen.rust.keywords import RUST_RAW_INCOMPATIBLE
@@ -148,6 +157,12 @@ def validate_native_function(
     module_function_names: set[str] | None = None,
 ) -> None:
     """Validate a function body against the supported subset, attaching diagnostics."""
+    # Function-scope local bindings only (comprehension ``for`` targets are scoped
+    # to the comprehension, not the whole function — Python 3 scoping — so they are
+    # NOT function-scope shadows). A comprehension target shadows a same-name
+    # callable only inside its own expression, modeled by the site-scoped map below.
+    function.local_binding_names = frozenset(_local_binding_names(node))
+    function.comprehension_scope_names = _comprehension_target_scopes(node)
     _validate_decorators(node, function)
     _infer_missing_signature_from_context(node, function, return_types, module_function_names)
     _validate_signature(node, function)
@@ -324,7 +339,12 @@ def _add_identifier_diagnostic(
 
 def _validate_decorators(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
     for decorator in node.decorator_list:
-        if is_native_decorator(decorator):
+        # Raw ``@native`` / ``@rextio.native`` spelling is not identity proof.  A
+        # real marker mixed with a fake native-looking decorator can otherwise
+        # change the runtime function while validation silently ignores the fake.
+        if function.module_bindings is not None and marker_decorator_is_proven(
+            decorator, function.module_bindings, "native"
+        ):
             continue
         function.add_diagnostic(
             Diagnostic(
@@ -347,6 +367,9 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
         _add_unsupported_syntax(function, node.args.kwarg, "arbitrary **kwargs are not supported")
 
     args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    function.positional_param_names = tuple(
+        arg.arg for arg in (*node.args.posonlyargs, *node.args.args)
+    )
     for arg in args:
         if arg.annotation is None and arg.arg not in function.inferred_arg_types:
             function.add_diagnostic(
@@ -365,6 +388,8 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
             plugin_key = _plugin_annotation_key(function, arg.annotation)
             if plugin_key is not None:
                 _record_plugin_type_key(function, plugin_key)
+                function.signature_plugin_keys[arg.arg] = plugin_key
+                _record_declared_schema(function, arg.arg, arg.annotation)
                 continue
             function.add_diagnostic(
                 Diagnostic(
@@ -468,10 +493,38 @@ def _plugin_annotation_key(function: FunctionAnalysis, annotation: ast.AST) -> s
     return function.claim_engine.resolve_annotation(annotation, function.imports)
 
 
+def _record_declared_schema(
+    function: FunctionAnalysis, param_name: str, annotation: ast.AST
+) -> None:
+    """Record a parameter's declared schema from a ``Frame[Row]`` annotation.
+
+    No-op unless a schema-parameterized plugin annotation resolves to a valid
+    declared schema (fail closed to no association otherwise). The annotation is
+    never executed.
+    """
+    engine = function.claim_engine
+    if engine is None:
+        return
+    schema = engine.resolve_declared_schema(annotation, function.imports, function.module_name)
+    if schema is not None:
+        function.declared_schemas[param_name] = schema
+
+
 def _record_plugin_type_key(function: FunctionAnalysis, plugin_key: str) -> None:
-    """Record a plugin type resolved in the signature (drives the plugin route)."""
+    """Record a plugin type resolved in the signature (drives the plugin route).
+
+    Also classifies the key as resident (opaque, no Python boundary — plugin
+    API 1.3) or materialized (boundary-converting), so the boundary pass can
+    treat an all-resident signature as a native-only helper while a
+    materialized signature stays a Python-facing entry point (RXT092).
+    """
     if plugin_key not in function.plugin_type_keys:
         function.plugin_type_keys.append(plugin_key)
+    engine = function.claim_engine
+    if engine is not None and engine.is_resident_type(plugin_key):
+        function.has_resident_signature = True
+    else:
+        function.has_materialized_plugin_type = True
 
 
 def _validate_body(node: ast.FunctionDef, function: FunctionAnalysis) -> None:
@@ -793,6 +846,10 @@ def _validate_statement_types(
             if not isinstance(target, ast.Name):
                 _add_unsupported_syntax(function, target, "assignment targets must be local names")
                 continue
+            if _reject_incompatible_rebinding(
+                function, node, target.id, env, value_type, node.value
+            ):
+                continue
             # Bind the target even when the value type could not be inferred, using
             # a sentinel so the name still counts as in-scope (see _UNTYPED_LOCAL).
             env[target.id] = value_type if value_type is not None else _UNTYPED_LOCAL
@@ -825,7 +882,15 @@ def _validate_statement_types(
         value_type = _infer_expr_type(node.value, function, env, expected_type=annotated_type)
         if value_type is not None and annotated_type is not None:
             _validate_type_match(value_type, annotated_type, function, node)
+        # An annotated re-binding still fixes the Rust binding to ``annotated_type``;
+        # if the name already holds a different concrete type (a resident value, a
+        # different scalar/plugin type), the annotated rebind changes the fixed
+        # binding and fails closed exactly like a plain assignment does.
         if annotated_type is not None:
+            if _reject_incompatible_rebinding(
+                function, node, node.target.id, env, annotated_type, node.value
+            ):
+                return
             env[node.target.id] = annotated_type
         return
     if isinstance(node, ast.AugAssign):
@@ -981,9 +1046,7 @@ def _validate_try(
                 function, handler, "'except ... as name' is not supported in native functions"
             )
             return
-        if not isinstance(handler.type, ast.Name) or not is_supported_builtin_exception(
-            handler.type.id
-        ):
+        if not _is_exact_supported_builtin_exception(handler.type, function):
             _add_unsupported_syntax(
                 function,
                 handler,
@@ -1029,6 +1092,27 @@ def _validate_try(
     _validate_statement_list_types(node.finalbody, function, env, return_type)
     if node.finalbody:
         _add_finally_context_divergence_note(node, function)
+
+
+def _is_exact_supported_builtin_exception(
+    node: ast.expr | None,
+    function: FunctionAnalysis,
+) -> bool:
+    """Whether a handler resolves to the exact untouched builtin exception.
+
+    Lowering records only the builtin exception name and never evaluates the
+    Python handler expression. A same-named local/module binding or a project-
+    visible mutation of ``builtins.<name>`` would therefore catch a different
+    runtime class than generated Rust. Missing binding authority fails closed.
+    """
+    if not isinstance(node, ast.Name) or not is_supported_builtin_exception(node.id):
+        return False
+    if node.id in function.local_binding_names:
+        return False
+    bindings = function.module_bindings
+    if bindings is None or bindings.lookup(node.id).kind is not BindingKind.UNBOUND:
+        return False
+    return not function.project_mutations.target_is_mutated(f"builtins.{node.id}")
 
 
 _FINALLY_CONTEXT_NOTE = (
@@ -1370,24 +1454,181 @@ _METHOD_RECEIVER_TYPES = frozenset({"str", "list", "bytes"})
 # `AttributeError`). The full resolved target is matched (not just the module name),
 # so an unrecognized `module.method` such as `list.append` is not treated as a stdlib
 # call. (`logging.*` routes to the RXT080 shim, so logger receivers use `logger_names`.)
-_RECEIVER_IGNORED_STDLIB_TARGETS = frozenset(
-    {
-        *BASE64_TARGETS,
-        *DATETIME_ISOFORMAT_TARGETS,
-        *DATETIME_NOW_TARGETS,
-        *DATETIME_TIMESTAMP_TARGETS,
-        *HASHLIB_CHAIN_TARGETS,
-        *HASHLIB_INTERNAL_TARGETS,
-        *JSON_TARGETS,
-        *MATH_CONSTANT_TARGETS,
-        *MATH_FLOAT_BINARY_TARGETS,
-        *MATH_FLOAT_TO_BOOL_TARGETS,
-        *MATH_FLOAT_TO_INT_TARGETS,
-        *MATH_FLOAT_UNARY_TARGETS,
-        *STATISTICS_TARGETS,
-        *TIME_TARGETS,
-    }
-)
+# The receiver-ignored stdlib targets are exactly the module-qualified stdlib
+# targets that require a proven final import (shared with callable metadata and
+# codegen through :data:`IMPORT_QUALIFIED_STDLIB_TARGETS`). A local that rebinds
+# the receiver name — OR the never-imported case — makes the spelling NOT the
+# stdlib module, so native lowering must fail closed (see ``_call_head_shadowed``
+# and ``_stdlib_receiver_unproven``).
+_RECEIVER_IGNORED_STDLIB_TARGETS = IMPORT_QUALIFIED_STDLIB_TARGETS
+
+
+def _call_head_shadowed(
+    function: FunctionAnalysis,
+    node: ast.Call,
+    local_names: Collection[str],
+    module_function_names: Collection[str],
+) -> bool:
+    """Whether ``node``'s callee head is shadowed so lowering would call the wrong thing.
+
+    The single shadow rule shared by the signature inferencer and the standalone
+    body validator (no split-brain): a bare call ``f(...)`` is shadowed when ``f``
+    would otherwise resolve to a callable (an import, a same-module function, or a
+    supported builtin) but a function-local binding, OR the shared final-binding
+    authority (``module_bindings``) proves the name's final module binder is a
+    class / value / ``del`` / conditional / later wildcard import — none of which
+    is that callable. An attribute call ``mod.f(...)`` that codegen lowers with the
+    receiver IGNORED (stdlib module / imported module / logger) is shadowed when
+    its receiver name is likewise rebound. A genuine method call on a local
+    (``xs.index(...)``) is never a shadow.
+
+    The final-binding authority is authoritative when present: it SUBSUMES the
+    coarse ``module_assigned_names`` (a module assignment is a ``VALUE`` binding it
+    already blocks) AND correctly *un-poisons* a name whose earlier assignment is
+    overridden by a later ``def``/import (director point 4: an earlier bad
+    assignment followed by a final safe ``def`` must not stay poisoned).
+    ``module_assigned_names`` is consulted only as a legacy fallback when no
+    authority is attached (defensive).
+    """
+
+    def module_shadows(name: str) -> bool:
+        if function.module_bindings is not None:
+            return head_binding_blocks(function.module_bindings, name)
+        return name in function.module_assigned_names
+
+    func = node.func
+    if isinstance(func, ast.Name):
+        resolves_to_callable = (
+            func.id in function.imports
+            or func.id in module_function_names
+            or func.id in _SHADOWABLE_BUILTIN_CALLS
+        )
+        shadowed_by_binding = func.id in local_names or module_shadows(func.id)
+        if resolves_to_callable and shadowed_by_binding:
+            return True
+        target = canonical_call_target(node, function.imports, function.logger_names)
+        if target in _RECEIVER_IGNORED_STDLIB_TARGETS:
+            return not stdlib_receiver_is_proven_import(
+                func,
+                function.imports,
+                local_names,
+                function.project_modules,
+            )
+        return False
+    target = canonical_call_target(node, function.imports, function.logger_names)
+    if target is None:
+        return False
+    if target.split(".", 1)[0] in _METHOD_RECEIVER_TYPES:
+        return False
+    root: ast.AST = func
+    while isinstance(root, (ast.Attribute, ast.Call)):
+        root = root.value if isinstance(root, ast.Attribute) else root.func
+    if not isinstance(root, ast.Name):
+        return False
+    if target in _RECEIVER_IGNORED_STDLIB_TARGETS:
+        # A module-qualified stdlib target lowers with the receiver IGNORED, so it
+        # is sound only when the receiver root name is a PROVEN final import to the
+        # module. A function-local rebinding, a non-final module binder (class /
+        # value / ``del`` / conditional / later wildcard), OR a never-imported
+        # spelling (``math.sin`` with no ``import math`` — a CPython ``NameError``,
+        # not a call to stdlib ``sin``) all make the spelling wrong: fail closed.
+        return module_shadows(root.id) or not stdlib_receiver_is_proven_import(
+            func,
+            function.imports,
+            local_names,
+            function.project_modules,
+        )
+    # An imported project-module / logger receiver whose spelling codegen resolves
+    # through the import (receiver not stdlib-ignored): shadowed when its receiver
+    # name is rebound to something other than that import.
+    if root.id in local_names:
+        return root.id in function.imports or root.id in function.logger_names
+    if module_shadows(root.id):
+        return root.id in function.imports
+    return False
+
+
+def _call_reaches_mutated_target(function: FunctionAnalysis, node: ast.Call) -> bool:
+    """Whether a call resolves to a project module attribute mutated at module load.
+
+    A ``import pkg.helper as h; h.good = …`` in any project module rebinds
+    ``pkg.helper.good`` for the whole program, so a direct-native call that lowers
+    the stale compiled ``good`` would diverge from CPython. The call's canonical
+    target is already resolved through the import map, so it is the project
+    qualname to test against the shared mutation authority (plugin API 1.3, WP-4,
+    director follow-up 7 P0-4).
+    """
+    target = canonical_call_target(node, function.imports, function.logger_names)
+    if target is None:
+        return False
+    return function.project_mutations.target_is_mutated(target)
+
+
+def _logging_receiver_is_unproven(function: FunctionAnalysis, node: ast.Call) -> bool:
+    """Whether a recognized logger receiver lacks its clean construction proof.
+
+    ``logger.info`` is canonicalized to ``logging.info`` and codegen ignores the
+    Python receiver.  It is sound only when the receiver name came from the
+    module's recognized ``logging.getLogger`` assignment and that constructor was
+    not source-mutated.  The latter mutation is otherwise hidden by canonicalizing
+    the terminal method to ``logging.info``.
+    """
+    target = canonical_call_target(node, function.imports, function.logger_names)
+    if target not in LOGGING_CANONICAL_TARGETS.values():
+        return False
+    func = node.func
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        receiver = func.value.id
+        if receiver in function.logger_names:
+            return function.project_mutations.target_is_mutated(
+                logger_object_target(function.module_name, receiver)
+            ) or function.project_mutations.target_is_mutated("logging.getLogger")
+    # A direct ``logging.info`` / from-imported ``info`` is native only when its
+    # receiver resolves to the genuine stdlib module. A same-named project module,
+    # an unbound spelling, or an unrecognized logger object fails closed.
+    return not stdlib_receiver_is_proven_import(
+        func,
+        function.imports,
+        function.local_binding_names,
+        function.project_modules,
+    )
+
+
+def _stdlib_receiver_unproven(
+    function: FunctionAnalysis,
+    node: ast.Attribute,
+    target: str,
+    local_names: Collection[str],
+) -> bool:
+    """Whether a receiver-ignored stdlib attribute's base is NOT a proven import.
+
+    A ``math.pi``/``math.e`` constant READ (and any receiver-ignored stdlib
+    attribute) lowers with the receiver ignored, so it is sound only when the base
+    name is a PROVEN final import to the module. If the base is a function local, a
+    non-final module binder (a class/``del``/conditional/wildcard per the shared
+    final-binding authority, or a legacy module assignment), OR a never-imported
+    spelling (``math.pi`` with no ``import math`` — a CPython ``NameError``, not the
+    stdlib constant), typing it as the stdlib value would silently diverge from
+    CPython. Mirror the call-head attribute rule (plugin API 1.3, WP-4).
+    """
+    if function.project_mutations.target_is_mutated(target):
+        return True
+    root: ast.AST = node
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    if not isinstance(root, ast.Name):
+        return True
+    if function.module_bindings is not None:
+        if head_binding_blocks(function.module_bindings, root.id):
+            return True
+    elif root.id in function.module_assigned_names:
+        return True
+    return not stdlib_receiver_is_proven_import(
+        node,
+        function.imports,
+        local_names,
+        function.project_modules,
+    )
 
 
 def _collect_leaked_walrus_targets(node: ast.AST, names: set[str]) -> None:
@@ -1489,6 +1730,54 @@ def _local_binding_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[st
     return names
 
 
+def _comprehension_target_scopes(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> dict[int, frozenset[str]]:
+    """Map each AST node id to the comprehension ``for`` targets in scope at it.
+
+    A Python 3 comprehension ``for`` target is scoped to the comprehension — it
+    shadows a same-name project callable ONLY inside the comprehension's element,
+    conditions, and non-leftmost generator iterables (the leftmost generator's
+    iterable is evaluated in the enclosing scope, so it does not see the target).
+    Nested comprehensions accumulate their outer targets. Walrus targets are NOT
+    included here: PEP 572 leaks them to the containing function scope, so they are
+    already function-scope shadows (:func:`_local_binding_names`).
+
+    Only nodes inside a comprehension get an entry; every other node is absent
+    (an empty scope). Deterministic and conservative — it only adds shadow names
+    for a reference genuinely inside a comprehension's active scope.
+    """
+    scopes: dict[int, frozenset[str]] = {}
+
+    def descend(current: ast.AST, active: frozenset[str]) -> None:
+        if active:
+            scopes[id(current)] = active
+        if isinstance(current, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            generators = current.generators
+            comp_targets: set[str] = set()
+            for generator in generators:
+                comp_targets |= _target_names(generator.target)
+            inner = active | frozenset(comp_targets)
+            element_nodes: list[ast.expr] = (
+                [current.key, current.value] if isinstance(current, ast.DictComp) else [current.elt]
+            )
+            for element in element_nodes:
+                descend(element, inner)
+            for index, generator in enumerate(generators):
+                # The leftmost generator's iterable is evaluated in the enclosing
+                # scope (it cannot reference this comprehension's own targets).
+                descend(generator.iter, active if index == 0 else inner)
+                for condition in generator.ifs:
+                    descend(condition, inner)
+            return
+        for child in ast.iter_child_nodes(current):
+            descend(child, active)
+
+    for statement in node.body:
+        descend(statement, frozenset())
+    return scopes
+
+
 class _SignatureInferencer:
     def __init__(
         self,
@@ -1566,6 +1855,10 @@ class _SignatureInferencer:
     def visit_statement(self, node: ast.stmt) -> None:
         if isinstance(node, ast.Assign):
             value_type = self.infer_expr(node.value)
+            # The resident-alias / fixed-binding decision is centralized in
+            # `_reject_incompatible_rebinding` (run over EVERY binder form by the
+            # body validation pass), so the signature inferencer only propagates
+            # types here and never diverges from that single rule.
             for target in node.targets:
                 self.bind_target(target, value_type)
             return
@@ -1702,73 +1995,14 @@ class _SignatureInferencer:
             left_type = right_type or left_type
 
     def _is_shadowed_callable(self, node: ast.Call) -> bool:
-        """Whether this call's callee name is shadowed by a local binding.
+        """Whether this call's callee head is shadowed (shared rule).
 
-        A bare call ``f()`` is shadowed when ``f`` is a local binding AND a name that
-        would otherwise resolve to a callable — an import, a same-module function, or a
-        supported builtin — so lowering would call the wrong function.
-
-        An attribute call ``mod.f()`` resolves to a native function (lowered with the
-        receiver IGNORED) when its receiver is an imported module, a recognized
-        standard-library module (``math``/``hashlib``/``datetime``/… , whose
-        ``module.method(...)`` lowers statically even without an import), or a module
-        logger (``logger.info(...)`` -> ``logging.*``); only those receivers being
-        shadowed cause a wrong-function lowering. A method call on an ordinary
-        local/parameter (`xs.index(...)`, even when the name collides with a
-        function/builtin) is a genuine method call, not a shadow, and stays on the
-        direct-native path.
+        Delegates to the module-level :func:`_call_head_shadowed` so the signature
+        inferencer and the standalone body validator apply one identical rule.
         """
-        func = node.func
-        if isinstance(func, ast.Name):
-            resolves_to_callable = (
-                func.id in self.function.imports
-                or func.id in self.module_function_names
-                or func.id in _SHADOWABLE_BUILTIN_CALLS
-            )
-            # The callable name is shadowed when a function-local binding OR a
-            # module-level assignment (`len = 5` at module scope) rebinds it, so a
-            # bare call would lower to the wrong callable.
-            shadowed_by_binding = (
-                func.id in self.local_names or func.id in self.function.module_assigned_names
-            )
-            return resolves_to_callable and shadowed_by_binding
-        # Attribute / chained call. `canonical_call_target` resolves the call the way
-        # codegen does (mapping import aliases and recognizing method vs module forms);
-        # an unresolved (None) call is not a receiver-ignored native call, so it cannot
-        # be a module/import shadow (a `list.append` not in the canonical method map is
-        # a genuine method, not a module call).
-        target = canonical_call_target(node, self.function.imports, self.function.logger_names)
-        if target is None:
-            return False
-        if target.split(".", 1)[0] in _METHOD_RECEIVER_TYPES:
-            # A method call (`recv.index(...)` -> `list.index`) uses the receiver, so it
-            # is a genuine method even when the receiver name collides with a module.
-            return False
-        # A receiver-ignored static call (stdlib module / imported module / logger). Use
-        # the SOURCE receiver name (walking attribute and chained-call receivers to the
-        # base name), not the resolved target root, so an aliased import (`import math
-        # as m`) is keyed on the local `m`, not the canonical `math`.
-        root = func
-        while isinstance(root, (ast.Attribute, ast.Call)):
-            root = root.value if isinstance(root, ast.Attribute) else root.func
-        if not isinstance(root, ast.Name):
-            return False
-        if root.id in self.local_names:
-            # A function-local binding shadows a same-named import / recognized
-            # stdlib module / module logger used as a receiver.
-            return (
-                target in _RECEIVER_IGNORED_STDLIB_TARGETS
-                or root.id in self.function.imports
-                or root.id in self.function.logger_names
-            )
-        if root.id in self.function.module_assigned_names:
-            # A module-level assignment shadows the receiver only when it rebinds an
-            # *imported* name (`import math` then `math = 5`). A module logger
-            # defined by `logger = getLogger()` is itself such an assignment and is
-            # registered as a logger name *because* of it, so it must not be treated
-            # as a shadow of itself.
-            return root.id in self.function.imports
-        return False
+        return _call_head_shadowed(
+            self.function, node, self.local_names, self.module_function_names
+        )
 
     def infer_call(self, node: ast.Call, expected: str | None) -> str | None:
         if self._is_shadowed_callable(node):
@@ -1875,6 +2109,21 @@ class _SignatureInferencer:
         key = (node.lineno, node.col_offset)
         self.function.call_arg_types[key] = tuple(arg_type for arg_type, _ in results)
         self.function.call_arg_targets[key] = tuple(target for _, target in results)
+        if self.function.claim_engine is not None and target is not None:
+            # A plugin-claimed call types the local it is assigned to — including
+            # a resident (opaque, native-only) value produced for native
+            # chaining, so the boundary pass sees the exact plugin type key when
+            # that local is later passed to a native helper. This is a
+            # side-effect-free peek (no claim/rejection is recorded here — the
+            # body validator remains the single place that records claims).
+            claim_type = self.function.claim_engine.peek_call_result_type(
+                self.function,
+                node,
+                target,
+                tuple(arg_type for arg_type, _ in results),
+            )
+            if claim_type is not None:
+                return claim_type
         return self.sibling_return_types.get(target) if target is not None else None
 
     def _infer_call_arg(self, arg: ast.expr) -> tuple[str | None, str | None]:
@@ -2038,7 +2287,12 @@ class _SignatureInferencer:
             self.add_type(target.id, value_type)
 
     def add_type(self, name: str, value_type: str) -> None:
-        if not _is_supported_signature_type(value_type):
+        engine = self.function.claim_engine
+        is_plugin_key = engine is not None and engine.is_plugin_type(value_type)
+        if not is_plugin_key and not _is_supported_signature_type(value_type):
+            # Plugin type keys (e.g. resident opaque values) are kept so a local
+            # holding a claimed plugin result carries its exact key for the
+            # native-to-native signature check; other unsupported types drop.
             return
         current = self.known.get(name)
         if current is None:
@@ -2123,6 +2377,19 @@ def _infer_expr_type(
                 return None
             return "int"
         if isinstance(node.value, float):
+            if not math.isfinite(node.value):
+                # A non-finite float literal (``1e400`` parses to ``inf``, and a
+                # NaN literal likewise) has no valid Rust literal: codegen would
+                # emit ``inf``/``NaN``, which are not Rust values (E0425), so the
+                # cargo build fails instead of falling back. Reject it to the
+                # Python fallback exactly like an out-of-range integer literal.
+                _add_unsupported_syntax(
+                    function,
+                    node,
+                    "non-finite float literal (inf/nan) is not supported in native "
+                    "functions; it has no valid Rust literal representation",
+                )
+                return None
             return "float"
         if isinstance(node.value, str):
             return "str"
@@ -2152,7 +2419,9 @@ def _infer_expr_type(
         return bound
     if isinstance(node, ast.Attribute):
         target = canonical_attribute_target(node, function.imports)
-        if target in MATH_CONSTANT_TARGETS:
+        if target in MATH_CONSTANT_TARGETS and not _stdlib_receiver_unproven(
+            function, node, target, function.local_binding_names
+        ):
             return "float"
         _add_unsupported_syntax(
             function,
@@ -2639,6 +2908,14 @@ def _infer_named_expr_type(
         named_expr_binding_env=binding_env,
         active_comprehension_targets=active_targets,
     )
+    # A walrus binds the CONTAINING function scope (PEP 572), so a walrus that
+    # rebinds an existing local/parameter must preserve its fixed Rust binding type
+    # exactly like a plain assignment — including a resident local/parameter, whose
+    # ownership/type stability is enforced here too (RXT092/RXT010).
+    if _reject_incompatible_rebinding(
+        function, node, node.target.id, binding_env, value_type, node.value
+    ):
+        return None
     if value_type is not None:
         env[node.target.id] = value_type
         binding_env[node.target.id] = value_type
@@ -2686,16 +2963,83 @@ def _infer_call_type(
             active_comprehension_targets=active_targets,
         )
 
+    target = canonical_call_target(node, function.imports, function.logger_names)
+    if target is None:
+        target = dotted_name(node.func)
+    # A method call whose receiver is not a plain dotted name (a nested claimed
+    # call in a direct-temporary chain, ``make(x).reduce(udf)``) has no dotted
+    # target, but a covering plugin still identifies the site by the method name
+    # — the receiver value is carried separately as ReceiverMeta. Use the method
+    # name as the claim target so the claim path is reachable; non-plugin method
+    # calls are unaffected (no plugin covers a bare method name, so they still
+    # return an untyped None below).
+    method_claim_target = target
+    if method_claim_target is None and isinstance(node.func, ast.Attribute):
+        method_claim_target = node.func.attr
+
+    # A callable-reference argument at a plugin-claimable site (e.g. the UDF in
+    # ``df.apply(udf)``) is lowered by the plugin as a compile-time reference to
+    # a native helper — it never becomes a Rust local — so it must NOT be
+    # inferred as a value (which would reject the enclosing function with RXT010
+    # for reading an unbound name). The plugin API 1.3 callable metadata carries
+    # the resolved function instead. Detect these positions up front and skip
+    # value-inference for them; other arguments infer normally.
+    callable_ref_positions: set[int] = set()
+    # Ids of keyword-argument VALUE nodes that are project-function references at
+    # a plugin-covered site (``obj.method(func=udf)``). Like the positional case,
+    # such a value is compile-time callable metadata (plugin API 1.3), not a Rust
+    # local, so it must NOT be value-inferred (which would reject the enclosing
+    # function with RXT010 for an unbound name).
+    callable_ref_keyword_ids: set[int] = set()
+    engine = function.claim_engine
+    if engine is not None:
+        receiver_type: str | None = None
+        if isinstance(node.func, ast.Attribute):
+            receiver_node = node.func.value
+            if isinstance(receiver_node, ast.Name):
+                bound = env.get(receiver_node.id)
+                receiver_type = (
+                    bound if isinstance(bound, str) and bound != _UNTYPED_LOCAL else None
+                )
+            elif isinstance(receiver_node, ast.Call):
+                # A call-valued method receiver — a nested claimed call in a
+                # direct-temporary chain ``make(x).reduce(udf)`` — is inferred once
+                # here, before the call's arguments (Python receiver-then-args
+                # order). That records the receiver's own claim and types it, so
+                # the covering plugin sees the resident receiver and codegen can
+                # bind the unsafe receiver to a single-use temporary.
+                receiver_type = infer_arg(receiver_node)
+        if engine.covers_call(target, receiver_type):
+            for index, arg in enumerate(node.args):
+                if engine.is_project_callable(arg, function):
+                    callable_ref_positions.add(index)
+            for keyword in node.keywords:
+                if keyword.arg is not None and engine.is_project_callable(keyword.value, function):
+                    callable_ref_keyword_ids.add(id(keyword.value))
+
     # First-pass positional inference (side effects: diagnostics, env binds).
     # Preserve results so later paths (including plugin claims) do not re-infer
     # positionals — evaluation order is each positional once, then keywords.
     positional_arg_types: list[str | None] = []
-    for arg in node.args:
-        positional_arg_types.append(infer_arg(arg))
-
-    target = canonical_call_target(node, function.imports, function.logger_names)
-    if target is None:
-        target = dotted_name(node.func)
+    for index, arg in enumerate(node.args):
+        if index in callable_ref_positions:
+            positional_arg_types.append(None)
+        else:
+            positional_arg_types.append(infer_arg(arg))
+    # A same-module project function whose name coincides with a builtin/stdlib
+    # spelling (``def abs``, ``def sin``, ``def min``) shadows that builtin for the
+    # whole module — Python resolves the sibling — so it must be typed as the
+    # sibling call, never the pure builtin (which would let core lower a different
+    # target than Python calls). Consult the shared final-binding authority: ONLY a
+    # name whose FINAL module binding is that sibling ``def`` resolves to it; a
+    # spelling later reassigned/deleted/conditionally bound falls through and fails
+    # closed. A bare name only (an attribute like ``math.sin`` cannot be a sibling).
+    if (
+        target is not None
+        and "." not in target
+        and function.module_final_bindings.get(target) == FINAL_BINDING_FUNCTION
+    ):
+        return function.call_return_types.get(target)
     if target == "print":
         return _infer_effect_call_type("print", node, function, env)
     if target is not None and target in LOGGING_CANONICAL_TARGETS.values():
@@ -2946,9 +3290,11 @@ def _infer_call_type(
         return None
     if _is_append_call(node):
         return _infer_append_call_type(node, function, env)
-    if target is None:
+    if method_claim_target is None:
         return None
-    known_return = function.call_return_types.get(target)
+    # Keyed on the real dotted target only: a synthesized bare method name must
+    # not accidentally match a same-module function's recorded return type.
+    known_return = function.call_return_types.get(target) if target is not None else None
     if known_return is not None:
         return known_return
     if function.claim_engine is not None:
@@ -2966,7 +3312,12 @@ def _infer_call_type(
         keyword_types: dict[int, str | None] = {}
         for keyword in node.keywords:
             if keyword.arg is not None:
-                keyword_types[id(keyword.value)] = infer_arg(keyword.value)
+                # A callable-ref keyword is skipped exactly like a callable-ref
+                # positional: it is compile-time metadata, never value-inferred.
+                if id(keyword.value) in callable_ref_keyword_ids:
+                    keyword_types[id(keyword.value)] = None
+                else:
+                    keyword_types[id(keyword.value)] = infer_arg(keyword.value)
 
         def type_of(child: ast.AST) -> str | None:
             child_id = id(child)
@@ -2979,7 +3330,7 @@ def _infer_call_type(
         handled, claim_type = function.claim_engine.claim_call(
             function,
             node,
-            target,
+            method_claim_target,
             claim_operand_types,
             type_of=type_of,
         )
@@ -3854,6 +4205,43 @@ def _call_was_plugin_managed(function: FunctionAnalysis, node: ast.Call) -> bool
 
 
 def _validate_call(function: FunctionAnalysis, node: ast.Call) -> None:
+    if _call_head_shadowed(
+        function, node, function.local_binding_names, function.module_function_names
+    ):
+        # The callee head does not resolve to the sibling/import/builtin its
+        # spelling suggests (a local binding, a module assignment, or the shared
+        # final-binding authority proves a class/value/`del`/conditional/wildcard
+        # final binder). Lowering it would call the wrong function and silently
+        # diverge from CPython, so fail closed to the Python fallback. This is the
+        # body-validation twin of the signature inferencer's shadow rejection, so
+        # a fully annotated function (whose signature is never re-inferred) is
+        # gated too. De-duplicated by (code, line, column).
+        _add_unsupported_syntax(
+            function,
+            node,
+            "calling a name that is shadowed by a local or non-final module binding "
+            "is not supported in native functions; it would lower to a call to the "
+            "wrong function",
+        )
+    if _call_reaches_mutated_target(function, node):
+        # The call resolves to a project module attribute rebound at module load
+        # (`import pkg.helper as h; h.good = …`), so a direct-native call would lower
+        # the stale compiled target and diverge from CPython. Fail closed to the
+        # Python fallback, which reads the mutated module attribute (P0-4).
+        _add_unsupported_syntax(
+            function,
+            node,
+            "call reaches a project module attribute that is mutated at module load "
+            "time; a native call would use the stale compiled target instead of the "
+            "rebound one",
+        )
+    if _logging_receiver_is_unproven(function, node):
+        _add_unsupported_syntax(
+            function,
+            node,
+            "logger receiver identity or method state was source-mutated; native logging "
+            "would ignore the runtime receiver",
+        )
     if node.keywords:
         # Plugin API 1.2: Claimed OR Rejected keyword calls are plugin-managed
         # (e.g. axis=0). NotCovered / unoffered keyword calls keep pre-1.2 RXT010.
@@ -3930,6 +4318,133 @@ def _unsupported_message(node: ast.AST) -> str:
     if isinstance(node, (ast.In, ast.NotIn)):
         return "membership comparisons are not supported in native functions"
     return f"unsupported syntax in native function: {type(node).__name__}"
+
+
+def _reject_incompatible_rebinding(
+    function: FunctionAnalysis,
+    node: ast.AST,
+    target_name: str,
+    env: dict[str, str],
+    value_type: str | None,
+    value_node: ast.AST | None = None,
+) -> bool:
+    """Reject a binder that aliases a resident value or changes a fixed Rust type.
+
+    This is the single, centralized fail-closed gate for EVERY admitted binder
+    form (plain ``Assign``, ``AnnAssign``, and walrus/``NamedExpr`` — in ordinary
+    expressions and inside comprehension scopes), so no binder can diverge:
+
+    * *Resident alias* — binding ANY name (a fresh local OR a rebind) to a bare
+      resident value (``value_node`` is an ``ast.Name`` whose resolved type is a
+      resident plugin key) is rejected (RXT092). A resident value is an affine,
+      opaque native value borrowed at each use site; the core has no reference
+      representation for it, so a second owner is impossible: codegen's name-copy
+      path would emit ``.clone()`` (a resident type need not implement ``Clone``)
+      and a bare move would invalidate the original. A *fresh* resident value
+      still comes from a resident-producing plugin **call** (``value_node`` is a
+      ``Call``, not a ``Name``), which is a valid first binding and never trips
+      this rule. Immutable borrowing in a plugin consumer (``f(g)``) is an
+      argument, not a binder, and is likewise unaffected.
+    * *Resident parameter rebind* — a resident *parameter* is an immutable shared
+      borrow (``&T``) and cannot be rebound at all (RXT092).
+    * *Resident local rebind* — a resident *local* may be rebound only to the
+      exact same resident type (RXT092).
+    * *Fixed-type change* — any other existing local/parameter with a known
+      concrete type must keep that exact lowered Rust type; a scalar
+      ``int``↔``float`` change, a scalar↔plugin change, or a non-resident
+      plugin-type change fails closed with the generic RXT010 diagnostic (codegen
+      reassigns an existing name rather than shadowing, so a type change would
+      generate uncompilable Rust, E0308).
+
+    A same-type rebinding stays accepted (the ``let mut`` binding keeps its type).
+    A binding whose old or new type is unknown/untyped cannot be proven
+    incompatible, so it is left to the existing per-binder inference. The caller's
+    local type/binding state is left untouched on rejection (this returns before
+    the caller binds the target). Returns ``True`` when it rejected.
+    """
+    engine = function.claim_engine
+    old_type = env.get(target_name)
+    if engine is not None:
+        if (
+            isinstance(value_node, ast.Name)
+            and value_type is not None
+            and value_type != _UNTYPED_LOCAL
+            and engine.is_resident_type(value_type)
+        ):
+            _add_resident_rebinding_error(
+                function,
+                node,
+                f"aliasing the resident plugin value {value_node.id!r} into a new "
+                f"binding {target_name!r} is not supported in native functions: a "
+                "resident value is an opaque, affine native value borrowed at each "
+                "use site (the core has no reference representation for it), so it "
+                "cannot be copied into a second owner",
+            )
+            return True
+        param_key = function.signature_plugin_keys.get(target_name)
+        if param_key is not None and engine.is_resident_type(param_key):
+            _add_resident_rebinding_error(
+                function,
+                node,
+                f"rebinding the resident plugin parameter {target_name!r} is not supported "
+                "in native functions: a resident value is an immutable shared borrow, "
+                "so it cannot be reassigned to an owned value",
+            )
+            return True
+        if (
+            old_type is not None
+            and old_type != _UNTYPED_LOCAL
+            and engine.is_resident_type(old_type)
+            and value_type != old_type
+        ):
+            _add_resident_rebinding_error(
+                function,
+                node,
+                f"rebinding the resident plugin local {target_name!r} to an incompatible "
+                f"type ({value_type}) is not supported in native functions: its fixed "
+                "Rust binding cannot change type",
+            )
+            return True
+    # General fixed-binding type stability (all non-resident cases): an existing
+    # local/parameter binding cannot change its exact lowered Rust type. Only fires
+    # when BOTH the old and new types are known and concrete, so an untyped binding
+    # is left to the existing inference (fail-open here, but a real type change is
+    # caught).
+    if (
+        old_type is not None
+        and old_type != _UNTYPED_LOCAL
+        and value_type is not None
+        and value_type != _UNTYPED_LOCAL
+        and value_type != old_type
+    ):
+        _add_unsupported_syntax(
+            function,
+            node,
+            f"rebinding {target_name!r} changes its type from {old_type} to {value_type}; "
+            "a native local/parameter has one fixed Rust binding type and cannot be "
+            "reassigned to a different type",
+        )
+        return True
+    return False
+
+
+def _add_resident_rebinding_error(function: FunctionAnalysis, node: ast.AST, message: str) -> None:
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT092",
+            severity="error",
+            message=message,
+            file_path=function.file_path,
+            line=getattr(node, "lineno", function.line),
+            column=getattr(node, "col_offset", function.column),
+            function_name=function.qualname,
+            suggestion=(
+                "Use the resident value directly at each call site, or rebind only "
+                "to a fresh value of the same resident type, or keep the function "
+                "on the Python fallback."
+            ),
+        )
+    )
 
 
 def _add_unsupported_syntax(

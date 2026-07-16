@@ -9,9 +9,10 @@ from dataclasses import dataclass
 class Diagnostic:
     """A single analyzer diagnostic (error or warning) at a source location.
 
-    Under tooling contract ``2.0.0``, ``line`` is 1-based and ``column`` is a
+    Under tooling contract ``2.x``, ``line`` is 1-based and ``column`` is a
     0-based UTF-8 byte offset into that line (``ast.col_offset``), including
-    for ``RXT000`` syntax errors. See ``docs/specs/tooling-contract.md``.
+    for ``RXT000`` syntax errors (standardized in contract ``2.0.0``). See
+    ``docs/specs/tooling-contract.md``.
     """
 
     code: str

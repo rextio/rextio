@@ -191,26 +191,54 @@ class RxtPluginType(RxtType):
     remaining fields carry the boundary conversion (PyO3 parameter/return
     types and the conversion expressions) from the plugin's
     ``BoundaryConversion`` (docs/specs/plugin-lowering.md section 4).
+
+    ``resident`` (plugin API 1.3) marks an opaque, native-only value with no
+    Python boundary conversion: the conversion fields are empty and the type
+    NEVER crosses an exported PyO3 boundary. A resident value flows only
+    through claimed plugin expressions, locals, and accepted native helper
+    calls (native-to-native chaining).
     """
 
     key: str
     native_rust: str
-    param_rust: str
-    param_expr: str
-    return_rust: str
-    return_expr: str
+    param_rust: str = ""
+    param_expr: str = ""
+    return_rust: str = ""
+    return_expr: str = ""
+    resident: bool = False
+    # Exact-text Rust module support this type OWNS (plugin API 1.3), threaded
+    # from ``PluginType.uses``/``helpers`` through the build/type-map path. A
+    # function whose signature references this type contributes these ``use``
+    # lines / module-level items so a signature-only accepted function (zero
+    # claims) still emits the symbols its conversion/native type references.
+    uses: tuple[str, ...] = ()
+    helpers: tuple[str, ...] = ()
 
     def display_name(self) -> str:
         """Return the human-readable name of this type (the plugin type key)."""
         return self.key
 
     def to_dict(self) -> dict[str, object]:
-        """Return the JSON-serializable dict form of this type."""
-        return {
+        """Return the JSON-serializable dict form of this type.
+
+        Materialized (boundary-converting) types with no module support keep
+        their exact legacy byte-shape — no ``resident``/``uses``/``helpers``
+        keys. Only a resident (opaque, native-only — plugin API 1.3) type adds
+        ``resident: true``; non-empty support is emitted as order-preserving
+        lists so IR identity moves when the support changes.
+        """
+        result: dict[str, object] = {
             "kind": "plugin",
             "key": self.key,
             "native_rust": self.native_rust,
         }
+        if self.resident:
+            result["resident"] = True
+        if self.uses:
+            result["uses"] = list(self.uses)
+        if self.helpers:
+            result["helpers"] = list(self.helpers)
+        return result
 
 
 # Capitalized typing aliases (`List[int]`, `typing.List[int]`, ...) that are not

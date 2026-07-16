@@ -150,8 +150,14 @@ def fresh_import():
     import sys
 
     def _import(name: str) -> object:
-        for cached in ("_rextio_native", name, name.split(".")[0]):
-            sys.modules.pop(cached, None)
+        root = name.split(".", 1)[0]
+        # A wrapper imports package-local support modules such as
+        # ``pkg._fallback_ops``.  Evict the entire package subtree, not only the
+        # requested module/root, so a parametrized rebuild cannot reuse the prior
+        # case's fallback class or function identities.
+        for cached in tuple(sys.modules):
+            if cached == "_rextio_native" or cached == root or cached.startswith(f"{root}."):
+                sys.modules.pop(cached, None)
         importlib.invalidate_caches()
         return importlib.import_module(name)
 

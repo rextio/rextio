@@ -1,6 +1,8 @@
 # Rextio
 
-Rextio 0.1.2 is an alpha-stage local build tool for Python projects.
+Rextio 0.1.3 is an alpha-stage local build tool for Python projects (published
+to PyPI on 2026-07-17 with plugin API 1.3 and tooling contract 2.1.0;
+supersedes 0.1.2, which emitted tooling contract 2.0.0).
 
 ```text
 pip install rextio

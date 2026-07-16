@@ -31,15 +31,12 @@ fn __rextio_checked_neg(a: i64) -> PyResult<i64> {
 fn rextio_call_python_runtime(
     py: Python<'_>,
     module_name: &str,
-    attr_path: &[&str],
+    ordinal: usize,
     args: &Bound<'_, PyTuple>,
     kwargs: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<Py<PyAny>> {
-    let module = PyModule::import(py, module_name)?;
-    let mut target = module.getattr(attr_path[0])?;
-    for attr in &attr_path[1..] {
-        target = target.getattr(*attr)?;
-    }
+    let registry = PyModule::import(py, "rextio.runtime.original_registry")?;
+    let target = registry.getattr("resolve_runtime_original")?.call1((module_name, ordinal))?;
     let value = target.call(args, kwargs)?;
     Ok(value.unbind())
 }
