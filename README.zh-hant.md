@@ -4,11 +4,10 @@
 
 **把符合條件的 typed Python 函式編譯為 Rust，其餘一切保留在 Python fallback 上。**
 
-Rextio 0.1.2 是面向 Python 專案的 alpha 階段本地建置工具（已於 2026-07-14
-發佈到 PyPI，取代此前的 **0.1.1** 版本）。它找出可以
-安全下沉到 Rust 的帶型別 Python 函式，用 PyO3 提前（ahead-of-time）編譯
-它們，其餘部分全部繼續透過產生的 Python fallback 程式碼運行 — import
-路徑與行為保持不變。
+Rextio 0.1.3 是 alpha 階段本地建置工具（2026-07-17 已發佈到 PyPI，
+取代先前的 **0.1.2**；plugin API **1.3**）。它找出可以安全下沉到 Rust
+的帶型別 Python 函式，用 PyO3 提前（ahead-of-time）編譯它們，其餘部分
+全部繼續透過產生的 Python fallback 程式碼運行 — import 路徑與行為保持不變。
 
 ```text
 帶型別的 Python 專案
@@ -260,7 +259,7 @@ CLI 參數 > 環境變數 > rextio.toml > 內建預設值
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.2 中唯一實作的 native 目標是 Rust。
+0.1.3 中唯一實作的 native 目標是 Rust。
 
 Rextio 外掛是用 `pip` 或 `uv` 等工具安裝的普通 Python 套件。外掛套件透過
 `rextio.plugins` entry point 群組暴露中繼資料，包括它涵蓋的 Python 套件
@@ -287,12 +286,14 @@ default_external_policy = "fallback"
 相容的 plugin API **1.2**（靜態字面量/有序關鍵字元資料、結構化
 `ClaimExpr` 樹、leaves 模式下沉）。first-party 的
 [rextio-numpy](https://github.com/rextio/rextio-numpy) 外掛需單獨安裝
-（core 無反向依賴）：**PyPI 0.1.0** 是已發佈的初始認證 float64 1-D 表面；
-**未打標籤的 0.1.1 RC** 擴展 literal-axis/fusion，並需要 **core >= 0.1.2**。
-相關套件的**嚴格發佈順序**為 rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy
-0.1.1（不可同時發佈；見 [tooling contract](docs/specs/tooling-contract.md)）。
-一般依賴下沉不隨發行版捆綁；`try-native` 是顯式的規劃策略，沒有安全的
-direct 下沉時仍會 fallback。
+（core 無反向依賴）：已發佈的 **PyPI 0.1.1** 擴展了 literal-axis/fusion，
+並需要 **core >= 0.1.2**（初始認證 float64 1-D 表面為 0.1.0）。相關套件已按
+**嚴格發佈順序** rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 發佈
+（見 [tooling contract](docs/specs/tooling-contract.md)）。Core **0.1.3** 於
+2026-07-17 發佈，附帶 plugin API 1.3 與 tooling contract **2.1.0**（相對
+core 0.1.2 發出的 **2.0.0** 形狀為 additive；支援 dual-map 的 `2.x` 消費者
+保持相容）。一般依賴下沉不隨發行版捆綁；`try-native` 是顯式的規劃策略，
+沒有安全的 direct 下沉時仍會 fallback。
 
 ## Native 選擇
 
@@ -371,7 +372,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.2 刻意支援一個小的 subset。這個 subset 就是以 native
+Rextio 0.1.3 刻意支援一個小的 subset。這個 subset 就是以 native
 Rust 執行的程式碼。
 
 支援的型別:
@@ -508,12 +509,12 @@ plain Python（`.py` 繼續被 import），樹的其餘部分用 Nuitka 編譯�
 用 Numba，並注意非常小的函式在任何加速器下都會輸給呼叫邊界成本。
 
 first-party 的 [rextio-numpy](https://github.com/rextio/rextio-numpy) 外掛
-將覆蓋的 NumPy 轉換為 AOT 編譯的 native Rust。**已發佈 rextio-numpy 0.1.0**
-覆蓋初始認證 float64 1-D 表面（逐元素算術、`numpy.dot`、整個陣列的
-`sum`/`mean`）。**未打標籤的 rextio-numpy 0.1.1 RC** 擴展需要 core plugin
-API 1.2（**core >= 0.1.2**）的 literal-axis/fusion 下沉；它不是已發佈套件，
-勿與 0.1.0 混淆。該 RC 的發佈順序在 dual-map **rextio-lsp 0.1.1** 與
-**core 0.1.2** 之後。因此 NumPy 程式碼有兩條路徑: 對已覆蓋表面用 Rextio
+將覆蓋的 NumPy 轉換為 AOT 編譯的 native Rust。**已發佈 rextio-numpy 0.1.1**
+把初始 0.1.0 的認證 float64 1-D 表面擴展到 F64/F32/I64 rank-1/rank-2
+broadcasting、literal-axis reduction 與 2–8 操作逐元素 fusion。它使用 core
+plugin API 1.2（**core >= 0.1.2**）；rank-2 `dot`/matmul 仍走 fallback。
+dual-map **rextio-lsp 0.1.1** → **core 0.1.2** → **rextio-numpy 0.1.1**
+的必要發佈順序已於 2026-07-14 完成。因此 NumPy 程式碼有兩條路徑: 對已覆蓋表面用 Rextio
 外掛做 AOT 編譯，或在 Python fallback 內用 Numba 做 JIT。當兩者都適用時，
 顯式的 `@numba.*` 裝飾器優先，analyzer 會輸出資訊性的 RXT091 註記; 關於
 路徑取捨的更完整指南將隨外掛表面的成長而逐步明確。

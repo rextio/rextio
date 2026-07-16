@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from rextio.cli.main import main
+from rextio.runtime import native_loader
 
 
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required for native e2e")
@@ -79,7 +80,20 @@ def rejected(x: int) -> int:
     # Runs natively with an in-process boundary call into `helper`.
     assert module.rejected(5) == 15
 
-    monkeypatch.setattr(module, "_rextio_native_fn_add", lambda a, b: a + b + 100)
+    real_native_loader = native_loader.load_native_function
+
+    def injected_native_loader(*, module_name: str, function_name: str):
+        if function_name == "e2e_app__math_ops__add":
+            return lambda a, b: a + b + 100
+        return real_native_loader(module_name=module_name, function_name=function_name)
+
+    # Native bindings now live in the wrapper's isolated bootstrap closure, so
+    # inject at loader construction time instead of mutating a module-global
+    # implementation detail that no longer exists.
+    monkeypatch.setattr(native_loader, "load_native_function", injected_native_loader)
+    for module_name in ("e2e_app.math_ops", "e2e_app._fallback_math_ops"):
+        sys.modules.pop(module_name, None)
+    module = importlib.import_module("e2e_app.math_ops")
     assert module.add(2, 3) == 105
 
     monkeypatch.setenv("REXTIO_NATIVE_MODE", "fallback")

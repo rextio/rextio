@@ -1,10 +1,11 @@
 # Feature stability
 
-Rextio **0.1.2** is an alpha-stage package version (release candidate on this
-branch; latest published PyPI release is **0.1.1**). This page is the source of
-truth for which features are covered by the [versioning policy](versioning.md)'s
-stability promises and which are experimental (correct-but-incomplete, and free
-to change).
+Rextio **0.1.3** is the published package version (PyPI 2026-07-17; plugin
+API **1.3**; tooling contract **2.1.0**), superseding **0.1.2** (contract
+**2.0.0**). This page is
+the source of truth for which features are covered by the
+[versioning policy](versioning.md)'s stability promises and which are
+experimental (correct-but-incomplete, and free to change).
 
 Tiers:
 
@@ -31,7 +32,7 @@ Tiers:
 | Native build orchestration (maturin / Cargo) | Stable | `cargo` is the default `[rust] build_tool` (the builder needs no extra Python dependency; Cargo itself must be on PATH or configured via `[toolchain]`). Set `--rust-build-tool=maturin` (or `[rust] build_tool = "maturin"`, requires the optional `rextio[build]` dependency) to build wheels with maturin; if maturin is selected but not installed Rextio automatically falls back to Cargo. If the native build fails, packaging still produces a fallback-only pure-Python (`py3-none-any`) wheel that works through the Python fallback. |
 | Import policy — `fallback` | Stable | Treats an external package as fallback-only at the boundary. |
 | Import policy — `analyze` / `try-native` | Experimental | Accepted as configuration, but largely planning metadata; concrete core-driven native lowering of external calls is not yet implemented. |
-| Import policy — `plugin` | Experimental | A package covered by an installed plugin is routed through it. As of 0.1.1 an API 1.1 plugin can concretely lower covered constructs via the claim/lower hooks; API 1.2 adds optional claim-site keyword/literal metadata and structured expression trees for fusion-aware lowering (see the [plugin lowering spec](specs/plugin-lowering.md)). The analyzer still decides which sites are offered and remains the acceptance authority. |
+| Import policy — `plugin` | Experimental | A package covered by an installed plugin is routed through it. API 1.1 concretely lowers through claim/lower hooks; API 1.2 adds keyword/literal metadata and fusion trees; API 1.3 (shipped in core 0.1.3) adds opaque resident values/native chaining, static receiver/callable/declared-schema metadata, and version-gated bool/string keyword literals (see the [plugin lowering spec](specs/plugin-lowering.md)). The analyzer remains the acceptance authority. |
 
 ## CLI
 
@@ -51,11 +52,11 @@ Tiers:
 | Runtime-semantics shim (`RXT080`) | Experimental | Auto-applied to explicitly `@rextio.native` dynamic/async functions; emits a generic shim that calls back into Python. |
 | Native top-level module initialization | Experimental | `[policy] native_top_level`. Lowers a restricted subset of module-level code. |
 | Nuitka fallback / executable backend | Experimental | `--fallback=nuitka`, `--executable-backend=nuitka`. Requires Nuitka; surfaced by the build preflight when missing. The real-Nuitka end-to-end path runs only on the scheduled/manual CI job (not on every PR), so regressions there may surface later than for the Cargo path. |
-| Build incrementality | N/A (clean rebuild) | `rextio build`/`generate` fully re-analyze, re-lower, and re-render on every invocation and reset `.rextio/build`/`.rextio/generated` first; there is no mtime- or fingerprint-based incremental caching in the 0.1.x line (through 0.1.2 RC). A no-op rebuild does the full work. Reports (`build.json`/`generate.json`/`check.json`) are reset each run so only the current command's reports remain. |
+| Build incrementality | N/A (clean rebuild) | `rextio build`/`generate` fully re-analyze, re-lower, and re-render on every invocation and reset `.rextio/build`/`.rextio/generated` first; there is no mtime- or fingerprint-based incremental caching in the 0.1.x line (through released 0.1.3). A no-op rebuild does the full work. Reports (`build.json`/`generate.json`/`check.json`) are reset each run so only the current command's reports remain. |
 | Hybrid runtime `__file__` | Experimental (limitation) | The subprocess-hybrid executable backend copies the project's Python source into `<binary>.runtime/`, so a delegated fallback function's `__file__` points at the copied tree, not the original source. Code that resolves data files relative to `__file__` (e.g. `Path(__file__).parent / "data"`) will not find them there; keep such data-dependent functions native, or use the source hybrid runtime against the original tree. |
 | Rust-importable crate artifact | Experimental | `--rust-importable` / `--rust-crate-name`. Exposes accepted direct-Rust functions as a Cargo path dependency. |
-| Plugins | Experimental | Entry-point plugins declare target compatibility and the external packages they cover. Protocol v2 (see [the tooling contract](specs/tooling-contract.md)) lets a plugin additionally *self-describe* declarative rule records via `describe()`/`covers()` — surfaced in `rextio capabilities` with `RXTP-<PLUGIN>-NNN` diagnostic namespacing, and enabling the informational RXT091 plugin-lowerable hint on accelerator-decorated functions. A plugin API 1.1+ plugin may also lower covered constructs through the claim/lower hooks; 1.2 adds version-gated keyword/literal metadata, fusion expression trees, and `operand_mode` direct|leaves ([plugin lowering spec](specs/plugin-lowering.md)). API 1.1 providers keep legacy keyword-not-offered semantics. The analyzer decides which sites are offered and remains the acceptance authority. |
-| Tooling-contract JSON fields | Experimental | `rextio check --format json` (and `.rextio/reports/check.json`) carries a top-level `contract_version` (currently `2.0.0`) plus per-function `route`, `native_status`, and `rejection_codes`, as specified in [the tooling contract](specs/tooling-contract.md). Contract `2.0.0` broke `RXT000` column semantics (now 0-based UTF-8 bytes like every other diagnostic); the shape may still be refined until the contract is promoted to stable. |
+| Plugins | Experimental | Entry-point plugins declare target compatibility and the external packages they cover. Protocol v2 (see [the tooling contract](specs/tooling-contract.md)) supports self-described rules and `RXTP-<PLUGIN>-NNN` diagnostics. API 1.1+ lowers through claim/lower hooks; 1.2 adds version-gated keyword/literal metadata, fusion trees, and `operand_mode` direct\|leaves; 1.3 (core 0.1.3) adds resident values/native chaining, receiver/callable/schema metadata, and bool/string static keyword literals. Dynamic keyword values, `**kwargs`, floats, and bytes remain fail-closed ([plugin lowering spec](specs/plugin-lowering.md)). Older providers keep their legacy offer/serialization shapes. The analyzer remains the acceptance authority. |
+| Tooling-contract JSON fields | Experimental | `rextio check --format json` (and `.rextio/reports/check.json`) carries a top-level `contract_version` (currently `2.1.0`) plus per-function `route`, `native_status`, and `rejection_codes`, as specified in [the tooling contract](specs/tooling-contract.md). Contract `2.0.0` (core 0.1.2) broke `RXT000` column semantics (0-based UTF-8 bytes like every other diagnostic); `2.1.0` (core 0.1.3) adds producer fields (`modules[].logger_group_targets` always; `plugin_claims[].receiver` / `callables` when present) without changing position semantics. Dual-map `2.x` consumers that ignore unknown keys remain compatible; the shape may still be refined until the contract is promoted to stable. |
 | `rextio capabilities` command | Experimental | Prints the config-resolved capability manifest from [the tooling contract](specs/tooling-contract.md): the supported type matrix, core and active-plugin rule records (constraint + diagnostic code + guidance per rule), a `config_fingerprint` for consumer caching, and the active plugins. Introspection-only (no source analysis, no report files). |
 
 ## Planned (not implemented)

@@ -8,9 +8,26 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from rextio.analyzer.boundary import apply_boundary_checks
+from rextio.analyzer.callable_metadata import index_project_symbols
+from rextio.analyzer.common_calls import (
+    MUTATION_WATCHED_EXTERNAL_MODULES,
+)
 from rextio.analyzer.diagnostics import Diagnostic
+from rextio.analyzer.final_bindings import (
+    BindingKind,
+    ModuleBindings,
+    ProjectBindings,
+    ProjectCallable,
+    ProjectMutations,
+    build_module_bindings,
+    collect_module_mutations,
+)
 from rextio.analyzer.models import ProjectAnalysis
-from rextio.analyzer.module_parser import module_name_for_path, parse_module
+from rextio.analyzer.module_parser import (
+    _collect_imports,
+    module_name_for_path,
+    parse_module,
+)
 from rextio.analyzer.plugin_claims import ClaimEngine
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.config.schema import ImportsConfig, RextioConfig
@@ -108,13 +125,50 @@ def analyze_project(
     """
     root = Path(project_root).resolve()
     target_language = normalize_target_language(target_language)
-    claim_engine: ClaimEngine | None = None
-    if plugin_registry is not None and plugin_registry.providers:
-        claim_engine = ClaimEngine(plugin_registry, plugin_config or RextioConfig())
     analysis = ProjectAnalysis(project_root=root)
     files = scan_python_files(root)
     project_modules = _project_module_names(files, root)
     project_return_types = _project_annotated_return_types(files, root)
+    trusted_annotation_targets = frozenset(
+        annotation
+        for binding in (() if plugin_registry is None else plugin_registry.types)
+        for annotation in binding.plugin_type.annotations
+    )
+    trusted_annotation_modules = frozenset(
+        target.split(".", 1)[0] for target in trusted_annotation_targets
+    )
+    project_mutations = _collect_project_mutations(
+        files,
+        root,
+        project_modules,
+        watched_modules=trusted_annotation_modules,
+    )
+    project_bindings = _build_project_bindings(
+        files,
+        root,
+        project_mutations,
+        project_modules,
+        trusted_annotation_targets,
+    )
+    claim_engine: ClaimEngine | None = None
+    if plugin_registry is not None and plugin_registry.providers:
+        # Build the project-wide function/class index BEFORE the claim pass so
+        # callable- and schema-metadata resolution is order-independent across
+        # modules (a callable defined in a not-yet-parsed module still resolves).
+        symbol_index = index_project_symbols(
+            files,
+            root,
+            module_name_for_path,
+            _collect_imports,
+            project_bindings=project_bindings,
+            project_mutations=project_mutations,
+            project_modules=project_modules,
+        )
+        claim_engine = ClaimEngine(
+            plugin_registry, plugin_config or RextioConfig(), symbol_index=symbol_index
+        )
+    analysis.project_mutations = project_mutations
+    analysis.project_bindings = project_bindings
     analysis.modules = [
         parse_module(
             path,
@@ -128,6 +182,8 @@ def analyze_project(
             embedding_enabled=embedding_enabled,
             project_return_types=project_return_types,
             claim_engine=claim_engine,
+            project_mutations=project_mutations,
+            project_bindings=project_bindings,
         )
         for path in files
     ]
@@ -261,6 +317,401 @@ def _project_annotated_return_types(files: list[Path], project_root: Path) -> di
             ):
                 return_types[_qualname(item.name)] = annotation_name(item.returns)
     return return_types
+
+
+def _build_project_bindings(
+    files: list[Path],
+    project_root: Path,
+    project_mutations: ProjectMutations,
+    project_modules: set[str],
+    trusted_annotation_targets: frozenset[str] = frozenset(),
+) -> ProjectBindings:
+    """Build the single shared final-binding authority for every project module.
+
+    One ``ModuleBindings`` per module, built once here and threaded everywhere
+    (module parsing, the resolver, the build gate) so no path re-derives a
+    divergent copy — even when no plugin is active (director follow-up 7, P1-4).
+    """
+    by_module: dict[str, ModuleBindings] = {}
+    for path in files:
+        module_name = module_name_for_path(path, project_root)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:
+            continue
+        by_module[module_name] = build_module_bindings(
+            tree,
+            module_name,
+            project_mutations=project_mutations,
+            project_modules=project_modules,
+            trusted_annotation_targets=trusted_annotation_targets,
+        )
+    return ProjectBindings(by_module)
+
+
+def _collect_project_mutations(
+    files: list[Path],
+    project_root: Path,
+    project_modules: set[str],
+    *,
+    watched_modules: Iterable[str] = (),
+) -> ProjectMutations:
+    """Aggregate every project module's module-load attribute mutations.
+
+    A pre-pass (like ``_project_annotated_return_types``) so the mutation
+    authority is known before any module is parsed and is shared project-wide:
+    a ``pkg/app.py`` doing ``import pkg.helper as h; h.good = …`` marks
+    ``pkg.helper.good`` mutated for the WHOLE project, blocking a direct-native
+    call/import/re-export that reaches it (director follow-up 7, P0-4).
+    """
+    watched = frozenset({*MUTATION_WATCHED_EXTERNAL_MODULES, *watched_modules})
+    project_callables = _build_project_callable_registry(
+        files,
+        project_root,
+        project_modules,
+    )
+
+    def scan_with(
+        callable_registry: dict[str, ProjectCallable],
+        known_mutations: ProjectMutations,
+    ) -> ProjectMutations:
+        specific: dict[str, set[str]] = {}
+        unknown: set[str] = set()
+        for path in files:
+            module_name = module_name_for_path(path, project_root)
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            except SyntaxError:
+                continue
+            imports = _collect_imports(tree, module_name, path.name == "__init__.py")
+            module_specific, module_unknown = collect_module_mutations(
+                tree,
+                imports,
+                project_modules,
+                module_name=module_name,
+                watched_modules=watched,
+                is_package_module=path.name == "__init__.py",
+                project_callables=callable_registry,
+                known_mutations=known_mutations,
+            )
+            for target_module, attrs in module_specific.items():
+                specific.setdefault(target_module, set()).update(attrs)
+            unknown |= module_unknown
+        return ProjectMutations(
+            {module: frozenset(attrs) for module, attrs in specific.items()},
+            frozenset(unknown),
+        )
+
+    # A source-final function is executable by exact identity only while its
+    # owning module attribute is itself untouched during project import.  The
+    # first replay can discover such a mutation; remove every affected target
+    # and replay until the registry stabilizes.  Removal is monotone and
+    # bounded by the finite registry.  A subsequent call through a removed
+    # target then fails closed in ``collect_module_mutations`` instead of
+    # replaying stale source (follow-up 11).
+    mutations = ProjectMutations({}, frozenset())
+    while True:
+        # Builtin/stdlib identity is process-global.  Re-scan all modules until
+        # facts discovered by one module have revoked every other module's
+        # purity shortcuts.  The union is monotone, so this finite authority
+        # always converges even when callable replay is subsequently narrowed.
+        while True:
+            discovered = scan_with(project_callables, mutations)
+            merged_specific: dict[str, frozenset[str]] = {
+                receiver: frozenset(paths) for receiver, paths in mutations.by_module.items()
+            }
+            for receiver, paths in discovered.by_module.items():
+                merged_specific[receiver] = merged_specific.get(receiver, frozenset()) | paths
+            merged = ProjectMutations(
+                merged_specific,
+                mutations.unknown_modules | discovered.unknown_modules,
+            )
+            if merged == mutations:
+                break
+            mutations = merged
+        exact_callables = {
+            target: record
+            for target, record in project_callables.items()
+            if not mutations.target_is_mutated(target)
+        }
+        if len(exact_callables) == len(project_callables):
+            return mutations
+        project_callables = exact_callables
+
+
+def _build_project_callable_registry(
+    files: list[Path],
+    project_root: Path,
+    project_modules: set[str],
+) -> dict[str, ProjectCallable]:
+    """Index exact undecorated project functions for module-load replay.
+
+    This is deliberately a source-only registry: no function is executed.  A
+    decorated, conditional, overwritten, deleted, star-shadowed, or otherwise
+    non-final function is absent so an import-time call through it fails closed
+    in :func:`collect_module_mutations`.
+    """
+    parsed: dict[str, tuple[ast.Module, bool, ModuleBindings]] = {}
+    for path in files:
+        module_name = module_name_for_path(path, project_root)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:
+            continue
+        bindings = build_module_bindings(
+            tree,
+            module_name,
+            project_modules=project_modules,
+        )
+        parsed[module_name] = (tree, path.name == "__init__.py", bindings)
+
+    exact_nodes: dict[str, ast.FunctionDef] = {}
+    # A project function reads globals when it is *called*, not when the source
+    # file has reached its final statement.  This distinction is observable for
+    # circular imports: another module can call a function while its owner is
+    # paused in the middle of execution.  Keep the complete source-order import
+    # history from the definition onward instead of taking one final snapshot.
+    # Import-edge snapshots below let a replay in the same strongly connected
+    # component select the state at which the owner can be suspended; ordinary
+    # non-cyclic calls still receive the exact final environment.
+    import_history_by_target: dict[str, dict[str, set[str]]] = {}
+    import_edge_states: dict[str, list[tuple[str, dict[str, str]]]] = {}
+    import_graph: dict[str, set[str]] = {module: set() for module in parsed}
+    final_imports_by_module: dict[str, dict[str, str]] = {}
+
+    def imported_project_module(target: str) -> str | None:
+        candidates = [
+            candidate
+            for candidate in parsed
+            if target == candidate or target.startswith(f"{candidate}.")
+        ]
+        return max(candidates, key=len) if candidates else None
+
+    for module_name, (tree, is_package, bindings) in parsed.items():
+        final_imports_by_module[module_name] = _collect_imports(
+            tree,
+            module_name,
+            is_package,
+            bindings,
+        )
+        current_imports: dict[str, str] = {}
+        active_targets: list[str] = []
+
+        def remember_current_imports() -> None:
+            for target in active_targets:
+                history = import_history_by_target[target]
+                for name, import_target in current_imports.items():
+                    history.setdefault(name, set()).add(import_target)
+
+        def import_from_base(node: ast.ImportFrom) -> str | None:
+            if not node.level:
+                return node.module
+            package = module_name.split(".") if module_name else []
+            if not is_package and package:
+                package.pop()
+            ascend = node.level - 1
+            if ascend > len(package):
+                return None
+            if ascend:
+                package = package[:-ascend]
+            if node.module:
+                package.extend(node.module.split("."))
+            return ".".join(package)
+
+        def remember_import_edge(import_target: str | None, state: dict[str, str]) -> None:
+            if import_target is None:
+                return
+            imported_module = imported_project_module(import_target)
+            if imported_module is None:
+                return
+            import_graph[module_name].add(imported_module)
+            for callable_target in active_targets:
+                import_edge_states.setdefault(callable_target, []).append(
+                    (imported_module, dict(state))
+                )
+
+        class ExecutedImportVisitor(ast.NodeVisitor):
+            """Collect imports that execute now, excluding deferred bodies."""
+
+            def __init__(self) -> None:
+                self.nodes: list[ast.Import | ast.ImportFrom] = []
+
+            def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
+                self.nodes.append(node)
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
+                self.nodes.append(node)
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+                del node
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+                del node
+
+            def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+                del node
+
+        def nested_executed_imports(node: ast.stmt) -> list[ast.Import | ast.ImportFrom]:
+            visitor = ExecutedImportVisitor()
+            visitor.visit(node)
+            return visitor.nodes
+
+        def remember_import_node_edges(
+            import_node: ast.Import | ast.ImportFrom,
+            state: dict[str, str],
+        ) -> None:
+            if isinstance(import_node, ast.Import):
+                for imported in import_node.names:
+                    remember_import_edge(imported.name, state)
+                return
+            if import_node.module == "__future__" and not import_node.level:
+                return
+            base = import_from_base(import_node)
+            for imported in import_node.names:
+                import_target = (
+                    base
+                    if imported.name == "*"
+                    else f"{base}.{imported.name}"
+                    if base
+                    else imported.name
+                )
+                remember_import_edge(import_target, state)
+
+        for node in tree.body:
+            if (
+                isinstance(node, ast.FunctionDef)
+                and not node.decorator_list
+                and bindings.lookup(node.name).kind is BindingKind.FUNCTION
+                and bindings.lookup(node.name).matches_origin(node)
+            ):
+                target = f"{module_name}.{node.name}" if module_name else node.name
+                exact_nodes[target] = node
+                current_imports.pop(node.name, None)
+                import_history_by_target[target] = {
+                    name: {import_target} for name, import_target in current_imports.items()
+                }
+                active_targets.append(target)
+                remember_current_imports()
+                continue
+
+            if isinstance(node, ast.Import):
+                for imported in node.names:
+                    # IMPORT_NAME executes the dependency before STORE_NAME
+                    # publishes this alias.  A circular callback therefore sees
+                    # the exact pre-binding environment.
+                    remember_import_edge(imported.name, current_imports)
+                    visible = imported.asname or imported.name.split(".", 1)[0]
+                    current_imports[visible] = imported.name if imported.asname else visible
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "__future__" and not node.level:
+                    remember_current_imports()
+                    continue
+                base = import_from_base(node)
+                for imported in node.names:
+                    import_target = (
+                        base
+                        if imported.name == "*"
+                        else f"{base}.{imported.name}"
+                        if base
+                        else imported.name
+                    )
+                    # As above, the imported module can call back before
+                    # IMPORT_FROM/STORE_NAME replaces the visible name.
+                    remember_import_edge(import_target, current_imports)
+                    if imported.name == "*":
+                        current_imports.clear()
+                        continue
+                    visible = imported.asname or imported.name
+                    assert import_target is not None
+                    current_imports[visible] = import_target
+            else:
+                # Reuse the final-binding walk for every module-scope binder,
+                # including walrus and binders nested in if/for/with/try/match.
+                # Forgetting a possibly rebound import alias is deliberate: its
+                # absence makes callable replay widen instead of resurrecting a
+                # stale root.  Imports nested in immediately executed control
+                # flow/class bodies still contribute graph edges, using this
+                # widened pre-edge state.
+                statement_authority = build_module_bindings(
+                    ast.Module(body=[node], type_ignores=[]),
+                    module_name,
+                    project_modules=project_modules,
+                )
+                for bound_name in statement_authority.entries:
+                    current_imports.pop(bound_name, None)
+                if statement_authority.last_unknown_star_order is not None:
+                    current_imports.clear()
+                widened_state = dict(current_imports)
+                for nested_import in nested_executed_imports(node):
+                    remember_import_node_edges(nested_import, widened_state)
+            # Record the state after every top-level statement.  In particular,
+            # an import statement can suspend here while a dependency calls back
+            # into one of the already-defined functions.
+            remember_current_imports()
+
+    def reachable(start: str) -> set[str]:
+        seen: set[str] = set()
+        pending = [start]
+        while pending:
+            current = pending.pop()
+            for neighbor in import_graph.get(current, ()):
+                if neighbor in seen:
+                    continue
+                seen.add(neighbor)
+                pending.append(neighbor)
+        return seen
+
+    reachable_by_module = {module: reachable(module) for module in parsed}
+    cycle_modules_by_module = {
+        module: frozenset(
+            candidate
+            for candidate in reachable_by_module[module]
+            if module in reachable_by_module.get(candidate, set())
+        )
+        for module in parsed
+    }
+
+    functions_by_module: dict[str, dict[str, str]] = {}
+    for target in exact_nodes:
+        owner, _, name = target.rpartition(".")
+        functions_by_module.setdefault(owner, {})[name] = target
+
+    registry: dict[str, ProjectCallable] = {}
+    for target, node in exact_nodes.items():
+        module_name = target.rpartition(".")[0]
+        tree, is_package, _ = parsed[module_name]
+        del tree
+        cycle_modules = cycle_modules_by_module[module_name]
+        cycle_aliases: dict[str, set[str]] = {}
+        cycle_states = [
+            state
+            for imported_module, state in import_edge_states.get(target, ())
+            if imported_module in cycle_modules
+        ]
+        for state in cycle_states:
+            for name, import_target in state.items():
+                cycle_aliases.setdefault(name, set()).add(import_target)
+        registry[target] = ProjectCallable(
+            target=target,
+            module_name=module_name,
+            is_package_module=is_package,
+            node=node,
+            global_aliases={
+                name: frozenset(import_targets)
+                for name, import_targets in import_history_by_target.get(target, {}).items()
+            },
+            final_global_aliases={
+                name: frozenset({import_target})
+                for name, import_target in final_imports_by_module[module_name].items()
+            },
+            cycle_global_aliases={
+                name: frozenset(import_targets) for name, import_targets in cycle_aliases.items()
+            },
+            cycle_snapshot_available=bool(cycle_states),
+            cycle_modules=cycle_modules,
+            global_functions=functions_by_module.get(module_name, {}),
+        )
+    return registry
 
 
 def _project_module_names(files: list[Path], project_root: Path) -> set[str]:

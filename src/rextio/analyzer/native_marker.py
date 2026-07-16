@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Mapping
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -42,6 +43,17 @@ def parse_native_marker(node: ast.AST) -> NativeMarker | None:
         name = dotted_name(node)
     if name not in {"rextio.native", "native"}:
         return None
+    return parse_native_marker_shape(node)
+
+
+def parse_native_marker_shape(node: ast.AST) -> NativeMarker:
+    """Parse marker arguments after an external authority proves its identity.
+
+    Unlike :func:`parse_native_marker`, this helper does not infer identity from
+    raw spelling.  It is used for exact import aliases (``@n`` / ``@rx.native``)
+    only after the shared source-order binding authority has proved that the
+    decorator resolves to ``rextio.native``.
+    """
     if not isinstance(node, ast.Call):
         return NativeMarker()
     if node.args:
@@ -151,6 +163,28 @@ def external_accelerator_for_function(
         if tool is not None:
             return tool
     return None
+
+
+def decorator_resolves_to_accelerator(decorator: ast.expr, imports: Mapping[str, str]) -> bool:
+    """Whether a decorator resolves (via ``imports``) to a recognized accelerator.
+
+    Recognizes numba ``@jit``/``@njit``/``@vectorize``/… in attribute, from-import,
+    and aliased forms. Used by the module-execution effect scanner to exempt an
+    accelerator decorator
+    (which core proves rebinds only its own decorated name) from being treated as
+    an unproven global-mutating effect — including the aliased and from-import
+    forms (``from numba import vectorize as vec``; ``@vec``).
+    """
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    name = dotted_name(target)
+    if name is None:
+        return False
+    head, _, rest = name.partition(".")
+    resolved_head = imports.get(head)
+    if resolved_head is None:
+        return False
+    resolved = f"{resolved_head}.{rest}" if rest else resolved_head
+    return resolved in _EXTERNAL_ACCELERATOR_QUALNAMES
 
 
 def external_accelerator_for_source(

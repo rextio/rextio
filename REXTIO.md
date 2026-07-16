@@ -1,27 +1,34 @@
-# Rextio 0.1.2 Notes
+# Rextio 0.1.3 Notes
 
 > **Security:** Rextio analyzes source, generates Rust, and runs external build
 > tools — treat it like a compiler and only build trusted projects. See
 > [`SECURITY.md`](./SECURITY.md) for the threat model and protections.
 
-> **Release status:** Package version **0.1.2** on this branch is a **release
-> candidate** — not tagged and not uploaded to PyPI. The latest published
-> package remains **0.1.1**. Tooling contract **2.0.0** and plugin API **1.2**
-> ship with this line. **Strict integration order:** rextio-lsp 0.1.1 → core
-> 0.1.2 → rextio-numpy 0.1.1 (LSP first; core must not publish alone first;
-> numpy 0.1.1 after core). See
-> [docs/specs/tooling-contract.md](./docs/specs/tooling-contract.md).
+> **Release status:** Package version **0.1.3** is published to PyPI on
+> 2026-07-17 (plugin API **1.3**; tooling contract **2.1.0**), superseding
+> **0.1.2** (2026-07-14; tooling contract **2.0.0**). Related 0.1.2-line
+> releases were published in the completed strict order: rextio-lsp 0.1.1 →
+> core 0.1.2 → rextio-numpy 0.1.1.
+> See [docs/specs/tooling-contract.md](./docs/specs/tooling-contract.md).
 
 Rextio 0.1.1 added the machine-readable tooling contract (`rextio
 capabilities`, route/status fields in `rextio check --format json`) and the
 plugin protocol that lets plugins describe and lower covered constructs.
-**0.1.2** (this RC) advances the tooling contract to **2.0.0** (RXT000
-columns are 0-based UTF-8 bytes like every other diagnostic) and ships
+**0.1.2** advanced the tooling contract to **2.0.0** (RXT000
+columns are 0-based UTF-8 bytes like every other diagnostic) and shipped
 backward-compatible plugin API **1.2** (static literal/ordered keyword
 metadata, structured `ClaimExpr` trees, leaves-mode lowering for downstream
-axis/fusion plugins). See [docs/specs/](./docs/README.md) and
-[CHANGELOG.md](./CHANGELOG.md); the core workflow below is unchanged from
-0.1.0.
+axis/fusion plugins). **0.1.3** advances the tooling contract to **2.1.0**
+(additive producer fields on the same major: always-on
+`modules[].logger_group_targets`; conditional `plugin_claims[].receiver` /
+`callables`) and ships additive plugin API **1.3** (opaque resident values and
+immutable-borrow native chaining, type-level Rust module support,
+method-oriented receiver/callable/schema metadata, and bool/string static
+keyword literals) plus identity-authority hardening. API 1.3 remains
+Experimental; API 1.1/1.2 providers keep loading; dual-map `2.x` contract
+consumers that tolerate unknown fields remain compatible. See
+[docs/specs/](./docs/README.md) and [CHANGELOG.md](./CHANGELOG.md); the core
+workflow below is unchanged from 0.1.0.
 
 Rextio proves a focused hybrid build workflow:
 

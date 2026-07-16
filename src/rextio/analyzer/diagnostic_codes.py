@@ -59,7 +59,8 @@ _CODES: tuple[DiagnosticCode, ...] = (
     ),
     DiagnosticCode(
         "RXT092",
-        "Native function calls a plugin-typed function (Python-facing entry point)",
+        "Resident plugin value would cross an exported PyO3 boundary, or a native "
+        "call targets a materialized plugin-typed (Python-facing) function",
         "experimental",
     ),
 )

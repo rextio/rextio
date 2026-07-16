@@ -1,11 +1,143 @@
 from __future__ import annotations
 
+import ast
+import importlib
+import sys
 from pathlib import Path
 
+import pytest
+
+from rextio.analyzer.executable_identity import executable_ast_fingerprint
+from rextio.analyzer.final_bindings import build_module_bindings
 from rextio.analyzer.models import FunctionAnalysis, ModuleAnalysis
 from rextio.analyzer.plugin_claims import PluginClaim
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.codegen.python_wrapper.wrapper_gen import render_wrapper_module
+
+
+def test_wrapper_captures_runtime_builtins_before_fallback_star_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source" / "app.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        """
+import rextio
+
+__all__ = [
+    "A", "hasattr", "list", "type", "vars", "enumerate", "object",
+    "getattr", "isinstance", "set", "globals", "RuntimeError",
+    "AttributeError", "KeyError", "TypeError",
+]
+
+hasattr = lambda *args: False
+list = lambda *args: ["shadow-list"]
+type = 0
+vars = enumerate = object = getattr = isinstance = set = globals = lambda *args: None
+RuntimeError = AttributeError = KeyError = TypeError = Exception
+
+class A:
+    @rextio.native
+    def m(self, value: int) -> int:
+        return value + 1
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(source.parent)
+    wrapper = render_wrapper_module(analysis.modules[0])
+    assert wrapper.index("_rextio_builtin_type =") < wrapper.index(
+        "import _fallback_app as _rextio_fallback_module"
+    )
+    assert "_rextio_builtin_type(owner)" in wrapper
+    assert "_rextio_builtin_hasattr(_rextio_fallback_module" in wrapper
+
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "app.py").write_text(wrapper, encoding="utf-8")
+    (build / "_fallback_app.py").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.syspath_prepend(str(build))
+    sys.modules.pop("app", None)
+    sys.modules.pop("_fallback_app", None)
+    try:
+        module = importlib.import_module("app")
+        assert module.hasattr("ignored") is False
+        assert module.list("ignored") == ["shadow-list"]
+        assert module.type == 0
+        assert module.A().m(4) == 5
+    finally:
+        sys.modules.pop("app", None)
+        sys.modules.pop("_fallback_app", None)
+
+
+def test_wrapper_internal_runtime_survives_explicit_all_helper_name_collisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fallback exports may faithfully replace every predictable private name."""
+    source = tmp_path / "source" / "app.py"
+    source.parent.mkdir(parents=True)
+    helper_names = [
+        "_rextio_builtins",
+        "_rextio_types",
+        "_rextio_fallback_module",
+        "_rextio_native_disabled",
+        "_rextio_native_required",
+        "_rextio_boundary_fallback_required",
+        "_rextio_load_native_function",
+        "_rextio_require_fallback_method",
+        "_rextio_install_fallback_method",
+        "_rextio_builtin_AttributeError",
+        "_rextio_builtin_KeyError",
+        "_rextio_builtin_RuntimeError",
+        "_rextio_builtin_TypeError",
+        "_rextio_builtin_enumerate",
+        "_rextio_builtin_getattr",
+        "_rextio_builtin_globals",
+        "_rextio_builtin_hasattr",
+        "_rextio_builtin_isinstance",
+        "_rextio_builtin_list",
+        "_rextio_builtin_object",
+        "_rextio_builtin_set",
+        "_rextio_builtin_setattr",
+        "_rextio_builtin_type",
+        "_rextio_builtin_vars",
+        "_rextio_fallback_fn_A_m",
+        "_rextio_native_fn_A_m",
+        "_rextio_wrapper_A_m",
+    ]
+    assignments = "\n".join(f"{name} = 'user:{name}'" for name in helper_names)
+    source.write_text(
+        (
+            "import rextio\n\n"
+            f"__all__ = ['A', {', '.join(repr(name) for name in helper_names)}]\n"
+            f"{assignments}\n\n"
+            "class A:\n"
+            "    @rextio.native\n"
+            "    def m(self, value: int) -> int:\n"
+            "        return value + 1\n"
+        ),
+        encoding="utf-8",
+    )
+    analysis = analyze_project(source.parent)
+    wrapper = render_wrapper_module(analysis.modules[0])
+
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "app.py").write_text(wrapper, encoding="utf-8")
+    (build / "_fallback_app.py").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.syspath_prepend(str(build))
+    sys.modules.pop("app", None)
+    sys.modules.pop("_fallback_app", None)
+    try:
+        module = importlib.import_module("app")
+        for name in helper_names:
+            assert getattr(module, name) == f"user:{name}"
+        assert module.A().m(4) == 5
+        assert module.A().m(9) == 10
+    finally:
+        sys.modules.pop("app", None)
+        sys.modules.pop("_fallback_app", None)
 
 
 def test_generates_wrapper_module_for_package_module(tmp_path: Path) -> None:
@@ -37,17 +169,16 @@ def helper(x: int) -> int:
     assert "from rextio.runtime.flags import native_disabled as _rextio_native_disabled" in wrapper
     assert "from rextio.runtime.flags import native_required as _rextio_native_required" in wrapper
     assert "from . import _fallback_scoring as _rextio_fallback_module" in wrapper
-    assert "from ._fallback_scoring import *  # noqa: F401,F403" in wrapper
-    assert "from ._fallback_scoring import add as _rextio_fallback_fn_add" in wrapper
-    assert "_rextio_native_fn_add = _rextio_load_native_function(" in wrapper
+    assert "_rextio_builtin_globals().update(_rextio_public_exports)" in wrapper
+    assert "from ._fallback_scoring import add as _rextio_fallback_slot_0" in wrapper
+    assert "_rextio_native_slot_0 = _rextio_load_native_function(" in wrapper
     assert 'function_name="demo_pkg__scoring__add"' in wrapper
     assert "def add(a: int, b: int) -> int:" in wrapper
-    assert "if _rextio_native_required():" in wrapper
     assert "native mode requires generated native function: demo_pkg.scoring.add" in wrapper
-    assert '_rextio_boundary_fallback_required("demo_pkg.scoring.add", 1000)' in wrapper
-    assert "return _rextio_fallback_fn_add(a, b)" in wrapper
-    assert "return _rextio_native_fn_add(a, b)" in wrapper
-    assert "_rextio_fallback_module.add = add" in wrapper
+    assert '"demo_pkg.scoring.add", 1000' in wrapper
+    assert "return _rextio_dispatch_capture_1(a, b)" in wrapper
+    assert "return _rextio_dispatch_capture_0(a, b)" in wrapper
+    assert "_rextio_fallback_module.add = _rextio_dispatch_slot_0" in wrapper
 
 
 def test_wrapper_uses_lazy_annotations(tmp_path: Path) -> None:
@@ -100,8 +231,8 @@ def unique(values: list[int]) -> set[int]:
     wrapper = render_wrapper_module(module)
 
     assert "def unique(values: list[int]) -> set[int]:" in wrapper
-    assert "return _rextio_fallback_fn_unique(values)" in wrapper
-    assert "return set(_rextio_native_fn_unique(values))" in wrapper
+    assert "return _rextio_dispatch_capture_1(values)" in wrapper
+    assert "return _rextio_dispatch_capture_6(_rextio_dispatch_capture_0(values))" in wrapper
 
 
 def test_wrapper_selects_native_top_level_fallback_module(tmp_path: Path) -> None:
@@ -124,8 +255,9 @@ total: int = 41
         in wrapper
     )
     assert "return _rextio_import_fallback_module(_REXTIO_FALLBACK_MODULE_NAME)" in wrapper
-    assert "module.__dict__.update(updates)" in wrapper
-    assert "globals().update(updates)" in wrapper
+    assert "module.__dict__.update(updates)" not in wrapper
+    assert "_REXTIO_NATIVE_TOP_LEVEL_FINAL_NAMES = ('total',)" in wrapper
+    assert "_rextio_builtin_globals().update(_rextio_native_top_level_updates)" in wrapper
 
 
 def test_wrapper_preserves_private_default_and_module_all_and_doc(tmp_path: Path) -> None:
@@ -157,10 +289,10 @@ def add(a: int, b: int = _PRIVATE_MAX) -> int:
     # __defaults__ (not reproduced as expressions), so the private default
     # name never appears in the wrapper source and cannot NameError.
     assert "_PRIVATE_MAX" not in wrapper
-    assert "add.__defaults__ = _rextio_fallback_fn_add.__defaults__" in wrapper
+    assert "_rextio_dispatch_slot_0.__defaults__ = _rextio_fallback_slot_0.__defaults__" in wrapper
     # Docstring and __all__ are mirrored.
     assert "__doc__ = _rextio_fallback_module.__doc__" in wrapper
-    assert "__all__ = list(_rextio_fallback_module.__all__)" in wrapper
+    assert "__all__ = _rextio_builtin_list(_rextio_fallback_module.__all__)" in wrapper
     # Runtime helpers are aliased under _rextio_ so they cannot be clobbered or
     # leaked through the star-import.
     assert "import native_disabled as _rextio_native_disabled" in wrapper
@@ -196,7 +328,7 @@ def aaa(x: int = zzz(0)) -> int:
     wrapper = render_wrapper_module(analysis.modules[0])
     # No reproduced default expression referencing zzz; compiles cleanly.
     assert "= zzz(0)" not in wrapper
-    assert "aaa.__defaults__ = _rextio_fallback_fn_aaa.__defaults__" in wrapper
+    assert "_rextio_dispatch_slot_0.__defaults__ = _rextio_fallback_slot_0.__defaults__" in wrapper
     compile(wrapper, "<wrapper>", "exec")
 
 
@@ -375,6 +507,12 @@ class Alias:
     def im(self, x: int) -> int:
         return x + 1
     im = sm(im)
+
+import rextio
+
+@rextio.native
+def keep(x: int) -> int:
+    return x
 """,
         encoding="utf-8",
     )
@@ -525,9 +663,10 @@ class AugC:
     accepted = {f.qualname: f.accepted for m in analysis.modules for f in m.functions}
     for cls in ("IfC", "ForC", "TryC", "WalrusC", "AugC"):
         assert accepted[f"demo_pkg.mod.{cls}.im"] is False, cls
-    wrapper = render_wrapper_module(analysis.modules[0])
-    for cls in ("IfC", "ForC", "TryC", "WalrusC", "AugC"):
-        assert f"{cls}.im" not in wrapper, cls
+    # The class-body augmented assignment is itself an unproven module-load
+    # protocol hook, so it also invalidates the earlier auto-discovered helper.
+    # With no accepted target there is intentionally no wrapper to render.
+    assert analysis.accepted_native_functions == []
 
 
 def test_reassignment_scan_no_false_positive_from_control_flow(tmp_path: Path) -> None:
@@ -660,12 +799,16 @@ class ForT:
     for im in range(3):
         pass
 
+import rextio
+
 class WithT:
     @rextio.native
     def im(self, x: int) -> int:
         return x + 1
     with contextlib.nullcontext(5) as im:
         pass
+
+import rextio
 
 class ExceptT:
     @rextio.native
@@ -676,11 +819,15 @@ class ExceptT:
     except Exception as im:
         pass
 
+import rextio
+
 class ImportT:
     @rextio.native
     def im(self, x: int) -> int:
         return x + 1
     import os as im
+
+import rextio
 
 class MatchT:
     @rextio.native
@@ -690,11 +837,15 @@ class MatchT:
         case im:
             pass
 
+import rextio
+
 class DelT:
     @rextio.native
     def im(self, x: int) -> int:
         return x + 1
     del im
+
+import rextio
 
 class LaterDefT:
     @rextio.native
@@ -702,6 +853,8 @@ class LaterDefT:
         return x + 1
     def im(self):
         return 9
+
+import rextio
 
 class HeaderWalrusT:
     @rextio.native
@@ -906,7 +1059,7 @@ def keep(x: int) -> int:
     )
     analysis = analyze_project(tmp_path)
     wrapper = render_wrapper_module(analysis.modules[0])
-    assert 'if hasattr(_rextio_fallback_module, "__all__"):' in wrapper
+    assert 'if _rextio_builtin_hasattr(_rextio_fallback_module, "__all__"):' in wrapper
     compile(wrapper, "<wrapper>", "exec")
 
 
@@ -935,10 +1088,14 @@ def _render_single_function_wrapper(tmp_path: Path, function: FunctionAnalysis) 
         encoding="utf-8",
     )
     function.file_path = str(source)
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    node = next(item for item in tree.body if isinstance(item, ast.FunctionDef))
+    function.source_ast_fingerprint = executable_ast_fingerprint(node)
     module = ModuleAnalysis(
         module_name="pure_math.math_ops",
         file_path=str(source),
         functions=[function],
+        module_bindings=build_module_bindings(tree, "pure_math.math_ops"),
     )
     return render_wrapper_module(module, boundary_fallback_threshold=7)
 
@@ -949,10 +1106,11 @@ def _claim_only_function() -> FunctionAnalysis:
         qualname="pure_math.math_ops.sum_squares",
         module_name="pure_math.math_ops",
         file_path="math_ops.py",
-        line=2,
+        line=3,
         column=0,
         is_native_candidate=True,
         accepted=True,
+        explicitly_marked=True,
         plugin_claims=[_plugin_claim()],
         plugin_type_keys=[],
     )
@@ -988,16 +1146,14 @@ def test_plain_native_function_keeps_boundary_threshold(tmp_path: Path) -> None:
         qualname="pure_math.math_ops.sum_squares",
         module_name="pure_math.math_ops",
         file_path="math_ops.py",
-        line=2,
+        line=3,
         column=0,
         is_native_candidate=True,
         accepted=True,
+        explicitly_marked=True,
         plugin_claims=[],
         plugin_type_keys=[],
     )
     assert function.route == "native-direct"
     wrapper = _render_single_function_wrapper(tmp_path, function)
-    assert any(
-        "_rextio_boundary_fallback_required(" in line and "import" not in line
-        for line in wrapper.splitlines()
-    )
+    assert '"pure_math.math_ops.sum_squares", 7' in wrapper

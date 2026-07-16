@@ -1,10 +1,10 @@
 # Unsupported Features in 0.1.x
 
-Rextio is a focused, alpha-stage hybrid build tool. The current package line is
-**0.1.2** (release candidate on this branch; latest published PyPI package is
-**0.1.1**). The direct-Rust subset and boundary rules below still rest on the
-original **0.1.0** design; historical “0.1.0” wording in later sections is
-preserved as design scope, not as a claim that 0.1.0 is the only shipped
+Rextio is a focused, alpha-stage hybrid build tool. The package version on this
+branch is **0.1.3** (published to PyPI on 2026-07-17; plugin API 1.3; tooling
+contract **2.1.0**). The direct-Rust subset and boundary rules below still rest
+on the original **0.1.0** design; historical “0.1.0” wording in later sections
+is preserved as design scope, not as a claim that 0.1.0 is the only shipped
 version. Rextio compiles eligible Python functions with statically resolved
 types to Rust native modules and keeps the rest of the project as Python
 fallback.

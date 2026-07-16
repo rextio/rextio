@@ -140,6 +140,30 @@ def test_extract_claim_literal_shapes() -> None:
     assert extract_claim_literal(ast.Name(id="x", ctx=ast.Load())).is_literal is False
 
 
+def test_extract_claim_literal_api13_bool_and_string_shapes() -> None:
+    import ast
+
+    # The legacy/default extractor remains the API 1.2 surface.
+    assert extract_claim_literal(ast.Constant(value=True)).is_literal is False
+    assert extract_claim_literal(ast.Constant(value="columns")).is_literal is False
+    assert extract_claim_literal(ast.Constant(value=True), api_13=True) == ClaimLiteral(
+        is_literal=True, value=True
+    )
+    assert extract_claim_literal(ast.Constant(value="columns"), api_13=True) == ClaimLiteral(
+        is_literal=True, value="columns"
+    )
+    assert extract_claim_literal(ast.Constant(value=b"raw"), api_13=True).is_literal is False
+    assert extract_claim_literal(ast.Constant(value=1.5), api_13=True).is_literal is False
+    assert (
+        extract_claim_literal(ast.parse("(True,)", mode="eval").body, api_13=True).is_literal
+        is False
+    )
+    assert (
+        extract_claim_literal(ast.parse("('columns',)", mode="eval").body, api_13=True).is_literal
+        is False
+    )
+
+
 def test_claim_literal_to_dict_stable() -> None:
     assert ClaimLiteral().to_dict() == {"is_literal": False}
     assert ClaimLiteral(is_literal=True, value=None).to_dict() == {
@@ -157,6 +181,181 @@ def test_claim_literal_to_dict_stable() -> None:
         "value_kind": "int_tuple",
         "value": [0, 1],
     }
+    bool_literal = ClaimLiteral(is_literal=True, value=True)
+    int_literal = ClaimLiteral(is_literal=True, value=1)
+    assert bool_literal.to_dict() == {
+        "is_literal": True,
+        "value_kind": "bool",
+        "value": True,
+    }
+    assert ClaimLiteral(is_literal=True, value="columns").to_dict() == {
+        "is_literal": True,
+        "value_kind": "str",
+        "value": "columns",
+    }
+    # Python bool compares equal to int; the cache/equality key must not.
+    assert bool_literal != int_literal
+    assert hash(bool_literal) != hash(int_literal)
+
+
+def test_api13_bool_and_string_keywords_are_offered_exactly(tmp_path: Path) -> None:
+    class Capturing13(MetadataCapturingProvider):
+        api_version = "1.3"
+
+    provider = Capturing13()
+    write_module(
+        tmp_path,
+        """
+from rextio_numpy.types import F64Arr1
+import numpy as np
+
+def bool_axis(a: F64Arr1) -> float:
+    return np.sum(a, axis=True)
+
+def string_axis(a: F64Arr1) -> float:
+    return np.sum(a, axis="columns")
+""",
+    )
+    analysis = analyze_project(
+        tmp_path, plugin_registry=make_registry(provider), plugin_config=RextioConfig()
+    )
+
+    bool_function = function_named(analysis, "myapp.kernels.bool_axis")
+    string_function = function_named(analysis, "myapp.kernels.string_axis")
+    assert bool_function.route == "native-plugin:rextio-numpy"
+    assert string_function.route == "native-plugin:rextio-numpy"
+    assert bool_function.plugin_claims[0].keywords[0].literal == ClaimLiteral(True, True)
+    assert string_function.plugin_claims[0].keywords[0].literal == ClaimLiteral(True, "columns")
+
+
+@pytest.mark.parametrize("value", ["True", '"columns"'])
+def test_api12_bool_and_string_keywords_keep_prior_not_offered_behavior(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    provider = MetadataCapturingProvider()
+    write_module(
+        tmp_path,
+        f"""
+from rextio_numpy.types import F64Arr1
+import numpy as np
+
+def unsupported(a: F64Arr1) -> float:
+    return np.sum(a, axis={value})
+""",
+    )
+    analysis = analyze_project(
+        tmp_path, plugin_registry=make_registry(provider), plugin_config=RextioConfig()
+    )
+    function = function_named(analysis, "myapp.kernels.unsupported")
+
+    assert function.route != "native-plugin:rextio-numpy"
+    assert function.plugin_claims == []
+    assert provider.claim_sites == []
+
+
+def test_mixed_api12_and_api13_bool_keyword_is_offered_only_to_api13(
+    tmp_path: Path,
+) -> None:
+    class Greedy12:
+        api_version = "1.2"
+
+        def __init__(self) -> None:
+            self.claim_sites: list[ClaimSite] = []
+
+        def claim(self, site: ClaimSite, config: RextioConfig):
+            self.claim_sites.append(site)
+            if site.kind == "call" and site.target == "numpy.sum":
+                return Claimed(rule_id="rextio-legacy/sum", result_type="float")
+            return NotCovered()
+
+    class Capturing13(MetadataCapturingProvider):
+        api_version = "1.3"
+
+    provider12 = Greedy12()
+    provider13 = Capturing13()
+    plugins = (
+        RextioPlugin(
+            id="rextio-legacy",
+            name="legacy",
+            packages=("numpy",),
+            rules_provided=True,
+            api_version="1.2",
+            lowering_provided=True,
+        ),
+        RextioPlugin(
+            id="rextio-numpy",
+            name="numpy",
+            packages=("numpy",),
+            rules_provided=True,
+            api_version="1.3",
+            lowering_provided=True,
+        ),
+    )
+    registry = PluginRegistry(
+        enabled=("rextio-legacy", "rextio-numpy"),
+        discovered=plugins,
+        active=plugins,
+        types=(PluginTypeBinding(plugin_id="rextio-numpy", plugin_type=F64_ARR1),),
+        providers=(
+            PluginProviderBinding(plugin_id="rextio-legacy", provider=provider12),
+            PluginProviderBinding(plugin_id="rextio-numpy", provider=provider13),
+        ),
+    )
+    write_module(
+        tmp_path,
+        """
+from rextio_numpy.types import F64Arr1
+import numpy as np
+
+def reduce(a: F64Arr1) -> float:
+    return np.sum(a, axis=True)
+""",
+    )
+
+    analysis = analyze_project(tmp_path, plugin_registry=registry, plugin_config=RextioConfig())
+    function = function_named(analysis, "myapp.kernels.reduce")
+
+    assert provider12.claim_sites == []
+    assert len(provider13.claim_sites) == 1
+    assert function.route == "native-plugin:rextio-numpy"
+    assert function.plugin_claims[0].keywords[0].literal == ClaimLiteral(True, True)
+
+
+@pytest.mark.parametrize(
+    "signature,call",
+    [
+        ("a: F64Arr1, axis: bool", "np.sum(a, axis=axis)"),
+        ("a: F64Arr1, **kwargs", "np.sum(a, **kwargs)"),
+    ],
+)
+def test_api13_dynamic_keywords_and_kwargs_still_fail_closed(
+    tmp_path: Path,
+    signature: str,
+    call: str,
+) -> None:
+    class Greedy13(MetadataCapturingProvider):
+        api_version = "1.3"
+
+    provider = Greedy13()
+    write_module(
+        tmp_path,
+        f"""
+from rextio_numpy.types import F64Arr1
+import numpy as np
+
+def unsupported({signature}) -> float:
+    return {call}
+""",
+    )
+    analysis = analyze_project(
+        tmp_path, plugin_registry=make_registry(provider), plugin_config=RextioConfig()
+    )
+    function = function_named(analysis, "myapp.kernels.unsupported")
+
+    assert function.route != "native-plugin:rextio-numpy"
+    assert function.plugin_claims == []
+    assert provider.claim_sites == []
 
 
 def test_absent_vs_literal_none_keyword(tmp_path: Path) -> None:

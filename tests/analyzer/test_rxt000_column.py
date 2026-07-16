@@ -1,9 +1,10 @@
 """RXT000 column contract: 0-based UTF-8 byte offsets (not SyntaxError.offset).
 
-Contract 2.0.0 standardizes every diagnostic column (including RXT000) as a
-0-based UTF-8 byte offset. Adversarial cases deliberately make Python code
-points, UTF-8 bytes, and UTF-16 code units diverge so a regression to either
-legacy 1-based code-point storage or accidental UTF-16 indexing fails loudly.
+Contract 2.x (position semantics from 2.0.0; current producer 2.1.0) standardizes
+every diagnostic column (including RXT000) as a 0-based UTF-8 byte offset.
+Adversarial cases deliberately make Python code points, UTF-8 bytes, and UTF-16
+code units diverge so a regression to either legacy 1-based code-point storage
+or accidental UTF-16 indexing fails loudly.
 """
 
 from __future__ import annotations
@@ -29,8 +30,9 @@ def _utf16_len(text: str) -> int:
 
 
 def test_tooling_contract_version_is_major_2() -> None:
-    # Protocol discriminator for the RXT000 column semantic break.
-    assert TOOLING_CONTRACT_VERSION == "2.0.0"
+    # Protocol discriminator for the RXT000 column semantic break (major 2);
+    # 2.1.0 is the current additive producer shape on the same major.
+    assert TOOLING_CONTRACT_VERSION == "2.1.0"
     assert TOOLING_CONTRACT_VERSION.split(".", 1)[0] == "2"
 
 
@@ -82,7 +84,7 @@ def test_rxt000_adversarial_codepoints_utf8_utf16_diverge(tmp_path: Path) -> Non
     - UTF-8 bytes: 19
     - UTF-16 code units: 13  (😀 is a surrogate pair)
 
-    Contract 2.0.0 must emit the UTF-8 byte column (19), not 13 and not a
+    Contract 2.x must emit the UTF-8 byte column (19), not 13 and not a
     UTF-16 unit index.
     """
     source = 'x = "한글😀" + (\n'
@@ -138,7 +140,7 @@ def test_rxt000_column_in_check_json_report(tmp_path: Path) -> None:
     report = json.loads(report_path.read_text(encoding="utf-8"))
 
     assert report["contract_version"] == TOOLING_CONTRACT_VERSION
-    assert report["contract_version"] == "2.0.0"
+    assert report["contract_version"] == "2.1.0"
 
     rxt000 = [d for d in report["diagnostics"] if d["code"] == "RXT000"]
     assert len(rxt000) == 1

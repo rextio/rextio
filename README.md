@@ -5,12 +5,11 @@
 **Compiles eligible typed Python functions to Rust and keeps everything
 else on the Python fallback.**
 
-Rextio 0.1.2 is an alpha-stage local build tool for Python projects (published
-to PyPI on 2026-07-14, superseding the previous **0.1.1** release). It finds
-typed Python functions that can be safely
-lowered to Rust, compiles them ahead of time with PyO3, and keeps everything
-else running through generated Python fallback code - same imports, same
-behavior.
+Rextio 0.1.3 is an alpha-stage local build tool for Python projects (published
+to PyPI on 2026-07-17, superseding the previous **0.1.2** release). It finds
+typed Python functions that can be safely lowered to Rust, compiles them ahead
+of time with PyO3, and keeps everything else running through generated Python
+fallback code - same imports, same behavior.
 
 ```text
 typed Python project
@@ -137,6 +136,12 @@ Rextio can produce several artifacts from the same Python project:
 The generated Python wrappers try native code first and fall back to Python when
 native is disabled, unavailable, rejected by analysis, or past the configured
 boundary threshold.
+
+Wrapper construction reserves no user-facing ``_rextio_*`` spelling. Internal
+dispatch objects are created in an isolated initialization scope, so an
+explicit ``__all__`` may faithfully export user functions or values whose names
+look like generated helpers. Native top-level values are published only after
+dispatch closures and native method replacements have been initialized.
 
 ```text
 REXTIO_NATIVE_MODE=fallback
@@ -286,7 +291,7 @@ Common settings:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Rust is the only implemented native target in 0.1.2.
+Rust is the only implemented native target in 0.1.3.
 
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry
@@ -316,16 +321,21 @@ constructs (plugin API 1.1 — see
 backward-compatible plugin API **1.2** with two distinct roles:
 **static literal/ordered keyword metadata** enables literal-axis
 claims/lowering, and **structured `ClaimExpr` trees plus leaves-mode
-lowering** enable fusion. The first-party
-[rextio-numpy](https://github.com/rextio/rextio-numpy) plugin is installed
-separately (core has no reverse dependency on it): **PyPI 0.1.0** is the
-published initial certified float64 1-D surface; the **untagged 0.1.1 RC**
-expands that surface with literal-axis *and* fusion work (each on its own
-API 1.2 surface) and requires core **>= 0.1.2** — do not treat either line
-as the other's release state.
-**Strict related-package publish order:** rextio-lsp 0.1.1 → core 0.1.2 →
-rextio-numpy 0.1.1 (not simultaneous; see
-[the tooling contract](docs/specs/tooling-contract.md)).
+lowering** enable fusion. **0.1.3** ships additive plugin API **1.3**:
+opaque resident values/native chaining plus static receiver,
+callable-body/native-symbol, and declared-schema claim metadata, with
+version-gated static `bool`/`str` named-keyword literals. API 1.1/1.2
+providers keep their legacy shapes; API 1.3 remains Experimental. The
+first-party [rextio-numpy](https://github.com/rextio/rextio-numpy) plugin is
+installed separately (core has no reverse dependency on it). PyPI **0.1.1** is
+the published API-1.2 consumer with literal-axis and fusion support and
+requires core **>= 0.1.2,<0.2**.
+**Strict related-package publish order for the 0.1.2 line (completed
+2026-07-14):** rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 (see
+[the tooling contract](docs/specs/tooling-contract.md)). Core **0.1.3** is
+published on 2026-07-17 with plugin API 1.3 and tooling contract **2.1.0**
+(additive over the **2.0.0** shape emitted by core 0.1.2; dual-map `2.x`
+consumers remain compatible).
 General dependency lowering is not bundled; `try-native` is an explicit
 planning policy and still falls back when no safe direct lowering exists.
 
@@ -410,7 +420,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## Supported Direct Rust Subset
 
-Rextio 0.1.2 supports a deliberately small subset. This is the code
+Rextio 0.1.3 supports a deliberately small subset. This is the code
 that runs as native Rust.
 
 Supported types include:
@@ -487,6 +497,11 @@ the generated Python fallback implementation instead.
 This compatibility path can preserve features such as class/object behavior,
 instance methods, exceptions, context managers, `async`/`await`, generators, and
 dynamic attribute access. It reports `RXT080`.
+
+The wrapper stores exact fallback callables in an isolated ordinal registry;
+it does not add generated `_rextio_*` attributes to either the fallback module
+or the public module. A source module may therefore export those spellings
+without collision.
 
 This path preserves behavior. It should not be treated as a Rust speedup path.
 
@@ -567,19 +582,19 @@ lose to call-boundary costs under any accelerator.
 
 The first-party [rextio-numpy](https://github.com/rextio/rextio-numpy)
 plugin translates covered NumPy into AOT-compiled native Rust. **Published
-rextio-numpy 0.1.0** covers the initial certified float64 1-D surface
-(element-wise arithmetic, `numpy.dot`, whole-array `sum`/`mean`). The
-**untagged rextio-numpy 0.1.1 RC** expands that surface using core plugin
-API 1.2 (**core >= 0.1.2**): literal-axis claims via static
-keyword/literal metadata, and fusion via `ClaimExpr` + leaves-mode — not
-via leaves mode alone. It is not the published package and must not be
-confused with 0.1.0. Publish order for that RC is after dual-map
-**rextio-lsp 0.1.1** and **core 0.1.2**. NumPy code therefore has two
-routes - Rextio-plugin AOT compilation for the covered surface, or Numba
+rextio-numpy 0.1.1** expands the initial 0.1.0 float64 1-D surface to the
+certified F64/F32/I64 rank-1/rank-2 broadcasting subset, literal-axis
+reductions, and 2–8-op elementwise fusion. It uses core plugin API 1.2
+(**core >= 0.1.2**): literal-axis claims come from static keyword/literal
+metadata, while fusion uses `ClaimExpr` + leaves-mode. Rank-2 `dot`/matmul
+remains outside the covered surface and falls back. The required release
+order — dual-map **rextio-lsp 0.1.1**, then **core 0.1.2**, then
+**rextio-numpy 0.1.1** — completed on 2026-07-14. NumPy code therefore has
+two routes: Rextio-plugin AOT compilation for the covered surface, or Numba
 JIT inside the Python fallback. When both apply, an explicit `@numba.*`
-decorator wins and the analyzer emits an informational RXT091 note;
-broader guidance on choosing between the routes will firm up as the plugin
-surface grows.
+decorator wins and the analyzer emits an informational RXT091 note; broader
+guidance on choosing between the routes will firm up as the plugin surface
+grows.
 
 ## Examples
 

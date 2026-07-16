@@ -118,20 +118,28 @@ _CORE_RULES: tuple[RuleRecord, ...] = tuple(
                 provider="core",
                 scope=RuleScope(
                     kind="call",
-                    pattern="native candidate calls a plugin-typed function",
+                    pattern=(
+                        "native call into a materialized plugin-typed function, or a "
+                        "resident plugin value escaping the exported PyO3 boundary"
+                    ),
                 ),
                 constraint=(
-                    "A plugin-typed function compiles as a PyO3 boundary entry point; a "
-                    "native-to-native call into it would emit Rust with the wrong arity and "
-                    "parameter types, so the caller is rejected in this release."
+                    "A MATERIALIZED plugin-typed function compiles as a PyO3 boundary entry "
+                    "point; a native-to-native call into it would emit Rust with the wrong "
+                    "arity and parameter types, so the caller is rejected. A RESIDENT "
+                    "(opaque, no-boundary) plugin value has no Python conversion, so an "
+                    "explicitly @rextio.native-marked function carrying one in its signature "
+                    "is rejected rather than exported. A resident-only helper is exempt and "
+                    "may be called native-to-native."
                 ),
                 outcome="reject",
                 diagnostic_code="RXT092",
                 guidance=(
-                    "Call plugin-typed functions from Python fallback code, or inline the "
-                    "covered operations into the caller. A REJECTED plugin-typed callee "
-                    "reports RXT072 (dependency rejected) instead; tooling keying on "
-                    "RXT092 should also handle RXT072."
+                    "Call materialized plugin-typed functions from Python fallback code, or "
+                    "inline the covered operations into the caller. For a resident helper, "
+                    "drop the @rextio.native marker so it stays an internal native-to-native "
+                    "helper. A REJECTED plugin-typed callee reports RXT072 (dependency "
+                    "rejected) instead; tooling keying on RXT092 should also handle RXT072."
                 ),
                 stability="experimental",
             ),

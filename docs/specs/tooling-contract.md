@@ -1,7 +1,7 @@
 # Spec: Machine-Readable Tooling Contract
 
 Status: **draft** (experimental tier; current producer `contract_version` is
-`2.0.0`)
+`2.1.0`)
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
 ## Purpose
@@ -22,7 +22,7 @@ consume instead:
 Both JSON surfaces carry a top-level field:
 
 ```json
-{ "contract_version": "2.0.0" }
+{ "contract_version": "2.1.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -34,7 +34,8 @@ to generic guidance when the major is outside what they support.
 | Version | Meaning |
 |---|---|
 | `1.0.0` | First public producer line (rextio 0.1.1). Route/status fields + capability manifest. **Exception:** `RXT000` (syntax-error) `column` was CPython `SyntaxError.offset` — a **1-based Unicode code-point** index — not the UTF-8 byte offset used by every other diagnostic. |
-| `2.0.0` | **Breaking position semantics.** Every diagnostic `column` / `end_column`, including `RXT000`, is a **0-based UTF-8 byte offset** into the line (`ast.col_offset` convention). No field renames. |
+| `2.0.0` | **Breaking position semantics.** Every diagnostic `column` / `end_column`, including `RXT000`, is a **0-based UTF-8 byte offset** into the line (`ast.col_offset` convention). No field renames. Emitted by core **0.1.2**. |
+| `2.1.0` | **Additive producer shape** (same major; dual-map `2.x` consumers stay supported). Core **0.1.3** always serializes module-level `logger_group_targets`, and conditionally serializes plugin-claim fields `receiver` and `callables` when present (plugin API 1.3 method/callable metadata). Position semantics unchanged from `2.0.0`. Consumers that ignore unknown fields continue to work. |
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.
@@ -157,8 +158,18 @@ same payload to `.rextio/reports/check.json`. Additive changes:
    it to the guidance seam — analyzer rejection sites should populate it with
    the same guidance string the capability manifest carries for that rule
    (single-sourced via the rule registry, below).
+4. **Contract `2.1.0` (core 0.1.3) additive report fields** — same major as
+   `2.0.0`; old `2.x` consumers that ignore unknown keys remain correct:
 
-No existing key changes meaning or disappears.
+   | Location | Field | Presence | Meaning |
+   |---|---|---|---|
+   | `modules[]` | `logger_group_targets` | **Always** (object; may be empty) | Map of accepted logger receiver name → list of process-global `logging.getLogger` cache-group targets proven for that receiver. Equal exact names share a group across modules; dynamic names use the global unknown group. |
+   | `modules[].functions[].plugin_claims[]` | `receiver` | When non-null method-receiver metadata is present | Plugin API 1.3 `ReceiverMeta` (`arg_type`, `schema`, `expr_kind`, `is_safe`) for method claim sites. Omitted when there is no receiver (module-qualified calls, plain functions). |
+   | `modules[].functions[].plugin_claims[]` | `callables` | When the claim has one or more callable-argument metadata entries | Ordered plugin API 1.3 `CallableMeta` records for project-function arguments at the claim site. Omitted when empty. |
+
+   Earlier additive claim keys from plugin API 1.2 (`operand_literals`,
+   `keywords`, `expression`, `operand_mode` when not `"direct"`) remain
+   conditional the same way. No existing key changes meaning or disappears.
 
 ## `rextio capabilities --json`
 
@@ -178,8 +189,8 @@ in registry order, then plugin rules and the `plugins` array sorted by id.
 
 ```json
 {
-  "contract_version": "2.0.0",
-  "rextio_version": "0.1.2",
+  "contract_version": "2.1.0",
+  "rextio_version": "0.1.3",
   "project_root": "/abs/path",
   "config_fingerprint": "<sha256 of resolved config>",
   "target": { "language": "rust" },
@@ -300,11 +311,19 @@ class RextioPluginV2(Protocol):
    RXT091 to the registry; document in `docs/stability.md` as experimental.
 2. rextio-numpy becomes the first `describe()` implementation; its rule records
    validate the plugin merge path.
-3. **0.1.2 RC (this line; not yet tagged/uploaded):** contract `2.0.0` —
-   normalize `RXT000` columns to 0-based UTF-8 byte offsets. **Release-order
-   gate (strict):** rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 (see
-   §Compatibility and release ordering). Core must not publish alone first;
-   numpy 0.1.1 must not publish before core. Consumers that support only major
-   1 must degrade; dual-map consumers keep mapping both 1.x and 2.x correctly.
-4. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
+3. **0.1.2 (published 2026-07-14):** contract `2.0.0` normalizes `RXT000`
+   columns to 0-based UTF-8 byte offsets. The strict release-order gate —
+   rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 — completed in that
+   order (see §Compatibility and release ordering). Consumers that support
+   only major 1 must degrade; dual-map consumers keep mapping both 1.x and
+   2.x correctly. Historical evidence: core 0.1.2 emitted `contract_version`
+   `2.0.0`.
+4. **0.1.3 (published 2026-07-17):** package ships plugin API **1.3**
+   (additive; Experimental). Tooling contract advances to **`2.1.0`**
+   (same major): additive producer fields
+   `modules[].logger_group_targets` (always) and conditional
+   `plugin_claims[].receiver` / `plugin_claims[].callables` when present.
+   Column semantics unchanged from `2.0.0`. Dual-map `2.x` consumers that
+   tolerate unknown fields remain compatible.
+5. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

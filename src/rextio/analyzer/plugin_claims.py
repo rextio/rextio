@@ -15,14 +15,24 @@ metadata so distinct sites never share a verdict.
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import replace
 
+from rextio.analyzer.callable_metadata import (
+    FINAL_BINDING_CLASS,
+    FINAL_BINDING_FUNCTION,
+    ProjectSymbolIndex,
+    build_schema_from_class,
+    extract_callable_meta,
+    resolve_symbol_qualname,
+)
 from rextio.analyzer.models import FunctionAnalysis, PluginClaim, PluginClaimRejection
 from rextio.analyzer.native_marker import dotted_name
+from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.capabilities import DICT_KEY_TYPES, LIST_ITEM_TYPES, SET_ITEM_TYPES
 from rextio.config.schema import RextioConfig
 from rextio.plugins.api import (
+    CallableMeta,
     Claimed,
     ClaimExpr,
     ClaimLiteral,
@@ -30,7 +40,9 @@ from rextio.plugins.api import (
     KeywordArg,
     NON_LITERAL,
     NotCovered,
+    ReceiverMeta,
     Rejected,
+    SchemaMeta,
     plugin_code_segment,
 )
 from rextio.plugins.loader import PluginError
@@ -61,12 +73,14 @@ def _api_version_tuple(version: str) -> tuple[int, int]:
     return (major, minor)
 
 
-def extract_claim_literal(node: ast.AST) -> ClaimLiteral:
+def extract_claim_literal(node: ast.AST, *, api_13: bool = False) -> ClaimLiteral:
     """Extract a supported static literal from an AST node without executing it.
 
     Returns :data:`NON_LITERAL` when the node is not a supported literal shape
-    (signed int, ``None``, or a tuple of signed ints). Unary ``-`` on an int
-    constant is folded so negative axis values work.
+    (signed int, ``None``, or a tuple of signed ints). With ``api_13=True``,
+    bool and string constants are additionally accepted for API 1.3 keyword
+    metadata. Unary ``-`` on an int constant is folded so negative axis values
+    work. Tuples remain int-only in both versions.
     """
     if (
         isinstance(node, ast.UnaryOp)
@@ -82,10 +96,16 @@ def extract_claim_literal(node: ast.AST) -> ClaimLiteral:
     if isinstance(node, ast.Constant):
         if node.value is None:
             return ClaimLiteral(is_literal=True, value=None)
+        if isinstance(node.value, bool):
+            if api_13:
+                return ClaimLiteral(is_literal=True, value=node.value)
+            return NON_LITERAL
         if isinstance(node.value, int) and not isinstance(node.value, bool):
             if _I64_MIN <= node.value <= _I64_MAX:
                 return ClaimLiteral(is_literal=True, value=node.value)
             return NON_LITERAL
+        if api_13 and isinstance(node.value, str):
+            return ClaimLiteral(is_literal=True, value=node.value)
         return NON_LITERAL
     if isinstance(node, ast.Tuple):
         items: list[int] = []
@@ -129,11 +149,56 @@ def _expr_is_leaves_safe(expression: ClaimExpr) -> bool:
     return False
 
 
+def classify_receiver(node: ast.AST) -> tuple[str, bool]:
+    """Classify a method-call receiver expression's shape and evaluation safety.
+
+    Returns ``(expr_kind, is_safe)``. Only a plain local ``ast.Name`` is
+    intrinsically side-effect-free (``is_safe`` True): reading a Rust local is
+    pure and repeatable, so core can render it as a bare reference. Every other
+    shape is conservatively unsafe (``is_safe`` False) because Python evaluation
+    of the receiver can run arbitrary user code that this compiler does not
+    prove pure:
+
+    * ``attribute`` (``obj.x``) can trigger a descriptor ``__get__`` or a
+      ``__getattr__`` hook;
+    * ``subscript`` (``obj[k]``) invokes ``__getitem__`` (and evaluates the key);
+    * ``call`` (``f()``) evaluates a call;
+    * ``opaque`` is any other shape core cannot classify.
+
+    The classification never changes single-evaluation — core ALWAYS evaluates
+    the receiver exactly once in Python order regardless. ``is_safe`` only tells
+    a provider whether the rendered receiver text
+    (:attr:`~rextio.plugins.api.LoweringContext.receiver`) is a bare reference
+    or a bound single-use temporary.
+    """
+    if isinstance(node, ast.Name):
+        return "name", True
+    if isinstance(node, ast.Attribute):
+        return "attribute", False
+    if isinstance(node, ast.Subscript):
+        return "subscript", False
+    if isinstance(node, ast.Call):
+        return "call", False
+    return "opaque", False
+
+
 class ClaimEngine:
     """Resolves plugin annotation vocabularies and runs the claim pass."""
 
-    def __init__(self, registry: PluginRegistry, config: RextioConfig) -> None:
+    def __init__(
+        self,
+        registry: PluginRegistry,
+        config: RextioConfig,
+        symbol_index: ProjectSymbolIndex | None = None,
+    ) -> None:
         self._config = config
+        # Project-wide static function/class index (built before the claim pass,
+        # so callable/schema resolution is order-independent across modules).
+        self._symbol_index = symbol_index or ProjectSymbolIndex()
+        # Declared schemas resolved from schema class nodes, cached by the class
+        # qualname so a repeated ``Frame[Row]`` annotation yields the identical
+        # (value-equal) SchemaMeta.
+        self._schema_by_class: dict[str, SchemaMeta | None] = {}
         self._providers = {binding.plugin_id: binding.provider for binding in registry.providers}
         # plugin id -> (major, minor) API version from the provider (or plugin
         # metadata). Gates all 1.2 analyzer/codegen behavior.
@@ -165,8 +230,15 @@ class ClaimEngine:
         # annotation spelling -> (plugin_id, plugin type key)
         self._annotations: dict[str, tuple[str, str]] = {}
         self._type_keys: set[str] = set()
+        # Resident (opaque, no-boundary) plugin type keys (plugin API 1.3). A
+        # native function whose plugin type keys are all resident is a
+        # native-only helper the boundary pass may call native-to-native; a
+        # materialized key keeps the RXT092 Python-entry-point restriction.
+        self._resident_type_keys: set[str] = set()
         for type_binding in registry.types:
             self._type_keys.add(type_binding.plugin_type.key)
+            if type_binding.plugin_type.is_resident:
+                self._resident_type_keys.add(type_binding.plugin_type.key)
             for spelling in type_binding.plugin_type.annotations:
                 self._annotations[spelling] = (
                     type_binding.plugin_id,
@@ -188,9 +260,17 @@ class ClaimEngine:
         """Whether the provider declared plugin API >= 1.2."""
         return self.provider_api_version(plugin_id) >= (1, 2)
 
+    def provider_is_api_13(self, plugin_id: str) -> bool:
+        """Whether the provider declared plugin API >= 1.3."""
+        return self.provider_api_version(plugin_id) >= (1, 3)
+
     def is_plugin_type(self, type_name: str | None) -> bool:
         """Report whether a type-environment entry is a plugin type key."""
         return type_name is not None and type_name in self._type_keys
+
+    def is_resident_type(self, type_name: str | None) -> bool:
+        """Report whether a type key is a resident (opaque, no-boundary) type."""
+        return type_name is not None and type_name in self._resident_type_keys
 
     def resolve_annotation(self, annotation: ast.AST, imports: Mapping[str, str]) -> str | None:
         """Resolve an annotation node to a plugin type key, or None.
@@ -199,7 +279,15 @@ class ClaimEngine:
         ``from rextio_numpy.types import F64Arr1`` and
         ``import rextio_numpy.types as t; t.F64Arr1`` both reach the
         vocabulary entry.
+
+        A schema-parameterized plugin annotation ``Frame[Row]`` (plugin API 1.3)
+        resolves to the SAME plugin type key as the bare ``Frame``: the ``[Row]``
+        subscript only carries the declared-schema association (see
+        :meth:`resolve_declared_schema`) and never changes the resolved type, so
+        every existing type-resolution path is preserved.
         """
+        if isinstance(annotation, ast.Subscript):
+            return self.resolve_annotation(annotation.value, imports)
         dotted = dotted_name(annotation)
         if dotted is None:
             return None
@@ -208,6 +296,149 @@ class ClaimEngine:
         resolved = dotted if imported is None else (f"{imported}.{tail}" if separator else imported)
         entry = self._annotations.get(resolved)
         return entry[1] if entry is not None else None
+
+    def _resolve_type(self, annotation: ast.expr, imports: Mapping[str, str]) -> str | None:
+        """Resolve an annotation to a core type name or a plugin type key, or None."""
+        if is_supported_type(annotation):
+            return annotation_name(annotation)
+        return self.resolve_annotation(annotation, imports)
+
+    def resolve_declared_schema(
+        self, annotation: ast.AST, imports: Mapping[str, str], module_name: str
+    ) -> SchemaMeta | None:
+        """Resolve a schema-parameterized plugin annotation to its declared schema.
+
+        The documented source spelling is a plugin base annotation parameterized
+        by a declared schema class — ``df: Frame[Row]`` — where ``Row`` is a
+        project class whose body is only ``name: <type>`` field annotations. The
+        schema is built statically from ``Row``'s class node (never executed) and
+        associated with the annotated receiver/parameter. Returns ``None`` (no
+        association, fail closed) when the annotation is not a parameterized
+        plugin type, the schema class is unresolved, or its body violates the
+        declared-schema grammar.
+        """
+        if not isinstance(annotation, ast.Subscript):
+            return None
+        # The base must be the DIRECT registered plugin spelling (``Frame[Row]``),
+        # not another subscript: ``Frame[Row][Other]`` is a nested subscript whose
+        # inner ``Frame[Row]`` would otherwise resolve (``resolve_annotation``
+        # strips subscripts recursively) and wrongly associate ``Other`` with the
+        # outer ``Frame``. A nested/parameterized base carries no declared schema.
+        if isinstance(annotation.value, ast.Subscript):
+            return None
+        if self.resolve_annotation(annotation.value, imports) is None:
+            return None  # base is not a registered plugin type
+        slice_dotted = dotted_name(annotation.slice)
+        if slice_dotted is None:
+            return None
+        qualname = resolve_symbol_qualname(
+            slice_dotted,
+            dict(imports),
+            module_name,
+            self._symbol_index.classes,
+            # A schema annotation resolves at module scope, so there is no function
+            # local to shadow it; but the shared final-binding model still fails
+            # closed when the schema class name's final binder — in the annotating
+            # module or the schema's own defining module — is not the ``class``
+            # (``Row = int`` after ``class Row``, a later import, ``del``, or a
+            # conditional rebind), so the indexed class node is never stale.
+            kind=FINAL_BINDING_CLASS,
+            final_bindings=self._symbol_index.final_bindings,
+            project_mutations=self._symbol_index.project_mutations,
+        )
+        if qualname is None:
+            return None
+        if qualname not in self._schema_by_class:
+            indexed = self._symbol_index.classes[qualname]
+            self._schema_by_class[qualname] = build_schema_from_class(
+                qualname, indexed, self._resolve_type, plugin_type_keys=self._type_keys
+            )
+        return self._schema_by_class[qualname]
+
+    def peek_call_result_type(
+        self,
+        function: FunctionAnalysis,
+        node: ast.Call,
+        target: str,
+        operand_types: tuple[str | None, ...],
+        *,
+        type_of: Callable[[ast.AST], str | None] | None = None,
+    ) -> str | None:
+        """Return a claimed call's result type without recording anything.
+
+        Used by signature inference to type a local assigned from a claimed
+        call (e.g. a resident value produced for native chaining) so the
+        boundary pass sees its exact plugin type key. This is side-effect free:
+        it never records a claim or rejection (the body validator remains the
+        sole recorder) and is deliberately conservative — it returns ``None``
+        for keyword calls and only reports a single unambiguous ``Claimed``
+        result type. A ``None`` result simply leaves the local untyped, which
+        keeps a downstream native caller on the Python fallback (fail closed).
+
+        The offered site carries the SAME real metadata (``file_path``, ``line``,
+        ``column``, operand literals, and expression) that the later authoritative
+        ``claim_call`` builds for this exact node — a peek must never present a
+        provider a different (e.g. zeroed) site than the one it will authoritatively
+        rule on, so a path/position-sensitive provider stays consistent.
+        """
+        if node.keywords:
+            return None
+        type_lookup = type_of or (lambda _node: None)
+        receiver_type = self._receiver_type(node, type_lookup)
+        plugin_ids = self._call_plugins(target, operand_types, receiver_type=receiver_type)
+        if not plugin_ids:
+            return None
+        any_12 = any(self.provider_is_api_12(pid) for pid in plugin_ids)
+        if any_12:
+            operand_literals = tuple(extract_claim_literal(arg) for arg in node.args)
+            expression = self._build_call_expr(
+                node,
+                target=target,
+                result_type=None,
+                type_of=type_lookup,
+                operand_types=operand_types,
+                keywords=(),
+            )
+        else:
+            operand_literals = ()
+            expression = None
+        any_13 = any(self.provider_is_api_13(pid) for pid in plugin_ids)
+        schema_of = self._schema_lookup(function)
+        receiver = self._receiver_meta(node, type_lookup, schema_of) if any_13 else None
+        callables = (
+            self._callable_metas(function, node, self._receiver_schema(node, schema_of))
+            if any_13
+            else ()
+        )
+        site = ClaimSite(
+            kind="call",
+            target=target,
+            operand_types=operand_types,
+            file_path=function.file_path,
+            line=getattr(node, "lineno", function.line),
+            column=getattr(node, "col_offset", function.column),
+            operand_literals=operand_literals,
+            keywords=(),
+            expression=expression,
+            receiver=receiver,
+            callables=callables,
+        )
+        result_type: str | None = None
+        for plugin_id in plugin_ids:
+            try:
+                verdict = self._claim(plugin_id, self._site_for_provider(site, plugin_id))
+            except PluginError:
+                # Any misconfiguration (bad rejection namespace, overlap, unknown
+                # result type, …) is surfaced authoritatively by the recording
+                # path with full metadata; a peek must never raise or pre-empt it.
+                return None
+            if isinstance(verdict, Claimed):
+                if result_type is not None and verdict.result_type != result_type:
+                    # Overlapping claims are an error the recording path reports;
+                    # stay silent here rather than pick a winner.
+                    return None
+                result_type = verdict.result_type
+        return result_type
 
     def claim_call(
         self,
@@ -220,39 +451,76 @@ class ClaimEngine:
     ) -> tuple[bool, str | None]:
         """Offer a call site to covering plugins; return (handled, result type).
 
-        Plugin API 1.2 keyword policy (fail closed):
+        Plugin API 1.2/1.3 keyword policy (fail closed):
 
         * ``**kwargs`` / unnamed keywords are never offered.
         * Named keywords with non-literal values are never offered (no CallIR
           representation for runtime keyword operands yet).
         * Named keywords with supported static literals (signed int, ``None``,
           int tuples) are offered only to providers with ``api_version >= 1.2``.
+        * Static bool and string keyword literals are offered only to providers
+          with ``api_version >= 1.3``.
         * API 1.1 providers retain legacy semantics: any keyword call is not
           offered to them (pre-1.2 RXT010/fallback).
         """
         if call_has_dynamic_keywords(node):
             return False, None
-        plugin_ids = self._call_plugins(target, operand_types)
+        type_lookup_pre = type_of or (lambda _node: None)
+        receiver_type = self._receiver_type(node, type_lookup_pre)
+        plugin_ids = self._call_plugins(target, operand_types, receiver_type=receiver_type)
         if not plugin_ids:
             return False, None
         has_keywords = bool(node.keywords)
+        # Keyword names whose value is a statically-resolved project-function
+        # reference (plugin API 1.3): carried as compile-time CallableMeta, never
+        # as a runtime keyword operand.
+        callable_keyword_names: set[str] = set()
+        has_api_13_literal = False
         if has_keywords:
             # Only 1.2+ providers may see keyword call sites.
             plugin_ids = tuple(pid for pid in plugin_ids if self.provider_is_api_12(pid))
             if not plugin_ids:
                 return False, None
-            # Runtime (non-literal) keyword values fail closed: not offerable.
             for keyword in node.keywords:
                 if keyword.arg is None:
                     return False, None
-                if not extract_claim_literal(keyword.value).is_literal:
+                if extract_claim_literal(keyword.value).is_literal:
+                    continue
+                if extract_claim_literal(keyword.value, api_13=True).is_literal:
+                    has_api_13_literal = True
+                    continue
+                # A project-function keyword reference is compile-time callable
+                # metadata, not a runtime keyword operand (there is no CallIR
+                # representation for a runtime keyword value, but a callable ref
+                # never becomes one — it names a native helper / closed body).
+                # Any OTHER non-literal keyword value still fails closed.
+                if self.is_project_callable(keyword.value, function):
+                    callable_keyword_names.add(keyword.arg)
+                    continue
+                return False, None
+            if callable_keyword_names or has_api_13_literal:
+                # Keyword callables and bool/string literal metadata are
+                # representable only for >= 1.3 providers. In a mixed-provider
+                # registry, lower versions must not observe or claim the site.
+                plugin_ids = tuple(pid for pid in plugin_ids if self.provider_is_api_13(pid))
+                if not plugin_ids:
                     return False, None
-        type_lookup = type_of or (lambda _node: None)
+        type_lookup = type_lookup_pre
         # Build full 1.2 metadata once; stripped per-provider for api < 1.2.
         any_12 = any(self.provider_is_api_12(pid) for pid in plugin_ids)
+        any_13 = any(self.provider_is_api_13(pid) for pid in plugin_ids)
         if any_12:
             operand_literals = tuple(extract_claim_literal(arg) for arg in node.args)
-            keywords = self._keyword_args(node, type_lookup) if has_keywords else ()
+            keywords = (
+                self._keyword_args(
+                    node,
+                    type_lookup,
+                    exclude=callable_keyword_names,
+                    api_13=any_13,
+                )
+                if has_keywords
+                else ()
+            )
             expression = self._build_call_expr(
                 node,
                 target=target,
@@ -265,6 +533,15 @@ class ClaimEngine:
             operand_literals = ()
             keywords = ()
             expression = None
+        # Plugin API 1.3 receiver/callable metadata (stripped per-provider for
+        # api < 1.3).
+        schema_of = self._schema_lookup(function)
+        receiver = self._receiver_meta(node, type_lookup, schema_of) if any_13 else None
+        callables = (
+            self._callable_metas(function, node, self._receiver_schema(node, schema_of))
+            if any_13
+            else ()
+        )
         site = ClaimSite(
             kind="call",
             target=target,
@@ -275,6 +552,8 @@ class ClaimEngine:
             operand_literals=operand_literals,
             keywords=keywords,
             expression=expression,
+            receiver=receiver,
+            callables=callables,
         )
         return self._offer(function, site, plugin_ids, _node_end(node))
 
@@ -338,7 +617,62 @@ class ClaimEngine:
         )
         return self._offer(function, site, plugin_ids, _node_end(node))
 
-    def _call_plugins(self, target: str, operand_types: tuple[str | None, ...]) -> tuple[str, ...]:
+    def covers_call(self, target: str | None, receiver_type: str | None) -> bool:
+        """Report whether any active plugin covers this call/method site.
+
+        A cheap package/receiver coverage probe (no operand types, no provider
+        ``claim`` call) used by argument inference to recognize a callable-
+        reference argument at a plugin site — such an argument is lowered by the
+        plugin and must not be rejected as an unbound value read.
+        """
+        if not self._providers:
+            return False
+        return bool(self._call_plugins(target or "", (), receiver_type=receiver_type))
+
+    def is_project_callable(self, node: ast.AST, function: FunctionAnalysis) -> bool:
+        """Report whether an argument statically resolves to an indexed project function.
+
+        Scope/site-aware and conservative (plugin API 1.3): a reference shadowed
+        by a function local, or whose name is reassigned at the caller's or the
+        defining module's scope, is not a project callable (fail closed), so the
+        cheap probe never disagrees with :meth:`_callable_metas`.
+        """
+        dotted = dotted_name(node)
+        if dotted is None:
+            return False
+        return (
+            resolve_symbol_qualname(
+                dotted,
+                dict(function.imports),
+                function.module_name,
+                self._symbol_index.functions,
+                kind=FINAL_BINDING_FUNCTION,
+                final_bindings=self._symbol_index.final_bindings,
+                local_names=self._site_local_names(function, node),
+                project_mutations=self._symbol_index.project_mutations,
+            )
+            is not None
+        )
+
+    def _site_local_names(self, function: FunctionAnalysis, node: ast.AST) -> frozenset[str]:
+        """Local shadow names in scope at a callable-reference site.
+
+        The function-scope locals UNION the comprehension ``for`` targets in scope
+        at this exact node (Python 3 comprehension scoping), so a reference inside a
+        comprehension is shadowed by that comprehension's targets while the same name
+        used elsewhere in the function is not.
+        """
+        scoped = function.comprehension_scope_names.get(id(node))
+        if not scoped:
+            return function.local_binding_names
+        return function.local_binding_names | scoped
+
+    def _call_plugins(
+        self,
+        target: str,
+        operand_types: tuple[str | None, ...],
+        receiver_type: str | None = None,
+    ) -> tuple[str, ...]:
         package = target.split(".")[0]
         matched = {
             plugin_id for plugin_id, packages in self._packages.items() if package in packages
@@ -350,24 +684,168 @@ class ClaimEngine:
                 owner = operand.split("/")[0]
                 if owner in self._providers:
                     matched.add(owner)
+        # A method call whose receiver carries a plugin type is that plugin's
+        # business too (``df.method(...)`` on a plugin-typed ``df``). The
+        # receiver is never in ``operand_types`` (it is not a positional arg),
+        # so it must be matched explicitly. This receiver-type-only matching is a
+        # plugin API 1.3 surface: gate it to providers declaring API >= 1.3, so a
+        # legacy 1.1/1.2 provider is NEVER newly offered a method site solely
+        # because its plugin type is the receiver (a site it was never offered
+        # before 1.3). Legacy package and operand-type matching above are
+        # unchanged, so a 1.1/1.2 provider keeps its exact pre-1.3 coverage.
+        if receiver_type is not None and receiver_type in self._type_keys:
+            owner = receiver_type.split("/")[0]
+            if owner in self._providers and self.provider_is_api_13(owner):
+                matched.add(owner)
         return tuple(sorted(matched))
+
+    def _receiver_type(
+        self, node: ast.Call, type_of: Callable[[ast.AST], str | None]
+    ) -> str | None:
+        """Return the resolved type of a method-call receiver value, or None.
+
+        A receiver exists only when ``node.func`` is an attribute access whose
+        base expression resolves to a value type — ``df.method(...)`` on a typed
+        ``df``. A module-qualified call (``numpy.dot(...)``: the base ``numpy``
+        has no value type) has no receiver.
+        """
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            return None
+        return type_of(func.value)
+
+    def _schema_lookup(self, function: FunctionAnalysis) -> Callable[[ast.AST], SchemaMeta | None]:
+        """Return a receiver/parameter -> declared-schema resolver for a function.
+
+        A schema is associated with a plain parameter/local name via its
+        ``Frame[Row]`` annotation (recorded in ``function.declared_schemas``); a
+        non-name expression carries no declared schema.
+        """
+        declared = function.declared_schemas
+
+        def schema_of(node: ast.AST) -> SchemaMeta | None:
+            if isinstance(node, ast.Name):
+                return declared.get(node.id)
+            return None
+
+        return schema_of
+
+    def _receiver_schema(
+        self, node: ast.Call, schema_of: Callable[[ast.AST], SchemaMeta | None]
+    ) -> SchemaMeta | None:
+        """Return the declared schema of a method-call receiver, or None."""
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            return None
+        return schema_of(func.value)
+
+    def _receiver_meta(
+        self,
+        node: ast.Call,
+        type_of: Callable[[ast.AST], str | None],
+        schema_of: Callable[[ast.AST], SchemaMeta | None],
+    ) -> ReceiverMeta | None:
+        """Build the receiver metadata for a method call, or None for plain calls."""
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            return None
+        receiver_type = type_of(func.value)
+        if receiver_type is None:
+            return None
+        expr_kind, is_safe = classify_receiver(func.value)
+        return ReceiverMeta(
+            arg_type=receiver_type,
+            expr_kind=expr_kind,
+            is_safe=is_safe,
+            schema=schema_of(func.value),
+        )
+
+    def _callable_metas(
+        self,
+        function: FunctionAnalysis,
+        node: ast.Call,
+        receiver_schema: SchemaMeta | None,
+    ) -> tuple[CallableMeta, ...]:
+        """Build ordered callable metadata for a call's project-function arguments.
+
+        A positional or keyword argument that statically resolves — through the
+        caller module's imports/aliases — to an indexed project function is
+        exposed as a :class:`CallableMeta`. ``receiver_schema`` (the method
+        receiver's declared schema, if any) is bound to each callable's first
+        unannotated parameter, so a row UDF's field/subscript reads resolve. Args
+        that do not resolve to a project function carry no metadata (omitted).
+
+        arg_index is the positional index for a positional argument; a keyword
+        callable takes the next index after the positional arguments, in keyword
+        order, so every index stays unique.
+        """
+        if self._symbol_index is None:
+            return ()
+        metas: list[CallableMeta] = []
+
+        def resolve(arg: ast.expr, arg_index: int, keyword: str = "") -> None:
+            dotted = dotted_name(arg)
+            if dotted is None:
+                return
+            qualname = resolve_symbol_qualname(
+                dotted,
+                dict(function.imports),
+                function.module_name,
+                self._symbol_index.functions,
+                kind=FINAL_BINDING_FUNCTION,
+                final_bindings=self._symbol_index.final_bindings,
+                local_names=self._site_local_names(function, arg),
+                project_mutations=self._symbol_index.project_mutations,
+            )
+            if qualname is None:
+                return
+            indexed = self._symbol_index.functions[qualname]
+            meta = extract_callable_meta(
+                arg_index,
+                indexed,
+                self._resolve_type,
+                receiver_schema=receiver_schema,
+                keyword=keyword,
+            )
+            if meta is not None:
+                metas.append(meta)
+
+        for index, arg in enumerate(node.args):
+            resolve(arg, index)
+        next_index = len(node.args)
+        for offset, keyword in enumerate(node.keywords):
+            if keyword.arg is None:
+                continue  # **kwargs never reaches here (dynamic keywords fail closed)
+            # A keyword callable takes the next synthetic index after the
+            # positional arguments; its ``keyword`` name is the unambiguous
+            # identifier (the index is only a slot for cache-key uniqueness).
+            resolve(keyword.value, next_index + offset, keyword=keyword.arg)
+        return tuple(metas)
 
     def _keyword_args(
         self,
         node: ast.Call,
         type_of: Callable[[ast.AST], str | None],
+        exclude: Collection[str] = (),
+        *,
+        api_13: bool = False,
     ) -> tuple[KeywordArg, ...]:
-        """Build ordered keyword metadata for a call (dynamic kwargs already excluded)."""
+        """Build ordered keyword metadata for a call (dynamic kwargs already excluded).
+
+        ``exclude`` names keywords that are project-function references carried as
+        compile-time :class:`CallableMeta` instead — they are not runtime keyword
+        operands, so they never appear on this surface.
+        """
         keywords: list[KeywordArg] = []
         for keyword in node.keywords:
             name = keyword.arg
-            if name is None:
+            if name is None or name in exclude:
                 continue
             keywords.append(
                 KeywordArg(
                     name=name,
                     arg_type=type_of(keyword.value),
-                    literal=extract_claim_literal(keyword.value),
+                    literal=extract_claim_literal(keyword.value, api_13=api_13),
                 )
             )
         return tuple(keywords)
@@ -500,15 +978,21 @@ class ClaimEngine:
     def _site_for_provider(self, site: ClaimSite, plugin_id: str) -> ClaimSite:
         """Return the claim site shape a provider may see for its API version.
 
-        API < 1.2 providers always receive empty 1.2 metadata (legacy shape).
+        API < 1.2 providers always receive empty 1.2 metadata; API < 1.3
+        providers additionally never see the 1.3 receiver/callable metadata
+        (legacy shape, so lower-versioned providers stay behavior-compatible).
         """
-        if self.provider_is_api_12(plugin_id):
+        if self.provider_is_api_13(plugin_id):
             return site
+        if self.provider_is_api_12(plugin_id):
+            return replace(site, receiver=None, callables=())
         return replace(
             site,
             operand_literals=(),
             keywords=(),
             expression=None,
+            receiver=None,
+            callables=(),
         )
 
     def _offer(
@@ -556,6 +1040,8 @@ class ClaimEngine:
                 keywords=offer_site.keywords,
                 expression=expression,
                 operand_mode=claimed.operand_mode,
+                receiver=offer_site.receiver,
+                callables=offer_site.callables,
             )
             if not any(
                 existing.kind == claim.kind
@@ -609,6 +1095,8 @@ class ClaimEngine:
             site.operand_literals,
             site.keywords,
             site.expression,
+            site.receiver,
+            site.callables,
         )
         cached = self._cache.get(cache_key)
         if cached is not None:

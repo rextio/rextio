@@ -5,6 +5,7 @@ from __future__ import annotations
 from rextio.analyzer.common_calls import COMMON_DIRECT_RUST_CALLS
 from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.diagnostics import Diagnostic
+from rextio.analyzer.final_bindings import BindingKind, definition_is_final
 from rextio.analyzer.import_policy import decision_for_target
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis, ProjectAnalysis
 from rextio.ir.types import normalize_type_name
@@ -45,6 +46,152 @@ def apply_boundary_checks(
     resolver = FunctionResolver(analysis)
     for function in analysis.native_candidates:
         function.accepted = not function.error_diagnostics
+
+    # Definition/build-output gate (plugin API 1.3, WP-4): a native function may
+    # be built and installed in the generated wrapper ONLY when its defining
+    # module's final binding for its own visible name is EXACTLY this def (matched
+    # by exact origin, not merely a qualname). A function overwritten by a later
+    # class/assignment/`del`/conditional binder — or shadowed by a later wildcard
+    # import — is stale: Python resolves the name to the overwriting object, so
+    # installing the native function would replace it and silently diverge (e.g.
+    # `def good` then `class good`: CPython's `good(x)` runs the class, native
+    # would run the stale function). Duplicate defs keep only the last. Fail closed
+    # to the Python fallback, which resolves the name correctly.
+    for function in analysis.native_candidates:
+        if not function.accepted:
+            continue
+        if function.enclosing_class_name is not None:
+            # A native method is gated against its enclosing class + method final
+            # binding at collection time (its `name` is a class attribute, not a
+            # module binding), so the module-level function gate does not apply.
+            continue
+        if not definition_is_final(
+            function.module_bindings,
+            function.name,
+            BindingKind.FUNCTION,
+            function.line,
+            function.column,
+        ):
+            function.accepted = False
+            function.add_diagnostic(
+                Diagnostic(
+                    code="RXT010",
+                    severity="error",
+                    message=(
+                        "native function is not its module's final binding for "
+                        f"{function.name!r}; a later class/assignment/del/conditional "
+                        "binder or wildcard import overrides it, so installing the "
+                        "native function would diverge from CPython"
+                    ),
+                    file_path=function.file_path,
+                    line=function.line,
+                    column=function.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "Remove the overriding binding, or leave this function on the "
+                        "Python fallback so the module-final object is used."
+                    ),
+                )
+            )
+
+    # Mutation gate (plugin API 1.3, WP-4, P0-4): a native function whose own
+    # qualname is a project module attribute rebound at module load
+    # (`import pkg.helper as h; h.good = …` in another module) must not be installed
+    # in the generated wrapper — Python resolves the module attribute to the rebound
+    # object, so a compiled sibling/re-export reaching it would use the stale native
+    # target. Fail closed to the Python fallback (the module attribute is honored).
+    for function in analysis.native_candidates:
+        if function.accepted and analysis.project_mutations.target_is_mutated(function.qualname):
+            function.accepted = False
+            function.add_diagnostic(
+                Diagnostic(
+                    code="RXT010",
+                    severity="error",
+                    message=(
+                        f"native function {function.qualname} is a module attribute "
+                        "rebound at module load (setattr/attribute assignment in a "
+                        "project module), so installing the native target would diverge "
+                        "from the rebound object CPython resolves"
+                    ),
+                    file_path=function.file_path,
+                    line=function.line,
+                    column=function.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "Remove the module-load attribute mutation, or leave this "
+                        "function on the Python fallback so the rebound object is used."
+                    ),
+                )
+            )
+
+    # Method definition gate (plugin API 1.3, WP-4, P0-2): defensively re-verify
+    # that an accepted native method's enclosing class is still the module's exact
+    # final CLASS binding (the collection pass also checks the method's class-body
+    # final binding). A malformed accepted list cannot install a method onto a stale
+    # or duplicate class — Python resolves the final class, whose namespace would not
+    # carry this method.
+    for function in analysis.native_candidates:
+        if not function.accepted or function.enclosing_class_name is None:
+            continue
+        if not definition_is_final(
+            function.module_bindings,
+            function.enclosing_class_name,
+            BindingKind.CLASS,
+            function.enclosing_class_line,
+            function.enclosing_class_column,
+        ):
+            function.accepted = False
+            function.add_diagnostic(
+                Diagnostic(
+                    code="RXT010",
+                    severity="error",
+                    message=(
+                        f"native method {function.qualname} belongs to a class that is not "
+                        "the module's final CLASS binding, so installing it would target a "
+                        "stale or duplicate class"
+                    ),
+                    file_path=function.file_path,
+                    line=function.line,
+                    column=function.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "Remove the duplicate/overwriting class binding, or leave the "
+                        "method on the Python fallback."
+                    ),
+                )
+            )
+
+    # Resident values (opaque, native-only — plugin API 1.3) must never cross an
+    # exported PyO3 boundary. An auto-discovered resident-signature function is
+    # kept as a non-exported native-only helper (codegen omits its #[pyfunction]
+    # and Python-dispatch wrapper). But an EXPLICITLY marked @rextio.native
+    # function is a request for a Python-callable native export, which a resident
+    # parameter/return cannot honor — fail closed with RXT092 rather than emit a
+    # boundary that silently leaks or cannot compile.
+    for function in analysis.native_candidates:
+        if function.accepted and function.explicitly_marked and function.has_resident_signature:
+            function.accepted = False
+            function.add_diagnostic(
+                Diagnostic(
+                    code="RXT092",
+                    severity="error",
+                    message=(
+                        "explicitly marked native function has a resident plugin type "
+                        f"in its signature: {function.qualname}; a resident (opaque, "
+                        "native-only) value has no Python boundary conversion and "
+                        "cannot cross an exported PyO3 parameter or return"
+                    ),
+                    file_path=function.file_path,
+                    line=function.line,
+                    column=function.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "Remove the @rextio.native marker so it can serve as an "
+                        "internal native-to-native helper, or use a materialized "
+                        "plugin type (with a boundary conversion) for the boundary."
+                    ),
+                )
+            )
 
     changed = True
     while changed:
@@ -297,23 +444,28 @@ def _boundary_errors(
                 )
             )
             continue
-        if dependency is not None and dependency.plugin_type_keys:
+        if dependency is not None and dependency.has_materialized_plugin_type:
             # NOTE: a REJECTED plugin-typed callee is reported as RXT072
             # (dependency rejected) by the earlier branch — deliberate:
             # RXT092 marks calls into otherwise-healthy plugin-typed
             # functions; tooling keying on RXT092 should also handle RXT072.
-            # A plugin-typed function compiles as a PyO3 boundary entry point
-            # (interpreter token + conversion parameter types); a native call
-            # into it would emit Rust with the wrong arity and types. In this
-            # release plugin-typed functions are Python-facing only.
+            # A MATERIALIZED plugin-typed function compiles as a PyO3 boundary
+            # entry point (interpreter token + conversion parameter types); a
+            # native call into it would emit Rust with the wrong arity and
+            # types. Such functions stay Python-facing only in this release.
+            #
+            # A RESIDENT-only callee (opaque, no boundary conversion — plugin
+            # API 1.3) is exempt: it is a native-only helper, so the call falls
+            # through to the native-to-native signature check below, which
+            # understands resident plugin type keys.
             diagnostics.append(
                 Diagnostic(
                     code="RXT092",
                     severity="error",
                     message=(
                         "native function calls a plugin-typed function: "
-                        f"{resolved.resolved_target}; plugin-typed functions are "
-                        "Python-facing entry points in this release"
+                        f"{resolved.resolved_target}; materialized plugin-typed "
+                        "functions are Python-facing entry points in this release"
                     ),
                     file_path=function.file_path,
                     line=call.line,
@@ -384,6 +536,30 @@ _SCALAR_PARAM_TYPES = {"int", "float", "bool", "str", "bytes"}
 _CONTAINER_PARAM_PREFIXES = ("list[", "tuple[", "dict[", "set[", "frozenset[")
 
 
+def _positional_param_types(dependency: FunctionAnalysis) -> list[str | None]:
+    """Return the callee's positional parameter types, in order, with plugin keys.
+
+    ``signature_arg_types`` holds only core-typed parameters (resident
+    plugin-typed parameters are absent), so a positional list built from it
+    alone would be misaligned once a plugin-typed parameter appears. This walks
+    the recorded positional parameter names and resolves each to its core type,
+    its resident plugin type key, or ``None`` (undetermined).
+    """
+    if not dependency.positional_param_names:
+        # Signature was never captured positionally (e.g. runtime-shim methods);
+        # preserve the legacy core-only view.
+        return list(dependency.signature_arg_types.values())
+    types: list[str | None] = []
+    for name in dependency.positional_param_names:
+        if name in dependency.signature_arg_types:
+            types.append(dependency.signature_arg_types[name])
+        elif name in dependency.signature_plugin_keys:
+            types.append(dependency.signature_plugin_keys[name])
+        else:
+            types.append(None)
+    return types
+
+
 def _native_arg_type_errors(
     module: ModuleAnalysis,
     function: FunctionAnalysis,
@@ -441,7 +617,15 @@ def _native_arg_type_errors(
         )
         return diagnostics
 
-    param_types = list(dependency.signature_arg_types.values())
+    param_types = _positional_param_types(dependency)
+    # Positions whose parameter is a plugin type key (resident, plugin API 1.3):
+    # native-to-native compatibility requires the caller's argument to carry the
+    # exact same key. A materialized-typed callee never reaches here (RXT092).
+    plugin_param_keys = {
+        index: dependency.signature_plugin_keys[name]
+        for index, name in enumerate(dependency.positional_param_names)
+        if name in dependency.signature_plugin_keys
+    }
     arg_types = list(function.call_arg_types.get((call.line, call.column), call.arg_types))
     arg_targets = function.call_arg_targets.get((call.line, call.column), ())
 
@@ -502,9 +686,41 @@ def _native_arg_type_errors(
         return diagnostics
 
     for index, arg_type in enumerate(arg_types):
+        expected_key = plugin_param_keys.get(index)
+        if expected_key is not None:
+            # A resident plugin-typed parameter: the argument must carry the
+            # exact same registered plugin type key (no coercion). Anything else
+            # — a core value, a different plugin type, or an undetermined type —
+            # keeps the caller on the Python fallback.
+            if arg_type == expected_key:
+                continue
+            actual = arg_type if arg_type is not None else "an undetermined type"
+            diagnostics.append(
+                Diagnostic(
+                    code="RXT010",
+                    severity="error",
+                    message=(
+                        f"native call argument {index + 1} to {dependency.qualname} has "
+                        f"{actual} but the parameter is the plugin type {expected_key!r}; "
+                        "a resident plugin value must match the registered type key "
+                        "exactly, so this would emit native code that fails to compile"
+                    ),
+                    file_path=function.file_path,
+                    line=call.line,
+                    column=call.column,
+                    function_name=function.qualname,
+                    suggestion=(
+                        "Pass a value of the exact plugin type, or keep this caller "
+                        "on the Python fallback."
+                    ),
+                )
+            )
+            continue
         if index >= len(param_types):
             continue
         param_type = param_types[index]
+        if param_type is None:
+            continue
         if arg_type == param_type:
             continue
         is_optional = param_type.startswith("Optional[") or (

@@ -5,12 +5,11 @@
 **適格な typed Python 関数を Rust にコンパイルし、それ以外はすべて
 Python fallback のまま動かします。**
 
-Rextio 0.1.2 は Python プロジェクト向けの alpha 段階ローカルビルドツール
-です（2026-07-14 に PyPI へ公開され、以前の **0.1.1** リリースを置き換え
-ます）。型付きの Python 関数のうち安全に
-Rust へ下ろせるものを見つけて PyO3 で事前（ahead-of-time）コンパイルし、
-それ以外はすべて生成された Python fallback コードで動かし続けます —
-import パスも動作もそのままです。
+Rextio 0.1.3 は alpha 段階のローカルビルドツールです（2026-07-17 に
+PyPI 公開、直前の **0.1.2** を置き換え。plugin API **1.3**）。型付きの
+Python 関数のうち安全に Rust へ下ろせるものを見つけて PyO3 で事前
+（ahead-of-time）コンパイルし、それ以外はすべて生成された Python
+fallback コードで動かし続けます — import パスも動作もそのままです。
 
 ```text
 型付き Python プロジェクト
@@ -274,7 +273,7 @@ CLI パラメータ > 環境変数 > rextio.toml > 組み込みデフォルト
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.2 で実装済みの native ターゲットは Rust だけです。
+0.1.3 で実装済みの native ターゲットは Rust だけです。
 
 Rextio プラグインは `pip` や `uv` などでインストールする普通の Python
 パッケージです。プラグインパッケージは、対象とする Python パッケージ名を
@@ -305,13 +304,16 @@ default_external_policy = "fallback"
 後方互換の plugin API **1.2**（静的リテラル／順序付きキーワードメタデータ、
 構造化 `ClaimExpr` 木、leaves モード lowering）を追加します。first-party の
 [rextio-numpy](https://github.com/rextio/rextio-numpy) プラグインは別途
-インストールします（core は逆依存しません）: **PyPI 0.1.0** が公開済みの
-初期認証 float64 1-D サーフェス、**未タグ 0.1.1 RC** は literal-axis／
-fusion を広げ **core >= 0.1.2** が必要です。関連パッケージの**厳密な公開
-順序**は rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1（同時公開は
-しない; [tooling contract](docs/specs/tooling-contract.md) を参照）。一般的な
-依存 lowering はバンドルされません。`try-native` は明示的な計画ポリシーで、
-安全な direct lowering がなければやはり fallback します。
+インストールします（core は逆依存しません）: **PyPI 0.1.1** は公開済みの
+literal-axis／fusion 拡張で、**core >= 0.1.2** が必要です（初期認証
+float64 1-D サーフェスは 0.1.0）。関連パッケージは**厳密な公開順序**
+rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 で公開されました
+（[tooling contract](docs/specs/tooling-contract.md) を参照）。Core **0.1.3**
+は 2026-07-17 に plugin API 1.3 と tooling contract **2.1.0**（core 0.1.2 が
+出した **2.0.0** 形状の additive；dual-map の `2.x` 消費者は互換）として
+公開されています。一般的な依存 lowering はバンドルされません。`try-native`
+は明示的な計画ポリシーで、安全な direct lowering がなければやはり
+fallback します。
 
 ## Native 選択
 
@@ -393,7 +395,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.2 は意図的に小さな subset をサポートします。この subset が
+Rextio 0.1.3 は意図的に小さな subset をサポートします。この subset が
 native Rust として実行されるコードです。
 
 サポートされる型:
@@ -550,12 +552,12 @@ runtime も動作します（dispatcher が本物の CPython を実行）。
 
 first-party の [rextio-numpy](https://github.com/rextio/rextio-numpy)
 プラグインは、カバーされた NumPy を AOT コンパイルされた native Rust へ
-変換します。**公開済み rextio-numpy 0.1.0** は初期認証 float64 1-D
-サーフェス（要素ごとの算術、`numpy.dot`、配列全体の `sum`/`mean`）を
-カバーします。**未タグ rextio-numpy 0.1.1 RC** は core plugin API 1.2
-（**core >= 0.1.2**）を要する literal-axis／fusion lowering を広げます
-（公開パッケージではなく 0.1.0 と混同しないこと）。その RC の公開は dual-map
-**rextio-lsp 0.1.1** と **core 0.1.2** の後です。これにより NumPy コード
+変換します。**公開済み rextio-numpy 0.1.1** は、初期 0.1.0 の認証済み
+float64 1-D サーフェスを F64/F32/I64 の rank-1/rank-2 broadcasting、
+literal-axis reduction、2–8 演算の要素ごとの fusion へ拡張します。core
+plugin API 1.2（**core >= 0.1.2**）を使用し、rank-2 `dot`/matmul は引き続き
+fallback です。dual-map **rextio-lsp 0.1.1** → **core 0.1.2** →
+**rextio-numpy 0.1.1** の必須公開順序は 2026-07-14 に完了しました。これにより NumPy コード
 には 2 つの経路（カバーされたサーフェスに対する Rextio plugin の AOT
 コンパイル、または Python fallback 内の Numba JIT）があります。両方が
 適用できる場合は明示的な `@numba.*` デコレータが優先され、analyzer は

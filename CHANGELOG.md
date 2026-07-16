@@ -1,5 +1,145 @@
 # Changelog
 
+## 0.1.3 — 2026-07-17
+
+**Published release.** Package version `0.1.3` is tagged and published to PyPI
+on 2026-07-17, and is now the latest released core package, superseding
+**0.1.2** (2026-07-14). `pip install rextio` installs 0.1.3.
+
+Tooling contract advances to **2.1.0** (same major as the **2.0.0** shape
+emitted by core 0.1.2; additive producer fields only — dual-map `2.x`
+consumers that tolerate unknown keys remain compatible). Plugin API is **1.3**
+(additive over 1.1/1.2; API 1.1/1.2 providers keep loading with their legacy
+shapes). Plugin API 1.3 remains Experimental.
+
+### Tooling contract 2.1.0 (protocol)
+
+- **Additive producer shape** (minor bump; position semantics unchanged from
+  `2.0.0`): `rextio check --format json` / `.rextio/reports/check.json` always
+  serializes `modules[].logger_group_targets`, and conditionally serializes
+  `plugin_claims[].receiver` and `plugin_claims[].callables` when plugin API
+  1.3 method/callable metadata is present. `rextio capabilities` continues to
+  embed the same top-level `contract_version`. See
+  [docs/specs/tooling-contract.md](docs/specs/tooling-contract.md).
+
+### Analyzer / identity
+
+- Close the class-body ``global`` + assignment-expression rebinding gap in the
+  project-wide final-binding authority: a walrus under class-body ``global``
+  (assignment RHS, bare expression statement, control-flow conditions, or
+  nested function/class/lambda headers evaluated while the class body runs)
+  rebinds the module global and invalidates a prior ``FUNCTION`` final binding.
+  Nested function/lambda/class *bodies* remain other scopes and do not create
+  false module writes; class-body comprehensions with walruses are SyntaxError
+  and are skipped safely.
+
+### Plugin API 1.3
+
+- Add plugin-owned opaque resident values and immutable-borrow native chaining,
+  with RXT092 fail-closed boundaries when ownership or Python materialization
+  cannot be proved.
+- Add type-level Rust module support (`PluginType.uses`/`helpers`) so a
+  signature-only accepted function (a plugin-typed parameter/return with zero
+  claims) emits the `use`/helper items that define its rendered boundary
+  conversion or named native type, instead of calling into undefined plugin
+  functions/types. Support is collected only from the plugin types that appear
+  directly in an accepted function's signature, threaded through
+  `RxtPluginType` and the build/type-map path, and merged into the existing
+  module collectors: `plugin_uses` is a set deduplicated and sorted at
+  emission, while `plugin_helpers` is deduplicated by exact text in first-seen
+  insertion order — including against identical `LoweredExpr` support. Empty support
+  keeps the exact legacy 1.1/1.2 serialized bytes; non-empty support serializes
+  deterministically (so report/cache identity moves) and requires
+  `api_version >= 1.3` (rejected for lower-versioned providers).
+- Add frozen receiver, structured callable-body/native-symbol, and ordered
+  annotation-derived schema metadata for method-oriented plugins. API 1.1/1.2
+  providers retain their exact legacy offer and serialization shapes.
+- Extend named-keyword `ClaimLiteral` metadata with static `bool` and `str`
+  values for API 1.3 providers only. Mixed-version registries project those
+  sites exclusively to 1.3 providers; dynamic keyword values, `**kwargs`,
+  floats, bytes, and non-int tuples remain fail-closed. A derived literal-kind
+  discriminator keeps bool and int cache/equality keys distinct despite
+  Python's `True == 1`, while legacy none/int/int-tuple serialization is
+  unchanged.
+- Thread one project-wide source-order binding/effect/mutation authority through
+  analysis, callable metadata, claims, IR, and wrapper planning. Native markers,
+  imported/static targets, re-exports, methods, and callable UDFs are accepted
+  only when their exact executable identities remain proven.
+
+### Correctness hardening
+
+- Fail closed on source-visible module/class/stdlib/builtin mutation, aliases and
+  control-flow joins, executed local mutators, consumed generators, implicit
+  protocol hooks, decorator replacement, class construction hooks, descriptors,
+  and post-class member replacement/deletion.
+- Track exact tuple/list destructuring aliases and package-resolved relative
+  re-exports while rejecting starred, mismatched, dynamic, cyclic, or mutated
+  paths. Logger receiver/method aliases, `builtins.__build_class__` mutation,
+  and module-load operator/attribute/subscript/f-string/comprehension protocol
+  effects now also prevent unsafe direct-native promotion.
+- Preserve API 1.3 `Frame[Schema]`-style metadata without weakening the new
+  protocol-effect gate: only an exact, unmutated annotation target from the
+  active validated plugin type vocabulary is trusted in annotation context,
+  and that trust set is carried through shared binding, IR, and wrapper source
+  revalidation. Shadowed, rebound, mutated, unregistered, or arbitrary
+  subscriptions remain fail-closed.
+- Revalidate semantic AST fingerprints before lowering or wrapper generation so
+  an edit after analysis cannot reuse stale types or plugin claims. Generated
+  method wrappers also verify the fallback owner/function identity before
+  installation and fail loudly on mismatch.
+- Dynamic monkeypatching performed externally after wrapper import remains
+  outside this static proof boundary; source-visible mutations are rejected or
+  routed through Python fallback.
+- Close the follow-up 11 module-execution gaps: loop alias/effect replay now
+  reaches a sound fixed point (with conservative widening), logger identity is
+  process-global and keyed by exact names, implicit ``__builtins__`` mutations
+  enter the builtin authority, and exact imported project mutators are replayed
+  with defining-module imports plus positional/keyword/default binding. Unknown
+  imported callables, recursive summary cycles, dynamic defaults, and complex
+  argument expansion fail closed.
+- Close the follow-up 12 execution gaps: project-call replay now selects
+  source-order global bindings at circular-import suspension edges and final
+  bindings for ordinary calls; narrow exact return summaries preserve root,
+  scalar, conditional, default, and logger-factory identities. Generalized
+  expression roots cover direct/conditional/container/walrus logger factories
+  and module-dict ``__builtins__`` forms, while unknown external callees that
+  receive project roots (including container-nested roots), unknown identities,
+  or globals fail closed. Source constructors and protocol-dispatching builtins
+  are no longer assumed pure without a closed proof; function-local ``vars()``
+  remains local rather than being mistaken for module globals.
+- Construct fallback/native bindings, factories, function wrappers, and method
+  wrappers in one isolated bootstrap scope with ordinal local slots. Terminal
+  publication preserves callable user exports of any ``_rextio_*`` spelling;
+  native top-level updates cannot overwrite runtime captures before method and
+  closure initialization. Correct stale release-candidate wording for the
+  published core 0.1.2 and rextio-numpy 0.1.1 releases.
+- Close the follow-up 13 identity/effect gaps: builtin and
+  ``logging.getLogger`` purity now consult a project-wide fixed-point mutation
+  authority; post-definition constructor changes, source-class protocol hooks,
+  executed ``nonlocal`` cells, opaque module-scope exposure (including nested
+  containers and deferred generators), and structurally unknown callable
+  returns widen rather than inventing identities. RXT080 originals live in an
+  isolated runtime ordinal registry instead of synthetic fallback/public module
+  attributes. Native top-level results are filtered against exact final
+  bindings and published only at the terminal wrapper step, so assignment vs
+  function/class name collisions follow Python source order.
+- Close the follow-up 14 mutation-summary gaps: bounded container summaries
+  retain project exposure without flattening roots into invented subscript
+  paths, while unsupported or externally mutated shapes widen. Bare
+  `id`/`len`/`range`
+  aliases preserve their builtin-slot identity across chained and destructured
+  assignments, so monkeypatching revokes purity. Opaque calls now recursively
+  account for project roots yielded by list/set/dict comprehensions and
+  generator expressions; unknown comprehension inputs fail closed while
+  closed scalar comprehensions remain clean.
+- Close the follow-up 15 mutable-container alias gap: dict/list/set summaries
+  now discard exact shape at the first alias, parameter, shared binding, or
+  callable return while retaining every exposed project root. Stores, deletes,
+  and modeled mutating methods through any resulting alias invalidate all such
+  roots (including newly inserted values); nested tuples containing mutable
+  members follow the same rule, while immutable tuple/scalar summaries and
+  fresh literal direct selection remain precise.
+
 ## 0.1.2 — 2026-07-14
 
 **Published release.** Package version `0.1.2` is tagged and published to PyPI
@@ -41,11 +181,10 @@ on `rextio-lsp` or `rextio-numpy`.
   `leaf_operands` on `LoweringContext`) **enables fusion-aware** expression
   emission (one helper over non-literal leaves of a multi-op tree). Leaves
   mode is the fusion path; it is **not** the literal-axis path.
-- Together these Wave 2 surfaces are used by the already-implemented but
-  **untagged** rextio-numpy **0.1.1 RC** (literal-axis *and* fusion work; not
-  published on PyPI; the published rextio-numpy line remains 0.1.0). API 1.1
-  providers retain legacy keyword-not-offered semantics and never receive
-  leaves-mode data. See `docs/specs/plugin-lowering.md`.
+- Together these Wave 2 surfaces are used by rextio-numpy **0.1.1**, published
+  later on 2026-07-14 after LSP 0.1.1 and core 0.1.2 in the required order.
+  API 1.1 providers retain legacy keyword-not-offered semantics and never
+  receive leaves-mode data. See `docs/specs/plugin-lowering.md`.
 
 ### Diagnostics and CLI
 

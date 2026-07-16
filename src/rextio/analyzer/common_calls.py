@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Collection, Mapping
 
 from rextio.analyzer.native_marker import dotted_name
 
@@ -174,6 +175,89 @@ COMMON_DIRECT_RUST_CALLS = {
 }
 
 
+# Module-qualified stdlib call/constant targets whose native lowering IGNORES the
+# receiver expression and emits a static Rust call/constant. Native lowering is
+# sound only when the source receiver name is a PROVEN final import to that module:
+# a never-imported spelling (`math.sin(x)` with no `import math`, or bare `math.pi`
+# with no import) raises `NameError` in CPython, it does NOT call the stdlib target
+# — `canonical_call_target`/`resolve_import_target` recognize the spelling even with
+# no import, so the import must be proven separately. (Bare builtins like `abs`/`min`
+# are NOT here — they need no import; str/bytes/list method targets are NOT here —
+# their receiver is a real value, not an ignored module name.)
+IMPORT_QUALIFIED_STDLIB_TARGETS = frozenset(
+    {
+        *BASE64_TARGETS,
+        *DATETIME_ISOFORMAT_TARGETS,
+        *DATETIME_NOW_TARGETS,
+        *DATETIME_TIMESTAMP_TARGETS,
+        *HASHLIB_CHAIN_TARGETS,
+        *HASHLIB_INTERNAL_TARGETS,
+        *JSON_TARGETS,
+        *MATH_CONSTANT_TARGETS,
+        *MATH_FLOAT_BINARY_TARGETS,
+        *MATH_FLOAT_TO_BOOL_TARGETS,
+        *MATH_FLOAT_TO_INT_TARGETS,
+        *MATH_FLOAT_UNARY_TARGETS,
+        *STATISTICS_TARGETS,
+        *TIME_TARGETS,
+    }
+)
+
+# External module roots whose attributes are replaced by static lowering or
+# marker recognition.  Source-visible mutation of any such target participates
+# in the same project-wide qualified-mutation authority.  Kept here so full
+# project analysis and standalone ``parse_module`` use one exact watch set.
+MUTATION_WATCHED_EXTERNAL_MODULES = frozenset(
+    {
+        "builtins",
+        "rextio",
+        *(target.split(".", 1)[0] for target in IMPORT_QUALIFIED_STDLIB_TARGETS),
+        *(target.split(".", 1)[0] for target in LOGGING_CANONICAL_TARGETS),
+    }
+)
+
+
+def stdlib_receiver_root(node: ast.expr) -> ast.Name | None:
+    """Return the root receiver ``Name`` of a (possibly chained) attribute/call.
+
+    Walks through ``Attribute``/``Call`` links to the base name — ``math`` for
+    ``math.sin``, ``hashlib`` for ``hashlib.sha256(x).hexdigest()``, ``sqrt`` for
+    a bare ``sqrt(x)`` — or ``None`` when the base is not a plain name.
+    """
+    root: ast.AST = node
+    while isinstance(root, (ast.Attribute, ast.Call)):
+        root = root.value if isinstance(root, ast.Attribute) else root.func
+    return root if isinstance(root, ast.Name) else None
+
+
+def stdlib_receiver_is_proven_import(
+    node: ast.expr,
+    imports: Mapping[str, str],
+    local_names: Collection[str] = (),
+    project_modules: Collection[str] = (),
+) -> bool:
+    """Whether a module-qualified stdlib target's receiver is a proven final import.
+
+    The receiver root name must be present in the (final-binding-filtered) import
+    map, must not be shadowed by a function-local binding, and must not resolve
+    into the analyzed project's own module namespace. A never-imported spelling,
+    a local rebinding, a project-local module named like stdlib (for example
+    ``math.py``), or a name the import map dropped because a later class/
+    assignment/``del``/wildcard shadowed the import all fail closed.
+    """
+    root = stdlib_receiver_root(node)
+    if root is None:
+        return False
+    if root.id in local_names:
+        return False
+    imported = imports.get(root.id)
+    if imported is None:
+        return False
+    return not any(
+        imported == module or imported.startswith(f"{module}.") for module in project_modules
+    )
+
+
 def canonical_call_target(
     node: ast.Call,
     imports: dict[str, str],
@@ -278,14 +362,31 @@ def canonical_method_call(node: ast.Call, imports: dict[str, str]) -> str | None
     return None
 
 
-def is_logging_get_logger_call(node: ast.AST, imports: dict[str, str]) -> bool:
-    """Report whether the node is a logging.getLogger(...) call."""
+def is_logging_get_logger_call(
+    node: ast.AST,
+    imports: dict[str, str],
+    project_modules: Collection[str] = (),
+) -> bool:
+    """Report whether the node is a proven imported ``logging.getLogger`` call.
+
+    ``resolve_import_target`` intentionally leaves an unknown raw spelling
+    unchanged, so comparing only the resolved string would treat an unbound
+    ``logging.getLogger`` as the stdlib constructor.  Logger receivers are later
+    lowered without consulting their Python object; require the final import root
+    here just as other receiver-ignored stdlib calls do.
+    """
     if not isinstance(node, ast.Call):
         return False
     raw_target = dotted_name(node.func)
     if raw_target is None:
         return False
-    return resolve_import_target(raw_target, imports) == "logging.getLogger"
+    return resolve_import_target(
+        raw_target, imports
+    ) == "logging.getLogger" and stdlib_receiver_is_proven_import(
+        node.func,
+        imports,
+        project_modules=project_modules,
+    )
 
 
 def is_supported_effect_call(

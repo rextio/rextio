@@ -14,11 +14,24 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rextio.analyzer.diagnostics import Diagnostic
+from rextio.analyzer.final_bindings import (
+    ModuleBindings,
+    ProjectBindings,
+    ProjectMutations,
+    _EMPTY_MUTATIONS,
+)
 from rextio.contract import TOOLING_CONTRACT_VERSION
 
 if TYPE_CHECKING:
     from rextio.analyzer.plugin_claims import ClaimEngine
-    from rextio.plugins.api import ClaimExpr, ClaimLiteral, KeywordArg
+    from rextio.plugins.api import (
+        CallableMeta,
+        ClaimExpr,
+        ClaimLiteral,
+        KeywordArg,
+        ReceiverMeta,
+        SchemaMeta,
+    )
 
 
 @dataclass(frozen=True)
@@ -49,6 +62,9 @@ class PluginClaim:
     expression: ClaimExpr | None = None
     # How codegen feeds lower(): "direct" (default) or "leaves" (fusion).
     operand_mode: str = "direct"
+    # Plugin API 1.3 static metadata (defaults keep the 1.1/1.2 report shape).
+    receiver: ReceiverMeta | None = None
+    callables: tuple[CallableMeta, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this claim."""
@@ -73,6 +89,11 @@ class PluginClaim:
             data["expression"] = self.expression.to_dict()
         if self.operand_mode != "direct":
             data["operand_mode"] = self.operand_mode
+        # Serialize 1.3 metadata when present so check.json stays additive.
+        if self.receiver is not None:
+            data["receiver"] = self.receiver.to_dict()
+        if self.callables:
+            data["callables"] = [callable_meta.to_dict() for callable_meta in self.callables]
         return data
 
 
@@ -165,6 +186,10 @@ class FunctionAnalysis:
     # Auto-discovered (undecorated) functions are False. Used to keep the
     # Python runtime-semantics shim (RXT080) opt-in (see boundary checks).
     explicitly_marked: bool = False
+    # Semantic AST identity captured during analysis.  IR/wrapper generation
+    # re-reads source and requires an exact match so a same-line edit cannot reuse
+    # stale inferred types, plugin claims, or lowering decisions.
+    source_ast_fingerprint: str | None = None
     calls: list[CallSite] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
     inferred_arg_types: dict[str, str] = field(default_factory=dict)
@@ -228,6 +253,66 @@ class FunctionAnalysis:
     # function of the same name for every function in the module, so a bare call
     # to that name would lower to the wrong callable. Used by the shadow checker.
     module_assigned_names: frozenset[str] = frozenset()
+    # Every same-module top-level function name (any def, regardless of whether it
+    # is the *final* binding of that name). Lets the standalone body validator's
+    # shadow check tell "this bare name would resolve to a sibling function" so it
+    # can fail closed when the shared final-binding authority proves that sibling
+    # is not the name's final binder (e.g. `def good` then `class good`).
+    module_function_names: frozenset[str] = frozenset()
+    # The module's source-order FINAL binding kind per visible name (the shared
+    # plugin-API-1.3 authority, ``collect_module_final_bindings``). Lets call
+    # resolution treat a same-module ``def abs``/``def min`` sibling as the sibling
+    # function — never the pure builtin — and fail closed on a spelling whose final
+    # binder is an assignment/``del``/conditional rebind, so core never silently
+    # types/lowers a stale builtin/math target Python does not call.
+    module_final_bindings: dict[str, str] = field(default_factory=dict)
+    # The shared, immutable source-order final-binding authority for this
+    # function's defining module (``build_module_bindings``). Unlike the coarse
+    # ``module_final_bindings`` kind map, it carries each name's exact binder
+    # origin (line/column/order) and wildcard-import state, so a call head or a
+    # definition is validated against the *exact* final binder — never a stale
+    # duplicate — and a ``from x import *`` correctly shadows later-unbound
+    # spellings. Shared across every function in the module (one object).
+    module_bindings: ModuleBindings | None = None
+    # For a native METHOD, its enclosing class's visible name and EXACT origin
+    # (line/column of the ``class`` statement). A native method may be built only
+    # when this class is the module's exact final CLASS binding AND this method def
+    # is the class namespace's final binding for its name; otherwise Python resolves
+    # a different class/attribute and the wrapper would install a stale (or missing)
+    # method (plugin API 1.3, WP-4, director follow-up 7 P0-2). ``None`` for a
+    # module-level function.
+    enclosing_class_name: str | None = None
+    enclosing_class_line: int | None = None
+    enclosing_class_column: int | None = None
+    # The shared project-wide record of module attributes mutated during module
+    # load (``import pkg.helper as h; h.good = …``). A direct-native call/import
+    # that reaches a mutated target would lower a stale compiled function and
+    # diverge from CPython, so the call gate and definition gate fail closed on it
+    # (plugin API 1.3, WP-4, director follow-up 7 P0-4). Shared across the project.
+    project_mutations: ProjectMutations = _EMPTY_MUTATIONS
+    # Every project-owned module/package name. A source import whose resolved
+    # target is in this set is project code even when its spelling collides with
+    # stdlib (for example a project ``math.py`` or ``logging.py``), so static
+    # stdlib lowering must fail closed.
+    project_modules: frozenset[str] = frozenset()
+    # Every name bound as a local in this function's own scope (parameters plus
+    # every Store-context target anywhere in the body, including loop and
+    # comprehension targets). A callable-argument reference whose name is a local
+    # here is shadowed and does NOT resolve to a same-name project function, so
+    # scope-aware callable/schema resolution fails closed on it (plugin API 1.3,
+    # WP-4). Captured before signature inference and the body pass so claims made
+    # during either see it.
+    local_binding_names: frozenset[str] = frozenset()
+    # Site-scoped comprehension shadowing (plugin API 1.3, WP-4): maps an AST node
+    # id to the comprehension ``for`` target names in scope AT that node. A
+    # comprehension target shadows a same-name project callable only inside the
+    # comprehension's own expression scope (Python 3 comprehension scoping), never
+    # across the whole function, so a callable reference is looked up with
+    # ``local_binding_names`` UNION this node's entry. Empty for nodes outside any
+    # comprehension. Transient analysis state, keyed by node identity.
+    comprehension_scope_names: dict[int, frozenset[str]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
     # Qualnames of project functions this (direct-native) function calls that live
     # on the Python fallback and are delegated to the external CPython dispatcher
     # instead of rejected. Only populated in the Rust-executable "delegate" mode
@@ -260,6 +345,30 @@ class FunctionAnalysis:
     # without any claimed body site (e.g. an identity function), so the
     # native-plugin route derives from claims OR these keys.
     plugin_type_keys: list[str] = field(default_factory=list)
+    # The ordered positional parameter names (positional-only + normal), so the
+    # boundary pass can reconstruct the callee's full positional type list —
+    # including resident plugin-typed parameters, which are absent from
+    # ``signature_arg_types`` (that map holds only core-typed params).
+    positional_param_names: tuple[str, ...] = ()
+    # Parameter name -> resolved plugin type key, for parameters annotated with
+    # a plugin type. Lets native-to-native signature compatibility match a
+    # resident argument against a resident parameter by exact key (plugin API
+    # 1.3), preserving the existing arity/keyword/scalar/container checks.
+    signature_plugin_keys: dict[str, str] = field(default_factory=dict)
+    # True when the signature (parameter or return) carries a RESIDENT plugin
+    # type key (opaque, no Python boundary): such a function is a native-only
+    # helper, never PyO3-exported (a resident value cannot cross the boundary).
+    has_resident_signature: bool = False
+    # True when the signature carries a MATERIALIZED plugin type key (a plugin
+    # type with a Python boundary conversion): a Python-facing entry point that
+    # native callers may not call native-to-native (RXT092), as before.
+    has_materialized_plugin_type: bool = False
+    # Parameter (or annotated local) name -> declared schema resolved from a
+    # schema-parameterized plugin annotation (``df: Frame[Row]``), plugin API
+    # 1.3. Drives the method receiver's ``ReceiverMeta.schema`` and the row-UDF
+    # callable body's schema-bound field/subscript reads. Empty when no schema
+    # annotation appears; never executes the annotation.
+    declared_schemas: dict[str, SchemaMeta] = field(default_factory=dict)
     # Transient analysis state: the claim engine for active lowering plugins
     # (None when no lowering plugin is active). Never serialized or compared.
     claim_engine: ClaimEngine | None = field(default=None, repr=False, compare=False)
@@ -441,8 +550,21 @@ class ModuleAnalysis:
     diagnostics: list[Diagnostic] = field(default_factory=list)
     imports: dict[str, str] = field(default_factory=dict)
     logger_names: tuple[str, ...] = ()
+    # Process-global ``logging.getLogger`` cache groups proven for each accepted
+    # receiver.  Equal exact names share a group across source modules; dynamic
+    # names use the global unknown group and may alias every exact group.
+    logger_group_targets: dict[str, tuple[str, ...]] = field(default_factory=dict)
     import_policies: tuple[ImportPolicyDecision, ...] = ()
     top_level: TopLevelAnalysis | None = None
+    # The module's shared final-binding authority (see FunctionAnalysis).
+    module_bindings: ModuleBindings | None = None
+    # The same immutable project-wide qualified-mutation authority attached to
+    # each function.  IR/wrapper generation consumes it as a defensive gate so
+    # a malformed accepted list cannot lower a source-mutated target.
+    project_mutations: ProjectMutations = _EMPTY_MUTATIONS
+    # Project-owned module/package names used by analyzer and defensive IR gates
+    # to distinguish a genuine stdlib import from a same-named local module.
+    project_modules: frozenset[str] = frozenset()
 
     @property
     def functions_by_name(self) -> dict[str, FunctionAnalysis]:
@@ -457,6 +579,9 @@ class ModuleAnalysis:
             "imports": dict(sorted(self.imports.items())),
             "import_policies": [decision.to_dict() for decision in self.import_policies],
             "logger_names": list(self.logger_names),
+            "logger_group_targets": {
+                name: list(targets) for name, targets in sorted(self.logger_group_targets.items())
+            },
             "functions": [function.to_dict() for function in self.functions],
             "top_level": self.top_level.to_dict() if self.top_level is not None else None,
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
@@ -469,6 +594,15 @@ class ProjectAnalysis:
 
     project_root: Path
     modules: list[ModuleAnalysis] = field(default_factory=list)
+    # The single project-wide final-binding authority (one ``ModuleBindings`` per
+    # module), built once and shared by module parsing, callable indexing, the
+    # resolver, and the build gate — even when no plugin is active — so no path
+    # re-derives a divergent copy (plugin API 1.3, WP-4, director follow-up 7 P1-4).
+    project_bindings: ProjectBindings = field(default_factory=lambda: ProjectBindings({}))
+    # The shared project-wide module-load mutation authority (see
+    # ``FunctionAnalysis.project_mutations``), used by the boundary resolver and
+    # the definition/build gate.
+    project_mutations: ProjectMutations = _EMPTY_MUTATIONS
 
     @property
     def native_candidates(self) -> list[FunctionAnalysis]:

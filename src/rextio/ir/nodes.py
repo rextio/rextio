@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from rextio.ir.types import RxtType
 
 if TYPE_CHECKING:
-    from rextio.plugins.api import ClaimExpr, ClaimLiteral, KeywordArg
+    from rextio.plugins.api import CallableMeta, ClaimExpr, ClaimLiteral, KeywordArg, ReceiverMeta
 
 
 class IRNode:
@@ -60,6 +60,12 @@ class PluginClaimIR(IRNode):
     keywords: tuple[KeywordArg, ...] = ()
     expression: ClaimExpr | None = None
     operand_mode: str = "direct"
+    # Plugin API 1.3 (defaulted None/empty so 1.1/1.2-shaped claims are
+    # unchanged): the method receiver metadata and the ordered callable metadata
+    # carried from the claim through to lower(). The receiver's rendered Rust
+    # sub-expression is carried separately on ``CallIR.receiver``.
+    receiver: ReceiverMeta | None = None
+    callables: tuple[CallableMeta, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this node."""
@@ -79,6 +85,10 @@ class PluginClaimIR(IRNode):
             data["expression"] = self.expression.to_dict()
         if self.operand_mode != "direct":
             data["operand_mode"] = self.operand_mode
+        if self.receiver is not None:
+            data["receiver"] = self.receiver.to_dict()
+        if self.callables:
+            data["callables"] = [callable_meta.to_dict() for callable_meta in self.callables]
         return data
 
 
@@ -404,6 +414,11 @@ class CallIR(ExprIR):
     # Set when an active plugin claimed this site; codegen routes the whole
     # expression through the plugin's lower() instead of the core rendering.
     claim: PluginClaimIR | None = None
+    # The lowered receiver sub-expression for a claimed method call
+    # (``obj.method(...)``); None for plain calls/binops. The receiver is NOT a
+    # positional argument (it never appears in ``args``); codegen evaluates it
+    # exactly once, in Python order, before the operands (plugin API 1.3).
+    receiver: ExprIR | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this node."""
@@ -414,6 +429,8 @@ class CallIR(ExprIR):
         }
         if self.claim is not None:
             data["claim"] = self.claim.to_dict()
+        if self.receiver is not None:
+            data["receiver"] = self.receiver.to_dict()
         return data
 
 

@@ -1,6 +1,6 @@
 # Spec: Plugin Lowering (claim/lower Hook)
 
-Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2)
+Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3)
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
 
@@ -30,8 +30,31 @@ class PluginType:
     annotations: tuple[str, ...]  # dotted spellings that resolve to this type,
                                   # e.g. ("rextio_numpy.types.F64Arr1",)
     rust_type: str                # e.g. "ndarray::Array1<f64>"
-    conversion: BoundaryConversion  # see §4
+    conversion: BoundaryConversion | None = None  # see §4 (None → resident, §4a)
+    uses: tuple[str, ...] = ()    # plugin API 1.3: `use` lines this type OWNS
+    helpers: tuple[str, ...] = () # plugin API 1.3: module-level items this type
+                                  # OWNS (fn/struct/const), deduplicated by text
 ```
+
+- **Type-level module support (`uses`/`helpers`, plugin API 1.3).** A
+  `PluginType` may declare the exact-text `use` lines and module-level items
+  (fn / struct / const) that DEFINE the symbols its `rust_type` or
+  `conversion` references. Type-level ownership is required because (a) a
+  **resident** type has `conversion=None` yet may still use a plugin-owned
+  named Rust type, and (b) a **signature-only accepted function** — one with a
+  plugin-typed parameter/return and **zero claims** — renders the type's
+  boundary conversion / named native type without ever running `lower()`, so
+  its support could not otherwise reach the module. Core collects this support
+  from the plugin types that appear **directly** in each accepted function's
+  parameters/return and merges it into the same module collectors as
+  `LoweredExpr` support (§3): `uses` are deduplicated in a set and **sorted at
+  emission**, while `helpers` are deduplicated by exact text in **first-seen
+  insertion order**. Deduplication is by exact text — including when the
+  identical helper also arrives from a claim. An **unused** registered type emits nothing. Empty support is
+  omitted from `PluginType.to_dict()` (a 1.1/1.2 type keeps its exact legacy
+  serialized bytes); non-empty support serializes deterministically so
+  report/cache identity moves when it changes. Declaring non-empty support
+  requires `api_version >= 1.3` (the loader rejects it below 1.3).
 
 - The **primary mechanism is an explicit annotation vocabulary** the plugin
   ships (e.g. `rextio_numpy.types.F64Arr1` / `F64Arr2` — at Python runtime
@@ -91,7 +114,10 @@ def lower(self, claimed: ClaimSite, ctx: LoweringContext) -> LoweredExpr: ...
     pre-1.2 keyword rejection path). Named keywords with non-literal
     (runtime) values are also **never offered** — current `CallIR`/
     `LoweringContext` cannot represent runtime keyword operands (reserved
-    for a future API).
+    for a future API). API 1.3 additively permits static `bool` and `str`
+    constants in **named keyword** `ClaimLiteral` metadata; positional
+    `operand_literals` retain the exact 1.2 shape. Floats, bytes, tuple-of-bool,
+    tuple-of-string, and every other constant shape remain non-literal.
   * `expression: ClaimExpr | None` — a frozen structured tree of nested
     eligible call/binop nodes, literals, and leaves. Core builds it only
     when the nested structure is representable safely; otherwise the site
@@ -103,7 +129,11 @@ def lower(self, claimed: ClaimSite, ctx: LoweringContext) -> LoweredExpr: ...
     `kind="literal"`, not leaf kinds.
 
   Claim-cache keys include these fields so sites that differ only in
-  keywords, literals, or tree shape never share a verdict.
+  keywords, literals, or tree shape never share a verdict. Literal identity
+  includes a derived `value_kind`, so Python's `True == 1` rule cannot make a
+  bool-keyword site collide with an integer-keyword site. Serialization uses
+  `value_kind="bool"` / `"str"` for the 1.3 additions and keeps the exact
+  existing `none` / `int` / `int_tuple` forms.
   `ClaimSite.to_dict()` omits empty/absent 1.2 keys so a site built with
   only legacy fields keeps the exact pre-1.2 dict shape.
 
@@ -122,6 +152,10 @@ def lower(self, claimed: ClaimSite, ctx: LoweringContext) -> LoweredExpr: ...
     operands. Runtime keyword operands are reserved for a future API.
   * Named keywords with supported static literals (`None`, signed int,
     int tuples) are offered only to API ≥ 1.2 providers.
+  * Named keywords with static `bool` or `str` values are offered only to API
+    ≥ 1.3 providers. In a mixed 1.2/1.3 registry, only the 1.3 providers see
+    that call site. Dynamic values, `**kwargs`, floats, bytes, and other
+    constants stay unoffered/fail-closed.
   * Positional arguments are inferred before ordered keyword values
     (Python evaluation order).
   * `Claimed` **or** `Rejected` plugin-managed keyword calls suppress
@@ -307,6 +341,89 @@ Normative rules for the initial surface:
   and are never delegated by the Rust-executable dispatcher — the existing
   "containers never cross" rule extends to plugin types verbatim.
 
+## 4a. Resident types and native-to-native chaining (plugin API 1.3)
+
+A **resident** plugin type is a `PluginType` whose `conversion is None`
+(`PluginType.is_resident`). It is an *opaque, native-only* Rust value: it has
+**no Python boundary conversion** and therefore **never crosses an exported
+PyO3 parameter or return**. It exists only inside generated native code and
+enables **safe native-to-native chaining** — a value produced by one claim can
+be stored in a local, handed to an accepted native helper, and consumed by
+another claim, with no Python round-trip. Existing materialized types (with a
+`BoundaryConversion`) are unchanged and remain source/behavior compatible.
+
+Normative rules for the 1.3 resident-type contract (static claim metadata
+in §9 completes the same surface):
+
+- **Declaration.** A resident type sets `conversion=None`. A plugin declaring a
+  resident type MUST advertise `api_version >= 1.3`; the loader rejects a
+  resident type from a lower-versioned provider (`PluginError`). `rust_type` is
+  the value's exact native representation (e.g. `petgraph::Graph<...>`), used
+  verbatim in native signatures. The IR carries it as
+  `RxtPluginType(resident=True)`; `RxtPluginType.resident=False` is the
+  materialized form.
+
+- **Production / storage / consumption.** A resident value is produced by a
+  claimed plugin expression whose `Claimed.result_type` is the resident type
+  key, stored in an ordinary local (the analyzer types the local with the exact
+  key), passed as a positional argument to another claimed plugin expression,
+  or passed to an **accepted native helper** call. It is handed to plugin
+  `lower()` as a bare identifier (the plugin owns borrow-vs-consume, as for
+  materialized operands); native-to-native calls pass the value **by shared
+  reference** — a resident parameter lowers to `&T` and an argument is borrowed
+  (`&value`), never moved and never cloned (a resident type need not be
+  `Clone`). Because the argument is only borrowed, the caller keeps ownership
+  and MAY reuse the value, pass it to another helper, or pass it twice in the
+  same call; a `g = new(...); g2 = helper(g, ...)` chain that then consumes both
+  `g` and `g2` is well-formed native code, not a use-after-move.
+
+- **Native-to-native signature compatibility.** The boundary pass understands
+  registered plugin type keys and exact Rust representations. A native call
+  into a helper whose parameters/return are resident is permitted; the
+  positional-arity, keyword-only, scalar, and container checks are preserved,
+  and a resident parameter requires the caller's argument to carry the **exact
+  same** registered type key (any core value, different plugin type, or
+  undetermined type keeps the caller on the Python fallback, RXT010).
+
+- **Fail-closed escape rules (RXT092 where it is the appropriate existing
+  diagnostic).** A resident value MUST NOT escape through:
+  * an **exported PyO3 parameter/return** — a resident-signature function is
+    compiled as an internal, non-`#[pyfunction]` native-only helper and gets no
+    Python-dispatch wrapper; an **explicitly `@rextio.native`-marked**
+    resident-signature function (a request for a Python-callable native export
+    a resident boundary cannot honor) is rejected with **RXT092**;
+  * a **materialized** plugin-typed callee — native calls into a function whose
+    signature carries a materialized plugin type stay **RXT092** (Python-facing
+    entry points), unchanged;
+  * a **fallback / delegate / scalar-boundary / runtime-shim** edge — those
+    paths admit only immutable delegatable scalars, so a resident value is
+    never eligible (fail closed);
+  * an **unsupported container** — a resident type nested in a
+    list/dict/set/tuple annotation does not resolve as a core type, so the
+    function is simply not a candidate (fail closed).
+
+- **Ownership.** The ownership contract is **immutable shared borrow**: a
+  resident value crosses a native-to-native call as `&T`, so ownership stays
+  with the producer and reuse is well-defined (the caller may consume the value
+  again or pass it to further helpers). No raw pointers, unchecked lifetime
+  extension, `unsafe`, global caches, silent clones, or Python-object leakage
+  are introduced to make chaining pass. Patterns the borrow contract cannot
+  honor without a second owner are rejected **before codegen** and stay on the
+  Python fallback — never allowed to surface as a compiler error:
+  * returning a resident **parameter** (or an alias of one) by value, which the
+    fallback would return by identity while the native leg would need an owned
+    copy — rejected by the plugin alias-escape check;
+  * aliasing a resident value into another binding (`g2 = g`), which would need
+    a `.clone()` (a resident type need not be `Clone`) or a move that invalidates
+    the original — rejected during signature inference.
+
+  A compiler error is a bug in this contract, not the contract itself.
+
+- **Routes / crates.** A resident-signature or resident-claiming function keeps
+  the `native-plugin:<id>` route and the `native_status=accepted` /
+  boundary-fallback-exemption posture of §7. Crate injection, generated
+  imports, and helpers stay deterministic and deduplicated (§3, §5).
+
 ## 5. Crate dependency injection: pinned, consented, reported
 
 ```python
@@ -367,9 +484,18 @@ result equivalence with hypothesis — the same posture as core's own
 - A function with ≥1 plugin-claimed site OR a plugin-typed parameter/return
   gets route `native-plugin:<id>` (even if other sites lowered through core
   rules) — a signature-only plugin function still needs the plugin's boundary
-  conversions and crates. `native_status` stays `accepted`. Native-to-native
-  calls INTO a plugin-typed function are rejected in this release (RXT092):
-  plugin-typed functions are Python-facing entry points.
+  conversions and crates. `native_status` stays `accepted`. A signature-only
+  accepted function (plugin-typed parameter/return, **zero claims**) never runs
+  `lower()`, so the `use`/helper items that DEFINE its rendered conversion /
+  named native type come from the signature plugin types' **type-level module
+  support** (`PluginType.uses`/`helpers`, §1), collected from the types that
+  appear directly in the signature and deduplicated against any `LoweredExpr`
+  support before the module prelude is rendered. Native-to-native
+  calls INTO a **materialized** plugin-typed function are rejected (RXT092):
+  materialized plugin-typed functions are Python-facing entry points. A
+  **resident**-only function (plugin API 1.3, §4a) is exempt — it is an
+  internal native-only helper, so native-to-native calls into it are permitted
+  under the extended signature-compatibility check.
   Every `native-plugin` function (by claims OR type keys) is **exempt from the
   boundary-fallback threshold**: it never flips to the Python fallback leg
   mid-run, because the native and fallback legs may have documented per-leg
@@ -387,7 +513,7 @@ result equivalence with hypothesis — the same posture as core's own
   hint on accelerator-decorated functions is unchanged (decorator still
   wins: explicit decorator > plugin > fallback).
 
-## 8. Versioning and rollout (0.1.1 / 1.2 additive)
+## 8. Versioning and rollout (released 1.2 / 1.3)
 
 - `PLUGIN_API_VERSION` bumps **1.0 → 1.1** for the lowering members; all new
   members are optional, so 1.0 describe-only plugins keep loading (major
@@ -396,17 +522,27 @@ result equivalence with hypothesis — the same posture as core's own
 - **Plugin API 1.2** (additive, same major): extends `ClaimSite` with
   `operand_literals` / `keywords` / `expression` and `LoweringContext` with
   `leaf_operands`. Defaults keep 1.1 providers source- and
-  behavior-compatible. Core advertises `PLUGIN_API_VERSION = "1.2"`; plugins
-  may still declare `api_version = "1.1"`.
+  behavior-compatible. Plugins may still declare `api_version = "1.1"`.
+- **Plugin API 1.3** (additive, same major; published with core **0.1.3** on
+  2026-07-17): adds **resident** types (`PluginType.conversion` is now
+  optional; `conversion=None` marks an opaque, native-only value), safe
+  native-to-native chaining (§4a), orthogonal static receiver/callable-body/
+  schema metadata (§9), and bool/string static named keyword literals.
+  Defaults and per-provider projection keep 1.1/1.2 providers source- and
+  behavior-compatible; a resident type and every 1.3 metadata addition
+  require `api_version >= 1.3`. Core advertises
+  `PLUGIN_API_VERSION = "1.3"`. API 1.3 remains Experimental.
 - Everything in the 1.1 surface ships in the **0.1.1 line** as Experimental.
   The 1.2 claim metadata / fusion tree surface ships on the **0.1.2** core
   line without a package major bump (Wave 2 core gate; Wave 3 package
-  release is separate).
+  release is separate). The 1.3 resident/chaining/metadata surface ships on
+  the **0.1.3** core line without a package major bump.
 - **Related-package publish order** for the 1.2 consumer surface (strict, not
   simultaneous): **rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1**. The
-  untagged rextio-numpy 0.1.1 RC (literal-axis / fusion / leaves-mode) requires
-  core plugin API 1.2 and must not publish before core 0.1.2. Published
-  rextio-numpy remains **0.1.0** until that order is followed. See
+  published rextio-numpy 0.1.1 (literal-axis / fusion / leaves-mode) requires
+  core plugin API 1.2. That order completed on 2026-07-14. Core **0.1.3**
+  (plugin API 1.3; tooling contract **2.1.0**, additive over core 0.1.2's
+  contract **2.0.0**) published on 2026-07-17. See
   [tooling-contract.md](tooling-contract.md) §Compatibility and release
   ordering.
 - Implementation slices, in order:
@@ -422,6 +558,239 @@ result equivalence with hypothesis — the same posture as core's own
      rust-numpy injection → cargo build → hypothesis equivalence).
   5. **Wave 2 (1.2):** claim-site literal/keyword metadata, structured
      `ClaimExpr` trees, fusion `leaf_operands` at lower, additive docs/tests.
+
+## 9. Static claim metadata surfaces (plugin API 1.3)
+
+Plugin API 1.3 defines three orthogonal, deterministic, **static** metadata
+surfaces carried on the claim site. Every record is frozen,
+hashable/cache-safe, order-preserving, and JSON-serializable through
+`to_dict()`. None ever carries raw source text, mutable AST nodes,
+closures/globals, or a value produced by executing user code — they are derived
+only from resolved types and a documented static grammar. All are additive,
+defaulted `ClaimSite` / `PluginClaim` fields (and one `LoweringContext` field),
+so 1.1/1.2 providers keep the exact pre-1.3 serialization shape and never
+observe the new metadata (stripped by `_site_for_provider` below api 1.3).
+Claim-cache keys include `receiver` and `callables`, so sites that differ only
+in the 1.3 metadata never share a verdict.
+
+### 9.1 Method receiver metadata — `ClaimSite.receiver: ReceiverMeta | None`
+
+A method claim site (`obj.method(...)`) distinguishes the receiver *value* from
+the ordinary positional arguments. The positional args stay in `operand_types`;
+the receiver never appears there. `ReceiverMeta` carries:
+
+- `arg_type: str | None` — the receiver's resolved type (plugin type key or
+  core type name; `None` when unresolved).
+- `schema: SchemaMeta | None` — the receiver type's declared schema (§9.3) when
+  one is registered; `None` otherwise.
+- `expr_kind: str` — the receiver expression shape, one of
+  `name | attribute | subscript | call | opaque`.
+- `is_safe: bool` — whether the receiver is a side-effect-free reference. Only
+  a plain local `name` is intrinsically safe: an `attribute` access can fire a
+  descriptor `__get__` or `__getattr__`, a `subscript` invokes `__getitem__`,
+  and `call`/`opaque` evaluate user code, so every non-name receiver is unsafe.
+  Core **always** evaluates the receiver exactly once in Python order
+  regardless; `is_safe` only tells a provider whether the rendered receiver
+  text (`LoweringContext.receiver`) is a bare reference or a bound single-use
+  temporary.
+
+A method call is detected when `node.func` is an attribute access whose base
+resolves to a value type; the method name is the last segment of `target`. A
+module-qualified call (`numpy.dot(...)`: the base `numpy` has no value type) has
+no receiver. A plugin-typed receiver makes the site that plugin's business even
+when no positional arg carries the type. At lower time,
+`LoweringContext.receiver` is the receiver rendered once in Python evaluation
+order.
+
+### 9.2 Callable metadata — `ClaimSite.callables: tuple[CallableMeta, ...]`
+
+For a callable argument that resolves to a project function, `CallableMeta`
+exposes only immutable structured facts:
+
+- `arg_index: int` — the callable argument's positional index at the site.
+- `qualname: str` — the resolved project-function qualname.
+- `params: tuple[CallableParam, ...]` — ordered typed signature.
+- `return_type: str | None` — resolved return type.
+- `accepts_native: bool` — the function is a proven accepted scalar native
+  function (a direct native-callable UDF).
+- `runtime_semantics: bool` — it carries the RXT080 runtime-shim semantics.
+- `native_symbol: str | None` — the codegen-resolved native Rust symbol when
+  one exists (filled at lower time; `None` at claim time).
+- `body: CallableBody` — a closed body representation, or an explicit
+  unavailability.
+
+`CallableBody` is either `available=True` with a closed `CallableBodyExpr`
+tree, or `available=False` with an `unavailable_reason` (and no expression).
+The **closed body grammar** (`CallableBodyExpr`) covers only the safe
+scalar/simple-row UDF subset: parameter reads (`param`), supported scalar
+literals (`literal` / `ScalarLiteral`, int/float/bool/str/None only),
+schema-bound field/subscript reads (`field` / `subscript`), unary/binary/
+boolean/comparison operations (`unary`/`binop`/`boolop`/`compare`), the
+conditional expression (`cond`), and already-supported pure scalar calls
+(`call`). Everything else — statements, mutation, loops, comprehensions,
+attribute side effects, globals, closures, dynamic-valued defaults, varargs,
+kwargs, async/generator/yield — is **unavailable** (a body with
+`available=False`), and a claim that needs a body MUST fail closed on an
+unavailable body rather than guess. Internal AST objects are never exposed;
+the closed record is the only representation.
+
+### 9.3 Declared schema metadata — `SchemaMeta` / `SchemaField`
+
+An immutable, ordered schema identity (`identity`) and fields (`name` plus a
+resolved scalar/plugin `field_type`), derived only from the documented static
+annotation grammar by `build_declared_schema(identity, class_node,
+resolve_type)`. The grammar: a schema class body contains ONLY simple field
+annotations `name: <type>` (an optional leading string docstring and bare
+`pass` are permitted); each annotation must resolve, through the caller's
+`resolve_type`, to a core scalar type name or a registered plugin type key.
+Pandas runtime objects are never inferred and the annotation is never executed.
+The builder fails closed with `SchemaGrammarError` (the analysis-time caller
+treats that as "no schema") on: unsupported metadata (any non-annotation
+statement, methods, nested classes, assignments), a field default/value,
+a non-`Name` target, a dynamic annotation expression (one containing a call),
+an unresolved type, or a duplicate field name. `SchemaMeta` re-checks duplicate
+names as a construction-time invariant.
+
+**Association spelling (exact source form).** A declared schema is associated
+with a receiver/parameter through a **schema-parameterized plugin annotation**:
+the plugin's base type annotation subscripted by a schema class. A schema is a
+plain project class whose body is only field annotations, and the parameter is
+annotated with `Base[Schema]`:
+
+```python
+class Row:                      # the schema: only `name: <type>` fields
+    price: float
+    qty: int
+
+def kernel(df: Frame[Row]) -> float:   # Frame[Row] associates Row with df
+    return df.apply(udf)
+```
+
+`Frame[Row]` resolves to the **same** plugin type key as bare `Frame` — the
+`[Row]` subscript only carries the schema association and never changes type
+resolution (`resolve_annotation` strips the subscript; every existing
+signature/return/local type path is preserved). During project analysis the
+schema class is discovered (project-wide, order-independent), built statically
+by the grammar above, and associated with the annotated parameter in
+`FunctionAnalysis.declared_schemas`. It then propagates to the method receiver's
+`ReceiverMeta.schema` and, for a row UDF (an unannotated first callable
+parameter), binds that parameter so `row["col"]` / `row.col` reads in the
+callable body resolve to typed `subscript` / `field` nodes. A malformed,
+dynamic, unresolved, or duplicate schema fails closed to **no association** (a
+well-formed schemaless receiver), never a wrong schema. rextio-pandas consumes
+`ReceiverMeta.schema` and the row-param field/subscript body nodes directly.
+
+When annotations are evaluated at module load (no postponed-annotations
+future), subscription normally invokes an arbitrary protocol hook. Core exempts
+only a subscript whose base resolves at that exact source position to an
+annotation target in the active, validated plugin type vocabulary and whose
+target has no source-visible mutation or same-spelling project module. The
+trusted target set travels with the shared `ModuleBindings` authority into
+IR/wrapper source revalidation. A local same-spelling class, a project-owned
+module shadowing the plugin package, a rebound/import-ambiguous alias, a mutated
+plugin target, an unregistered `Evil[T]`, nested unsupported subscription, or
+an effectful slice remains fail-closed. `from __future__ import annotations`
+follows Python's normal postponed-evaluation rule and executes no subscription
+at module load.
+
+### 9.4 Integration contract for method claim sites
+
+From one method claim site a 1.3 provider can determine: the receiver Rust
+operand (`LoweringContext.receiver`), type, and schema (`ClaimSite.receiver`);
+the ordered call args (`operand_types` / `operand_literals`) and literal
+keywords (`keywords`, including API 1.3 static bool/string values); whether the
+UDF is a proven accepted scalar native function
+(`CallableMeta.accepts_native`) or has a supported closed row-UDF body
+(`CallableMeta.body.available`); its native symbol/body
+(`CallableMeta.native_symbol` / `body`); and the exact output scalar type
+(`Claimed.result_type`, echoed on the claim). Receiver/callable evaluation
+order and single evaluation match Python.
+
+**Analysis wiring.** A callable argument that is a bare name/dotted reference
+statically resolving (through the caller's imports/aliases) to an indexed
+project function is offered as a `CallableMeta`; core recognizes it at a
+plugin-covered site and does **not** reject the enclosing function for reading
+an unbound value (the callable never becomes a Rust local). `accepts_native` is
+a static determination over the documented scalar subset: every parameter and
+the return resolve to a core scalar, the body is representable in the closed
+grammar, and it carries no runtime-shim semantics — a row UDF (schema-bound
+first parameter) is `body.available` but not `accepts_native`. `runtime_semantics`
+is set (and the body left unavailable) when the resolved function calls a
+CPython runtime-fidelity target.
+
+**Codegen wiring.** `PluginClaimIR` carries the receiver/callable metadata and
+`CallIR.receiver` carries the lowered receiver sub-expression (never a positional
+argument). At lower time core: (1) fills `CallableMeta.native_symbol` for a
+callable that is `accepts_native` **and** whose qualname names an actually-
+generated accepted native helper in the module — every other callable keeps
+`native_symbol=None`, so the plugin uses the closed body or fails closed; and
+(2) evaluates the receiver **exactly once, before the operands** — a safe
+receiver (a plain local name) is passed through as a bare reference, and any
+non-safe receiver is bound to a fresh single-use temporary
+(`let __rextio_recv = …;`) whose name is handed to the provider as
+`LoweringContext.receiver`, so a descriptor/`__getattr__`/`__getitem__`/call in
+the receiver runs once. This preserves the resident-borrow semantics (§4a): a
+resident receiver is borrowed by the provider, never moved or cloned.
+
+### 9.5 Executable identity and source-order safety
+
+All 1.3 metadata and generated code consume one project-wide source-order
+authority. Raw spelling is never proof that `@native`, `@exempt`, a callable
+argument, imported target, class, or method still names the object analyzed.
+Final bindings, every re-export/alias hop, qualified parent and descendant
+mutations, module-load effects, and the exact definition origin must agree.
+Unknown execution or ownership routes fail closed to a rejection, runtime shim,
+or Python fallback.
+
+Class methods are limited to stable plain classes. Class decorators, custom
+bases/metaclasses, arbitrary descriptor-bearing namespace values, class-body or
+post-class member replacement/deletion, and construction hooks are not eligible.
+IR and wrapper generation re-read the source and require the analyzed function's
+semantic AST fingerprint; generated method installation additionally verifies
+the runtime fallback owner and function identity before replacement. A mismatch
+is a build/import error, never permission to install stale native code.
+
+The proof covers mutations visible in the analyzed project during module
+execution, including executed local callables, consumed generators, implicit
+protocol hooks (including module-load operators, subscripts, attributes,
+formatted strings, and comprehensions), stdlib/builtin targets (including
+`builtins.__build_class__`), logger receivers/aliases, marker internals, and
+package-resolved relative re-exports. Exact tuple/list destructuring aliases are
+tracked; starred, mismatched, or dynamic unpacking fails closed. Mutation
+performed externally after wrapper import remains a documented dynamic
+limitation and is outside the static contract.
+
+Exact project callables are replayed with the globals visible at the relevant
+source-order execution point. Calls made while a circular import has suspended
+the defining module use that cycle-edge environment; ordinary calls use the
+final environment. A deliberately narrow return summary carries exact project
+roots, immutable scalars, conditional unions, bound defaults, and logger
+factory identities into subsequent assignment or mutation expressions.
+Unknown/dynamic return identities and external calls exposed to project roots
+or a module globals dictionary poison the affected mutation authority, including
+roots nested in literal containers or deferred generator yields. Container
+return aliases are never flattened into fabricated subscript paths: without a
+closed structural summary they widen at their rooted owner. Source constructors
+and builtins that can dispatch Python protocol hooks require a closed effect
+proof; post-definition constructor replacement revokes that proof, and an
+instance with source protocol hooks becomes unknown on its first later use.
+Executed callables containing ``nonlocal`` also widen because closure cells are
+not modeled. Builtin and ``logging.getLogger`` fast paths consult a monotone
+project-wide mutation fixed point, so scan order cannot preserve stale purity.
+Zero-argument ``vars()`` is module authority only at module scope and remains a
+local namespace inside an executed function.
+
+Generated Python dispatch state has no reserved user-name namespace. Native and
+fallback bindings, factories, wrappers, and method-installation helpers are
+created in an isolated bootstrap scope under ordinal local slots. The source
+namespace (including explicit ``__all__`` entries with any ``_rextio_*``
+spelling) and native top-level updates are published only after closures and
+methods are ready; accepted top-level dispatch functions are installed last.
+RXT080 originals are captured as an ordinal mapping in a separate runtime
+registry, never as generated attributes on the fallback or public module.
+Native top-level update keys are reconciled with the exact final source binding
+before terminal publication, so a later function/class defeats an earlier
+assignment and a later accepted assignment defeats the earlier definition.
 
 ## Non-goals
 
