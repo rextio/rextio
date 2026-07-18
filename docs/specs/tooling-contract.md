@@ -3,7 +3,7 @@
 Status: **draft** (experimental tier). The current published producer is core
 0.1.4, released on 2026-07-18 with `contract_version` `2.2.0` and plugin API
 **1.3**. The Release Train C branch contains the additive, **unreleased**
-`2.5.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
+`2.6.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
 contract. Package version on the branch remains **0.1.4**.
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
@@ -31,7 +31,7 @@ Both JSON surfaces carry a top-level field. The published 0.1.4 producer emits:
 The unreleased Train C branch emits:
 
 ```json
-{ "contract_version": "2.5.0" }
+{ "contract_version": "2.6.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -48,7 +48,8 @@ to generic guidance when the major is outside what they support.
 | `2.2.0` | **Additive promotion-assessment shape.** Each reportable function adds `marker_kind`, a separate `promotion_assessment` evidence channel, and reliable `source_range` / `name_range`. Runtime `route`, `native_status`, and `rejection_codes` semantics remain unchanged. Failed automatic probes stay normal fallback rather than becoming compiler/build errors. Published with core **0.1.4**. |
 | `2.3.0` | **Unreleased additive host-planning shape** (Train C intermediate). Check/generate/build reports gain a fail-closed `host_source_plan`; generate/build plans carry resolved `artifact_profiles`; Rust executable closures add `module_initializers`; capabilities declares `artifact_contract` and a non-operational `device_provider_contract`. |
 | `2.4.0` | **Unreleased additive plugin standalone-capability shape** (Train C intermediate). Capabilities plugins gain `artifact_capability_declared` (presence only; no profile-hook execution). Generate/build may emit `standalone_plugin_capabilities` with resolved per-profile allow/deny details. `lowering_provided`, route, native-status, rejection, and promotion-assessment semantics remain unchanged. |
-| `2.5.0` | **Unreleased additive external-source preview shape** (current Train C producer). Import-policy decisions add nullable exact `distribution` / `version` metadata; check/generate and blocked-build reports may add one sanitized `external_source_plan`. The plan is inventory evidence only (`execution_authority: "preview-only"`, `distributable: false`, `c6_gate: "required"`) and never grants source execution, lowering, build, packaging, or redistribution authority. |
+| `2.5.0` | **Unreleased additive external-source preview shape** (Train C intermediate). Import-policy decisions add nullable exact `distribution` / `version` metadata; check/generate and blocked-build reports may add one sanitized `external_source_plan`. The plan is inventory evidence only (`execution_authority: "preview-only"`, `distributable: false`, `c6_gate: "required"`) and never grants source execution, lowering, build, packaging, or redistribution authority. |
+| `2.6.0` | **Unreleased additive C6.1 authorization-contract shape** (current Train C producer). The sanitized `external_source_plan` adds authority material (`source_files`, `metadata_files`, `plan_snapshot`, `plan_snapshot_sha256`, `license_material_sha256`, `inventory_schema`) and may nest `authorization` for project-owned `rextio.external-source.lock.json` verification (`*_verified` booleans). `c6_gate` is `required` or `authorization-verified`. Verified authorization still never grants source-native lowering, packaging, or redistribution; remaining C5.2 linkage/codegen is unimplemented (`external-source-c5-not-implemented`). Full C6 remains pending. |
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.
@@ -425,11 +426,12 @@ record their disposition, source range, statement indexes, dependency/binding/
 export/deletion sets, namespace uncertainty, and any fallback-barrier reason.
 An unavailable initializer carries no approximate segments.
 
-### External source inventory preview (contract 2.5.0)
+### External source inventory preview (contract 2.5.0) and C6.1 authorization (2.6.0)
 
-This section describes the C5.1 inventory/gate slice. It is intentionally
-smaller than external-package source AOT and must not be interpreted as build
-authority.
+This section describes the C5.1 inventory/gate slice plus the additive C6.1
+SourceLock authorization-contract preview. It is intentionally smaller than
+external-package source AOT and must not be interpreted as build authority or
+full C6 completion.
 
 A project may opt in through `rextio.toml` for exactly one imported package:
 
@@ -466,10 +468,28 @@ fallback output. A blocked `build.json` includes the plan both through
     "installed_version": "1.0.0",
     "max_depth": 1,
     "license_observed": "MIT",
+    "license_material_sha256": null,
+    "inventory_schema": "rextio-external-source-inventory-v1",
     "modules": [],
+    "source_files": [],
+    "metadata_files": [],
     "candidate_functions": [],
+    "plan_snapshot": null,
+    "plan_snapshot_sha256": null,
     "reason": "depth-1 preview source contains an unresolved import",
-    "license_warning": "..."
+    "license_warning": "...",
+    "authorization": {
+      "status": "plan-unavailable",
+      "path": "rextio.external-source.lock.json",
+      "reason": "depth-1 preview source contains an unresolved import",
+      "snapshot_sha256": null,
+      "attestor": null,
+      "attestor_kind": null,
+      "license_observed": null,
+      "license_attestation_verified": false,
+      "source_inventory_verified": false,
+      "provenance_verified": false
+    }
   }
 }
 ```
@@ -480,6 +500,208 @@ non-distributable and build-blocking. `license_warning` always states that
 translation/redistribution can create derivative-work obligations, calls out
 GNU/copyleft risk, and says the inventory is not legal advice; check, generate,
 and blocked build also emit it on stderr.
+
+Contract **2.6.0** adds authority material on every resolved plan so projects
+can author a SourceLock from check/generate JSON alone:
+
+- `inventory_schema` (`rextio-external-source-inventory-v1`)
+- `source_files[]` / `metadata_files[]` with sanitized `path`, `sha256`, `size`,
+  and `role` (`source-module` | `record` | `metadata` | `wheel` | `license-file`)
+- `license_material_sha256` — shared digest over observed license + METADATA +
+  license-file authority material (same algorithm as lock
+  `reviewed_license_material_sha256`)
+- `plan_snapshot` — domain-separated document hashed into `plan_snapshot_sha256`
+  (compact sorted JSON; excludes free-text reason/warning/authorization;
+  includes sorted `candidate_functions` and `license_material_sha256`)
+- nested `authorization` only (no top-level mirror):
+  `status` is exactly
+  `missing | invalid | incomplete | stale | plan-unavailable | verified`;
+  booleans are `license_attestation_verified`, `source_inventory_verified`,
+  `provenance_verified` (true only after successful verification)
+
+Absolute install paths and source bodies never serialize. `c6_gate` is
+`required` until verification succeeds, then `authorization-verified`.
+
+#### SourceLock schema (project-owned file)
+
+File name (exact): `rextio.external-source.lock.json` at the project root.
+
+**Mechanical copy rules from `rextio check` JSON** (preview-ready plan only):
+
+1. `package` ← `external_source_plan.package`
+2. `distribution` / `version` ← `distribution` / `requested_version`
+3. `content_hashes.source_files` ← exact `source_files[]` objects
+4. `content_hashes.metadata_files` ← exact `metadata_files[]` objects
+   (must include RECORD, METADATA, WHEEL, and every license-file entry)
+5. `content_hashes.snapshot_sha256` ← `plan_snapshot_sha256`
+6. `source_inventory.components[0].files` ← union of `source_files` and
+   `metadata_files` with **identical** path/sha256/size/**role**
+7. `source_inventory.components[0].license_observed` ← `license_observed`
+8. `provenance.subject_snapshot_sha256` ← `plan_snapshot_sha256`
+9. `provenance.installed_wheel.metadata_files` ← exact `metadata_files[]`
+10. `provenance.evidence` ← exactly
+    `["installed-distribution-record", "project-vcs-review"]` in that order
+11. `license_attestation.reviewed_license` ← `license_observed`
+12. `license_attestation.reviewed_license_material_sha256` ←
+    `license_material_sha256`
+13. Set attestor/producer after human/org review; relationship matrix:
+    `organization-owner` → `attestor_kind: organization`;
+    `human-owner` / `project-maintainer` / `security-reviewer` →
+    `attestor_kind: human`
+
+```json
+{
+  "schema_version": "1",
+  "kind": "rextio.external-source-authorization",
+  "package": "small_math_pkg",
+  "distribution": "small-math-pkg",
+  "version": "1.0.0",
+  "content_hashes": {
+    "source_files": [
+      {
+        "module_name": "small_math_pkg",
+        "path": "distributions/small-math-pkg/small_math_pkg/__init__.py",
+        "sha256": "<from plan source_files>",
+        "size": 123,
+        "role": "source-module"
+      }
+    ],
+    "metadata_files": [
+      {
+        "path": "distributions/small-math-pkg/small_math_pkg-1.0.0.dist-info/RECORD",
+        "sha256": "<from plan>",
+        "size": 200,
+        "role": "record"
+      },
+      {
+        "path": "distributions/small-math-pkg/small_math_pkg-1.0.0.dist-info/METADATA",
+        "sha256": "<from plan>",
+        "size": 456,
+        "role": "metadata"
+      },
+      {
+        "path": "distributions/small-math-pkg/small_math_pkg-1.0.0.dist-info/WHEEL",
+        "sha256": "<from plan>",
+        "size": 80,
+        "role": "wheel"
+      },
+      {
+        "path": "distributions/small-math-pkg/small_math_pkg-1.0.0.dist-info/licenses/LICENSE",
+        "sha256": "<from plan>",
+        "size": 64,
+        "role": "license-file"
+      }
+    ],
+    "snapshot_sha256": "<plan_snapshot_sha256>"
+  },
+  "source_inventory": {
+    "format": "rextio-source-inventory-v1",
+    "components": [
+      {
+        "type": "pypi-distribution",
+        "name": "small-math-pkg",
+        "version": "1.0.0",
+        "license_observed": "MIT",
+        "files": [
+          {
+            "path": "distributions/small-math-pkg/small_math_pkg/__init__.py",
+            "sha256": "<same as source_files>",
+            "size": 123,
+            "role": "source-module"
+          },
+          {
+            "path": "distributions/small-math-pkg/small_math_pkg-1.0.0.dist-info/RECORD",
+            "sha256": "<same>",
+            "size": 200,
+            "role": "record"
+          },
+          {
+            "path": "distributions/small-math-pkg/small_math_pkg-1.0.0.dist-info/METADATA",
+            "sha256": "<same>",
+            "size": 456,
+            "role": "metadata"
+          },
+          {
+            "path": "distributions/small-math-pkg/small_math_pkg-1.0.0.dist-info/WHEEL",
+            "sha256": "<same>",
+            "size": 80,
+            "role": "wheel"
+          },
+          {
+            "path": "distributions/small-math-pkg/small_math_pkg-1.0.0.dist-info/licenses/LICENSE",
+            "sha256": "<same>",
+            "size": 64,
+            "role": "license-file"
+          }
+        ]
+      }
+    ]
+  },
+  "provenance": {
+    "subject_snapshot_sha256": "<plan_snapshot_sha256>",
+    "producer": "Acme Engineering",
+    "attestor_relationship": "organization-owner",
+    "installed_wheel": {
+      "distribution": "small-math-pkg",
+      "version": "1.0.0",
+      "metadata_files": [
+        {
+          "path": "distributions/small-math-pkg/small_math_pkg-1.0.0.dist-info/RECORD",
+          "sha256": "<same>",
+          "size": 200,
+          "role": "record"
+        },
+        {
+          "path": "distributions/small-math-pkg/small_math_pkg-1.0.0.dist-info/METADATA",
+          "sha256": "<same>",
+          "size": 456,
+          "role": "metadata"
+        },
+        {
+          "path": "distributions/small-math-pkg/small_math_pkg-1.0.0.dist-info/WHEEL",
+          "sha256": "<same>",
+          "size": 80,
+          "role": "wheel"
+        },
+        {
+          "path": "distributions/small-math-pkg/small_math_pkg-1.0.0.dist-info/licenses/LICENSE",
+          "sha256": "<same>",
+          "size": 64,
+          "role": "license-file"
+        }
+      ]
+    },
+    "evidence": [
+      "installed-distribution-record",
+      "project-vcs-review"
+    ]
+  },
+  "license_attestation": {
+    "attestor": "Acme Engineering",
+    "attestor_kind": "organization",
+    "reviewed_license": "MIT",
+    "reviewed_license_material_sha256": "<license_material_sha256 from plan>",
+    "decision": "allow",
+    "action_scopes": [
+      "analysis",
+      "translation",
+      "local-build",
+      "package",
+      "redistribution"
+    ],
+    "acknowledgement": "REXTIO_EXTERNAL_SOURCE_LICENSE_ACK_V1"
+  }
+}
+```
+
+Authoring workflow: (1) install the exact distribution, (2) declare the C5.1
+import pin, (3) run `rextio check`, (4) copy authority fields per the rules
+above, (5) fill attestor/producer after human/org review. Trust boundary is
+project/VCS review; this preview has no cryptographic signature.
+`source_inventory` is a custom inventory, not a standards-compliant full SBOM.
+Full/signed authorization, standards SPDX/CycloneDX SBOM for Python sources /
+Rust crates / runtimes / artifacts, artifact provenance, and source-native
+implementation remain deferred (full C6 / C5.2).
 
 Resolution uses installed metadata only and never imports or executes the
 package. It requires the exact configured distribution name and version, one
@@ -497,13 +719,15 @@ no variadic parameters, and a scalar return annotation. C5.1 does not prove the
 body is lowerable, connect the function to project call sites, produce Rust,
 or authorize a native closure.
 
-`rextio build` returns `RXT060` with status
-`external-source-c6-blocked` before configured CPython/Nuitka/Cargo probes or
-artifact work. Programmatic hybrid builds raise
-`ExternalSourceBuildBlockedError` before creating artifact directories. A later
-C6 must introduce an exact source lock, license decision, SBOM, provenance
-attestation, and explicit closure/lowering authorization before any build,
-package, executable, Rust crate, or redistribution path can consume this plan.
+`rextio build` returns `RXT060` before configured CPython/Nuitka/Cargo probes or
+artifact work. Without a verified SourceLock the status is
+`external-source-c6-blocked` and programmatic hybrid builds raise
+`ExternalSourceBuildBlockedError`. With a verified SourceLock the distinct
+status is `external-source-c5-not-implemented` and programmatic builds raise
+`ExternalSourceC5NotImplementedError`: remaining call-site linkage, body
+lowerability, Rust codegen, and packaging are not implemented. Neither path
+creates artifact directories or grants redistribution authority. Null/unknown
+`license_observed` never verifies.
 
 ### Resolved `artifact_profiles`
 
@@ -739,7 +963,7 @@ class RextioPluginV2(Protocol):
 - No incremental-analysis API (deferred until latency measurements demand it;
   v1 tooling calls the batch analyzer).
 - No recursive third-party-package source promotion, device-provider discovery,
-  provider build/link hook, CUDA execution, or device support claim in 2.5.
+  provider build/link hook, CUDA execution, or device support claim through 2.6.0.
   C5.1 inventories one exact distribution but authorizes no lowering or build.
 - No name-based reservation of route strings beyond this document; new routes
   bump the contract minor version.
@@ -781,5 +1005,11 @@ class RextioPluginV2(Protocol):
    distribution/version import-policy metadata and the sanitized,
    preview-only `external_source_plan`. Keep every such plan non-distributable
    and hard-blocked at the C6 authority gate.
-9. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
+9. **Release Train C / contract 2.6.0 (unreleased):** add C6.1 authority material
+   and SourceLock authorization evidence under
+   `external_source_plan.authorization`, verified against project-owned lock
+   content hashes/sizes/source_inventory/provenance/closed license
+   attestation. Verified authorization still fails closed with the distinct
+   post-authorization C5-not-implemented block; full C6 remains pending.
+10. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

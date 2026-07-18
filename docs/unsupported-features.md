@@ -10,10 +10,11 @@ types to Rust native modules and keeps the rest of the project as Python
 fallback.
 
 The Release Train C branch adds experimental host source/executable planning,
-plugin standalone capability, and the C5.1 external-source inventory gate. It
-emits tooling contract **2.5.0**, but remains **unreleased**. PyPI 0.1.4 does
-not include those additions. Train C boundaries are called out explicitly
-below so planning records are not mistaken for broad source-AOT support.
+plugin standalone capability, the C5.1 external-source inventory gate, and the
+C6.1 bounded prebuild authorization-contract preview (not full C6). It emits
+tooling contract **2.6.0**, but remains **unreleased**. PyPI 0.1.4 does not
+include those additions. Train C boundaries are called out explicitly below so
+planning records are not mistaken for broad source-AOT support.
 
 Unsupported native features are not bugs in the fallback path. When a native
 candidate uses unsupported syntax, unsupported types, or unsafe boundaries,
@@ -354,15 +355,23 @@ that package keep the native candidate on CPython/Nuitka fallback and emit
 `RXT030`. When such a call is inside a loop, the diagnostic suggests
 function-level fallback, adding a plugin, or refactoring to a batch API.
 
-The unreleased C5.1 branch adds only a bounded inventory exception, not native
-lowering: one imported package may name an exact installed distribution/version
-with `max_depth = 1`. Rextio verifies pure-wheel metadata and RECORD hashes,
-then reports sanitized direct-module and lexical scalar-function evidence
-without importing, copying, lowering, compiling, packaging, or redistributing
-that source. Every resulting plan blocks `build` before configured toolchain or
-artifact work until C6 license/SBOM/provenance authorization exists. The CLI and
-JSON warn that dependency translation can create derivative-work obligations,
-especially under GNU/copyleft terms, and that the inventory is not legal advice.
+The unreleased C5.1/C6.1 branch adds only a bounded inventory plus prebuild
+authorization contract, not native lowering: one imported package may name an
+exact installed distribution/version with `max_depth = 1`. Rextio verifies
+pure-wheel metadata and RECORD hashes/sizes, then reports sanitized direct-
+module and lexical scalar-function evidence plus authority material without
+importing, copying, lowering, compiling, packaging, or redistributing that
+source. A project-owned `rextio.external-source.lock.json` may authorize one
+available plan (exact hashes/sizes, custom source inventory, provenance with
+subject snapshot binding, closed license attestation); Rextio never
+auto-approves licenses. Every resulting plan still blocks `build` before
+configured toolchain or artifact work: missing/invalid authorization is
+`external-source-c6-blocked`, and verified authorization is the distinct
+`external-source-c5-not-implemented` block because remaining C5.2 linkage/codegen
+is not implemented. Full C6 remains pending. The CLI and JSON warn that
+dependency translation can create derivative-work obligations, especially under
+GNU/copyleft terms, and that the inventory/authorization gate is not legal
+advice.
 
 Fallback Python code may call native functions. If fallback Python code calls a
 native function inside a Python loop, Rextio emits `RXT073` because repeated
@@ -559,8 +568,9 @@ The unreleased Train C planning records do not change these additional limits:
 - A `SourceModule` or `ModuleInitIR` report is descriptive evidence, not
   permission to execute or translate that source.
 - Installed pure-Python packages are not recursively promoted, copied, or
-  vendored. License locks, SBOM/provenance enforcement, and dependency-source
-  build authorization remain future work.
+  vendored. C6.1 may verify a project SourceLock prebuild contract, but full
+  C6, remaining C5.2 source-native linkage/codegen/packaging, standards SBOM,
+  and redistribution remain future work.
 - Draft device-provider records have no discovery, selection, build/link hook,
   generated helper injection, or runtime dispatch.
 - The CUDA Driver API inventory probe (Windows x64 and Linux x86_64/aarch64) is

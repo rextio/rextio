@@ -94,7 +94,10 @@ from rextio.plugins.capabilities import (
 )
 from rextio.plugins.loader import PluginError
 from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
-from rextio.source.external import ExternalSourceBuildBlockedError
+from rextio.source.external import (
+    ExternalSourceBuildBlockedError,
+    ExternalSourceC5NotImplementedError,
+)
 from rextio.source.planning import ensure_host_source_plan
 from rextio.targets.plan import TargetPlan, default_target_plan
 
@@ -401,10 +404,12 @@ def build_hybrid_artifact(
         executable_analysis = analysis
     blocked_plan = analysis.external_source_plan or executable_analysis.external_source_plan
     if blocked_plan is not None:
-        # C5 produces sanitized preview evidence only.  This must happen before
-        # target discovery, generated-source cleanup, Cargo, Python fallback,
-        # wheel, executable, or rust-crate work.  C6 will replace this hard gate
-        # with verified SourceLock/SBOM/provenance authority.
+        # External-source work must stop before target discovery, generated-
+        # source cleanup, Cargo, Python fallback, wheel, executable, or
+        # rust-crate work.  C6.1 verifies a project SourceLock; a verified lock
+        # still cannot claim remaining C5.2 linkage/codegen/packaging.
+        if blocked_plan.authorization_verified:
+            raise ExternalSourceC5NotImplementedError(blocked_plan)
         raise ExternalSourceBuildBlockedError(blocked_plan)
     fallback_strategy = resolve_executable_fallback(executable_fallback, executable_hybrid_runtime)
     toolchain = toolchain or ToolchainConfig()
