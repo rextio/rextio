@@ -513,9 +513,10 @@ Contract 2.3 adds two declarative objects to `rextio capabilities`:
 
 Capabilities is declaration/configuration introspection. It does not resolve an
 `ArtifactProfile`, inspect local hardware, select a device provider, or claim
-device support. The draft provider records and the Windows CUDA inventory tool
-are documented in the [device-provider draft](device-provider.md) and
-[Windows CUDA validation guide](../testing/windows-cuda-validation.md). Every
+device support. The draft provider records and the CUDA Driver API inventory
+tool (Windows + Linux hosts) are documented in the
+[device-provider draft](device-provider.md) and
+[CUDA driver validation guide](../testing/cuda-driver-validation.md). Every
 draft preflight/probe result has `support_claim: false`.
 
 ## `rextio capabilities --json`

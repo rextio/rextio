@@ -44,8 +44,8 @@ An index of the project's documentation. See the top-level
 
 ## Testing guides
 
-- [Windows CUDA inventory validation](testing/windows-cuda-validation.md) —
-  bounded Driver API inventory instructions. Every report carries
+- [CUDA Driver API inventory validation](testing/cuda-driver-validation.md) —
+  Windows+Linux bounded Driver API inventory instructions. Every report carries
   `support_claim: false`; this is not CUDA execution support.
 
 ## Project

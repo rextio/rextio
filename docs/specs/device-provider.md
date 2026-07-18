@@ -59,8 +59,8 @@ third-party provider API; none is implied by this draft.
    architecture, runtime, driver, ownership, and lifetime contract.
 
 A successful preflight cannot promote build-only evidence to certified device
-support. Standard GitHub-hosted compilation and the Windows inventory probe do
-not establish CUDA execution support.
+support. Standard GitHub-hosted compilation and the Windows/Linux CUDA Driver
+API inventory probe do not establish CUDA execution support.
 
 ## Trust boundary
 

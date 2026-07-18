@@ -159,18 +159,19 @@ exact additive shape. Contract-major 2 consumers must ignore unknown fields;
 Train C does not change diagnostic positions, route, native-status, rejection,
 or promotion-assessment semantics.
 
-## Device-provider boundary and Windows CUDA inventory
+## Device-provider boundary and CUDA Driver API inventory
 
 Train C also adds draft records that keep domain lowering plugins separate from
 future hardware/runtime providers. There is no discovery, provider selection,
 build/link hook, runtime dispatch, or CUDA provider in this train. See the
 [device-provider API draft](specs/device-provider.md).
 
-The no-dependency Windows Rust probe only inventories a bounded set of NVIDIA
-Driver API symbols and device facts. It never creates a context, manages
-memory, launches a kernel, or links generated code. Every result has
-`support_claim: false`, including a report that successfully enumerates a GPU.
-See [Windows CUDA inventory validation](testing/windows-cuda-validation.md).
+The no-dependency Rust probe inventories a bounded set of NVIDIA Driver API
+symbols and device facts on Windows x64 and Linux x86_64/aarch64. It never
+creates a context, manages memory, launches a kernel, or links generated code.
+Every result has `support_claim: false`, including a report that successfully
+enumerates a GPU. See
+[CUDA Driver API inventory validation](testing/cuda-driver-validation.md).
 
 ## Deferred work
 

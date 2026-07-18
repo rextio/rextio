@@ -552,11 +552,11 @@ The unreleased Train C planning records do not change these additional limits:
   build authorization remain future work.
 - Draft device-provider records have no discovery, selection, build/link hook,
   generated helper injection, or runtime dispatch.
-- The Windows CUDA inventory probe is not CUDA support. It does not create a
-  context, allocate/transfer memory, create a stream, load a module, launch a
-  kernel, or test generated artifacts. Every report has
-  `support_claim: false`; see
-  [Windows CUDA inventory validation](testing/windows-cuda-validation.md).
+- The CUDA Driver API inventory probe (Windows x64 and Linux x86_64/aarch64) is
+  not CUDA support. It does not create a context, allocate/transfer memory,
+  create a stream, load a module, launch a kernel, or test generated artifacts.
+  Every report has `support_claim: false`; see
+  [CUDA Driver API inventory validation](testing/cuda-driver-validation.md).
 
 Nuitka fallback packaging is experimental in 0.1.0. If requested and not
 available, Rextio reports a clear `RXT060` error and suggests CPython fallback.

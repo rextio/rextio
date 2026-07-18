@@ -22,7 +22,7 @@ pytestmark = [
 def test_windows_cuda_probe_writes_a_truthful_non_support_report(tmp_path: Path) -> None:
     repository_root = Path(__file__).resolve().parents[2]
     script = repository_root / "scripts" / "validate-windows-cuda.ps1"
-    output = tmp_path / "windows-cuda-probe.json"
+    output = tmp_path / "cuda-driver-probe.json"
     target = tmp_path / "cargo-target"
     powershell = shutil.which("pwsh") or shutil.which("powershell.exe")
     assert powershell is not None, "PowerShell is required for Windows CUDA validation"
@@ -51,7 +51,7 @@ def test_windows_cuda_probe_writes_a_truthful_non_support_report(tmp_path: Path)
     assert completed.returncode == 0, completed.stderr
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["schema_version"] == "1"
-    assert report["probe"] == "rextio-windows-cuda-probe"
+    assert report["probe"] == "rextio-cuda-driver-probe"
     assert report["support_claim"] is False
     assert report["target"]["os"] == "windows"
     assert report["status"] in {"probe-complete", "unavailable", "unsupported", "error"}

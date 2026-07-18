@@ -1,5 +1,5 @@
 [package]
-name = "rextio-windows-cuda-probe"
+name = "rextio-cuda-driver-probe"
 version = "0.0.0"
 edition = "2021"
 publish = false

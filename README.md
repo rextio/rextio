@@ -704,7 +704,7 @@ Plans, not promises - priorities can shift with alpha feedback:
 - [Unsupported features](docs/unsupported-features.md) — the 0.1.0 subset boundaries.
 - [Host source-AOT and native executables](docs/source-aot-and-executables.md) — unreleased Train C planning and initializer limits.
 - [Device-provider API draft](docs/specs/device-provider.md) — non-operational hardware/runtime contract boundary.
-- [Windows CUDA inventory validation](docs/testing/windows-cuda-validation.md) — bounded probe instructions; not a CUDA support claim.
+- [CUDA Driver API inventory validation](docs/testing/cuda-driver-validation.md) — Windows+Linux bounded probe instructions; not a CUDA support claim.
 - [Security model](SECURITY.md) — trust boundary and how to report vulnerabilities.
 - [Contributing](CONTRIBUTING.md) — setup, gates, and conventions.
 - [Changelog](CHANGELOG.md).

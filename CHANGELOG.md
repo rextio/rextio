@@ -46,14 +46,23 @@ unreleased tooling contract **2.3.0**.
   `manifest()` / `preflight()` records. There is no provider discovery,
   selection, build/link hook, or runtime dispatch; every preflight result has
   `support_claim: false`.
-- Add a no-dependency Windows x64 CUDA Driver API inventory probe and PowerShell
-  validation workflow. The probe resolves `nvcuda.dll` from System32 only and
-  uses just a six-symbol inventory surface, never creates a context or launches
-  a kernel, and always reports `support_claim: false`; it is not CUDA support or
+- Add a no-dependency CUDA Driver API inventory probe and Windows/Linux
+  validation workflows. On Windows x64 the probe resolves `nvcuda.dll` from
+  System32 only; on Linux x86_64/aarch64 it loads arch-split reviewed absolute
+  `libcuda.so.1` candidates (specialized WSL2/NVIDIA-container/Jetson mounts
+  before generic distro paths), canonicalizes under reviewed system roots with
+  a group-/world-writable ancestry provenance guard (`0o022`), distinguishes
+  `LIBCUDA_SO_NOT_FOUND` from `LIBCUDA_SO_LOAD_FAILED` without path/`dlerror`
+  leakage, and fails closed otherwise. Loose and strict (`--require-device` /
+  `REXTIO_LINUX_CUDA_REQUIRE_DEVICE=1`) Linux validation modes are documented;
+  ordinary e2e CI runs host `cargo test` on ubuntu/macOS and a loose Linux
+  validate plus aarch64 compile-only `cargo check`. Both OS paths share the
+  same six-symbol inventory surface, never create a context or launch a kernel,
+  and always report `support_claim: false`; this is not CUDA support or
   certification.
 - Document the released-versus-unreleased boundary, explicit executable
-  fallback, source initializer limitations, device-provider draft, and Windows
-  validation procedure.
+  fallback, source initializer limitations, device-provider draft, and
+  Windows/Linux CUDA inventory validation procedure.
 
 ## 0.1.4 — 2026-07-18
 
