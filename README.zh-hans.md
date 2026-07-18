@@ -4,8 +4,10 @@
 
 **把符合条件的 typed Python 函数编译为 Rust，其余一切保留在 Python fallback 上。**
 
-Rextio 0.1.3 是 alpha 阶段本地构建工具（2026-07-17 已发布到 PyPI，
-取代先前的 **0.1.2**；plugin API **1.3**）。它找出可以安全下沉到 Rust
+此源代码树是使用 plugin API **1.3**、tooling contract **2.2.0** 的未发布
+Rextio **0.1.4 候选版本**。当前 PyPI 版本仍是 2026-07-17 发布的
+**0.1.3**（tooling contract 2.1.0）。Rextio 是 alpha 阶段本地构建工具，
+它找出可以安全下沉到 Rust
 的带类型 Python 函数，用 PyO3 提前（ahead-of-time）编译它们，其余部分
 全部继续通过生成的 Python fallback 代码运行 — import 路径与行为保持不变。
 
@@ -258,7 +260,7 @@ CLI 参数 > 环境变量 > rextio.toml > 内置默认值
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.3 中唯一实现的 native 目标是 Rust。
+0.1.4 源代码候选版本中唯一实现的 native 目标是 Rust。
 
 Rextio 插件是用 `pip` 或 `uv` 等工具安装的普通 Python 包。插件包通过
 `rextio.plugins` entry point 组暴露元数据，包括它覆盖的 Python 包名。
@@ -290,8 +292,12 @@ default_external_policy = "fallback"
 （见 [tooling contract](docs/specs/tooling-contract.md)）。Core **0.1.3** 于
 2026-07-17 发布，附带 plugin API 1.3 与 tooling contract **2.1.0**（相对
 core 0.1.2 发出的 **2.0.0** 形状为 additive；支持 dual-map 的 `2.x` 消费者
-保持兼容）。一般依赖下沉不随发行版捆绑；`try-native` 是显式的规划策略，
-没有安全的 direct 下沉时仍会 fallback。
+保持兼容）。
+未发布的 **0.1.4 源代码候选版本**保留 plugin API 1.3，并发出 tooling
+contract **2.2.0**；它在不改变既有 route/status/rejection 含义的前提下，
+加入独立的 promotion assessment、可信 marker 意图及函数/名称范围。
+一般依赖下沉不随发行版捆绑；`try-native` 是显式的规划策略，没有安全的
+direct 下沉时仍会 fallback。
 
 ## Native 选择
 
@@ -370,7 +376,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.3 刻意支持一个小的 subset。这个 subset 就是以 native
+Rextio 0.1.4 源代码候选版本刻意支持一个小的 subset。这个 subset 就是以 native
 Rust 运行的代码。
 
 支持的类型:

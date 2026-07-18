@@ -5,8 +5,10 @@
 **Compiles eligible typed Python functions to Rust and keeps everything
 else on the Python fallback.**
 
-Rextio 0.1.3 is an alpha-stage local build tool for Python projects (published
-to PyPI on 2026-07-17, superseding the previous **0.1.2** release). It finds
+This source tree is the unreleased Rextio **0.1.4 candidate** with plugin API
+**1.3** and tooling contract **2.2.0**. The current PyPI release remains
+**0.1.3** (published 2026-07-17, tooling contract 2.1.0). Rextio is an
+alpha-stage local build tool for Python projects. It finds
 typed Python functions that can be safely lowered to Rust, compiles them ahead
 of time with PyO3, and keeps everything else running through generated Python
 fallback code - same imports, same behavior.
@@ -291,7 +293,7 @@ Common settings:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Rust is the only implemented native target in 0.1.3.
+Rust is the only implemented native target in the 0.1.4 source candidate.
 
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry
@@ -336,6 +338,10 @@ requires core **>= 0.1.2,<0.2**.
 published on 2026-07-17 with plugin API 1.3 and tooling contract **2.1.0**
 (additive over the **2.0.0** shape emitted by core 0.1.2; dual-map `2.x`
 consumers remain compatible).
+The unreleased **0.1.4 source candidate** retains plugin API 1.3 and emits
+tooling contract **2.2.0**, adding isolated promotion assessments, trusted
+marker intent, and reliable function/name ranges without changing legacy
+route/status/rejection meanings.
 General dependency lowering is not bundled; `try-native` is an explicit
 planning policy and still falls back when no safe direct lowering exists.
 
@@ -420,7 +426,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## Supported Direct Rust Subset
 
-Rextio 0.1.3 supports a deliberately small subset. This is the code
+The Rextio 0.1.4 source candidate supports a deliberately small subset. This is the code
 that runs as native Rust.
 
 Supported types include:

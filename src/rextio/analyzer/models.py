@@ -170,6 +170,30 @@ class ImportPolicyDecision:
         }
 
 
+@dataclass(frozen=True)
+class SourcePosition:
+    """A contract-2 source position (1-based line, 0-based UTF-8 byte column)."""
+
+    line: int
+    column: int
+
+    def to_dict(self) -> dict[str, int]:
+        """Return the JSON-serializable position object."""
+        return {"line": self.line, "column": self.column}
+
+
+@dataclass(frozen=True)
+class SourceRange:
+    """A half-open source range used by tooling-contract 2.2 editor records."""
+
+    start: SourcePosition
+    end: SourcePosition
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-serializable half-open range object."""
+        return {"start": self.start.to_dict(), "end": self.end.to_dict()}
+
+
 @dataclass
 class FunctionAnalysis:
     """The analysis of a single candidate function: acceptance, types, and diagnostics."""
@@ -180,6 +204,24 @@ class FunctionAnalysis:
     file_path: str
     line: int
     column: int
+    # Tooling-contract 2.2 source identity. Actual parser-produced function
+    # records always carry both ranges; optionality keeps this analyzer model
+    # usable by internal validators and focused unit-test probes that are never
+    # serialized as module report records.
+    source_range: SourceRange | None = None
+    name_range: SourceRange | None = None
+    # Statically proven Rextio marker intent. This is independent from plugin
+    # ownership: an explicitly-native function lowered by a plugin remains
+    # marker_kind="native" while its promotion provenance is plugin-managed.
+    marker_kind: str = "none"
+    # Promotion assessment state that cannot be reconstructed from the legacy
+    # route/status fields. Probe diagnostics live here instead of in
+    # ``diagnostics`` so failed automatic discovery remains ordinary fallback,
+    # never a project/build error.
+    promotion_evidence: list[Diagnostic] = field(default_factory=list)
+    assessment_provenance: str | None = None
+    assessment_skip_reason: str | None = None
+    assessment_plugin_managed: bool = False
     is_native_candidate: bool = False
     accepted: bool = False
     # True only when the function carries an explicit `@rextio.native` marker.
@@ -448,6 +490,87 @@ class FunctionAnalysis:
             return
         self.diagnostics.append(diagnostic)
 
+    def _promotion_assessment_dict(self) -> dict[str, object]:
+        """Serialize the isolated tooling-contract 2.2 promotion assessment."""
+        provenance = self.assessment_provenance
+        skip_reason = self.assessment_skip_reason
+
+        # Route/marker facts that can change during the project boundary pass
+        # take precedence over the parse-time hint. In particular, a function
+        # accepted through a plugin is plugin-managed even if it was explicitly
+        # requested, while a runtime shim with informational claims is not.
+        if self.marker_kind == "exempt":
+            provenance = "explicit-exempt"
+            skip_reason = "explicit-exemption"
+        elif self.external_accelerator is not None and self.marker_kind == "none":
+            provenance = "external-accelerator"
+            skip_reason = "external-accelerator"
+        elif self.route.startswith("native-plugin:"):
+            provenance = "plugin-managed"
+            skip_reason = None
+        elif (
+            not self.accepted
+            and self.assessment_plugin_managed
+            and not self.native_runtime_semantics
+        ):
+            provenance = "plugin-managed"
+            skip_reason = None
+        elif self.marker_kind == "native" and skip_reason is None:
+            provenance = "explicit-native"
+        elif provenance is None:
+            if self.accepted or self.is_native_candidate or self.promotion_evidence:
+                provenance = "auto"
+            else:
+                provenance = "policy-skip"
+                skip_reason = "automatic-promotion-disabled"
+
+        if skip_reason is not None:
+            return {
+                "status": "skipped",
+                "provenance": provenance,
+                "diagnostic_codes": [],
+                "diagnostics": [],
+                "skip_reason": skip_reason,
+            }
+
+        evidence = self.promotion_evidence or self.diagnostics
+        serialized: list[dict[str, object]] = []
+        for diagnostic in evidence:
+            # Function-level diagnostics normally carry exact source locations.
+            # If a provider omits one, anchoring it to the enclosing definition
+            # preserves a usable required position without leaking it into the
+            # legacy/project diagnostic channel.
+            line = diagnostic.line if diagnostic.line is not None else self.line
+            column = diagnostic.column if diagnostic.column is not None else self.column
+            serialized.append(
+                {
+                    "kind": "blocker" if diagnostic.severity == "error" else "advisory",
+                    "code": diagnostic.code,
+                    "message": diagnostic.message,
+                    "suggestion": diagnostic.suggestion,
+                    "line": line,
+                    "column": column,
+                    "end_line": None,
+                    "end_column": None,
+                }
+            )
+        serialized.sort(
+            key=lambda item: (
+                item["line"],
+                item["column"],
+                item["code"],
+                item["message"],
+            )
+        )
+        codes = sorted({str(item["code"]) for item in serialized})
+        return {
+            "status": "eligible" if self.accepted else "ineligible",
+            "provenance": provenance,
+            "diagnostic_codes": codes,
+            "diagnostics": serialized,
+            "skip_reason": None,
+        }
+
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this function analysis."""
         data: dict[str, object] = {
@@ -463,6 +586,8 @@ class FunctionAnalysis:
             "native_status": self.native_status,
             "rejection_codes": self.rejection_codes,
             "explicitly_marked": self.explicitly_marked,
+            "marker_kind": self.marker_kind,
+            "promotion_assessment": self._promotion_assessment_dict(),
             "native_target_language": self.native_target_language,
             "native_runtime_semantics": self.native_runtime_semantics,
             "is_embedding_candidate": self.is_embedding_candidate,
@@ -479,6 +604,9 @@ class FunctionAnalysis:
             "plugin_type_keys": sorted(self.plugin_type_keys),
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
+        if self.source_range is not None and self.name_range is not None:
+            data["source_range"] = self.source_range.to_dict()
+            data["name_range"] = self.name_range.to_dict()
         # Only present for functions kept off embedding for overflow safety, so the
         # common case keeps a stable report shape.
         return data

@@ -5,8 +5,10 @@
 **적합한 typed Python 함수는 Rust로 컴파일하고, 나머지는 전부 Python
 fallback으로 유지합니다.**
 
-Rextio 0.1.3은 alpha 단계 로컬 빌드 도구입니다(2026-07-17 PyPI 게시,
-이전 **0.1.2** 릴리스를 대체; plugin API **1.3**). 타입이 지정된 Python
+이 소스 트리는 plugin API **1.3**, tooling contract **2.2.0**을 사용하는
+미출시 Rextio **0.1.4 후보**입니다. 현재 PyPI 릴리스는 2026-07-17에 게시된
+**0.1.3**(tooling contract 2.1.0)입니다. Rextio는 alpha 단계 로컬 빌드
+도구입니다. 타입이 지정된 Python
 함수 중 안전하게 Rust로 낮출 수 있는 것을 찾아 PyO3로 미리(ahead-of-time)
 컴파일하고, 나머지는 전부 생성된 Python fallback 코드로 계속 실행합니다 —
 import 경로도, 동작도 그대로입니다.
@@ -268,7 +270,7 @@ CLI 파라미터 > 환경변수 > rextio.toml > 내장 기본값
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.3에서 구현된 native target은 Rust뿐입니다.
+0.1.4 소스 후보에서 구현된 native target은 Rust뿐입니다.
 
 Rextio 플러그인은 `pip`이나 `uv` 같은 도구로 설치하는 평범한 Python
 패키지입니다. 플러그인 패키지는 자신이 다루는 Python 패키지 이름을 포함한
@@ -306,6 +308,9 @@ rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1로 게시되었습니다(
 contract](docs/specs/tooling-contract.md) 참고). Core **0.1.3**은 plugin API
 1.3과 tooling contract **2.1.0**(core 0.1.2가 내보낸 **2.0.0** 형태 위의
 additive; dual-map `2.x` 소비자는 호환)으로 2026-07-17에 게시되었습니다.
+미출시 **0.1.4 소스 후보**는 plugin API 1.3을 유지하고 tooling contract
+**2.2.0**을 내보냅니다. legacy route/status/rejection 의미는 바꾸지 않으면서
+분리된 승격 판정, 신뢰된 marker 의도, 함수/이름 range를 추가합니다.
 일반 의존성 lowering은 번들되지 않습니다. `try-native`는 명시적 계획
 정책이며, 안전한 direct lowering이 없으면 여전히 fallback합니다.
 
@@ -389,7 +394,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## 지원하는 direct Rust subset
 
-Rextio 0.1.3은 의도적으로 작은 subset을 지원합니다. 이 subset이
+Rextio 0.1.4 소스 후보는 의도적으로 작은 subset을 지원합니다. 이 subset이
 native Rust로 실행되는 코드입니다.
 
 지원 타입:

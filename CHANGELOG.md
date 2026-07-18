@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.4 — Unreleased
+
+**Source candidate only.** The source tree identifies as `0.1.4`; the current
+published PyPI release remains **0.1.3**. Plugin API stays at **1.3**.
+
+### Tooling contract 2.2.0
+
+- Add per-function `marker_kind`, isolated `promotion_assessment` evidence,
+  and reliable half-open `source_range` / `name_range` records using 1-based
+  lines and 0-based UTF-8 byte columns.
+- Preserve failed automatic-promotion probe diagnostics and actionable
+  suggestions without adding them to legacy function/project diagnostics,
+  build errors, or CLI failure state.
+- Serialize explicit exemptions and report unmarked module async functions
+  plus direct methods of top-level classes as intentional skipped assessments.
+- Keep the legacy meanings of `route`, `native_status`, and
+  `rejection_codes` unchanged; expected automatic fallback remains
+  `fallback-python` / `not-candidate` with no rejection codes.
+
 ## 0.1.3 — 2026-07-17
 
 **Published release.** Package version `0.1.3` is tagged and published to PyPI
