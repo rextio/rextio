@@ -193,3 +193,12 @@ def test_identifiers_and_collection_values_are_whitespace_canonicalized() -> Non
     assert requirement.logical_device == "gpu"
     assert requirement.backend == "cuda"
     assert requirement.features == ("tensor",)
+
+
+@pytest.mark.parametrize(
+    "reference",
+    ["/Users/private/project/app.py", "C:\\private\\project\\app.py", "../app.py"],
+)
+def test_artifact_provenance_rejects_machine_private_paths(reference: str) -> None:
+    with pytest.raises(ValueError, match="project-relative"):
+        ArtifactProvenance(source_references=(reference,))

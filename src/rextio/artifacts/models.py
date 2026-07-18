@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Callable, TypeVar
 
 
@@ -46,6 +47,14 @@ def _sorted_strings(values: tuple[str, ...]) -> tuple[str, ...]:
     if any(not value for value in normalized):
         raise ValueError("canonical string collections must not contain empty values")
     return tuple(sorted(set(normalized)))
+
+
+def _validate_project_relative_reference(reference: str) -> None:
+    """Reject provenance references that disclose a machine-private path."""
+    posix = PurePosixPath(reference)
+    windows = PureWindowsPath(reference)
+    if posix.is_absolute() or windows.is_absolute() or ".." in posix.parts or ".." in windows.parts:
+        raise ValueError("artifact provenance source references must be project-relative")
 
 
 def _reject_conflicting_named_requirements(
@@ -131,7 +140,10 @@ class ArtifactProvenance:
         if not self.producer.strip():
             raise ValueError("artifact provenance producer must not be empty")
         object.__setattr__(self, "producer", self.producer.strip())
-        object.__setattr__(self, "source_references", _sorted_strings(self.source_references))
+        source_references = _sorted_strings(self.source_references)
+        for reference in source_references:
+            _validate_project_relative_reference(reference)
+        object.__setattr__(self, "source_references", source_references)
         object.__setattr__(self, "evidence", _sorted_strings(self.evidence))
 
     def to_dict(self) -> dict[str, object]:
@@ -219,9 +231,7 @@ class TargetCapability:
             _sorted_unique(self.artifact_kinds, key=lambda kind: kind.value),
         )
         object.__setattr__(self, "cpu_features", _sorted_strings(self.cpu_features))
-        object.__setattr__(
-            self, "accelerator_backends", _sorted_strings(self.accelerator_backends)
-        )
+        object.__setattr__(self, "accelerator_backends", _sorted_strings(self.accelerator_backends))
         object.__setattr__(
             self,
             "device_requirements",
@@ -239,9 +249,7 @@ class TargetCapability:
                 ),
             ),
         )
-        object.__setattr__(
-            self, "evidence_references", _sorted_strings(self.evidence_references)
-        )
+        object.__setattr__(self, "evidence_references", _sorted_strings(self.evidence_references))
         if self.certification_tier is not CertificationTier.UNSUPPORTED:
             if not self.target_triples or not self.artifact_kinds:
                 raise ValueError(
@@ -301,9 +309,7 @@ class ArtifactProfile:
         elif self.python_fallback_backend is not None:
             raise ValueError("python fallback backend is only valid for a host extension artifact")
         _reject_conflicting_named_requirements(self.abi_requirements, label="ABI")
-        _reject_conflicting_named_requirements(
-            self.runtime_requirements, label="runtime"
-        )
+        _reject_conflicting_named_requirements(self.runtime_requirements, label="runtime")
         object.__setattr__(
             self,
             "abi_requirements",
