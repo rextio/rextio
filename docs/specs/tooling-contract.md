@@ -1,8 +1,7 @@
 # Spec: Machine-Readable Tooling Contract
 
-Status: **draft** (experimental tier; the unreleased 0.1.4 source candidate
-emits `contract_version` `2.2.0`; the current published 0.1.3 producer remains
-`2.1.0`)
+Status: **draft** (experimental tier; the current producer is core 0.1.4,
+published on 2026-07-18 with `contract_version` `2.2.0`)
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
 ## Purpose
@@ -98,6 +97,10 @@ package dependencies.
 major-1-only rextio-lsp 0.1.0 is an unsupported pairing (degraded guidance at
 best; residual risk of mis-rendered RXT000 ranges if a server still applies
 the old special case).
+
+Release Train B reused the consumer-first gate for the additive 2.2 shape:
+**rextio-lsp 0.1.2 → core 0.1.4**. That required sequence completed on
+2026-07-18; the LSP consumer was available before the 2.2 producer.
 
 ## Route taxonomy
 
@@ -507,10 +510,9 @@ class RextioPluginV2(Protocol):
    `plugin_claims[].receiver` / `plugin_claims[].callables` when present.
    Column semantics unchanged from `2.0.0`. Dual-map `2.x` consumers that
    tolerate unknown fields remain compatible.
-5. **0.1.4 source candidate / contract 2.2.0 (Release Train B, implemented but
-   unpublished):** the producer adds the frozen promotion-assessment and range
-   fields above without reclassifying expected automatic fallback as a build
-   error. The current published producer remains core 0.1.3 / contract 2.1.0;
-   source-candidate implementation does not imply package publication.
+5. **0.1.4 / contract 2.2.0 (published 2026-07-18):** Release Train B shipped
+   rextio-lsp 0.1.2 before core 0.1.4. The producer adds the frozen
+   promotion-assessment and range fields above without reclassifying expected
+   automatic fallback as a build error. Plugin API remains 1.3.
 6. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

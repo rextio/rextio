@@ -1,14 +1,15 @@
-# Rextio 0.1.3 Notes
+# Rextio 0.1.4 Notes
 
 > **Security:** Rextio analyzes source, generates Rust, and runs external build
 > tools — treat it like a compiler and only build trusted projects. See
 > [`SECURITY.md`](./SECURITY.md) for the threat model and protections.
 
-> **Release status:** Package version **0.1.3** is published to PyPI on
-> 2026-07-17 (plugin API **1.3**; tooling contract **2.1.0**), superseding
-> **0.1.2** (2026-07-14; tooling contract **2.0.0**). Related 0.1.2-line
+> **Release status:** Package version **0.1.4** is published to PyPI on
+> 2026-07-18 (plugin API **1.3**; tooling contract **2.2.0**), superseding
+> **0.1.3** (2026-07-17; tooling contract **2.1.0**). Related 0.1.2-line
 > releases were published in the completed strict order: rextio-lsp 0.1.1 →
-> core 0.1.2 → rextio-numpy 0.1.1.
+> core 0.1.2 → rextio-numpy 0.1.1. Release Train B also completed consumer
+> first: rextio-lsp 0.1.2 → core 0.1.4.
 > See [docs/specs/tooling-contract.md](./docs/specs/tooling-contract.md).
 
 Rextio 0.1.1 added the machine-readable tooling contract (`rextio
@@ -26,7 +27,10 @@ immutable-borrow native chaining, type-level Rust module support,
 method-oriented receiver/callable/schema metadata, and bool/string static
 keyword literals) plus identity-authority hardening. API 1.3 remains
 Experimental; API 1.1/1.2 providers keep loading; dual-map `2.x` contract
-consumers that tolerate unknown fields remain compatible. See
+consumers that tolerate unknown fields remain compatible. **0.1.4** advances
+the tooling contract to **2.2.0**, adding isolated promotion assessments,
+trusted marker intent, and reliable function/name ranges without changing
+legacy route/status/rejection meanings. See
 [docs/specs/](./docs/README.md) and [CHANGELOG.md](./CHANGELOG.md); the core
 workflow below is unchanged from 0.1.0.
 

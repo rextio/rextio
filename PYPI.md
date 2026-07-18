@@ -1,9 +1,9 @@
 # Rextio
 
-This source tree is the unreleased Rextio **0.1.4 candidate** with plugin API
-**1.3** and tooling contract **2.2.0**. The current published PyPI package
-remains **0.1.3** (2026-07-17; plugin API 1.3; tooling contract 2.1.0), which
-superseded 0.1.2 and its tooling contract 2.0.0.
+Rextio **0.1.4** is an alpha-stage local build tool for Python projects,
+published to PyPI on 2026-07-18 with plugin API **1.3** and tooling contract
+**2.2.0**. It supersedes 0.1.3 and its tooling contract 2.1.0. Release Train B
+completed in consumer-first order: rextio-lsp 0.1.2, then core 0.1.4.
 
 ```text
 pip install rextio
