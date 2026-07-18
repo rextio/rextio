@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from rextio.artifacts.models import ArtifactKind, FallbackStrategy
 from rextio.artifacts.profiles import (
+    detect_host_target_triple,
     host_executable_profile,
     host_extension_profile,
     rust_crate_profile,
@@ -46,3 +49,30 @@ def test_rust_crate_profile_has_no_python_fallback() -> None:
     assert profile.kind is ArtifactKind.RUST_CRATE
     assert profile.packaging_backend == "cargo-crate"
     assert profile.fallback is None
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "linux_abi", "expected"),
+    [
+        ("Darwin", "arm64", None, "aarch64-apple-darwin"),
+        ("Darwin", "x86_64", None, "x86_64-apple-darwin"),
+        ("Linux", "AMD64", "glibc", "x86_64-unknown-linux-gnu"),
+        ("Linux", "aarch64", "musl", "aarch64-unknown-linux-musl"),
+        ("Windows", "AMD64", None, "x86_64-pc-windows-msvc"),
+        ("Windows", "ARM64", None, "aarch64-pc-windows-msvc"),
+    ],
+)
+def test_host_target_triple_mapping(
+    system: str,
+    machine: str,
+    linux_abi: str | None,
+    expected: str,
+) -> None:
+    assert (
+        detect_host_target_triple(system=system, machine=machine, linux_abi=linux_abi) == expected
+    )
+
+
+def test_host_target_triple_fails_closed_for_unknown_platform() -> None:
+    with pytest.raises(ValueError, match="unsupported host platform"):
+        detect_host_target_triple(system="Plan9", machine="x86_64")

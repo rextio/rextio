@@ -9,6 +9,8 @@ from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
+from rextio.artifacts.closure import closure_requires_prebuild_failure
+from rextio.artifacts.entry_graph import executable_entry_graph
 from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
 from rextio.build.preflight import (
     format_missing_tools,
@@ -124,6 +126,7 @@ def run(args: Namespace) -> int:
                 ("executable", "name"): args.executable_name,
                 ("executable", "backend"): args.executable_backend,
                 ("executable", "python"): args.executable_python,
+                ("executable", "fallback"): args.executable_fallback,
                 ("toolchain", "cargo"): args.cargo,
                 ("toolchain", "maturin"): args.maturin,
                 ("toolchain", "nuitka"): args.nuitka,
@@ -246,21 +249,6 @@ def run(args: Namespace) -> int:
         reporter.error(f"Suggestion: run rextio check {project_root}")
         return 1
 
-    # Only require the native toolchain when there is actually native code to
-    # compile; a pure-Python project still builds its CPython fallback artifact.
-    if analysis.requires_native_build():
-        missing_tools = missing_build_tools(
-            native_backend=target_plan.spec.language, toolchain=config.toolchain
-        )
-        if missing_tools:
-            reporter.error(format_missing_tools(missing_tools))
-            return 1
-        rust_toolchain_error = _rust_toolchain_error(config, config.rust.build_tool)
-        if rust_toolchain_error is not None:
-            reporter.error("RXT060 Build failed while preparing the Rust toolchain.")
-            reporter.error(rust_toolchain_error)
-            return 1
-
     # The native Rust executable backend analyzes in delegate mode so the
     # entrypoint can call project fallback functions through the external CPython
     # dispatcher. This is a separate analysis, so it does not change the wheel /
@@ -290,6 +278,32 @@ def run(args: Namespace) -> int:
             reporter.error(f"RXT060 Plugin error: {exc}")
             return 1
 
+    executable_prebuild_failure = False
+    if executable_analysis is not None and config.executable.entrypoint is not None:
+        closure = executable_entry_graph(
+            executable_analysis,
+            config.executable.entrypoint.replace(":", ".", 1),
+            config.executable.fallback,
+        )
+        executable_prebuild_failure = closure_requires_prebuild_failure(closure)
+
+    # Only require the native toolchain when there is actually native code to
+    # compile; a pure-Python project still builds its CPython fallback artifact.
+    # A pre-build closure failure is reported before any Cargo preflight or
+    # invocation, so users see the entry/edge reason even without a Rust toolchain.
+    if analysis.requires_native_build() and not executable_prebuild_failure:
+        missing_tools = missing_build_tools(
+            native_backend=target_plan.spec.language, toolchain=config.toolchain
+        )
+        if missing_tools:
+            reporter.error(format_missing_tools(missing_tools))
+            return 1
+        rust_toolchain_error = _rust_toolchain_error(config, config.rust.build_tool)
+        if rust_toolchain_error is not None:
+            reporter.error("RXT060 Build failed while preparing the Rust toolchain.")
+            reporter.error(rust_toolchain_error)
+            return 1
+
     result = build_hybrid_artifact(
         project_root,
         analysis,
@@ -307,7 +321,7 @@ def run(args: Namespace) -> int:
         build_timeout_seconds=config.build.build_timeout_seconds,
         executable_analysis=executable_analysis,
         executable_python=config.executable.python,
-        executable_hybrid_runtime=config.executable.hybrid_runtime,
+        executable_fallback=config.executable.fallback,
         toolchain=config.toolchain,
     )
     lines = ["Rextio build", f"  target language: {target_plan.spec.language}"]
@@ -342,6 +356,8 @@ def run(args: Namespace) -> int:
     lines.append(f"  executable artifact: {result.executable_build.status}")
     if config.executable.entrypoint:
         lines.append(f"  executable backend: {config.executable.backend}")
+        if config.executable.backend == "rust":
+            lines.append(f"  executable fallback: {config.executable.fallback.value}")
     if result.native_build.installed_path:
         lines.append(f"  native module: {result.native_build.installed_path}")
     if result.wheel_build.path:

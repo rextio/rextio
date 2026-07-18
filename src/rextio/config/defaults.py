@@ -42,7 +42,10 @@ DEFAULT_CONFIG: dict[str, dict[str, object]] = {
         "backend": "zipapp",
         "nuitka_mode": "standalone",
         "python": None,
-        "hybrid_runtime": "source",
+        # Keep both spellings unspecified here so the loader can distinguish an
+        # explicit compatibility alias from the python-subprocess default.
+        "fallback": None,
+        "hybrid_runtime": None,
     },
     "toolchain": {
         "cargo": None,

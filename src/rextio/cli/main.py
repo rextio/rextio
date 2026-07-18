@@ -215,14 +215,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     build_parser_.add_argument(
+        "--executable-fallback",
+        choices=("error", "python-subprocess", "nuitka-sidecar"),
+        default=None,
+        help=(
+            "Fallback strategy for an open Rust executable entry graph. "
+            "Overrides REXTIO_EXECUTABLE_FALLBACK and [executable] fallback."
+        ),
+    )
+    build_parser_.add_argument(
         "--hybrid-runtime",
         choices=("source", "nuitka"),
         default=None,
         help=(
-            "How the rust backend ships delegated Python: 'source' (dispatcher + "
-            "project source, run with python) or 'nuitka' (a self-contained compiled "
-            "dispatcher, no separate Python install). Overrides REXTIO_HYBRID_RUNTIME "
-            "and [executable] hybrid_runtime."
+            "Compatibility alias for --executable-fallback: 'source' maps to "
+            "'python-subprocess' and 'nuitka' maps to 'nuitka-sidecar'. Overrides "
+            "REXTIO_HYBRID_RUNTIME and [executable] hybrid_runtime."
         ),
     )
     _add_policy_options(build_parser_)

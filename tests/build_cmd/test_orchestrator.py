@@ -13,10 +13,236 @@ import pytest
 
 import rextio.build.orchestrator as orchestrator
 from rextio.analyzer.project_scanner import analyze_project
+from rextio.artifacts.models import FallbackStrategy
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.build.executable_builder import ExecutableBuildResult
 from rextio.cli.main import main
 from rextio.codegen.rust.generator import RustCodegenError
+
+
+def _fake_built_rust_executable(
+    crate_dir: Path,
+    dist_dir: Path,
+    binary_name: str,
+    entrypoint: str,
+    *,
+    timeout: float,
+    toolchain=None,
+) -> ExecutableBuildResult:
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    binary = dist_dir / binary_name
+    binary.write_text("fake binary", encoding="utf-8")
+    return ExecutableBuildResult(
+        status="built",
+        path=str(binary),
+        message="ok",
+        entrypoint=entrypoint,
+        backend="rust",
+    )
+
+
+def test_open_error_closure_reports_all_edges_before_any_cargo(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def alpha(value: int) -> int:
+    return value + 1
+
+@rextio.exempt
+def zeta(value: int) -> int:
+    return value + 2
+
+@rextio.native
+def worker(value: int) -> int:
+    return alpha(value) + zeta(value)
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return worker(len(argv))
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator")
+    executable_analysis = analyze_project(
+        tmp_path, native_marker="decorator", delegate_fallback=True
+    )
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Cargo/native generation must not run for an open error closure")
+
+    monkeypatch.setattr(orchestrator, "_generate_and_build_native", unexpected)
+    monkeypatch.setattr(orchestrator, "build_rust_executable", unexpected)
+
+    result = orchestrator.build_hybrid_artifact(
+        tmp_path,
+        analysis,
+        "cpython",
+        executable_entrypoint="app:main",
+        executable_backend="rust",
+        executable_analysis=executable_analysis,
+        executable_fallback=FallbackStrategy.ERROR,
+    )
+
+    assert result.executable_build.status == "failed"
+    closure = result.executable_build.to_dict()["closure"]
+    assert closure["status"] == "open"
+    assert [edge["callee"] for edge in closure["fallback_edges"]] == [
+        "app.alpha",
+        "app.zeta",
+    ]
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    assert report["executable_build"]["closure"] == closure
+    assert not ArtifactLayout(tmp_path).rust_bin_dir.exists()
+
+
+@pytest.mark.parametrize("strategy", list(FallbackStrategy))
+def test_unavailable_entrypoint_fails_before_build_and_removes_stale_outputs(
+    tmp_path: Path,
+    monkeypatch,
+    strategy: FallbackStrategy,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        "import rextio\n@rextio.native\ndef main(argv: list[str]) -> int:\n    return 0\n",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    layout = ArtifactLayout(tmp_path)
+    for path in (
+        layout.build_dir / "stale",
+        layout.rust_dir / "stale",
+        layout.rust_bin_dir / "stale",
+        layout.python_dir / "stale",
+        layout.dist_dir / "missing_main.runtime" / "stale",
+        layout.dist_dir / "stale-crate-rust-crate" / "stale",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("stale", encoding="utf-8")
+    for name in ("missing_main", "missing_main.exe"):
+        (layout.dist_dir / name).write_text("stale", encoding="utf-8")
+    wheel = layout.dist_dir / f"{tmp_path.name.lower()}-0.1.0-py3-none-any.whl"
+    wheel.write_text("stale", encoding="utf-8")
+    keep = layout.dist_dir / "keep-me.txt"
+    keep.write_text("keep", encoding="utf-8")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("native generation/Cargo must not run for unavailable entrypoint")
+
+    monkeypatch.setattr(orchestrator, "_generate_and_build_native", unexpected)
+    monkeypatch.setattr(orchestrator, "build_rust_executable", unexpected)
+
+    result = orchestrator.build_hybrid_artifact(
+        tmp_path,
+        analysis,
+        "cpython",
+        executable_entrypoint="missing:main",
+        executable_backend="rust",
+        executable_analysis=analysis,
+        executable_fallback=strategy,
+        rust_crate_name="stale-crate",
+    )
+
+    closure = result.executable_build.to_dict()["closure"]
+    assert result.executable_build.status == "failed"
+    assert closure["status"] == "unavailable"
+    assert closure["profile"]["target_triple"] != "host"
+    assert "Fallback sidecars cannot replace" in result.executable_build.message
+    assert not layout.build_dir.exists()
+    assert not layout.rust_dir.exists()
+    assert not layout.rust_bin_dir.exists()
+    assert not layout.python_dir.exists()
+    assert not wheel.exists()
+    assert not (layout.dist_dir / "stale-crate-rust-crate").exists()
+    assert not (layout.dist_dir / "missing_main").exists()
+    assert not (layout.dist_dir / "missing_main.exe").exists()
+    assert not (layout.dist_dir / "missing_main.runtime").exists()
+    assert keep.read_text(encoding="utf-8") == "keep"
+
+
+def test_closed_error_closure_builds_without_runtime_sidecar(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return len(argv)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    layout = ArtifactLayout(tmp_path)
+    monkeypatch.setattr(orchestrator, "build_rust_executable", _fake_built_rust_executable)
+
+    result = orchestrator._build_rust_executable_artifact(
+        layout,
+        analysis,
+        "app:main",
+        None,
+        None,
+        FallbackStrategy.ERROR,
+        build_timeout=30,
+    )
+
+    assert result.status == "built"
+    assert result.to_dict()["closure"]["status"] == "closed"
+    assert result.to_dict()["closure"]["strategy"] == "error"
+    assert not (layout.dist_dir / "app_main.runtime").exists()
+    assert "serde_json" not in (layout.rust_bin_dir / "Cargo.toml").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("strategy", "expects_nuitka"),
+    [
+        (FallbackStrategy.PYTHON_SUBPROCESS, False),
+        (FallbackStrategy.NUITKA_SIDECAR, True),
+    ],
+)
+def test_canonical_sidecar_strategies_reuse_existing_dispatchers(
+    tmp_path: Path, monkeypatch, strategy: FallbackStrategy, expects_nuitka: bool
+) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def label(value: str) -> str:
+    return value.lower()
+
+@rextio.native
+def main(argv: list[str]) -> int:
+    return len(label(argv[0]))
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_marker="decorator", delegate_fallback=True)
+    layout = ArtifactLayout(tmp_path)
+    nuitka_calls: list[set[str]] = []
+    monkeypatch.setattr(orchestrator, "build_rust_executable", _fake_built_rust_executable)
+
+    def fake_nuitka(runtime_dir, allowed_qualnames, timeout, toolchain=None):
+        nuitka_calls.append(set(allowed_qualnames))
+        return None
+
+    monkeypatch.setattr(orchestrator, "_build_nuitka_dispatcher", fake_nuitka)
+
+    result = orchestrator._build_rust_executable_artifact(
+        layout,
+        analysis,
+        "app:main",
+        None,
+        None,
+        strategy,
+        build_timeout=30,
+    )
+
+    assert result.status == "built"
+    assert (layout.dist_dir / "app_main.runtime").is_dir()
+    assert bool(nuitka_calls) is expects_nuitka
+    assert result.to_dict()["closure"]["strategy"] == strategy.value
 
 
 def test_build_generates_rust_project_for_accepted_native_only(
