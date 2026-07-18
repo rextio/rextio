@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,6 +63,7 @@ from rextio.build.wheel_builder import (
     skipped_wheel,
 )
 from rextio.codegen.rust.generator import (
+    crate_emitted_qualnames,
     generate_rust_crate_module,
     generate_rust_main_binary,
     generate_rust_module,
@@ -84,6 +86,13 @@ from rextio.ir.lowering import LoweringError, PluginTypeMaps, lower_project
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.partition.build_plan import BuildPlan, create_build_plan
 from rextio.partition.fallback_plan import FallbackPlan
+from rextio.plugins.capabilities import (
+    StandalonePluginContext,
+    analysis_function_plugin_type_keys,
+    build_standalone_plugin_context,
+    profile_crate_dependencies,
+)
+from rextio.plugins.loader import PluginError
 from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
 from rextio.source.planning import ensure_host_source_plan
 from rextio.targets.plan import TargetPlan, default_target_plan
@@ -190,6 +199,10 @@ class GenerateResult:
     native_source: NativeSourceResult
     rust_crate_source: NativeSourceResult
     plugin_crate_dependencies: tuple[dict[str, object], ...] = ()
+    # Plugin API 1.4: resolved per-profile standalone capability (generate only
+    # for requested rust-crate / host-executable profiles). Additive; absence
+    # means no standalone profile was resolved for this generate.
+    standalone_plugin_capabilities: tuple[dict[str, object], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this result."""
@@ -214,6 +227,10 @@ class GenerateResult:
             data["plugin_crate_dependencies"] = [
                 dict(dependency) for dependency in self.plugin_crate_dependencies
             ]
+        if self.standalone_plugin_capabilities:
+            data["standalone_plugin_capabilities"] = [
+                dict(item) for item in self.standalone_plugin_capabilities
+            ]
         return data
 
 
@@ -237,6 +254,9 @@ class BuildResult:
     # extension: {"plugin_id", "name", "version", "features"} dicts
     # (docs/specs/plugin-lowering.md section 5). Empty for plugin-free builds.
     plugin_crate_dependencies: tuple[dict[str, object], ...] = ()
+    # Plugin API 1.4: resolved standalone capability details for requested
+    # rust-crate / host-executable profiles (additive).
+    standalone_plugin_capabilities: tuple[dict[str, object], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this result.
@@ -266,6 +286,10 @@ class BuildResult:
         if self.plugin_crate_dependencies:
             data["plugin_crate_dependencies"] = [
                 dict(dependency) for dependency in self.plugin_crate_dependencies
+            ]
+        if self.standalone_plugin_capabilities:
+            data["standalone_plugin_capabilities"] = [
+                dict(item) for item in self.standalone_plugin_capabilities
             ]
         return data
 
@@ -353,6 +377,9 @@ def build_hybrid_artifact(
     executable_hybrid_runtime: str | None = None,
     executable_fallback: FallbackStrategy | str | None = None,
     toolchain: ToolchainConfig | None = None,
+    *,
+    executable_standalone: StandalonePluginContext | None = None,
+    standalone_contexts: dict[ArtifactKind, StandalonePluginContext] | None = None,
 ) -> BuildResult:
     """Build the hybrid native+fallback artifact for a project.
 
@@ -360,6 +387,10 @@ def build_hybrid_artifact(
     backend uses; it is analyzed in delegate mode so the entrypoint can call
     project fallback functions through the external CPython dispatcher. It
     defaults to ``analysis`` for the other backends, which do not delegate.
+
+    ``executable_standalone`` / ``standalone_contexts`` allow the CLI preflight
+    to resolve plugin API 1.4 capability once and reuse the same immutable
+    context for closure, codegen, dependency selection, and reports.
     """
     if executable_analysis is None:
         executable_analysis = analysis
@@ -376,16 +407,30 @@ def build_hybrid_artifact(
         rust_importable=rust_importable and analysis.requires_native_build(),
     )
     plan = create_build_plan(analysis, fallback, artifact_profiles=artifact_profiles)
+    # Resolve each exact ArtifactProfile's capability at most once for this command.
+    contexts = _ensure_standalone_contexts(
+        plan,
+        target_plan,
+        seed=standalone_contexts,
+        executable_analysis=executable_analysis,
+        executable_standalone=executable_standalone,
+        include_executable=(
+            executable_backend == "rust" and executable_entrypoint is not None
+        ),
+    )
     closure_report: NativeClosureReport | None = None
+    resolved_executable_standalone = contexts.get(ArtifactKind.HOST_EXECUTABLE)
     if executable_backend == "rust" and executable_entrypoint is not None:
         executable_profile = next(
             profile for profile in artifact_profiles if profile.kind is ArtifactKind.HOST_EXECUTABLE
         )
+        assert resolved_executable_standalone is not None
         closure_report = executable_entry_graph(
             executable_analysis,
             _entrypoint_to_qualname(executable_entrypoint),
             fallback_strategy,
             profile=executable_profile,
+            plugin_capabilities=resolved_executable_standalone.capabilities,
         )
     if closure_report is not None and closure_requires_prebuild_failure(closure_report):
         assert executable_entrypoint is not None
@@ -400,6 +445,7 @@ def build_hybrid_artifact(
             executable_entrypoint,
             executable_name,
             rust_crate_name,
+            standalone_contexts=contexts,
         )
     _reset_generated_dir(layout.build_dir)
     _prepare_generated_sources(layout, target_plan)
@@ -423,6 +469,7 @@ def build_hybrid_artifact(
         crate_name=rust_crate_name,
         build_timeout=build_timeout_seconds,
         toolchain=toolchain,
+        standalone_context=contexts.get(ArtifactKind.RUST_CRATE),
     )
     _write_build_artifact(layout)
     fallback_build = _build_fallback_backend(
@@ -445,6 +492,7 @@ def build_hybrid_artifact(
         closure_report=closure_report,
         build_timeout=build_timeout_seconds,
         toolchain=toolchain,
+        executable_standalone=resolved_executable_standalone,
     )
 
     result = BuildResult(
@@ -461,6 +509,7 @@ def build_hybrid_artifact(
         executable_build=executable_build,
         rust_crate_build=rust_crate_build,
         plugin_crate_dependencies=plugin_crate_dependencies,
+        standalone_plugin_capabilities=_standalone_capability_reports_from_contexts(contexts),
     )
     _write_build_result(layout, result)
     return result
@@ -477,6 +526,8 @@ def _failed_closure_build_result(
     entrypoint: str,
     executable_name: str | None,
     rust_crate_name: str,
+    *,
+    standalone_contexts: dict[ArtifactKind, StandalonePluginContext] | None = None,
 ) -> BuildResult:
     """Return an inspectable failure before any source, Cargo, or sidecar work."""
     _cleanup_failed_prebuild_outputs(
@@ -509,6 +560,9 @@ def _failed_closure_build_result(
         wheel_build=skipped_wheel(f"{cause} prevented wheel packaging."),
         executable_build=executable_build,
         rust_crate_build=skipped_rust_crate_build(f"{cause} prevented Rust crate work."),
+        standalone_plugin_capabilities=_standalone_capability_reports_from_contexts(
+            standalone_contexts or {}
+        ),
     )
     _reset_report_files(layout.reports_dir)
     _write_check_report(layout, analysis)
@@ -556,6 +610,9 @@ def generate_source_artifact(
         rust_importable=rust_importable and analysis.requires_native_build(),
     )
     plan = create_build_plan(analysis, fallback, artifact_profiles=artifact_profiles)
+    # Resolve once per exact profile for this generate command; reuse for
+    # crate codegen, dependency selection, and JSON serialization.
+    contexts = _ensure_standalone_contexts(plan, target_plan, seed=None)
     _prepare_generated_sources(layout, target_plan)
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
@@ -572,6 +629,7 @@ def generate_source_artifact(
         target_plan,
         enabled=rust_importable,
         crate_name=rust_crate_name,
+        standalone_context=contexts.get(ArtifactKind.RUST_CRATE),
     )
 
     result = GenerateResult(
@@ -585,6 +643,7 @@ def generate_source_artifact(
         native_source=native_source,
         rust_crate_source=rust_crate_source,
         plugin_crate_dependencies=plugin_crate_dependencies,
+        standalone_plugin_capabilities=_standalone_capability_reports_from_contexts(contexts),
     )
     (layout.reports_dir / "generate.json").write_text(
         json.dumps(
@@ -731,6 +790,7 @@ def _generate_and_build_rust_crate(
     crate_name: str,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
+    standalone_context: StandalonePluginContext | None = None,
 ) -> RustCrateBuildResult:
     if not enabled:
         return skipped_rust_crate_build("Rust-importable crate was not requested.")
@@ -740,6 +800,7 @@ def _generate_and_build_rust_crate(
         target_plan,
         enabled=True,
         crate_name=crate_name,
+        standalone_context=standalone_context,
     )
     if source.status != "generated":
         if source.status == "skipped":
@@ -851,6 +912,111 @@ def _generate_native_source(
     ), plugin_crate_dependencies
 
 
+def _analysis_functions(analysis: ProjectAnalysis) -> list[object]:
+    return [function for module in analysis.modules for function in module.functions]
+
+
+def _standalone_context_for_kind(
+    plan: BuildPlan,
+    target_plan: TargetPlan,
+    kind: ArtifactKind,
+    *,
+    functions: list[object] | None = None,
+) -> StandalonePluginContext | None:
+    """Resolve plugin API 1.4 capability for one planned artifact profile kind."""
+    profile = next((item for item in plan.artifact_profiles if item.kind is kind), None)
+    if profile is None:
+        return None
+    return build_standalone_plugin_context(
+        profile=profile,
+        registry=target_plan.plugins,
+        functions=functions if functions is not None else _analysis_functions(plan.analysis),
+    )
+
+
+def _ensure_standalone_contexts(
+    plan: BuildPlan,
+    target_plan: TargetPlan,
+    *,
+    seed: dict[ArtifactKind, StandalonePluginContext] | None,
+    executable_analysis: ProjectAnalysis | None = None,
+    executable_standalone: StandalonePluginContext | None = None,
+    include_executable: bool = False,
+) -> dict[ArtifactKind, StandalonePluginContext]:
+    """Resolve each planned standalone profile at most once; reuse seed entries."""
+    contexts: dict[ArtifactKind, StandalonePluginContext] = dict(seed or {})
+    profiles_by_kind = {profile.kind: profile for profile in plan.artifact_profiles}
+
+    def validate_context(
+        kind: ArtifactKind, context: StandalonePluginContext
+    ) -> None:
+        expected = profiles_by_kind.get(kind)
+        if expected is None:
+            raise PluginError(
+                f"pre-resolved standalone context for {kind.value!r} has no "
+                "matching planned artifact profile"
+            )
+        if context.profile != expected:
+            raise PluginError(
+                f"pre-resolved standalone context profile mismatch for {kind.value!r}: "
+                f"expected {expected.to_dict()!r}, got {context.profile.to_dict()!r}"
+            )
+
+    for kind, context in contexts.items():
+        validate_context(kind, context)
+    if ArtifactKind.RUST_CRATE not in contexts:
+        crate_ctx = _standalone_context_for_kind(plan, target_plan, ArtifactKind.RUST_CRATE)
+        if crate_ctx is not None:
+            contexts[ArtifactKind.RUST_CRATE] = crate_ctx
+    if include_executable and ArtifactKind.HOST_EXECUTABLE not in contexts:
+        if executable_standalone is not None:
+            validate_context(ArtifactKind.HOST_EXECUTABLE, executable_standalone)
+            contexts[ArtifactKind.HOST_EXECUTABLE] = executable_standalone
+        else:
+            analysis = executable_analysis or plan.analysis
+            exec_ctx = _standalone_context_for_kind(
+                plan,
+                target_plan,
+                ArtifactKind.HOST_EXECUTABLE,
+                functions=_analysis_functions(analysis),
+            )
+            if exec_ctx is not None:
+                contexts[ArtifactKind.HOST_EXECUTABLE] = exec_ctx
+    return contexts
+
+
+def _standalone_capability_reports_from_contexts(
+    contexts: Mapping[ArtifactKind, StandalonePluginContext],
+) -> tuple[dict[str, object], ...]:
+    """Serialize pre-resolved contexts without re-invoking capability hooks."""
+    reports: list[dict[str, object]] = []
+    for kind in (ArtifactKind.RUST_CRATE, ArtifactKind.HOST_EXECUTABLE):
+        context = contexts.get(kind)
+        if context is not None:
+            reports.append(context.to_dict())
+    return tuple(reports)
+
+
+def _plugin_ids_for_emitted_functions(
+    *,
+    analysis: ProjectAnalysis,
+    emitted_qualnames: frozenset[str],
+    standalone: StandalonePluginContext,
+) -> set[str]:
+    """Collect plugin ids only from functions actually emitted after exclusion."""
+    used: set[str] = set()
+    for function in analysis.accepted_native_functions:
+        if function.qualname not in emitted_qualnames:
+            continue
+        if not standalone.is_capable(function.qualname):
+            continue
+        for claim in function.plugin_claims:
+            used.add(claim.plugin_id)
+        for key in analysis_function_plugin_type_keys(function):
+            used.add(key.split("/", 1)[0])
+    return used
+
+
 def _generate_rust_crate_source(
     plan: BuildPlan,
     layout: ArtifactLayout,
@@ -858,6 +1024,7 @@ def _generate_rust_crate_source(
     *,
     enabled: bool,
     crate_name: str,
+    standalone_context: StandalonePluginContext | None = None,
 ) -> NativeSourceResult:
     if not enabled:
         return NativeSourceResult(
@@ -879,20 +1046,41 @@ def _generate_rust_crate_source(
         )
     try:
         # Include embedded helpers: an exported native function may call one, and
-        # the crate must carry the callee it references. Plugin types are passed
-        # so plugin-typed signatures lower; plugin-lowered functions are then
-        # excluded from the crate (they have no pure-Rust form), so the crate
-        # needs no providers and no cargo dependency injection.
-        plugin_types, _plugin_providers, _plugin_types_by_key = _plugin_lowering_inputs(target_plan)
+        # the crate must carry the callee it references. Plugin types + providers
+        # are passed so plugin API 1.4 standalone-capable functions can lower
+        # with native Rust types only. Legacy (no capability) plugin functions
+        # remain excluded transitively.
+        plugin_types, plugin_providers, plugin_types_by_key = _plugin_lowering_inputs(target_plan)
+        standalone = standalone_context
+        if standalone is None:
+            standalone = _standalone_context_for_kind(plan, target_plan, ArtifactKind.RUST_CRATE)
         module_ir = lower_project(plan.analysis, include_embedding=True, plugin_types=plugin_types)
-        rust_source = generate_rust_crate_module(module_ir)
-    except (LoweringError, RustCodegenError) as exc:
+        rust_source = generate_rust_crate_module(
+            module_ir,
+            plugin_providers=plugin_providers,
+            plugin_types_by_key=plugin_types_by_key,
+            standalone=standalone,
+        )
+        extra_dependencies: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+        if standalone is not None:
+            emitted = crate_emitted_qualnames(module_ir, standalone=standalone)
+            used_plugin_ids = _plugin_ids_for_emitted_functions(
+                analysis=plan.analysis,
+                emitted_qualnames=emitted,
+                standalone=standalone,
+            )
+            extra_dependencies = profile_crate_dependencies(
+                standalone.capabilities, used_plugin_ids
+            )
+    except (LoweringError, RustCodegenError, PluginError) as exc:
         return NativeSourceResult(
             status="failed",
             message=str(exc),
         )
 
-    _write_rust_crate_project(layout, rust_source, crate_name)
+    _write_rust_crate_project(
+        layout, rust_source, crate_name, extra_dependencies=extra_dependencies
+    )
     return NativeSourceResult(
         status="generated",
         message="Generated Rust-importable crate source for direct native functions.",
@@ -959,6 +1147,7 @@ def _build_executable_artifact(
     closure_report: NativeClosureReport | None = None,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
+    executable_standalone: StandalonePluginContext | None = None,
 ) -> ExecutableBuildResult:
     if entrypoint is None:
         return skipped_executable("No executable entrypoint was requested.")
@@ -977,6 +1166,7 @@ def _build_executable_artifact(
             closure_report=closure_report,
             build_timeout=build_timeout,
             toolchain=toolchain,
+            executable_standalone=executable_standalone,
         )
     if fallback_build.status != "built":
         return skipped_executable("Fallback packaging failed, so no executable was generated.")
@@ -1255,6 +1445,7 @@ def _build_rust_executable_artifact(
     closure_report: NativeClosureReport | None = None,
     build_timeout: float,
     toolchain: ToolchainConfig | None = None,
+    executable_standalone: StandalonePluginContext | None = None,
 ) -> ExecutableBuildResult:
     """Generate and build the native Rust executable for the entrypoint.
 
@@ -1279,11 +1470,32 @@ def _build_rust_executable_artifact(
             backend="rust",
         )
     entry_qualname = _entrypoint_to_qualname(entrypoint)
+    resolved_target_plan = target_plan or default_target_plan()
+    # Reuse the pre-resolved capability context when provided (CLI preflight /
+    # orchestrator) so the capability hook runs at most once per profile.
+    standalone = executable_standalone
+    if standalone is None:
+        profile = (
+            closure_report.profile
+            if closure_report is not None
+            else host_executable_profile(_required_host_target_triple(), fallback=strategy)
+        )
+        standalone = build_standalone_plugin_context(
+            profile=profile,
+            registry=resolved_target_plan.plugins,
+            functions=_analysis_functions(analysis),
+        )
+    if closure_report is not None and closure_report.profile != standalone.profile:
+        raise PluginError(
+            "pre-resolved executable closure profile does not match the standalone "
+            "plugin capability profile"
+        )
     closure = closure_report or executable_entry_graph(
         analysis,
         entry_qualname,
         strategy,
-        profile=host_executable_profile(_required_host_target_triple(), fallback=strategy),
+        profile=standalone.profile,
+        plugin_capabilities=standalone.capabilities,
     )
     if closure_requires_prebuild_failure(closure):
         _cleanup_failed_executable_outputs(layout, entrypoint, executable_name)
@@ -1317,12 +1529,12 @@ def _build_rust_executable_artifact(
                 closure,
             )
     try:
-        # Plugin types let plugin-typed signatures lower; plugin-lowered
-        # functions have no pure-Rust form, so the crate renderer's exclusion
-        # and mode guard keep them out of the binary (never delegated either:
-        # plugin types never cross the delegation wire).
-        plugin_types, _plugin_providers, _plugin_types_by_key = _plugin_lowering_inputs(
-            target_plan or default_target_plan()
+        # Plugin types + providers enable plugin API 1.4 standalone-capable
+        # functions in the binary (native Rust types only). Legacy plugin
+        # functions without matching capability remain excluded / blocked by
+        # the pre-Cargo closure.
+        plugin_types, plugin_providers, plugin_types_by_key = _plugin_lowering_inputs(
+            resolved_target_plan
         )
         initializer_plans = _executable_initializer_plans(analysis, closure)
         module_ir = _filter_module_ir(
@@ -1342,8 +1554,22 @@ def _build_rust_executable_artifact(
             _delegation_python(executable_python, toolchain),
             nuitka_dispatcher=nuitka_dispatcher,
             initializer_qualnames=closure.module_initializers,
+            plugin_providers=plugin_providers,
+            plugin_types_by_key=plugin_types_by_key,
+            standalone=standalone,
         )
-    except (RustCodegenError, LoweringError) as exc:
+        # Only functions that survive transitive exclusion and remain reachable
+        # may inject profile-specific crate dependencies.
+        emitted = crate_emitted_qualnames(module_ir, standalone=standalone) & frozenset(
+            reachable_qualnames
+        )
+        used_plugin_ids = _plugin_ids_for_emitted_functions(
+            analysis=analysis,
+            emitted_qualnames=emitted,
+            standalone=standalone,
+        )
+        extra_dependencies = profile_crate_dependencies(standalone.capabilities, used_plugin_ids)
+    except (RustCodegenError, LoweringError, PluginError) as exc:
         return _with_closure(
             ExecutableBuildResult(
                 status="failed",
@@ -1362,7 +1588,12 @@ def _build_rust_executable_artifact(
         shutil.rmtree(crate_dir)
     layout.rust_bin_src_dir.mkdir(parents=True, exist_ok=True)
     (crate_dir / "Cargo.toml").write_text(
-        render_binary_cargo_toml("rextio_generated_bin", binary_name, hybrid=hybrid),
+        render_binary_cargo_toml(
+            "rextio_generated_bin",
+            binary_name,
+            hybrid=hybrid,
+            extra_dependencies=extra_dependencies,
+        ),
         encoding="utf-8",
     )
     (layout.rust_bin_src_dir / "main.rs").write_text(main_rs, encoding="utf-8")
@@ -1614,10 +1845,16 @@ def _write_rust_project(
     (layout.rust_src_dir / "lib.rs").write_text(rust_source, encoding="utf-8")
 
 
-def _write_rust_crate_project(layout: ArtifactLayout, rust_source: str, crate_name: str) -> None:
+def _write_rust_crate_project(
+    layout: ArtifactLayout,
+    rust_source: str,
+    crate_name: str,
+    *,
+    extra_dependencies: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
+) -> None:
     layout.rust_crate_src_dir.mkdir(parents=True, exist_ok=True)
     (layout.rust_crate_dir / "Cargo.toml").write_text(
-        render_importable_cargo_toml(crate_name),
+        render_importable_cargo_toml(crate_name, extra_dependencies=extra_dependencies),
         encoding="utf-8",
     )
     (layout.rust_crate_src_dir / "lib.rs").write_text(rust_source, encoding="utf-8")

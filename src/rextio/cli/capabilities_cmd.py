@@ -131,6 +131,9 @@ def build_manifest(
                 "rules_provided": plugin.rules_provided,
                 "api_version": plugin.api_version,
                 "lowering_provided": plugin.lowering_provided,
+                # Plugin API 1.4: presence only. Capabilities never executes
+                # profile hooks or resolves allow/deny for a host profile.
+                "artifact_capability_declared": plugin.artifact_capability_declared,
             }
             # Sorted by id (not entry-point discovery order) so the manifest
             # is byte-stable across environments, matching the rules array.

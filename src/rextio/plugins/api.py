@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, Protocol, Union
 
 from rextio.analyzer.diagnostics import Diagnostic
+from rextio.artifacts.models import ArtifactProfile
 
 if TYPE_CHECKING:
     from rextio.config.schema import RextioConfig
@@ -48,9 +49,13 @@ RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 # method-receiver metadata (:class:`ReceiverMeta`), callable metadata for
 # project-function arguments (:class:`CallableMeta` with a closed
 # :class:`CallableBody`), and declared-schema metadata (:class:`SchemaMeta`).
-# All additions are optional/defaulted, so 1.1 and 1.2 providers remain source-
-# and behavior-compatible (major must still match).
-PLUGIN_API_VERSION = "1.3"
+# 1.4 adds the optional ``artifact_capability(profile)`` hook: an explicit,
+# fail-closed declaration of standalone (boundary-free) Rust artifact support
+# for rust-crate and host-executable profiles. The hook is NOT part of the
+# all-or-none lowering member set; absence means standalone unsupported.
+# All additions are optional/defaulted, so 1.1–1.3 providers remain source-
+# and behavior-compatible for host-extension builds (major must still match).
+PLUGIN_API_VERSION = "1.4"
 
 # Crate dependency pins are exact by decree of the lowering spec: a plugin
 # without an exact pin fails to load.
@@ -1230,13 +1235,21 @@ class LoweredExpr:
     helpers: tuple[str, ...] = ()
 
 
+# Closed backend identifiers for plugin API 1.4 LoweringContext.backend.
+# Host-extension PyO3 builds use ``pyo3``; boundary-free rust-crate and
+# host-executable builds use ``standalone-rust``.
+LOWERING_BACKEND_PYO3 = "pyo3"
+LOWERING_BACKEND_STANDALONE_RUST = "standalone-rust"
+LOWERING_BACKENDS = frozenset({LOWERING_BACKEND_PYO3, LOWERING_BACKEND_STANDALONE_RUST})
+
+
 @dataclass(frozen=True)
 class LoweringContext:
     """The codegen-side context handed to a plugin's ``lower()``.
 
     ``operands`` are the rendered Rust sub-expressions of the claimed site's
     operands/arguments in positional order (already lowered by core or by
-    prior plugin claims); ``target_language`` names the active codegen backend
+    prior plugin claims); ``target_language`` names the active codegen language
     (``"rust"``); ``fresh_name`` allocates a fresh temporary identifier in the
     enclosing function's namespace from a given prefix.
 
@@ -1260,6 +1273,27 @@ class LoweringContext:
     # reference when the receiver is safe, otherwise a bound single-use
     # temporary). None for plain calls and binops.
     receiver: str | None = None
+    # Plugin API 1.4 addition (defaulted for 1.1–1.3 host-extension
+    # compatibility). ``backend`` is a closed identifier distinguishing the
+    # PyO3 host-extension path from boundary-free standalone Rust emission.
+    # ``artifact_profile`` is the exact resolved ArtifactProfile used for
+    # authorization on standalone lowers; None for host-extension builds.
+    # Old construction that omits both fields remains valid (pyo3 / None).
+    backend: str = LOWERING_BACKEND_PYO3
+    artifact_profile: ArtifactProfile | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the closed backend set for API 1.4 fields."""
+        if self.backend not in LOWERING_BACKENDS:
+            options = ", ".join(sorted(LOWERING_BACKENDS))
+            raise ValueError(
+                f"unsupported LoweringContext.backend: {self.backend!r}. Use {options}."
+            )
+        if self.backend == LOWERING_BACKEND_STANDALONE_RUST and self.artifact_profile is None:
+            raise ValueError(
+                "LoweringContext.artifact_profile is required when backend is "
+                f"{LOWERING_BACKEND_STANDALONE_RUST!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -1294,6 +1328,98 @@ class CrateDependency:
             "name": self.name,
             "version": self.version,
             "features": list(self.features),
+        }
+
+
+@dataclass(frozen=True)
+class PluginArtifactTypeSupport:
+    """Profile-specific native module support for one exact plugin type key.
+
+    Declared only through
+    :meth:`RextioArtifactCapabilityPlugin.artifact_capability` (plugin API
+    1.4). Never inferred from :class:`PluginType` conversion, resident status,
+    host-extension ``uses``/``helpers``, or ``crate_dependencies()``.
+    """
+
+    type_key: str
+    uses: tuple[str, ...] = ()
+    helpers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Validate the type key and support item shapes."""
+        if not isinstance(self.type_key, str) or not self.type_key:
+            raise ValueError("PluginArtifactTypeSupport.type_key must be a non-empty string")
+        for label, support in (("uses", self.uses), ("helpers", self.helpers)):
+            if not isinstance(support, tuple):
+                raise ValueError(f"PluginArtifactTypeSupport.{label} must be a tuple of strings")
+            for item in support:
+                if not isinstance(item, str) or not item:
+                    raise ValueError(
+                        f"PluginArtifactTypeSupport.{label} must contain only non-empty strings"
+                    )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable form of this type support."""
+        data: dict[str, object] = {"type_key": self.type_key}
+        if self.uses:
+            data["uses"] = list(self.uses)
+        if self.helpers:
+            data["helpers"] = list(self.helpers)
+        return data
+
+
+@dataclass(frozen=True)
+class PluginArtifactCapability:
+    """Explicit fail-closed standalone support for one exact :class:`ArtifactProfile`.
+
+    Returned from ``artifact_capability(profile)``. ``None`` (or a missing hook)
+    means the plugin does **not** support that standalone profile. Coverage is
+    exact: claim rule ids and type keys used by a function must all appear
+    here, and only the declared crate dependencies / uses / helpers may be
+    injected for that profile.
+    """
+
+    rule_ids: tuple[str, ...] = ()
+    types: tuple[PluginArtifactTypeSupport, ...] = ()
+    crate_dependencies: tuple[CrateDependency, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Validate container shapes; namespace ownership is checked by the resolver."""
+        if not isinstance(self.rule_ids, tuple) or not all(
+            isinstance(rule_id, str) and rule_id for rule_id in self.rule_ids
+        ):
+            raise ValueError("PluginArtifactCapability.rule_ids must be a tuple of non-empty strings")
+        if not isinstance(self.types, tuple) or not all(
+            isinstance(item, PluginArtifactTypeSupport) for item in self.types
+        ):
+            raise ValueError(
+                "PluginArtifactCapability.types must be a tuple of PluginArtifactTypeSupport"
+            )
+        if not isinstance(self.crate_dependencies, tuple) or not all(
+            isinstance(item, CrateDependency) for item in self.crate_dependencies
+        ):
+            raise ValueError(
+                "PluginArtifactCapability.crate_dependencies must be a tuple of CrateDependency"
+            )
+
+    def type_keys(self) -> frozenset[str]:
+        """Return the set of exact type keys covered by this capability."""
+        return frozenset(item.type_key for item in self.types)
+
+    def allowed_uses(self) -> frozenset[str]:
+        """Return the union of all profile-declared ``use`` lines."""
+        return frozenset(use for item in self.types for use in item.uses)
+
+    def allowed_helpers(self) -> frozenset[str]:
+        """Return the union of all profile-declared helper items."""
+        return frozenset(helper for item in self.types for helper in item.helpers)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable form of this capability."""
+        return {
+            "rule_ids": list(self.rule_ids),
+            "types": [item.to_dict() for item in self.types],
+            "crate_dependencies": [dep.to_dict() for dep in self.crate_dependencies],
         }
 
 
@@ -1354,4 +1480,35 @@ class RextioLoweringPlugin(RextioPluginV2, Protocol):
 
     def crate_dependencies(self) -> tuple[CrateDependency, ...]:
         """Return the pinned crates this plugin's generated code depends on."""
+        ...
+
+
+class RextioArtifactCapabilityPlugin(Protocol):
+    """Optional plugin API 1.4 extension for standalone artifact capability.
+
+    Deliberately **separate** from :class:`RextioLoweringPlugin` so a concrete
+    class that inherits the legacy lowering Protocol does not inherit a
+    callable ``artifact_capability`` stub. Presence is detected by a concrete
+    (non-Protocol) implementation on the provider; the hook is not part of the
+    all-or-none lowering set.
+    """
+
+    def artifact_capability(
+        self, profile: ArtifactProfile
+    ) -> PluginArtifactCapability | None:
+        """Declare standalone (boundary-free) support for an exact artifact profile.
+
+        Plugin API **1.4** optional hook. Presence requires ``api_version >= 1.4``
+        and a lowering-capable provider; absence is valid and means standalone
+        artifacts are unsupported.
+
+        Support is never inferred from :class:`PluginType` conversion, resident
+        status, host-extension ``uses``/``helpers``, or
+        :meth:`RextioLoweringPlugin.crate_dependencies`. Return ``None`` when
+        the profile is not supported; return an immutable
+        :class:`PluginArtifactCapability` when it is. Core validates namespace
+        ownership, rule/type vocabulary membership, duplicates, and crate pins
+        and fails closed with :class:`~rextio.plugins.loader.PluginError` on
+        invalid declarations or hook exceptions.
+        """
         ...

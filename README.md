@@ -13,10 +13,14 @@ of time with PyO3, and keeps everything else running through generated Python
 fallback code - same imports, same behavior.
 
 **Unreleased branch note:** Release Train C adds experimental host source/
-artifact planning and a narrow initializer-before-main Rust executable slice.
-This branch emits additive tooling contract **2.3.0**, but those changes are
-not yet a tagged or PyPI release; published 0.1.4 remains the 2.2.0 producer.
-See [Host source-AOT and native executables](docs/source-aot-and-executables.md).
+artifact planning, a narrow initializer-before-main Rust executable slice, and
+plugin API **1.4** fail-closed standalone artifact capability (rust-crate /
+host-executable). This branch emits additive tooling contract **2.4.0** and
+plugin API **1.4** while keeping package version **0.1.4**; those changes are
+not yet a tagged or PyPI release. Published 0.1.4 remains the plugin API **1.3**
+/ contract **2.2.0** producer. See
+[Host source-AOT and native executables](docs/source-aot-and-executables.md) and
+[plugin lowering](docs/specs/plugin-lowering.md) §10.
 
 ```text
 typed Python project

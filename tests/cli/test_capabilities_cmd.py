@@ -146,6 +146,7 @@ def test_capabilities_merges_v2_plugin_rules(
             "rules_provided": True,
             "api_version": "1.0",
             "lowering_provided": False,
+            "artifact_capability_declared": False,
         }
     ]
     plugin_rules = [rule for rule in manifest["rules"] if rule["provider"] == "rextio-numpy"]

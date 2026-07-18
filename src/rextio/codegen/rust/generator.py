@@ -31,12 +31,14 @@ from rextio.codegen.rust.rust_format import (
 from rextio.codegen.rust.type_map import rust_type
 from rextio.analyzer.logging_format import python_logging_format_segments
 from rextio.plugins.api import (
+    LOWERING_BACKEND_STANDALONE_RUST,
     CallableMeta,
     ClaimExpr,
     ClaimSite,
     LoweredExpr,
     LoweringContext,
 )
+from rextio.plugins.capabilities import StandalonePluginContext, claim_plugin_type_keys
 from rextio.ir.nodes import (
     AppendIR,
     AssignIR,
@@ -208,13 +210,17 @@ def _called_function_names(function: FunctionIR) -> set[str]:
     return names
 
 
-def _crate_excluded_qualnames(module_ir: ModuleIR) -> set[str]:
+def _crate_excluded_qualnames(
+    module_ir: ModuleIR,
+    standalone: StandalonePluginContext | None = None,
+) -> set[str]:
     """Functions with no pure-Rust crate form, closed over the native call graph.
 
     Seeds are runtime-shim, boundary-calling, and plugin-lowered functions
-    (the first two need the Python interpreter; plugin lowering emits
-    PyO3-boundary code, so a plugin-lowered function has no pure-Rust crate
-    form either). Any function that calls an excluded function - by
+    that lack a resolved standalone capability for the active artifact profile
+    (the first two need the Python interpreter; legacy plugin lowering emits
+    PyO3-boundary code). Plugin API 1.4 functions that pass resolved capability
+    coverage are kept. Any function that calls an excluded function - by
     qualname or by bare name within the same module, mirroring how the crate
     renderer resolves native calls - is excluded as well, to a fixed point.
 
@@ -231,7 +237,10 @@ def _crate_excluded_qualnames(module_ir: ModuleIR) -> set[str]:
         for function in module_ir.functions
         if function.native_runtime_semantics
         or function.has_boundary_calls
-        or function.plugin_lowered
+        or (
+            function.plugin_lowered
+            and (standalone is None or not standalone.is_capable(function.qualname))
+        )
     }
     if not excluded:
         return excluded
@@ -258,11 +267,34 @@ def _crate_excluded_qualnames(module_ir: ModuleIR) -> set[str]:
     return excluded
 
 
+def crate_emitted_qualnames(
+    module_ir: ModuleIR,
+    standalone: StandalonePluginContext | None = None,
+) -> frozenset[str]:
+    """Return qualnames that survive standalone transitive exclusion.
+
+    Dependency injection for rust-crate / host-executable must use this set
+    (or an equivalent post-exclusion filter), never the pre-exclusion capable
+    set alone — a capable plugin function that calls an unsupported plugin
+    function is excluded and must not inject crate dependencies.
+    """
+    excluded = _crate_excluded_qualnames(module_ir, standalone=standalone)
+    return frozenset(
+        function.qualname
+        for function in module_ir.functions
+        if function.qualname not in excluded
+    )
+
+
 def generate_rust_crate_module(
     module_ir: ModuleIR,
     delegated_return_types: dict[str, str] | None = None,
     python_command: str = "python3",
     nuitka_dispatcher: bool = False,
+    *,
+    plugin_providers: dict[str, object] | None = None,
+    plugin_types_by_key: Mapping[str, RxtType] | None = None,
+    standalone: StandalonePluginContext | None = None,
 ) -> str:
     """Generate the Rust-importable crate source for a lowered module.
 
@@ -270,6 +302,11 @@ def generate_rust_crate_module(
     generated code delegates to the external CPython dispatcher to its return
     type; when non-empty the IPC client is appended and its calls are lowered to
     ``__rextio_call_python``.
+
+    ``standalone`` carries resolved plugin API 1.4 capability for the exact
+    rust-crate / host-executable profile. Plugin-lowered functions that pass
+    coverage render with native Rust types only (no PyO3 boundary). Without a
+    matching capability, legacy exclusion remains fail-closed and transitive.
     """
     delegated_return_types = delegated_return_types or {}
     # Embedded helpers are ordinary direct functions in crate mode;
@@ -277,7 +314,7 @@ def generate_rust_crate_module(
     # pure-Rust crate form (both need the Python interpreter). The exclusion
     # is TRANSITIVE: a function whose native callee is excluded would render
     # a call to a function the crate does not emit, so it is excluded too.
-    excluded = _crate_excluded_qualnames(module_ir)
+    excluded = _crate_excluded_qualnames(module_ir, standalone=standalone)
     direct_functions = [
         function for function in module_ir.functions if function.qualname not in excluded
     ]
@@ -297,6 +334,8 @@ def generate_rust_crate_module(
         function.qualname: function.return_type for function in direct_functions
     }
     used_helpers: set[str] = set()
+    plugin_uses: set[str] = set()
+    plugin_helpers: dict[str, None] = {}
     rendered = [
         _render_function(
             function,
@@ -306,15 +345,24 @@ def generate_rust_crate_module(
             mode="crate",
             used_helpers=used_helpers,
             delegated_return_types=delegated_return_types,
+            plugin_providers=plugin_providers,
+            plugin_types_by_key=plugin_types_by_key,
+            plugin_uses=plugin_uses,
+            plugin_helpers=plugin_helpers,
+            standalone=standalone,
         )
         for function in direct_functions
     ]
+    prelude: list[str] = []
+    prelude.extend(sorted(plugin_uses))
+    prelude.extend(plugin_helpers)
     return _render_importable_crate_module(
         rendered,
         used_helpers,
         include_ipc_client=bool(delegated_return_types),
         python_command=python_command,
         nuitka_dispatcher=nuitka_dispatcher,
+        extra_prelude=prelude or None,
     )
 
 
@@ -326,6 +374,9 @@ def generate_rust_main_binary(
     nuitka_dispatcher: bool = False,
     *,
     initializer_qualnames: tuple[str, ...] = (),
+    plugin_providers: dict[str, object] | None = None,
+    plugin_types_by_key: Mapping[str, RxtType] | None = None,
+    standalone: StandalonePluginContext | None = None,
 ) -> str:
     """Generate a Rust *binary* crate source for an executable build.
 
@@ -341,7 +392,13 @@ def generate_rust_main_binary(
     entry = _resolve_main_entry(module_ir, entry_qualname)
     initializers = _resolve_main_initializers(module_ir, initializer_qualnames)
     crate_source = generate_rust_crate_module(
-        module_ir, delegated_return_types, python_command, nuitka_dispatcher
+        module_ir,
+        delegated_return_types,
+        python_command,
+        nuitka_dispatcher,
+        plugin_providers=plugin_providers,
+        plugin_types_by_key=plugin_types_by_key,
+        standalone=standalone,
     )
     entry_name = rust_identifier(native_function_name(entry.qualname))
     initializer_calls: list[str] = []
@@ -536,6 +593,7 @@ def _render_importable_crate_module(
     include_ipc_client: bool = False,
     python_command: str = "python3",
     nuitka_dispatcher: bool = False,
+    extra_prelude: list[str] | None = None,
 ) -> str:
     lines = [
         "// Generated by Rextio. Do not edit manually.",
@@ -550,38 +608,45 @@ def _render_importable_crate_module(
         "use std::collections::HashMap;",
         "use std::collections::HashSet;",
         "",
-        "#[derive(Debug, Clone, PartialEq, Eq)]",
-        "pub struct RextioError {",
-        "    // The CPython exception type name this error corresponds to (e.g.",
-        '    // "OverflowError"), so a consumer can render a Python-style message.',
-        "    kind: String,",
-        "    message: String,",
-        "}",
-        "",
-        "impl RextioError {",
-        "    pub fn new(kind: impl Into<String>, message: impl Into<String>) -> Self {",
-        "        Self { kind: kind.into(), message: message.into() }",
-        "    }",
-        "",
-        "    pub fn kind(&self) -> &str {",
-        "        &self.kind",
-        "    }",
-        "",
-        "    pub fn message(&self) -> &str {",
-        "        &self.message",
-        "    }",
-        "}",
-        "",
-        "impl std::fmt::Display for RextioError {",
-        "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {",
-        "        // CPython-style `TypeName: message`.",
-        '        write!(f, "{}: {}", self.kind, self.message)',
-        "    }",
-        "}",
-        "",
-        "impl std::error::Error for RextioError {}",
-        "",
     ]
+    if extra_prelude:
+        lines.extend(extra_prelude)
+        lines.append("")
+    lines.extend(
+        [
+            "#[derive(Debug, Clone, PartialEq, Eq)]",
+            "pub struct RextioError {",
+            "    // The CPython exception type name this error corresponds to (e.g.",
+            '    // "OverflowError"), so a consumer can render a Python-style message.',
+            "    kind: String,",
+            "    message: String,",
+            "}",
+            "",
+            "impl RextioError {",
+            "    pub fn new(kind: impl Into<String>, message: impl Into<String>) -> Self {",
+            "        Self { kind: kind.into(), message: message.into() }",
+            "    }",
+            "",
+            "    pub fn kind(&self) -> &str {",
+            "        &self.kind",
+            "    }",
+            "",
+            "    pub fn message(&self) -> &str {",
+            "        &self.message",
+            "    }",
+            "}",
+            "",
+            "impl std::fmt::Display for RextioError {",
+            "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {",
+            "        // CPython-style `TypeName: message`.",
+            '        write!(f, "{}: {}", self.kind, self.message)',
+            "    }",
+            "}",
+            "",
+            "impl std::error::Error for RextioError {}",
+            "",
+        ]
+    )
     lines.extend(_checked_arith_helpers(used_helpers, "crate"))
     if include_ipc_client:
         lines.append(render_subprocess_client(python_command, nuitka_dispatcher=nuitka_dispatcher))
@@ -608,6 +673,7 @@ class _FunctionRenderer:
         plugin_types_by_key: Mapping[str, RxtType] | None = None,
         plugin_uses: set[str] | None = None,
         plugin_helpers: dict[str, None] | None = None,
+        standalone: StandalonePluginContext | None = None,
     ) -> None:
         self.function = function
         # Whether the pyo3-mode function is registered with the module. Embedded
@@ -648,9 +714,15 @@ class _FunctionRenderer:
         self.plugin_types_by_key = plugin_types_by_key or {}
         self.plugin_uses = plugin_uses if plugin_uses is not None else set()
         self.plugin_helpers = plugin_helpers if plugin_helpers is not None else {}
+        # Plugin API 1.4 standalone artifact capability for crate/executable.
+        self.standalone = standalone
+
+    def _standalone_capable(self) -> bool:
+        """Whether this function may render plugin-lowered sites without PyO3."""
+        return self.standalone is not None and self.standalone.is_capable(self.function.qualname)
 
     def render(self) -> str:
-        if self.mode != "pyo3" and self.function.plugin_lowered:
+        if self.mode != "pyo3" and self.function.plugin_lowered and not self._standalone_capable():
             raise RustCodegenError(
                 f"plugin-lowered function has no pure-Rust form: {self.function.qualname}"
             )
@@ -660,6 +732,7 @@ class _FunctionRenderer:
         # emits the `use`/helper items its boundary conversion or named native
         # type references. Collecting first also means a helper that ALSO
         # arrives from a claim's LoweredExpr deduplicates to one item.
+        # Standalone mode uses only profile-declared capability support.
         self._collect_signature_type_support()
         assigned_names = _assigned_names(self.function.body)
         # Only MATERIALIZED plugin types (with a boundary conversion) drive the
@@ -751,14 +824,30 @@ class _FunctionRenderer:
         type reused across parameter and return (or a helper that also arrives
         from a ``LoweredExpr``) is emitted exactly once. Ordering is
         deterministic: parameters in signature order, then the return type.
+
+        In standalone (crate/executable) mode only profile-declared capability
+        support is used — never host-extension PluginType uses/helpers.
         """
         signature_types: list[RxtType] = [param.type for param in self.function.params]
         signature_types.append(self.function.return_type)
         for signature_type in signature_types:
-            if isinstance(signature_type, RxtPluginType):
-                self.plugin_uses.update(signature_type.uses)
-                for helper in signature_type.helpers:
+            if not isinstance(signature_type, RxtPluginType):
+                continue
+            if self.mode != "pyo3" and self.standalone is not None:
+                plugin_id = signature_type.key.split("/", 1)[0]
+                support = self.standalone.type_support(plugin_id, signature_type.key)
+                if support is None:
+                    raise RustCodegenError(
+                        f"plugin type {signature_type.key!r} is not covered by the "
+                        f"resolved standalone capability for {self.function.qualname}"
+                    )
+                self.plugin_uses.update(support.uses)
+                for helper in support.helpers:
                     self.plugin_helpers.setdefault(helper)
+                continue
+            self.plugin_uses.update(signature_type.uses)
+            for helper in signature_type.helpers:
+                self.plugin_helpers.setdefault(helper)
 
     def render_block(self, block: BlockIR, indent: int) -> list[str]:
         lines: list[str] = []
@@ -1551,7 +1640,7 @@ class _FunctionRenderer:
         providers always receive a legacy :class:`ClaimSite` (empty 1.2
         metadata), never get ``leaf_operands``, and cannot use leaves-mode IR.
         """
-        if self.mode != "pyo3":
+        if self.mode != "pyo3" and not self._standalone_capable():
             raise RustCodegenError(
                 f"plugin-lowered function has no pure-Rust form: {self.function.qualname}"
             )
@@ -1640,13 +1729,38 @@ class _FunctionRenderer:
             site = replace(site, receiver=claim.receiver, callables=resolved_callables)
             if receiver_expr is not None:
                 ctx_receiver, receiver_binding = self._render_claim_receiver(claim, receiver_expr)
-        ctx = LoweringContext(
-            operands=operands,
-            target_language="rust",
-            fresh_name=self.next_temp,
-            leaf_operands=leaf_operands,
-            receiver=ctx_receiver,
-        )
+        if self.mode == "pyo3":
+            ctx = LoweringContext(
+                operands=operands,
+                target_language="rust",
+                fresh_name=self.next_temp,
+                leaf_operands=leaf_operands,
+                receiver=ctx_receiver,
+            )
+        else:
+            if self.standalone is None:
+                raise RustCodegenError(
+                    f"standalone lowering of {claim.target!r} in "
+                    f"{self.function.qualname} requires a resolved StandalonePluginContext"
+                )
+            # Defense-in-depth: every plugin type on the claim must be covered,
+            # not only signature plugin_type_keys (operand/result/receiver).
+            claim_types = claim_plugin_type_keys(claim)
+            if claim_types and not self.standalone.covers_type_keys(claim_types):
+                raise RustCodegenError(
+                    f"plugin claim {claim.target!r} in {self.function.qualname} uses "
+                    f"plugin type keys {sorted(claim_types)} that are not covered by "
+                    "the resolved standalone capability"
+                )
+            ctx = LoweringContext(
+                operands=operands,
+                target_language="rust",
+                fresh_name=self.next_temp,
+                leaf_operands=leaf_operands,
+                receiver=ctx_receiver,
+                backend=LOWERING_BACKEND_STANDALONE_RUST,
+                artifact_profile=self.standalone.profile,
+            )
         try:
             lowered = provider.lower(site, ctx)  # type: ignore[attr-defined]
         except Exception as exc:
@@ -1660,6 +1774,22 @@ class _FunctionRenderer:
                 f"claimed site {claim.target!r} in {self.function.qualname}, "
                 f"got {type(lowered).__name__}"
             )
+        if self.mode != "pyo3" and self.standalone is not None:
+            # Second codegen-time assertion: standalone emission may only use
+            # profile-declared uses/helpers (never undeclared support).
+            allowed_uses = self.standalone.allowed_uses_for(claim.plugin_id)
+            allowed_helpers = self.standalone.allowed_helpers_for(claim.plugin_id)
+            undeclared_uses = [use for use in lowered.uses if use not in allowed_uses]
+            undeclared_helpers = [
+                helper for helper in lowered.helpers if helper not in allowed_helpers
+            ]
+            if undeclared_uses or undeclared_helpers:
+                raise RustCodegenError(
+                    f"plugin {claim.plugin_id!r} lower() emitted undeclared "
+                    f"standalone support for {claim.target!r} in "
+                    f"{self.function.qualname}: uses={undeclared_uses!r}, "
+                    f"helpers={undeclared_helpers!r}"
+                )
         self.plugin_uses.update(lowered.uses)
         for helper in lowered.helpers:
             self.plugin_helpers.setdefault(helper)
@@ -2790,6 +2920,7 @@ def _render_function(
     plugin_types_by_key: Mapping[str, RxtType] | None = None,
     plugin_uses: set[str] | None = None,
     plugin_helpers: dict[str, None] | None = None,
+    standalone: StandalonePluginContext | None = None,
 ) -> str:
     return _FunctionRenderer(
         function,
@@ -2805,6 +2936,7 @@ def _render_function(
         plugin_types_by_key=plugin_types_by_key,
         plugin_uses=plugin_uses,
         plugin_helpers=plugin_helpers,
+        standalone=standalone,
     ).render()
 
 

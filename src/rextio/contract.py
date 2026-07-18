@@ -25,5 +25,8 @@ from __future__ import annotations
 # function/name ranges without changing route/status or position semantics.
 # Contract 2.3.0 adds behavior-neutral host source plans to check/build plans,
 # declared artifact profiles, and the draft device-provider contract marker.
+# Contract 2.4.0 adds plugin standalone-artifact capability presence/declaration
+# and generate/build resolved per-profile allow/deny details without changing
+# lowering_provided, route, native-status, rejection, or promotion semantics.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.3.0"
+TOOLING_CONTRACT_VERSION = "2.4.0"

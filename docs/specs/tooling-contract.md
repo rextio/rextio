@@ -1,9 +1,10 @@
 # Spec: Machine-Readable Tooling Contract
 
 Status: **draft** (experimental tier). The current published producer is core
-0.1.4, released on 2026-07-18 with `contract_version` `2.2.0`. The Release
-Train C branch contains the additive, **unreleased** `2.3.0` producer described
-below; it is not yet a PyPI contract.
+0.1.4, released on 2026-07-18 with `contract_version` `2.2.0` and plugin API
+**1.3**. The Release Train C branch contains the additive, **unreleased**
+`2.4.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
+contract. Package version on the branch remains **0.1.4**.
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
 ## Purpose
@@ -30,7 +31,7 @@ Both JSON surfaces carry a top-level field. The published 0.1.4 producer emits:
 The unreleased Train C branch emits:
 
 ```json
-{ "contract_version": "2.3.0" }
+{ "contract_version": "2.4.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -44,8 +45,9 @@ to generic guidance when the major is outside what they support.
 | `1.0.0` | First public producer line (rextio 0.1.1). Route/status fields + capability manifest. **Exception:** `RXT000` (syntax-error) `column` was CPython `SyntaxError.offset` — a **1-based Unicode code-point** index — not the UTF-8 byte offset used by every other diagnostic. |
 | `2.0.0` | **Breaking position semantics.** Every diagnostic `column` / `end_column`, including `RXT000`, is a **0-based UTF-8 byte offset** into the line (`ast.col_offset` convention). No field renames. Emitted by core **0.1.2**. |
 | `2.1.0` | **Additive producer shape** (same major; dual-map `2.x` consumers stay supported). Core **0.1.3** always serializes module-level `logger_group_targets`, and conditionally serializes plugin-claim fields `receiver` and `callables` when present (plugin API 1.3 method/callable metadata). Position semantics unchanged from `2.0.0`. Consumers that ignore unknown fields continue to work. |
-| `2.2.0` | **Additive promotion-assessment shape.** Each reportable function adds `marker_kind`, a separate `promotion_assessment` evidence channel, and reliable `source_range` / `name_range`. Runtime `route`, `native_status`, and `rejection_codes` semantics remain unchanged. Failed automatic probes stay normal fallback rather than becoming compiler/build errors. |
-| `2.3.0` | **Unreleased additive host-planning shape.** Check/generate/build reports gain a fail-closed `host_source_plan`; generate/build plans carry resolved `artifact_profiles`; Rust executable closures add `module_initializers`; capabilities declares `artifact_contract` and a non-operational `device_provider_contract`. Position, route, native-status, rejection, and promotion-assessment semantics remain unchanged. |
+| `2.2.0` | **Additive promotion-assessment shape.** Each reportable function adds `marker_kind`, a separate `promotion_assessment` evidence channel, and reliable `source_range` / `name_range`. Runtime `route`, `native_status`, and `rejection_codes` semantics remain unchanged. Failed automatic probes stay normal fallback rather than becoming compiler/build errors. Published with core **0.1.4**. |
+| `2.3.0` | **Unreleased additive host-planning shape** (Train C intermediate). Check/generate/build reports gain a fail-closed `host_source_plan`; generate/build plans carry resolved `artifact_profiles`; Rust executable closures add `module_initializers`; capabilities declares `artifact_contract` and a non-operational `device_provider_contract`. |
+| `2.4.0` | **Unreleased additive plugin standalone-capability shape** (current Train C producer). Capabilities plugins gain `artifact_capability_declared` (presence only; no profile-hook execution). Generate/build may emit `standalone_plugin_capabilities` with resolved per-profile allow/deny details. `lowering_provided`, route, native-status, rejection, and promotion-assessment semantics remain unchanged. |
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.

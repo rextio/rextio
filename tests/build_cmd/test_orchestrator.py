@@ -11,14 +11,17 @@ from types import SimpleNamespace
 
 import pytest
 
-import rextio.artifacts.entry_graph as entry_graph
 import rextio.build.orchestrator as orchestrator
+import rextio.cli.build_cmd as build_cmd
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.artifacts.models import FallbackStrategy
+from rextio.artifacts.models import ArtifactKind, FallbackStrategy
+from rextio.artifacts.profiles import rust_crate_profile
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.build.executable_builder import ExecutableBuildResult
 from rextio.cli.main import main
 from rextio.codegen.rust.generator import RustCodegenError
+from rextio.plugins.capabilities import StandalonePluginContext
+from rextio.plugins.loader import PluginError
 
 
 def _fake_built_rust_executable(
@@ -54,6 +57,24 @@ def test_fallback_only_profile_planning_does_not_probe_host(monkeypatch) -> None
         )
         == ()
     )
+
+
+def test_pre_resolved_standalone_context_must_match_planned_profile() -> None:
+    expected = rust_crate_profile("aarch64-apple-darwin")
+    wrong = rust_crate_profile("x86_64-unknown-linux-gnu")
+    context = StandalonePluginContext(
+        profile=wrong,
+        capabilities={},
+        capable_qualnames=frozenset(),
+    )
+    plan = SimpleNamespace(artifact_profiles=(expected,))
+
+    with pytest.raises(PluginError, match="context profile mismatch"):
+        orchestrator._ensure_standalone_contexts(
+            plan,
+            SimpleNamespace(),
+            seed={ArtifactKind.RUST_CRATE: context},
+        )
 
 
 def test_build_reports_unavailable_host_artifact_profile(
@@ -100,7 +121,7 @@ def test_rust_executable_preflight_reports_unavailable_host_profile(
             "RXT060 Artifact profile planning failed. Cause: unsupported armv7l host"
         )
 
-    monkeypatch.setattr(entry_graph, "required_host_target_triple", unsupported_host)
+    monkeypatch.setattr(build_cmd, "detect_host_target_triple", unsupported_host)
 
     exit_code = main(
         [
