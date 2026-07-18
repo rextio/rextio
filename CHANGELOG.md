@@ -1,5 +1,69 @@
 # Changelog
 
+## Unreleased — Release Train C
+
+**Experimental branch work; not tagged or published to PyPI.** The latest
+published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
+contract **2.2.0**. This branch retains plugin API 1.3 and emits the additive,
+unreleased tooling contract **2.3.0**.
+
+### Host source and artifact planning
+
+- Add immutable `ArtifactProfile`, `SourceModule`/`SourceModuleGraph`, and
+  source-ordered `ModuleInitIR` records with deterministic serialization,
+  project-relative provenance, source hashes, and fail-closed coherence checks.
+- Add a descriptive-only `host_source_plan` to check and build-plan reports.
+  A missing source, unavailable initializer, or module/path/hash mismatch makes
+  the plan unavailable instead of approximating Python import order.
+- Resolve artifact profiles only for outputs actually requested during
+  generate/build. `BuildPlan.artifact_profiles` is authoritative; fallback-only
+  work does not probe or advertise a host target triple.
+
+### Native executable architecture
+
+- Make the Rust executable fallback strategy explicit and closed:
+  `error | python-subprocess | nuitka-sidecar`. Preserve
+  `hybrid_runtime = source | nuitka` as a compatibility alias.
+- Extend executable closure reports with ordered `module_initializers` and fail
+  before external build work when source/initializer authority is unavailable.
+- Connect a deliberately narrow initializer-before-main vertical slice:
+  exactly one source module, no load-time imports/cycles, same-module
+  direct-native entrypoint, and plain single-name assignments to exact scalar
+  literals (`bool`, `int`, `float`, `str`). Revalidate the source hash, plan,
+  and statement indexes before lowering; run the `() -> None` initializer before
+  argv handling and the entrypoint.
+- Do not publish initializer values as Rust globals or Python module values.
+  Native reads of those values remain blocked; broader top-level semantics are
+  deferred.
+
+### Tooling contract 2.3.0 and device groundwork
+
+- Add `host_source_plan`, resolved `artifact_profiles`, closure
+  `module_initializers`, and capabilities `artifact_contract` fields without
+  changing contract-2 position, route, native-status, rejection, or promotion
+  semantics.
+- Add a non-operational `device_provider_contract` marker and immutable draft
+  `manifest()` / `preflight()` records. There is no provider discovery,
+  selection, build/link hook, or runtime dispatch; every preflight result has
+  `support_claim: false`.
+- Add a no-dependency CUDA Driver API inventory probe and Windows/Linux
+  validation workflows. On Windows x64 the probe resolves `nvcuda.dll` from
+  System32 only; on Linux x86_64/aarch64 it loads arch-split reviewed absolute
+  `libcuda.so.1` candidates (specialized WSL2/NVIDIA-container/Jetson mounts
+  before generic distro paths), canonicalizes under reviewed system roots with
+  a group-/world-writable ancestry provenance guard (`0o022`), distinguishes
+  `LIBCUDA_SO_NOT_FOUND` from `LIBCUDA_SO_LOAD_FAILED` without path/`dlerror`
+  leakage, and fails closed otherwise. Loose and strict (`--require-device` /
+  `REXTIO_LINUX_CUDA_REQUIRE_DEVICE=1`) Linux validation modes are documented;
+  ordinary e2e CI runs host `cargo test` on ubuntu/macOS and a loose Linux
+  validate plus aarch64 compile-only `cargo check`. Both OS paths share the
+  same six-symbol inventory surface, never create a context or launch a kernel,
+  and always report `support_claim: false`; this is not CUDA support or
+  certification.
+- Document the released-versus-unreleased boundary, explicit executable
+  fallback, source initializer limitations, device-provider draft, and
+  Windows/Linux CUDA inventory validation procedure.
+
 ## 0.1.4 — 2026-07-18
 
 **Published release.** Package version `0.1.4` is tagged and published to PyPI

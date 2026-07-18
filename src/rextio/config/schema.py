@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from rextio.artifacts.models import FallbackStrategy
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS
 
 
@@ -88,10 +89,13 @@ class ExecutableConfig:
     # calls (bare name on PATH, absolute path, or a relative path resolved against
     # `<binary>.runtime`). None -> the built-in default (`python3`).
     python: str | None = None
-    # How the `rust` backend ships the delegated Python: "source" (dispatcher.py +
-    # project source, run with `python`) or "nuitka" (a self-contained compiled
-    # dispatcher executable, so no separate Python install is needed at runtime).
-    hybrid_runtime: str = "source"
+    # Explicit fallback for the Rust executable entry graph.  This is separate
+    # from [build].fallback_backend, which continues to control wheel fallback.
+    fallback: FallbackStrategy = FallbackStrategy.PYTHON_SUBPROCESS
+    # Compatibility input retained for old configs.  The loader maps source to
+    # python-subprocess and nuitka to nuitka-sidecar, then uses ``fallback`` as
+    # the canonical authority.
+    hybrid_runtime: str | None = "source"
 
 
 # One pattern shared by config validation and the pin matcher so the two can

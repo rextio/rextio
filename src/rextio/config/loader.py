@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from rextio.__about__ import __version__
+from rextio.artifacts.closure import resolve_executable_fallback
+from rextio.artifacts.models import FallbackStrategy
 from rextio.limits import MAX_BUILD_TIMEOUT_SECONDS
 from rextio.config.defaults import DEFAULT_CONFIG
 from rextio.config.schema import (
@@ -43,7 +45,15 @@ CONFIG_KEYS = {
     "plugins": {"enabled"},
     "imports": {"default_external_policy", "packages"},
     "embedding": {"enabled"},
-    "executable": {"entrypoint", "name", "backend", "nuitka_mode", "python", "hybrid_runtime"},
+    "executable": {
+        "entrypoint",
+        "name",
+        "backend",
+        "nuitka_mode",
+        "python",
+        "fallback",
+        "hybrid_runtime",
+    },
     "toolchain": {
         "cargo",
         "maturin",
@@ -86,6 +96,7 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_EXECUTABLE_BACKEND": ("executable", "backend", "string"),
     "REXTIO_NUITKA_MODE": ("executable", "nuitka_mode", "string"),
     "REXTIO_EXECUTABLE_PYTHON": ("executable", "python", "optional_string"),
+    "REXTIO_EXECUTABLE_FALLBACK": ("executable", "fallback", "string"),
     "REXTIO_HYBRID_RUNTIME": ("executable", "hybrid_runtime", "string"),
     "REXTIO_CARGO": ("toolchain", "cargo", "optional_string"),
     "REXTIO_MATURIN": ("toolchain", "maturin", "optional_string"),
@@ -189,6 +200,12 @@ def override_config(
         "toolchain": toolchain,
         "policy": policy,
     }
+    canonical_override = overrides.get(("executable", "fallback"))
+    legacy_override = overrides.get(("executable", "hybrid_runtime"))
+    if canonical_override is not None and legacy_override is None:
+        executable["hybrid_runtime"] = None
+    elif legacy_override is not None and canonical_override is None:
+        executable["fallback"] = None
     for (section, key), value in overrides.items():
         if value is None:
             continue
@@ -212,6 +229,19 @@ def _build_config(
     toolchain: dict[str, Any],
     policy: dict[str, Any],
 ) -> RextioConfig:
+    raw_executable_fallback = executable.get("fallback")
+    raw_hybrid_runtime = executable.get("hybrid_runtime")
+    _require_optional_string("executable", "fallback", raw_executable_fallback)
+    _require_optional_string("executable", "hybrid_runtime", raw_hybrid_runtime)
+    try:
+        resolved_executable_fallback = resolve_executable_fallback(
+            raw_executable_fallback, raw_hybrid_runtime
+        )
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    executable["fallback"] = resolved_executable_fallback
+    if raw_hybrid_runtime is None:
+        executable["hybrid_runtime"] = _compatibility_hybrid_runtime(resolved_executable_fallback)
     _validate_config_values(
         build, rust, fallback, target, plugins, imports, embedding, executable, toolchain, policy
     )
@@ -227,6 +257,17 @@ def _build_config(
         toolchain=ToolchainConfig(**toolchain),
         policy=PolicyConfig(**policy),
     )
+
+
+def _compatibility_hybrid_runtime(
+    fallback: FallbackStrategy | str,
+) -> str | None:
+    strategy = resolve_executable_fallback(fallback)  # validated immediately above
+    if strategy is FallbackStrategy.PYTHON_SUBPROCESS:
+        return "source"
+    if strategy is FallbackStrategy.NUITKA_SIDECAR:
+        return "nuitka"
+    return None
 
 
 def _validate_config_values(
@@ -265,8 +306,15 @@ def _validate_config_values(
     _require_optional_string("executable", "name", executable["name"])
     _require_optional_string("executable", "python", executable["python"])
     _require_value(
-        "executable", "hybrid_runtime", executable["hybrid_runtime"], {"source", "nuitka"}
+        "executable",
+        "fallback",
+        executable["fallback"],
+        {"error", "python-subprocess", "nuitka-sidecar"},
     )
+    if executable["hybrid_runtime"] is not None:
+        _require_value(
+            "executable", "hybrid_runtime", executable["hybrid_runtime"], {"source", "nuitka"}
+        )
     _require_string("executable", "backend", executable["backend"])
     _require_string("executable", "nuitka_mode", executable["nuitka_mode"])
     for tool_key in ("cargo", "maturin", "nuitka", "python", "rust_toolchain"):
@@ -445,6 +493,12 @@ def _apply_environment_overrides(
         "toolchain": toolchain,
         "policy": policy,
     }
+    canonical_env = bool(environ.get("REXTIO_EXECUTABLE_FALLBACK"))
+    legacy_env = bool(environ.get("REXTIO_HYBRID_RUNTIME"))
+    if canonical_env and not legacy_env:
+        executable["hybrid_runtime"] = None
+    elif legacy_env and not canonical_env:
+        executable["fallback"] = None
     for env_name, (section, key, kind) in ENVIRONMENT_OVERRIDES.items():
         raw_value = environ.get(env_name)
         if raw_value is None or raw_value == "":

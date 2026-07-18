@@ -136,8 +136,8 @@ def kernel(x: float) -> float:
     data = analysis.to_dict()
 
     assert data["contract_version"] == TOOLING_CONTRACT_VERSION
-    # Contract 2.2.0 adds promotion evidence and reliable function ranges.
-    assert data["contract_version"] == "2.2.0"
+    # Contract 2.3.0 adds host source planning while retaining promotion evidence.
+    assert data["contract_version"] == "2.3.0"
     assert TOOLING_CONTRACT_VERSION.split(".", 1)[0] == "2"
 
     # Contract 2.1.0 always serializes logger_group_targets on each module.

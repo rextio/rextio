@@ -24,6 +24,22 @@ def test_capabilities_json_shape(tmp_path: Path, capsys) -> None:
     assert manifest["project_root"] == str(tmp_path.resolve())
     assert manifest["target"] == {"language": "rust"}
     assert manifest["plugins"] == []
+    assert manifest["artifact_contract"] == {
+        "status": "experimental",
+        "profile_resolution": "generate-build-only",
+        "kinds": ["host-extension", "host-executable", "rust-crate"],
+        "host_executable_fallbacks": [
+            "error",
+            "python-subprocess",
+            "nuitka-sidecar",
+        ],
+    }
+    assert manifest["device_provider_contract"] == {
+        "status": "draft",
+        "discovery": False,
+        "provider_selected": False,
+        "local_probe_performed": False,
+    }
 
     type_capabilities = manifest["type_capabilities"]
     assert type_capabilities["scalar_types"] == sorted(SCALAR_TYPES)

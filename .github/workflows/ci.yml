@@ -124,6 +124,60 @@ jobs:
         env:
           REXTIO_E2E_STRICT: "1"
         run: python -m pytest tests/e2e -q
+      - name: CUDA driver inventory probe cargo test (host; compile coverage)
+        # Once per OS at Python 3.11: host cargo unit tests for the unpublished
+        # probe. On macOS this covers UNSUPPORTED_TARGET; on Linux it covers the
+        # host inventory path without claiming real-GPU evidence.
+        if: matrix.python-version == '3.11'
+        run: cargo test --locked --manifest-path tools/cuda-driver-probe/Cargo.toml
+      - name: CUDA driver inventory probe (loose Linux CI; not real-GPU evidence)
+        # Ubuntu-only loose validation + aarch64 compile-only check. The wrapper
+        # builds the host probe; no separate cargo build. Cross-target cargo
+        # check is compile coverage only (not a Linux aarch64 run, not GPU).
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-unknown-linux-gnu
+          cargo check --locked \
+            --manifest-path tools/cuda-driver-probe/Cargo.toml \
+            --target aarch64-unknown-linux-gnu
+          mkdir -p "${RUNNER_TEMP}/rextio-cuda-probe"
+          ./scripts/validate-linux-cuda.sh \
+            --output "${RUNNER_TEMP}/rextio-cuda-probe/cuda-driver-probe.json" \
+            --target-dir "${RUNNER_TEMP}/rextio-cuda-probe/cargo-target"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "rextio-cuda-probe" / "cuda-driver-probe.json"
+          report = json.loads(path.read_text(encoding="utf-8"))
+          assert report["schema_version"] == "1"
+          assert report["probe"] == "rextio-cuda-driver-probe"
+          assert report["support_claim"] is False
+          assert report["target"]["os"] == "linux"
+          assert report["target"]["arch"] in {"x86_64", "aarch64"}
+          assert report["platform_supported"] is True
+          assert report["status"] in {"probe-complete", "unavailable", "error"}
+          devices = report["devices"]
+          assert isinstance(devices, list)
+          if report["status"] == "probe-complete":
+              assert report["driver_loaded"] is True
+              assert isinstance(report["driver_version"], int)
+              assert isinstance(report["device_count"], int)
+              assert report["device_count"] > 0
+              assert len(devices) == report["device_count"]
+              for ordinal, device in enumerate(devices):
+                  assert device["ordinal"] == ordinal
+                  assert device["name"]
+                  assert device["sm"].startswith("sm_")
+          else:
+              reason = report.get("reason_code")
+              assert isinstance(reason, str) and reason
+              assert "/" not in reason and "\\" not in reason and "=" not in reason
+          # Loose CI lane: no GPU expected. Compile + fail-closed only.
+          print("loose-linux-cuda-probe-ok", report["status"], report.get("reason_code"))
+          PY
 
   nuitka-e2e:
     name: E2E (real Nuitka toolchain)

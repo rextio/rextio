@@ -24,6 +24,7 @@ from rextio.contract import TOOLING_CONTRACT_VERSION
 
 if TYPE_CHECKING:
     from rextio.analyzer.plugin_claims import ClaimEngine
+    from rextio.source.planning import HostSourcePlan
     from rextio.plugins.api import (
         CallableMeta,
         ClaimExpr,
@@ -731,6 +732,10 @@ class ProjectAnalysis:
     # ``FunctionAnalysis.project_mutations``), used by the boundary resolver and
     # the definition/build gate.
     project_mutations: ProjectMutations = _EMPTY_MUTATIONS
+    # Added only when a command/build asks for Train-C host source planning.
+    # Keeping analysis itself side-effect free avoids widening every internal
+    # analyzer call while check/generate/build reports expose the same plan.
+    host_source_plan: HostSourcePlan | None = None
 
     @property
     def native_candidates(self) -> list[FunctionAnalysis]:
@@ -869,7 +874,7 @@ class ProjectAnalysis:
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of the whole project analysis."""
-        return {
+        data: dict[str, object] = {
             "contract_version": TOOLING_CONTRACT_VERSION,
             "project_root": str(self.project_root),
             "modules": [module.to_dict() for module in self.modules],
@@ -886,3 +891,6 @@ class ProjectAnalysis:
             ],
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
+        if self.host_source_plan is not None:
+            data["host_source_plan"] = self.host_source_plan.to_dict()
+        return data

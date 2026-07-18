@@ -23,5 +23,7 @@ from __future__ import annotations
 # remains compatible with dual-map 2.x consumers that tolerate unknown fields.
 # Contract 2.2.0 adds isolated promotion-assessment evidence plus reliable
 # function/name ranges without changing route/status or position semantics.
+# Contract 2.3.0 adds behavior-neutral host source plans to check/build plans,
+# declared artifact profiles, and the draft device-provider contract marker.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.2.0"
+TOOLING_CONTRACT_VERSION = "2.3.0"

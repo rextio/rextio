@@ -7,6 +7,67 @@ import pytest
 from rextio.config.loader import ConfigError, load_config, override_config
 
 
+def test_executable_fallback_defaults_to_python_subprocess(tmp_path: Path) -> None:
+    config = load_config(tmp_path)
+
+    assert config.executable.fallback == "python-subprocess"
+    assert config.executable.hybrid_runtime == "source"
+
+
+@pytest.mark.parametrize(
+    ("legacy", "canonical"),
+    [("source", "python-subprocess"), ("nuitka", "nuitka-sidecar")],
+)
+def test_legacy_hybrid_runtime_maps_to_canonical_fallback(
+    tmp_path: Path, legacy: str, canonical: str
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        f'[executable]\nhybrid_runtime = "{legacy}"\n', encoding="utf-8"
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.executable.fallback == canonical
+    assert config.executable.hybrid_runtime == legacy
+
+
+def test_canonical_and_legacy_fallback_conflict_is_actionable(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        '[executable]\nfallback = "error"\nhybrid_runtime = "source"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="fallback='error'.*hybrid_runtime='source'"):
+        load_config(tmp_path)
+
+
+def test_environment_canonical_fallback_overrides_legacy_toml(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        '[executable]\nhybrid_runtime = "source"\n', encoding="utf-8"
+    )
+
+    config = load_config(tmp_path, environ={"REXTIO_EXECUTABLE_FALLBACK": "nuitka-sidecar"})
+
+    assert config.executable.fallback == "nuitka-sidecar"
+    assert config.executable.hybrid_runtime == "nuitka"
+
+
+def test_cli_style_legacy_override_beats_lower_canonical_setting(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text('[executable]\nfallback = "error"\n', encoding="utf-8")
+
+    config = override_config(load_config(tmp_path), {("executable", "hybrid_runtime"): "source"})
+
+    assert config.executable.fallback == "python-subprocess"
+
+
+@pytest.mark.parametrize("key", ["fallback", "hybrid_runtime"])
+def test_executable_fallback_inputs_reject_non_string_types(tmp_path: Path, key: str) -> None:
+    (tmp_path / "rextio.toml").write_text(f"[executable]\n{key} = []\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=rf"\[executable\]\.{key} must be a string"):
+        load_config(tmp_path)
+
+
 def test_load_config_defaults_to_auto_native_discovery(tmp_path: Path) -> None:
     config = load_config(tmp_path)
 

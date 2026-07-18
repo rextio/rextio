@@ -17,6 +17,7 @@ from rextio.cli.config_overrides import (
 from rextio.cli.reporter import Reporter
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.plugins.loader import PluginError
+from rextio.source.planning import ensure_host_source_plan
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
@@ -167,6 +168,7 @@ def run(args: Namespace) -> int:
         # result, or overlapping claims) - a configuration-style failure.
         reporter.error(f"RXT060 Plugin error: {exc}")
         return 1
+    ensure_host_source_plan(analysis)
     if not getattr(args, "no_report", False):
         write_check_report(project_root, analysis)
     reporter.print_result(text=format_check_report(analysis), data=analysis.to_dict())
@@ -179,6 +181,7 @@ def run(args: Namespace) -> int:
 
 def write_check_report(project_root: Path, analysis: ProjectAnalysis) -> Path:
     """Write the check JSON report and return its path."""
+    ensure_host_source_plan(analysis)
     reports_dir = project_root / ".rextio" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     report_path = reports_dir / "check.json"

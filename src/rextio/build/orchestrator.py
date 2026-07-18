@@ -8,9 +8,24 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from rextio.analyzer.call_resolution import FunctionResolver
-from rextio.analyzer.models import FunctionAnalysis, ProjectAnalysis
+from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.native_marker import external_accelerator_for_source
+from rextio.artifacts.closure import (
+    ClosureStatus,
+    NativeClosureReport,
+    closure_requires_prebuild_failure,
+    resolve_executable_fallback,
+    strategy_from_compatibility_value,
+)
+from rextio.artifacts.entry_graph import executable_entry_graph
+from rextio.artifacts.models import ArtifactKind, ArtifactProfile, FallbackStrategy
+from rextio.artifacts.profiles import (
+    ArtifactProfilePlanningError,
+    detect_host_target_triple,
+    host_executable_profile,
+    host_extension_profile,
+    rust_crate_profile,
+)
 from rextio.ir.types import RxtPluginType, normalize_type_name
 from rextio.build.cargo_builder import (
     NativeBuildResult,
@@ -64,11 +79,13 @@ from rextio.fallback.cpython import (
 )
 from rextio.fallback.nuitka import build_nuitka_fallback
 from rextio.ir.nodes import ModuleIR
+from rextio.ir.module_init import ModuleInitIR
 from rextio.ir.lowering import LoweringError, PluginTypeMaps, lower_project
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.partition.build_plan import BuildPlan, create_build_plan
 from rextio.partition.fallback_plan import FallbackPlan
 from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
+from rextio.source.planning import ensure_host_source_plan
 from rextio.targets.plan import TargetPlan, default_target_plan
 
 
@@ -78,6 +95,16 @@ from rextio.targets.plan import TargetPlan, default_target_plan
 _DISPATCHER_RESERVED_TOP_LEVEL_NAMES = frozenset(
     {"importlib", "json", "os", "sys", "types", "rextio"}
 )
+
+
+def _required_host_target_triple() -> str:
+    """Resolve a requested native host target through one actionable error."""
+    try:
+        return detect_host_target_triple()
+    except ValueError as error:
+        raise ArtifactProfilePlanningError(
+            f"RXT060 Artifact profile planning failed. Cause: {error}"
+        ) from error
 
 
 def _plugin_lowering_inputs(
@@ -179,6 +206,7 @@ class GenerateResult:
             "embedding_candidate_count": len(self.plan.native.embedded_functions),
             "native_source": self.native_source.to_dict(),
             "rust_crate_source": self.rust_crate_source.to_dict(),
+            "artifact_profiles": [profile.to_dict() for profile in self.plan.artifact_profiles],
         }
         # Mirror build.json's plugin dependency report so the two reports stay
         # consistent (council round 8).
@@ -233,12 +261,76 @@ class BuildResult:
             "wheel_build": self.wheel_build.to_dict(),
             "executable_build": self.executable_build.to_dict(),
             "rust_crate_build": self.rust_crate_build.to_dict(),
+            "artifact_profiles": [profile.to_dict() for profile in self.plan.artifact_profiles],
         }
         if self.plugin_crate_dependencies:
             data["plugin_crate_dependencies"] = [
                 dict(dependency) for dependency in self.plugin_crate_dependencies
             ]
         return data
+
+
+@dataclass(frozen=True)
+class PlannedExecutableBuildResult(ExecutableBuildResult):
+    """An executable result carrying its deterministic closure report."""
+
+    closure: NativeClosureReport | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the executable result with its closure report."""
+        data = super().to_dict()
+        data["closure"] = self.closure.to_dict() if self.closure is not None else None
+        return data
+
+
+def _generate_artifact_profiles(
+    fallback: str,
+    *,
+    native_extension: bool,
+    rust_importable: bool,
+) -> tuple[ArtifactProfile, ...]:
+    if not native_extension and not rust_importable:
+        return ()
+    target_triple = _required_host_target_triple()
+    profiles: list[ArtifactProfile] = []
+    if native_extension:
+        profiles.append(
+            host_extension_profile(
+                target_triple,
+                python_fallback_backend=fallback,
+            )
+        )
+    if rust_importable:
+        profiles.append(rust_crate_profile(target_triple))
+    return tuple(profiles)
+
+
+def _build_artifact_profiles(
+    fallback: str,
+    executable_fallback: FallbackStrategy,
+    *,
+    executable_entrypoint: str | None,
+    executable_backend: str,
+    native_extension: bool,
+    rust_importable: bool,
+) -> tuple[ArtifactProfile, ...]:
+    rust_executable = executable_entrypoint is not None and executable_backend == "rust"
+    if not native_extension and not rust_importable and not rust_executable:
+        return ()
+    target_triple = _required_host_target_triple()
+    profiles: list[ArtifactProfile] = []
+    if native_extension:
+        profiles.append(
+            host_extension_profile(
+                target_triple,
+                python_fallback_backend=fallback,
+            )
+        )
+    if rust_executable:
+        profiles.append(host_executable_profile(target_triple, fallback=executable_fallback))
+    if rust_importable:
+        profiles.append(rust_crate_profile(target_triple))
+    return tuple(profiles)
 
 
 def build_hybrid_artifact(
@@ -258,7 +350,8 @@ def build_hybrid_artifact(
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     executable_analysis: ProjectAnalysis | None = None,
     executable_python: str | None = None,
-    executable_hybrid_runtime: str = "source",
+    executable_hybrid_runtime: str | None = None,
+    executable_fallback: FallbackStrategy | str | None = None,
     toolchain: ToolchainConfig | None = None,
 ) -> BuildResult:
     """Build the hybrid native+fallback artifact for a project.
@@ -270,10 +363,44 @@ def build_hybrid_artifact(
     """
     if executable_analysis is None:
         executable_analysis = analysis
+    fallback_strategy = resolve_executable_fallback(executable_fallback, executable_hybrid_runtime)
     toolchain = toolchain or ToolchainConfig()
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
-    plan = create_build_plan(analysis, fallback)
+    artifact_profiles = _build_artifact_profiles(
+        fallback,
+        fallback_strategy,
+        executable_entrypoint=executable_entrypoint,
+        executable_backend=executable_backend,
+        native_extension=analysis.requires_native_build(),
+        rust_importable=rust_importable and analysis.requires_native_build(),
+    )
+    plan = create_build_plan(analysis, fallback, artifact_profiles=artifact_profiles)
+    closure_report: NativeClosureReport | None = None
+    if executable_backend == "rust" and executable_entrypoint is not None:
+        executable_profile = next(
+            profile for profile in artifact_profiles if profile.kind is ArtifactKind.HOST_EXECUTABLE
+        )
+        closure_report = executable_entry_graph(
+            executable_analysis,
+            _entrypoint_to_qualname(executable_entrypoint),
+            fallback_strategy,
+            profile=executable_profile,
+        )
+    if closure_report is not None and closure_requires_prebuild_failure(closure_report):
+        assert executable_entrypoint is not None
+        return _failed_closure_build_result(
+            layout,
+            analysis,
+            plan,
+            fallback,
+            boundary_fallback_threshold,
+            target_plan,
+            closure_report,
+            executable_entrypoint,
+            executable_name,
+            rust_crate_name,
+        )
     _reset_generated_dir(layout.build_dir)
     _prepare_generated_sources(layout, target_plan)
     _write_check_report(layout, analysis)
@@ -313,8 +440,9 @@ def build_hybrid_artifact(
         plan,
         executable_analysis,
         executable_python,
-        executable_hybrid_runtime,
+        fallback_strategy,
         target_plan,
+        closure_report=closure_report,
         build_timeout=build_timeout_seconds,
         toolchain=toolchain,
     )
@@ -334,14 +462,70 @@ def build_hybrid_artifact(
         rust_crate_build=rust_crate_build,
         plugin_crate_dependencies=plugin_crate_dependencies,
     )
+    _write_build_result(layout, result)
+    return result
+
+
+def _failed_closure_build_result(
+    layout: ArtifactLayout,
+    analysis: ProjectAnalysis,
+    plan: BuildPlan,
+    fallback: str,
+    boundary_fallback_threshold: int,
+    target_plan: TargetPlan,
+    closure: NativeClosureReport,
+    entrypoint: str,
+    executable_name: str | None,
+    rust_crate_name: str,
+) -> BuildResult:
+    """Return an inspectable failure before any source, Cargo, or sidecar work."""
+    _cleanup_failed_prebuild_outputs(
+        layout,
+        target_plan,
+        entrypoint,
+        executable_name,
+        rust_crate_name,
+    )
+    executable_build = _closure_failure(entrypoint, closure)
+    cause = (
+        "Unavailable executable entry graph"
+        if closure.status is ClosureStatus.UNAVAILABLE
+        else "Open fallback=error executable closure"
+    )
+    result = BuildResult(
+        fallback=fallback,
+        boundary_fallback_threshold=boundary_fallback_threshold,
+        target_plan=target_plan,
+        layout=layout,
+        plan=plan,
+        accepted_native_count=plan.native.accepted_count,
+        rejected_native_count=plan.native.rejected_count,
+        native_build=skipped_native_build(f"{cause} prevented native build work."),
+        fallback_build=FallbackBuildResult(
+            status="skipped",
+            backend=fallback,
+            message=f"{cause} prevented fallback packaging.",
+        ),
+        wheel_build=skipped_wheel(f"{cause} prevented wheel packaging."),
+        executable_build=executable_build,
+        rust_crate_build=skipped_rust_crate_build(f"{cause} prevented Rust crate work."),
+    )
+    _reset_report_files(layout.reports_dir)
+    _write_check_report(layout, analysis)
+    _write_build_result(layout, result)
+    return result
+
+
+def _write_build_result(layout: ArtifactLayout, result: BuildResult) -> None:
+    """Serialize one aggregate build result deterministically."""
     (layout.reports_dir / "build.json").write_text(
         json.dumps(
             {
                 "status": _build_status(
-                    native_build,
-                    fallback_build,
-                    executable_build,
-                    rust_crate_build,
+                    result.native_build,
+                    result.fallback_build,
+                    result.executable_build,
+                    result.rust_crate_build,
                 ),
                 **result.to_dict(),
             },
@@ -351,7 +535,6 @@ def build_hybrid_artifact(
         + "\n",
         encoding="utf-8",
     )
-    return result
 
 
 def generate_source_artifact(
@@ -367,7 +550,12 @@ def generate_source_artifact(
     """Generate native and Python source artifacts without compiling."""
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
-    plan = create_build_plan(analysis, fallback)
+    artifact_profiles = _generate_artifact_profiles(
+        fallback,
+        native_extension=analysis.requires_native_build(),
+        rust_importable=rust_importable and analysis.requires_native_build(),
+    )
+    plan = create_build_plan(analysis, fallback, artifact_profiles=artifact_profiles)
     _prepare_generated_sources(layout, target_plan)
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
@@ -435,6 +623,7 @@ def _prepare_generated_sources(layout: ArtifactLayout, target_plan: TargetPlan) 
 
 
 def _write_check_report(layout: ArtifactLayout, analysis: ProjectAnalysis) -> None:
+    ensure_host_source_plan(analysis)
     (layout.reports_dir / "check.json").write_text(
         json.dumps(analysis.to_dict(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -764,9 +953,10 @@ def _build_executable_artifact(
     plan: BuildPlan,
     executable_analysis: ProjectAnalysis,
     executable_python: str | None,
-    executable_hybrid_runtime: str,
+    executable_fallback: FallbackStrategy,
     target_plan: TargetPlan,
     *,
+    closure_report: NativeClosureReport | None = None,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
 ) -> ExecutableBuildResult:
@@ -782,8 +972,9 @@ def _build_executable_artifact(
             entrypoint,
             executable_name,
             executable_python,
-            executable_hybrid_runtime,
+            executable_fallback,
             target_plan,
+            closure_report=closure_report,
             build_timeout=build_timeout,
             toolchain=toolchain,
         )
@@ -874,73 +1065,46 @@ def _entrypoint_reachable_native_graph(
     analysis: ProjectAnalysis,
     entry_qualname: str,
 ) -> tuple[set[str], dict[str, str]]:
-    """Return direct-native functions and delegated callees reachable from entry."""
-    by_qualname = {
-        function.qualname: function for module in analysis.modules for function in module.functions
-    }
-    modules_by_name = {module.module_name: module for module in analysis.modules}
-    entry = by_qualname.get(entry_qualname)
-    if (
-        entry is None
-        or not entry.accepted
-        or entry.native_runtime_semantics
-        or entry.is_embedding_candidate
-    ):
-        return set(), {}
-
-    resolver = FunctionResolver(analysis)
-    reachable: set[str] = set()
-    delegated: dict[str, str] = {}
-    stack = [entry]
-    while stack:
-        function = stack.pop()
-        if function.qualname in reachable:
-            continue
-        reachable.add(function.qualname)
-        module = modules_by_name.get(function.module_name)
-        if module is None:
-            continue
-        for call in function.calls:
-            resolved = resolver.resolve(module, call.target).function
-            if resolved is None:
-                continue
-            if resolved.qualname in function.delegated_call_targets:
-                return_type = _normalized_function_return_type(resolved)
-                if return_type is not None:
-                    delegated[resolved.qualname] = return_type
-                continue
-            if resolved.is_embedding_candidate:
-                # An embedded helper is a plain crate function the caller invokes
-                # directly; keep it in the reachable set so the IR filter emits it.
-                # Its candidacy shape (a single scalar expression) has no calls of
-                # its own, so it is a leaf.
-                reachable.add(resolved.qualname)
-                continue
-            if resolved.accepted and not resolved.native_runtime_semantics:
-                stack.append(resolved)
-    return reachable, delegated
+    """Compatibility tuple derived from the reusable executable closure report."""
+    closure = executable_entry_graph(analysis, entry_qualname)
+    return set(closure.reachable_native_functions), closure.delegated_return_types
 
 
-def _normalized_function_return_type(function: FunctionAnalysis) -> str | None:
-    return_type = (
-        function.signature_return_type
-        or function.inferred_return_type
-        or function.annotated_return_type
-    )
-    return normalize_type_name(return_type)
-
-
-def _filter_module_ir(module_ir: ModuleIR, reachable_qualnames: set[str]) -> ModuleIR:
-    """Keep only entry-reachable functions when generating a Rust executable."""
+def _filter_module_ir(
+    module_ir: ModuleIR,
+    reachable_qualnames: set[str],
+    initializer_qualnames: set[str] | None = None,
+) -> ModuleIR:
+    """Keep entry-reachable functions and explicitly planned initializers."""
     if not reachable_qualnames:
         # An empty set means the entry itself was not an accepted direct-native
         # function. Pass the full IR through so `_resolve_main_entry` can name the
         # REAL problem (missing entry / RXT080 shim / embedding) - filtering everything
         # out here would degrade those diagnostics to a generic "missing entry".
         return module_ir
-    return ModuleIR(
-        [function for function in module_ir.functions if function.qualname in reachable_qualnames]
-    )
+    retained = reachable_qualnames | (initializer_qualnames or set())
+    return ModuleIR([function for function in module_ir.functions if function.qualname in retained])
+
+
+def _executable_initializer_plans(
+    analysis: ProjectAnalysis,
+    closure: NativeClosureReport,
+) -> dict[str, ModuleInitIR]:
+    """Resolve closure-authorized initializer names back to their exact plans."""
+    if not closure.module_initializers:
+        return {}
+    source_plan = ensure_host_source_plan(analysis)
+    plans_by_module = {plan.module_name: plan for plan in source_plan.module_initializers}
+    resolved: dict[str, ModuleInitIR] = {}
+    for qualname in closure.module_initializers:
+        module_name, separator, _name = qualname.rpartition(".")
+        plan = plans_by_module.get(module_name)
+        if not separator or plan is None:
+            raise LoweringError(
+                f"closure-authorized module initializer has no source plan: {qualname}"
+            )
+        resolved[qualname] = plan
+    return resolved
 
 
 def _write_hybrid_runtime(
@@ -1085,9 +1249,10 @@ def _build_rust_executable_artifact(
     entrypoint: str,
     executable_name: str | None,
     executable_python: str | None,
-    hybrid_runtime: str,
+    executable_fallback: FallbackStrategy | str | None,
     target_plan: TargetPlan | None = None,
     *,
+    closure_report: NativeClosureReport | None = None,
     build_timeout: float,
     toolchain: ToolchainConfig | None = None,
 ) -> ExecutableBuildResult:
@@ -1099,11 +1264,13 @@ def _build_rust_executable_artifact(
     binary as ``<binary>.runtime``; a binary with no delegated calls needs no
     Python runtime at all.
     """
+    strategy = strategy_from_compatibility_value(executable_fallback)
     configured_python, python_error = resolve_python(toolchain or ToolchainConfig())
     if (toolchain and toolchain.python is not None) and configured_python is None:
-        # Do not silently degrade to "python3": programmatic callers skip the
-        # CLI preflight, and a binary baked with the wrong interpreter fails
-        # far from the cause.
+        # Preserve the pre-closure toolchain gate for programmatic callers.  In
+        # particular, callers may intentionally omit analysis while checking a
+        # configured interpreter, and no source or entry graph is authoritative
+        # until that prerequisite resolves.
         return ExecutableBuildResult(
             status="failed",
             path=None,
@@ -1112,31 +1279,42 @@ def _build_rust_executable_artifact(
             backend="rust",
         )
     entry_qualname = _entrypoint_to_qualname(entrypoint)
-    reachable_qualnames, delegated_return_types = _entrypoint_reachable_native_graph(
+    closure = closure_report or executable_entry_graph(
         analysis,
         entry_qualname,
+        strategy,
+        profile=host_executable_profile(_required_host_target_triple(), fallback=strategy),
     )
-    nuitka_dispatcher = hybrid_runtime == "nuitka"
+    if closure_requires_prebuild_failure(closure):
+        _cleanup_failed_executable_outputs(layout, entrypoint, executable_name)
+        return _closure_failure(entrypoint, closure)
+    reachable_qualnames = set(closure.reachable_native_functions)
+    delegated_return_types = closure.delegated_return_types
+    nuitka_dispatcher = strategy is FallbackStrategy.NUITKA_SIDECAR
     if nuitka_dispatcher and delegated_return_types:
         accelerated = _externally_accelerated_runtime_modules(analysis)
         if accelerated:
             names = ", ".join(accelerated)
-            return ExecutableBuildResult(
-                status="failed",
-                path=None,
-                message=(
-                    "RXT060 Executable build failed: project module(s) "
-                    f"{names} use an external accelerator (e.g. Numba), which a "
-                    "Nuitka-compiled dispatcher cannot serve (compiled functions "
-                    "expose no bytecode for the accelerator and the accelerator "
-                    "package is not bundled). Every project module ships in the "
-                    "hybrid runtime and Nuitka follows imports into it, so this "
-                    "applies even when no accelerated function is delegated "
-                    "directly. Use --hybrid-runtime=source, whose dispatcher "
-                    "runs real CPython with the project's environment."
+            return _with_closure(
+                ExecutableBuildResult(
+                    status="failed",
+                    path=None,
+                    message=(
+                        "RXT060 Executable build failed: project module(s) "
+                        f"{names} use an external accelerator (e.g. Numba), which a "
+                        "Nuitka-compiled dispatcher cannot serve (compiled functions "
+                        "expose no bytecode for the accelerator and the accelerator "
+                        "package is not bundled). Every project module ships in the "
+                        "hybrid runtime and Nuitka follows imports into it, so this "
+                        "applies even when no accelerated function is delegated "
+                        "directly. Use --executable-fallback=python-subprocess "
+                        "(legacy: --hybrid-runtime=source), whose dispatcher runs "
+                        "real CPython with the project's environment."
+                    ),
+                    entrypoint=entrypoint,
+                    backend="rust",
                 ),
-                entrypoint=entrypoint,
-                backend="rust",
+                closure,
             )
     try:
         # Plugin types let plugin-typed signatures lower; plugin-lowered
@@ -1146,9 +1324,16 @@ def _build_rust_executable_artifact(
         plugin_types, _plugin_providers, _plugin_types_by_key = _plugin_lowering_inputs(
             target_plan or default_target_plan()
         )
+        initializer_plans = _executable_initializer_plans(analysis, closure)
         module_ir = _filter_module_ir(
-            lower_project(analysis, include_embedding=True, plugin_types=plugin_types),
+            lower_project(
+                analysis,
+                include_embedding=True,
+                plugin_types=plugin_types,
+                executable_module_initializers=initializer_plans,
+            ),
             reachable_qualnames,
+            set(closure.module_initializers),
         )
         main_rs = generate_rust_main_binary(
             module_ir,
@@ -1156,14 +1341,18 @@ def _build_rust_executable_artifact(
             delegated_return_types,
             _delegation_python(executable_python, toolchain),
             nuitka_dispatcher=nuitka_dispatcher,
+            initializer_qualnames=closure.module_initializers,
         )
     except (RustCodegenError, LoweringError) as exc:
-        return ExecutableBuildResult(
-            status="failed",
-            path=None,
-            message=f"RXT060 Executable build failed while generating the Rust binary. Cause: {exc}",
-            entrypoint=entrypoint,
-            backend="rust",
+        return _with_closure(
+            ExecutableBuildResult(
+                status="failed",
+                path=None,
+                message=f"RXT060 Executable build failed while generating the Rust binary. Cause: {exc}",
+                entrypoint=entrypoint,
+                backend="rust",
+            ),
+            closure,
         )
 
     binary_name = _rust_binary_name(executable_name, entry_qualname)
@@ -1194,12 +1383,15 @@ def _build_rust_executable_artifact(
             _write_hybrid_runtime(runtime_dir, analysis, set(delegated_return_types))
         except RustCodegenError as exc:
             _cleanup_rust_executable_outputs(result.path, runtime_dir)
-            return ExecutableBuildResult(
-                status="failed",
-                path=None,
-                message=f"RXT060 Executable build failed while packaging the dispatcher. Cause: {exc}",
-                entrypoint=entrypoint,
-                backend="rust",
+            return _with_closure(
+                ExecutableBuildResult(
+                    status="failed",
+                    path=None,
+                    message=f"RXT060 Executable build failed while packaging the dispatcher. Cause: {exc}",
+                    entrypoint=entrypoint,
+                    backend="rust",
+                ),
+                closure,
             )
         if nuitka_dispatcher:
             error = _build_nuitka_dispatcher(
@@ -1207,14 +1399,131 @@ def _build_rust_executable_artifact(
             )
             if error is not None:
                 _cleanup_rust_executable_outputs(result.path, runtime_dir)
-                return ExecutableBuildResult(
-                    status="failed",
-                    path=None,
-                    message=f"RXT060 Executable build failed while packaging the dispatcher. Cause: {error}",
-                    entrypoint=entrypoint,
-                    backend="rust",
+                return _with_closure(
+                    ExecutableBuildResult(
+                        status="failed",
+                        path=None,
+                        message=f"RXT060 Executable build failed while packaging the dispatcher. Cause: {error}",
+                        entrypoint=entrypoint,
+                        backend="rust",
+                    ),
+                    closure,
                 )
-    return result
+    return _with_closure(result, closure)
+
+
+def _closure_failure(entrypoint: str, closure: NativeClosureReport) -> PlannedExecutableBuildResult:
+    if closure.status is ClosureStatus.UNAVAILABLE:
+        blocker_details = "; ".join(
+            f"{blocker.source} -> {blocker.callee}: {blocker.reason}"
+            if blocker.callee is not None
+            else f"{blocker.source}: {blocker.reason}"
+            for blocker in closure.blockers
+        )
+        reason = closure.entrypoint_reason or blocker_details or "entry graph is unavailable"
+        details = f" Blockers: {blocker_details}." if blocker_details else ""
+        if closure.entrypoint_reason is not None:
+            guidance = (
+                "Fallback sidecars cannot replace a non-native entrypoint. "
+                "Suggestion: use a module:function entrypoint accepted as "
+                "native-direct and run rextio check for promotion diagnostics."
+            )
+        else:
+            guidance = (
+                "Fallback sidecars cannot reproduce missing initialization inside "
+                "the native process. Suggestion: simplify the module to the documented "
+                "executable initializer slice, disable native_top_level, or keep a "
+                "Python-hosted executable backend."
+            )
+        return PlannedExecutableBuildResult(
+            status="failed",
+            path=None,
+            message=(
+                "RXT060 Executable build failed because the Rust entry graph is "
+                f"unavailable for {entrypoint!r}: {reason}.{details} "
+                f"{guidance}"
+            ),
+            entrypoint=entrypoint,
+            backend="rust",
+            closure=closure,
+        )
+
+    edges = "; ".join(
+        f"{edge.source} -> {edge.callee}: {edge.reason}" for edge in closure.fallback_edges
+    )
+    return PlannedExecutableBuildResult(
+        status="failed",
+        path=None,
+        message=(
+            "RXT060 Executable build failed because fallback='error' requires a "
+            f"closed native entry graph. Reachable fallback edges: {edges}. "
+            "Suggestion: make every listed callee direct-native, or select "
+            "--executable-fallback=python-subprocess or nuitka-sidecar."
+        ),
+        entrypoint=entrypoint,
+        backend="rust",
+        closure=closure,
+    )
+
+
+def _cleanup_failed_prebuild_outputs(
+    layout: ArtifactLayout,
+    target_plan: TargetPlan,
+    entrypoint: str,
+    executable_name: str | None,
+    rust_crate_name: str,
+) -> None:
+    """Invalidate only artifacts a successful run with this config would own."""
+    for path in (
+        layout.build_dir,
+        layout.target_dir(target_plan.spec.language),
+        layout.rust_crate_dir,
+        layout.rust_bin_dir,
+        layout.python_dir,
+    ):
+        _remove_path(path)
+    _cleanup_failed_executable_outputs(layout, entrypoint, executable_name)
+    _remove_path(layout.dist_dir / f"{rust_crate_name}-rust-crate")
+    distribution = re.sub(r"[^A-Za-z0-9.]+", "_", layout.root.name).strip("._").lower()
+    distribution = distribution or "rextio_hybrid_artifact"
+    if layout.dist_dir.exists():
+        for wheel in layout.dist_dir.glob(f"{distribution}-0.1.0-*.whl"):
+            _remove_path(wheel)
+
+
+def _cleanup_failed_executable_outputs(
+    layout: ArtifactLayout,
+    entrypoint: str,
+    executable_name: str | None,
+) -> None:
+    _remove_path(layout.rust_bin_dir)
+    binary_name = _rust_binary_name(executable_name, _entrypoint_to_qualname(entrypoint))
+    for suffix in ("", ".exe"):
+        _remove_path(layout.dist_dir / f"{binary_name}{suffix}")
+    _remove_path(layout.dist_dir / f"{binary_name}{RUNTIME_DIR_SUFFIX}")
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _with_closure(
+    result: ExecutableBuildResult, closure: NativeClosureReport
+) -> PlannedExecutableBuildResult:
+    return PlannedExecutableBuildResult(
+        status=result.status,
+        path=result.path,
+        message=result.message,
+        entrypoint=result.entrypoint,
+        backend=result.backend,
+        command=result.command,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        closure=closure,
+    )
 
 
 def _cleanup_rust_executable_outputs(binary_path: str | None, runtime_dir: Path) -> None:

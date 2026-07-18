@@ -8,8 +8,15 @@ import sys
 from argparse import Namespace
 from pathlib import Path
 
+from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.build.orchestrator import BuildResult, build_hybrid_artifact
+from rextio.artifacts.closure import closure_requires_prebuild_failure
+from rextio.artifacts.entry_graph import executable_entry_graph
+from rextio.build.orchestrator import (
+    ArtifactProfilePlanningError,
+    BuildResult,
+    build_hybrid_artifact,
+)
 from rextio.build.preflight import (
     format_missing_tools,
     missing_build_tools,
@@ -35,6 +42,38 @@ from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.config.schema import RextioConfig
 from rextio.fallback.nuitka import nuitka_unavailable_message
 from rextio.targets.plan import TargetPlanError, create_target_plan
+
+
+def _report_artifact_profile_failure(
+    project_root: Path,
+    analysis: ProjectAnalysis,
+    fallback: str,
+    error: ArtifactProfilePlanningError,
+    reporter: Reporter,
+) -> int:
+    """Write the stable CLI failure shared by preflight and orchestration."""
+    reports_dir = project_root / ".rextio" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    write_check_report(project_root, analysis)
+    (reports_dir / "build.json").write_text(
+        json.dumps(
+            {
+                "analysis": analysis.to_dict(),
+                "error": {"code": "RXT060", "message": str(error)},
+                "fallback": fallback,
+                "status": "artifact-profile-unavailable",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    reporter.error(str(error))
+    reporter.error(
+        "Suggestion: run on a supported Rust host target or keep this project on fallback."
+    )
+    return 1
 
 
 def _toolchain_preflight_error(config: RextioConfig) -> str | None:
@@ -124,6 +163,7 @@ def run(args: Namespace) -> int:
                 ("executable", "name"): args.executable_name,
                 ("executable", "backend"): args.executable_backend,
                 ("executable", "python"): args.executable_python,
+                ("executable", "fallback"): args.executable_fallback,
                 ("toolchain", "cargo"): args.cargo,
                 ("toolchain", "maturin"): args.maturin,
                 ("toolchain", "nuitka"): args.nuitka,
@@ -246,21 +286,6 @@ def run(args: Namespace) -> int:
         reporter.error(f"Suggestion: run rextio check {project_root}")
         return 1
 
-    # Only require the native toolchain when there is actually native code to
-    # compile; a pure-Python project still builds its CPython fallback artifact.
-    if analysis.requires_native_build():
-        missing_tools = missing_build_tools(
-            native_backend=target_plan.spec.language, toolchain=config.toolchain
-        )
-        if missing_tools:
-            reporter.error(format_missing_tools(missing_tools))
-            return 1
-        rust_toolchain_error = _rust_toolchain_error(config, config.rust.build_tool)
-        if rust_toolchain_error is not None:
-            reporter.error("RXT060 Build failed while preparing the Rust toolchain.")
-            reporter.error(rust_toolchain_error)
-            return 1
-
     # The native Rust executable backend analyzes in delegate mode so the
     # entrypoint can call project fallback functions through the external CPython
     # dispatcher. This is a separate analysis, so it does not change the wheel /
@@ -290,26 +315,70 @@ def run(args: Namespace) -> int:
             reporter.error(f"RXT060 Plugin error: {exc}")
             return 1
 
-    result = build_hybrid_artifact(
-        project_root,
-        analysis,
-        fallback,
-        build_tool=config.rust.build_tool,
-        boundary_fallback_threshold=config.build.fallback_threshold,
-        executable_entrypoint=config.executable.entrypoint,
-        executable_name=config.executable.name,
-        executable_backend=config.executable.backend,
-        nuitka_mode=config.executable.nuitka_mode,
-        target_plan=target_plan,
-        rust_importable=config.rust.importable,
-        rust_crate_name=config.rust.crate_name,
-        embedding_enabled=config.embedding.enabled,
-        build_timeout_seconds=config.build.build_timeout_seconds,
-        executable_analysis=executable_analysis,
-        executable_python=config.executable.python,
-        executable_hybrid_runtime=config.executable.hybrid_runtime,
-        toolchain=config.toolchain,
-    )
+    executable_prebuild_failure = False
+    if executable_analysis is not None and config.executable.entrypoint is not None:
+        try:
+            closure = executable_entry_graph(
+                executable_analysis,
+                config.executable.entrypoint.replace(":", ".", 1),
+                config.executable.fallback,
+            )
+        except ArtifactProfilePlanningError as error:
+            return _report_artifact_profile_failure(
+                project_root,
+                analysis,
+                fallback,
+                error,
+                reporter,
+            )
+        executable_prebuild_failure = closure_requires_prebuild_failure(closure)
+
+    # Only require the native toolchain when there is actually native code to
+    # compile; a pure-Python project still builds its CPython fallback artifact.
+    # A pre-build closure failure is reported before any Cargo preflight or
+    # invocation, so users see the entry/edge reason even without a Rust toolchain.
+    if analysis.requires_native_build() and not executable_prebuild_failure:
+        missing_tools = missing_build_tools(
+            native_backend=target_plan.spec.language, toolchain=config.toolchain
+        )
+        if missing_tools:
+            reporter.error(format_missing_tools(missing_tools))
+            return 1
+        rust_toolchain_error = _rust_toolchain_error(config, config.rust.build_tool)
+        if rust_toolchain_error is not None:
+            reporter.error("RXT060 Build failed while preparing the Rust toolchain.")
+            reporter.error(rust_toolchain_error)
+            return 1
+
+    try:
+        result = build_hybrid_artifact(
+            project_root,
+            analysis,
+            fallback,
+            build_tool=config.rust.build_tool,
+            boundary_fallback_threshold=config.build.fallback_threshold,
+            executable_entrypoint=config.executable.entrypoint,
+            executable_name=config.executable.name,
+            executable_backend=config.executable.backend,
+            nuitka_mode=config.executable.nuitka_mode,
+            target_plan=target_plan,
+            rust_importable=config.rust.importable,
+            rust_crate_name=config.rust.crate_name,
+            embedding_enabled=config.embedding.enabled,
+            build_timeout_seconds=config.build.build_timeout_seconds,
+            executable_analysis=executable_analysis,
+            executable_python=config.executable.python,
+            executable_fallback=config.executable.fallback,
+            toolchain=config.toolchain,
+        )
+    except ArtifactProfilePlanningError as error:
+        return _report_artifact_profile_failure(
+            project_root,
+            analysis,
+            fallback,
+            error,
+            reporter,
+        )
     lines = ["Rextio build", f"  target language: {target_plan.spec.language}"]
     if target_plan.spec.version:
         lines.append(f"  target version: {target_plan.spec.version}")
@@ -342,6 +411,8 @@ def run(args: Namespace) -> int:
     lines.append(f"  executable artifact: {result.executable_build.status}")
     if config.executable.entrypoint:
         lines.append(f"  executable backend: {config.executable.backend}")
+        if config.executable.backend == "rust":
+            lines.append(f"  executable fallback: {config.executable.fallback.value}")
     if result.native_build.installed_path:
         lines.append(f"  native module: {result.native_build.installed_path}")
     if result.wheel_build.path:
