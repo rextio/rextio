@@ -9,6 +9,11 @@ version. Rextio compiles eligible Python functions with statically resolved
 types to Rust native modules and keeps the rest of the project as Python
 fallback.
 
+The Release Train C branch adds experimental host source/executable planning
+and emits tooling contract **2.3.0**, but remains **unreleased**. PyPI 0.1.4
+does not include those additions. Train C boundaries are called out explicitly
+below so planning records are not mistaken for broad source-AOT support.
+
 Unsupported native features are not bugs in the fallback path. When a native
 candidate uses unsupported syntax, unsupported types, or unsafe boundaries,
 Rextio rejects that function from native compilation and routes it through
@@ -42,6 +47,36 @@ blocks that update variables assigned before the block. Assigned module
 variables must share one supported value type so the initializer can return
 `dict[str, T]`. Rextio still keeps a full original fallback module for
 `REXTIO_NATIVE_MODE=fallback` and native import failures.
+
+### Train C Rust-executable initializer boundary (unreleased)
+
+The Rust executable's initializer-before-main path is separate from, and much
+narrower than, the Python/PyO3 top-level path above. With `native_top_level`
+enabled, it accepts only a single project source module, the initializer and
+direct-native entrypoint in that same module, no module-load imports or graph
+cycles, and plain single-name assignments to exact `bool`, `int`, `float`, or
+`str` literals. Exact source hashes and statement indexes are revalidated
+before lowering.
+
+It does **not** accept annotated/augmented/expression-valued assignments,
+calls, control flow, multiple targets, imports, conditional/deleted/unknown
+bindings, or more than one source module. The generated initializer runs before
+argv handling and the entrypoint, but its values are discarded. They are not
+published as Rust globals or Python module values, and a native function cannot
+read them. A stale or unsupported initializer makes the executable closure
+unavailable and stops before Cargo under every fallback strategy.
+
+Native executable fallback is explicit and closed:
+
+| `[executable] fallback` | Meaning |
+| --- | --- |
+| `error` | Only a fully closed direct-native entry graph is accepted. |
+| `python-subprocess` | Supported immutable-scalar fallback calls use an external CPython dispatcher. |
+| `nuitka-sidecar` | The bounded dispatcher path is compiled as a Nuitka sidecar. |
+
+The legacy `hybrid_runtime = "source" | "nuitka"` input maps to
+`python-subprocess | nuitka-sidecar`. It does not add a fourth strategy.
+See [Host source-AOT and native executables](source-aot-and-executables.md).
 
 If a source function has no annotations and no `.pyi` signature, Rextio only
 compiles it when constants, arithmetic, comparisons, `if` tests, loops,
@@ -507,6 +542,21 @@ local time).
 - cloud build, SaaS dashboards, or GitHub app workflows
 - native code generation for target languages other than Rust
 - concrete third-party plugin transformations
+
+The unreleased Train C planning records do not change these additional limits:
+
+- A `SourceModule` or `ModuleInitIR` report is descriptive evidence, not
+  permission to execute or translate that source.
+- Installed pure-Python packages are not recursively promoted, copied, or
+  vendored. License locks, SBOM/provenance enforcement, and dependency-source
+  build authorization remain future work.
+- Draft device-provider records have no discovery, selection, build/link hook,
+  generated helper injection, or runtime dispatch.
+- The Windows CUDA inventory probe is not CUDA support. It does not create a
+  context, allocate/transfer memory, create a stream, load a module, launch a
+  kernel, or test generated artifacts. Every report has
+  `support_claim: false`; see
+  [Windows CUDA inventory validation](testing/windows-cuda-validation.md).
 
 Nuitka fallback packaging is experimental in 0.1.0. If requested and not
 available, Rextio reports a clear `RXT060` error and suggests CPython fallback.

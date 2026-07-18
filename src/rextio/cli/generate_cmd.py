@@ -8,7 +8,7 @@ from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.build.orchestrator import generate_source_artifact
+from rextio.build.orchestrator import ArtifactProfilePlanningError, generate_source_artifact
 from rextio.cli.config_overrides import (
     key_value_overrides,
     package_policy_overrides,
@@ -101,16 +101,38 @@ def run(args: Namespace) -> int:
         reporter.error(f"Suggestion: run rextio check {project_root}")
         return 1
 
-    result = generate_source_artifact(
-        project_root,
-        analysis,
-        fallback,
-        boundary_fallback_threshold=config.build.fallback_threshold,
-        target_plan=target_plan,
-        rust_importable=config.rust.importable,
-        rust_crate_name=config.rust.crate_name,
-        embedding_enabled=config.embedding.enabled,
-    )
+    try:
+        result = generate_source_artifact(
+            project_root,
+            analysis,
+            fallback,
+            boundary_fallback_threshold=config.build.fallback_threshold,
+            target_plan=target_plan,
+            rust_importable=config.rust.importable,
+            rust_crate_name=config.rust.crate_name,
+            embedding_enabled=config.embedding.enabled,
+        )
+    except ArtifactProfilePlanningError as error:
+        reports_dir = project_root / ".rextio" / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        write_check_report(project_root, analysis)
+        (reports_dir / "generate.json").write_text(
+            json.dumps(
+                {
+                    "analysis": analysis.to_dict(),
+                    "error": {"code": "RXT060", "message": str(error)},
+                    "fallback": fallback,
+                    "status": "artifact-profile-unavailable",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reporter.error(str(error))
+        reporter.error("Suggestion: run on a supported Rust host target or keep this project on fallback.")
+        return 1
     lines = ["Rextio generate", f"  target language: {target_plan.spec.language}"]
     if target_plan.spec.version:
         lines.append(f"  target version: {target_plan.spec.version}")

@@ -1,7 +1,9 @@
 # Spec: Machine-Readable Tooling Contract
 
-Status: **draft** (experimental tier; the current producer is core 0.1.4,
-published on 2026-07-18 with `contract_version` `2.2.0`)
+Status: **draft** (experimental tier). The current published producer is core
+0.1.4, released on 2026-07-18 with `contract_version` `2.2.0`. The Release
+Train C branch contains the additive, **unreleased** `2.3.0` producer described
+below; it is not yet a PyPI contract.
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
 ## Purpose
@@ -19,10 +21,16 @@ consume instead:
 
 ## Contract versioning
 
-Both JSON surfaces carry a top-level field:
+Both JSON surfaces carry a top-level field. The published 0.1.4 producer emits:
 
 ```json
 { "contract_version": "2.2.0" }
+```
+
+The unreleased Train C branch emits:
+
+```json
+{ "contract_version": "2.3.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -37,6 +45,7 @@ to generic guidance when the major is outside what they support.
 | `2.0.0` | **Breaking position semantics.** Every diagnostic `column` / `end_column`, including `RXT000`, is a **0-based UTF-8 byte offset** into the line (`ast.col_offset` convention). No field renames. Emitted by core **0.1.2**. |
 | `2.1.0` | **Additive producer shape** (same major; dual-map `2.x` consumers stay supported). Core **0.1.3** always serializes module-level `logger_group_targets`, and conditionally serializes plugin-claim fields `receiver` and `callables` when present (plugin API 1.3 method/callable metadata). Position semantics unchanged from `2.0.0`. Consumers that ignore unknown fields continue to work. |
 | `2.2.0` | **Additive promotion-assessment shape.** Each reportable function adds `marker_kind`, a separate `promotion_assessment` evidence channel, and reliable `source_range` / `name_range`. Runtime `route`, `native_status`, and `rejection_codes` semantics remain unchanged. Failed automatic probes stay normal fallback rather than becoming compiler/build errors. |
+| `2.3.0` | **Unreleased additive host-planning shape.** Check/generate/build reports gain a fail-closed `host_source_plan`; generate/build plans carry resolved `artifact_profiles`; Rust executable closures add `module_initializers`; capabilities declares `artifact_contract` and a non-operational `device_provider_contract`. Position, route, native-status, rejection, and promotion-assessment semantics remain unchanged. |
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.
@@ -180,6 +189,10 @@ same payload to `.rextio/reports/check.json`. Additive changes:
    `modules[].functions[]` record adds the required fields defined below. A
    consumer that does not know them continues to use the existing route/status
    fields unchanged.
+6. **Contract `2.3.0` additive host-planning field (unreleased)** — command
+   reports add the `host_source_plan` and artifact/executable fields defined in
+   [Host source and artifact planning](#host-source-and-artifact-planning-contract-230).
+   No existing diagnostic or function record changes meaning.
 
 ### Promotion assessment (contract 2.2.0)
 
@@ -356,11 +369,160 @@ The LSP remains a JSON-only consumer. Contract 2.2 requires no VS Code
 initialization option or custom protocol, and does not change the existing
 `rextio.showRouteInfo` CodeLens command or its string qualname argument.
 
+## Host source and artifact planning (contract 2.3.0)
+
+This section describes the **unreleased** Release Train C additive shape.
+Published core 0.1.4 stops at contract 2.2.0.
+
+### `host_source_plan`
+
+`rextio check --format json` and `.rextio/reports/check.json` add a top-level
+`host_source_plan`. `generate.json` and `build.json` carry the same object at
+`plan.host_source_plan`:
+
+```json
+{
+  "host_source_plan": {
+    "availability": "available",
+    "execution_authority": "descriptive-only",
+    "graph": {
+      "modules": [],
+      "local_edges": [],
+      "external_references": [],
+      "strongly_connected_components": [],
+      "cycles": [],
+      "scc_membership": {}
+    },
+    "module_initializers": [],
+    "unavailable_reason": null
+  }
+}
+```
+
+`availability` is exactly `available | unavailable`.
+`execution_authority` is always `descriptive-only`: the record is evidence,
+not permission to execute source. `graph` is null when source-graph or
+module-initializer assembly cannot establish a project-contained snapshot.
+`unavailable_reason` is null only when the graph and every initializer plan form
+one coherent snapshot. A graph/initializer module-set, relative-path, SHA-256,
+or availability mismatch makes the complete plan unavailable rather than
+approximating source order.
+
+Each graph `modules[]` item is a serialized `SourceModule`: module name,
+project-relative path, package-init flag, source origin, SHA-256, optional
+distribution/version/license metadata, dependency depth, source-ordered import
+records, and sanitized provenance. Graph edges retain source ranges, import
+ordinals, and whether the import is deferred. Strongly connected components
+and cycle membership are deterministic.
+
+Each `module_initializers[]` item is a `ModuleInitIR` with module name,
+project-relative path, source SHA-256, availability, exact source-order
+segments, metadata ranges, an unavailable reason, and provenance. Segments
+record their disposition, source range, statement indexes, dependency/binding/
+export/deletion sets, namespace uncertainty, and any fallback-barrier reason.
+An unavailable initializer carries no approximate segments.
+
+### Resolved `artifact_profiles`
+
+`generate.json` and `build.json` add `plan.artifact_profiles`; the same exact
+array is mirrored as top-level `artifact_profiles` for report consumers.
+`BuildPlan.artifact_profiles` is the canonical authority. Profiles are resolved
+only for outputs the command actually requests and only during generate/build:
+a fallback-only command therefore emits an empty array and does not probe a
+host target triple. If a requested native output has no supported host triple,
+generate/build fails with a structured `RXT060` report instead of guessing a
+profile.
+
+One profile has this deterministic shape:
+
+```json
+{
+  "kind": "host-executable",
+  "target_triple": "x86_64-pc-windows-msvc",
+  "packaging_backend": "rust-binary",
+  "fallback": "python-subprocess",
+  "python_fallback_backend": null,
+  "abi_requirements": [
+    {"name": "rextio-scalar-ipc", "version": "1", "features": []}
+  ],
+  "runtime_requirements": [
+    {"name": "cpython", "version": null, "features": []}
+  ],
+  "device_requirements": [],
+  "provenance": {
+    "producer": "rextio",
+    "source_references": [],
+    "evidence": []
+  }
+}
+```
+
+The closed artifact-kind enum is `host-extension | host-executable |
+rust-crate`. Only a host executable carries `fallback`, which is required and
+is exactly `error | python-subprocess | nuitka-sidecar`. Only a host extension
+carries `python_fallback_backend`, exactly `cpython | nuitka`. ABI, runtime,
+and device requirements are descriptive requirements; they do not themselves
+prove support or authorize a provider.
+
+### Rust executable closure initializers
+
+For a requested Rust executable, `build.json` adds
+`executable_build.closure.module_initializers`, an ordered array of initializer
+qualnames already authorized by the executable source gate. The adjacent
+closure `strategy` must equal `profile.fallback`. Duplicate or empty initializer
+names are invalid.
+
+The initial executable gate accepts only one source module, with the initializer
+and direct-native entrypoint in that module; no load-time imports or cycles; and
+exact, unconditional single-name assignments to `bool`, `int`, `float`, or
+`str` literals. The source hash and statement indexes are revalidated before
+lowering. The generated `() -> None` initializer runs before argv handling and
+the entrypoint. Its values are discarded: they are not Rust globals and a
+native function that reads one blocks the executable. Any initializer
+uncertainty makes the closure unavailable and prevents external build work for
+all three fallback strategies.
+
+The broader Python-wrapper `native_top_level` path is separate; its returned
+update map does not grant Rust-executable initializer authority. See
+[Host source-AOT and native executables](../source-aot-and-executables.md).
+
+### Capabilities declarations
+
+Contract 2.3 adds two declarative objects to `rextio capabilities`:
+
+```json
+{
+  "artifact_contract": {
+    "status": "experimental",
+    "profile_resolution": "generate-build-only",
+    "kinds": ["host-extension", "host-executable", "rust-crate"],
+    "host_executable_fallbacks": [
+      "error",
+      "python-subprocess",
+      "nuitka-sidecar"
+    ]
+  },
+  "device_provider_contract": {
+    "status": "draft",
+    "discovery": false,
+    "provider_selected": false,
+    "local_probe_performed": false
+  }
+}
+```
+
+Capabilities is declaration/configuration introspection. It does not resolve an
+`ArtifactProfile`, inspect local hardware, select a device provider, or claim
+device support. The draft provider records and the Windows CUDA inventory tool
+are documented in the [device-provider draft](device-provider.md) and
+[Windows CUDA validation guide](../testing/windows-cuda-validation.md). Every
+draft preflight/probe result has `support_claim: false`.
+
 ## `rextio capabilities --json`
 
-New subcommand (wired like the others in `src/rextio/cli/main.py`, handler
+This subcommand is wired like the others in `src/rextio/cli/main.py`, handler
 module `src/rextio/cli/capabilities_cmd.py`, output through the existing
-`Reporter` seam). It answers: *"in THIS project, with THIS `rextio.toml`, what
+`Reporter` seam. It answers: *"in THIS project, with THIS `rextio.toml`, what
 can become native, and what should I do when it can't?"*
 
 Resolution is config-aware: it loads the project config (same
@@ -371,6 +533,10 @@ module-level code — with plugins enabled, `capabilities` is configuration
 introspection but not side-effect-free. The command never analyzes project
 sources or writes report files. Output ordering is deterministic: core rules
 in registry order, then plugin rules and the `plugins` array sorted by id.
+
+The following is the published 2.2-era base shape. The unreleased 2.3 producer
+adds the two declaration objects shown in
+[Capabilities declarations](#capabilities-declarations).
 
 ```json
 {
@@ -482,10 +648,14 @@ class RextioPluginV2(Protocol):
 
 ## Non-goals
 
-- No lowering/codegen behavior changes; this spec is contract surface only.
+- Contract records do not independently authorize lowering or execution. The
+  Train C initializer-before-main behavior is authorized by its separate,
+  fail-closed executable source/closure gate.
 - No LSP or editor logic; those live in rextio-lsp / rextio-vscode.
 - No incremental-analysis API (deferred until latency measurements demand it;
   v1 tooling calls the batch analyzer).
+- No recursive third-party-package source promotion, device-provider discovery,
+  provider build/link hook, CUDA execution, or device support claim in 2.3.
 - No name-based reservation of route strings beyond this document; new routes
   bump the contract minor version.
 
@@ -514,5 +684,10 @@ class RextioPluginV2(Protocol):
    rextio-lsp 0.1.2 before core 0.1.4. The producer adds the frozen
    promotion-assessment and range fields above without reclassifying expected
    automatic fallback as a build error. Plugin API remains 1.3.
-6. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
+6. **Release Train C / contract 2.3.0 (unreleased):** add the descriptive host
+   source plan, resolved artifact profiles, explicit executable fallback and
+   initializer closure fields, plus declarative artifact/device capability
+   markers. Preserve all 2.2 function and position semantics. This is a branch
+   candidate, not a published core release.
+7. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

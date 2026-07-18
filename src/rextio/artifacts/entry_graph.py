@@ -13,9 +13,9 @@ from rextio.artifacts.closure import (
     calculate_native_closure,
 )
 from rextio.artifacts.models import ArtifactProfile, FallbackStrategy
-from rextio.artifacts.profiles import host_executable_profile
-from rextio.artifacts.profiles import detect_host_target_triple
+from rextio.artifacts.profiles import host_executable_profile, required_host_target_triple
 from rextio.ir.types import normalize_type_name
+from rextio.source.planning import select_executable_module_initializers
 
 
 def executable_entry_graph(
@@ -36,6 +36,15 @@ def executable_entry_graph(
     fallback_edges: list[FallbackClosureEdge] = []
     blockers: list[ClosureBlocker] = []
     resolver = FunctionResolver(analysis)
+    initializer_selection = select_executable_module_initializers(analysis, entrypoint)
+    blockers.extend(
+        ClosureBlocker(
+            source=entrypoint,
+            callee=blocker.qualname,
+            reason=f"module initializer is unavailable: {blocker.reason}",
+        )
+        for blocker in initializer_selection.blockers
+    )
 
     for module in analysis.modules:
         for function in module.functions:
@@ -81,7 +90,7 @@ def executable_entry_graph(
                     )
 
     selected_profile = profile or host_executable_profile(
-        detect_host_target_triple(), fallback=strategy
+        required_host_target_triple(), fallback=strategy
     )
     return calculate_native_closure(
         entrypoint,
@@ -92,6 +101,9 @@ def executable_entry_graph(
         profile=selected_profile,
         entrypoint_reason=entrypoint_reason,
         blockers=blockers,
+        module_initializers=(
+            initializer.qualname for initializer in initializer_selection.initializers
+        ),
     )
 
 

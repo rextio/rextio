@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import rextio.artifacts.entry_graph as entry_graph
 import rextio.build.orchestrator as orchestrator
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.artifacts.models import FallbackStrategy
@@ -38,6 +39,98 @@ def _fake_built_rust_executable(
         message="ok",
         entrypoint=entrypoint,
         backend="rust",
+    )
+
+
+def test_fallback_only_profile_planning_does_not_probe_host(monkeypatch) -> None:
+    def unexpected():
+        pytest.fail("fallback-only artifact planning must not resolve a Rust target triple")
+
+    monkeypatch.setattr(orchestrator, "detect_host_target_triple", unexpected)
+
+    assert (
+        orchestrator._generate_artifact_profiles(
+            "cpython", native_extension=False, rust_importable=False
+        )
+        == ()
+    )
+
+
+def test_build_reports_unavailable_host_artifact_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fake_cargo: Path,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a + b\n",
+        encoding="utf-8",
+    )
+
+    def unsupported_host() -> str:
+        raise ValueError("unsupported host architecture 'armv7l'")
+
+    monkeypatch.setattr(orchestrator, "detect_host_target_triple", unsupported_host)
+
+    exit_code = main(["build", str(tmp_path), "--fallback=cpython"])
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    assert exit_code == 1
+    assert "RXT060 Artifact profile planning failed" in captured.err
+    assert report["status"] == "artifact-profile-unavailable"
+    assert report["error"]["code"] == "RXT060"
+    assert (tmp_path / ".rextio" / "reports" / "check.json").exists()
+
+
+def test_rust_executable_preflight_reports_unavailable_host_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (tmp_path / "app.py").write_text(
+        "def main(argv: list[str]) -> int:\n    return len(argv) - 1\n",
+        encoding="utf-8",
+    )
+
+    def unsupported_host() -> str:
+        raise orchestrator.ArtifactProfilePlanningError(
+            "RXT060 Artifact profile planning failed. Cause: unsupported armv7l host"
+        )
+
+    monkeypatch.setattr(entry_graph, "required_host_target_triple", unsupported_host)
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--executable-backend=rust",
+            "--executable-fallback=error",
+            "--entrypoint=app:main",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    assert exit_code == 1
+    assert "RXT060 Artifact profile planning failed" in captured.err
+    assert report["status"] == "artifact-profile-unavailable"
+    assert report["error"]["code"] == "RXT060"
+    assert (
+        orchestrator._build_artifact_profiles(
+            "cpython",
+            FallbackStrategy.PYTHON_SUBPROCESS,
+            executable_entrypoint=None,
+            executable_backend="zipapp",
+            native_extension=False,
+            rust_importable=False,
+        )
+        == ()
     )
 
 
@@ -1320,6 +1413,71 @@ def unused(argv: list[str]) -> int:
     assert "app__main" in main_rs
     assert "app__unused" not in main_rs
     assert not (layout.dist_dir / "app_main.runtime").exists()
+
+
+def test_rust_executable_runs_authorized_initializer_before_main(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        "seed = 1\n\ndef main(argv: list[str]) -> int:\n    return len(argv)\n",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_top_level=True, delegate_fallback=True)
+    layout = ArtifactLayout(tmp_path)
+    monkeypatch.setattr(orchestrator, "build_rust_executable", _fake_built_rust_executable)
+
+    result = orchestrator._build_rust_executable_artifact(
+        layout,
+        analysis,
+        "app:main",
+        None,
+        None,
+        FallbackStrategy.ERROR,
+        build_timeout=30,
+    )
+
+    assert result.status == "built"
+    closure = result.to_dict()["closure"]
+    assert closure["module_initializers"] == ["app.__rextio_top_level__"]
+    main_rs = (layout.rust_bin_src_dir / "main.rs").read_text(encoding="utf-8")
+    init_call = "if let Err(err) = app____rextio_top_level()"
+    assert main_rs.index(init_call) < main_rs.index("std::env::args_os()")
+    assert main_rs.index(init_call) < main_rs.index("match app__main(argv)")
+
+
+@pytest.mark.parametrize("strategy", list(FallbackStrategy))
+def test_initializer_blocker_fails_before_cargo_for_every_strategy(
+    tmp_path: Path,
+    monkeypatch,
+    strategy: FallbackStrategy,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        "seed: int = 1\n\ndef main(argv: list[str]) -> int:\n    return len(argv)\n",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_top_level=True, delegate_fallback=True)
+    layout = ArtifactLayout(tmp_path)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Cargo must not run for an unavailable module initializer")
+
+    monkeypatch.setattr(orchestrator, "build_rust_executable", unexpected)
+
+    result = orchestrator._build_rust_executable_artifact(
+        layout,
+        analysis,
+        "app:main",
+        None,
+        None,
+        strategy,
+        build_timeout=30,
+    )
+
+    assert result.status == "failed"
+    assert result.to_dict()["closure"]["status"] == "unavailable"
+    assert "module initializer" in result.message
+    assert not layout.rust_bin_dir.exists()
 
 
 def test_rust_executable_nuitka_dispatcher_failure_cleans_outputs(

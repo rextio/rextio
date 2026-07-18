@@ -176,6 +176,7 @@ class NativeClosureReport:
     profile: ArtifactProfile
     entrypoint_reason: str | None = None
     blockers: tuple[ClosureBlocker, ...] = ()
+    module_initializers: tuple[str, ...] = ()
 
     @property
     def reachable_native_functions(self) -> tuple[str, ...]:
@@ -203,6 +204,7 @@ class NativeClosureReport:
             "strategy": self.strategy.value,
             "entrypoint_reason": self.entrypoint_reason,
             "blockers": [blocker.to_dict() for blocker in self.blockers],
+            "module_initializers": list(self.module_initializers),
             "profile": self.profile.to_dict(),
         }
 
@@ -224,6 +226,7 @@ def calculate_native_closure(
     profile: ArtifactProfile,
     entrypoint_reason: str | None = None,
     blockers: Iterable[ClosureBlocker] = (),
+    module_initializers: Iterable[str] = (),
 ) -> NativeClosureReport:
     """Calculate and canonicalize the graph reachable from ``entrypoint``."""
     canonical_nodes: dict[str, ClosureNode] = {}
@@ -237,6 +240,7 @@ def calculate_native_closure(
     canonical_native_edges = tuple(sorted(set(native_edges)))
     canonical_fallback_edges = tuple(sorted(set(fallback_edges)))
     canonical_blockers = tuple(sorted(set(blockers)))
+    canonical_initializers = _canonical_module_initializers(module_initializers)
     if entrypoint not in canonical_nodes:
         return NativeClosureReport(
             entrypoint=entrypoint,
@@ -250,6 +254,7 @@ def calculate_native_closure(
             blockers=tuple(
                 blocker for blocker in canonical_blockers if blocker.source == entrypoint
             ),
+            module_initializers=canonical_initializers,
         )
 
     outgoing: dict[str, list[str]] = {}
@@ -299,4 +304,20 @@ def calculate_native_closure(
         strategy=strategy,
         profile=profile,
         blockers=tuple(sorted(selected_blockers)),
+        module_initializers=canonical_initializers,
     )
+
+
+def _canonical_module_initializers(initializers: Iterable[str]) -> tuple[str, ...]:
+    """Validate an already planned deterministic initializer order."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for initializer in initializers:
+        qualname = initializer.strip()
+        if not qualname:
+            raise ValueError("module initializer qualname must not be empty")
+        if qualname in seen:
+            raise ValueError(f"duplicate module initializer qualname: {qualname!r}")
+        seen.add(qualname)
+        ordered.append(qualname)
+    return tuple(ordered)

@@ -12,6 +12,12 @@ typed Python functions that can be safely lowered to Rust, compiles them ahead
 of time with PyO3, and keeps everything else running through generated Python
 fallback code - same imports, same behavior.
 
+**Unreleased branch note:** Release Train C adds experimental host source/
+artifact planning and a narrow initializer-before-main Rust executable slice.
+This branch emits additive tooling contract **2.3.0**, but those changes are
+not yet a tagged or PyPI release; published 0.1.4 remains the 2.2.0 producer.
+See [Host source-AOT and native executables](docs/source-aot-and-executables.md).
+
 ```text
 typed Python project
   -> analyze supported native candidates
@@ -85,6 +91,7 @@ rextio build . --fallback-threshold=1000
 rextio build . --embed-helpers
 rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
+rextio build . --entrypoint=myapp.cli:main --executable-backend=rust --executable-fallback=error
 rextio build . --rust-importable --rust-crate-name=my_native
 ```
 
@@ -131,7 +138,7 @@ Rextio can produce several artifacts from the same Python project:
 | `dist/*.whl` | Wheel containing fallback code and, when built, the native extension. |
 | `dist/<name>.pyz` | Optional zipapp executable for a configured Python entrypoint. |
 | `dist/<name>.dist/` or `dist/<name>` | Optional Nuitka standalone or onefile executable. |
-| `dist/<name>` | Optional standalone native Rust binary (`--executable-backend=rust`), no Python runtime. |
+| `dist/<name>` | Optional native Rust binary (`--executable-backend=rust`); `python-subprocess` needs CPython, while a closed graph or self-contained Nuitka sidecar needs no separate Python install. |
 | `dist/<crate>-rust-crate/` | Optional Rust library crate for Rust projects to import. |
 
 The generated Python wrappers try native code first and fall back to Python when
@@ -176,6 +183,20 @@ Native Rust binary:
 ```text
 rextio build . --entrypoint=myapp.cli:main --executable-backend=rust
 ```
+
+The Rust executable's fallback policy is separate from wheel fallback and is
+always explicit in its resolved artifact profile:
+
+| Fallback | Behavior |
+| --- | --- |
+| `error` | Require a fully closed direct-native entry graph; fail before Cargo otherwise. |
+| `python-subprocess` | Delegate supported immutable-scalar fallback calls to external CPython (default). |
+| `nuitka-sidecar` | Compile the bounded fallback dispatcher as a Nuitka sidecar. |
+
+Select it with `--executable-fallback`, `[executable] fallback`, or
+`REXTIO_EXECUTABLE_FALLBACK`. The older `--hybrid-runtime=source|nuitka`
+spelling remains a compatibility alias for
+`python-subprocess|nuitka-sidecar`.
 
 This compiles a native binary (`dist/<name>`) whose `main` runs in Rust. The
 entrypoint must be an accepted direct-native `def main(argv: list[str]) -> int`:
@@ -222,6 +243,16 @@ an absolute path, or a path relative to `<binary>.runtime` to bundle one);
 `--hybrid-runtime=nuitka` instead compiles the delegated Python into a
 self-contained dispatcher executable shipped in the runtime directory, so the
 hybrid binary needs no separate Python install (requires Nuitka at build time).
+
+Release Train C also connects one narrow top-level ordering slice to Rust
+`main`. With `--native-top-level`, exactly one no-import source module may run
+plain single-name assignments to `bool`/`int`/`float`/`str` literals before
+argv handling and the entrypoint. Source hashes and statement indexes are
+revalidated. The assigned values are discarded: they are not Rust globals,
+are not published back to Python, and cannot be read by native functions.
+Anything broader makes the executable unavailable before Cargo. This
+unreleased slice is documented in
+[Host source-AOT and native executables](docs/source-aot-and-executables.md).
 
 When direct Rust functions are useful from a Rust application, build an
 additional Cargo library crate:
@@ -281,6 +312,7 @@ Common settings:
 | `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
 | `[executable] nuitka_mode` | `--nuitka-mode` | `REXTIO_NUITKA_MODE` |
 | `[executable] python` | `--executable-python` | `REXTIO_EXECUTABLE_PYTHON` |
+| `[executable] fallback` | `--executable-fallback` | `REXTIO_EXECUTABLE_FALLBACK` |
 | `[executable] hybrid_runtime` | `--hybrid-runtime` | `REXTIO_HYBRID_RUNTIME` |
 | `[toolchain] cargo` | `--cargo` | `REXTIO_CARGO` |
 | `[toolchain] maturin` | `--maturin` | `REXTIO_MATURIN` |
@@ -670,6 +702,9 @@ Plans, not promises - priorities can shift with alpha feedback:
 - [Feature stability](docs/stability.md) — what is stable vs. experimental in 0.1.0.
 - [Versioning policy](docs/versioning.md) — SemVer with pre-1.0 caveats.
 - [Unsupported features](docs/unsupported-features.md) — the 0.1.0 subset boundaries.
+- [Host source-AOT and native executables](docs/source-aot-and-executables.md) — unreleased Train C planning and initializer limits.
+- [Device-provider API draft](docs/specs/device-provider.md) — non-operational hardware/runtime contract boundary.
+- [Windows CUDA inventory validation](docs/testing/windows-cuda-validation.md) — bounded probe instructions; not a CUDA support claim.
 - [Security model](SECURITY.md) — trust boundary and how to report vulnerabilities.
 - [Contributing](CONTRIBUTING.md) — setup, gates, and conventions.
 - [Changelog](CHANGELOG.md).

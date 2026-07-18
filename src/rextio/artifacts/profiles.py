@@ -16,6 +16,10 @@ from rextio.artifacts.models import (
 )
 
 
+class ArtifactProfilePlanningError(RuntimeError):
+    """Raised when a requested native artifact has no resolvable host profile."""
+
+
 def detect_host_target_triple(
     *,
     system: str | None = None,
@@ -54,6 +58,16 @@ def detect_host_target_triple(
     raise ValueError(
         f"unsupported host platform {resolved_system!r}; cannot resolve a Rust target triple"
     )
+
+
+def required_host_target_triple() -> str:
+    """Resolve a requested native host target through one actionable error."""
+    try:
+        return detect_host_target_triple()
+    except ValueError as error:
+        raise ArtifactProfilePlanningError(
+            f"RXT060 Artifact profile planning failed. Cause: {error}"
+        ) from error
 
 
 def _detected_linux_abi() -> str:

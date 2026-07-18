@@ -324,6 +324,8 @@ def generate_rust_main_binary(
     delegated_return_types: dict[str, str] | None = None,
     python_command: str = "python3",
     nuitka_dispatcher: bool = False,
+    *,
+    initializer_qualnames: tuple[str, ...] = (),
 ) -> str:
     """Generate a Rust *binary* crate source for an executable build.
 
@@ -337,13 +339,27 @@ def generate_rust_main_binary(
     stderr with a non-zero exit.
     """
     entry = _resolve_main_entry(module_ir, entry_qualname)
+    initializers = _resolve_main_initializers(module_ir, initializer_qualnames)
     crate_source = generate_rust_crate_module(
         module_ir, delegated_return_types, python_command, nuitka_dispatcher
     )
     entry_name = rust_identifier(native_function_name(entry.qualname))
+    initializer_calls: list[str] = []
+    for initializer in initializers:
+        initializer_name = rust_identifier(native_function_name(initializer.qualname))
+        initializer_calls.extend(
+            [
+                f"    if let Err(err) = {initializer_name}() {{",
+                "        // Initializers run before argv handling and the entrypoint.",
+                '        eprintln!("{}", err);',
+                "        std::process::exit(1);",
+                "    }",
+            ]
+        )
     main_fn = "\n".join(
         [
             "fn main() {",
+            *initializer_calls,
             "    // Mirror Python `sys.argv`: the program path at index 0, then args.",
             "    let argv: Vec<String> = match std::env::args_os()",
             "        .map(|arg| arg.into_string())",
@@ -367,6 +383,35 @@ def generate_rust_main_binary(
         ]
     )
     return f"{crate_source}\n{main_fn}\n"
+
+
+def _resolve_main_initializers(
+    module_ir: ModuleIR,
+    initializer_qualnames: tuple[str, ...],
+) -> tuple[FunctionIR, ...]:
+    """Validate standalone unit initializers while preserving planned order."""
+    if len(set(initializer_qualnames)) != len(initializer_qualnames):
+        raise RustCodegenError("Rust-main module initializer qualnames must be unique")
+    functions = {function.qualname: function for function in module_ir.functions}
+    resolved: list[FunctionIR] = []
+    for qualname in initializer_qualnames:
+        initializer = functions.get(qualname)
+        if initializer is None:
+            raise RustCodegenError(
+                f"Rust-main module initializer '{qualname}' is missing from executable IR"
+            )
+        if (
+            initializer.params
+            or not isinstance(initializer.return_type, RxtNone)
+            or initializer.native_runtime_semantics
+            or initializer.embedded
+            or initializer.plugin_lowered
+        ):
+            raise RustCodegenError(
+                f"Rust-main module initializer '{qualname}' must be direct-native () -> None"
+            )
+        resolved.append(initializer)
+    return tuple(resolved)
 
 
 def _resolve_main_entry(module_ir: ModuleIR, entry_qualname: str) -> FunctionIR:

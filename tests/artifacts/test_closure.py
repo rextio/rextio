@@ -13,6 +13,7 @@ from rextio.analyzer.models import (
     PluginClaim,
     ProjectAnalysis,
 )
+from rextio.analyzer.project_scanner import analyze_project
 from rextio.artifacts.closure import (
     ClosureBlocker,
     ClosureNode,
@@ -225,3 +226,50 @@ def test_unreachable_plugin_function_does_not_block_direct_entrypoint() -> None:
     )
 
     assert report.status is ClosureStatus.CLOSED
+
+
+def test_executable_entry_graph_records_authorized_module_initializer(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        "seed = 1\n\ndef main(argv: list[str]) -> int:\n    return len(argv)\n",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_top_level=True, delegate_fallback=True)
+
+    report = executable_entry_graph(analysis, "app.main")
+
+    assert report.status is ClosureStatus.CLOSED
+    assert report.module_initializers == ("app.__rextio_top_level__",)
+    assert report.to_dict()["module_initializers"] == ["app.__rextio_top_level__"]
+
+
+@pytest.mark.parametrize("strategy", list(FallbackStrategy))
+def test_initializer_blocker_makes_closure_unavailable_for_every_strategy(
+    tmp_path: Path,
+    strategy: FallbackStrategy,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        "seed: int = 1\n\ndef main(argv: list[str]) -> int:\n    return len(argv)\n",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_top_level=True, delegate_fallback=True)
+
+    report = executable_entry_graph(analysis, "app.main", strategy)
+
+    assert report.status is ClosureStatus.UNAVAILABLE
+    assert closure_requires_prebuild_failure(report)
+    assert report.module_initializers == ()
+    assert "module initializer is unavailable" in report.blockers[0].reason
+
+
+def test_initializer_value_is_not_treated_as_a_rust_global(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        "seed = 1\n\ndef main(argv: list[str]) -> int:\n    return seed\n",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(tmp_path, native_top_level=True, delegate_fallback=True)
+
+    report = executable_entry_graph(analysis, "app.main")
+
+    assert report.status is ClosureStatus.UNAVAILABLE
+    assert report.entrypoint_reason is not None
+    assert "rejected from native lowering" in report.entrypoint_reason

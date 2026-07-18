@@ -1727,6 +1727,84 @@ def bad_arg(n: int) -> int:
     assert "pyo3" not in cargo
 
 
+def test_generate_rust_main_binary_runs_initializers_before_argv_and_entry() -> None:
+    from rextio.codegen.native_names import native_function_name
+    from rextio.codegen.rust.generator import generate_rust_main_binary
+    from rextio.ir.nodes import BlockIR, FunctionIR, LiteralIR, ModuleIR, ParamIR, ReturnIR
+    from rextio.ir.types import RxtInt, RxtList, RxtNone, RxtStr
+
+    initializer_qualname = "app.__rextio_top_level__"
+    module_ir = ModuleIR(
+        [
+            FunctionIR(
+                name="__rextio_top_level__",
+                qualname=initializer_qualname,
+                module_name="app",
+                params=[],
+                return_type=RxtNone(),
+                body=BlockIR([ReturnIR(value=None)]),
+            ),
+            FunctionIR(
+                name="main",
+                qualname="app.main",
+                module_name="app",
+                params=[ParamIR("argv", RxtList(RxtStr()))],
+                return_type=RxtInt(),
+                body=BlockIR([ReturnIR(LiteralIR(0))]),
+            ),
+        ]
+    )
+
+    source = generate_rust_main_binary(
+        module_ir,
+        "app.main",
+        initializer_qualnames=(initializer_qualname,),
+    )
+
+    initializer_call = f"if let Err(err) = {native_function_name(initializer_qualname)}()"
+    assert source.index(initializer_call) < source.index("std::env::args_os()")
+    assert source.index(initializer_call) < source.index("match app__main(argv)")
+    assert 'eprintln!("{}", err);' in source
+    assert "std::process::exit(1);" in source
+
+
+def test_generate_rust_main_binary_rejects_non_unit_initializer() -> None:
+    import pytest
+
+    from rextio.codegen.rust.errors import RustCodegenError
+    from rextio.codegen.rust.generator import generate_rust_main_binary
+    from rextio.ir.nodes import BlockIR, FunctionIR, LiteralIR, ModuleIR, ParamIR, ReturnIR
+    from rextio.ir.types import RxtInt, RxtList, RxtStr
+
+    module_ir = ModuleIR(
+        [
+            FunctionIR(
+                name="__rextio_top_level__",
+                qualname="app.__rextio_top_level__",
+                module_name="app",
+                params=[],
+                return_type=RxtInt(),
+                body=BlockIR([ReturnIR(LiteralIR(1))]),
+            ),
+            FunctionIR(
+                name="main",
+                qualname="app.main",
+                module_name="app",
+                params=[ParamIR("argv", RxtList(RxtStr()))],
+                return_type=RxtInt(),
+                body=BlockIR([ReturnIR(LiteralIR(0))]),
+            ),
+        ]
+    )
+
+    with pytest.raises(RustCodegenError, match=r"must be direct-native \(\) -> None"):
+        generate_rust_main_binary(
+            module_ir,
+            "app.main",
+            initializer_qualnames=("app.__rextio_top_level__",),
+        )
+
+
 def test_generate_rust_main_binary_rejects_runtime_or_embedded_entry_clearly(
     tmp_path: Path,
 ) -> None:
