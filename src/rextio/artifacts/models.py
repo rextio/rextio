@@ -42,7 +42,24 @@ def _sorted_unique(values: tuple[_T, ...], *, key: Callable[[_T], Any]) -> tuple
 
 def _sorted_strings(values: tuple[str, ...]) -> tuple[str, ...]:
     """Return strings de-duplicated in lexical order."""
-    return tuple(sorted(set(values)))
+    normalized = tuple(value.strip() for value in values)
+    if any(not value for value in normalized):
+        raise ValueError("canonical string collections must not contain empty values")
+    return tuple(sorted(set(normalized)))
+
+
+def _reject_conflicting_named_requirements(
+    values: tuple[ABIRequirement, ...] | tuple[RuntimeRequirement, ...],
+    *,
+    label: str,
+) -> None:
+    """Reject two non-identical requirements with the same logical name."""
+    by_name: dict[str, ABIRequirement | RuntimeRequirement] = {}
+    for value in values:
+        previous = by_name.get(value.name)
+        if previous is not None and previous != value:
+            raise ValueError(f"conflicting {label} requirements for {value.name!r}")
+        by_name[value.name] = value
 
 
 @dataclass(frozen=True)
@@ -57,6 +74,11 @@ class ABIRequirement:
         """Validate and canonicalize the requirement."""
         if not self.name.strip():
             raise ValueError("ABI requirement name must not be empty")
+        object.__setattr__(self, "name", self.name.strip())
+        if self.version is not None:
+            if not self.version.strip():
+                raise ValueError("ABI requirement version must not be empty")
+            object.__setattr__(self, "version", self.version.strip())
         object.__setattr__(self, "features", _sorted_strings(self.features))
 
     def to_dict(self) -> dict[str, object]:
@@ -80,6 +102,11 @@ class RuntimeRequirement:
         """Validate and canonicalize the requirement."""
         if not self.name.strip():
             raise ValueError("runtime requirement name must not be empty")
+        object.__setattr__(self, "name", self.name.strip())
+        if self.version is not None:
+            if not self.version.strip():
+                raise ValueError("runtime requirement version must not be empty")
+            object.__setattr__(self, "version", self.version.strip())
         object.__setattr__(self, "features", _sorted_strings(self.features))
 
     def to_dict(self) -> dict[str, object]:
@@ -103,6 +130,7 @@ class ArtifactProvenance:
         """Validate and canonicalize provenance references."""
         if not self.producer.strip():
             raise ValueError("artifact provenance producer must not be empty")
+        object.__setattr__(self, "producer", self.producer.strip())
         object.__setattr__(self, "source_references", _sorted_strings(self.source_references))
         object.__setattr__(self, "evidence", _sorted_strings(self.evidence))
 
@@ -132,6 +160,13 @@ class DeviceRequirement:
         """Validate and canonicalize the passive requirement."""
         if not self.logical_device.strip():
             raise ValueError("logical device must not be empty")
+        object.__setattr__(self, "logical_device", self.logical_device.strip())
+        for field_name in ("backend", "runtime"):
+            value = getattr(self, field_name)
+            if value is not None:
+                if not value.strip():
+                    raise ValueError(f"device requirement {field_name} must not be empty")
+                object.__setattr__(self, field_name, value.strip())
         for field_name in ("features", "layouts", "memory_spaces", "architectures"):
             object.__setattr__(self, field_name, _sorted_strings(getattr(self, field_name)))
 
@@ -158,13 +193,15 @@ class TargetCapability:
     artifact_kinds: tuple[ArtifactKind, ...] = ()
     cpu_features: tuple[str, ...] = ()
     accelerator_backends: tuple[str, ...] = ()
-    certification_tier: CertificationTier = CertificationTier.EXPERIMENTAL
+    device_requirements: tuple[DeviceRequirement, ...] = ()
+    certification_tier: CertificationTier = CertificationTier.UNSUPPORTED
     evidence_references: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Validate and canonicalize the declaration."""
         if not self.id.strip():
             raise ValueError("target capability id must not be empty")
+        object.__setattr__(self, "id", self.id.strip())
         object.__setattr__(
             self,
             "artifact_kinds",
@@ -186,8 +223,32 @@ class TargetCapability:
             self, "accelerator_backends", _sorted_strings(self.accelerator_backends)
         )
         object.__setattr__(
+            self,
+            "device_requirements",
+            _sorted_unique(
+                self.device_requirements,
+                key=lambda requirement: (
+                    requirement.logical_device,
+                    requirement.backend or "",
+                    requirement.runtime or "",
+                    requirement.features,
+                    requirement.layouts,
+                    requirement.memory_spaces,
+                    requirement.architectures,
+                    requirement.reuse_domain_runtime,
+                ),
+            ),
+        )
+        object.__setattr__(
             self, "evidence_references", _sorted_strings(self.evidence_references)
         )
+        if self.certification_tier is not CertificationTier.UNSUPPORTED:
+            if not self.target_triples or not self.artifact_kinds:
+                raise ValueError(
+                    "supported target capability requires target triples and artifact kinds"
+                )
+            if not self.evidence_references:
+                raise ValueError("supported target capability requires evidence references")
 
     def to_dict(self) -> dict[str, object]:
         """Return the deterministic JSON-serializable representation."""
@@ -197,6 +258,7 @@ class TargetCapability:
             "artifact_kinds": [kind.value for kind in self.artifact_kinds],
             "cpu_features": list(self.cpu_features),
             "accelerator_backends": list(self.accelerator_backends),
+            "device_requirements": [item.to_dict() for item in self.device_requirements],
             "certification_tier": self.certification_tier.value,
             "evidence_references": list(self.evidence_references),
         }
@@ -210,6 +272,7 @@ class ArtifactProfile:
     target_triple: str
     packaging_backend: str
     fallback: FallbackStrategy | None = None
+    python_fallback_backend: str | None = None
     abi_requirements: tuple[ABIRequirement, ...] = ()
     runtime_requirements: tuple[RuntimeRequirement, ...] = ()
     device_requirements: tuple[DeviceRequirement, ...] = ()
@@ -224,10 +287,23 @@ class ArtifactProfile:
             raise ValueError("artifact target triple must not be empty")
         if not self.packaging_backend.strip():
             raise ValueError("artifact packaging backend must not be empty")
+        object.__setattr__(self, "target_triple", self.target_triple.strip())
+        object.__setattr__(self, "packaging_backend", self.packaging_backend.strip())
         if self.kind is ArtifactKind.HOST_EXECUTABLE and self.fallback is None:
             raise ValueError("host executable artifact requires an explicit fallback strategy")
         if self.kind is not ArtifactKind.HOST_EXECUTABLE and self.fallback is not None:
             raise ValueError("fallback strategy is only valid for a host executable artifact")
+        if self.kind is ArtifactKind.HOST_EXTENSION:
+            if self.python_fallback_backend not in {"cpython", "nuitka"}:
+                raise ValueError(
+                    "host extension artifact requires python fallback backend cpython or nuitka"
+                )
+        elif self.python_fallback_backend is not None:
+            raise ValueError("python fallback backend is only valid for a host extension artifact")
+        _reject_conflicting_named_requirements(self.abi_requirements, label="ABI")
+        _reject_conflicting_named_requirements(
+            self.runtime_requirements, label="runtime"
+        )
         object.__setattr__(
             self,
             "abi_requirements",
@@ -277,6 +353,7 @@ class ArtifactProfile:
             "target_triple": self.target_triple,
             "packaging_backend": self.packaging_backend,
             "fallback": self.fallback.value if self.fallback is not None else None,
+            "python_fallback_backend": self.python_fallback_backend,
             "abi_requirements": [item.to_dict() for item in self.abi_requirements],
             "runtime_requirements": [item.to_dict() for item in self.runtime_requirements],
             "device_requirements": [item.to_dict() for item in self.device_requirements],

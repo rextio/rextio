@@ -49,6 +49,7 @@ def test_artifact_profile_serialization_is_canonical() -> None:
         "target_triple": "aarch64-apple-darwin",
         "packaging_backend": "rust-binary",
         "fallback": "error",
+        "python_fallback_backend": None,
         "abi_requirements": [
             {"name": "libc", "version": None, "features": []},
             {"name": "python", "version": "3.11", "features": ["limited"]},
@@ -95,8 +96,10 @@ def test_public_records_normalize_valid_string_enum_values() -> None:
     )
     capability = TargetCapability(
         id="host",
+        target_triples=("x86_64-unknown-linux-gnu",),
         artifact_kinds=("host-extension",),
         certification_tier="certified",
+        evidence_references=("host-ci",),
     )
 
     assert profile.kind is ArtifactKind.HOST_EXECUTABLE
@@ -129,6 +132,7 @@ def test_target_capability_is_declared_data_not_probe_state() -> None:
         "artifact_kinds": ["host-executable", "host-extension"],
         "cpu_features": [],
         "accelerator_backends": ["cuda"],
+        "device_requirements": [],
         "certification_tier": "build-only",
         "evidence_references": ["windows-probe"],
     }
@@ -138,3 +142,54 @@ def test_records_are_frozen() -> None:
     requirement = DeviceRequirement("cpu")
     with pytest.raises(FrozenInstanceError):
         setattr(requirement, "logical_device", "gpu")
+
+
+def test_host_extension_models_python_fallback_separately() -> None:
+    profile = ArtifactProfile(
+        kind=ArtifactKind.HOST_EXTENSION,
+        target_triple="x86_64-unknown-linux-gnu",
+        packaging_backend="wheel",
+        python_fallback_backend="cpython",
+    )
+
+    assert profile.fallback is None
+    assert profile.to_dict()["python_fallback_backend"] == "cpython"
+
+
+def test_conflicting_named_requirements_fail_closed() -> None:
+    with pytest.raises(ValueError, match="conflicting ABI requirements"):
+        ArtifactProfile(
+            kind=ArtifactKind.HOST_EXTENSION,
+            target_triple="x86_64-unknown-linux-gnu",
+            packaging_backend="wheel",
+            python_fallback_backend="cpython",
+            abi_requirements=(
+                ABIRequirement("cpython", "3.11"),
+                ABIRequirement("cpython", "3.12"),
+            ),
+        )
+
+
+def test_supported_capability_requires_scope_and_evidence() -> None:
+    with pytest.raises(ValueError, match="target triples and artifact kinds"):
+        TargetCapability(id="unscoped", certification_tier=CertificationTier.EXPERIMENTAL)
+
+    with pytest.raises(ValueError, match="requires evidence"):
+        TargetCapability(
+            id="unevidenced",
+            target_triples=("x86_64-unknown-linux-gnu",),
+            artifact_kinds=(ArtifactKind.HOST_EXTENSION,),
+            certification_tier=CertificationTier.EXPERIMENTAL,
+        )
+
+
+def test_identifiers_and_collection_values_are_whitespace_canonicalized() -> None:
+    requirement = DeviceRequirement(
+        " gpu ",
+        backend=" cuda ",
+        features=(" tensor ", "tensor"),
+    )
+
+    assert requirement.logical_device == "gpu"
+    assert requirement.backend == "cuda"
+    assert requirement.features == ("tensor",)

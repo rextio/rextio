@@ -14,6 +14,9 @@ def test_host_extension_profile_matches_current_wheel_family() -> None:
     assert profile.kind is ArtifactKind.HOST_EXTENSION
     assert profile.packaging_backend == "wheel"
     assert profile.fallback is None
+    assert profile.python_fallback_backend == "cpython"
+    assert [item.name for item in profile.abi_requirements] == ["cpython"]
+    assert [item.name for item in profile.runtime_requirements] == ["cpython"]
 
 
 def test_host_executable_profile_keeps_current_subprocess_default() -> None:
@@ -22,6 +25,8 @@ def test_host_executable_profile_keeps_current_subprocess_default() -> None:
     assert profile.kind is ArtifactKind.HOST_EXECUTABLE
     assert profile.packaging_backend == "rust-binary"
     assert profile.fallback is FallbackStrategy.PYTHON_SUBPROCESS
+    assert [item.name for item in profile.abi_requirements] == ["rextio-scalar-ipc"]
+    assert [item.name for item in profile.runtime_requirements] == ["cpython"]
 
 
 def test_host_executable_profile_accepts_explicit_native_only_policy() -> None:
@@ -31,6 +36,8 @@ def test_host_executable_profile_accepts_explicit_native_only_policy() -> None:
     )
 
     assert profile.to_dict()["fallback"] == "error"
+    assert profile.abi_requirements == ()
+    assert profile.runtime_requirements == ()
 
 
 def test_rust_crate_profile_has_no_python_fallback() -> None:
