@@ -101,8 +101,20 @@ def test_p0_2_method_on_non_final_class_or_method_fails_closed(tmp_path: Path) -
         "method_value": f"import rextio\n\nclass A:\n{method}    m = 5\n",
     }
     for name, source in cases.items():
-        statuses = _statuses(tmp_path / name, {"app.py": source})
-        assert statuses["app.A.m"] == "rejected", name
+        root = tmp_path / name
+        path = root / "app.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+        analysis = analyze_project(root)
+        statuses = [
+            function.native_status
+            for module in analysis.modules
+            for function in module.functions
+            if function.qualname == "app.A.m"
+        ]
+        # Contract 2.2 can additionally report the later unmarked duplicate,
+        # but the legacy explicit-native rejection record must remain present.
+        assert "rejected" in statuses, name
 
 
 def test_p0_2_valid_final_method_stays_native_shim(tmp_path: Path) -> None:

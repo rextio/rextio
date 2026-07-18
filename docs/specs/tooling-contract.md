@@ -1,7 +1,7 @@
 # Spec: Machine-Readable Tooling Contract
 
-Status: **draft** (experimental tier; current producer `contract_version` is
-`2.1.0`)
+Status: **draft** (experimental tier; the current producer is core 0.1.4,
+published on 2026-07-18 with `contract_version` `2.2.0`)
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
 ## Purpose
@@ -22,7 +22,7 @@ consume instead:
 Both JSON surfaces carry a top-level field:
 
 ```json
-{ "contract_version": "2.1.0" }
+{ "contract_version": "2.2.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -36,6 +36,7 @@ to generic guidance when the major is outside what they support.
 | `1.0.0` | First public producer line (rextio 0.1.1). Route/status fields + capability manifest. **Exception:** `RXT000` (syntax-error) `column` was CPython `SyntaxError.offset` — a **1-based Unicode code-point** index — not the UTF-8 byte offset used by every other diagnostic. |
 | `2.0.0` | **Breaking position semantics.** Every diagnostic `column` / `end_column`, including `RXT000`, is a **0-based UTF-8 byte offset** into the line (`ast.col_offset` convention). No field renames. Emitted by core **0.1.2**. |
 | `2.1.0` | **Additive producer shape** (same major; dual-map `2.x` consumers stay supported). Core **0.1.3** always serializes module-level `logger_group_targets`, and conditionally serializes plugin-claim fields `receiver` and `callables` when present (plugin API 1.3 method/callable metadata). Position semantics unchanged from `2.0.0`. Consumers that ignore unknown fields continue to work. |
+| `2.2.0` | **Additive promotion-assessment shape.** Each reportable function adds `marker_kind`, a separate `promotion_assessment` evidence channel, and reliable `source_range` / `name_range`. Runtime `route`, `native_status`, and `rejection_codes` semantics remain unchanged. Failed automatic probes stay normal fallback rather than becoming compiler/build errors. |
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.
@@ -96,6 +97,10 @@ package dependencies.
 major-1-only rextio-lsp 0.1.0 is an unsupported pairing (degraded guidance at
 best; residual risk of mis-rendered RXT000 ranges if a server still applies
 the old special case).
+
+Release Train B reused the consumer-first gate for the additive 2.2 shape:
+**rextio-lsp 0.1.2 → core 0.1.4**. That required sequence completed on
+2026-07-18; the LSP consumer was available before the 2.2 producer.
 
 ## Route taxonomy
 
@@ -171,6 +176,186 @@ same payload to `.rextio/reports/check.json`. Additive changes:
    `keywords`, `expression`, `operand_mode` when not `"direct"`) remain
    conditional the same way. No existing key changes meaning or disappears.
 
+5. **Contract `2.2.0` additive promotion fields** — every reportable
+   `modules[].functions[]` record adds the required fields defined below. A
+   consumer that does not know them continues to use the existing route/status
+   fields unchanged.
+
+### Promotion assessment (contract 2.2.0)
+
+The execution route and the promotion assessment answer different questions.
+`route` says where the function executes. `promotion_assessment` says whether
+the applicable native-promotion attempt succeeded, failed, or was intentionally
+not attempted. In particular, a failed initial automatic probe must remain
+`route: "fallback-python"`, `native_status: "not-candidate"`, and
+`rejection_codes: []`; the new object preserves its assessment evidence
+without changing those legacy semantics. An automatic candidate that passes
+that probe but is rejected by later boundary/project checks retains its
+existing legacy `native_status: "rejected"` and rejection codes.
+
+A 2.2 producer emits this exact additive shape on every reportable function:
+
+```json
+{
+  "marker_kind": "none",
+  "promotion_assessment": {
+    "status": "ineligible",
+    "provenance": "auto",
+    "diagnostic_codes": ["RXT001"],
+    "diagnostics": [
+      {
+        "kind": "blocker",
+        "code": "RXT001",
+        "message": "native promotion requires resolved parameter and return types",
+        "suggestion": "Add supported type annotations.",
+        "line": 8,
+        "column": 0,
+        "end_line": 8,
+        "end_column": 11
+      }
+    ],
+    "skip_reason": null
+  },
+  "source_range": {
+    "start": {"line": 8, "column": 0},
+    "end": {"line": 9, "column": 12}
+  },
+  "name_range": {
+    "start": {"line": 8, "column": 4},
+    "end": {"line": 8, "column": 11}
+  }
+}
+```
+
+All four top-level keys above are required on a reportable 2.2 function.
+
+#### Marker and assessment enums
+
+`marker_kind` is exactly `none | native | exempt`. It records a statically
+proven Rextio marker, not arbitrary decorator spelling. `exempt` wins when
+both Rextio markers are present. An external accelerator decorator alone uses
+`none`. A malformed or unsupported but statically proven native marker uses
+`native`; an unproven/rebound marker spelling is not trusted.
+
+`promotion_assessment.status` is exactly:
+
+- `eligible`: the applicable core/plugin/explicit assessment succeeded;
+- `ineligible`: an assessment ran and found at least one promotion blocker;
+- `skipped`: no assessment ran because user intent, policy, or the supported
+  structural scope excluded it. Skipped is not a compiler rejection.
+
+`promotion_assessment.provenance` is exactly:
+
+```text
+auto | explicit-native | explicit-exempt | external-accelerator |
+plugin-managed | policy-skip | structural-skip
+```
+
+Choose provenance in this order: explicit exemption; an owning external
+accelerator; structural/policy skip; a plugin-owned eligible route or failed
+probe; explicit native; automatic core assessment. `marker_kind` and plugin
+provenance are deliberately orthogonal: an explicitly native function may be
+plugin-managed, in which case it serializes `marker_kind: "native"` and
+`provenance: "plugin-managed"`. Informational plugin claims on a
+`native-shim` do not execute and do not make that assessment plugin-managed.
+
+`skip_reason` is always present. It is null for `eligible` and `ineligible`.
+For `skipped`, it is exactly one of:
+
+```text
+explicit-exemption
+external-accelerator
+automatic-promotion-disabled
+async-auto-promotion-not-supported
+method-auto-promotion-not-supported
+```
+
+The corresponding provenance is, respectively, `explicit-exempt`,
+`external-accelerator`, `policy-skip`, or `structural-skip` for either of the
+last two reasons. Skipped assessments have empty `diagnostic_codes` and
+`diagnostics` arrays.
+
+#### Assessment diagnostics are not build diagnostics
+
+`promotion_assessment.diagnostic_codes` is an always-present, sorted, unique
+list derived from `promotion_assessment.diagnostics`. The diagnostics array is
+always present and deterministically ordered by
+`(line, column, code, message)`. Each record has required `kind`, `code`,
+`message`, `suggestion`, `line`, `column`, `end_line`, and `end_column` keys;
+`suggestion` and the end positions may be null. `kind` is exactly
+`blocker | advisory`. Positions use the normal contract-2 units and the
+enclosing function supplies `file_path`.
+
+This array is an isolated promotion-evidence channel. Its records MUST NOT be
+added to legacy `functions[].diagnostics`, the project-wide diagnostics list,
+`ProjectAnalysis.has_error_diagnostics`, CLI error status, or build failure
+state. A failed automatic probe is expected fallback, not a compiler error.
+The producer maps the probe's original errors to assessment `blocker` records
+and its warnings/information to `advisory` records. `ineligible` requires at
+least one blocker; `eligible` permits advisories but no blockers.
+
+An explicit-native rejection can have the same underlying diagnostic in both
+the legacy and assessment channels. Both serializations must agree on code,
+message, suggestion, and span. Consumers de-duplicate on
+`(code, line, column, end_line, end_column, message)`. When an assessment
+suggestion is null, a consumer may use the matching capability rule's
+`guidance`.
+
+#### Function ranges and reportable set
+
+`source_range` and `name_range` are half-open `[start, end)` objects with
+`start` / `end`, each containing required integer `line` / `column` keys.
+`source_range` starts at the `def` or `async` token (decorators excluded) and
+ends at the AST function node's end position. `name_range` covers exactly the
+identifier token after `def`. Existing `line` / `column` remain present and
+equal the source-range start. The producer derives the name span by tokenizing
+source; it must not guess with substring search. Null, partial, or zero-width
+ranges are not valid 2.2 records.
+
+The bounded 2.2 reportable set is every module-body sync/async definition and
+every direct sync/async method in a top-level class for which both ranges are
+reliable. Existing explicit-native method rejection records (including
+nested-class/class-control-flow cases already reported by 2.1) must not
+disappear. This train does not newly enumerate undecorated nested functions,
+lambdas, local classes, or methods of nested classes; stable qualname, closure
+ownership, and overlapping-range policy for those definitions remain
+deferred. `(file_path, source_range)`, not `qualname` alone, identifies an
+editor source record when duplicate definitions exist.
+
+An unmarked async function or direct method in automatic mode is
+`structural-skip`, not a rejection. An explicitly native async function or
+method continues through its existing assessment/runtime-shim behavior and is
+not automatically classified as skipped. A normal unmarked function under
+decorator-only policy is `policy-skip`.
+
+Explicit exemptions are still serialized so tools can retain source truth,
+but a valid `marker_kind: "exempt"` suppresses promotion CodeLens, promotion
+diagnostics, and promotion hover. Unrelated analyzer diagnostics are not
+erased.
+
+For a valid assessment the LSP presents exactly one CodeLens for each
+reportable non-exempt function; its title contains the route and assessment
+status, and a skipped title includes the skip reason. Assessment blockers map
+to LSP Warning, advisories follow the existing informational-code policy, and
+neither maps to LSP Error. Matching legacy/assessment diagnostics are emitted
+only once under the de-duplication key above.
+
+#### Legacy defaults
+
+For a contract-major 1 or 2 record where these additive fields are absent,
+consumers use `marker_kind = "none"` and represent
+`promotion_assessment`, `source_range`, and `name_range` as unavailable. They
+must not synthesize an assessment from legacy route/status fields, which
+cannot distinguish failed auto assessment, exemption, and structural/policy
+skips. Legacy hover and route CodeLens continue to use `line` / `column`.
+Malformed objects or unknown enum values are treated as unavailable rather
+than aborting the report parser; only an exact valid `marker_kind: "exempt"`
+suppresses promotion UI.
+
+The LSP remains a JSON-only consumer. Contract 2.2 requires no VS Code
+initialization option or custom protocol, and does not change the existing
+`rextio.showRouteInfo` CodeLens command or its string qualname argument.
+
 ## `rextio capabilities --json`
 
 New subcommand (wired like the others in `src/rextio/cli/main.py`, handler
@@ -189,8 +374,8 @@ in registry order, then plugin rules and the `plugins` array sorted by id.
 
 ```json
 {
-  "contract_version": "2.1.0",
-  "rextio_version": "0.1.3",
+  "contract_version": "2.2.0",
+  "rextio_version": "0.1.4",
   "project_root": "/abs/path",
   "config_fingerprint": "<sha256 of resolved config>",
   "target": { "language": "rust" },
@@ -325,5 +510,9 @@ class RextioPluginV2(Protocol):
    `plugin_claims[].receiver` / `plugin_claims[].callables` when present.
    Column semantics unchanged from `2.0.0`. Dual-map `2.x` consumers that
    tolerate unknown fields remain compatible.
-5. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
+5. **0.1.4 / contract 2.2.0 (published 2026-07-18):** Release Train B shipped
+   rextio-lsp 0.1.2 before core 0.1.4. The producer adds the frozen
+   promotion-assessment and range fields above without reclassifying expected
+   automatic fallback as a build error. Plugin API remains 1.3.
+6. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import io
+import tokenize
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,7 +38,13 @@ from rextio.analyzer.final_bindings import (
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.analyzer.import_policy import classify_import_policies
 from rextio.analyzer.embedding import is_embedding_candidate
-from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis
+from rextio.analyzer.models import (
+    CallSite,
+    FunctionAnalysis,
+    ModuleAnalysis,
+    SourcePosition,
+    SourceRange,
+)
 from rextio.analyzer.native_marker import (
     NativeMarker,
     dotted_name,
@@ -208,14 +216,132 @@ def parse_module(
         _collect_native_methods(
             tree,
             module,
+            native_marker,
             target_language,
             module_bindings,
             effective_mutations,
         )
     )
+    _finalize_function_records(tree, source, module)
     if native_top_level:
         module.top_level = analyze_native_top_level(tree, module)
     return module
+
+
+def _utf8_column(lines: list[str], line: int, codepoint_column: int) -> int | None:
+    if line < 1 or line > len(lines) or codepoint_column < 0:
+        return None
+    text = lines[line - 1]
+    if codepoint_column > len(text):
+        return None
+    return len(text[:codepoint_column].encode("utf-8"))
+
+
+def _tokenized_name_ranges(source: str) -> dict[tuple[int, str], SourceRange] | None:
+    """Tokenize once and index exact function-name ranges by definition line/name."""
+    lines = source.splitlines(keepends=True)
+    ranges: dict[tuple[int, str], SourceRange] = {}
+    expect_name = False
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if expect_name and token.type == tokenize.NAME:
+                start_column = _utf8_column(lines, token.start[0], token.start[1])
+                end_column = _utf8_column(lines, token.end[0], token.end[1])
+                if start_column is None or end_column is None or end_column <= start_column:
+                    return None
+                ranges[(token.start[0], token.string)] = SourceRange(
+                    SourcePosition(token.start[0], start_column),
+                    SourcePosition(token.end[0], end_column),
+                )
+                expect_name = False
+                continue
+            if token.type == tokenize.NAME and token.string == "def":
+                expect_name = True
+    except (IndentationError, tokenize.TokenError):
+        return None
+    return ranges
+
+
+def _function_ranges(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    name_range: SourceRange | None,
+) -> tuple[SourceRange, SourceRange] | None:
+    """Return reliable half-open AST/name-token ranges for a function node."""
+    if node.end_lineno is None or node.end_col_offset is None:
+        return None
+    source_range = SourceRange(
+        SourcePosition(node.lineno, node.col_offset),
+        SourcePosition(node.end_lineno, node.end_col_offset),
+    )
+    if (source_range.end.line, source_range.end.column) <= (
+        source_range.start.line,
+        source_range.start.column,
+    ):
+        return None
+    if (
+        name_range is None
+        or name_range.start.line != node.lineno
+        or name_range.end.line != node.lineno
+        or name_range.end.column <= name_range.start.column
+    ):
+        return None
+    return source_range, name_range
+
+
+def _proven_marker_kind(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    module_bindings: ModuleBindings,
+) -> str:
+    # Exemption wins when both trusted Rextio markers are present.
+    if _has_proven_exempt_marker(node, module_bindings):
+        return "exempt"
+    if _proven_native_marker(node, module_bindings) is not None:
+        return "native"
+    return "none"
+
+
+def _finalize_function_records(
+    tree: ast.Module,
+    source: str,
+    module: ModuleAnalysis,
+) -> None:
+    """Attach contract-2.2 ranges/marker intent and order source records."""
+    if module.module_bindings is None:
+        return
+    name_ranges = _tokenized_name_ranges(source)
+    if name_ranges is None:
+        return
+    nodes: dict[tuple[int, int, str], ast.FunctionDef | ast.AsyncFunctionDef] = {
+        (node.lineno, node.col_offset, node.name): node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    reportable: list[FunctionAnalysis] = []
+    for function in module.functions:
+        node = nodes.get((function.line, function.column, function.name))
+        if node is None:
+            continue
+        ranges = _function_ranges(node, name_ranges.get((node.lineno, node.name)))
+        if ranges is None:
+            continue
+        function.source_range, function.name_range = ranges
+        function.line = ranges[0].start.line
+        function.column = ranges[0].start.column
+        function.marker_kind = _proven_marker_kind(node, module.module_bindings)
+        reportable.append(function)
+    reportable.sort(
+        key=lambda function: (
+            function.source_range.start.line if function.source_range is not None else function.line,
+            function.source_range.start.column
+            if function.source_range is not None
+            else function.column,
+            function.source_range.end.line if function.source_range is not None else function.line,
+            function.source_range.end.column
+            if function.source_range is not None
+            else function.column,
+        )
+    )
+    module.functions = reportable
 
 
 @dataclass(frozen=True)
@@ -775,6 +901,7 @@ def _collect_module_functions(
     fidelity_shim_names = _collect_fidelity_shim_names(tree)
     for node in tree.body:
         if isinstance(node, ast.AsyncFunctionDef):
+            has_exempt = _has_proven_exempt_marker(node, module_bindings)
             marker = _proven_native_marker(node, module_bindings)
             raw_marker = next(
                 (
@@ -787,7 +914,16 @@ def _collect_module_functions(
             marker_identity_unproven = marker is None and raw_marker is not None
             if marker_identity_unproven:
                 marker = _unproven_marker_identity()
-            if marker is not None and not _has_proven_exempt_marker(node, module_bindings):
+            if has_exempt:
+                functions.append(
+                    _skipped_function_record(
+                        node,
+                        module,
+                        provenance="explicit-exempt",
+                        skip_reason="explicit-exemption",
+                    )
+                )
+            elif marker is not None:
                 if marker.error:
                     rejected = _rejected_native_marker_function(
                         node, module, marker, target_language
@@ -796,10 +932,55 @@ def _collect_module_functions(
                         rejected.is_native_candidate = False
                         rejected.explicitly_marked = False
                         rejected.native_target_language = None
+                        if native_marker == "auto":
+                            rejected.assessment_provenance = "structural-skip"
+                            rejected.assessment_skip_reason = (
+                                "async-auto-promotion-not-supported"
+                            )
+                        else:
+                            rejected.assessment_provenance = "policy-skip"
+                            rejected.assessment_skip_reason = (
+                                "automatic-promotion-disabled"
+                            )
                     functions.append(rejected)
                 elif _native_marker_applies(marker, target_language):
                     functions.append(
                         _runtime_semantics_function(node, module, marker, target_language)
+                    )
+                else:
+                    functions.append(
+                        _inactive_native_target_function(node, module, target_language)
+                    )
+            else:
+                external_accelerator = external_accelerator_for_function(
+                    node, module.imports, project_modules
+                )
+                if external_accelerator is not None:
+                    skipped = _skipped_function_record(
+                        node,
+                        module,
+                        provenance="external-accelerator",
+                        skip_reason="external-accelerator",
+                    )
+                    skipped.external_accelerator = external_accelerator
+                    functions.append(skipped)
+                elif native_marker == "auto":
+                    functions.append(
+                        _skipped_function_record(
+                            node,
+                            module,
+                            provenance="structural-skip",
+                            skip_reason="async-auto-promotion-not-supported",
+                        )
+                    )
+                else:
+                    functions.append(
+                        _skipped_function_record(
+                            node,
+                            module,
+                            provenance="policy-skip",
+                            skip_reason="automatic-promotion-disabled",
+                        )
                     )
             continue
         if not isinstance(node, ast.FunctionDef):
@@ -854,13 +1035,27 @@ def _collect_module_functions(
         if has_exempt:
             function.is_native_candidate = False
             function.native_target_language = None
+            function.assessment_provenance = "explicit-exempt"
+            function.assessment_skip_reason = "explicit-exemption"
         elif marker is not None and marker.error:
+            if has_marker:
+                function.assessment_provenance = "explicit-native"
+            elif native_marker == "auto":
+                function.assessment_provenance = "auto"
+            else:
+                function.assessment_provenance = "policy-skip"
+                function.assessment_skip_reason = "automatic-promotion-disabled"
             _add_native_marker_diagnostic(function, node, marker)
             if marker_identity_unproven:
                 function.native_target_language = None
         elif marker is not None and not _native_marker_applies(marker, target_language):
             function.is_native_candidate = False
+            function.assessment_provenance = "explicit-native"
+            function.promotion_evidence.append(
+                _inactive_native_target_diagnostic(function, node, target_language)
+            )
         elif has_marker:
+            function.assessment_provenance = "explicit-native"
             _classify_native_function(
                 node, function, return_types, module_function_names, fidelity_shim_names
             )
@@ -873,6 +1068,8 @@ def _collect_module_functions(
             # decorator, surfacing the conflict.)
             function.is_native_candidate = False
             function.native_target_language = None
+            function.assessment_provenance = "external-accelerator"
+            function.assessment_skip_reason = "external-accelerator"
         elif native_marker == "auto" and _is_auto_native_candidate(
             node,
             function,
@@ -882,6 +1079,7 @@ def _collect_module_functions(
         ):
             function.is_native_candidate = True
             function.accepted = True
+            function.assessment_provenance = "auto"
         elif embedding_enabled and _mark_embedding_candidate(
             node,
             function,
@@ -890,6 +1088,9 @@ def _collect_module_functions(
             module_function_names,
         ):
             pass
+        elif native_marker != "auto":
+            function.assessment_provenance = "policy-skip"
+            function.assessment_skip_reason = "automatic-promotion-disabled"
         # Make this function's resolved return type available to later functions'
         # nested-call argument resolution, even when the return type was inferred
         # rather than annotated (annotations are already seeded above). A function
@@ -904,6 +1105,108 @@ def _collect_module_functions(
             return_types[node.name] = function.inferred_return_type
         functions.append(function)
     return functions
+
+
+def _skipped_function_record(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    module: ModuleAnalysis,
+    *,
+    provenance: str,
+    skip_reason: str,
+    qualname: str | None = None,
+    enclosing_class: ast.ClassDef | None = None,
+) -> FunctionAnalysis:
+    """Build a report-only fallback record for a deliberately skipped definition."""
+    return FunctionAnalysis(
+        name=node.name,
+        qualname=(
+            qualname
+            if qualname is not None
+            else f"{module.module_name}.{node.name}" if module.module_name else node.name
+        ),
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        source_ast_fingerprint=executable_ast_fingerprint(node),
+        calls=collect_call_sites(node, module.imports, module.logger_names),
+        annotated_return_type=(
+            annotation_name(node.returns) if node.returns is not None else None
+        ),
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
+        module_bindings=module.module_bindings,
+        project_mutations=module.project_mutations,
+        project_modules=module.project_modules,
+        assessment_provenance=provenance,
+        assessment_skip_reason=skip_reason,
+        enclosing_class_name=enclosing_class.name if enclosing_class is not None else None,
+        enclosing_class_line=enclosing_class.lineno if enclosing_class is not None else None,
+        enclosing_class_column=(
+            enclosing_class.col_offset if enclosing_class is not None else None
+        ),
+    )
+
+
+def _inactive_native_target_diagnostic(
+    function: FunctionAnalysis,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    target_language: str,
+) -> Diagnostic:
+    return Diagnostic(
+        code="RXT010",
+        severity="error",
+        message=(
+            "@rextio.native does not select the active "
+            f"{target_language!r} target, so this definition stays on fallback"
+        ),
+        file_path=function.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        function_name=function.qualname,
+        suggestion=(
+            f"Include {target_language!r} in the marker target list, or remove the marker."
+        ),
+    )
+
+
+def _inactive_native_target_function(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    module: ModuleAnalysis,
+    target_language: str,
+    *,
+    qualname: str | None = None,
+    enclosing_class: ast.ClassDef | None = None,
+) -> FunctionAnalysis:
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=(
+            qualname
+            if qualname is not None
+            else f"{module.module_name}.{node.name}" if module.module_name else node.name
+        ),
+        module_name=module.module_name,
+        file_path=module.file_path,
+        line=node.lineno,
+        column=node.col_offset,
+        source_ast_fingerprint=executable_ast_fingerprint(node),
+        calls=collect_call_sites(node, module.imports, module.logger_names),
+        imports=dict(module.imports),
+        logger_names=module.logger_names,
+        module_bindings=module.module_bindings,
+        project_mutations=module.project_mutations,
+        project_modules=module.project_modules,
+        assessment_provenance="explicit-native",
+        enclosing_class_name=enclosing_class.name if enclosing_class is not None else None,
+        enclosing_class_line=enclosing_class.lineno if enclosing_class is not None else None,
+        enclosing_class_column=(
+            enclosing_class.col_offset if enclosing_class is not None else None
+        ),
+    )
+    function.promotion_evidence.append(
+        _inactive_native_target_diagnostic(function, node, target_language)
+    )
+    return function
 
 
 def _mark_embedding_candidate(
@@ -962,8 +1265,7 @@ def _is_auto_native_candidate(
     return_types: dict[str, str] | None = None,
     module_function_names: set[str] | None = None,
 ) -> bool:
-    if node.decorator_list:
-        return False
+    function.assessment_provenance = "auto"
     probe = FunctionAnalysis(
         name=function.name,
         qualname=function.qualname,
@@ -988,6 +1290,11 @@ def _is_auto_native_candidate(
         claim_engine=function.claim_engine,
     )
     validate_native_function(node, probe, return_types, module_function_names)
+    plugin_managed = bool(
+        probe.plugin_claim_rejections
+        or any(diagnostic.code.startswith("RXTP-") for diagnostic in probe.diagnostics)
+    )
+    function.assessment_plugin_managed = plugin_managed
     if probe.accepted:
         function.inferred_arg_types = dict(probe.inferred_arg_types)
         function.signature_arg_types = dict(probe.signature_arg_types)
@@ -1021,6 +1328,19 @@ def _is_auto_native_candidate(
     # `@rextio.native`; auto-promoting dynamic functions (e.g. dynamic attribute
     # access) to the shim is too broad. Marked functions are still handled by
     # `_classify_native_function`.
+    # Preserve the failed probe as isolated promotion evidence. It must not be
+    # attached through add_diagnostic(): that would turn expected automatic
+    # fallback into a project/build error and change the legacy status contract.
+    function.promotion_evidence = list(probe.diagnostics)
+    function.plugin_claims = list(probe.plugin_claims)
+    function.plugin_claim_rejections = list(probe.plugin_claim_rejections)
+    function.plugin_type_keys = list(probe.plugin_type_keys)
+    function.positional_param_names = probe.positional_param_names
+    function.signature_plugin_keys = dict(probe.signature_plugin_keys)
+    function.has_resident_signature = probe.has_resident_signature
+    function.has_materialized_plugin_type = probe.has_materialized_plugin_type
+    function.declared_schemas = dict(probe.declared_schemas)
+    function.local_binding_names = probe.local_binding_names
     return False
 
 
@@ -1055,6 +1375,10 @@ def _classify_native_function(
         claim_engine=function.claim_engine,
     )
     validate_native_function(node, probe, return_types, module_function_names)
+    function.assessment_plugin_managed = bool(
+        probe.plugin_claim_rejections
+        or any(diagnostic.code.startswith("RXTP-") for diagnostic in probe.diagnostics)
+    )
     function.inferred_arg_types = dict(probe.inferred_arg_types)
     function.signature_arg_types = dict(probe.signature_arg_types)
     function.signature_return_type = probe.signature_return_type
@@ -1381,6 +1705,7 @@ def _class_construction_instability_reason(
 def _collect_native_methods(
     tree: ast.Module,
     module: ModuleAnalysis,
+    native_marker: str,
     target_language: str,
     module_bindings: ModuleBindings | None = None,
     project_mutations: ProjectMutations = _EMPTY_MUTATIONS,
@@ -1440,6 +1765,8 @@ def _collect_native_methods(
         for child in _walk_class_scope(node.body):
             if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
+            is_direct_method = id(child) in direct_method_ids
+            has_exempt = _has_proven_exempt_marker(child, module_bindings)
             marker = _proven_native_marker(child, module_bindings)
             raw_marker = next(
                 (
@@ -1452,7 +1779,63 @@ def _collect_native_methods(
             marker_identity_unproven = marker is None and raw_marker is not None
             if marker_identity_unproven:
                 marker = _unproven_marker_identity()
-            if marker is None or _has_proven_exempt_marker(child, module_bindings):
+            qualname = (
+                f"{module.module_name}.{node.name}.{child.name}"
+                if module.module_name
+                else f"{node.name}.{child.name}"
+            )
+            if has_exempt:
+                if is_direct_method:
+                    functions.append(
+                        _skipped_function_record(
+                            child,
+                            module,
+                            provenance="explicit-exempt",
+                            skip_reason="explicit-exemption",
+                            qualname=qualname,
+                            enclosing_class=node,
+                        )
+                    )
+                continue
+            if marker is None:
+                if not is_direct_method:
+                    continue
+                external_accelerator = external_accelerator_for_function(
+                    child, module.imports, set(module.project_modules)
+                )
+                if external_accelerator is not None:
+                    skipped = _skipped_function_record(
+                        child,
+                        module,
+                        provenance="external-accelerator",
+                        skip_reason="external-accelerator",
+                        qualname=qualname,
+                        enclosing_class=node,
+                    )
+                    skipped.external_accelerator = external_accelerator
+                    functions.append(skipped)
+                elif native_marker == "auto":
+                    functions.append(
+                        _skipped_function_record(
+                            child,
+                            module,
+                            provenance="structural-skip",
+                            skip_reason="method-auto-promotion-not-supported",
+                            qualname=qualname,
+                            enclosing_class=node,
+                        )
+                    )
+                else:
+                    functions.append(
+                        _skipped_function_record(
+                            child,
+                            module,
+                            provenance="policy-skip",
+                            skip_reason="automatic-promotion-disabled",
+                            qualname=qualname,
+                            enclosing_class=node,
+                        )
+                    )
                 continue
             if marker.error:
                 rejected = _rejected_native_marker_method(
@@ -1461,11 +1844,29 @@ def _collect_native_methods(
                 if marker_identity_unproven:
                     rejected.is_native_candidate = False
                     rejected.native_target_language = None
+                    if native_marker == "auto":
+                        rejected.assessment_provenance = "structural-skip"
+                        rejected.assessment_skip_reason = (
+                            "method-auto-promotion-not-supported"
+                        )
+                    else:
+                        rejected.assessment_provenance = "policy-skip"
+                        rejected.assessment_skip_reason = "automatic-promotion-disabled"
                 functions.append(rejected)
                 continue
             if not _native_marker_applies(marker, target_language):
+                if is_direct_method:
+                    functions.append(
+                        _inactive_native_target_function(
+                            child,
+                            module,
+                            target_language,
+                            qualname=qualname,
+                            enclosing_class=node,
+                        )
+                    )
                 continue
-            if id(child) not in direct_method_ids:
+            if not is_direct_method:
                 # Defined inside class-body control flow: its definition is
                 # conditional and the direct-child ordering the reassignment scan
                 # relies on does not apply, so it cannot be safely wrapped. Reject
@@ -1526,11 +1927,6 @@ def _collect_native_methods(
                     )
                 )
                 continue
-            qualname = (
-                f"{module.module_name}.{node.name}.{child.name}"
-                if module.module_name
-                else f"{node.name}.{child.name}"
-            )
             function = FunctionAnalysis(
                 name=child.name,
                 qualname=qualname,
@@ -1552,6 +1948,7 @@ def _collect_native_methods(
                 enclosing_class_name=node.name,
                 enclosing_class_line=node.lineno,
                 enclosing_class_column=node.col_offset,
+                assessment_provenance="explicit-native",
             )
             # The class-method shim emits `fn {name}(py, args, kwargs)` like the
             # module-level shim, so the method name must be representable in Rust;

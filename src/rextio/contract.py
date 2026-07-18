@@ -18,8 +18,10 @@ from __future__ import annotations
 # semantics so every diagnostic column is a 0-based UTF-8 byte offset
 # (ast.col_offset convention); contract 1.x left RXT000 as CPython's 1-based
 # Unicode code-point SyntaxError.offset. Core 0.1.2 emitted 2.0.0. Core 0.1.3
-# emits 2.1.0 for additive producer-shape fields (plugin_claims.receiver /
+# emitted 2.1.0 for additive producer-shape fields (plugin_claims.receiver /
 # callables when present; always-on module.logger_group_targets). Same major
 # remains compatible with dual-map 2.x consumers that tolerate unknown fields.
+# Contract 2.2.0 adds isolated promotion-assessment evidence plus reliable
+# function/name ranges without changing route/status or position semantics.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.1.0"
+TOOLING_CONTRACT_VERSION = "2.2.0"

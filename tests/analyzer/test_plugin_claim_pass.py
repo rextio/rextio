@@ -142,6 +142,8 @@ def test_claimed_call_is_accepted_with_plugin_route(tmp_path: Path) -> None:
 
     data = function.to_dict()
     assert data["route"] == "native-plugin:rextio-numpy"
+    assert data["promotion_assessment"]["status"] == "eligible"
+    assert data["promotion_assessment"]["provenance"] == "plugin-managed"
     assert data["plugin_claims"][0]["target"] == "numpy.dot"
 
 
@@ -196,6 +198,10 @@ def mean(a: F64Arr1) -> float:
     assert rejection.function_name == "myapp.kernels.mean"
     assert rejection.line > 0
     assert not any(d.code == "RXT030" for d in function.diagnostics)
+    assessment = function.to_dict()["promotion_assessment"]
+    assert assessment["status"] == "ineligible"
+    assert assessment["provenance"] == "plugin-managed"
+    assert "RXTP-NUMPY-010" in assessment["diagnostic_codes"]
 
 
 def test_rejected_keyword_call_delivers_plugin_diagnostic_not_rxt010(
