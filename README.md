@@ -15,7 +15,8 @@ fallback code - same imports, same behavior.
 **Unreleased branch note:** Release Train C adds experimental host source/
 artifact planning, a narrow initializer-before-main Rust executable slice, and
 plugin API **1.4** fail-closed standalone artifact capability (rust-crate /
-host-executable). This branch emits additive tooling contract **2.4.0** and
+host-executable), plus a C5.1 external pure-Python source inventory/gate
+preview. This branch emits additive tooling contract **2.5.0** and
 plugin API **1.4** while keeping package version **0.1.4**; those changes are
 not yet a tagged or PyPI release. Published 0.1.4 remains the plugin API **1.3**
 / contract **2.2.0** producer. See
@@ -350,6 +351,39 @@ default_external_policy = "fallback"
 "legacy_dynamic_pkg" = "fallback"
 "known_pkg" = { policy = "plugin", plugin = "known-rust" }
 ```
+
+The unreleased C5.1 branch also has a deliberately non-building, config-only
+preview for one exact installed pure-Python distribution:
+
+```toml
+[imports.packages.small_math_pkg]
+policy = "try-native"
+max_depth = 1
+distribution = "small-math-pkg"
+version = "1.0.0"
+```
+
+This full declaration may appear for exactly one imported package. Rextio does
+not import or execute the package. It inventories direct depth-1 UTF-8 `.py`
+files only after verifying the exact distribution name/version, one RFC822
+WHEEL 1.0 record with a sole `py3-none-any` purelib tag, contained non-symlink paths, and RECORD
+SHA-256/size values. `check` and `generate` emit a sanitized
+`external_source_plan`; `generate` never copies that package source into the
+fallback tree. Existing `try-native` entries without `distribution` and
+`version` remain metadata-only.
+
+This is inventory evidence, not source-to-Rust conversion. Candidate function
+names are only lexical hints: they are not connected to project calls, lowered,
+compiled, packaged, or redistributed. `rextio build` therefore stops with
+`RXT060` before Python/Nuitka/Cargo or artifact work whenever the imported
+declaration produces a plan, including an unavailable plan. C6 must add a
+license decision/lock, SBOM, provenance attestation, and actual closure/lowering
+authority first.
+
+**License warning:** translating or redistributing dependency source can create
+derivative-work and redistribution obligations. Review the exact package
+license, especially GNU/copyleft terms. Rextio's inventory is not legal advice.
+The same warning is emitted on stderr and serialized in the plan.
 
 The supported package policies are `fallback`, `analyze`, `try-native`, and
 `plugin`. Since 0.1.1 a plugin can also describe and *lower* covered

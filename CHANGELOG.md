@@ -5,8 +5,35 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.4.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.5.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line.
+
+### C5.1 external pure-Python source inventory/gate preview
+
+- Add a config-only preview for exactly one imported external package declared
+  with `policy = "try-native"`, `max_depth = 1`, and exact `distribution` plus
+  `version` fields. Existing `try-native` declarations without the exact pair
+  remain metadata-only; CLI/environment policy overrides cannot activate this
+  authority-sensitive path.
+- Resolve installed metadata without importing or executing the package. Require
+  exact distribution identity/version, one purelib `py3-none-any` WHEEL tag,
+  one contained dist-info root, safe unique RECORD paths, and matching SHA-256
+  plus size for WHEEL, METADATA, and selected source files. Reject symlinks,
+  path escapes, unresolved imports, non-UTF-8/unparseable source, and every
+  source module below the direct depth-1 slice.
+- Emit only sanitized `external_source_plan` inventory and lexical names of
+  fully annotated scalar function candidates. Absolute installation paths and
+  source bytes are not serialized, package source is not copied into generated
+  fallback output, and no project-call linkage or Rust lowering is claimed.
+- Block every build carrying an available or unavailable external-source plan
+  with stable `RXT060`/`external-source-c6-blocked` evidence before configured
+  CPython/Nuitka/Cargo probes or artifact work. Programmatic build orchestration
+  fails closed as well. Actual build, packaging, executable/crate output, and
+  redistribution remain unavailable until C6 supplies license lock/decision,
+  SBOM, provenance, and source-native closure authority.
+- Serialize and emit a mandatory warning that dependency source translation can
+  create derivative-work or redistribution obligations, especially for
+  GNU/copyleft licenses, and that the preview is not legal advice.
 
 ### Plugin API 1.4 — standalone artifact capability (fail-closed)
 
@@ -85,9 +112,12 @@ Train C host-planning work remains under the same unreleased line.
   Native reads of those values remain blocked; broader top-level semantics are
   deferred.
 
-### Tooling contract 2.4.0 (and prior 2.3.0 host planning)
+### Tooling contract 2.5.0 (and prior Train C additions)
 
-- Advance the unreleased producer to **2.4.0** for plugin standalone-capability
+- Advance the unreleased producer to **2.5.0** for the sanitized, preview-only
+  `external_source_plan` added by C5.1. The record is explicitly
+  non-distributable and carries a required C6 gate and license warning.
+- Contract **2.4.0** added plugin standalone-capability
   presence/declaration and generate/build resolved per-profile allow/deny
   details, without changing route, native-status, rejection, promotion, or
   `lowering_provided` semantics.

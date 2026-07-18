@@ -168,6 +168,11 @@ def run(args: Namespace) -> int:
         # result, or overlapping claims) - a configuration-style failure.
         reporter.error(f"RXT060 Plugin error: {exc}")
         return 1
+    if analysis.external_source_plan is not None:
+        reporter.warn(
+            "External source license warning: "
+            f"{analysis.external_source_plan.license_warning}"
+        )
     ensure_host_source_plan(analysis)
     if not getattr(args, "no_report", False):
         write_check_report(project_root, analysis)

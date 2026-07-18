@@ -94,6 +94,7 @@ from rextio.plugins.capabilities import (
 )
 from rextio.plugins.loader import PluginError
 from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
+from rextio.source.external import ExternalSourceBuildBlockedError
 from rextio.source.planning import ensure_host_source_plan
 from rextio.targets.plan import TargetPlan, default_target_plan
 
@@ -203,6 +204,8 @@ class GenerateResult:
     # for requested rust-crate / host-executable profiles). Additive; absence
     # means no standalone profile was resolved for this generate.
     standalone_plugin_capabilities: tuple[dict[str, object], ...] = ()
+    # Train C5 preview evidence.  Presence never authorizes a build.
+    external_source_plan: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this result."""
@@ -231,6 +234,8 @@ class GenerateResult:
             data["standalone_plugin_capabilities"] = [
                 dict(item) for item in self.standalone_plugin_capabilities
             ]
+        if self.external_source_plan is not None:
+            data["external_source_plan"] = dict(self.external_source_plan)
         return data
 
 
@@ -394,6 +399,13 @@ def build_hybrid_artifact(
     """
     if executable_analysis is None:
         executable_analysis = analysis
+    blocked_plan = analysis.external_source_plan or executable_analysis.external_source_plan
+    if blocked_plan is not None:
+        # C5 produces sanitized preview evidence only.  This must happen before
+        # target discovery, generated-source cleanup, Cargo, Python fallback,
+        # wheel, executable, or rust-crate work.  C6 will replace this hard gate
+        # with verified SourceLock/SBOM/provenance authority.
+        raise ExternalSourceBuildBlockedError(blocked_plan)
     fallback_strategy = resolve_executable_fallback(executable_fallback, executable_hybrid_runtime)
     toolchain = toolchain or ToolchainConfig()
     target_plan = target_plan or default_target_plan()
@@ -644,6 +656,11 @@ def generate_source_artifact(
         rust_crate_source=rust_crate_source,
         plugin_crate_dependencies=plugin_crate_dependencies,
         standalone_plugin_capabilities=_standalone_capability_reports_from_contexts(contexts),
+        external_source_plan=(
+            analysis.external_source_plan.to_dict()
+            if analysis.external_source_plan is not None
+            else None
+        ),
     )
     (layout.reports_dir / "generate.json").write_text(
         json.dumps(

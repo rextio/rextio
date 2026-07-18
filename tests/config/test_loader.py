@@ -7,6 +7,101 @@ import pytest
 from rextio.config.loader import ConfigError, load_config, override_config
 
 
+def test_external_source_preview_requires_one_exact_depth_one_declaration(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[imports.packages.rextio_c5_poc_math]
+policy = "try-native"
+max_depth = 1
+distribution = "rextio-c5-poc-math"
+version = "1.0.0"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    policy = load_config(tmp_path).imports.packages["rextio_c5_poc_math"]
+
+    assert policy.policy == "try-native"
+    assert policy.max_depth == 1
+    assert policy.distribution == "rextio-c5-poc-math"
+    assert policy.version == "1.0.0"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'policy = "try-native"\nmax_depth = 1\ndistribution = "poc"',
+        'policy = "try-native"\nmax_depth = 0\ndistribution = "poc"\nversion = "1.0"',
+        'policy = "fallback"\nmax_depth = 1\ndistribution = "poc"\nversion = "1.0"',
+        'policy = "try-native"\nmax_depth = 1\ndistribution = "poc"\nversion = ">=1.0"',
+    ],
+)
+def test_external_source_preview_rejects_incomplete_or_non_exact_declaration(
+    tmp_path: Path, body: str
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        f"[imports.packages.poc]\n{body}\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
+
+
+def test_external_source_preview_rejects_multiple_activated_packages(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[imports.packages.one]
+policy = "try-native"
+max_depth = 1
+distribution = "one"
+version = "1.0"
+[imports.packages.two]
+policy = "try-native"
+max_depth = 1
+distribution = "two"
+version = "2.0"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="exactly one source-native external package"):
+        load_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("package", "distribution", "version"),
+    (
+        ("bad-package", "valid-dist", "1.0.0"),
+        ("valid_package", "../outside", "1.0.0"),
+        ("valid_package", "valid-dist", "1.0.0/../../outside"),
+    ),
+)
+def test_external_source_preview_rejects_unsafe_identity_fields(
+    tmp_path: Path,
+    package: str,
+    distribution: str,
+    version: str,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        f"""
+[imports.packages."{package}"]
+policy = "try-native"
+max_depth = 1
+distribution = "{distribution}"
+version = "{version}"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
+
+
 def test_executable_fallback_defaults_to_python_subprocess(tmp_path: Path) -> None:
     config = load_config(tmp_path)
 

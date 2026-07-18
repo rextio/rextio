@@ -24,6 +24,7 @@ from rextio.contract import TOOLING_CONTRACT_VERSION
 
 if TYPE_CHECKING:
     from rextio.analyzer.plugin_claims import ClaimEngine
+    from rextio.source.external import ExternalSourcePlan
     from rextio.source.planning import HostSourcePlan
     from rextio.plugins.api import (
         CallableMeta,
@@ -155,6 +156,8 @@ class ImportPolicyDecision:
     policy: str
     plugin: str | None = None
     max_depth: int = 0
+    distribution: str | None = None
+    version: str | None = None
     reason: str = ""
 
     def to_dict(self) -> dict[str, object]:
@@ -167,6 +170,8 @@ class ImportPolicyDecision:
             "policy": self.policy,
             "plugin": self.plugin,
             "max_depth": self.max_depth,
+            "distribution": self.distribution,
+            "version": self.version,
             "reason": self.reason,
         }
 
@@ -736,6 +741,9 @@ class ProjectAnalysis:
     # Keeping analysis itself side-effect free avoids widening every internal
     # analyzer call while check/generate/build reports expose the same plan.
     host_source_plan: HostSourcePlan | None = None
+    # Train C5: sanitized, non-executing installed-distribution inventory.
+    # This is preview evidence only and never authorizes a build.
+    external_source_plan: ExternalSourcePlan | None = None
 
     @property
     def native_candidates(self) -> list[FunctionAnalysis]:
@@ -893,4 +901,6 @@ class ProjectAnalysis:
         }
         if self.host_source_plan is not None:
             data["host_source_plan"] = self.host_source_plan.to_dict()
+        if self.external_source_plan is not None:
+            data["external_source_plan"] = self.external_source_plan.to_dict()
         return data

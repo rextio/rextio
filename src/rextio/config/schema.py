@@ -60,6 +60,11 @@ class ImportPackagePolicy:
     policy: str = "fallback"
     plugin: str | None = None
     max_depth: int = 0
+    # Train C5 source-native preview activation.  Both values must be present,
+    # exact, and paired with ``policy = "try-native"`` / ``max_depth = 1``.
+    # Older try-native declarations intentionally remain metadata-only.
+    distribution: str | None = None
+    version: str | None = None
 
 
 @dataclass(frozen=True)

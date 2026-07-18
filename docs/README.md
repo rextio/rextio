@@ -13,7 +13,8 @@ An index of the project's documentation. See the top-level
   supported subset (published package: **0.1.4** / plugin API 1.3).
 - [Host source-AOT and native executables](source-aot-and-executables.md) —
   **unreleased Release Train C** source graph, `ModuleInitIR`, artifact profile,
-  explicit executable fallback, and narrow initializer-before-main boundary.
+  explicit executable fallback, narrow initializer-before-main boundary, and
+  the C5.1 external-distribution inventory/build gate.
 
 ## Specs
 
@@ -28,9 +29,10 @@ An index of the project's documentation. See the top-level
   advances the contract to `2.1.0` (additive shape; same major) and ships
   plugin API 1.3. Release Train B then completed consumer first — rextio-lsp
   0.1.2 → core 0.1.4 — and advances the contract to `2.2.0`.
-  The **unreleased** Train C branch advances additively to `2.3.0` for host
-  source/artifact/executable planning; published 0.1.4 remains the 2.2.0
-  producer.
+  The **unreleased** Train C branch advances additively through `2.3.0` host
+  source/artifact/executable planning and `2.4.0` standalone plugin capability
+  to current `2.5.0` sanitized external-source preview evidence; published
+  0.1.4 remains the 2.2.0 producer.
 - [Plugin lowering](specs/plugin-lowering.md) — draft (0.1.1+; plugin API 1.1
   on PyPI 0.1.1, **1.2** additive on published 0.1.2, and **1.3** on published
   0.1.3 and retained in 0.1.4): the claim/lower hook that lets plugins translate

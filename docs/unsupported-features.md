@@ -9,9 +9,10 @@ version. Rextio compiles eligible Python functions with statically resolved
 types to Rust native modules and keeps the rest of the project as Python
 fallback.
 
-The Release Train C branch adds experimental host source/executable planning
-and emits tooling contract **2.3.0**, but remains **unreleased**. PyPI 0.1.4
-does not include those additions. Train C boundaries are called out explicitly
+The Release Train C branch adds experimental host source/executable planning,
+plugin standalone capability, and the C5.1 external-source inventory gate. It
+emits tooling contract **2.5.0**, but remains **unreleased**. PyPI 0.1.4 does
+not include those additions. Train C boundaries are called out explicitly
 below so planning records are not mistaken for broad source-AOT support.
 
 Unsupported native features are not bugs in the fallback path. When a native
@@ -352,6 +353,16 @@ third-party package source into Rust. If no safe direct lowering exists, calls t
 that package keep the native candidate on CPython/Nuitka fallback and emit
 `RXT030`. When such a call is inside a loop, the diagnostic suggests
 function-level fallback, adding a plugin, or refactoring to a batch API.
+
+The unreleased C5.1 branch adds only a bounded inventory exception, not native
+lowering: one imported package may name an exact installed distribution/version
+with `max_depth = 1`. Rextio verifies pure-wheel metadata and RECORD hashes,
+then reports sanitized direct-module and lexical scalar-function evidence
+without importing, copying, lowering, compiling, packaging, or redistributing
+that source. Every resulting plan blocks `build` before configured toolchain or
+artifact work until C6 license/SBOM/provenance authorization exists. The CLI and
+JSON warn that dependency translation can create derivative-work obligations,
+especially under GNU/copyleft terms, and that the inventory is not legal advice.
 
 Fallback Python code may call native functions. If fallback Python code calls a
 native function inside a Python loop, Rextio emits `RXT073` because repeated

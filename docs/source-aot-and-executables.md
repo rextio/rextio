@@ -2,7 +2,7 @@
 
 Status: **Unreleased Release Train C**, experimental. The latest published
 Rextio release remains **0.1.4** with tooling contract **2.2.0**. The Train C
-branch emits the additive, unreleased tooling contract **2.3.0**; none of the
+branch emits the additive, unreleased tooling contract **2.5.0**; none of the
 surfaces on this page should be treated as already available from PyPI.
 
 Train C introduces a fail-closed planning layer for host source, output
@@ -32,6 +32,46 @@ identities so a changed file cannot reuse stale planning authority.
 The plan explains source order; it does not by itself authorize code generation
 or execution. The separate executable closure gate selects the only initializer
 slice that may run.
+
+## C5.1 external distribution inventory — preview only
+
+Train C can inventory one exact, imported pure-Python distribution at depth 1
+when `rextio.toml` contains all four authority-sensitive fields:
+
+```toml
+[imports.packages.small_math_pkg]
+policy = "try-native"
+max_depth = 1
+distribution = "small-math-pkg"
+version = "1.0.0"
+```
+
+The resolver uses `importlib.metadata` and reads installed metadata/source bytes
+without importing or executing package code. It requires exact name/version,
+one well-formed WHEEL 1.0 record with a sole purelib `py3-none-any` tag, safe unique RECORD paths, matching SHA-256 and
+size for metadata and selected source, containment under the installed root,
+and no symlink in a selected path. It examines only direct UTF-8 `.py` modules
+under the configured package; a selected module containing an import is
+unavailable. Only one full declaration is accepted, and it cannot be activated
+solely through a CLI/environment package-policy override.
+
+The resulting `external_source_plan` is sanitized and carries
+`execution_authority: "preview-only"`, `distributable: false`, and
+`c6_gate: "required"`. Its module paths are stable distribution-relative
+references, never installation paths. Candidate function names are lexical
+hints for fully scalar-annotated top-level functions; C5.1 does not inspect
+body lowerability, connect project calls, generate Rust, or copy external source
+into fallback output.
+
+Any available or unavailable plan blocks `rextio build` before configured
+CPython/Nuitka/Cargo probes and artifact work. `check` and `generate` may retain
+the evidence, but build/package/executable/Rust-crate/redistribution authority
+requires C6 license lock and decision, SBOM, provenance attestation, and a real
+source-native closure/lowering design.
+
+The plan and CLI include a strong warning: dependency source translation or
+redistribution can create derivative-work obligations, GNU/copyleft terms need
+particular care, and this inventory is not legal advice.
 
 ## Artifact profile authority
 
@@ -140,7 +180,7 @@ function. A detected read blocks the executable before Cargo. The slice proves
 snapshot validation and initializer-before-main ordering; it does not yet
 model Python module global state.
 
-## Tooling-contract 2.3 reports
+## Tooling-contract 2.5 reports
 
 The unreleased additive contract exposes:
 
@@ -153,6 +193,8 @@ The unreleased additive contract exposes:
   executable;
 - declarative `artifact_contract` and `device_provider_contract` objects in
   `rextio capabilities --format json`.
+- sanitized top-level `external_source_plan` evidence in check/generate and the
+  C6-blocked build report.
 
 See the [machine-readable tooling contract](specs/tooling-contract.md) for the
 exact additive shape. Contract-major 2 consumers must ignore unknown fields;
@@ -181,7 +223,8 @@ Train C does not yet provide:
 - Rust-global publication or native reads of initialized module values;
 - arbitrary top-level statements, calls, annotations, or side effects in a
   Rust executable;
-- recursive source-native promotion of installed pure-Python packages;
+- project-call linkage, Rust lowering, or recursive source-native promotion of
+  installed pure-Python packages beyond the C5.1 inventory/gate preview;
 - license-lock, SBOM, and provenance gates for vendored dependency source;
 - device-provider discovery, privileged build/link contributions, CUDA
   execution, or CUDA certification;
