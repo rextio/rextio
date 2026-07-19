@@ -15,6 +15,9 @@ from rextio.artifacts.closure import (
     resolve_executable_fallback,
 )
 from rextio.artifacts.entry_graph import executable_entry_graph
+from rextio.artifacts.authorization import (
+    evaluate_artifact_distribution_authorization,
+)
 from rextio.artifacts.evidence import (
     ARTIFACT_EVIDENCE_POLICY_REQUIRED,
     ARTIFACT_EVIDENCE_GATE_UNAVAILABLE,
@@ -226,9 +229,13 @@ def _report_required_evidence_failure(
             error.gate.reason == ARTIFACT_EVIDENCE_GATE_UNAVAILABLE
             and error.gate.evidence_reason is not None
         ):
-            report["artifact_evidence"] = ArtifactEvidence.unavailable(
+            unavailable_evidence = ArtifactEvidence.unavailable(
                 reason=error.gate.evidence_reason
-            ).to_dict()
+            )
+            report["artifact_evidence"] = unavailable_evidence.to_dict()
+            report["artifact_distribution_authorization"] = (
+                evaluate_artifact_distribution_authorization(unavailable_evidence).to_dict()
+            )
         (reports_dir / "build.json").write_text(
             json.dumps(
                 report,
@@ -723,6 +730,16 @@ def run(args: Namespace) -> int:
             "  artifact evidence gate: "
             f"{artifact_evidence_gate.status} "
             "(distribution_authorized=false; complete=false; signed=false)"
+        )
+    artifact_authorization = getattr(
+        result, "artifact_distribution_authorization", None
+    )
+    if artifact_authorization is not None:
+        lines.append(
+            "  artifact distribution authorization: blocked "
+            "(authority=readiness-assessment-only; preview evidence gate "
+            "satisfaction is not distribution authorization; "
+            "distribution_authorized=false; complete=false; signed=false)"
         )
     if result.executable_build.path:
         lines.append(f"  executable: {result.executable_build.path}")

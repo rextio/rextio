@@ -5,10 +5,43 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.9.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.10.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR.
+
+### C6.5 hard distribution-authorization readiness contract
+
+- Add top-level `build.json.artifact_distribution_authorization` for the same
+  bounded ordinary host-extension + CPython wheel path that emits
+  `artifact_evidence`. The immutable assessment is derived only from the final
+  validated evidence record, after required-mode evidence revalidation and
+  output transaction handling.
+- Keep the assessment unconditionally `status: "blocked"` with
+  `authority: "readiness-assessment-only"`, `complete: false`, `signed: false`,
+  and `distribution_authorized: false`. No configuration or constructor input
+  can promote it, and ordinary build success plus the C6.3 preview-evidence
+  gate retain their existing semantics.
+- Use a closed, canonical check/blocker vocabulary and order. Preview-ready
+  evidence satisfies only subject, declared-input snapshot, reachable Cargo
+  graph, and direct-native-linkage observations; fixed blockers identify the
+  remaining license policy, native-runtime resolution/transitive closure,
+  runtime dynamic loading, complete build-input closure, source-transformation
+  provenance, builder identity, reproducibility, signature, and SBOM-composition
+  gaps. Unavailable evidence
+  carries only `evidence-unavailable` plus its existing sanitized fixed reason,
+  without raw paths/errors or speculative downstream blockers.
+- Make readiness evaluation total and report-only. It deeply reconstructs the
+  nested evidence models and validates structural/model bindings without
+  reopening output files or re-inspecting bytes. If a preview model fails that
+  stricter validation, the build and C6.3 gate keep their prior outcome while
+  all readiness checks become `not-evaluated` and the sole closed blocker is
+  `readiness-assessment-unavailable`; exception text is never serialized.
+- Keep dependency path resolution, transitive native closure, runtime
+  `dlopen`, Windows PE, runtime-bearing plugins, host executables, Rust crates,
+  Nuitka/WASM evidence, signatures, and final distribution authorization out
+  of scope. Package version remains **0.1.4**, plugin API remains **1.4**, and
+  the additive tooling contract advances to **2.10.0**.
 
 ### C6.4 direct native runtime linkage inventory preview
 

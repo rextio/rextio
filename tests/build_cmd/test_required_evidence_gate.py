@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -118,6 +119,13 @@ def test_required_oversized_private_wheel_uses_fixed_rxt060_gate(
     assert isinstance(gate, dict)
     assert gate["reason"] == "evidence-unavailable"
     assert gate["evidence_reason"] == "wheel-bytes-mutated"
+    authorization = report["artifact_distribution_authorization"]
+    assert isinstance(authorization, dict)
+    assert authorization["status"] == "blocked"
+    assert authorization["evidence_status"] == "unavailable"
+    assert authorization["evidence_reason"] == "wheel-bytes-mutated"
+    assert authorization["blockers"] == ["evidence-unavailable"]
+    assert authorization["distribution_authorized"] is False
     assert isinstance(failed_wheel, dict)
     assert failed_wheel["status"] == "failed"
     assert failed_wheel["message"].startswith("RXT060")
@@ -388,7 +396,9 @@ def _use_synthetic_runtime_inventory(
 
 
 def test_required_policy_succeeds_only_with_preview_ready_evidence(
-    tmp_path: Path, fake_cargo: Path
+    tmp_path: Path,
+    fake_cargo: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _write_native_project(tmp_path)
 
@@ -410,6 +420,97 @@ def test_required_policy_succeeds_only_with_preview_ready_evidence(
         "complete": False,
         "signed": False,
     }
+    authorization = report["artifact_distribution_authorization"]
+    assert isinstance(authorization, dict)
+    assert authorization["status"] == "blocked"
+    assert authorization["authority"] == "readiness-assessment-only"
+    assert authorization["evidence_status"] == "preview-ready"
+    assert authorization["blockers"] == [
+        "component-license-policy-incomplete",
+        "native-runtime-resolution-incomplete",
+        "native-runtime-transitive-closure-incomplete",
+        "runtime-dynamic-loading-unverified",
+        "build-input-closure-incomplete",
+        "source-transformation-provenance-incomplete",
+        "builder-toolchain-identity-unbound",
+        "reproducibility-unverified",
+        "attestation-unsigned",
+        "sbom-composition-incomplete",
+    ]
+    assert authorization["distribution_authorized"] is False
+    output = capsys.readouterr().out
+    assert "artifact evidence gate: satisfied" in output
+    assert "artifact distribution authorization: blocked" in output
+    assert "preview evidence gate satisfaction is not distribution authorization" in output
+
+
+@pytest.mark.parametrize("policy", ["best-effort", "required"])
+def test_sparse_preview_readiness_never_changes_build_or_required_gate(
+    tmp_path: Path,
+    fake_cargo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    policy: str,
+) -> None:
+    _write_native_project(tmp_path)
+    emit = orchestrator.emit_host_extension_wheel_evidence
+
+    def emit_sparse(**kwargs):
+        evidence = emit(**kwargs)
+        assert evidence is not None and evidence.status == "preview-ready"
+        return replace(evidence, inputs=())
+
+    monkeypatch.setattr(orchestrator, "emit_host_extension_wheel_evidence", emit_sparse)
+
+    assert main(["build", str(tmp_path), f"--artifact-evidence-policy={policy}"]) == 0
+    report = _report(tmp_path)
+    assert report["status"] == "built"
+    authorization = report["artifact_distribution_authorization"]
+    assert isinstance(authorization, dict)
+    assert authorization["evidence_status"] == "preview-ready"
+    assert authorization["blockers"] == ["readiness-assessment-unavailable"]
+    assert {item["status"] for item in authorization["checks"]} == {
+        "not-evaluated"
+    }
+    if policy == "required":
+        gate = report["artifact_evidence_gate"]
+        assert isinstance(gate, dict) and gate["status"] == "satisfied"
+    else:
+        assert "artifact_evidence_gate" not in report
+
+
+def test_nested_preview_mutation_is_sanitized_without_changing_best_effort_success(
+    tmp_path: Path,
+    fake_cargo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_native_project(tmp_path)
+    emit = orchestrator.emit_host_extension_wheel_evidence
+
+    def emit_mutated(**kwargs):
+        evidence = emit(**kwargs)
+        assert evidence is not None and evidence.native_runtime_inventory is not None
+        mutated_architecture = (
+            "x86_64"
+            if evidence.native_runtime_inventory.architecture == "aarch64"
+            else "aarch64"
+        )
+        object.__setattr__(
+            evidence.native_runtime_inventory,
+            "architecture",
+            mutated_architecture,
+        )
+        return evidence
+
+    monkeypatch.setattr(orchestrator, "emit_host_extension_wheel_evidence", emit_mutated)
+
+    assert main(["build", str(tmp_path), "--artifact-evidence-policy=best-effort"]) == 0
+    report = _report(tmp_path)
+    assert report["status"] == "built"
+    authorization = report["artifact_distribution_authorization"]
+    assert isinstance(authorization, dict)
+    assert authorization["blockers"] == ["readiness-assessment-unavailable"]
+    assert authorization["evidence_reason"] is None
+    assert "private" not in json.dumps(authorization, sort_keys=True)
 
 
 def test_required_policy_rejects_scope_before_toolchain(
@@ -433,6 +534,7 @@ def test_required_policy_rejects_scope_before_toolchain(
     assert isinstance(error, dict) and error["code"] == "RXT060"
     assert isinstance(gate, dict) and gate["reason"] == "artifact-set-out-of-scope"
     assert gate["observed_status"] is None
+    assert "artifact_distribution_authorization" not in report
     assert "artifact-set-out-of-scope" in capsys.readouterr().err
 
 
@@ -740,7 +842,14 @@ def test_cli_evidence_policy_overrides_environment(
     )
 
     assert main(["build", str(tmp_path), "--artifact-evidence-policy=best-effort"]) == 0
-    assert "artifact_evidence_gate" not in _report(tmp_path)
+    report = _report(tmp_path)
+    assert "artifact_evidence_gate" not in report
+    authorization = report["artifact_distribution_authorization"]
+    assert isinstance(authorization, dict)
+    assert authorization["evidence_status"] == "unavailable"
+    assert authorization["blockers"] == ["evidence-unavailable"]
+    assert authorization["status"] == "blocked"
+    assert report["status"] == "built"
 
 
 def test_required_policy_refuses_symlinked_dist_parent(
@@ -761,5 +870,9 @@ def test_required_policy_refuses_symlinked_dist_parent(
     gate = report["artifact_evidence_gate"]
     assert isinstance(evidence, dict) and evidence["reason"] == "sidecar-write-failed"
     assert isinstance(gate, dict) and gate["reason"] == "evidence-unavailable"
+    authorization = report["artifact_distribution_authorization"]
+    assert isinstance(authorization, dict)
+    assert authorization["evidence_reason"] == "sidecar-write-failed"
+    assert authorization["blockers"] == ["evidence-unavailable"]
     assert marker.read_text(encoding="utf-8") == "owner"
     assert list(owner_dir.iterdir()) == [marker]

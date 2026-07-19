@@ -41,5 +41,8 @@ from __future__ import annotations
 # Contract 2.9.0 adds C6.4 sanitized direct native runtime linkage inventory
 # (macOS Mach-O / Linux ELF) under artifact_evidence without claiming a
 # transitive closure, signatures, or distribution authorization.
+# Contract 2.10.0 adds C6.5's deterministic, always-blocked distribution-
+# authorization readiness assessment. It distinguishes preview evidence and
+# the required preview gate from any future hard distribution authorization.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.9.0"
+TOOLING_CONTRACT_VERSION = "2.10.0"
