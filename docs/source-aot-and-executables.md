@@ -2,7 +2,7 @@
 
 Status: **Unreleased Release Train C**, experimental. The latest published
 Rextio release remains **0.1.4** with tooling contract **2.2.0**. The Train C
-branch emits the additive, unreleased tooling contract **2.7.0**; none of the
+branch emits the additive, unreleased tooling contract **2.8.0**; none of the
 surfaces on this page should be treated as already available from PyPI.
 
 Train C introduces a fail-closed planning layer for host source, output
@@ -252,7 +252,7 @@ enumerates a GPU. See
 
 ## Deferred work
 
-Train C through **2.7.0** does not yet provide:
+Train C through **2.8.0** does not yet provide:
 
 - multiple-module initializer execution or Python import-order emulation;
 - Rust-global publication or native reads of initialized module values;

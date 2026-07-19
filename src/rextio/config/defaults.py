@@ -12,6 +12,7 @@ DEFAULT_CONFIG: dict[str, dict[str, object]] = {
         "fallback_backend": "cpython",
         "fallback_threshold": DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
         "build_timeout_seconds": DEFAULT_BUILD_TIMEOUT_SECONDS,
+        "artifact_evidence_policy": "best-effort",
     },
     "rust": {
         "binding": "pyo3",

@@ -15,6 +15,12 @@ from rextio.artifacts.closure import (
     resolve_executable_fallback,
 )
 from rextio.artifacts.entry_graph import executable_entry_graph
+from rextio.artifacts.evidence import (
+    ARTIFACT_EVIDENCE_POLICY_REQUIRED,
+    ARTIFACT_EVIDENCE_GATE_UNAVAILABLE,
+    ArtifactEvidence,
+    ArtifactEvidenceGate,
+)
 from rextio.artifacts.models import ArtifactKind
 from rextio.artifacts.profiles import (
     detect_host_target_triple,
@@ -22,8 +28,10 @@ from rextio.artifacts.profiles import (
 )
 from rextio.build.orchestrator import (
     ArtifactProfilePlanningError,
+    ArtifactEvidenceRequiredError,
     BuildResult,
     build_hybrid_artifact,
+    required_artifact_evidence_scope_is_valid,
 )
 from rextio.plugins.capabilities import (
     StandalonePluginContext,
@@ -192,6 +200,57 @@ def _report_external_source_build_blocked(
     return 1
 
 
+def _report_required_evidence_failure(
+    project_root: Path,
+    analysis: ProjectAnalysis,
+    fallback: str,
+    error: ArtifactEvidenceRequiredError,
+    reporter: Reporter,
+) -> int:
+    """Report the stable fail-closed C6.3 diagnostic and exit status."""
+    if error.result is None:
+        reports_dir = project_root / ".rextio" / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        for stale in ("build.json", "generate.json", "check.json"):
+            (reports_dir / stale).unlink(missing_ok=True)
+        write_check_report(project_root, analysis)
+        report: dict[str, object] = {
+            "analysis": analysis.to_dict(),
+            "artifact_evidence_gate": error.gate.to_dict(),
+            "contract_version": TOOLING_CONTRACT_VERSION,
+            "error": {"code": "RXT060", "message": str(error)},
+            "fallback": fallback,
+            "status": "artifact-evidence-required-failed",
+        }
+        if (
+            error.gate.reason == ARTIFACT_EVIDENCE_GATE_UNAVAILABLE
+            and error.gate.evidence_reason is not None
+        ):
+            report["artifact_evidence"] = ArtifactEvidence.unavailable(
+                reason=error.gate.evidence_reason
+            ).to_dict()
+        (reports_dir / "build.json").write_text(
+            json.dumps(
+                report,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    reporter.error(f"RXT060 {error}")
+    if (
+        error.result is not None
+        and "rollback was incomplete" in error.result.wheel_build.message
+    ):
+        reporter.error(error.result.wheel_build.message)
+    reporter.error(
+        "Suggestion: use --artifact-evidence-policy=best-effort, or request exactly one "
+        "native host-extension + CPython wheel and resolve the evidence failure."
+    )
+    return 1
+
+
 def _toolchain_preflight_error(config: RextioConfig) -> str | None:
     """Verify the configured CPython before any analysis or build work.
 
@@ -325,6 +384,7 @@ def run(args: Namespace) -> int:
                 ("build", "fallback_backend"): args.fallback,
                 ("build", "fallback_threshold"): args.fallback_threshold,
                 ("build", "build_timeout_seconds"): args.build_timeout,
+                ("build", "artifact_evidence_policy"): args.artifact_evidence_policy,
                 ("rust", "binding"): args.rust_binding,
                 ("rust", "build_tool"): args.rust_build_tool,
                 ("rust", "importable"): args.rust_importable,
@@ -378,7 +438,10 @@ def run(args: Namespace) -> int:
     # executable probes until after analysis so a preview is always stopped by
     # the C6 authority gate before any configured tool is invoked.
     external_preview_declared = _external_source_preview_declared(config)
-    if not external_preview_declared and not _prepare_build_toolchain(
+    required_evidence = (
+        config.build.artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED
+    )
+    if not (external_preview_declared or required_evidence) and not _prepare_build_toolchain(
         config, fallback, reporter
     ):
         return 1
@@ -437,10 +500,26 @@ def run(args: Namespace) -> int:
         reporter.error(f"Suggestion: run rextio check {project_root}")
         return 1
 
+    if required_evidence and not required_artifact_evidence_scope_is_valid(
+        native_extension=analysis.requires_native_build(),
+        fallback=fallback,
+        executable_entrypoint=config.executable.entrypoint,
+        rust_importable=config.rust.importable,
+    ):
+        return _report_required_evidence_failure(
+            project_root,
+            analysis,
+            fallback,
+            ArtifactEvidenceRequiredError(ArtifactEvidenceGate.out_of_scope()),
+            reporter,
+        )
+
     # A declaration that was not actually imported produces no C5 plan. Resume
     # the ordinary build contract only after that has been established without
     # invoking configured Python/Nuitka tools.
-    if external_preview_declared and not _prepare_build_toolchain(config, fallback, reporter):
+    if (external_preview_declared or required_evidence) and not _prepare_build_toolchain(
+        config, fallback, reporter
+    ):
         return 1
 
     # The native Rust executable backend analyzes in delegate mode so the
@@ -558,12 +637,17 @@ def run(args: Namespace) -> int:
             executable_python=config.executable.python,
             executable_fallback=config.executable.fallback,
             toolchain=config.toolchain,
+            artifact_evidence_policy=config.build.artifact_evidence_policy,
             executable_standalone=executable_standalone,
             standalone_contexts=(
                 {ArtifactKind.HOST_EXECUTABLE: executable_standalone}
                 if executable_standalone is not None
                 else None
             ),
+        )
+    except ArtifactEvidenceRequiredError as error:
+        return _report_required_evidence_failure(
+            project_root, analysis, fallback, error, reporter
         )
     except PluginError as exc:
         return _report_plugin_capability_failure(
@@ -587,6 +671,7 @@ def run(args: Namespace) -> int:
         f"  experimental helper embedding: {'enabled' if config.embedding.enabled else 'disabled'}"
     )
     lines.append(f"  rust build tool: {config.rust.build_tool}")
+    lines.append(f"  artifact evidence policy: {config.build.artifact_evidence_policy}")
     lines.append(f"  accepted native functions: {result.accepted_native_count}")
     lines.append(f"  rejected native functions: {result.rejected_native_count}")
     lines.append(f"  embedding candidates: {len(result.plan.native.embedded_functions)}")
@@ -632,6 +717,13 @@ def run(args: Namespace) -> int:
                 f"(authority=evidence-only; composition=incomplete; "
                 f"signature_status=unsigned; reason={reason})"
             )
+    artifact_evidence_gate = getattr(result, "artifact_evidence_gate", None)
+    if artifact_evidence_gate is not None:
+        lines.append(
+            "  artifact evidence gate: "
+            f"{artifact_evidence_gate.status} "
+            "(distribution_authorized=false; complete=false; signed=false)"
+        )
     if result.executable_build.path:
         lines.append(f"  executable: {result.executable_build.path}")
     if result.rust_crate_build.crate_path:

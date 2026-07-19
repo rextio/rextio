@@ -155,6 +155,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     build_parser_.add_argument(
+        "--artifact-evidence-policy",
+        choices=("best-effort", "required"),
+        default=None,
+        help=(
+            "Artifact evidence policy. 'required' is a narrow fail-closed preview gate; "
+            "it does not authorize distribution. Overrides "
+            "REXTIO_ARTIFACT_EVIDENCE_POLICY and [build] artifact_evidence_policy."
+        ),
+    )
+    build_parser_.add_argument(
         "--rust-binding",
         choices=("pyo3",),
         default=None,

@@ -97,6 +97,13 @@ UNAVAILABLE_REASONS: frozenset[str] = frozenset(
     }
 )
 
+ARTIFACT_EVIDENCE_POLICY_BEST_EFFORT = "best-effort"
+ARTIFACT_EVIDENCE_POLICY_REQUIRED = "required"
+ARTIFACT_EVIDENCE_SCOPE = "host-extension-wheel-cpython-v1"
+ARTIFACT_EVIDENCE_REQUIRED_STATUS = "preview-ready"
+ARTIFACT_EVIDENCE_GATE_OUT_OF_SCOPE = "artifact-set-out-of-scope"
+ARTIFACT_EVIDENCE_GATE_UNAVAILABLE = "evidence-unavailable"
+
 # Deterministic UUID namespace for CycloneDX serialNumber (RFC 4122 UUIDv5).
 _CDX_UUID_NAMESPACE = uuid.UUID("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
 
@@ -107,6 +114,98 @@ class ArtifactEvidenceError(RuntimeError):
     def __init__(self, message: str, *, reason: str = REASON_EVIDENCE_INTERNAL) -> None:
         self.reason = reason
         super().__init__(_sanitize_error_message(message))
+
+
+@dataclass(frozen=True)
+class ArtifactEvidenceGate:
+    """Immutable report for the opt-in C6.3 required evidence policy."""
+
+    mode: str
+    status: str
+    scope: str = ARTIFACT_EVIDENCE_SCOPE
+    required_status: str = ARTIFACT_EVIDENCE_REQUIRED_STATUS
+    observed_status: str | None = None
+    reason: str | None = None
+    evidence_reason: str | None = None
+    distribution_authorized: bool = False
+    complete: bool = False
+    signed: bool = False
+
+    def __post_init__(self) -> None:
+        if self.mode != ARTIFACT_EVIDENCE_POLICY_REQUIRED:
+            raise ValueError("artifact evidence gate mode must be required")
+        if self.status not in {"satisfied", "blocked"}:
+            raise ValueError("artifact evidence gate status must be satisfied or blocked")
+        if self.scope != ARTIFACT_EVIDENCE_SCOPE:
+            raise ValueError("artifact evidence gate scope is invalid")
+        if self.required_status != ARTIFACT_EVIDENCE_REQUIRED_STATUS:
+            raise ValueError("artifact evidence gate required_status is invalid")
+        if self.reason not in {
+            None,
+            ARTIFACT_EVIDENCE_GATE_OUT_OF_SCOPE,
+            ARTIFACT_EVIDENCE_GATE_UNAVAILABLE,
+        }:
+            raise ValueError("artifact evidence gate reason is invalid")
+        if self.status == "satisfied":
+            if self.observed_status != ARTIFACT_EVIDENCE_REQUIRED_STATUS:
+                raise ValueError("satisfied gate requires preview-ready evidence")
+            if self.reason is not None or self.evidence_reason is not None:
+                raise ValueError("satisfied gate must not carry failure reasons")
+        elif self.reason is None:
+            raise ValueError("blocked gate requires a reason")
+        if self.reason == ARTIFACT_EVIDENCE_GATE_OUT_OF_SCOPE:
+            if self.observed_status is not None or self.evidence_reason is not None:
+                raise ValueError("out-of-scope gate must not claim observed evidence")
+        if self.reason == ARTIFACT_EVIDENCE_GATE_UNAVAILABLE:
+            if (
+                self.observed_status != "unavailable"
+                or self.evidence_reason not in UNAVAILABLE_REASONS
+            ):
+                raise ValueError("unavailable gate requires a fixed evidence reason")
+        object.__setattr__(self, "distribution_authorized", False)
+        object.__setattr__(self, "complete", False)
+        object.__setattr__(self, "signed", False)
+
+    @classmethod
+    def out_of_scope(cls) -> ArtifactEvidenceGate:
+        """Return the stable pre-build scope rejection report."""
+        return cls(
+            mode=ARTIFACT_EVIDENCE_POLICY_REQUIRED,
+            status="blocked",
+            reason=ARTIFACT_EVIDENCE_GATE_OUT_OF_SCOPE,
+        )
+
+    @classmethod
+    def from_evidence(cls, evidence: ArtifactEvidence) -> ArtifactEvidenceGate:
+        """Evaluate one C6.2 evidence record without widening its authority."""
+        if evidence.status == ARTIFACT_EVIDENCE_REQUIRED_STATUS:
+            return cls(
+                mode=ARTIFACT_EVIDENCE_POLICY_REQUIRED,
+                status="satisfied",
+                observed_status=evidence.status,
+            )
+        return cls(
+            mode=ARTIFACT_EVIDENCE_POLICY_REQUIRED,
+            status="blocked",
+            observed_status=evidence.status,
+            reason=ARTIFACT_EVIDENCE_GATE_UNAVAILABLE,
+            evidence_reason=evidence.reason,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the fixed, deterministic tooling-contract shape."""
+        return {
+            "mode": self.mode,
+            "status": self.status,
+            "scope": self.scope,
+            "required_status": self.required_status,
+            "observed_status": self.observed_status,
+            "reason": self.reason,
+            "evidence_reason": self.evidence_reason,
+            "distribution_authorized": False,
+            "complete": False,
+            "signed": False,
+        }
 
 
 @dataclass(frozen=True)
@@ -1829,6 +1928,7 @@ def _fsync_directory(directory: Path) -> None:
 __all__ = [
     "ArtifactEvidence",
     "ArtifactEvidenceError",
+    "ArtifactEvidenceGate",
     "CargoDepEdge",
     "CargoPackageRef",
     "DEFAULT_LIMITATIONS",

@@ -15,6 +15,7 @@ from rextio.artifacts.evidence import (
     REASON_CARGO_GRAPH_INVALID,
     ArtifactEvidence,
     ArtifactEvidenceError,
+    ArtifactEvidenceGate,
     CargoDepEdge,
     CargoPackageRef,
     EvidenceFileRef,
@@ -36,6 +37,51 @@ from rextio.artifacts.evidence import (
     validate_logical_reference,
     write_atomic_bytes,
 )
+
+
+def test_required_artifact_evidence_gate_is_non_authorizing() -> None:
+    satisfied = ArtifactEvidenceGate.from_evidence(
+        ArtifactEvidence(
+            kind="host-extension-wheel",
+            status="preview-ready",
+            target_triple="x86_64-unknown-linux-gnu",
+            subject=EvidenceFileRef(
+                logical_path="dist/demo.whl", sha256="0" * 64, size=1, role="wheel"
+            ),
+            sbom=SidecarArtifact(
+                format="CycloneDX",
+                logical_path="dist/demo.whl.cdx.json",
+                sha256="1" * 64,
+                size=1,
+            ),
+            provenance=SidecarArtifact(
+                format="in-toto-Statement",
+                logical_path="dist/demo.whl.intoto.json",
+                sha256="2" * 64,
+                size=1,
+            ),
+        )
+    )
+    assert satisfied.to_dict() == {
+        "mode": "required",
+        "status": "satisfied",
+        "scope": "host-extension-wheel-cpython-v1",
+        "required_status": "preview-ready",
+        "observed_status": "preview-ready",
+        "reason": None,
+        "evidence_reason": None,
+        "distribution_authorized": False,
+        "complete": False,
+        "signed": False,
+    }
+
+    blocked = ArtifactEvidenceGate.from_evidence(
+        ArtifactEvidence.unavailable(reason="cargo-metadata-failed")
+    )
+    assert blocked.status == "blocked"
+    assert blocked.reason == "evidence-unavailable"
+    assert blocked.evidence_reason == "cargo-metadata-failed"
+    assert blocked.distribution_authorized is False
 
 
 def test_validate_logical_reference_rejects_absolute_and_escape() -> None:

@@ -47,13 +47,13 @@ def build_artifact_wheel(
             message="RXT060 Wheel build failed because the Python build artifact was missing.",
         )
 
+    wheel_path = artifact_wheel_path(project_root, python_dir, dist_dir)
     name = _normalize_distribution_name(project_root.name or "rextio_hybrid_artifact")
     version = "0.1.0"
     wheel_tag = _wheel_tag(python_dir)
     root_is_purelib = "false" if _has_native_extension(python_dir) else "true"
     dist_info = f"{name}-{version}.dist-info"
     dist_dir.mkdir(parents=True, exist_ok=True)
-    wheel_path = dist_dir / f"{name}-{version}-{wheel_tag}.whl"
     if wheel_path.exists():
         wheel_path.unlink()
 
@@ -100,6 +100,12 @@ def build_artifact_wheel(
         path=str(wheel_path),
         message="Generated hybrid artifact wheel.",
     )
+
+
+def artifact_wheel_path(project_root: Path, python_dir: Path, dist_dir: Path) -> Path:
+    """Return the exact deterministic wheel output path without touching disk."""
+    name = _normalize_distribution_name(project_root.name or "rextio_hybrid_artifact")
+    return dist_dir / f"{name}-0.1.0-{_wheel_tag(python_dir)}.whl"
 
 
 def _normalize_distribution_name(value: str) -> str:

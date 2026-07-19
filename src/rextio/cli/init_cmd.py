@@ -18,6 +18,8 @@ fallback_backend = "cpython"
 fallback_threshold = 1000
 # Per-invocation timeout (seconds) for external build tools (cargo/maturin/nuitka).
 build_timeout_seconds = {DEFAULT_BUILD_TIMEOUT_SECONDS}
+# "required" is a narrow fail-closed preview gate and does not authorize release.
+artifact_evidence_policy = "best-effort"
 
 [rust]
 binding = "pyo3"

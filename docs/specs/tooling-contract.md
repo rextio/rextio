@@ -3,7 +3,7 @@
 Status: **draft** (experimental tier). The current published producer is core
 0.1.4, released on 2026-07-18 with `contract_version` `2.2.0` and plugin API
 **1.3**. The Release Train C branch contains the additive, **unreleased**
-`2.7.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
+`2.8.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
 contract. Package version on the branch remains **0.1.4**.
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
@@ -31,7 +31,7 @@ Both JSON surfaces carry a top-level field. The published 0.1.4 producer emits:
 The unreleased Train C branch emits:
 
 ```json
-{ "contract_version": "2.7.0" }
+{ "contract_version": "2.8.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -50,7 +50,8 @@ to generic guidance when the major is outside what they support.
 | `2.4.0` | **Unreleased additive plugin standalone-capability shape** (Train C intermediate). Capabilities plugins gain `artifact_capability_declared` (presence only; no profile-hook execution). Generate/build may emit `standalone_plugin_capabilities` with resolved per-profile allow/deny details. `lowering_provided`, route, native-status, rejection, and promotion-assessment semantics remain unchanged. |
 | `2.5.0` | **Unreleased additive external-source preview shape** (Train C intermediate). Import-policy decisions add nullable exact `distribution` / `version` metadata; check/generate and blocked-build reports may add one sanitized `external_source_plan`. The plan is inventory evidence only (`execution_authority: "preview-only"`, `distributable: false`, `c6_gate: "required"`) and never grants source execution, lowering, build, packaging, or redistribution authority. |
 | `2.6.0` | **Unreleased additive C6.1 authorization-contract shape** (Train C intermediate). The sanitized `external_source_plan` adds authority material (`source_files`, `metadata_files`, `plan_snapshot`, `plan_snapshot_sha256`, `license_material_sha256`, `inventory_schema`) and may nest `authorization` for project-owned `rextio.external-source.lock.json` verification (`*_verified` booleans). `c6_gate` is `required` or `authorization-verified`. Verified authorization still never grants source-native lowering, packaging, or redistribution; remaining C5.2 linkage/codegen is unimplemented (`external-source-c5-not-implemented`). |
-| `2.7.0` | **Unreleased additive C6.2 host-extension wheel artifact-evidence preview** (current Train C producer). In-scope successful host-extension+`cpython` wheels always add top-level `build.json.artifact_evidence` with `status` exactly `preview-ready` or `unavailable`, `authority: "evidence-only"`, `signature_status: "unsigned"`, and `composition: "incomplete"`. Preview-ready may emit bounded CycloneDX 1.6 / unsigned in-toto Statement (SLSA Provenance v1) sidecars; unavailable uses a sanitized fixed reason and never changes ordinary build success. Host-executable, rust-crate, Nuitka host-extension fallback, WASM, and external-package source-native builds omit the field. `ArtifactProvenance` remains planning metadata only. |
+| `2.7.0` | **Unreleased additive C6.2 host-extension wheel artifact-evidence preview** (Train C intermediate). In-scope successful host-extension+`cpython` wheels always add top-level `build.json.artifact_evidence` with `status` exactly `preview-ready` or `unavailable`, `authority: "evidence-only"`, `signature_status: "unsigned"`, and `composition: "incomplete"`. Preview-ready may emit bounded CycloneDX 1.6 / unsigned in-toto Statement (SLSA Provenance v1) sidecars; unavailable uses a sanitized fixed reason and never changes ordinary build success. Host-executable, rust-crate, Nuitka host-extension fallback, WASM, and external-package source-native builds omit the field. `ArtifactProvenance` remains planning metadata only. |
+| `2.8.0` | **Unreleased additive C6.3 required-evidence gate** (current Train C producer). Required mode adds top-level `build.json.artifact_evidence_gate` and succeeds only when the exact single host-extension + CPython wheel path produces C6.2 `preview-ready` evidence. Scope and evidence failures are `RXT060` / `artifact-evidence-required-failed`; the gate remains incomplete, unsigned, and explicitly non-authorizing. Default best-effort behavior and all C6.2 shapes remain unchanged. |
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.
@@ -844,7 +845,7 @@ tool output. Planning `ArtifactProvenance` is unchanged.
 #### `artifact_evidence` item shapes and fixed reason enum
 
 Top-level `build.json` and `generate.json` carry additive
-`contract_version` (currently `"2.7.0"`). Item fields under
+`contract_version` (currently `"2.8.0"`). Item fields under
 `artifact_evidence` when `status` is `preview-ready`:
 
 | Field | Shape |
@@ -874,6 +875,59 @@ allowlist (no free-text paths or tool output):
 | `evidence-internal-error` | Unexpected evidence path failure |
 | `input-snapshot-missing` | Orchestrator did not supply an input snapshot |
 | `wheel-bytes-mutated` | Wheel digest/size changed after the subject snapshot |
+
+### Required artifact-evidence gate (contract 2.8.0)
+
+The build-only setting `[build] artifact_evidence_policy` is exactly
+`best-effort | required` and defaults to `best-effort`. It also has the CLI
+spelling `--artifact-evidence-policy` and environment spelling
+`REXTIO_ARTIFACT_EVIDENCE_POLICY`, resolved by the normal CLI > environment >
+TOML > default precedence.
+
+`best-effort` preserves contract 2.7.0: evidence unavailability is non-fatal
+and `artifact_evidence_gate` is omitted. `required` is valid only for exactly
+one ordinary host-extension profile with CPython wheel fallback, at least one
+accepted native region that requires a host extension (an accepted function
+and/or native top-level segment), no executable request, no Rust-importable crate,
+and no additional artifact profile. An invalid artifact set stops before
+configured CPython/Nuitka/Cargo/maturin work with `RXT060`, exit code 1,
+`build.json.status = "artifact-evidence-required-failed"`, and reason
+`artifact-set-out-of-scope`. External-source C6.1/C5.2 blocks retain precedence.
+
+In-scope required builds succeed only when `artifact_evidence.status` is
+`preview-ready`. `unavailable` evidence fails with the same report status and
+reason `evidence-unavailable`; `evidence_reason` carries the fixed C6.2 reason.
+Programmatic `build_hybrid_artifact` raises rather than returning an apparently
+successful result. A failed required run removes only its exact wheel and two
+sidecar paths, restores pre-existing exact outputs, preserves unrelated files,
+and keeps generated source plus reports for debugging. Output parents must be
+real contained directories, and the transaction rolls back on exceptional
+exits. If cleanup or restoration cannot be verified, the build report says the
+rollback was incomplete rather than claiming those files were removed.
+
+The immutable gate is emitted only in required mode:
+
+```json
+{
+  "artifact_evidence_gate": {
+    "mode": "required",
+    "status": "satisfied",
+    "scope": "host-extension-wheel-cpython-v1",
+    "required_status": "preview-ready",
+    "observed_status": "preview-ready",
+    "reason": null,
+    "evidence_reason": null,
+    "distribution_authorized": false,
+    "complete": false,
+    "signed": false
+  }
+}
+```
+
+For scope rejection, `observed_status` and `evidence_reason` are null. For
+evidence rejection, `observed_status` is `unavailable`. Even `satisfied` never
+means distribution authorization, evidence completeness, signature presence,
+reproducibility, hermeticity, or full C6 completion.
 
 Resolution uses installed metadata only and never imports or executes the
 package. It requires the exact configured distribution name and version, one
@@ -1135,7 +1189,7 @@ class RextioPluginV2(Protocol):
 - No incremental-analysis API (deferred until latency measurements demand it;
   v1 tooling calls the batch analyzer).
 - No recursive third-party-package source promotion, device-provider discovery,
-  provider build/link hook, CUDA execution, or device support claim through 2.7.0.
+  provider build/link hook, CUDA execution, or device support claim through 2.8.0.
   C5.1 inventories one exact distribution but authorizes no lowering or build.
 - No name-based reservation of route strings beyond this document; new routes
   bump the contract minor version.
@@ -1189,5 +1243,9 @@ class RextioPluginV2(Protocol):
     host-extension wheels only. Do not claim signatures, completeness,
     hermeticity, reproducibility, or external-source authorization. Full C6
     remains pending.
-11. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
+11. **Release Train C / contract 2.8.0 (unreleased):** add the opt-in required
+    evidence policy and immutable gate for the exact single host-extension +
+    CPython wheel scope. Fail closed without granting distribution authority;
+    keep C6.2 best-effort behavior as the default.
+12. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

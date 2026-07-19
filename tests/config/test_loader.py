@@ -380,6 +380,34 @@ def test_build_timeout_seconds_precedence(tmp_path: Path) -> None:
     assert overridden.build.build_timeout_seconds == 45.0
 
 
+def test_artifact_evidence_policy_precedence(tmp_path: Path) -> None:
+    assert load_config(tmp_path).build.artifact_evidence_policy == "best-effort"
+    (tmp_path / "rextio.toml").write_text(
+        '[build]\nartifact_evidence_policy = "required"\n', encoding="utf-8"
+    )
+    assert load_config(tmp_path).build.artifact_evidence_policy == "required"
+    config = load_config(
+        tmp_path,
+        environ={"REXTIO_ARTIFACT_EVIDENCE_POLICY": "best-effort"},
+    )
+    assert config.build.artifact_evidence_policy == "best-effort"
+    overridden = override_config(
+        config, {("build", "artifact_evidence_policy"): "required"}
+    )
+    assert overridden.build.artifact_evidence_policy == "required"
+
+
+@pytest.mark.parametrize("value", ["strict", "", "preview-ready"])
+def test_artifact_evidence_policy_rejects_invalid_value(
+    tmp_path: Path, value: str
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        f'[build]\nartifact_evidence_policy = "{value}"\n', encoding="utf-8"
+    )
+    with pytest.raises(ConfigError, match="artifact_evidence_policy"):
+        load_config(tmp_path)
+
+
 def test_build_timeout_seconds_rejects_non_positive(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"REXTIO_BUILD_TIMEOUT"):
         load_config(tmp_path, environ={"REXTIO_BUILD_TIMEOUT": "0"})
