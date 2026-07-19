@@ -3,7 +3,7 @@
 Status: **draft** (experimental tier). The current published producer is core
 0.1.4, released on 2026-07-18 with `contract_version` `2.2.0` and plugin API
 **1.3**. The Release Train C branch contains the additive, **unreleased**
-`2.9.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
+`2.10.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
 contract. Package version on the branch remains **0.1.4**.
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
@@ -31,7 +31,7 @@ Both JSON surfaces carry a top-level field. The published 0.1.4 producer emits:
 The unreleased Train C branch emits:
 
 ```json
-{ "contract_version": "2.9.0" }
+{ "contract_version": "2.10.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -52,7 +52,8 @@ to generic guidance when the major is outside what they support.
 | `2.6.0` | **Unreleased additive C6.1 authorization-contract shape** (Train C intermediate). The sanitized `external_source_plan` adds authority material (`source_files`, `metadata_files`, `plan_snapshot`, `plan_snapshot_sha256`, `license_material_sha256`, `inventory_schema`) and may nest `authorization` for project-owned `rextio.external-source.lock.json` verification (`*_verified` booleans). `c6_gate` is `required` or `authorization-verified`. Verified authorization still never grants source-native lowering, packaging, or redistribution; remaining C5.2 linkage/codegen is unimplemented (`external-source-c5-not-implemented`). |
 | `2.7.0` | **Unreleased additive C6.2 host-extension wheel artifact-evidence preview** (Train C intermediate). In-scope successful host-extension+`cpython` wheels always add top-level `build.json.artifact_evidence` with `status` exactly `preview-ready` or `unavailable`, `authority: "evidence-only"`, `signature_status: "unsigned"`, and `composition: "incomplete"`. Preview-ready may emit bounded CycloneDX 1.6 / unsigned in-toto Statement (SLSA Provenance v1) sidecars; unavailable uses a sanitized fixed reason and never changes ordinary build success. Host-executable, rust-crate, Nuitka host-extension fallback, WASM, and external-package source-native builds omit the field. `ArtifactProvenance` remains planning metadata only. |
 | `2.8.0` | **Unreleased additive C6.3 required-evidence gate** (Train C intermediate). Required mode adds top-level `build.json.artifact_evidence_gate` and succeeds only when the exact single host-extension + CPython wheel path produces C6.2 `preview-ready` evidence. Scope and evidence failures are `RXT060` / `artifact-evidence-required-failed`; the gate remains incomplete, unsigned, and explicitly non-authorizing. Default best-effort behavior and all C6.2 shapes remain unchanged. |
-| `2.9.0` | **Unreleased additive C6.4 direct native runtime linkage preview** (current Train C producer). Preview-ready evidence for the same bounded host-extension + CPython wheel adds a sanitized `native_runtime_inventory`: macOS Mach-O uses bounded `otool -L`, Linux ELF uses bounded `readelf -W -d`, and the contained installed native extension is bound to one exact wheel member by relative member name, SHA-256, and byte size. It records normalized architecture plus only closed-allowlist direct dependencies, each with sanitized `origin` and stable `bom_ref`. Path resolution, transitive closure, runtime `dlopen`, Windows PE, runtime-bearing plugins, and signatures remain excluded. Best-effort inspection failure reports fixed-reason `unavailable`; required mode preserves the C6.3 `RXT060` transactional rollback. Success remains incomplete, unsigned, and non-authorizing. |
+| `2.9.0` | **Unreleased additive C6.4 direct native runtime linkage preview** (Train C intermediate). Preview-ready evidence for the same bounded host-extension + CPython wheel adds a sanitized `native_runtime_inventory`: macOS Mach-O uses bounded `otool -L`, Linux ELF uses bounded `readelf -W -d`, and the contained installed native extension is bound to one exact wheel member by relative member name, SHA-256, and byte size. It records normalized architecture plus only closed-allowlist direct dependencies, each with sanitized `origin` and stable `bom_ref`. Path resolution, transitive closure, runtime `dlopen`, Windows PE, runtime-bearing plugins, and signatures remain excluded. Best-effort inspection failure reports fixed-reason `unavailable`; required mode preserves the C6.3 `RXT060` transactional rollback. Success remains incomplete, unsigned, and non-authorizing. |
+| `2.10.0` | **Unreleased additive C6.5 hard-authorization readiness shape** (current Train C producer). The same in-scope evidence path adds `build.json.artifact_distribution_authorization`, derived from final `artifact_evidence` after required-mode revalidation/transaction handling. It is always blocked, readiness-only, incomplete, unsigned, and non-authorizing. Closed ordered checks distinguish four deeply reconstructed structural/model bindings from selected current-scope missing license/runtime-closure/source-transformation-provenance/build-identity/reproducibility/signature/composition requirements. Invalid preview structure degrades to all checks `not-evaluated` plus only `readiness-assessment-unavailable`, without changing best-effort or C6.3 outcomes; unavailable evidence retains its fixed reason plus `evidence-unavailable`. |
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.
@@ -873,7 +874,7 @@ the post-rename inspection-failure path.
 #### `artifact_evidence` item shapes and fixed reason enum
 
 Top-level `build.json` and `generate.json` carry additive
-`contract_version` (currently `"2.9.0"`). Item fields under
+`contract_version` (currently `"2.10.0"`). Item fields under
 `artifact_evidence` when `status` is `preview-ready`:
 
 | Field | Shape |
@@ -1121,6 +1122,106 @@ lowerability, Rust codegen, and packaging are not implemented. Neither path
 creates artifact directories or grants redistribution authority. Null/unknown
 `license_observed` never verifies.
 
+### Hard distribution-authorization readiness (contract 2.10.0)
+
+C6.5 adds `build.json.artifact_distribution_authorization` only where the same
+ordinary host-extension + CPython wheel path emits `artifact_evidence`. It is
+derived from a revalidated immutable evidence model after final evidence
+handling; required mode derives it only after output revalidation and the
+required transaction has committed or rolled back. Out-of-scope artifact sets
+omit both the evidence and this assessment.
+
+This record is deliberately **not a gate** and cannot authorize any action.
+Its fixed envelope is `kind: "artifact-distribution-authorization"`, both
+`policy` and `scope` equal `host-extension-wheel-cpython-v1`,
+`policy_version: 1`, `status: "blocked"`, and
+`authority: "readiness-assessment-only"`. `complete`, `signed`, and
+`distribution_authorized` are mandatory and always `false`; no configuration
+setting or constructor value can change them. C6.3's required evidence gate
+continues to answer only whether bounded preview evidence is present. A
+`satisfied` C6.3 gate and a C6.5 `blocked` readiness assessment therefore
+coexist on a successful required build.
+
+For `evidence_status: "preview-ready"`, the exact shape is:
+
+```json
+{
+  "artifact_distribution_authorization": {
+    "kind": "artifact-distribution-authorization",
+    "policy": "host-extension-wheel-cpython-v1",
+    "policy_version": 1,
+    "scope": "host-extension-wheel-cpython-v1",
+    "status": "blocked",
+    "authority": "readiness-assessment-only",
+    "evidence_status": "preview-ready",
+    "evidence_reason": null,
+    "checks": [
+      {"id": "artifact-subject-bound", "status": "satisfied"},
+      {"id": "declared-input-snapshot-bound", "status": "satisfied"},
+      {"id": "cargo-resolve-graph-bound", "status": "satisfied"},
+      {"id": "direct-native-linkage-observed", "status": "satisfied"},
+      {"id": "component-license-policy-complete", "status": "blocked"},
+      {"id": "native-runtime-resolution-complete", "status": "blocked"},
+      {"id": "native-runtime-transitive-closure-complete", "status": "blocked"},
+      {"id": "runtime-dynamic-loading-verified", "status": "blocked"},
+      {"id": "build-input-closure-complete", "status": "blocked"},
+      {"id": "source-transformation-provenance-complete", "status": "blocked"},
+      {"id": "builder-toolchain-identity-bound", "status": "blocked"},
+      {"id": "reproducibility-verified", "status": "blocked"},
+      {"id": "attestation-signed", "status": "blocked"},
+      {"id": "sbom-composition-complete", "status": "blocked"}
+    ],
+    "blockers": [
+      "component-license-policy-incomplete",
+      "native-runtime-resolution-incomplete",
+      "native-runtime-transitive-closure-incomplete",
+      "runtime-dynamic-loading-unverified",
+      "build-input-closure-incomplete",
+      "source-transformation-provenance-incomplete",
+      "builder-toolchain-identity-unbound",
+      "reproducibility-unverified",
+      "attestation-unsigned",
+      "sbom-composition-incomplete"
+    ],
+    "complete": false,
+    "signed": false,
+    "distribution_authorized": false
+  }
+}
+```
+
+Check IDs, statuses, blocker IDs, coverage, uniqueness, and order are a closed
+contract. Unknown, duplicated, reordered, or free-text items are rejected.
+Before the four observation statuses become `satisfied`, the producer deeply
+reconstructs every nested evidence model and structurally validates the wheel
+subject/sidecar relationships, all required declared-input role snapshots, one
+bound Cargo path root and its fully reachable package graph, and the exact
+direct-native-to-wheel-member target/format/architecture relationship. This is
+model-binding validation only: C6.5 does not reopen artifacts, re-hash outputs,
+or rerun C6.4 inspectors.
+
+For `evidence_status: "unavailable"`, `evidence_reason` is exactly the existing
+fixed `artifact_evidence.reason`; the four observation checks use
+`"unavailable"`, the ten downstream readiness checks use `"not-evaluated"`,
+and `blockers` is exactly `["evidence-unavailable"]`. This avoids inventing
+downstream findings and prevents raw errors, tool output, credentials, or
+machine-private paths from entering the report.
+
+If an object still says `evidence_status: "preview-ready"` but fails the
+stricter structural readiness evaluation, C6.5 preserves that evidence status,
+sets **every** check to `"not-evaluated"`, keeps `evidence_reason: null`, and
+sets `blockers` exactly to `["readiness-assessment-unavailable"]`. Evaluation
+is total and exception text never serializes. This fallback is report-only: a
+best-effort build still succeeds, and a required build whose independent C6.3
+gate is satisfied remains successful with that gate still `satisfied`.
+
+The assessment has no effect on ordinary best-effort build success, required
+gate satisfaction/failure, rollback, or artifact publication. Dependency path
+resolution, transitive native dependency closure, runtime `dlopen` discovery,
+Windows PE, runtime-bearing plugins, host executables, Rust-importable crates,
+Nuitka/WASM evidence, signatures, and final distribution authorization remain
+outside C6.5.
+
 ### Resolved `artifact_profiles`
 
 `generate.json` and `build.json` add `plan.artifact_profiles`; the same exact
@@ -1355,11 +1456,11 @@ class RextioPluginV2(Protocol):
 - No incremental-analysis API (deferred until latency measurements demand it;
   v1 tooling calls the batch analyzer).
 - No recursive third-party-package source promotion, device-provider discovery,
-  provider build/link hook, CUDA execution, or device support claim through 2.9.0.
+  provider build/link hook, CUDA execution, or device support claim through 2.10.0.
   C5.1 inventories one exact distribution but authorizes no lowering or build.
 - No dependency path resolution, transitive dynamic-library closure, runtime
   `dlopen` observation, Windows PE linkage inventory, runtime-bearing plugin
-  inventory, or artifact signatures through 2.9.0. C6.4 records only bounded,
+  inventory, or artifact signatures through 2.10.0. C6.4 records only bounded,
   sanitized direct linkage observed from the generated macOS/Linux extension.
 - No name-based reservation of route strings beyond this document; new routes
   bump the contract minor version.
@@ -1426,5 +1527,12 @@ class RextioPluginV2(Protocol):
     rollback. Do not claim path resolution,
     transitive closure, `dlopen` visibility, Windows/plugin-runtime coverage,
     signatures, completeness, or distribution authority.
-13. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
+13. **Release Train C / contract 2.10.0 (unreleased):** add C6.5's immutable,
+    always-blocked `artifact_distribution_authorization` readiness assessment
+    for the same bounded host-extension + CPython wheel evidence path. Keep a
+    closed ordered check/blocker vocabulary, distinguish preview evidence gate
+    satisfaction from hard distribution authorization, and preserve all build,
+    rollback, and publication semantics. Do not implement the missing runtime
+    closure, reproducibility, signature, or final authorization work.
+14. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

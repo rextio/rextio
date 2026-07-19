@@ -21,6 +21,10 @@ from rextio.artifacts.closure import (
     strategy_from_compatibility_value,
 )
 from rextio.artifacts.entry_graph import executable_entry_graph
+from rextio.artifacts.authorization import (
+    ArtifactDistributionAuthorizationAssessment,
+    evaluate_artifact_distribution_authorization,
+)
 from rextio.artifacts.evidence import (
     ARTIFACT_EVIDENCE_POLICY_BEST_EFFORT,
     ARTIFACT_EVIDENCE_POLICY_REQUIRED,
@@ -315,6 +319,11 @@ class BuildResult:
     # C6.3: emitted only for the opt-in required evidence policy. Even a
     # satisfied gate remains incomplete, unsigned, and non-authorizing.
     artifact_evidence_gate: ArtifactEvidenceGate | None = None
+    # C6.5: derived only from final C6.2-C6.4 evidence. This readiness report
+    # is always blocked and never authorizes distribution.
+    artifact_distribution_authorization: (
+        ArtifactDistributionAuthorizationAssessment | None
+    ) = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this result.
@@ -357,6 +366,10 @@ class BuildResult:
             data["artifact_evidence"] = self.artifact_evidence.to_dict()
         if self.artifact_evidence_gate is not None:
             data["artifact_evidence_gate"] = self.artifact_evidence_gate.to_dict()
+        if self.artifact_distribution_authorization is not None:
+            data["artifact_distribution_authorization"] = (
+                self.artifact_distribution_authorization.to_dict()
+            )
         return data
 
 
@@ -373,6 +386,20 @@ class ArtifactEvidenceRequiredError(RuntimeError):
         self.result = result
         detail = gate.evidence_reason or gate.reason or "evidence-unavailable"
         super().__init__(f"required artifact evidence gate blocked: {detail}")
+
+
+def _artifact_authorization_assessment_no_throw(
+    evidence: ArtifactEvidence,
+) -> ArtifactDistributionAuthorizationAssessment:
+    """Keep report-only C6.5 incapable of changing build or C6.3 outcomes."""
+    try:
+        return evaluate_artifact_distribution_authorization(evidence)
+    except Exception:
+        # Defense in depth: the evaluator is itself total, but an unrelated
+        # future regression still degrades only to a fixed sanitized record.
+        return evaluate_artifact_distribution_authorization(
+            ArtifactEvidence.unavailable(reason=REASON_EVIDENCE_INTERNAL)
+        )
 
 
 @dataclass(frozen=True)
@@ -1419,6 +1446,15 @@ def build_hybrid_artifact(
             if not rollback.complete:
                 raise OSError("required evidence output rollback was incomplete") from error
         raise
+    # C6.5 is derived only after best-effort evidence has reached its final
+    # shape or required mode has completed revalidation and its output
+    # transaction. It cannot affect build success or gate semantics.
+    artifact_distribution_authorization = (
+        _artifact_authorization_assessment_no_throw(artifact_evidence)
+        if artifact_evidence is not None
+        else None
+    )
+
     executable_build = _build_executable_artifact(
         layout,
         native_build,
@@ -1455,6 +1491,7 @@ def build_hybrid_artifact(
         standalone_plugin_capabilities=_standalone_capability_reports_from_contexts(contexts),
         artifact_evidence=artifact_evidence,
         artifact_evidence_gate=artifact_evidence_gate,
+        artifact_distribution_authorization=artifact_distribution_authorization,
     )
     _write_build_result(layout, result)
     if artifact_evidence_gate is not None and artifact_evidence_gate.status == "blocked":

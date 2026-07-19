@@ -1,5 +1,10 @@
 """Artifact profiles and capability records for Rextio build planning."""
 
+from rextio.artifacts.authorization import (
+    ArtifactAuthorizationCheck,
+    ArtifactDistributionAuthorizationAssessment,
+    evaluate_artifact_distribution_authorization,
+)
 from rextio.artifacts.evidence import (
     ArtifactEvidence,
     ArtifactEvidenceError,
@@ -30,6 +35,8 @@ from rextio.artifacts.profiles import (
 
 __all__ = [
     "ABIRequirement",
+    "ArtifactAuthorizationCheck",
+    "ArtifactDistributionAuthorizationAssessment",
     "ArtifactEvidence",
     "ArtifactEvidenceError",
     "ArtifactEvidenceGate",
@@ -47,6 +54,7 @@ __all__ = [
     "TargetCapability",
     "WheelEntryRef",
     "detect_host_target_triple",
+    "evaluate_artifact_distribution_authorization",
     "host_executable_profile",
     "host_extension_profile",
     "rust_crate_profile",
