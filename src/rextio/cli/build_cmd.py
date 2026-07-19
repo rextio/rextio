@@ -49,6 +49,7 @@ from rextio.cli.config_overrides import (
 )
 from rextio.cli.check_cmd import write_check_report
 from rextio.cli.reporter import Reporter
+from rextio.contract import TOOLING_CONTRACT_VERSION
 from rextio.plugins.loader import PluginError
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.config.schema import RextioConfig
@@ -75,6 +76,7 @@ def _report_artifact_profile_failure(
         json.dumps(
             {
                 "analysis": analysis.to_dict(),
+                "contract_version": TOOLING_CONTRACT_VERSION,
                 "error": {"code": "RXT060", "message": str(error)},
                 "fallback": fallback,
                 "status": "artifact-profile-unavailable",
@@ -110,6 +112,7 @@ def _report_plugin_capability_failure(
         json.dumps(
             {
                 "analysis": analysis.to_dict(),
+                "contract_version": TOOLING_CONTRACT_VERSION,
                 "error": {"code": "RXT060", "message": f"Plugin error: {error}"},
                 "fallback": fallback,
                 "status": "plugin-capability-failed",
@@ -163,6 +166,7 @@ def _report_external_source_build_blocked(
     # Authorization evidence is nested only under external_source_plan.authorization.
     report_body: dict[str, object] = {
         "analysis": analysis.to_dict(),
+        "contract_version": TOOLING_CONTRACT_VERSION,
         "error": {"code": "RXT060", "message": str(error)},
         "external_source_plan": plan.to_dict(),
         "fallback": fallback,
@@ -417,8 +421,9 @@ def run(args: Namespace) -> int:
         (reports_dir / "build.json").write_text(
             json.dumps(
                 {
-                    "fallback": fallback,
                     "analysis": analysis.to_dict(),
+                    "contract_version": TOOLING_CONTRACT_VERSION,
+                    "fallback": fallback,
                     "status": "analysis-failed",
                 },
                 indent=2,
@@ -610,6 +615,23 @@ def run(args: Namespace) -> int:
         lines.append(f"  native module: {result.native_build.installed_path}")
     if result.wheel_build.path:
         lines.append(f"  wheel artifact: {result.wheel_build.path}")
+    artifact_evidence = getattr(result, "artifact_evidence", None)
+    if artifact_evidence is not None:
+        if artifact_evidence.status == "preview-ready":
+            lines.append(
+                "  artifact evidence: preview-ready incomplete unsigned "
+                f"(authority=evidence-only; "
+                f"sbom={artifact_evidence.sbom.logical_path if artifact_evidence.sbom else 'n/a'}; "
+                f"provenance="
+                f"{artifact_evidence.provenance.logical_path if artifact_evidence.provenance else 'n/a'})"
+            )
+        else:
+            reason = artifact_evidence.reason or "unavailable"
+            lines.append(
+                "  artifact evidence: unavailable "
+                f"(authority=evidence-only; composition=incomplete; "
+                f"signature_status=unsigned; reason={reason})"
+            )
     if result.executable_build.path:
         lines.append(f"  executable: {result.executable_build.path}")
     if result.rust_crate_build.crate_path:

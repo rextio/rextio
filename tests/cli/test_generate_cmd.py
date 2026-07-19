@@ -37,6 +37,9 @@ def test_generate_reports_unavailable_host_artifact_profile(
     assert "RXT060 Artifact profile planning failed" in captured.err
     assert report["status"] == "artifact-profile-unavailable"
     assert report["error"]["code"] == "RXT060"
+    from rextio.contract import TOOLING_CONTRACT_VERSION
+
+    assert report["contract_version"] == TOOLING_CONTRACT_VERSION
     assert (tmp_path / ".rextio" / "reports" / "check.json").exists()
 
 

@@ -335,12 +335,22 @@ def test_cli_build_reports_c6_gate_without_starting_artifact_work(
     assert "authorization: status=missing" in captured.err
     assert report["status"] == "external-source-c6-blocked"
     assert report["error"]["code"] == "RXT060"
+    from rextio.contract import TOOLING_CONTRACT_VERSION
+
+    assert report["contract_version"] == TOOLING_CONTRACT_VERSION
     assert report["external_source_plan"]["execution_authority"] == "preview-only"
     assert report["external_source_plan"]["authorization"]["status"] == "missing"
     assert "external_source_authorization" not in report
     assert str(installed_root) not in json.dumps(report)
     assert not (project / ".rextio" / "generated").exists()
     assert not (project / ".rextio" / "build").exists()
+    assert not (project / "dist").exists()
+    # C6.1 missing-lock gate must not probe Cargo/metadata or leave evidence.
+    assert not list(project.rglob("Cargo.toml"))
+    assert not list(project.rglob("Cargo.lock"))
+    assert not list(project.rglob("*.cdx.json"))
+    assert not list(project.rglob("*.intoto.json"))
+    assert "artifact_evidence" not in report
 
 
 def test_cli_build_verified_authorization_still_blocks_c5_not_implemented(
@@ -369,6 +379,9 @@ def test_cli_build_verified_authorization_still_blocks_c5_not_implemented(
     )
     assert report["status"] == "external-source-c5-not-implemented"
     assert report["error"]["code"] == "RXT060"
+    from rextio.contract import TOOLING_CONTRACT_VERSION
+
+    assert report["contract_version"] == TOOLING_CONTRACT_VERSION
     assert "not implemented" in report["error"]["message"]
     assert report["external_source_plan"]["c6_gate"] == "authorization-verified"
     assert report["external_source_plan"]["authorization"]["status"] == "verified"
@@ -378,6 +391,15 @@ def test_cli_build_verified_authorization_still_blocks_c5_not_implemented(
     assert str(installed_root) not in json.dumps(report)
     assert not (project / ".rextio" / "generated").exists()
     assert not (project / ".rextio" / "build").exists()
+    assert not (project / "dist").exists()
+    # Verified C6.1 locks remain blocked before Cargo/metadata and create no
+    # generated/build/dist/evidence artifacts (C5.2 still unimplemented).
+    assert not list(project.rglob("Cargo.toml"))
+    assert not list(project.rglob("Cargo.lock"))
+    assert not list(project.rglob("*.cdx.json"))
+    assert not list(project.rglob("*.intoto.json"))
+    assert "artifact_evidence" not in report
+    assert report["status"] == "external-source-c5-not-implemented"
 
 
 def test_check_and_generate_report_verified_authorization_without_local_paths(

@@ -19,13 +19,24 @@ from rextio.artifacts.closure import (
     strategy_from_compatibility_value,
 )
 from rextio.artifacts.entry_graph import executable_entry_graph
+from rextio.artifacts.evidence import ArtifactEvidence
 from rextio.artifacts.models import ArtifactKind, ArtifactProfile, FallbackStrategy
+from rextio.contract import TOOLING_CONTRACT_VERSION
 from rextio.artifacts.profiles import (
     ArtifactProfilePlanningError,
     detect_host_target_triple,
     host_executable_profile,
     host_extension_profile,
     rust_crate_profile,
+)
+from rextio.build.supply_chain import (
+    EvidenceInputSnapshot,
+    capture_cargo_lock_input,
+    capture_generated_python_inputs,
+    capture_generated_rust_inputs,
+    capture_project_source_snapshot,
+    emit_host_extension_wheel_evidence,
+    is_in_scope_host_extension_cpython,
 )
 from rextio.ir.types import RxtPluginType, normalize_type_name
 from rextio.build.cargo_builder import (
@@ -213,6 +224,8 @@ class GenerateResult:
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this result."""
         data: dict[str, object] = {
+            # Additive tooling contract version (2.7.0+); consumers may ignore.
+            "contract_version": TOOLING_CONTRACT_VERSION,
             "fallback": self.fallback,
             "boundary_fallback_threshold": self.boundary_fallback_threshold,
             "target": self.target_plan.to_dict(),
@@ -265,14 +278,21 @@ class BuildResult:
     # Plugin API 1.4: resolved standalone capability details for requested
     # rust-crate / host-executable profiles (additive).
     standalone_plugin_capabilities: tuple[dict[str, object], ...] = ()
+    # C6.2: bounded host-extension wheel SBOM/provenance preview (additive).
+    # Absent when the build is outside the ordinary host-extension wheel path.
+    artifact_evidence: ArtifactEvidence | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this result.
 
         ``plugin_crate_dependencies`` is emitted only when non-empty, so
         ``build.json`` keeps its existing shape for plugin-free builds.
+        ``artifact_evidence`` is emitted for in-scope host-extension+cpython
+        wheels as preview-ready or unavailable; out-of-scope builds omit it.
         """
         data: dict[str, object] = {
+            # Additive tooling contract version (2.7.0+); consumers may ignore.
+            "contract_version": TOOLING_CONTRACT_VERSION,
             "fallback": self.fallback,
             "boundary_fallback_threshold": self.boundary_fallback_threshold,
             "target": self.target_plan.to_dict(),
@@ -299,6 +319,8 @@ class BuildResult:
             data["standalone_plugin_capabilities"] = [
                 dict(item) for item in self.standalone_plugin_capabilities
             ]
+        if self.artifact_evidence is not None:
+            data["artifact_evidence"] = self.artifact_evidence.to_dict()
         return data
 
 
@@ -469,7 +491,17 @@ def build_hybrid_artifact(
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
-    native_build, plugin_crate_dependencies = _generate_and_build_native(
+    # C6.2: only capture prebuild evidence snapshots for in-scope
+    # host-extension+cpython builds. Out-of-scope paths skip the work entirely.
+    evidence_snapshot: EvidenceInputSnapshot | None = None
+    if is_in_scope_host_extension_cpython(plan):
+        evidence_snapshot = capture_project_source_snapshot(
+            project_root=project_root, plan=plan
+        )
+        evidence_snapshot = capture_generated_python_inputs(
+            evidence_snapshot, project_root=project_root, layout=layout
+        )
+    native_build, plugin_crate_dependencies, updated_snapshot = _generate_and_build_native(
         plan,
         layout,
         build_tool,
@@ -477,7 +509,15 @@ def build_hybrid_artifact(
         embedding_enabled=embedding_enabled,
         build_timeout=build_timeout_seconds,
         toolchain=toolchain,
+        evidence_snapshot=evidence_snapshot,
+        project_root=project_root,
     )
+    if updated_snapshot is not None:
+        evidence_snapshot = updated_snapshot
+    if evidence_snapshot is not None and native_build.status == "built":
+        evidence_snapshot = capture_cargo_lock_input(
+            evidence_snapshot, project_root=project_root, layout=layout
+        )
     rust_crate_build = _generate_and_build_rust_crate(
         plan,
         layout,
@@ -493,6 +533,19 @@ def build_hybrid_artifact(
         fallback, layout, build_timeout=build_timeout_seconds, toolchain=toolchain
     )
     wheel_build = _build_wheel_artifact(project_root, layout, native_build, fallback_build)
+    # C6.2: after the ordinary host-extension+cpython wheel is finalized, emit
+    # preview-ready or unavailable evidence. Out-of-scope builds omit the field.
+    # Unavailability never raises into the ordinary build success path.
+    artifact_evidence = emit_host_extension_wheel_evidence(
+        project_root=project_root,
+        layout=layout,
+        plan=plan,
+        wheel_build=wheel_build,
+        native_build=native_build,
+        input_snapshot=evidence_snapshot,
+        timeout=build_timeout_seconds,
+        toolchain=toolchain,
+    )
     executable_build = _build_executable_artifact(
         layout,
         native_build,
@@ -527,6 +580,7 @@ def build_hybrid_artifact(
         rust_crate_build=rust_crate_build,
         plugin_crate_dependencies=plugin_crate_dependencies,
         standalone_plugin_capabilities=_standalone_capability_reports_from_contexts(contexts),
+        artifact_evidence=artifact_evidence,
     )
     _write_build_result(layout, result)
     return result
@@ -769,9 +823,15 @@ def _generate_and_build_native(
     embedding_enabled: bool,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
-) -> tuple[NativeBuildResult, tuple[dict[str, object], ...]]:
+    evidence_snapshot: EvidenceInputSnapshot | None = None,
+    project_root: Path | None = None,
+) -> tuple[NativeBuildResult, tuple[dict[str, object], ...], EvidenceInputSnapshot | None]:
     if not plan.native.has_native_artifacts:
-        return skipped_native_build("No accepted native functions were found."), ()
+        return (
+            skipped_native_build("No accepted native functions were found."),
+            (),
+            evidence_snapshot,
+        )
     native_source, plugin_crate_dependencies = _generate_native_source(
         plan,
         layout,
@@ -779,28 +839,48 @@ def _generate_and_build_native(
         embedding_enabled=embedding_enabled,
     )
     if native_source.status == "failed":
-        return NativeBuildResult(
-            status="failed",
-            tool="codegen",
-            message=(
-                "RXT050 Codegen failure while generating native target code. "
-                f"Cause: {native_source.message}. Fallback Python files were still generated."
+        return (
+            NativeBuildResult(
+                status="failed",
+                tool="codegen",
+                message=(
+                    "RXT050 Codegen failure while generating native target code. "
+                    f"Cause: {native_source.message}. Fallback Python files were still generated."
+                ),
             ),
-        ), ()
+            (),
+            evidence_snapshot,
+        )
+
+    # Capture generated Rust inputs after write and before cargo compilation so
+    # later evidence can prove the exact build inputs (or mark unavailable).
+    if (
+        evidence_snapshot is not None
+        and project_root is not None
+        and native_source.status == "generated"
+    ):
+        evidence_snapshot = capture_generated_rust_inputs(
+            evidence_snapshot, project_root=project_root, layout=layout
+        )
 
     if target_plan.spec.language == "rust":
         return (
             _build_native_with_selected_tool(layout, build_tool, build_timeout, toolchain),
             plugin_crate_dependencies,
+            evidence_snapshot,
         )
-    return NativeBuildResult(
-        status="failed",
-        tool=target_plan.spec.language,
-        message=(
-            "RXT060 Build failed while compiling generated native module. "
-            f"Cause: target language {target_plan.spec.language!r} is not implemented."
+    return (
+        NativeBuildResult(
+            status="failed",
+            tool=target_plan.spec.language,
+            message=(
+                "RXT060 Build failed while compiling generated native module. "
+                f"Cause: target language {target_plan.spec.language!r} is not implemented."
+            ),
         ),
-    ), ()
+        (),
+        evidence_snapshot,
+    )
 
 
 def _generate_and_build_rust_crate(

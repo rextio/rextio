@@ -16,8 +16,9 @@ fallback code - same imports, same behavior.
 artifact planning, a narrow initializer-before-main Rust executable slice, and
 plugin API **1.4** fail-closed standalone artifact capability (rust-crate /
 host-executable), plus a C5.1 external pure-Python source inventory/gate
-preview and a C6.1 bounded prebuild authorization-contract preview (not full
-C6). This branch emits additive tooling contract **2.6.0** and plugin API
+preview, a C6.1 bounded prebuild authorization-contract preview, and a C6.2
+bounded host-extension wheel SBOM/provenance preview (incomplete/unsigned; not
+full C6). This branch emits additive tooling contract **2.7.0** and plugin API
 **1.4** while keeping package version **0.1.4**; those changes are not yet a
 tagged or PyPI release. Published 0.1.4 remains the plugin API **1.3** /
 contract **2.2.0** producer. See

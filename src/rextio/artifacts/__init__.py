@@ -1,5 +1,14 @@
 """Artifact profiles and capability records for Rextio build planning."""
 
+from rextio.artifacts.evidence import (
+    ArtifactEvidence,
+    ArtifactEvidenceError,
+    CargoDepEdge,
+    CargoPackageRef,
+    EvidenceFileRef,
+    SidecarArtifact,
+    WheelEntryRef,
+)
 from rextio.artifacts.models import (
     ABIRequirement,
     ArtifactKind,
@@ -20,14 +29,21 @@ from rextio.artifacts.profiles import (
 
 __all__ = [
     "ABIRequirement",
+    "ArtifactEvidence",
+    "ArtifactEvidenceError",
     "ArtifactKind",
     "ArtifactProfile",
     "ArtifactProvenance",
+    "CargoDepEdge",
+    "CargoPackageRef",
     "CertificationTier",
     "DeviceRequirement",
+    "EvidenceFileRef",
     "FallbackStrategy",
     "RuntimeRequirement",
+    "SidecarArtifact",
     "TargetCapability",
+    "WheelEntryRef",
     "detect_host_target_triple",
     "host_executable_profile",
     "host_extension_profile",
