@@ -374,17 +374,23 @@ def _annotate_v2_plugin(plugin: RextioPlugin, provider: Any) -> RextioPlugin:
             f"plugin {plugin.id!r} targets plugin-API {api_version!r}; "
             f"this rextio implements {PLUGIN_API_VERSION!r} (major must match)"
         )
+    lowering = _lowering_provided(plugin, provider)
+    capability_declared = _artifact_capability_declared(
+        plugin, provider, lowering_provided=lowering
+    )
     return replace(
         plugin,
         rules_provided=True,
         api_version=api_version,
-        lowering_provided=_lowering_provided(plugin, provider),
+        lowering_provided=lowering,
+        artifact_capability_declared=capability_declared,
     )
 
 
 # The plugin API 1.1 lowering members. They arrive together: implementing a
 # strict subset is a load error, so a half-wired plugin cannot look like a
-# describe-only one.
+# describe-only one. artifact_capability (API 1.4) is deliberately excluded —
+# it is optional and independent of host-extension lowering.
 _LOWERING_MEMBERS = ("type_vocabulary", "claim", "lower", "crate_dependencies")
 
 
@@ -405,6 +411,57 @@ def _lowering_provided(plugin: RextioPlugin, provider: Any) -> bool:
         raise PluginError(
             f"plugin {plugin.id!r} exposes lowering members but declares plugin-API "
             f"{declared!r}; lowering requires api_version >= 1.1"
+        )
+    return True
+
+
+def _is_protocol_class(cls: type) -> bool:
+    return bool(getattr(cls, "_is_protocol", False))
+
+
+def _provider_declares_concrete_artifact_capability(provider: Any) -> bool:
+    """Return whether a non-Protocol class in the MRO defines the hook.
+
+    Inheritance of a Protocol that lists ``artifact_capability`` must not count
+    as a declaration (Protocol stubs are callable but not implementations).
+    """
+    for cls in type(provider).__mro__:
+        if _is_protocol_class(cls):
+            continue
+        if "artifact_capability" not in cls.__dict__:
+            continue
+        attr = cls.__dict__["artifact_capability"]
+        if isinstance(attr, (staticmethod, classmethod)):
+            attr = attr.__func__
+        if callable(attr):
+            return True
+    return False
+
+
+def _artifact_capability_declared(
+    plugin: RextioPlugin, provider: Any, *, lowering_provided: bool
+) -> bool:
+    """Record whether the provider exposes the optional API 1.4 capability hook.
+
+    The hook is never invoked at load or capabilities-introspection time. A
+    pre-1.4 provider that implements the hook is a load error (fail closed).
+    Describe-only (non-lowering) providers may not declare the hook: capability
+    only has meaning for lowering providers.
+    """
+    if not _provider_declares_concrete_artifact_capability(provider):
+        return False
+    if not lowering_provided:
+        raise PluginError(
+            f"plugin {plugin.id!r} implements artifact_capability() but does not "
+            "provide lowering members; standalone artifact capability is only "
+            "valid on lowering providers (plugin API 1.4)"
+        )
+    declared = str(getattr(provider, "api_version", ""))
+    if _version_tuple(declared) < (1, 4):
+        raise PluginError(
+            f"plugin {plugin.id!r} implements artifact_capability() but declares "
+            f"plugin-API {declared!r}; standalone artifact capability requires "
+            "api_version >= 1.4"
         )
     return True
 

@@ -10,12 +10,24 @@ from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.artifacts.closure import closure_requires_prebuild_failure
+from rextio.artifacts.closure import (
+    closure_requires_prebuild_failure,
+    resolve_executable_fallback,
+)
 from rextio.artifacts.entry_graph import executable_entry_graph
+from rextio.artifacts.models import ArtifactKind
+from rextio.artifacts.profiles import (
+    detect_host_target_triple,
+    host_executable_profile,
+)
 from rextio.build.orchestrator import (
     ArtifactProfilePlanningError,
     BuildResult,
     build_hybrid_artifact,
+)
+from rextio.plugins.capabilities import (
+    StandalonePluginContext,
+    build_standalone_plugin_context,
 )
 from rextio.build.preflight import (
     format_missing_tools,
@@ -72,6 +84,42 @@ def _report_artifact_profile_failure(
     reporter.error(str(error))
     reporter.error(
         "Suggestion: run on a supported Rust host target or keep this project on fallback."
+    )
+    return 1
+
+
+def _report_plugin_capability_failure(
+    project_root: Path,
+    analysis: ProjectAnalysis,
+    fallback: str,
+    error: PluginError,
+    reporter: Reporter,
+    *,
+    command: str = "build",
+) -> int:
+    """Write a stable RXT060 failure for artifact_capability hook problems."""
+    reports_dir = project_root / ".rextio" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    write_check_report(project_root, analysis)
+    report_name = "build.json" if command == "build" else "generate.json"
+    (reports_dir / report_name).write_text(
+        json.dumps(
+            {
+                "analysis": analysis.to_dict(),
+                "error": {"code": "RXT060", "message": f"Plugin error: {error}"},
+                "fallback": fallback,
+                "status": "plugin-capability-failed",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    reporter.error(f"RXT060 Plugin error: {error}")
+    reporter.error(
+        "Suggestion: fix the plugin artifact_capability() declaration or disable "
+        "the plugin, then rerun."
     )
     return 1
 
@@ -316,12 +364,37 @@ def run(args: Namespace) -> int:
             return 1
 
     executable_prebuild_failure = False
+    # Pre-resolve host-executable capability once for this build command so the
+    # preflight closure and orchestrator share the same immutable context
+    # (plugin API 1.4: one hook call per exact ArtifactProfile).
+    executable_standalone: StandalonePluginContext | None = None
     if executable_analysis is not None and config.executable.entrypoint is not None:
         try:
+            fallback_strategy = resolve_executable_fallback(config.executable.fallback)
+            try:
+                triple = detect_host_target_triple()
+            except ValueError as error:
+                raise ArtifactProfilePlanningError(
+                    f"RXT060 Artifact profile planning failed. Cause: {error}"
+                ) from error
+            executable_profile = host_executable_profile(
+                triple, fallback=fallback_strategy
+            )
+            executable_standalone = build_standalone_plugin_context(
+                profile=executable_profile,
+                registry=target_plan.plugins,
+                functions=[
+                    function
+                    for module in executable_analysis.modules
+                    for function in module.functions
+                ],
+            )
             closure = executable_entry_graph(
                 executable_analysis,
                 config.executable.entrypoint.replace(":", ".", 1),
-                config.executable.fallback,
+                fallback_strategy,
+                profile=executable_profile,
+                plugin_capabilities=executable_standalone.capabilities,
             )
         except ArtifactProfilePlanningError as error:
             return _report_artifact_profile_failure(
@@ -331,12 +404,18 @@ def run(args: Namespace) -> int:
                 error,
                 reporter,
             )
+        except PluginError as exc:
+            return _report_plugin_capability_failure(
+                project_root, analysis, fallback, exc, reporter, command="build"
+            )
         executable_prebuild_failure = closure_requires_prebuild_failure(closure)
 
     # Only require the native toolchain when there is actually native code to
     # compile; a pure-Python project still builds its CPython fallback artifact.
     # A pre-build closure failure is reported before any Cargo preflight or
     # invocation, so users see the entry/edge reason even without a Rust toolchain.
+    # Capability-aware closure keeps a valid plugin executable CLOSED so
+    # toolchain diagnostics still run.
     if analysis.requires_native_build() and not executable_prebuild_failure:
         missing_tools = missing_build_tools(
             native_backend=target_plan.spec.language, toolchain=config.toolchain
@@ -370,6 +449,16 @@ def run(args: Namespace) -> int:
             executable_python=config.executable.python,
             executable_fallback=config.executable.fallback,
             toolchain=config.toolchain,
+            executable_standalone=executable_standalone,
+            standalone_contexts=(
+                {ArtifactKind.HOST_EXECUTABLE: executable_standalone}
+                if executable_standalone is not None
+                else None
+            ),
+        )
+    except PluginError as exc:
+        return _report_plugin_capability_failure(
+            project_root, analysis, fallback, exc, reporter, command="build"
         )
     except ArtifactProfilePlanningError as error:
         return _report_artifact_profile_failure(

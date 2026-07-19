@@ -93,6 +93,9 @@ class RextioPlugin:
     # Plugin API 1.1: True when the plugin implements the lowering members
     # (type_vocabulary/claim/lower/crate_dependencies).
     lowering_provided: bool = False
+    # Plugin API 1.4: True when the provider exposes artifact_capability().
+    # Presence only — capabilities introspection never executes the hook.
+    artifact_capability_declared: bool = False
 
     def matches(self, target: TargetSpec) -> bool:
         """Report whether this plugin applies to the given target spec."""
@@ -142,6 +145,7 @@ class RextioPlugin:
             "rules_provided": self.rules_provided,
             "api_version": self.api_version,
             "lowering_provided": self.lowering_provided,
+            "artifact_capability_declared": self.artifact_capability_declared,
         }
 
 

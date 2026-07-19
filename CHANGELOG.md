@@ -4,8 +4,57 @@
 
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
-contract **2.2.0**. This branch retains plugin API 1.3 and emits the additive,
-unreleased tooling contract **2.3.0**.
+contract **2.2.0**. This branch advances the unreleased producer to plugin API
+**1.4** and tooling contract **2.4.0** (package version stays **0.1.4**). Prior
+Train C host-planning work remains under the same unreleased line.
+
+### Plugin API 1.4 — standalone artifact capability (fail-closed)
+
+- Bump `PLUGIN_API_VERSION` to **1.4** (same major as 1.1–1.3). Host-extension
+  lowering for API 1.1–1.3 providers is unchanged.
+- Add the optional `artifact_capability(profile: ArtifactProfile)` hook on a
+  **separate** `RextioArtifactCapabilityPlugin` Protocol (not on
+  `RextioLoweringPlugin`), so legacy Protocol inheritance does not create a
+  callable stub. Concrete-implementation detection ignores Protocol stubs.
+  Presence requires `api_version >= 1.4` **and** a lowering provider;
+  describe-only providers that declare the hook fail load. Absence is valid and
+  means standalone unsupported. The hook is **not** part of the all-or-none
+  lowering member set (`type_vocabulary` / `claim` / `lower` /
+  `crate_dependencies`).
+- Add immutable `PluginArtifactTypeSupport` and `PluginArtifactCapability`
+  records covering exact plugin type keys, claim rule ids, and profile-specific
+  crate dependencies plus uses/helpers. Validate namespace ownership, membership
+  against actual `describe()` rules and `type_vocabulary()` keys, duplicates
+  (canonicalized uses/helpers/deps), malformed returns, reserved core crates,
+  and conflicting pins. Hook exceptions / invalid returns are `PluginError`
+  (CLI `RXT060` with failure evidence; programmatic paths fail-closed).
+- Resolve capability **exactly once per exact** `ArtifactProfile` per
+  generate/build command via immutable `StandalonePluginContext` (reuse for
+  closure, codegen, dependency selection, and JSON — never re-call the hook for
+  reporting). A function is standalone-capable only when every claim rule and
+  every plugin type it uses is covered: signature keys **plus** claim
+  operand/result/receiver types. Never infer support from `PluginType`
+  conversion, resident status, host-extension `crate_dependencies()`, uses, or
+  helpers.
+- `LoweringContext` gains defaulted `backend` (`pyo3` | `standalone-rust`) and
+  `artifact_profile` (exact resolved profile on standalone lowers). Host-
+  extension construction remains valid without those fields.
+- Thread profile-resolved standalone context through rust-crate and
+  host-executable codegen: capable plugin functions render with native Rust types
+  only (no PyO3 boundary). Codegen defense-in-depth rejects uncovered claim type
+  keys and undeclared uses/helpers. Legacy functions without matching capability
+  stay excluded transitively.
+- Inject only profile-specific exact capability crates from functions **actually
+  emitted after transitive exclusion**. Unsupported reachable plugin functions
+  block pre-Cargo for native-only executables; unreachable ones do not. Rust
+  executable CLI preflight uses the capability-aware exact closure / precomputed
+  context so a valid plugin executable is not misclassified as unavailable.
+- Capabilities introspection reports additive `artifact_capability_declared`
+  presence only (no host probe, no profile-hook execution). Generate/build JSON
+  may include resolved `standalone_plugin_capabilities` with deterministic
+  per-function decisions (`function_decisions`); rejected/fallback functions
+  never appear in `capable_functions`. `lowering_provided` semantics are
+  unchanged.
 
 ### Host source and artifact planning
 
@@ -36,12 +85,15 @@ unreleased tooling contract **2.3.0**.
   Native reads of those values remain blocked; broader top-level semantics are
   deferred.
 
-### Tooling contract 2.3.0 and device groundwork
+### Tooling contract 2.4.0 (and prior 2.3.0 host planning)
 
-- Add `host_source_plan`, resolved `artifact_profiles`, closure
-  `module_initializers`, and capabilities `artifact_contract` fields without
-  changing contract-2 position, route, native-status, rejection, or promotion
-  semantics.
+- Advance the unreleased producer to **2.4.0** for plugin standalone-capability
+  presence/declaration and generate/build resolved per-profile allow/deny
+  details, without changing route, native-status, rejection, promotion, or
+  `lowering_provided` semantics.
+- Contract **2.3.0** (still on this branch history) added `host_source_plan`,
+  resolved `artifact_profiles`, closure `module_initializers`, and capabilities
+  `artifact_contract` fields.
 - Add a non-operational `device_provider_contract` marker and immutable draft
   `manifest()` / `preflight()` records. There is no provider discovery,
   selection, build/link hook, or runtime dispatch; every preflight result has

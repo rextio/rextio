@@ -112,6 +112,30 @@ def run(args: Namespace) -> int:
             rust_crate_name=config.rust.crate_name,
             embedding_enabled=config.embedding.enabled,
         )
+    except PluginError as exc:
+        reports_dir = project_root / ".rextio" / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        write_check_report(project_root, analysis)
+        (reports_dir / "generate.json").write_text(
+            json.dumps(
+                {
+                    "analysis": analysis.to_dict(),
+                    "error": {"code": "RXT060", "message": f"Plugin error: {exc}"},
+                    "fallback": fallback,
+                    "status": "plugin-capability-failed",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reporter.error(f"RXT060 Plugin error: {exc}")
+        reporter.error(
+            "Suggestion: fix the plugin artifact_capability() declaration or disable "
+            "the plugin, then rerun rextio generate."
+        )
+        return 1
     except ArtifactProfilePlanningError as error:
         reports_dir = project_root / ".rextio" / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.models import FunctionAnalysis, ProjectAnalysis
 from rextio.artifacts.closure import (
@@ -15,6 +17,8 @@ from rextio.artifacts.closure import (
 from rextio.artifacts.models import ArtifactProfile, FallbackStrategy
 from rextio.artifacts.profiles import host_executable_profile, required_host_target_triple
 from rextio.ir.types import normalize_type_name
+from rextio.plugins.api import PluginArtifactCapability
+from rextio.plugins.capabilities import analysis_function_is_standalone_capable
 from rextio.source.planning import select_executable_module_initializers
 
 
@@ -24,13 +28,21 @@ def executable_entry_graph(
     strategy: FallbackStrategy = FallbackStrategy.PYTHON_SUBPROCESS,
     *,
     profile: ArtifactProfile | None = None,
+    plugin_capabilities: Mapping[str, PluginArtifactCapability | None] | None = None,
 ) -> NativeClosureReport:
-    """Return the single deterministic authority for a Rust executable graph."""
+    """Return the single deterministic authority for a Rust executable graph.
+
+    ``plugin_capabilities`` is the profile-resolved plugin API 1.4 map for the
+    host-executable profile. Absent or partial coverage keeps plugin-lowered
+    callees fail-closed as pre-Cargo blockers; unreachable unsupported
+    functions never block.
+    """
+    capabilities = plugin_capabilities or {}
     by_qualname = {
         function.qualname: function for module in analysis.modules for function in module.functions
     }
     entry = by_qualname.get(entrypoint)
-    entrypoint_reason = _entrypoint_reason(entry)
+    entrypoint_reason = _entrypoint_reason(entry, capabilities)
     nodes: list[ClosureNode] = []
     native_edges: list[NativeClosureEdge] = []
     fallback_edges: list[FallbackClosureEdge] = []
@@ -48,11 +60,11 @@ def executable_entry_graph(
 
     for module in analysis.modules:
         for function in module.functions:
-            if _is_direct_native(function):
+            if _is_closure_native(function, capabilities):
                 nodes.append(ClosureNode(function.qualname))
             elif function.is_embedding_candidate:
                 nodes.append(ClosureNode(function.qualname, "embedded-helper"))
-            if not _is_direct_native(function):
+            if not _is_closure_native(function, capabilities):
                 continue
             for call in function.calls:
                 resolved = resolver.resolve(module, call.target).function
@@ -67,7 +79,9 @@ def executable_entry_graph(
                             return_type=_normalized_return_type(resolved),
                         )
                     )
-                elif resolved.is_embedding_candidate or _is_direct_native(resolved):
+                elif resolved.is_embedding_candidate or _is_closure_native(
+                    resolved, capabilities
+                ):
                     native_edges.append(NativeClosureEdge(function.qualname, resolved.qualname))
                 elif resolved.route.startswith("native-plugin:"):
                     blockers.append(
@@ -111,7 +125,35 @@ def _is_direct_native(function: FunctionAnalysis) -> bool:
     return function.route == "native-direct" and not function.is_embedding_candidate
 
 
-def _entrypoint_reason(function: FunctionAnalysis | None) -> str | None:
+def _is_plugin_standalone_native(
+    function: FunctionAnalysis,
+    capabilities: Mapping[str, PluginArtifactCapability | None],
+) -> bool:
+    if not function.accepted or not function.route.startswith("native-plugin:"):
+        return False
+    if function.native_runtime_semantics or function.is_embedding_candidate:
+        return False
+    # Coverage includes signature plugin_type_keys plus every type key used
+    # inside claims (operand/result/receiver) — partial coverage fails closed.
+    return analysis_function_is_standalone_capable(
+        plugin_claims=function.plugin_claims,
+        plugin_type_keys=function.plugin_type_keys,
+        capabilities=capabilities,
+    )
+
+
+def _is_closure_native(
+    function: FunctionAnalysis,
+    capabilities: Mapping[str, PluginArtifactCapability | None],
+) -> bool:
+    return _is_direct_native(function) or _is_plugin_standalone_native(function, capabilities)
+
+
+def _entrypoint_reason(
+    function: FunctionAnalysis | None,
+    capabilities: Mapping[str, PluginArtifactCapability | None] | None = None,
+) -> str | None:
+    resolved_capabilities = capabilities or {}
     if function is None:
         return "entrypoint function was not found"
     if function.native_runtime_semantics:
@@ -119,6 +161,8 @@ def _entrypoint_reason(function: FunctionAnalysis | None) -> str | None:
     if function.is_embedding_candidate:
         return "entrypoint is an internal embedded helper"
     if function.route.startswith("native-plugin:"):
+        if _is_plugin_standalone_native(function, resolved_capabilities):
+            return None
         return (
             "entrypoint is plugin-lowered but the plugin declares no standalone "
             "Rust executable capability"

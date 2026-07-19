@@ -1,8 +1,13 @@
 # Spec: Plugin Lowering (claim/lower Hook)
 
-Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3)
+Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4)
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
+
+**Release framing:** published core **0.1.4** ships plugin API **1.3** and tooling
+contract **2.2.0**. The unreleased Train C branch (package version still
+**0.1.4**) advances to plugin API **1.4** and tooling contract **2.4.0** for the
+standalone artifact capability contract below.
 
 ## Purpose
 
@@ -227,7 +232,7 @@ class LoweredExpr:
     site's direct child operands/arguments (already lowered by core or by
     prior plugin claims), in positional order. Empty under
     `operand_mode="leaves"`.
-  * `target_language: str` — the active codegen backend name (`"rust"` in
+  * `target_language: str` — the active codegen language id (`"rust"` in
     0.1.x). This is a language id string, **not** an active `TargetSpec`
     object and not a build/profile options bag.
   * `fresh_name: Callable[[str], str]` — allocates a fresh temporary
@@ -236,6 +241,12 @@ class LoweredExpr:
     rendered non-literal leaves of `ClaimSite.expression` when
     `operand_mode="leaves"`. Empty under `direct`, or when the tree has no
     non-literal leaves.
+  * `backend: str = "pyo3"` (plugin API 1.4; closed set
+    `{pyo3, standalone-rust}`) — distinguishes host-extension PyO3 emission
+    from boundary-free standalone Rust. Old construction remains valid.
+  * `artifact_profile: ArtifactProfile | None = None` (plugin API 1.4) —
+    the exact resolved profile used for authorization on standalone lowers;
+    required when `backend == "standalone-rust"`.
 
   `LoweringContext` does **not** expose core error-raising helpers, IR
   nodes, or a `TargetSpec`. A plugin-typed operand is handed to the plugin
@@ -792,11 +803,119 @@ Native top-level update keys are reconciled with the exact final source binding
 before terminal publication, so a later function/class defeats an earlier
 assignment and a later accepted assignment defeats the earlier definition.
 
+## 10. Standalone artifact capability (plugin API 1.4)
+
+Host-extension builds (PyO3 wheels) keep using the 1.1–1.3 lowering members and
+boundary conversion. Boundary-free standalone artifacts — **`rust-crate`** and
+**`host-executable`** — never infer plugin support from those surfaces.
+
+### 10.1 Explicit hook (separate extension Protocol)
+
+```python
+class RextioArtifactCapabilityPlugin(Protocol):
+    def artifact_capability(
+        self, profile: ArtifactProfile
+    ) -> PluginArtifactCapability | None: ...
+```
+
+- Optional. Presence requires `api_version >= 1.4` **and** a lowering provider
+  (loader fail-closed). Describe-only providers may not declare the hook.
+- Defined on a **separate** Protocol from `RextioLoweringPlugin` so inheriting
+  the legacy lowering Protocol does not create a callable stub. Core detects a
+  concrete (non-Protocol) implementation only.
+- Absence is valid and means **standalone unsupported** for every profile.
+- **Not** part of the all-or-none set
+  (`type_vocabulary` / `claim` / `lower` / `crate_dependencies`).
+- Core never infers standalone support from `PluginType.conversion`, resident
+  status, host-extension `uses`/`helpers`, or `crate_dependencies()`.
+
+### 10.2 Capability records
+
+```python
+@dataclass(frozen=True)
+class PluginArtifactTypeSupport:
+    type_key: str                 # exact namespaced key, e.g. "rextio-numpy/f64-1d"
+    uses: tuple[str, ...] = ()    # profile-specific `use` lines
+    helpers: tuple[str, ...] = () # profile-specific module items
+
+@dataclass(frozen=True)
+class PluginArtifactCapability:
+    rule_ids: tuple[str, ...] = ()
+    types: tuple[PluginArtifactTypeSupport, ...] = ()
+    crate_dependencies: tuple[CrateDependency, ...] = ()
+```
+
+Core validates namespace ownership (`<plugin_id>/…`), membership against the
+plugin's actual `describe()` rule records and `type_vocabulary()` keys (stale
+but correctly namespaced values fail closed), duplicate rule/type keys,
+malformed return values, reserved core crate names, and conflicting pins.
+Duplicate uses/helpers/deps are canonicalized deterministically. Hook
+exceptions and invalid declarations raise `PluginError` (CLI surfaces as
+stable `RXT060`; programmatic paths remain fail-closed). Records serialize
+deterministically (sorted rule ids, type keys, crate deps).
+
+### 10.3 Resolution and coverage
+
+Capability is resolved **exactly once per exact** resolved `ArtifactProfile`
+per generate/build command (`rextio.plugins.capabilities`). The immutable
+`StandalonePluginContext` is reused for closure, codegen, dependency
+selection, and JSON serialization — reports never re-call the hook.
+
+A function is standalone-capable only when **every** plugin claim rule id and
+**every** plugin type key it uses is covered: signature `plugin_type_keys`
+**plus** claim `operand_types`, `result_type`, and receiver type when present.
+Missing or partial coverage excludes the function (planning and codegen
+defense-in-depth). Rejected/fallback functions never appear in
+`capable_functions`. Standalone reports include deterministic per-function
+decisions (`qualname`, `supported`, used/missing rule ids and type keys,
+`denial_reason`). Existing `route` / `native_status` and legacy
+`PluginType.to_dict()` byte shapes are unchanged.
+
+### 10.4 Codegen and cargo
+
+`LoweringContext` gains defaulted API 1.4 fields (host-extension construction
+unchanged):
+
+* `backend: str = "pyo3"` — closed set `{pyo3, standalone-rust}`
+* `artifact_profile: ArtifactProfile | None = None` — exact resolved profile
+  for standalone lowers; required when `backend == "standalone-rust"`
+
+In standalone Rust mode, capable plugin-lowered functions render with **native
+Rust types only** (no PyO3 boundary conversion). Only profile-declared uses/
+helpers may be emitted; a second codegen assertion rejects undeclared support
+from `lower()`. Profile-specific exact crate dependencies are collected only
+from functions **actually emitted after transitive exclusion** (a capable
+plugin function that calls an unsupported plugin function is excluded and must
+not inject deps when an independent core function remains). Unsupported
+reachable plugin functions are pre-Cargo closure blockers for native-only
+executables; unreachable ones do not block. Rust executable CLI preflight uses
+the same capability-aware closure / precomputed context so a valid plugin
+executable is not misclassified as unavailable.
+
+### 10.5 Introspection vs generate/build
+
+- `rextio capabilities` reports additive `artifact_capability_declared`
+  presence only. It must **not** probe the host or execute profile hooks.
+- `generate` / `build` JSON may include resolved
+  `standalone_plugin_capabilities` allow/deny details (including
+  `function_decisions`) for requested profiles, serialized from the
+  already-resolved context.
+- `lowering_provided` semantics are unchanged.
+
+### 10.6 Deferred positive host-executable vertical slice
+
+The contract, resolver, closure blockers, and codegen path are shared with
+host-executable profiles. A full positive end-to-end host-executable
+integration (entrypoint + plugin-capable call graph + cargo binary) may still
+be expanded beyond the rust-crate positive vertical slice; until then,
+unsupported or undeclared plugin reachability remains fail-closed pre-Cargo.
+
 ## Non-goals
 
 - No core-IR exposure to plugins; no statement/control-flow emission.
 - No in-place mutation of plugin-typed arguments; no view aliasing.
 - No plugin participation in the scalar boundary-call path or executable
-  delegation.
+  delegation without an explicit API 1.4 standalone capability.
 - No claim priority/ordering between plugins (overlap is an error).
 - No usage-based dtype/rank inference yet (annotation vocabulary only).
+- No inference of standalone support from host-extension plugin surfaces.
