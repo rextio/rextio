@@ -237,6 +237,7 @@ flag and environment variable. Common examples:
 ```text
 --fallback / REXTIO_FALLBACK_BACKEND / [build] fallback_backend
 --fallback-threshold / REXTIO_BOUNDARY_FALLBACK_THRESHOLD / [build] fallback_threshold
+--artifact-evidence-policy / REXTIO_ARTIFACT_EVIDENCE_POLICY / [build] artifact_evidence_policy
 --target-language / REXTIO_TARGET_LANGUAGE / [build] native_backend
 --target-version / REXTIO_TARGET_VERSION / [target] version
 --target-build-option / REXTIO_TARGET_BUILD_OPTIONS / [target.build_options]

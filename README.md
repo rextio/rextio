@@ -12,13 +12,16 @@ typed Python functions that can be safely lowered to Rust, compiles them ahead
 of time with PyO3, and keeps everything else running through generated Python
 fallback code - same imports, same behavior.
 
-**Unreleased branch note:** Release Train C adds experimental host source/
+**Unreleased branch note:** `main` remains at the released 0.1.4 commit while
+Release Train C integrates on the next-version branch `0.1.5`; feature PRs
+target `0.1.5` until the final release PR. Release Train C adds experimental host source/
 artifact planning, a narrow initializer-before-main Rust executable slice, and
 plugin API **1.4** fail-closed standalone artifact capability (rust-crate /
 host-executable), plus a C5.1 external pure-Python source inventory/gate
 preview, a C6.1 bounded prebuild authorization-contract preview, and a C6.2
 bounded host-extension wheel SBOM/provenance preview (incomplete/unsigned; not
-full C6). This branch emits additive tooling contract **2.7.0** and plugin API
+full C6), plus a C6.3 opt-in required-evidence gate for that exact preview
+artifact set. This branch emits additive tooling contract **2.8.0** and plugin API
 **1.4** while keeping package version **0.1.4**; those changes are not yet a
 tagged or PyPI release. Published 0.1.4 remains the plugin API **1.3** /
 contract **2.2.0** producer. See
@@ -100,6 +103,7 @@ rextio build . --entrypoint=myapp.cli:main
 rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
 rextio build . --entrypoint=myapp.cli:main --executable-backend=rust --executable-fallback=error
 rextio build . --rust-importable --rust-crate-name=my_native
+rextio build . --artifact-evidence-policy=required
 ```
 
 A typical end-to-end flow:
@@ -118,6 +122,15 @@ Cargo, maturin, Nuitka, wheel building, or executable packaging.
 
 Use `rextio build` when you want the generated source plus compiled/packageable
 artifacts.
+
+`--artifact-evidence-policy=required` is deliberately narrower: it accepts
+exactly one native host-extension + CPython wheel backed by an accepted native
+region (a function and/or native top-level segment), with no executable or
+Rust-importable crate, and exits with `RXT060` unless the C6.2 evidence status
+is `preview-ready`. Its gate remains `distribution_authorized: false`,
+`complete: false`, and `signed: false`; it is not a release authorization or a
+full supply-chain attestation. The default `best-effort` policy preserves the
+C6.2 behavior where evidence unavailability does not fail an ordinary build.
 
 ## Requirements
 
@@ -303,6 +316,7 @@ Common settings:
 | `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
 | `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
 | `[build] build_timeout_seconds` | `--build-timeout` | `REXTIO_BUILD_TIMEOUT` |
+| `[build] artifact_evidence_policy` | `--artifact-evidence-policy` | `REXTIO_ARTIFACT_EVIDENCE_POLICY` |
 | `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
 | `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
 | `[rust] importable` | `--rust-importable` / `--no-rust-importable` | `REXTIO_RUST_IMPORTABLE` |

@@ -19,6 +19,7 @@ class BuildConfig:
     # (cargo/maturin/nuitka). A hung toolchain fails the build instead of
     # blocking indefinitely.
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS
+    artifact_evidence_policy: str = "best-effort"
 
 
 @dataclass(frozen=True)

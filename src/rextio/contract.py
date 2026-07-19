@@ -36,5 +36,7 @@ from __future__ import annotations
 # linkage/codegen are unimplemented.
 # Contract 2.7.0 adds optional build.json.artifact_evidence for the bounded
 # C6.2 host-extension wheel SBOM/provenance preview (incomplete, unsigned).
+# Contract 2.8.0 adds the opt-in C6.3 required artifact-evidence gate without
+# granting distribution authorization or changing C6.2 evidence semantics.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.7.0"
+TOOLING_CONTRACT_VERSION = "2.8.0"

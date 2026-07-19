@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +21,19 @@ from rextio.artifacts.closure import (
     strategy_from_compatibility_value,
 )
 from rextio.artifacts.entry_graph import executable_entry_graph
-from rextio.artifacts.evidence import ArtifactEvidence
+from rextio.artifacts.evidence import (
+    ARTIFACT_EVIDENCE_POLICY_BEST_EFFORT,
+    ARTIFACT_EVIDENCE_POLICY_REQUIRED,
+    MAX_SIDECAR_BYTES,
+    REASON_EVIDENCE_INTERNAL,
+    REASON_SIDECAR_WRITE_FAILED,
+    REASON_WHEEL_MUTATED,
+    ArtifactEvidence,
+    ArtifactEvidenceError,
+    ArtifactEvidenceGate,
+    hash_regular_file,
+    project_relative_logical_path,
+)
 from rextio.artifacts.models import ArtifactKind, ArtifactProfile, FallbackStrategy
 from rextio.contract import TOOLING_CONTRACT_VERSION
 from rextio.artifacts.profiles import (
@@ -70,6 +84,7 @@ from rextio.build.rust_crate_builder import (
 )
 from rextio.build.wheel_builder import (
     WheelBuildResult,
+    artifact_wheel_path,
     build_artifact_wheel,
     skipped_wheel,
 )
@@ -281,6 +296,9 @@ class BuildResult:
     # C6.2: bounded host-extension wheel SBOM/provenance preview (additive).
     # Absent when the build is outside the ordinary host-extension wheel path.
     artifact_evidence: ArtifactEvidence | None = None
+    # C6.3: emitted only for the opt-in required evidence policy. Even a
+    # satisfied gate remains incomplete, unsigned, and non-authorizing.
+    artifact_evidence_gate: ArtifactEvidenceGate | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this result.
@@ -321,7 +339,266 @@ class BuildResult:
             ]
         if self.artifact_evidence is not None:
             data["artifact_evidence"] = self.artifact_evidence.to_dict()
+        if self.artifact_evidence_gate is not None:
+            data["artifact_evidence_gate"] = self.artifact_evidence_gate.to_dict()
         return data
+
+
+class ArtifactEvidenceRequiredError(RuntimeError):
+    """Raised when the opt-in required evidence policy blocks a build."""
+
+    def __init__(
+        self,
+        gate: ArtifactEvidenceGate,
+        *,
+        result: BuildResult | None = None,
+    ) -> None:
+        self.gate = gate
+        self.result = result
+        detail = gate.evidence_reason or gate.reason or "evidence-unavailable"
+        super().__init__(f"required artifact evidence gate blocked: {detail}")
+
+
+@dataclass(frozen=True)
+class _RequiredEvidenceRollback:
+    """No-throw rollback result used to avoid overstating output cleanup."""
+
+    current_outputs_removed: bool
+    previous_outputs_restored: bool
+    backup_directory_removed: bool
+
+    @property
+    def complete(self) -> bool:
+        return (
+            self.current_outputs_removed
+            and self.previous_outputs_restored
+            and self.backup_directory_removed
+        )
+
+
+def _lstat_or_none(path: Path) -> os.stat_result | None:
+    """Inspect one directory entry without following a symlink."""
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _unlink_entry_no_follow(path: Path) -> bool:
+    """Remove one non-directory entry without following symlinks."""
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    if stat.S_ISDIR(entry.st_mode):
+        return False
+    try:
+        path.unlink()
+    except OSError:
+        return False
+    try:
+        return _lstat_or_none(path) is None
+    except OSError:
+        return False
+
+
+def _entry_presence_no_follow(path: Path) -> bool | None:
+    """Return entry presence without following links, or None if inspection failed."""
+    try:
+        return _lstat_or_none(path) is not None
+    except OSError:
+        return None
+
+
+def _real_contained_directory(path: Path, *, parent: Path) -> None:
+    """Require an existing direct child directory without following a symlink."""
+    try:
+        entry = path.lstat()
+        parent_entry = parent.lstat()
+        if stat.S_ISLNK(parent_entry.st_mode) or not stat.S_ISDIR(parent_entry.st_mode):
+            raise OSError("required evidence parent must be a real directory")
+        if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
+            raise OSError("required evidence directory must be a real directory")
+        resolved_parent = parent.resolve(strict=True)
+        resolved_path = path.resolve(strict=True)
+    except OSError as error:
+        raise OSError("required evidence directory could not be inspected") from error
+    if resolved_path.parent != resolved_parent:
+        raise OSError("required evidence directory escapes its expected parent")
+
+
+@dataclass
+class _RequiredEvidenceOutputs:
+    """Preserve exact pre-existing outputs until a required gate succeeds."""
+
+    paths: tuple[Path, ...]
+    backups: tuple[Path | None, ...]
+    backup_dir: Path
+    _active: bool = True
+
+    @classmethod
+    def prepare(cls, layout: ArtifactLayout, wheel_path: Path) -> _RequiredEvidenceOutputs:
+        paths = (
+            wheel_path,
+            wheel_path.with_suffix(wheel_path.suffix + ".cdx.json"),
+            wheel_path.with_suffix(wheel_path.suffix + ".intoto.json"),
+        )
+        dist_parent = wheel_path.parent
+        if dist_parent != layout.dist_dir:
+            raise OSError("required evidence output parent is not the dist directory")
+        dist_parent.mkdir(parents=True, exist_ok=True)
+        _real_contained_directory(dist_parent, parent=layout.root)
+
+        _real_contained_directory(layout.build_dir, parent=layout.rextio_dir)
+        backup_dir = layout.build_dir / "required-evidence-output-backup"
+        backup_dir.mkdir(mode=0o700, exist_ok=False)
+        try:
+            _real_contained_directory(backup_dir, parent=layout.build_dir)
+        except OSError:
+            try:
+                backup_dir.rmdir()
+            except OSError:
+                pass
+            raise
+
+        backups: list[Path | None] = []
+        try:
+            for index, path in enumerate(paths):
+                entry = _lstat_or_none(path)
+                if entry is None:
+                    backups.append(None)
+                    continue
+                if stat.S_ISDIR(entry.st_mode):
+                    raise OSError("required evidence output path is a directory")
+                backup = backup_dir / f"{index}.previous"
+                path.replace(backup)
+                backups.append(backup)
+        except BaseException as error:
+            # A signal may arrive between rename and list append. Include the
+            # current slot when its exclusive backup name now exists.
+            current_index = len(backups)
+            if current_index < len(paths):
+                possible_backup = backup_dir / f"{current_index}.previous"
+                # Unknown presence is treated as preserved-but-unverified so
+                # rollback fails safely without deleting either candidate.
+                if _entry_presence_no_follow(possible_backup) is not False:
+                    backups.append(possible_backup)
+            transaction = cls(
+                paths=paths[: len(backups)], backups=tuple(backups), backup_dir=backup_dir
+            )
+            outcome = transaction.rollback()
+            if not outcome.complete:
+                raise OSError("required evidence output preparation rollback was incomplete") from error
+            raise
+        return cls(paths=paths, backups=tuple(backups), backup_dir=backup_dir)
+
+    def commit(self) -> None:
+        """Discard preserved prior outputs after required evidence succeeds."""
+        # Crossing this boundary commits the new exact outputs. Cleanup below
+        # is deliberately no-throw and never follows a backup symlink.
+        self._active = False
+        for backup in self.backups:
+            if backup is not None:
+                _unlink_entry_no_follow(backup)
+        try:
+            self.backup_dir.rmdir()
+        except OSError:
+            pass
+
+    def rollback(self) -> _RequiredEvidenceRollback:
+        """Remove this run's outputs and restore prior entries without following links."""
+        if not self._active:
+            return _RequiredEvidenceRollback(True, True, True)
+        self._active = False
+        removed = True
+        restored = True
+        for path, backup in zip(self.paths, self.backups, strict=False):
+            backup_presence = (
+                _entry_presence_no_follow(backup) if backup is not None else False
+            )
+            backup_present = backup_presence is True
+            if backup is None or backup_present:
+                removed = _unlink_entry_no_follow(path) and removed
+            # If a prior entry was recorded but its backup is absent, preparation
+            # did not move it (or preservation was lost). Never delete/follow it.
+            if backup is not None:
+                if backup_presence is not True:
+                    restored = False
+                    continue
+                if _entry_presence_no_follow(path) is not False:
+                    restored = False
+                    continue
+                try:
+                    backup.replace(path)
+                except OSError:
+                    restored = False
+                else:
+                    restored = _entry_presence_no_follow(path) is True and restored
+            elif _entry_presence_no_follow(path) is not False:
+                removed = False
+        try:
+            self.backup_dir.rmdir()
+        except OSError:
+            backup_removed = False
+        else:
+            backup_removed = True
+        return _RequiredEvidenceRollback(removed, restored, backup_removed)
+
+
+def _required_evidence_output_mismatch_reason(
+    *,
+    project_root: Path,
+    expected_wheel: Path,
+    wheel_build: WheelBuildResult,
+    evidence: ArtifactEvidence,
+) -> str | None:
+    """Revalidate the exact final files immediately before satisfying the gate."""
+    if (
+        evidence.status != "preview-ready"
+        or evidence.subject is None
+        or evidence.sbom is None
+        or evidence.provenance is None
+    ):
+        return REASON_EVIDENCE_INTERNAL
+    if wheel_build.status != "built" or wheel_build.path is None:
+        return REASON_WHEEL_MUTATED
+    if Path(wheel_build.path) != expected_wheel:
+        return REASON_WHEEL_MUTATED
+
+    expected_sbom = expected_wheel.with_suffix(expected_wheel.suffix + ".cdx.json")
+    expected_provenance = expected_wheel.with_suffix(
+        expected_wheel.suffix + ".intoto.json"
+    )
+    try:
+        wheel_logical = project_relative_logical_path(project_root, expected_wheel)
+        wheel_digest, wheel_size = hash_regular_file(expected_wheel)
+    except (ArtifactEvidenceError, OSError, ValueError):
+        return REASON_WHEEL_MUTATED
+    if (
+        evidence.subject.logical_path != wheel_logical
+        or evidence.subject.sha256 != wheel_digest
+        or evidence.subject.size != wheel_size
+    ):
+        return REASON_WHEEL_MUTATED
+
+    for path, recorded in (
+        (expected_sbom, evidence.sbom),
+        (expected_provenance, evidence.provenance),
+    ):
+        try:
+            logical = project_relative_logical_path(project_root, path)
+            digest, size = hash_regular_file(path, max_bytes=MAX_SIDECAR_BYTES)
+        except (ArtifactEvidenceError, OSError, ValueError):
+            return REASON_SIDECAR_WRITE_FAILED
+        if (
+            recorded.logical_path != logical
+            or recorded.sha256 != digest
+            or recorded.size != size
+        ):
+            return REASON_SIDECAR_WRITE_FAILED
+    return None
 
 
 @dataclass(frozen=True)
@@ -387,6 +664,22 @@ def _build_artifact_profiles(
     return tuple(profiles)
 
 
+def required_artifact_evidence_scope_is_valid(
+    *,
+    native_extension: bool,
+    fallback: str,
+    executable_entrypoint: str | None,
+    rust_importable: bool,
+) -> bool:
+    """Check the exact C6.3 artifact set without probing any toolchain."""
+    return (
+        native_extension
+        and fallback == "cpython"
+        and executable_entrypoint is None
+        and not rust_importable
+    )
+
+
 def build_hybrid_artifact(
     project_root: Path,
     analysis: ProjectAnalysis,
@@ -407,6 +700,7 @@ def build_hybrid_artifact(
     executable_hybrid_runtime: str | None = None,
     executable_fallback: FallbackStrategy | str | None = None,
     toolchain: ToolchainConfig | None = None,
+    artifact_evidence_policy: str = ARTIFACT_EVIDENCE_POLICY_BEST_EFFORT,
     *,
     executable_standalone: StandalonePluginContext | None = None,
     standalone_contexts: dict[ArtifactKind, StandalonePluginContext] | None = None,
@@ -433,6 +727,20 @@ def build_hybrid_artifact(
         if blocked_plan.authorization_verified:
             raise ExternalSourceC5NotImplementedError(blocked_plan)
         raise ExternalSourceBuildBlockedError(blocked_plan)
+    if artifact_evidence_policy not in {
+        ARTIFACT_EVIDENCE_POLICY_BEST_EFFORT,
+        ARTIFACT_EVIDENCE_POLICY_REQUIRED,
+    }:
+        raise ValueError("artifact_evidence_policy must be best-effort or required")
+    if artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED and not (
+        required_artifact_evidence_scope_is_valid(
+            native_extension=analysis.requires_native_build(),
+            fallback=fallback,
+            executable_entrypoint=executable_entrypoint,
+            rust_importable=rust_importable,
+        )
+    ):
+        raise ArtifactEvidenceRequiredError(ArtifactEvidenceGate.out_of_scope())
     fallback_strategy = resolve_executable_fallback(executable_fallback, executable_hybrid_runtime)
     toolchain = toolchain or ToolchainConfig()
     target_plan = target_plan or default_target_plan()
@@ -446,6 +754,11 @@ def build_hybrid_artifact(
         rust_importable=rust_importable and analysis.requires_native_build(),
     )
     plan = create_build_plan(analysis, fallback, artifact_profiles=artifact_profiles)
+    if artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED and not (
+        len(plan.artifact_profiles) == 1
+        and is_in_scope_host_extension_cpython(plan)
+    ):
+        raise ArtifactEvidenceRequiredError(ArtifactEvidenceGate.out_of_scope())
     # Resolve each exact ArtifactProfile's capability at most once for this command.
     contexts = _ensure_standalone_contexts(
         plan,
@@ -532,20 +845,90 @@ def build_hybrid_artifact(
     fallback_build = _build_fallback_backend(
         fallback, layout, build_timeout=build_timeout_seconds, toolchain=toolchain
     )
-    wheel_build = _build_wheel_artifact(project_root, layout, native_build, fallback_build)
-    # C6.2: after the ordinary host-extension+cpython wheel is finalized, emit
-    # preview-ready or unavailable evidence. Out-of-scope builds omit the field.
-    # Unavailability never raises into the ordinary build success path.
-    artifact_evidence = emit_host_extension_wheel_evidence(
-        project_root=project_root,
-        layout=layout,
-        plan=plan,
-        wheel_build=wheel_build,
-        native_build=native_build,
-        input_snapshot=evidence_snapshot,
-        timeout=build_timeout_seconds,
-        toolchain=toolchain,
-    )
+    required_outputs: _RequiredEvidenceOutputs | None = None
+    expected_wheel: Path | None = None
+    if artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED:
+        expected_wheel = artifact_wheel_path(
+            project_root, layout.build_python_dir, layout.dist_dir
+        )
+        try:
+            required_outputs = _RequiredEvidenceOutputs.prepare(layout, expected_wheel)
+        except OSError:
+            failed_evidence = ArtifactEvidence.unavailable(
+                reason=REASON_SIDECAR_WRITE_FAILED,
+                target_triple=plan.artifact_profiles[0].target_triple,
+            )
+            gate = ArtifactEvidenceGate.from_evidence(failed_evidence)
+            raise ArtifactEvidenceRequiredError(gate) from None
+    try:
+        wheel_build = _build_wheel_artifact(
+            project_root, layout, native_build, fallback_build
+        )
+        # C6.2: after the ordinary host-extension+cpython wheel is finalized, emit
+        # preview-ready or unavailable evidence. Out-of-scope builds omit the field.
+        # Unavailability never raises into the ordinary build success path.
+        artifact_evidence = emit_host_extension_wheel_evidence(
+            project_root=project_root,
+            layout=layout,
+            plan=plan,
+            wheel_build=wheel_build,
+            native_build=native_build,
+            input_snapshot=evidence_snapshot,
+            timeout=build_timeout_seconds,
+            toolchain=toolchain,
+        )
+        artifact_evidence_gate: ArtifactEvidenceGate | None = None
+        if artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED:
+            assert required_outputs is not None
+            assert expected_wheel is not None
+            if artifact_evidence is None:
+                artifact_evidence = ArtifactEvidence.unavailable(
+                    reason=REASON_EVIDENCE_INTERNAL,
+                    target_triple=plan.artifact_profiles[0].target_triple,
+                )
+            elif artifact_evidence.status == "preview-ready":
+                mismatch = _required_evidence_output_mismatch_reason(
+                    project_root=project_root,
+                    expected_wheel=expected_wheel,
+                    wheel_build=wheel_build,
+                    evidence=artifact_evidence,
+                )
+                if mismatch is not None:
+                    artifact_evidence = ArtifactEvidence.unavailable(
+                        reason=mismatch,
+                        target_triple=plan.artifact_profiles[0].target_triple,
+                    )
+            artifact_evidence_gate = ArtifactEvidenceGate.from_evidence(artifact_evidence)
+            if artifact_evidence_gate.status == "blocked":
+                rollback = required_outputs.rollback()
+                if rollback.complete:
+                    cleanup_message = (
+                        "the wheel and sidecars created by this run were removed and "
+                        "pre-existing outputs were restored."
+                    )
+                else:
+                    cleanup_message = (
+                        "output rollback was incomplete; files may remain and "
+                        "pre-existing outputs may require manual recovery."
+                    )
+                wheel_build = WheelBuildResult(
+                    status="failed",
+                    path=None,
+                    message=(
+                        "RXT060 Required artifact evidence was unavailable; "
+                        + cleanup_message
+                    ),
+                )
+            else:
+                required_outputs.commit()
+    except BaseException as error:
+        if required_outputs is not None and required_outputs._active:
+            rollback = required_outputs.rollback()
+            if not rollback.complete:
+                raise OSError(
+                    "required evidence output rollback was incomplete"
+                ) from error
+        raise
     executable_build = _build_executable_artifact(
         layout,
         native_build,
@@ -581,8 +964,11 @@ def build_hybrid_artifact(
         plugin_crate_dependencies=plugin_crate_dependencies,
         standalone_plugin_capabilities=_standalone_capability_reports_from_contexts(contexts),
         artifact_evidence=artifact_evidence,
+        artifact_evidence_gate=artifact_evidence_gate,
     )
     _write_build_result(layout, result)
+    if artifact_evidence_gate is not None and artifact_evidence_gate.status == "blocked":
+        raise ArtifactEvidenceRequiredError(artifact_evidence_gate, result=result)
     return result
 
 
@@ -643,15 +1029,21 @@ def _failed_closure_build_result(
 
 def _write_build_result(layout: ArtifactLayout, result: BuildResult) -> None:
     """Serialize one aggregate build result deterministically."""
+    status = _build_status(
+        result.native_build,
+        result.fallback_build,
+        result.executable_build,
+        result.rust_crate_build,
+    )
+    if (
+        result.artifact_evidence_gate is not None
+        and result.artifact_evidence_gate.status == "blocked"
+    ):
+        status = "artifact-evidence-required-failed"
     (layout.reports_dir / "build.json").write_text(
         json.dumps(
             {
-                "status": _build_status(
-                    result.native_build,
-                    result.fallback_build,
-                    result.executable_build,
-                    result.rust_crate_build,
-                ),
+                "status": status,
                 **result.to_dict(),
             },
             indent=2,

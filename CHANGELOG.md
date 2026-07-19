@@ -5,8 +5,33 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.7.0** (package version stays **0.1.4**). Prior
-Train C host-planning work remains under the same unreleased line.
+**1.4** and tooling contract **2.8.0** (package version stays **0.1.4**). Prior
+Train C host-planning work remains under the same unreleased line. Unreleased
+feature PRs target the `0.1.5` integration branch; `main` stays at the published
+0.1.4 commit until the final authorized release PR.
+
+### C6.3 opt-in required artifact-evidence gate
+
+- Add `[build] artifact_evidence_policy = "best-effort" | "required"`,
+  `--artifact-evidence-policy`, and `REXTIO_ARTIFACT_EVIDENCE_POLICY` with the
+  normal CLI > environment > TOML > default precedence. `best-effort` remains
+  the default and preserves C6.2 behavior.
+- `required` accepts only one native host-extension + CPython wheel backed by
+  an accepted native region (a function and/or native top-level segment), with
+  no executable, Rust-importable crate, or additional artifact profile. Other
+  artifact sets fail before external toolchain work with `RXT060`, status
+  `artifact-evidence-required-failed`, and reason
+  `artifact-set-out-of-scope`.
+- Required builds succeed only for `artifact_evidence.status =
+  "preview-ready"`. Unavailable evidence fails closed, removes only this run's
+  exact wheel/sidecars while preserving pre-existing outputs, and retains
+  generated source and reports for debugging. The output transaction rejects
+  symlinked parents, restores on exceptional exits, and reports an incomplete
+  rollback explicitly instead of claiming cleanup succeeded.
+- Add immutable `artifact_evidence_gate` only in required mode. A satisfied
+  gate still reports `distribution_authorized: false`, `complete: false`, and
+  `signed: false`; C6.2 remains preview-only and is not full distribution
+  authorization. Tooling contract **2.8.0** (additive minor).
 
 ### C6.2 bounded host-extension wheel artifact-evidence preview
 

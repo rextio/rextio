@@ -177,6 +177,7 @@ def test_init_creates_default_project_files(tmp_path: Path, capsys) -> None:
     assert (tmp_path / "REXTIO.md").exists()
     assert (tmp_path / ".rextioignore").exists()
     config_text = (tmp_path / "rextio.toml").read_text(encoding="utf-8")
+    assert 'artifact_evidence_policy = "best-effort"' in config_text
     assert 'native_marker = "auto"' in config_text
     assert 'default_external_policy = "fallback"' in config_text
     assert "[embedding]" in config_text

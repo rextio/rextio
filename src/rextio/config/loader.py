@@ -38,7 +38,13 @@ class ConfigError(RuntimeError):
 
 
 CONFIG_KEYS = {
-    "build": {"native_backend", "fallback_backend", "fallback_threshold", "build_timeout_seconds"},
+    "build": {
+        "native_backend",
+        "fallback_backend",
+        "fallback_threshold",
+        "build_timeout_seconds",
+        "artifact_evidence_policy",
+    },
     "rust": {"binding", "build_tool", "importable", "crate_name"},
     "fallback": {"nuitka"},
     "target": {"version", "build_options"},
@@ -80,6 +86,7 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_FALLBACK_BACKEND": ("build", "fallback_backend", "string"),
     "REXTIO_BOUNDARY_FALLBACK_THRESHOLD": ("build", "fallback_threshold", "integer"),
     "REXTIO_BUILD_TIMEOUT": ("build", "build_timeout_seconds", "positive_number"),
+    "REXTIO_ARTIFACT_EVIDENCE_POLICY": ("build", "artifact_evidence_policy", "string"),
     "REXTIO_RUST_BINDING": ("rust", "binding", "string"),
     "REXTIO_RUST_BUILD_TOOL": ("rust", "build_tool", "string"),
     "REXTIO_RUST_IMPORTABLE": ("rust", "importable", "boolean"),
@@ -291,6 +298,7 @@ def _validate_config_values(
         build["build_timeout_seconds"],
         maximum=MAX_BUILD_TIMEOUT_SECONDS,
     )
+    _require_string("build", "artifact_evidence_policy", build["artifact_evidence_policy"])
     _require_string("rust", "binding", rust["binding"])
     _require_string("rust", "build_tool", rust["build_tool"])
     _require_bool("rust", "importable", rust["importable"])
@@ -329,6 +337,12 @@ def _validate_config_values(
 
     _require_value("build", "native_backend", build["native_backend"], {"rust"})
     _require_value("build", "fallback_backend", build["fallback_backend"], {"cpython", "nuitka"})
+    _require_value(
+        "build",
+        "artifact_evidence_policy",
+        build["artifact_evidence_policy"],
+        {"best-effort", "required"},
+    )
     _require_value("rust", "binding", rust["binding"], {"pyo3"})
     _require_value("rust", "build_tool", rust["build_tool"], {"cargo", "maturin"})
     _require_value("fallback", "nuitka", fallback["nuitka"], {"experimental"})

@@ -3,6 +3,7 @@
 from rextio.artifacts.evidence import (
     ArtifactEvidence,
     ArtifactEvidenceError,
+    ArtifactEvidenceGate,
     CargoDepEdge,
     CargoPackageRef,
     EvidenceFileRef,
@@ -31,6 +32,7 @@ __all__ = [
     "ABIRequirement",
     "ArtifactEvidence",
     "ArtifactEvidenceError",
+    "ArtifactEvidenceGate",
     "ArtifactKind",
     "ArtifactProfile",
     "ArtifactProvenance",
