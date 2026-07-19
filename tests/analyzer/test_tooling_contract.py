@@ -136,8 +136,8 @@ def kernel(x: float) -> float:
     data = analysis.to_dict()
 
     assert data["contract_version"] == TOOLING_CONTRACT_VERSION
-    # Contract 2.4.0 adds plugin standalone-capability fields while retaining prior shapes.
-    assert data["contract_version"] == "2.4.0"
+    # Contract 2.5.0 adds preview-only external-source evidence while retaining prior shapes.
+    assert data["contract_version"] == "2.5.0"
     assert TOOLING_CONTRACT_VERSION.split(".", 1)[0] == "2"
 
     # Contract 2.1.0 always serializes logger_group_targets on each module.

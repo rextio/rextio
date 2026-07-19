@@ -53,6 +53,7 @@ from rextio.plugins.loader import PluginError
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.config.schema import RextioConfig
 from rextio.fallback.nuitka import nuitka_unavailable_message
+from rextio.source.external import ExternalSourceBuildBlockedError
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
@@ -124,6 +125,47 @@ def _report_plugin_capability_failure(
     return 1
 
 
+def _report_external_source_build_blocked(
+    project_root: Path,
+    analysis: ProjectAnalysis,
+    fallback: str,
+    reporter: Reporter,
+) -> int:
+    """Stop C5 previews before toolchain or artifact work and retain evidence."""
+    assert analysis.external_source_plan is not None
+    error = ExternalSourceBuildBlockedError(analysis.external_source_plan)
+    reports_dir = project_root / ".rextio" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    for stale in ("build.json", "generate.json", "check.json"):
+        (reports_dir / stale).unlink(missing_ok=True)
+    write_check_report(project_root, analysis)
+    (reports_dir / "build.json").write_text(
+        json.dumps(
+            {
+                "analysis": analysis.to_dict(),
+                "error": {"code": "RXT060", "message": str(error)},
+                "external_source_plan": analysis.external_source_plan.to_dict(),
+                "fallback": fallback,
+                "status": "external-source-c6-blocked",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    reporter.warn(
+        "External source license warning: "
+        f"{analysis.external_source_plan.license_warning}"
+    )
+    reporter.error(str(error))
+    reporter.error(
+        "Suggestion: use rextio check/generate for preview evidence, or wait for "
+        "the C6 license-lock, SBOM, and provenance gate."
+    )
+    return 1
+
+
 def _toolchain_preflight_error(config: RextioConfig) -> str | None:
     """Verify the configured CPython before any analysis or build work.
 
@@ -159,6 +201,67 @@ def _toolchain_preflight_error(config: RextioConfig) -> str | None:
         if path is None:
             return resolve_error
     return None
+
+
+def _external_source_preview_declared(config: RextioConfig) -> bool:
+    """Return whether config requests the C5 analysis-first preview path."""
+    return any(
+        policy.distribution is not None and policy.version is not None
+        for policy in config.imports.packages.values()
+    )
+
+
+def _prepare_build_toolchain(
+    config: RextioConfig,
+    fallback: str,
+    reporter: Reporter,
+) -> bool:
+    """Run build-wide Python/Nuitka probes and report stable failures."""
+    toolchain_error = _toolchain_preflight_error(config)
+    if toolchain_error is not None:
+        reporter.error("RXT060 Build failed while preparing the toolchain.")
+        reporter.error(toolchain_error)
+        return False
+
+    # Paths that ALWAYS invoke Nuitka when reached: the Nuitka fallback and a
+    # Nuitka executable with an entrypoint. The rust-executable hybrid runtime
+    # is deliberately NOT gated here: it only invokes Nuitka when analysis
+    # finds delegated fallback calls, so a pre-analysis rejection would block
+    # valid no-delegation builds that never touch Nuitka. The dispatcher
+    # builder enforces the version floor at the point of real use.
+    nuitka_requested = fallback == "nuitka" or (
+        config.executable.entrypoint is not None and config.executable.backend == "nuitka"
+    )
+    if not nuitka_requested:
+        return True
+
+    nuitka_command, resolve_error = resolve_nuitka_command(config.toolchain)
+    if nuitka_command is None:
+        if config.toolchain.nuitka_version is not None:
+            # A pin is strict for a tool this build uses: absent means the pin
+            # cannot be verified, so the build fails up front.
+            reporter.error("RXT060 Build failed while preparing the Nuitka toolchain.")
+            reporter.error(
+                resolve_error
+                or "Nuitka is pinned but not installed; install it or drop the pin."
+            )
+            return False
+        if fallback == "nuitka" or resolve_error is not None:
+            reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
+            reporter.error(resolve_error or nuitka_unavailable_message())
+            return False
+        # Executable/hybrid paths keep their existing missing-tool handling
+        # (reported by the builder with path-specific guidance).
+        return True
+
+    # The builders re-probe later so they stay correct for non-CLI callers;
+    # the extra ``nuitka --version`` is a deliberate, negligible cost.
+    version_error = nuitka_toolchain_error(nuitka_command, config.toolchain)
+    if version_error is not None:
+        reporter.error("RXT060 Build failed while preparing the Nuitka toolchain.")
+        reporter.error(version_error)
+        return False
+    return True
 
 
 def _rust_toolchain_error(config: RextioConfig, build_tool: str) -> str | None:
@@ -245,48 +348,14 @@ def run(args: Namespace) -> int:
         )
         return 1
 
-    # Paths that ALWAYS invoke Nuitka when reached: the Nuitka fallback and a
-    # Nuitka executable with an entrypoint. The rust-executable hybrid runtime
-    # is deliberately NOT gated here: it only invokes Nuitka when analysis
-    # finds delegated fallback calls, so a pre-analysis rejection would block
-    # valid no-delegation builds that never touch Nuitka. The dispatcher
-    # builder enforces the version floor at the point of real use.
-    toolchain_error = _toolchain_preflight_error(config)
-    if toolchain_error is not None:
-        reporter.error("RXT060 Build failed while preparing the toolchain.")
-        reporter.error(toolchain_error)
+    # Ordinary builds retain the early preflight. C5 declarations defer these
+    # executable probes until after analysis so a preview is always stopped by
+    # the C6 authority gate before any configured tool is invoked.
+    external_preview_declared = _external_source_preview_declared(config)
+    if not external_preview_declared and not _prepare_build_toolchain(
+        config, fallback, reporter
+    ):
         return 1
-
-    nuitka_requested = fallback == "nuitka" or (
-        config.executable.entrypoint is not None and config.executable.backend == "nuitka"
-    )
-    if nuitka_requested:
-        nuitka_command, resolve_error = resolve_nuitka_command(config.toolchain)
-        if nuitka_command is None:
-            if config.toolchain.nuitka_version is not None:
-                # A pin is strict for a tool this build uses: absent means
-                # the pin cannot be verified, so the build fails up front.
-                reporter.error("RXT060 Build failed while preparing the Nuitka toolchain.")
-                reporter.error(
-                    resolve_error
-                    or "Nuitka is pinned but not installed; install it or drop the pin."
-                )
-                return 1
-            if fallback == "nuitka" or resolve_error is not None:
-                reporter.error("RXT060 Build failed while preparing Nuitka fallback.")
-                reporter.error(resolve_error or nuitka_unavailable_message())
-                return 1
-            # Executable/hybrid paths keep their existing missing-tool handling
-            # (reported by the builder with path-specific guidance).
-        else:
-            # Fail before the (potentially slow) project analysis, not mid-build.
-            # The builders re-probe later so they stay correct for non-CLI callers;
-            # the extra `nuitka --version` is a deliberate, negligible cost.
-            version_error = nuitka_toolchain_error(nuitka_command, config.toolchain)
-            if version_error is not None:
-                reporter.error("RXT060 Build failed while preparing the Nuitka toolchain.")
-                reporter.error(version_error)
-                return 1
 
     try:
         analysis = analyze_project(
@@ -306,6 +375,13 @@ def run(args: Namespace) -> int:
         # RXT060 diagnostic instead of a raw traceback (council round 8).
         reporter.error(f"RXT060 Plugin error: {exc}")
         return 1
+    if analysis.external_source_plan is not None:
+        return _report_external_source_build_blocked(
+            project_root,
+            analysis,
+            fallback,
+            reporter,
+        )
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:
         reports_dir = project_root / ".rextio" / "reports"
@@ -332,6 +408,12 @@ def run(args: Namespace) -> int:
         reporter.error("RXT060 Build failed during project analysis.")
         reporter.error(f"Cause: Python parse errors were found under {project_root}.")
         reporter.error(f"Suggestion: run rextio check {project_root}")
+        return 1
+
+    # A declaration that was not actually imported produces no C5 plan. Resume
+    # the ordinary build contract only after that has been established without
+    # invoking configured Python/Nuitka tools.
+    if external_preview_declared and not _prepare_build_toolchain(config, fallback, reporter):
         return 1
 
     # The native Rust executable backend analyzes in delegate mode so the

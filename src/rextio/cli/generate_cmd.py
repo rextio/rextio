@@ -73,6 +73,11 @@ def run(args: Namespace) -> int:
     except PluginError as exc:
         reporter.error(f"RXT060 Plugin error: {exc}")
         return 1
+    if analysis.external_source_plan is not None:
+        reporter.warn(
+            "External source license warning: "
+            f"{analysis.external_source_plan.license_warning}"
+        )
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:
         reports_dir = project_root / ".rextio" / "reports"

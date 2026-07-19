@@ -32,6 +32,7 @@ from rextio.analyzer.plugin_claims import ClaimEngine
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.config.schema import ImportsConfig, RextioConfig
 from rextio.plugins.models import PluginRegistry, RextioPlugin
+from rextio.source.external import resolve_external_source_plan
 from rextio.targets.models import normalize_target_language
 
 IGNORED_PARTS = {
@@ -195,6 +196,8 @@ def analyze_project(
     )
     _strip_divergence_notes_from_non_native(analysis)
     _note_plugin_lowerable_accelerated(analysis, tuple(active_plugins))
+    if imports_config is not None:
+        analysis.external_source_plan = resolve_external_source_plan(imports_config, analysis)
     return analysis
 
 

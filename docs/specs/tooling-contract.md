@@ -3,7 +3,7 @@
 Status: **draft** (experimental tier). The current published producer is core
 0.1.4, released on 2026-07-18 with `contract_version` `2.2.0` and plugin API
 **1.3**. The Release Train C branch contains the additive, **unreleased**
-`2.4.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
+`2.5.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
 contract. Package version on the branch remains **0.1.4**.
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
@@ -31,7 +31,7 @@ Both JSON surfaces carry a top-level field. The published 0.1.4 producer emits:
 The unreleased Train C branch emits:
 
 ```json
-{ "contract_version": "2.4.0" }
+{ "contract_version": "2.5.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -47,7 +47,8 @@ to generic guidance when the major is outside what they support.
 | `2.1.0` | **Additive producer shape** (same major; dual-map `2.x` consumers stay supported). Core **0.1.3** always serializes module-level `logger_group_targets`, and conditionally serializes plugin-claim fields `receiver` and `callables` when present (plugin API 1.3 method/callable metadata). Position semantics unchanged from `2.0.0`. Consumers that ignore unknown fields continue to work. |
 | `2.2.0` | **Additive promotion-assessment shape.** Each reportable function adds `marker_kind`, a separate `promotion_assessment` evidence channel, and reliable `source_range` / `name_range`. Runtime `route`, `native_status`, and `rejection_codes` semantics remain unchanged. Failed automatic probes stay normal fallback rather than becoming compiler/build errors. Published with core **0.1.4**. |
 | `2.3.0` | **Unreleased additive host-planning shape** (Train C intermediate). Check/generate/build reports gain a fail-closed `host_source_plan`; generate/build plans carry resolved `artifact_profiles`; Rust executable closures add `module_initializers`; capabilities declares `artifact_contract` and a non-operational `device_provider_contract`. |
-| `2.4.0` | **Unreleased additive plugin standalone-capability shape** (current Train C producer). Capabilities plugins gain `artifact_capability_declared` (presence only; no profile-hook execution). Generate/build may emit `standalone_plugin_capabilities` with resolved per-profile allow/deny details. `lowering_provided`, route, native-status, rejection, and promotion-assessment semantics remain unchanged. |
+| `2.4.0` | **Unreleased additive plugin standalone-capability shape** (Train C intermediate). Capabilities plugins gain `artifact_capability_declared` (presence only; no profile-hook execution). Generate/build may emit `standalone_plugin_capabilities` with resolved per-profile allow/deny details. `lowering_provided`, route, native-status, rejection, and promotion-assessment semantics remain unchanged. |
+| `2.5.0` | **Unreleased additive external-source preview shape** (current Train C producer). Import-policy decisions add nullable exact `distribution` / `version` metadata; check/generate and blocked-build reports may add one sanitized `external_source_plan`. The plan is inventory evidence only (`execution_authority: "preview-only"`, `distributable: false`, `c6_gate: "required"`) and never grants source execution, lowering, build, packaging, or redistribution authority. |
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.
@@ -424,6 +425,86 @@ record their disposition, source range, statement indexes, dependency/binding/
 export/deletion sets, namespace uncertainty, and any fallback-barrier reason.
 An unavailable initializer carries no approximate segments.
 
+### External source inventory preview (contract 2.5.0)
+
+This section describes the C5.1 inventory/gate slice. It is intentionally
+smaller than external-package source AOT and must not be interpreted as build
+authority.
+
+A project may opt in through `rextio.toml` for exactly one imported package:
+
+```toml
+[imports.packages.small_math_pkg]
+policy = "try-native"
+max_depth = 1
+distribution = "small-math-pkg"
+version = "1.0.0"
+```
+
+The full declaration is config-only. Policy-only CLI/environment overrides do
+not supply the exact distribution identity. A `try-native` declaration without
+both `distribution` and `version` keeps its previous metadata-only behavior.
+Serialized import-policy decisions add nullable `distribution` and `version`
+fields; they are non-null only when carried from an exact package declaration.
+
+When the configured package is imported, `check.json` and `check --format json`
+add top-level `external_source_plan`. `generate.json` mirrors the same sanitized
+object at top level and does not copy external source into generated Python
+fallback output. A blocked `build.json` includes the plan both through
+`analysis.external_source_plan` and as top-level failure evidence:
+
+```json
+{
+  "external_source_plan": {
+    "status": "unavailable",
+    "execution_authority": "preview-only",
+    "distributable": false,
+    "c6_gate": "required",
+    "package": "small_math_pkg",
+    "distribution": "small-math-pkg",
+    "requested_version": "1.0.0",
+    "installed_version": "1.0.0",
+    "max_depth": 1,
+    "license_observed": "MIT",
+    "modules": [],
+    "candidate_functions": [],
+    "reason": "depth-1 preview source contains an unresolved import",
+    "license_warning": "..."
+  }
+}
+```
+
+`status` is exactly `preview-ready | unavailable`. An unavailable record has a
+sanitized `reason` and no approximate modules/candidates. Both statuses remain
+non-distributable and build-blocking. `license_warning` always states that
+translation/redistribution can create derivative-work obligations, calls out
+GNU/copyleft risk, and says the inventory is not legal advice; check, generate,
+and blocked build also emit it on stderr.
+
+Resolution uses installed metadata only and never imports or executes the
+package. It requires the exact configured distribution name and version, one
+well-formed WHEEL 1.0 record with only `Tag: py3-none-any`, one dist-info metadata root, safe
+unique RECORD paths, contained non-symlink files, and matching RECORD SHA-256
+and size for WHEEL, METADATA, and selected source. The preview reads only direct
+depth-1 UTF-8 `.py` files under the configured package and rejects a selected
+module containing any import. `modules` uses sanitized
+`distributions/<canonical-name>/...` references; installed absolute paths and
+source bytes never serialize.
+
+`candidate_functions` contains deterministic lexical hints only: undecorated
+top-level `def` names with scalar annotations (`bool`, `int`, `float`, `str`),
+no variadic parameters, and a scalar return annotation. C5.1 does not prove the
+body is lowerable, connect the function to project call sites, produce Rust,
+or authorize a native closure.
+
+`rextio build` returns `RXT060` with status
+`external-source-c6-blocked` before configured CPython/Nuitka/Cargo probes or
+artifact work. Programmatic hybrid builds raise
+`ExternalSourceBuildBlockedError` before creating artifact directories. A later
+C6 must introduce an exact source lock, license decision, SBOM, provenance
+attestation, and explicit closure/lowering authorization before any build,
+package, executable, Rust crate, or redistribution path can consume this plan.
+
 ### Resolved `artifact_profiles`
 
 `generate.json` and `build.json` add `plan.artifact_profiles`; the same exact
@@ -658,7 +739,8 @@ class RextioPluginV2(Protocol):
 - No incremental-analysis API (deferred until latency measurements demand it;
   v1 tooling calls the batch analyzer).
 - No recursive third-party-package source promotion, device-provider discovery,
-  provider build/link hook, CUDA execution, or device support claim in 2.3.
+  provider build/link hook, CUDA execution, or device support claim in 2.5.
+  C5.1 inventories one exact distribution but authorizes no lowering or build.
 - No name-based reservation of route strings beyond this document; new routes
   bump the contract minor version.
 
@@ -692,5 +774,12 @@ class RextioPluginV2(Protocol):
    initializer closure fields, plus declarative artifact/device capability
    markers. Preserve all 2.2 function and position semantics. This is a branch
    candidate, not a published core release.
-7. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
+7. **Release Train C / contract 2.4.0 (unreleased):** add presence-only plugin
+   standalone-capability introspection and resolved per-profile allow/deny
+   evidence without executing profile hooks during capabilities inspection.
+8. **Release Train C / contract 2.5.0 (unreleased):** add exact nullable
+   distribution/version import-policy metadata and the sanitized,
+   preview-only `external_source_plan`. Keep every such plan non-distributable
+   and hard-blocked at the C6 authority gate.
+9. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

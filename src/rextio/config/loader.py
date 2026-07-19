@@ -428,7 +428,13 @@ def _require_package_policy_map(section: str, key: str, value: Any) -> None:
             plugin = None
             max_depth = 0
         elif isinstance(raw_policy, dict):
-            unknown = set(raw_policy) - {"policy", "plugin", "max_depth"}
+            unknown = set(raw_policy) - {
+                "policy",
+                "plugin",
+                "max_depth",
+                "distribution",
+                "version",
+            }
             if unknown:
                 unknown_key = sorted(unknown)[0]
                 raise ConfigError(
@@ -437,6 +443,8 @@ def _require_package_policy_map(section: str, key: str, value: Any) -> None:
             policy = raw_policy.get("policy", "fallback")
             plugin = raw_policy.get("plugin")
             max_depth = raw_policy.get("max_depth", 0)
+            distribution = raw_policy.get("distribution")
+            version = raw_policy.get("version")
         else:
             raise ConfigError(f"[{section}].{key}.{package} must be a string or table")
         _require_value(
@@ -448,10 +456,67 @@ def _require_package_policy_map(section: str, key: str, value: Any) -> None:
         if plugin is not None:
             _require_string(f"{section}.{key}.{package}", "plugin", plugin)
         _require_non_negative_int(f"{section}.{key}.{package}", "max_depth", max_depth)
+        if not isinstance(raw_policy, dict):
+            distribution = None
+            version = None
+        if distribution is not None:
+            _require_string(f"{section}.{key}.{package}", "distribution", distribution)
+            if not re.fullmatch(
+                r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?",
+                distribution,
+            ):
+                raise ConfigError(
+                    f"[{section}.{key}.{package}].distribution must be one valid "
+                    "distribution name"
+                )
+            if not re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",
+                package,
+            ):
+                raise ConfigError(
+                    f"[{section}.{key}.{package}] source-native preview requires "
+                    "an importable dotted package name"
+                )
+        if version is not None:
+            _require_string(f"{section}.{key}.{package}", "version", version)
+            _require_exact_distribution_version(
+                f"{section}.{key}.{package}", "version", version
+            )
+        if (distribution is None) != (version is None):
+            raise ConfigError(
+                f"[{section}.{key}.{package}] source-native preview requires both "
+                "distribution and version"
+            )
+        if distribution is not None and (policy != "try-native" or max_depth != 1):
+            raise ConfigError(
+                f"[{section}.{key}.{package}] source-native preview requires "
+                'policy = "try-native" and max_depth = 1'
+            )
         if policy == "plugin" and not plugin:
             raise ConfigError(
                 f'[{section}].{key}.{package}.plugin is required when policy = "plugin"'
             )
+    activated = [
+        package
+        for package, raw_policy in value.items()
+        if isinstance(raw_policy, dict)
+        and raw_policy.get("distribution") is not None
+        and raw_policy.get("version") is not None
+    ]
+    if len(activated) > 1:
+        names = ", ".join(sorted(activated))
+        raise ConfigError(
+            "Train C5 permits exactly one source-native external package; "
+            f"activated declarations: {names}"
+        )
+
+
+def _require_exact_distribution_version(section: str, key: str, value: str) -> None:
+    """Reject requirement syntax; C5 pins one installed version exactly."""
+    if not re.fullmatch(r"[A-Za-z0-9]+(?:[._+-][A-Za-z0-9]+)*", value):
+        raise ConfigError(
+            f"[{section}].{key} must be one exact distribution version, not a specifier"
+        )
 
 
 def _require_string_list(section: str, key: str, value: Any) -> None:
@@ -595,6 +660,8 @@ def _build_imports_config(imports: dict[str, Any]) -> ImportsConfig:
             policy=raw_policy.get("policy", "fallback"),
             plugin=raw_policy.get("plugin"),
             max_depth=raw_policy.get("max_depth", 0),
+            distribution=raw_policy.get("distribution"),
+            version=raw_policy.get("version"),
         )
     return ImportsConfig(
         default_external_policy=imports["default_external_policy"],
@@ -610,6 +677,8 @@ def _imports_asdict(imports: ImportsConfig) -> dict[str, Any]:
                 "policy": policy.policy,
                 "plugin": policy.plugin,
                 "max_depth": policy.max_depth,
+                "distribution": policy.distribution,
+                "version": policy.version,
             }
             for package, policy in imports.packages.items()
         },
