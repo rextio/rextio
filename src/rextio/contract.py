@@ -38,5 +38,8 @@ from __future__ import annotations
 # C6.2 host-extension wheel SBOM/provenance preview (incomplete, unsigned).
 # Contract 2.8.0 adds the opt-in C6.3 required artifact-evidence gate without
 # granting distribution authorization or changing C6.2 evidence semantics.
+# Contract 2.9.0 adds C6.4 sanitized direct native runtime linkage inventory
+# (macOS Mach-O / Linux ELF) under artifact_evidence without claiming a
+# transitive closure, signatures, or distribution authorization.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.8.0"
+TOOLING_CONTRACT_VERSION = "2.9.0"

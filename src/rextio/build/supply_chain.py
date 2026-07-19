@@ -1,15 +1,21 @@
-"""C6.2 supply-chain evidence emission for host-extension+cpython wheels.
+"""C6.2/C6.4 supply-chain evidence emission for host-extension+cpython wheels.
 
 In-scope builds always emit an ``artifact_evidence`` record with status
 ``preview-ready`` or ``unavailable`` (authority ``evidence-only``). Evidence
 unavailability never changes ordinary build success and never prevents
 ``build.json`` from being written. Out-of-scope builds omit the field.
+
+C6.4 adds a sanitized direct native runtime linkage inventory (macOS Mach-O via
+``/usr/bin/otool -L``; Linux ELF via ``/usr/bin/readelf -W -d``) bound to the
+installed extension and matching wheel member. Failures still map to
+``unavailable`` and never break ordinary best-effort builds.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Callable
 
 from rextio.artifacts.evidence import (
     DEFAULT_LIMITATIONS,
@@ -18,7 +24,8 @@ from rextio.artifacts.evidence import (
     REASON_EVIDENCE_INTERNAL,
     REASON_INPUT_COUNT_EXCEEDED,
     REASON_NATIVE_NOT_BUILT,
-    REASON_SIDECAR_WRITE_FAILED,
+    REASON_RUNTIME_BINARY_MISMATCH,
+    REASON_RUNTIME_BINARY_MISSING,
     REASON_SNAPSHOT_MISSING,
     REASON_SOURCE_SNAPSHOT_MISMATCH,
     REASON_SOURCE_UNREADABLE,
@@ -27,20 +34,24 @@ from rextio.artifacts.evidence import (
     ArtifactEvidenceError,
     EvidenceFileRef,
     SidecarArtifact,
+    SidecarWriteTransaction,
+    _FileReceipt,
     build_cyclonedx_document,
     build_intoto_provenance_document,
-    cleanup_created_sidecars,
     hash_regular_file,
     load_wheel_snapshot,
     pretty_json_bytes,
     project_relative_logical_path,
     sha256_hex,
-    write_atomic_bytes,
 )
 from rextio.artifacts.models import ArtifactKind, ArtifactProfile
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.build.cargo_builder import NativeBuildResult
 from rextio.build.cargo_inventory import resolve_cargo_inventory
+from rextio.build.runtime_inventory import (
+    inspect_native_runtime_inventory,
+    resolve_installed_native_binary,
+)
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS
 from rextio.build.wheel_builder import WheelBuildResult
 from rextio.config.schema import ToolchainConfig
@@ -400,20 +411,6 @@ def verify_input_snapshot(
         return REASON_EVIDENCE_INTERNAL
 
 
-def _cleanup_created_basenames_noexcept(
-    basenames: list[str], *, project_root: Path, expected_parent: Path
-) -> None:
-    """Keep evidence cleanup incapable of failing an ordinary wheel build."""
-    try:
-        cleanup_created_sidecars(
-            basenames,
-            project_root=project_root,
-            expected_parent=expected_parent,
-        )
-    except Exception:
-        return
-
-
 def emit_host_extension_wheel_evidence(
     *,
     project_root: Path,
@@ -424,8 +421,12 @@ def emit_host_extension_wheel_evidence(
     input_snapshot: EvidenceInputSnapshot | None,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
+    output_claim: Callable[
+        [tuple[tuple[Path, _FileReceipt], ...]], None
+    ]
+    | None = None,
 ) -> ArtifactEvidence | None:
-    """Emit C6.2 evidence or return None when the build is out of scope.
+    """Emit C6.2/C6.4 evidence or return None when the build is out of scope.
 
     In-scope host-extension+cpython wheels always return an
     :class:`ArtifactEvidence` with ``preview-ready`` or ``unavailable``.
@@ -451,12 +452,6 @@ def emit_host_extension_wheel_evidence(
     wheel_path = Path(wheel_build.path)
     sbom_path = wheel_path.with_suffix(wheel_path.suffix + ".cdx.json")
     provenance_path = wheel_path.with_suffix(wheel_path.suffix + ".intoto.json")
-    # The outer handler may clean only basenames whose atomic write returned
-    # successfully in this emission. Guessed names could refer to pre-existing
-    # owner files when failure happens before the first write.
-    created_basenames: list[str] = []
-    dist_parent = wheel_path.parent
-
     try:
         return _emit_preview_ready(
             project_root=project_root,
@@ -466,26 +461,17 @@ def emit_host_extension_wheel_evidence(
             sbom_path=sbom_path,
             provenance_path=provenance_path,
             input_snapshot=input_snapshot,
-            created_basenames=created_basenames,
+            native_build=native_build,
             timeout=timeout,
             toolchain=toolchain,
+            output_claim=output_claim,
         )
     except ArtifactEvidenceError as error:
-        _cleanup_created_basenames_noexcept(
-            created_basenames,
-            project_root=project_root,
-            expected_parent=dist_parent,
-        )
         return ArtifactEvidence.unavailable(
             reason=error.reason or REASON_EVIDENCE_INTERNAL,
             target_triple=target_triple,
         )
     except Exception:
-        _cleanup_created_basenames_noexcept(
-            created_basenames,
-            project_root=project_root,
-            expected_parent=dist_parent,
-        )
         return ArtifactEvidence.unavailable(
             reason=REASON_EVIDENCE_INTERNAL, target_triple=target_triple
         )
@@ -500,11 +486,15 @@ def _emit_preview_ready(
     sbom_path: Path,
     provenance_path: Path,
     input_snapshot: EvidenceInputSnapshot,
-    created_basenames: list[str],
+    native_build: NativeBuildResult,
     timeout: float,
     toolchain: ToolchainConfig | None,
+    output_claim: Callable[
+        [tuple[tuple[Path, _FileReceipt], ...]], None
+    ]
+    | None,
 ) -> ArtifactEvidence:
-    """Build preview-ready evidence with post-cargo and pre-return re-verification.
+    """Build preview-ready evidence with post-cargo/runtime and pre-return checks.
 
     Sidecars are written only under a contained non-symlink dist parent. On any
     late failure, only sidecars created by this emission are cleaned up.
@@ -534,6 +524,49 @@ def _emit_preview_ready(
             "input snapshot verification failed after cargo metadata", reason=mismatch
         )
 
+    installed = resolve_installed_native_binary(
+        installed_path=native_build.installed_path,
+        expected_python_root=layout.python_dir,
+    )
+    if installed is None:
+        raise ArtifactEvidenceError(
+            "installed native extension binary is missing",
+            reason=REASON_RUNTIME_BINARY_MISSING,
+        )
+
+    runtime_inventory = inspect_native_runtime_inventory(
+        installed_path=installed,
+        expected_python_root=layout.python_dir,
+        wheel_entries=wheel_entries,
+        target_triple=profile.target_triple,
+        timeout=timeout,
+    )
+
+    # Re-verify inputs and re-hash the wheel after native inspection.
+    mismatch = verify_input_snapshot(input_snapshot, project_root=project_root)
+    if mismatch is not None:
+        raise ArtifactEvidenceError(
+            "input snapshot verification failed after runtime inspection",
+            reason=mismatch,
+        )
+    try:
+        wheel_digest_after, wheel_size_after = hash_regular_file(wheel_path)
+    except ArtifactEvidenceError as error:
+        raise ArtifactEvidenceError(
+            "wheel could not be re-read after runtime inspection",
+            reason=REASON_WHEEL_MUTATED,
+        ) from error
+    except OSError as exc:
+        raise ArtifactEvidenceError(
+            "wheel could not be re-read after runtime inspection",
+            reason=REASON_WHEEL_MUTATED,
+        ) from exc
+    if wheel_digest_after != subject.sha256 or wheel_size_after != subject.size:
+        raise ArtifactEvidenceError(
+            "wheel bytes changed during runtime inspection",
+            reason=REASON_WHEEL_MUTATED,
+        )
+
     inputs = input_snapshot.all_inputs
 
     sbom_document = build_cyclonedx_document(
@@ -543,20 +576,11 @@ def _emit_preview_ready(
         cargo_packages=inventory.packages,
         cargo_dependencies=inventory.dependencies,
         target_triple=profile.target_triple,
+        native_runtime_inventory=runtime_inventory,
     )
     sbom_bytes = pretty_json_bytes(sbom_document)
-    write_atomic_bytes(
-        sbom_path,
-        sbom_bytes,
-        project_root=project_root,
-        expected_parent=dist_parent,
-    )
-    created_basenames.append(sbom_path.name)
-    sbom_digest, sbom_size = hash_regular_file(sbom_path, max_bytes=len(sbom_bytes))
-    if sbom_digest != sha256_hex(sbom_bytes) or sbom_size != len(sbom_bytes):
-        raise ArtifactEvidenceError(
-            "SBOM sidecar hash mismatch after write", reason=REASON_SIDECAR_WRITE_FAILED
-        )
+    sbom_digest = sha256_hex(sbom_bytes)
+    sbom_size = len(sbom_bytes)
     sbom_logical = project_relative_logical_path(project_root, sbom_path)
     sbom_ref = EvidenceFileRef(
         logical_path=sbom_logical,
@@ -571,25 +595,11 @@ def _emit_preview_ready(
         inputs=inputs,
         cargo_packages=inventory.packages,
         target_triple=profile.target_triple,
+        native_runtime_inventory=runtime_inventory,
     )
     provenance_bytes = pretty_json_bytes(provenance_document)
-    write_atomic_bytes(
-        provenance_path,
-        provenance_bytes,
-        project_root=project_root,
-        expected_parent=dist_parent,
-    )
-    created_basenames.append(provenance_path.name)
-    provenance_digest, provenance_size = hash_regular_file(
-        provenance_path, max_bytes=len(provenance_bytes)
-    )
-    if provenance_digest != sha256_hex(provenance_bytes) or provenance_size != len(
-        provenance_bytes
-    ):
-        raise ArtifactEvidenceError(
-            "provenance sidecar hash mismatch after write",
-            reason=REASON_SIDECAR_WRITE_FAILED,
-        )
+    provenance_digest = sha256_hex(provenance_bytes)
+    provenance_size = len(provenance_bytes)
     provenance_logical = project_relative_logical_path(project_root, provenance_path)
 
     # Final re-verify before preview-ready return: inputs + wheel digest/size only.
@@ -618,8 +628,23 @@ def _emit_preview_ready(
             "wheel bytes changed after the evidence snapshot",
             reason=REASON_WHEEL_MUTATED,
         )
+    try:
+        native_digest, native_size = hash_regular_file(installed)
+    except (ArtifactEvidenceError, OSError) as exc:
+        raise ArtifactEvidenceError(
+            "native extension could not be re-read before evidence return",
+            reason=REASON_RUNTIME_BINARY_MISMATCH,
+        ) from exc
+    if (
+        native_digest != runtime_inventory.subject_sha256
+        or native_size != runtime_inventory.subject_size
+    ):
+        raise ArtifactEvidenceError(
+            "native extension changed during sidecar generation",
+            reason=REASON_RUNTIME_BINARY_MISMATCH,
+        )
 
-    return ArtifactEvidence(
+    evidence = ArtifactEvidence(
         kind="host-extension-wheel",
         status="preview-ready",
         target_triple=profile.target_triple,
@@ -650,8 +675,31 @@ def _emit_preview_ready(
         wheel_entries=wheel_entries,
         cargo_packages=inventory.packages,
         cargo_dependencies=inventory.dependencies,
+        native_runtime_inventory=runtime_inventory,
         limitations=DEFAULT_LIMITATIONS,
     )
+
+    # Publication is the final fallible phase. The transaction stages both
+    # sidecars under one pinned parent, preserves exact prior entries, and
+    # removes/restores only inode/dev identities owned by this emission.
+    transaction = SidecarWriteTransaction.prepare(
+        (sbom_path, provenance_path),
+        project_root=project_root,
+        expected_parent=dist_parent,
+    )
+    try:
+        transaction.write(sbom_path, sbom_bytes)
+        transaction.write(provenance_path, provenance_bytes)
+        transaction.commit(output_claim)
+    except BaseException:
+        try:
+            transaction.rollback()
+        except Exception:
+            # Best-effort evidence must never turn a successful ordinary build
+            # into an exception merely because defensive cleanup also failed.
+            pass
+        raise
+    return evidence
 
 
 def _in_scope_host_extension_profile(
@@ -688,6 +736,10 @@ def maybe_emit_host_extension_wheel_evidence(
     input_snapshot: EvidenceInputSnapshot | None = None,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
+    output_claim: Callable[
+        [tuple[tuple[Path, _FileReceipt], ...]], None
+    ]
+    | None = None,
 ) -> ArtifactEvidence | None:
     """Compatibility wrapper around :func:`emit_host_extension_wheel_evidence`."""
     return emit_host_extension_wheel_evidence(
@@ -699,6 +751,7 @@ def maybe_emit_host_extension_wheel_evidence(
         input_snapshot=input_snapshot,
         timeout=timeout,
         toolchain=toolchain,
+        output_claim=output_claim,
     )
 
 

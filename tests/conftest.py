@@ -91,6 +91,76 @@ if not lock_path.exists():
     )
     cargo.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    # Higher-level build tests exercise evidence policy/transactions with fake
+    # artifact bytes. Keep them compiler-independent while retaining the exact
+    # installed-path -> wheel-member hash/size binding. Dedicated runtime tests
+    # do not request this fixture and therefore run the real header/parser code.
+    from rextio.artifacts.evidence import (
+        REASON_RUNTIME_WHEEL_MEMBER_MISMATCH,
+        ArtifactEvidenceError,
+        NativeRuntimeInventory,
+        WheelEntryRef,
+        hash_regular_file,
+    )
+    from rextio.build import supply_chain as supply_chain_module
+
+    def synthetic_runtime_inventory(
+        *,
+        installed_path: Path | None,
+        expected_python_root: Path,
+        wheel_entries: tuple[WheelEntryRef, ...],
+        target_triple: str,
+        timeout: float,
+    ) -> NativeRuntimeInventory:
+        del timeout
+        if installed_path is None:
+            raise ArtifactEvidenceError(
+                "synthetic native binary is missing",
+                reason=REASON_RUNTIME_WHEEL_MEMBER_MISMATCH,
+            )
+        binary = Path(installed_path).resolve(strict=True)
+        root = expected_python_root.resolve(strict=True)
+        member_name = binary.relative_to(root).as_posix()
+        matches = [entry for entry in wheel_entries if entry.name == member_name]
+        digest, size = hash_regular_file(binary)
+        if (
+            len(matches) != 1
+            or matches[0].sha256 != digest
+            or matches[0].uncompressed_size != size
+        ):
+            raise ArtifactEvidenceError(
+                "synthetic wheel member does not match the installed binary",
+                reason=REASON_RUNTIME_WHEEL_MEMBER_MISMATCH,
+            )
+        arch_token = target_triple.split("-", 1)[0].lower()
+        if arch_token in {"aarch64", "arm64"}:
+            architecture = "aarch64"
+        elif arch_token == "x86_64":
+            architecture = "x86_64"
+        elif arch_token.startswith("arm") or arch_token.startswith("thumb"):
+            architecture = "arm"
+        else:
+            architecture = "x86"
+        format_name = "mach-o" if "apple-darwin" in target_triple else "elf"
+        entry = matches[0]
+        return NativeRuntimeInventory(
+            format=format_name,
+            architecture=architecture,
+            inspector="otool" if format_name == "mach-o" else "readelf",
+            subject_basename=binary.name,
+            subject_sha256=digest,
+            subject_size=size,
+            wheel_member=entry.name,
+            wheel_member_sha256=entry.sha256,
+            wheel_member_size=entry.uncompressed_size,
+        )
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "inspect_native_runtime_inventory",
+        synthetic_runtime_inventory,
+    )
     return cargo
 
 

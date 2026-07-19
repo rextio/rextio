@@ -12,8 +12,9 @@ fallback.
 The Release Train C branch adds experimental host source/executable planning,
 plugin standalone capability, the C5.1 external-source inventory gate, and the
 C6.1 bounded prebuild authorization-contract preview (not full C6). It emits
-tooling contract **2.8.0**, including C6.2 preview evidence and the C6.3
-required-evidence gate, but remains **unreleased**. PyPI 0.1.4 does not
+tooling contract **2.9.0**, including C6.2 preview evidence, the C6.3
+required-evidence gate, and the C6.4 macOS/Linux direct native runtime linkage
+inventory, but remains **unreleased**. PyPI 0.1.4 does not
 include those additions. Train C boundaries are called out explicitly below so
 planning records are not mistaken for broad source-AOT support.
 
@@ -571,8 +572,14 @@ The unreleased Train C planning records do not change these additional limits:
 - Installed pure-Python packages are not recursively promoted, copied, or
   vendored. C6.1 may verify a project SourceLock prebuild contract, C6.2 may
   emit incomplete/unsigned host-extension wheel evidence, and C6.3 may require
-  that preview evidence for one bounded artifact set. None authorizes
-  distribution; full C6,
+  that preview evidence for one bounded artifact set. C6.4 may inspect only the
+  generated extension's directly observed Mach-O (`otool -L`) or ELF
+  (`readelf -W -d`) linkage after exact native-to-wheel relative
+  identity/hash/size binding. It normalizes architecture and admits dependencies
+  only through a closed expected-runtime allowlist; it is not general native
+  dependency support. It does not resolve dependency paths, compute a
+  transitive closure, observe `dlopen`, cover Windows or runtime-bearing
+  plugins, or produce signatures. None authorizes distribution; full C6,
   remaining C5.2 source-native linkage/codegen/packaging, complete standards
   SBOM, and redistribution remain future work.
 - Draft device-provider records have no discovery, selection, build/link hook,

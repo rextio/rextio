@@ -33,6 +33,60 @@ def test_run_build_tool_captures_output(tmp_path) -> None:
     assert "err" in result.stderr
 
 
+@pytest.mark.parametrize("max_output_bytes", [None, 4096])
+def test_run_build_tool_can_replace_parent_environment_exactly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    max_output_bytes: int | None,
+) -> None:
+    monkeypatch.setenv("REXTIO_PARENT_ONLY_SECRET", "must-not-reach-child")
+    result = run_build_tool(
+        [
+            sys.executable,
+            "-c",
+            "import os; print(os.environ.get('REXTIO_PARENT_ONLY_SECRET', 'missing')); "
+            "print(os.environ['REXTIO_CHILD_ONLY'])",
+        ],
+        cwd=tmp_path,
+        env={"REXTIO_CHILD_ONLY": "present"},
+        inherit_env=False,
+        max_output_bytes=max_output_bytes,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["missing", "present"]
+    assert "must-not-reach-child" not in result.stdout
+    assert "must-not-reach-child" not in result.stderr
+
+
+def test_run_build_tool_default_environment_behavior_remains_overlay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("REXTIO_PARENT_VISIBLE", "parent")
+    result = run_build_tool(
+        [
+            sys.executable,
+            "-c",
+            "import os; print(os.environ['REXTIO_PARENT_VISIBLE']); "
+            "print(os.environ['REXTIO_CHILD_VISIBLE'])",
+        ],
+        cwd=tmp_path,
+        env={"REXTIO_CHILD_VISIBLE": "child"},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["parent", "child"]
+
+
+def test_run_build_tool_rejects_non_boolean_inherit_env(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="inherit_env"):
+        run_build_tool(
+            [sys.executable, "-c", "pass"],
+            cwd=tmp_path,
+            inherit_env=0,  # type: ignore[arg-type]
+        )
+
+
 def test_run_build_tool_times_out_into_a_failed_result(tmp_path) -> None:
     # A tool that hangs must not block the build forever: the helper terminates it
     # and returns a failed CompletedProcess so normal failure handling reports it.
@@ -212,8 +266,8 @@ def test_run_build_tool_forges_returncode_when_the_child_cannot_be_reaped(
     created: list[subprocess.Popen] = []
     real_start = subprocess_utils._start_process
 
-    def capturing_start(command, cwd, env=None):
-        proc = real_start(command, cwd)
+    def capturing_start(command, cwd, env=None, *, inherit_env=True):
+        proc = real_start(command, cwd, env, inherit_env=inherit_env)
         created.append(proc)
         return proc
 
@@ -314,8 +368,7 @@ def test_run_build_tool_overflow_is_prompt_when_child_writes_cap_plus_one_then_s
         [
             sys.executable,
             "-c",
-            "import sys, time; sys.stdout.write('x' * 1001); sys.stdout.flush(); "
-            "time.sleep(60)",
+            "import sys, time; sys.stdout.write('x' * 1001); sys.stdout.flush(); time.sleep(60)",
         ],
         cwd=tmp_path,
         timeout=30.0,
@@ -398,8 +451,7 @@ def test_windows_capped_path_overflow_prompt_on_this_host(tmp_path: Path) -> Non
         [
             sys.executable,
             "-c",
-            "import sys, time; sys.stdout.write('x' * 1001); sys.stdout.flush(); "
-            "time.sleep(60)",
+            "import sys, time; sys.stdout.write('x' * 1001); sys.stdout.flush(); time.sleep(60)",
         ],
         cwd=tmp_path,
         timeout=30.0,

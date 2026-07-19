@@ -3,7 +3,7 @@
 Status: **draft** (experimental tier). The current published producer is core
 0.1.4, released on 2026-07-18 with `contract_version` `2.2.0` and plugin API
 **1.3**. The Release Train C branch contains the additive, **unreleased**
-`2.8.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
+`2.9.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
 contract. Package version on the branch remains **0.1.4**.
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
@@ -31,7 +31,7 @@ Both JSON surfaces carry a top-level field. The published 0.1.4 producer emits:
 The unreleased Train C branch emits:
 
 ```json
-{ "contract_version": "2.8.0" }
+{ "contract_version": "2.9.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -51,7 +51,8 @@ to generic guidance when the major is outside what they support.
 | `2.5.0` | **Unreleased additive external-source preview shape** (Train C intermediate). Import-policy decisions add nullable exact `distribution` / `version` metadata; check/generate and blocked-build reports may add one sanitized `external_source_plan`. The plan is inventory evidence only (`execution_authority: "preview-only"`, `distributable: false`, `c6_gate: "required"`) and never grants source execution, lowering, build, packaging, or redistribution authority. |
 | `2.6.0` | **Unreleased additive C6.1 authorization-contract shape** (Train C intermediate). The sanitized `external_source_plan` adds authority material (`source_files`, `metadata_files`, `plan_snapshot`, `plan_snapshot_sha256`, `license_material_sha256`, `inventory_schema`) and may nest `authorization` for project-owned `rextio.external-source.lock.json` verification (`*_verified` booleans). `c6_gate` is `required` or `authorization-verified`. Verified authorization still never grants source-native lowering, packaging, or redistribution; remaining C5.2 linkage/codegen is unimplemented (`external-source-c5-not-implemented`). |
 | `2.7.0` | **Unreleased additive C6.2 host-extension wheel artifact-evidence preview** (Train C intermediate). In-scope successful host-extension+`cpython` wheels always add top-level `build.json.artifact_evidence` with `status` exactly `preview-ready` or `unavailable`, `authority: "evidence-only"`, `signature_status: "unsigned"`, and `composition: "incomplete"`. Preview-ready may emit bounded CycloneDX 1.6 / unsigned in-toto Statement (SLSA Provenance v1) sidecars; unavailable uses a sanitized fixed reason and never changes ordinary build success. Host-executable, rust-crate, Nuitka host-extension fallback, WASM, and external-package source-native builds omit the field. `ArtifactProvenance` remains planning metadata only. |
-| `2.8.0` | **Unreleased additive C6.3 required-evidence gate** (current Train C producer). Required mode adds top-level `build.json.artifact_evidence_gate` and succeeds only when the exact single host-extension + CPython wheel path produces C6.2 `preview-ready` evidence. Scope and evidence failures are `RXT060` / `artifact-evidence-required-failed`; the gate remains incomplete, unsigned, and explicitly non-authorizing. Default best-effort behavior and all C6.2 shapes remain unchanged. |
+| `2.8.0` | **Unreleased additive C6.3 required-evidence gate** (Train C intermediate). Required mode adds top-level `build.json.artifact_evidence_gate` and succeeds only when the exact single host-extension + CPython wheel path produces C6.2 `preview-ready` evidence. Scope and evidence failures are `RXT060` / `artifact-evidence-required-failed`; the gate remains incomplete, unsigned, and explicitly non-authorizing. Default best-effort behavior and all C6.2 shapes remain unchanged. |
+| `2.9.0` | **Unreleased additive C6.4 direct native runtime linkage preview** (current Train C producer). Preview-ready evidence for the same bounded host-extension + CPython wheel adds a sanitized `native_runtime_inventory`: macOS Mach-O uses bounded `otool -L`, Linux ELF uses bounded `readelf -W -d`, and the contained installed native extension is bound to one exact wheel member by relative member name, SHA-256, and byte size. It records normalized architecture plus only closed-allowlist direct dependencies, each with sanitized `origin` and stable `bom_ref`. Path resolution, transitive closure, runtime `dlopen`, Windows PE, runtime-bearing plugins, and signatures remain excluded. Best-effort inspection failure reports fixed-reason `unavailable`; required mode preserves the C6.3 `RXT060` transactional rollback. Success remains incomplete, unsigned, and non-authorizing. |
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.
@@ -724,7 +725,7 @@ the ordinary build still succeeds. Status is exactly:
 
 Shared fields on both statuses: `authority: "evidence-only"`,
 `signature_status: "unsigned"`, `composition: "incomplete"`, `preview: true`,
-`complete: false`, `signed: false`.
+`complete: false`, `signed: false`, `distribution_authorized: false`.
 
 | Artifact | Location | Notes |
 |---|---|---|
@@ -732,7 +733,7 @@ Shared fields on both statuses: `authority: "evidence-only"`,
 | Unsigned in-toto Statement v1 | `dist/<wheel>.whl.intoto.json` | Only when `preview-ready`. SLSA Provenance v1 predicate. Subjects are the wheel **and** the SBOM (outputs). `resolvedDependencies` are inputs/cargo packages only (not the SBOM). No `invocationId`. |
 | Report field | `build.json.artifact_evidence` | Always present for in-scope wheels; `preview-ready` or `unavailable` |
 
-Preview-ready shape (additive; omitted when out of scope):
+Preview-ready shape (abridged; additive; omitted when out of scope):
 
 ```json
 {
@@ -745,6 +746,7 @@ Preview-ready shape (additive; omitted when out of scope):
     "preview": true,
     "complete": false,
     "signed": false,
+    "distribution_authorized": false,
     "target_triple": "aarch64-apple-darwin",
     "subject": {
       "logical_path": "dist/demo-0.1.0-cp311-cp311-macosx_14_0_arm64.whl",
@@ -782,13 +784,19 @@ Preview-ready shape (additive; omitted when out of scope):
       "not-hermetic-claim",
       "not-completeness-claim",
       "not-external-source-authorization",
-      "no-native-dylib-runtime-inventory",
+      "direct-native-linkage-only",
+      "no-transitive-dylib-closure",
+      "no-runtime-dlopen-inventory",
       "no-recursive-package-inventory",
       "evidence-only-authority"
     ]
   }
 }
 ```
+
+The 2.9.0 producer also requires the `native_runtime_inventory` record
+described below; that nested record is omitted from this abridged shared-fields
+example. Producers before 2.9.0 did not emit it.
 
 Unavailable shape:
 
@@ -803,11 +811,17 @@ Unavailable shape:
     "preview": true,
     "complete": false,
     "signed": false,
+    "distribution_authorized": false,
     "reason": "source-snapshot-mismatch",
     "limitations": ["preview-only", "composition-incomplete", "unsigned", "…"]
   }
 }
 ```
+
+`artifact_evidence.distribution_authorized` is mandatory and exactly `false`
+for both statuses. Neither `preview-ready` nor required-mode gate satisfaction
+may omit it or change it to `true`; artifact evidence remains observational and
+cannot authorize distribution.
 
 Cargo packages come only from the **reachable** resolve graph of sanitized
 `cargo metadata --locked --offline --filter-platform <target>` (streaming
@@ -833,32 +847,49 @@ The wheel is read once as an immutable byte snapshot for both subject SHA-256
 and ZIP inventory; immediately before `preview-ready` return the wheel path is
 re-hashed only to confirm digest and size still match that subject (mismatch
 → `wheel-bytes-mutated` / `unavailable`). Sidecar writes verify path
-containment, reject symlink parents, and on supported POSIX pin the output
-directory with a dirfd for exclusive temp create/replace/fsync/unlink;
-elsewhere a conservative contained path fallback is used. Cleanup removes only
-sidecars actually created by that emission (no directory sweep). A `dist`
-directory that is a symlink pointing outside the project must not alter outside
-sentinels. Sidecars and the report field never serialize absolute paths, source
-bytes, credentials, environment secrets, machine-private paths, or unbounded
-tool output. Planning `ArtifactProvenance` is unchanged.
+containment, reject symlink parents, and pin the output-parent identity across
+publication. Each replacement/removal/restoration is authorized by an exact
+receipt for the expected path identity and content digest/size, and published
+bytes are verified against that receipt. Cleanup never sweeps a directory and
+never removes or overwrites pre-existing or concurrently replaced content that
+does not still match this transaction's receipt. A parent/receipt/content
+mismatch fails closed; required rollback reports itself incomplete rather than
+claiming cleanup succeeded. A `dist` directory that is a symlink pointing
+outside the project must not alter outside sentinels. Sidecars and the report
+field never serialize absolute paths, source bytes, credentials, environment
+secrets, machine-private paths, or unbounded tool output. Planning
+`ArtifactProvenance` is unchanged.
+
+Required-mode wheel publication is stricter than an observational receipt: the
+wheel is first built under the private output transaction directory and then
+hard-linked into the pinned `dist` parent with create-if-absent semantics. A
+file merely observed at the final path is never claimed by this run. Rollback
+first atomically renames a public candidate into that private quarantine and
+only then checks its receipt; a mismatch is restored without replacement when
+possible and otherwise remains quarantined for manual recovery. Preservation
+of a pre-existing output is write-ahead recorded before its rename, including
+the post-rename inspection-failure path.
 
 #### `artifact_evidence` item shapes and fixed reason enum
 
 Top-level `build.json` and `generate.json` carry additive
-`contract_version` (currently `"2.8.0"`). Item fields under
+`contract_version` (currently `"2.9.0"`). Item fields under
 `artifact_evidence` when `status` is `preview-ready`:
 
 | Field | Shape |
 |---|---|
+| `distribution_authorized` | Required on both statuses and always `false`; evidence cannot authorize distribution |
 | `subject` | `{logical_path, sha256, size, role}` — host-extension wheel subject |
 | `sbom` / `provenance` | `{format, logical_path, sha256, size, …extra}` sidecar refs |
 | `inputs[]` | `{logical_path, sha256, size, role}` project/generated/Cargo.lock refs |
 | `wheel_entries[]` | `{name, sha256, compressed_size, uncompressed_size}` ZIP members |
 | `cargo_packages[]` | `{name, version, source_fingerprint, checksum, kind, features, license, purl, bom_ref}` (no raw registry URI) |
 | `cargo_dependencies[]` | `{dependent_ref, dependency_ref}` bom-ref edges |
+| `native_runtime_inventory` | Contract 2.9.0 only: `{format, architecture, inspector, subject_basename, subject_sha256, subject_size, wheel_member, wheel_member_sha256, wheel_member_size, dependency_count, dependencies, scope, transitive_closure, runtime_dlopen}`; exact native/wheel identity+hash+size binding and closed-allowlist direct dependencies shaped `{name, origin, bom_ref}` |
 
-When `status` is `unavailable`, `reason` is exactly one of this fixed
-allowlist (no free-text paths or tool output):
+When `status` is `unavailable`, `reason` is exactly one member of the fixed
+allowlist (no free-text paths or tool output). The C6.2 entries are below;
+C6.4 adds the fixed linkage-inspection entries listed in its section:
 
 | Reason | Meaning |
 |---|---|
@@ -896,14 +927,19 @@ configured CPython/Nuitka/Cargo/maturin work with `RXT060`, exit code 1,
 
 In-scope required builds succeed only when `artifact_evidence.status` is
 `preview-ready`. `unavailable` evidence fails with the same report status and
-reason `evidence-unavailable`; `evidence_reason` carries the fixed C6.2 reason.
+reason `evidence-unavailable`; `evidence_reason` carries the fixed C6.2/C6.4
+reason.
 Programmatic `build_hybrid_artifact` raises rather than returning an apparently
 successful result. A failed required run removes only its exact wheel and two
 sidecar paths, restores pre-existing exact outputs, preserves unrelated files,
 and keeps generated source plus reports for debugging. Output parents must be
-real contained directories, and the transaction rolls back on exceptional
-exits. If cleanup or restoration cannot be verified, the build report says the
-rollback was incomplete rather than claiming those files were removed.
+real contained directories whose identity stays pinned through the transaction.
+Removal or restoration requires the current path identity and digest/size to
+match the exact publication/backup receipt; concurrently replaced content is
+left untouched. The transaction also rolls back on exceptional exits. If parent
+identity, ownership, content, cleanup, or restoration cannot be verified, the
+build report says the rollback was incomplete rather than claiming those files
+were removed or restored.
 
 The immutable gate is emitted only in required mode:
 
@@ -928,6 +964,136 @@ For scope rejection, `observed_status` and `evidence_reason` are null. For
 evidence rejection, `observed_status` is `unavailable`. Even `satisfied` never
 means distribution authorization, evidence completeness, signature presence,
 reproducibility, hermeticity, or full C6 completion.
+
+### Direct native runtime linkage inventory (contract 2.9.0)
+
+C6.4 extends the same bounded host-extension + CPython wheel evidence path; it
+does not widen artifact-profile scope. A `preview-ready` record from the 2.9.0
+producer includes `native_runtime_inventory` for the generated extension. The
+inventory is an observation made after the native build and wheel snapshot, not
+a loader simulation or a claim that dependency names are verified build
+materials.
+
+Inspection is platform-fixed and bounded:
+
+- macOS Mach-O invokes `otool -L` and may invoke `otool -D` only for the
+  bounded private-self-ID check described below;
+- Linux ELF invokes `readelf -W -d` and accepts direct `NEEDED` observations;
+- every child uses a reviewed absolute system-tool path, no shell, a short
+  timeout, and fixed stdout/stderr cap;
+- inspector children do not inherit the parent process environment: their
+  environment is limited to the minimal C-locale settings needed for stable
+  parser output;
+- inspector absolute paths, raw output, environment values, credentials, source
+  bytes, and machine-private absolute paths never serialize; and
+- Windows and every other platform produce fixed-reason `unavailable` evidence.
+
+Before accepting the inventory, Rextio requires the builder-reported native
+extension to be a contained regular file. Exactly one wheel member at the
+corresponding generated-Python relative path must match the installed native
+file's SHA-256 and byte size. Inspection then uses one private same-byte snapshot
+bound to both that original and wheel member: binary-header parsing and every
+`otool`/`readelf` read target the snapshot, not the mutable original. Original
+and snapshot identity plus digest/size are revalidated before
+`preview-ready`; binary format and normalized architecture must agree with the
+host artifact profile. Mutation or any identity/hash/size mismatch fails closed.
+The serialized linkage contains bounded sanitized logical names only;
+CycloneDX represents native-binary-to-dependency edges from that list.
+
+The exact 2.9.0 wire shape is flat and additive:
+
+```json
+{
+  "native_runtime_inventory": {
+    "format": "mach-o",
+    "architecture": "aarch64",
+    "inspector": "otool",
+    "subject_basename": "_rextio_native.cpython-311-darwin.so",
+    "subject_sha256": "…",
+    "subject_size": 123456,
+    "wheel_member": "demo/_rextio_native.cpython-311-darwin.so",
+    "wheel_member_sha256": "…",
+    "wheel_member_size": 123456,
+    "dependency_count": 1,
+    "dependencies": [
+      {
+        "name": "libSystem.B.dylib",
+        "origin": "system",
+        "bom_ref": "urn:rextio:native-dep:e15cd9b72bba39b815217f5bd6b134680"
+      }
+    ],
+    "scope": "direct-only",
+    "transitive_closure": false,
+    "runtime_dlopen": false
+  }
+}
+```
+
+`subject_sha256 == wheel_member_sha256`, `subject_size == wheel_member_size`,
+and `dependency_count == len(dependencies)` are required invariants. `format` is
+exactly `mach-o | elf`; `inspector` is exactly `otool | readelf`;
+`architecture` is one normalized value from `aarch64 | arm | powerpc |
+powerpc64 | riscv64 | s390x | x86 | x86_64`. Dependencies are unique and
+bounded, `origin` is exactly `system | unresolved`, and `bom_ref` is a stable
+path-free identity derived from origin plus name. They are not resolved paths.
+No raw inspector output or inspector executable path is part of the wire shape.
+
+The C6.4 inventory always states direct-only scope. It does **not** resolve
+`RPATH`/`RUNPATH`, Mach-O install names, or dependency files; compute a
+transitive dylib closure; observe libraries loaded later through `dlopen` or an
+equivalent API; cover Windows PE; inspect runtime-bearing plugin payloads; or
+provide signatures. Unsupported or unsafe search-path/loading metadata fails
+closed; allowed logical tokens are recorded but never resolved. CycloneDX and
+provenance carry only the same sanitized direct observation and never upgrade
+it into a closure or verified material claim.
+
+Dependency admission is deliberately closed rather than observationally
+permissive. Mach-O accepts only install names rooted in `/usr/lib` or
+`/System/Library`, reduces them to safe basenames, and records `origin:
+"system"`. Linux accepts only the target-specific expected runtime `NEEDED`
+set; arbitrary libraries and alternate loader dependency tags are rejected.
+Accepted ELF names remain `origin: "unresolved"` because C6.4 does not resolve
+them to files. A syntactically safe ELF basename outside the target-specific
+runtime allowlist uses `native-runtime-unexpected-dependency`, not a free-text
+tool/path error. Mach-O relative, `@...`, traversal-bearing, and non-system
+absolute install names instead fail the earlier closed path policy with
+`native-runtime-unsafe-dependency-path`; they are never admitted as normalized
+dependency names for allowlist comparison.
+
+Mach-O self-reference handling is also fail closed. The first `otool -L` row
+may be excluded as the generated private Cargo self-ID only when the private
+snapshot's header is `MH_DYLIB` **and** a separate bounded `otool -D` result is
+an exact match for that row. Neither first-row position, a path-like name, nor
+Cargo provenance is sufficient by itself. If the two independent observations
+do not agree, the row remains an ordinary dependency and must pass the same
+closed allowlist; malformed or unexpected content makes evidence unavailable.
+
+The fixed C6.4 additions to the `unavailable.reason` allowlist are:
+
+| Reason | Meaning |
+|---|---|
+| `native-runtime-platform-unsupported` | Host platform has no C6.4 inspector contract (including Windows) |
+| `native-runtime-inspector-missing` | Required `otool` or `readelf` executable is unavailable |
+| `native-runtime-inspector-failed` | Inspector returned a bounded non-success result |
+| `native-runtime-inspector-timeout` | Inspector exceeded its short timeout |
+| `native-runtime-output-exceeded` | Inspector output exceeded the byte cap |
+| `native-runtime-inventory-malformed` | Output or linkage metadata did not match the closed parser grammar |
+| `native-runtime-unsafe-dependency-path` | A dependency/search-path observation was unsafe or ambiguous |
+| `native-runtime-dependency-count-exceeded` | Dependency/name/graph bounds were exceeded |
+| `native-extension-binary-missing` | The exact contained builder-reported native extension was unavailable |
+| `native-extension-binary-mismatch` | Native format, bytes, SHA-256, size, or revalidation did not match |
+| `native-wheel-member-mismatch` | No single exact wheel-member identity matched the native extension |
+| `native-runtime-architecture-mismatch` | Observed architecture did not match the host profile |
+| `native-runtime-unexpected-dependency` | A dependency or alternate loader edge fell outside the closed expected-runtime allowlist |
+
+In default `best-effort` mode, any of these reasons produces `unavailable`, no
+sidecars, and an otherwise successful ordinary wheel build. Under `required`,
+the same result follows C6.3: `RXT060`, report status
+`artifact-evidence-required-failed`, reason `evidence-unavailable`, and
+transactional rollback of only this run's exact wheel and sidecars (with
+pre-existing exact outputs restored). Even a successful inventory keeps
+`composition: "incomplete"`, `signed: false`, and
+`distribution_authorized: false`; it is not release authorization.
 
 Resolution uses installed metadata only and never imports or executes the
 package. It requires the exact configured distribution name and version, one
@@ -1189,8 +1355,12 @@ class RextioPluginV2(Protocol):
 - No incremental-analysis API (deferred until latency measurements demand it;
   v1 tooling calls the batch analyzer).
 - No recursive third-party-package source promotion, device-provider discovery,
-  provider build/link hook, CUDA execution, or device support claim through 2.8.0.
+  provider build/link hook, CUDA execution, or device support claim through 2.9.0.
   C5.1 inventories one exact distribution but authorizes no lowering or build.
+- No dependency path resolution, transitive dynamic-library closure, runtime
+  `dlopen` observation, Windows PE linkage inventory, runtime-bearing plugin
+  inventory, or artifact signatures through 2.9.0. C6.4 records only bounded,
+  sanitized direct linkage observed from the generated macOS/Linux extension.
 - No name-based reservation of route strings beyond this document; new routes
   bump the contract minor version.
 
@@ -1247,5 +1417,14 @@ class RextioPluginV2(Protocol):
     evidence policy and immutable gate for the exact single host-extension +
     CPython wheel scope. Fail closed without granting distribution authority;
     keep C6.2 best-effort behavior as the default.
-12. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
+12. **Release Train C / contract 2.9.0 (unreleased):** add C6.4's sanitized
+    direct native runtime linkage inventory for macOS `otool -L` and Linux
+    `readelf -W -d`, with exact installed-native-to-wheel-member
+    identity/hash/size binding, normalized architecture, and closed-allowlist
+    dependency records carrying `origin` plus stable `bom_ref`. Preserve
+    fixed-reason best-effort unavailability and C6.3 required-mode `RXT060`
+    rollback. Do not claim path resolution,
+    transitive closure, `dlopen` visibility, Windows/plugin-runtime coverage,
+    signatures, completeness, or distribution authority.
+13. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

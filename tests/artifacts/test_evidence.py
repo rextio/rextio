@@ -19,6 +19,8 @@ from rextio.artifacts.evidence import (
     CargoDepEdge,
     CargoPackageRef,
     EvidenceFileRef,
+    NativeRuntimeDependency,
+    NativeRuntimeInventory,
     SidecarArtifact,
     WheelEntryRef,
     build_cyclonedx_document,
@@ -39,7 +41,30 @@ from rextio.artifacts.evidence import (
 )
 
 
+def _synthetic_native_inventory(
+    *, format_name: str = "elf", architecture: str = "x86_64"
+) -> tuple[WheelEntryRef, NativeRuntimeInventory]:
+    entry = WheelEntryRef(
+        name="_rextio_native.so",
+        sha256="9" * 64,
+        compressed_size=1,
+        uncompressed_size=1,
+    )
+    return entry, NativeRuntimeInventory(
+        format=format_name,
+        architecture=architecture,
+        inspector="otool" if format_name == "mach-o" else "readelf",
+        subject_basename=entry.name,
+        subject_sha256=entry.sha256,
+        subject_size=entry.uncompressed_size,
+        wheel_member=entry.name,
+        wheel_member_sha256=entry.sha256,
+        wheel_member_size=entry.uncompressed_size,
+    )
+
+
 def test_required_artifact_evidence_gate_is_non_authorizing() -> None:
+    native_entry, native_inventory = _synthetic_native_inventory()
     satisfied = ArtifactEvidenceGate.from_evidence(
         ArtifactEvidence(
             kind="host-extension-wheel",
@@ -60,6 +85,8 @@ def test_required_artifact_evidence_gate_is_non_authorizing() -> None:
                 sha256="2" * 64,
                 size=1,
             ),
+            wheel_entries=(native_entry,),
+            native_runtime_inventory=native_inventory,
         )
     )
     assert satisfied.to_dict() == {
@@ -372,6 +399,167 @@ def test_intoto_sbom_is_subject_not_material() -> None:
             "not-external-source-authorization",
         )
     )
+
+
+def test_native_runtime_inventory_binds_sizes_and_serializes_dependency_identity() -> None:
+    dependency = NativeRuntimeDependency(name="libc.so.6", origin="unresolved")
+    inventory = NativeRuntimeInventory(
+        format="elf",
+        architecture="x86_64",
+        inspector="readelf",
+        subject_basename="_rextio_native.so",
+        subject_sha256="a" * 64,
+        subject_size=64,
+        wheel_member="native/_rextio_native.so",
+        wheel_member_sha256="a" * 64,
+        wheel_member_size=64,
+        dependencies=(dependency,),
+    )
+
+    assert inventory.to_dict()["subject_size"] == 64
+    assert inventory.to_dict()["wheel_member_size"] == 64
+    assert inventory.to_dict()["dependencies"] == [
+        {
+            "name": "libc.so.6",
+            "origin": "unresolved",
+            "bom_ref": dependency.bom_ref(),
+        }
+    ]
+    with pytest.raises(ValueError, match="sizes must match"):
+        NativeRuntimeInventory(
+            format="elf",
+            architecture="x86_64",
+            inspector="readelf",
+            subject_basename="_rextio_native.so",
+            subject_sha256="a" * 64,
+            subject_size=64,
+            wheel_member="native/_rextio_native.so",
+            wheel_member_sha256="a" * 64,
+            wheel_member_size=63,
+        )
+    with pytest.raises(ValueError, match="format and inspector"):
+        NativeRuntimeInventory(
+            format="elf",
+            architecture="x86_64",
+            inspector="otool",
+            subject_basename="_rextio_native.so",
+            subject_sha256="a" * 64,
+            subject_size=64,
+            wheel_member="native/_rextio_native.so",
+            wheel_member_sha256="a" * 64,
+            wheel_member_size=64,
+        )
+    with pytest.raises(ValueError, match="unsafe"):
+        NativeRuntimeDependency(name="private/libc.so.6", origin="unresolved")
+
+
+def test_native_runtime_sbom_reuses_wheel_entry_and_provenance_observes_not_material() -> None:
+    subject = EvidenceFileRef(
+        logical_path="dist/demo-0.1.0-cp311.whl",
+        sha256="f" * 64,
+        size=256,
+        role="host-extension-wheel",
+    )
+    sbom = EvidenceFileRef(
+        logical_path="dist/demo-0.1.0-cp311.whl.cdx.json",
+        sha256="e" * 64,
+        size=128,
+        role="cyclonedx-sbom",
+    )
+    native_entry = WheelEntryRef(
+        name="native/_rextio_native.so",
+        sha256="a" * 64,
+        compressed_size=48,
+        uncompressed_size=64,
+    )
+    dependency = NativeRuntimeDependency(name="libc.so.6", origin="unresolved")
+    inventory = NativeRuntimeInventory(
+        format="elf",
+        architecture="x86_64",
+        inspector="readelf",
+        subject_basename="_rextio_native.so",
+        subject_sha256=native_entry.sha256,
+        subject_size=native_entry.uncompressed_size,
+        wheel_member=native_entry.name,
+        wheel_member_sha256=native_entry.sha256,
+        wheel_member_size=native_entry.uncompressed_size,
+        dependencies=(dependency,),
+    )
+    cdx = build_cyclonedx_document(
+        subject=subject,
+        inputs=(),
+        wheel_entries=(native_entry,),
+        cargo_packages=(),
+        cargo_dependencies=(),
+        target_triple="x86_64-unknown-linux-gnu",
+        native_runtime_inventory=inventory,
+    )
+    native_ref = (
+        f"urn:rextio:wheel-entry:{native_entry.sha256}:"
+        f"{sha256_hex(native_entry.name.encode('utf-8'))[:16]}"
+    )
+    root_ref = f"urn:rextio:wheel:{subject.sha256}"
+    rows = {row["ref"]: row["dependsOn"] for row in cdx["dependencies"]}
+    native_components = [
+        component
+        for component in cdx["components"]
+        if component.get("hashes")
+        == [{"alg": "SHA-256", "content": native_entry.sha256}]
+    ]
+
+    assert len(native_components) == 1
+    assert native_components[0]["bom-ref"] == native_ref
+    assert dependency.bom_ref() not in rows[root_ref]
+    assert native_ref in rows[root_ref]
+    assert rows[native_ref] == [dependency.bom_ref()]
+
+    provenance = build_intoto_provenance_document(
+        subject=subject,
+        sbom=sbom,
+        inputs=(),
+        cargo_packages=(),
+        target_triple="x86_64-unknown-linux-gnu",
+        native_runtime_inventory=inventory,
+    )
+    materials = provenance["predicate"]["buildDefinition"]["resolvedDependencies"]
+    assert materials == []
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert metadata["rextio:observed_native_runtime"] == inventory.to_dict()
+
+    ready = ArtifactEvidence(
+        kind="host-extension-wheel",
+        status="preview-ready",
+        target_triple="x86_64-unknown-linux-gnu",
+        subject=subject,
+        sbom=SidecarArtifact(
+            format="CycloneDX",
+            logical_path=sbom.logical_path,
+            sha256=sbom.sha256,
+            size=sbom.size,
+        ),
+        provenance=SidecarArtifact(
+            format="in-toto-Statement",
+            logical_path="dist/demo-0.1.0-cp311.whl.intoto.json",
+            sha256="d" * 64,
+            size=128,
+        ),
+        wheel_entries=(native_entry,),
+        native_runtime_inventory=inventory,
+    )
+    assert ready.status == "preview-ready"
+    assert ready.distribution_authorized is False
+    assert ready.to_dict()["distribution_authorized"] is False
+    with pytest.raises(ValueError, match="occur exactly once"):
+        ArtifactEvidence(
+            kind="host-extension-wheel",
+            status="preview-ready",
+            target_triple="x86_64-unknown-linux-gnu",
+            subject=subject,
+            sbom=ready.sbom,
+            provenance=ready.provenance,
+            wheel_entries=(),
+            native_runtime_inventory=inventory,
+        )
 
 
 def _write_zip(path: Path, entries: list[tuple[str, bytes]]) -> None:
@@ -811,6 +999,9 @@ def test_unavailable_reason_must_be_in_fixed_allowlist() -> None:
 
 
 def test_preview_ready_and_unavailable_status_invariants() -> None:
+    native_entry, native_inventory = _synthetic_native_inventory(
+        format_name="mach-o", architecture="aarch64"
+    )
     subject = EvidenceFileRef(
         logical_path="dist/demo.whl",
         sha256="a" * 64,
@@ -836,6 +1027,8 @@ def test_preview_ready_and_unavailable_status_invariants() -> None:
         subject=subject,
         sbom=sbom,
         provenance=prov,
+        wheel_entries=(native_entry,),
+        native_runtime_inventory=native_inventory,
     )
     data = ready.to_dict()
     assert data["status"] == "preview-ready"
@@ -894,6 +1087,7 @@ def test_cargo_package_repr_hides_registry_source() -> None:
 
 
 def test_artifact_evidence_rejects_duplicate_cargo_bom_refs() -> None:
+    native_entry, native_inventory = _synthetic_native_inventory()
     subject = EvidenceFileRef(
         logical_path="dist/demo.whl",
         sha256="a" * 64,
@@ -927,6 +1121,8 @@ def test_artifact_evidence_rejects_duplicate_cargo_bom_refs() -> None:
             subject=subject,
             sbom=sbom,
             provenance=prov,
+            wheel_entries=(native_entry,),
+            native_runtime_inventory=native_inventory,
             cargo_packages=(pkg, pkg),
         )
 

@@ -5,10 +5,60 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.8.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.9.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR.
+
+### C6.4 direct native runtime linkage inventory preview
+
+- Extend `artifact_evidence` for an otherwise preview-ready ordinary
+  host-extension + CPython wheel with a sanitized inventory of directly
+  observed dynamic linkage only: macOS Mach-O uses bounded `otool -L`, and
+  Linux ELF uses bounded `readelf -W -d`. Inspector children run reviewed
+  absolute system tools without a shell or inherited parent environment, using
+  only a minimal C locale, short timeout, and capped output; tool paths, raw
+  output, and machine-private absolute paths are never serialized.
+- Bind the inspected, contained installed native extension to one exact wheel
+  member by generated-Python relative identity, SHA-256, and byte size, and
+  create one private same-byte snapshot bound to both. Binary-header and
+  `otool`/`readelf` inspection read only that snapshot; original and snapshot
+  identity/digest are revalidated before evidence is accepted. Architecture,
+  binary format, ambiguous search paths, unexpected loading tags, unsafe names,
+  count/size bounds, and mutation mismatches fail closed to a fixed sanitized
+  reason.
+- Record the direct native-binary-to-dependency edges in the incomplete
+  CycloneDX preview and the corresponding sanitized observation in provenance.
+  This is not dependency path resolution, a transitive dylib closure, runtime
+  `dlopen` discovery, or a claim that observed dependencies were build inputs.
+- Record the normalized binary-header architecture. Each accepted dependency
+  carries `origin = system | unresolved` and a deterministic, path-free
+  `bom_ref`. Apply a closed expected-runtime allowlist: Mach-O admits only
+  `/usr/lib` and `/System/Library` install roots (serialized as basenames), and
+  rejects other Mach-O path forms as unsafe; ELF rejects arbitrary `NEEDED`
+  libraries with the fixed allowlist reason
+  `native-runtime-unexpected-dependency`.
+- Treat the first `otool -L` row as an ignorable private Cargo self-ID only when
+  the private snapshot is an `MH_DYLIB` and a separate bounded `otool -D`
+  observation exactly matches that row. Otherwise the row remains a dependency
+  and normal closed-allowlist validation applies.
+- Preserve policy semantics: `best-effort` keeps a successful wheel but reports
+  evidence `unavailable`; `required` emits `RXT060` and transactionally rolls
+  back this run's exact wheel and sidecars. Required wheels are built in a
+  private transaction directory and published only by a create-if-absent hard
+  link carrying an exact receipt; an observed public file is never claimed as
+  this run's output. Rollback atomically moves a candidate into private
+  quarantine before checking its receipt, so a concurrent replacement is
+  restored or retained for recovery rather than deleted. Pre-existing-output
+  preservation is write-ahead recorded before rename. A receipt/content
+  mismatch fails publication closed and reports incomplete rollback. Success
+  remains
+  `composition: incomplete`, `signed: false`, and
+  `distribution_authorized: false`.
+- Windows PE, runtime-bearing plugins, host executables, Rust-importable crates,
+  Nuitka/WASM paths, signatures, and path/transitive dependency resolution are
+  outside C6.4. Package version remains **0.1.4**, plugin API remains **1.4**,
+  and tooling contract advances additively to **2.9.0**.
 
 ### C6.3 opt-in required artifact-evidence gate
 
@@ -26,8 +76,10 @@ feature PRs target the `0.1.5` integration branch; `main` stays at the published
   "preview-ready"`. Unavailable evidence fails closed, removes only this run's
   exact wheel/sidecars while preserving pre-existing outputs, and retains
   generated source and reports for debugging. The output transaction rejects
-  symlinked parents, restores on exceptional exits, and reports an incomplete
-  rollback explicitly instead of claiming cleanup succeeded.
+  symlinked parents, pins parent identity, verifies exact ownership/content
+  receipts, restores on exceptional exits, preserves concurrently replaced
+  content, and reports an incomplete rollback explicitly instead of claiming
+  cleanup succeeded.
 - Add immutable `artifact_evidence_gate` only in required mode. A satisfied
   gate still reports `distribution_authorized: false`, `complete: false`, and
   `signed: false`; C6.2 remains preview-only and is not full distribution
@@ -37,8 +89,9 @@ feature PRs target the `0.1.5` integration branch; `main` stays at the published
 
 This is **not** full C6 completion. The preview is incomplete and unsigned
 (`authority: evidence-only`). It does not claim reproducibility, hermeticity,
-completeness, native dylib/runtime inventory, recursive package inventory,
-signatures, or external-source authorization. Host-executable, rust-crate,
+completeness, recursive package inventory, signatures, or external-source
+authorization. C6.2 itself had no native dylib/runtime inventory; C6.4 adds only
+the bounded direct observation described above. Host-executable, rust-crate,
 host-extension+Nuitka, WASM, and external-package source-native builds omit
 the field.
 

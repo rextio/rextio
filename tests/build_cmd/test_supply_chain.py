@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import textwrap
 from pathlib import Path
 
 import pytest
 
+import rextio.artifacts.evidence as evidence_mod
 from rextio.analyzer.models import ModuleAnalysis, ProjectAnalysis
+from rextio.artifacts.evidence import (
+    NativeRuntimeDependency,
+    NativeRuntimeInventory,
+    REASON_RUNTIME_INSPECTOR_FAILED,
+    WheelEntryRef,
+    hash_regular_file,
+)
 from rextio.artifacts.models import ArtifactKind
 from rextio.artifacts.profiles import detect_host_target_triple, host_extension_profile
 from rextio.build.artifact_layout import ArtifactLayout
@@ -28,6 +37,57 @@ from rextio.partition.fallback_plan import FallbackPlan
 from rextio.partition.native_plan import NativePlan
 from rextio.source.models import SourceModule, SourceModuleGraph, SourceOrigin
 from rextio.source.planning import HostSourcePlan
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_runtime_inspector(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    def inspect(
+        *,
+        installed_path: Path | None,
+        expected_python_root: Path,
+        wheel_entries: tuple[WheelEntryRef, ...],
+        target_triple: str,
+        timeout: float,
+    ) -> NativeRuntimeInventory:
+        del timeout
+        assert installed_path is not None
+        binary = Path(installed_path).resolve(strict=True)
+        member_name = binary.relative_to(expected_python_root.resolve(strict=True)).as_posix()
+        entry = next(item for item in wheel_entries if item.name == member_name)
+        digest, size = hash_regular_file(binary)
+        assert (entry.sha256, entry.uncompressed_size) == (digest, size)
+        arch_token = target_triple.split("-", 1)[0]
+        architecture = (
+            "aarch64"
+            if arch_token in {"aarch64", "arm64"}
+            else "x86_64"
+            if arch_token == "x86_64"
+            else "arm"
+            if arch_token.startswith("arm")
+            else "x86"
+        )
+        format_name = "mach-o" if "apple-darwin" in target_triple else "elf"
+        return NativeRuntimeInventory(
+            format=format_name,
+            architecture=architecture,
+            inspector="otool" if format_name == "mach-o" else "readelf",
+            subject_basename=binary.name,
+            subject_sha256=digest,
+            subject_size=size,
+            wheel_member=entry.name,
+            wheel_member_sha256=entry.sha256,
+            wheel_member_size=entry.uncompressed_size,
+            dependencies=(
+                NativeRuntimeDependency(
+                    name="libSystem.B.dylib" if format_name == "mach-o" else "libc.so.6",
+                    origin="system" if format_name == "mach-o" else "unresolved",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(supply_chain_module, "inspect_native_runtime_inventory", inspect)
 
 
 def _sha(data: bytes) -> str:
@@ -86,9 +146,21 @@ def _write_project_with_generated_tree(tmp_path: Path) -> tuple[Path, ArtifactLa
         (layout.python_dir / "app.py").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    native_payload = b"synthetic native library"
+    (layout.python_dir / "_rextio_native.so").write_bytes(native_payload)
+    (layout.build_python_dir / "_rextio_native.so").write_bytes(native_payload)
     wheel = build_artifact_wheel(project, layout.build_python_dir, layout.dist_dir)
     assert wheel.status == "built" and wheel.path is not None
     return project, layout, Path(wheel.path)
+
+
+def _built_native(layout: ArtifactLayout) -> NativeBuildResult:
+    return NativeBuildResult(
+        status="built",
+        tool="cargo",
+        message="ok",
+        installed_path=str(layout.python_dir / "_rextio_native.so"),
+    )
 
 
 def _plan(project: Path, profile, source: Path) -> BuildPlan:
@@ -149,7 +221,7 @@ def test_nuitka_host_extension_is_out_of_scope(tmp_path: Path) -> None:
         layout=layout,
         plan=plan,
         wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
-        native_build=NativeBuildResult(status="built", tool="cargo", message="ok"),
+        native_build=_built_native(layout),
         input_snapshot=snap,
     )
     assert evidence is None
@@ -166,7 +238,7 @@ def test_non_host_extension_profile_omits_evidence(tmp_path: Path) -> None:
         layout=layout,
         plan=plan,
         wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
-        native_build=NativeBuildResult(status="built", tool="cargo", message="ok"),
+        native_build=_built_native(layout),
         input_snapshot=None,
     )
     assert evidence is None
@@ -209,7 +281,7 @@ def test_source_snapshot_mismatch_marks_unavailable(tmp_path: Path) -> None:
         layout=layout,
         plan=plan,
         wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
-        native_build=NativeBuildResult(status="built", tool="cargo", message="ok"),
+        native_build=_built_native(layout),
         input_snapshot=snap,
     )
     assert evidence is not None
@@ -231,13 +303,17 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     plan = _plan(project, profile, project / "app.py")
     snap = _snapshot(project, layout, plan)
     assert snap.unavailable_reason is None
+    sbom_path = wheel_path.with_suffix(wheel_path.suffix + ".cdx.json")
+    provenance_path = wheel_path.with_suffix(wheel_path.suffix + ".intoto.json")
+    sbom_path.write_bytes(b"owner-sbom")
+    provenance_path.write_bytes(b"owner-provenance")
 
     evidence = emit_host_extension_wheel_evidence(
         project_root=project,
         layout=layout,
         plan=plan,
         wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
-        native_build=NativeBuildResult(status="built", tool="cargo", message="ok"),
+        native_build=_built_native(layout),
         input_snapshot=snap,
     )
     assert evidence is not None
@@ -253,6 +329,8 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     prov_path = project / evidence.provenance.logical_path  # type: ignore[union-attr]
     assert sbom_path.is_file()
     assert prov_path.is_file()
+    assert sbom_path.read_bytes() != b"owner-sbom"
+    assert prov_path.read_bytes() != b"owner-provenance"
     sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
     assert sbom["specVersion"] == "1.6"
     assert sbom["compositions"][0]["aggregate"] == "incomplete"
@@ -271,8 +349,264 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     report = evidence.to_dict()
     assert report["status"] == "preview-ready"
     assert report["authority"] == "evidence-only"
+    assert report["composition"] == "incomplete"
+    assert report["complete"] is False
+    assert report["signed"] is False
+    assert report["distribution_authorized"] is False
     assert "wheel_entries" in report
     assert "cargo_dependencies" in report
+
+    runtime = report["native_runtime_inventory"]
+    assert runtime["scope"] == "direct-only"
+    assert runtime["transitive_closure"] is False
+    assert runtime["runtime_dlopen"] is False
+    assert runtime["dependency_count"] == 1
+    dependency = runtime["dependencies"][0]
+
+    native_component = next(
+        component
+        for component in sbom["components"]
+        if component["name"] == runtime["wheel_member"]
+    )
+    native_properties = {item["name"]: item["value"] for item in native_component["properties"]}
+    assert native_properties["rextio:native_runtime_subject"] == "true"
+    assert native_properties["rextio:linkage_scope"] == "direct-only"
+    native_edge = next(
+        edge for edge in sbom["dependencies"] if edge["ref"] == native_component["bom-ref"]
+    )
+    assert dependency["bom_ref"] in native_edge["dependsOn"]
+    dependency_component = next(
+        component
+        for component in sbom["components"]
+        if component["bom-ref"] == dependency["bom_ref"]
+    )
+    assert dependency_component["name"] == dependency["name"]
+
+    internal = prov["predicate"]["buildDefinition"]["internalParameters"]
+    assert internal["native_runtime_scope"] == "direct-only"
+    assert internal["native_runtime_transitive_closure"] is False
+    assert internal["native_runtime_dlopen"] is False
+    assert internal["distribution_authorized"] is False
+    assert prov["predicate"]["runDetails"]["metadata"]["rextio:observed_native_runtime"] == runtime
+
+
+def test_runtime_inspector_failure_is_best_effort_and_preserves_wheel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rextio.build import supply_chain as sc
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    plan = _plan(project, profile, project / "app.py")
+    snap = _snapshot(project, layout, plan)
+    wheel_bytes = wheel_path.read_bytes()
+
+    def fail_inspection(**_kwargs):
+        raise sc.ArtifactEvidenceError(
+            "synthetic inspector failure",
+            reason=REASON_RUNTIME_INSPECTOR_FAILED,
+        )
+
+    monkeypatch.setattr(sc, "inspect_native_runtime_inventory", fail_inspection)
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snap,
+    )
+
+    assert evidence is not None
+    assert evidence.status == "unavailable"
+    assert evidence.reason == REASON_RUNTIME_INSPECTOR_FAILED
+    assert wheel_path.read_bytes() == wheel_bytes
+    assert not list(layout.dist_dir.glob("*.cdx.json"))
+    assert not list(layout.dist_dir.glob("*.intoto.json"))
+
+
+def test_native_mutation_during_sidecar_emission_restores_exact_sidecars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rextio.build import supply_chain as sc
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    plan = _plan(project, profile, project / "app.py")
+    snap = _snapshot(project, layout, plan)
+    installed = layout.python_dir / "_rextio_native.so"
+    sbom_path = wheel_path.with_suffix(wheel_path.suffix + ".cdx.json")
+    provenance_path = wheel_path.with_suffix(wheel_path.suffix + ".intoto.json")
+    sbom_path.write_bytes(b"owner-sbom")
+    provenance_path.write_bytes(b"owner-provenance")
+    owner_sbom = layout.dist_dir / "owner.cdx.json"
+    owner_provenance = layout.dist_dir / "owner.intoto.json"
+    owner_sbom.write_bytes(b"owner-sbom")
+    owner_provenance.write_bytes(b"owner-provenance")
+
+    real_build_provenance = sc.build_intoto_provenance_document
+
+    def mutate_then_build_provenance(**kwargs):
+        installed.write_bytes(b"mutated after runtime inventory")
+        return real_build_provenance(**kwargs)
+
+    monkeypatch.setattr(sc, "build_intoto_provenance_document", mutate_then_build_provenance)
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snap,
+    )
+
+    assert evidence is not None
+    assert evidence.status == "unavailable"
+    assert evidence.reason == sc.REASON_RUNTIME_BINARY_MISMATCH
+    assert sbom_path.read_bytes() == b"owner-sbom"
+    assert provenance_path.read_bytes() == b"owner-provenance"
+    assert owner_sbom.read_bytes() == b"owner-sbom"
+    assert owner_provenance.read_bytes() == b"owner-provenance"
+
+
+def test_sidecar_preserve_records_recovery_before_post_rename_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "dist"
+    parent.mkdir()
+    output = parent / "artifact.cdx.json"
+    output.write_bytes(b"owner-sidecar")
+    transaction = evidence_mod.SidecarWriteTransaction.prepare(
+        (output,), project_root=tmp_path, expected_parent=parent
+    )
+    transaction.write(output, b"new-sidecar")
+    real_matches = evidence_mod._receipt_matches_at
+    failed = False
+
+    def fail_first_backup_inspection(dir_fd: int, name: str, receipt) -> bool:
+        nonlocal failed
+        if name == "0" and not failed:
+            failed = True
+            raise evidence_mod.ArtifactEvidenceError(
+                "synthetic post-rename inspection failure",
+                reason="sidecar-write-failed",
+            )
+        return real_matches(dir_fd, name, receipt)
+
+    monkeypatch.setattr(evidence_mod, "_receipt_matches_at", fail_first_backup_inspection)
+
+    with pytest.raises(evidence_mod.ArtifactEvidenceError):
+        transaction.commit()
+    assert transaction.rollback() is True
+    assert output.read_bytes() == b"owner-sidecar"
+    assert not transaction._backup_path.exists()
+
+
+def test_sidecar_rollback_quarantines_before_receipt_and_preserves_racing_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "dist"
+    parent.mkdir()
+    output = parent / "artifact.cdx.json"
+    transaction = evidence_mod.SidecarWriteTransaction.prepare(
+        (output,), project_root=tmp_path, expected_parent=parent
+    )
+    transaction.write(output, b"transaction-sidecar")
+    with pytest.raises(RuntimeError, match="stop after publication"):
+        transaction.commit(
+            claim_sink=lambda _claims: (_ for _ in ()).throw(RuntimeError("stop after publication"))
+        )
+    real_matches = evidence_mod._receipt_matches_at
+    raced = False
+
+    def race_after_receipt(dir_fd: int, name: str, receipt) -> bool:
+        nonlocal raced
+        matches = real_matches(dir_fd, name, receipt)
+        if matches and not raced:
+            raced = True
+            replacement = parent / ".concurrent-sidecar"
+            replacement.write_bytes(b"concurrent-owner-sidecar")
+            os.replace(replacement, output)
+        return matches
+
+    monkeypatch.setattr(evidence_mod, "_receipt_matches_at", race_after_receipt)
+    complete = transaction.rollback()
+
+    assert raced is True
+    assert complete is False
+    assert output.read_bytes() == b"concurrent-owner-sidecar"
+
+
+def test_sidecar_stage_cleanup_quarantines_before_receipt_and_preserves_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "dist"
+    parent.mkdir()
+    output = parent / "artifact.cdx.json"
+    transaction = evidence_mod.SidecarWriteTransaction.prepare(
+        (output,), project_root=tmp_path, expected_parent=parent
+    )
+    transaction.write(output, b"transaction-sidecar")
+    stage_name = transaction._staged[0][0]
+    stage_path = parent / stage_name
+    real_matches = evidence_mod._receipt_matches_at
+    raced = False
+
+    def race_after_receipt(dir_fd: int, name: str, receipt) -> bool:
+        nonlocal raced
+        matches = real_matches(dir_fd, name, receipt)
+        if matches and not raced:
+            raced = True
+            replacement = parent / ".concurrent-stage"
+            replacement.write_bytes(b"concurrent-owner-stage")
+            os.replace(replacement, stage_path)
+        return matches
+
+    monkeypatch.setattr(evidence_mod, "_receipt_matches_at", race_after_receipt)
+    complete = transaction.rollback()
+
+    assert raced is True
+    assert complete is False
+    assert stage_path.read_bytes() == b"concurrent-owner-stage"
+
+
+def test_native_mutation_during_sidecar_emission_removes_only_new_sidecars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rextio.build import supply_chain as sc
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    plan = _plan(project, profile, project / "app.py")
+    snap = _snapshot(project, layout, plan)
+    installed = layout.python_dir / "_rextio_native.so"
+    sbom_path = wheel_path.with_suffix(wheel_path.suffix + ".cdx.json")
+    provenance_path = wheel_path.with_suffix(wheel_path.suffix + ".intoto.json")
+
+    real_build_provenance = sc.build_intoto_provenance_document
+
+    def mutate_then_build_provenance(**kwargs):
+        installed.write_bytes(b"mutated after runtime inventory")
+        return real_build_provenance(**kwargs)
+
+    monkeypatch.setattr(sc, "build_intoto_provenance_document", mutate_then_build_provenance)
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snap,
+    )
+
+    assert evidence is not None
+    assert evidence.status == "unavailable"
+    assert evidence.reason == sc.REASON_RUNTIME_BINARY_MISMATCH
+    assert not sbom_path.exists()
+    assert not provenance_path.exists()
 
 
 def test_prewrite_failure_preserves_preexisting_sidecars(
@@ -290,9 +624,7 @@ def test_prewrite_failure_preserves_preexisting_sidecars(
     provenance_path.write_bytes(b"owner-provenance")
 
     def fail_before_write(*_args, **_kwargs):
-        raise sc.ArtifactEvidenceError(
-            "cargo inventory failed", reason="cargo-metadata-failed"
-        )
+        raise sc.ArtifactEvidenceError("cargo inventory failed", reason="cargo-metadata-failed")
 
     monkeypatch.setattr(sc, "resolve_cargo_inventory", fail_before_write)
     evidence = emit_host_extension_wheel_evidence(
@@ -300,7 +632,7 @@ def test_prewrite_failure_preserves_preexisting_sidecars(
         layout=layout,
         plan=plan,
         wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
-        native_build=NativeBuildResult(status="built", tool="cargo", message="ok"),
+        native_build=_built_native(layout),
         input_snapshot=snap,
     )
     assert evidence is not None
@@ -322,6 +654,7 @@ def test_late_failure_cleans_written_sidecar_only(
     snap = _snapshot(project, layout, plan)
     sbom_path = wheel_path.with_suffix(wheel_path.suffix + ".cdx.json")
     provenance_path = wheel_path.with_suffix(wheel_path.suffix + ".intoto.json")
+    sbom_path.write_bytes(b"owner-sbom")
     provenance_path.write_bytes(b"owner-provenance")
     inventory = CargoInventory(
         target_triple=profile.target_triple,
@@ -343,17 +676,17 @@ def test_late_failure_cleans_written_sidecar_only(
         layout=layout,
         plan=plan,
         wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
-        native_build=NativeBuildResult(status="built", tool="cargo", message="ok"),
+        native_build=_built_native(layout),
         input_snapshot=snap,
     )
     assert evidence is not None
     assert evidence.status == "unavailable"
     assert evidence.reason == "evidence-internal-error"
-    assert not sbom_path.exists()
+    assert sbom_path.read_bytes() == b"owner-sbom"
     assert provenance_path.read_bytes() == b"owner-provenance"
 
 
-def test_cleanup_failure_cannot_escape_evidence_emission(
+def test_transaction_rollback_failure_cannot_escape_evidence_emission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from rextio.build import supply_chain as sc
@@ -363,27 +696,25 @@ def test_cleanup_failure_cannot_escape_evidence_emission(
     plan = _plan(project, profile, project / "app.py")
     snap = _snapshot(project, layout, plan)
 
-    def fail_inventory(*_args, **_kwargs):
-        raise sc.ArtifactEvidenceError(
-            "inventory failed", reason="cargo-metadata-failed"
-        )
+    def fail_commit(*_args, **_kwargs) -> None:
+        raise sc.ArtifactEvidenceError("sidecar commit failed", reason="sidecar-write-failed")
 
-    def fail_cleanup(*_args, **_kwargs) -> None:
-        raise OSError("cleanup must not escape")
+    def fail_rollback(*_args, **_kwargs) -> bool:
+        raise OSError("rollback must not escape")
 
-    monkeypatch.setattr(sc, "resolve_cargo_inventory", fail_inventory)
-    monkeypatch.setattr(sc, "cleanup_created_sidecars", fail_cleanup)
+    monkeypatch.setattr(sc.SidecarWriteTransaction, "commit", fail_commit)
+    monkeypatch.setattr(sc.SidecarWriteTransaction, "rollback", fail_rollback)
     evidence = emit_host_extension_wheel_evidence(
         project_root=project,
         layout=layout,
         plan=plan,
         wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
-        native_build=NativeBuildResult(status="built", tool="cargo", message="ok"),
+        native_build=_built_native(layout),
         input_snapshot=snap,
     )
     assert evidence is not None
     assert evidence.status == "unavailable"
-    assert evidence.reason == "cargo-metadata-failed"
+    assert evidence.reason == "sidecar-write-failed"
     assert wheel_path.is_file()
 
 
@@ -431,7 +762,7 @@ def test_illegal_logical_path_segment_marks_unavailable_not_crash(tmp_path: Path
         layout=layout,
         plan=plan,
         wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
-        native_build=NativeBuildResult(status="built", tool="cargo", message="ok"),
+        native_build=_built_native(layout),
         input_snapshot=snap,
     )
     assert evidence is not None
@@ -475,7 +806,7 @@ def test_wheel_mutation_after_snapshot_marks_unavailable(tmp_path: Path, monkeyp
         layout=layout,
         plan=plan,
         wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
-        native_build=NativeBuildResult(status="built", tool="cargo", message="ok"),
+        native_build=_built_native(layout),
         input_snapshot=snap,
     )
     assert evidence is not None
@@ -516,7 +847,7 @@ def test_input_mutation_after_cargo_marks_unavailable(tmp_path: Path, monkeypatc
         layout=layout,
         plan=plan,
         wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
-        native_build=NativeBuildResult(status="built", tool="cargo", message="ok"),
+        native_build=_built_native(layout),
         input_snapshot=snap,
     )
     assert evidence is not None
