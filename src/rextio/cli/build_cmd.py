@@ -53,7 +53,10 @@ from rextio.plugins.loader import PluginError
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.config.schema import RextioConfig
 from rextio.fallback.nuitka import nuitka_unavailable_message
-from rextio.source.external import ExternalSourceBuildBlockedError
+from rextio.source.external import (
+    ExternalSourceBuildBlockedError,
+    ExternalSourceC5NotImplementedError,
+)
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
@@ -131,38 +134,57 @@ def _report_external_source_build_blocked(
     fallback: str,
     reporter: Reporter,
 ) -> int:
-    """Stop C5 previews before toolchain or artifact work and retain evidence."""
+    """Stop external-source builds before toolchain or artifact work."""
     assert analysis.external_source_plan is not None
-    error = ExternalSourceBuildBlockedError(analysis.external_source_plan)
+    plan = analysis.external_source_plan
+    if plan.authorization_verified:
+        error: Exception = ExternalSourceC5NotImplementedError(plan)
+        status = "external-source-c5-not-implemented"
+        suggestion = (
+            "Suggestion: C6.1 SourceLock authorization succeeded; remaining C5.2 "
+            "call-site linkage, body lowerability, Rust codegen, and packaging "
+            "are not implemented. Keep using check/generate for inventory "
+            "evidence only."
+        )
+    else:
+        error = ExternalSourceBuildBlockedError(plan)
+        status = "external-source-c6-blocked"
+        suggestion = (
+            "Suggestion: add a verified project-owned "
+            "rextio.external-source.lock.json authored from rextio check "
+            "plan_snapshot material, or use rextio check/generate for preview "
+            "evidence only."
+        )
     reports_dir = project_root / ".rextio" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     for stale in ("build.json", "generate.json", "check.json"):
         (reports_dir / stale).unlink(missing_ok=True)
     write_check_report(project_root, analysis)
+    # Authorization evidence is nested only under external_source_plan.authorization.
+    report_body: dict[str, object] = {
+        "analysis": analysis.to_dict(),
+        "error": {"code": "RXT060", "message": str(error)},
+        "external_source_plan": plan.to_dict(),
+        "fallback": fallback,
+        "status": status,
+    }
     (reports_dir / "build.json").write_text(
-        json.dumps(
-            {
-                "analysis": analysis.to_dict(),
-                "error": {"code": "RXT060", "message": str(error)},
-                "external_source_plan": analysis.external_source_plan.to_dict(),
-                "fallback": fallback,
-                "status": "external-source-c6-blocked",
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
+        json.dumps(report_body, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     reporter.warn(
         "External source license warning: "
-        f"{analysis.external_source_plan.license_warning}"
+        f"{plan.license_warning}"
     )
+    if plan.authorization is not None:
+        auth = plan.authorization
+        reporter.warn(
+            "External source authorization: "
+            f"status={auth.status}"
+            + (f" reason={auth.reason}" if auth.reason else "")
+        )
     reporter.error(str(error))
-    reporter.error(
-        "Suggestion: use rextio check/generate for preview evidence, or wait for "
-        "the C6 license-lock, SBOM, and provenance gate."
-    )
+    reporter.error(suggestion)
     return 1
 
 

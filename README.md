@@ -16,10 +16,11 @@ fallback code - same imports, same behavior.
 artifact planning, a narrow initializer-before-main Rust executable slice, and
 plugin API **1.4** fail-closed standalone artifact capability (rust-crate /
 host-executable), plus a C5.1 external pure-Python source inventory/gate
-preview. This branch emits additive tooling contract **2.5.0** and
-plugin API **1.4** while keeping package version **0.1.4**; those changes are
-not yet a tagged or PyPI release. Published 0.1.4 remains the plugin API **1.3**
-/ contract **2.2.0** producer. See
+preview and a C6.1 bounded prebuild authorization-contract preview (not full
+C6). This branch emits additive tooling contract **2.6.0** and plugin API
+**1.4** while keeping package version **0.1.4**; those changes are not yet a
+tagged or PyPI release. Published 0.1.4 remains the plugin API **1.3** /
+contract **2.2.0** producer. See
 [Host source-AOT and native executables](docs/source-aot-and-executables.md) and
 [plugin lowering](docs/specs/plugin-lowering.md) §10.
 
@@ -376,14 +377,26 @@ This is inventory evidence, not source-to-Rust conversion. Candidate function
 names are only lexical hints: they are not connected to project calls, lowered,
 compiled, packaged, or redistributed. `rextio build` therefore stops with
 `RXT060` before Python/Nuitka/Cargo or artifact work whenever the imported
-declaration produces a plan, including an unavailable plan. C6 must add a
-license decision/lock, SBOM, provenance attestation, and actual closure/lowering
-authority first.
+declaration produces a plan, including an unavailable plan.
+
+**C6.1 prebuild authorization-contract preview (not full C6):** run
+`rextio check` and copy `source_files`, `metadata_files`,
+`plan_snapshot_sha256`, and `license_material_sha256` into a project-owned
+`rextio.external-source.lock.json` (see the tooling-contract copy rules).
+The lock binds exact identity, path/SHA-256/**size**/**role** material
+(sources + RECORD/METADATA/WHEEL + PEP 639 license files under
+`dist-info/licenses/`), custom `source_inventory` (not full SPDX/CycloneDX),
+provenance with exact ordered evidence and closed attestor relationships, and
+a closed license attestation (`REXTIO_EXTERNAL_SOURCE_LICENSE_ACK_V1`).
+Null/unknown licenses never become preview-ready or verify. Missing/invalid
+locks → `external-source-c6-blocked`. Verified locks still block with
+`external-source-c5-not-implemented` and never open a build path.
 
 **License warning:** translating or redistributing dependency source can create
 derivative-work and redistribution obligations. Review the exact package
-license, especially GNU/copyleft terms. Rextio's inventory is not legal advice.
-The same warning is emitted on stderr and serialized in the plan.
+license, especially GNU/copyleft terms. Rextio's inventory and SourceLock gate
+are not legal advice. The same warning is emitted on stderr and serialized in
+the plan.
 
 The supported package policies are `fallback`, `analyze`, `try-native`, and
 `plugin`. Since 0.1.1 a plugin can also describe and *lower* covered

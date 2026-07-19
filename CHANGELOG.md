@@ -5,8 +5,38 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.5.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.6.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line.
+
+### C6.1 bounded prebuild authorization-contract preview
+
+This is **not** full C6 completion. Full/signed authorization, standards SBOM,
+artifact provenance, and C5.2 source-native implementation remain pending.
+
+- Extend C5.1 plans with verified byte sizes only on `AuthorityFile` entries
+  (not the shared host `SourceModule` wire shape). Bind RECORD, METADATA,
+  WHEEL, and every PEP 639 `License-File` under
+  `<dist-info>/licenses/<value>` (Metadata ≥ 2.4; reject backslashes; reject
+  License-Expression+License). Reject missing/blank/UNKNOWN licenses before
+  preview-ready. Enforce module/file/size bounds so every preview-ready plan
+  can fit a valid 256 KiB SourceLock.
+- Publish `plan_snapshot`, `plan_snapshot_sha256`, and shared
+  `license_material_sha256` in check/generate JSON so projects can author
+  locks without internal helpers or local paths.
+- Project-owned `rextio.external-source.lock.json` binds exact identity,
+  path/hash/size/**role**, custom `source_inventory` (not full SPDX/CycloneDX),
+  provenance (`subject_snapshot_sha256`, exact ordered evidence, closed
+  relationship→attestor_kind matrix), and closed license attestation
+  (`decision: allow`, fixed scopes, exact ack constant). Rextio validates
+  structure/binding only — never legality. Project/VCS review is the trust
+  boundary (no signature).
+- Safe lock I/O: single-descriptor open/fstat/read with no-follow and
+  nonblocking where supported; reject symlink/FIFO/non-regular/oversized
+  locks. Strict JSON rejects duplicate keys, NaN/Infinity, excessive depth,
+  and never echoes attacker-controlled key names.
+- Authorization nested only under `external_source_plan.authorization`.
+  Verified still stops with `external-source-c5-not-implemented` and never
+  opens a build path.
 
 ### C5.1 external pure-Python source inventory/gate preview
 
@@ -26,11 +56,12 @@ Train C host-planning work remains under the same unreleased line.
   source bytes are not serialized, package source is not copied into generated
   fallback output, and no project-call linkage or Rust lowering is claimed.
 - Block every build carrying an available or unavailable external-source plan
-  with stable `RXT060`/`external-source-c6-blocked` evidence before configured
-  CPython/Nuitka/Cargo probes or artifact work. Programmatic build orchestration
-  fails closed as well. Actual build, packaging, executable/crate output, and
-  redistribution remain unavailable until C6 supplies license lock/decision,
-  SBOM, provenance, and source-native closure authority.
+  before configured CPython/Nuitka/Cargo probes or artifact work. Without a
+  verified C6 SourceLock the status is `external-source-c6-blocked`; with a
+  verified lock the distinct post-authorization block is
+  `external-source-c5-not-implemented`. Programmatic build orchestration fails
+  closed as well. Actual packaging, executable/crate output, and redistribution
+  remain unavailable until remaining C5.2 source-native work exists.
 - Serialize and emit a mandatory warning that dependency source translation can
   create derivative-work or redistribution obligations, especially for
   GNU/copyleft licenses, and that the preview is not legal advice.
@@ -112,11 +143,14 @@ Train C host-planning work remains under the same unreleased line.
   Native reads of those values remain blocked; broader top-level semantics are
   deferred.
 
-### Tooling contract 2.5.0 (and prior Train C additions)
+### Tooling contract 2.6.0 (and prior Train C additions)
 
-- Advance the unreleased producer to **2.5.0** for the sanitized, preview-only
-  `external_source_plan` added by C5.1. The record is explicitly
-  non-distributable and carries a required C6 gate and license warning.
+- Advance the unreleased producer to **2.6.0** for the C6.1 authorization-
+  contract preview: plan authority material (`source_files`, `metadata_files`,
+  `plan_snapshot`, `plan_snapshot_sha256`) plus nested
+  `external_source_plan.authorization`. The plan remains non-distributable;
+  `c6_gate` is `required` or `authorization-verified`; verified authorization
+  still does not grant source-native lowering or packaging.
 - Contract **2.4.0** added plugin standalone-capability
   presence/declaration and generate/build resolved per-profile allow/deny
   details, without changing route, native-status, rejection, promotion, or

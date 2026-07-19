@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
@@ -13,6 +13,13 @@ import rextio.source.external as external_source
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.cli.main import main
 from rextio.config.loader import load_config
+from rextio.source.authorization import (
+    LICENSE_ACKNOWLEDGEMENT_V1,
+    SOURCE_LOCK_FILENAME,
+    license_material_digest,
+    plan_snapshot_sha256,
+    verify_external_source_authorization,
+)
 
 
 PACKAGE = "rextio_c5_poc_math"
@@ -120,6 +127,98 @@ def _analyze(project: Path):
     return analyze_project(project, imports_config=config.imports)
 
 
+def _write_valid_source_lock(project: Path, plan: external_source.ExternalSourcePlan) -> None:
+    snapshot = plan_snapshot_sha256(plan)
+    assert snapshot is not None
+    assert plan.license is not None
+    source_entries = [
+        {
+            "module_name": item.module_name,
+            "path": item.path,
+            "sha256": item.sha256,
+            "size": item.size,
+            "role": "source-module",
+        }
+        for item in plan.source_files
+    ]
+    metadata_entries = [
+        {
+            "path": item.path,
+            "sha256": item.sha256,
+            "size": item.size,
+            "role": item.role,
+        }
+        for item in plan.metadata_files
+    ]
+    all_files = [
+        {
+            "path": item.path,
+            "sha256": item.sha256,
+            "size": item.size,
+            "role": item.role,
+        }
+        for item in (*plan.source_files, *plan.metadata_files)
+    ]
+    attestor = "Integration Test Org"
+    document = {
+        "schema_version": "1",
+        "kind": "rextio.external-source-authorization",
+        "package": plan.package,
+        "distribution": plan.distribution,
+        "version": plan.requested_version,
+        "content_hashes": {
+            "source_files": source_entries,
+            "metadata_files": metadata_entries,
+            "snapshot_sha256": snapshot,
+        },
+        "source_inventory": {
+            "format": "rextio-source-inventory-v1",
+            "components": [
+                {
+                    "type": "pypi-distribution",
+                    "name": plan.distribution,
+                    "version": plan.requested_version,
+                    "license_observed": plan.license,
+                    "files": all_files,
+                }
+            ],
+        },
+        "provenance": {
+            "subject_snapshot_sha256": snapshot,
+            "producer": attestor,
+            "attestor_relationship": "organization-owner",
+            "installed_wheel": {
+                "distribution": plan.distribution,
+                "version": plan.requested_version,
+                "metadata_files": metadata_entries,
+            },
+            "evidence": [
+                "installed-distribution-record",
+                "project-vcs-review",
+            ],
+        },
+        "license_attestation": {
+            "attestor": attestor,
+            "attestor_kind": "organization",
+            "reviewed_license": plan.license,
+            "reviewed_license_material_sha256": license_material_digest(plan),
+            "decision": "allow",
+            "action_scopes": [
+                "analysis",
+                "translation",
+                "local-build",
+                "package",
+                "redistribution",
+            ],
+            "acknowledgement": LICENSE_ACKNOWLEDGEMENT_V1,
+        },
+    }
+    (project / SOURCE_LOCK_FILENAME).write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_analyze_project_creates_sanitized_external_source_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -140,9 +239,32 @@ def test_analyze_project_creates_sanitized_external_source_plan(
     assert payload["execution_authority"] == "preview-only"
     assert payload["distributable"] is False
     assert payload["c6_gate"] == "required"
+    assert payload["authorization"]["status"] == "missing"
     assert payload["modules"][0]["path"] == (
         f"distributions/{DIST_NAME}/{PACKAGE}/__init__.py"
     )
+    assert "size" not in payload["modules"][0]
+    assert payload["source_files"][0]["size"] == len(SOURCE.encode("utf-8"))
+    assert payload["plan_snapshot_sha256"] is not None
+    assert payload["license_material_sha256"] is not None
+    assert payload["plan_snapshot"]["domain"] == "rextio.external-source-plan-snapshot.v1"
+    assert payload["plan_snapshot"]["license_material_sha256"] == payload[
+        "license_material_sha256"
+    ]
+    assert payload["source_files"]
+    assert payload["metadata_files"]
+    roles = {item["role"] for item in payload["metadata_files"]}
+    assert roles >= {"record", "metadata", "wheel"}
+    # Full 2.6 key surface for lock authoring from check JSON alone.
+    for key in (
+        "inventory_schema",
+        "source_files",
+        "metadata_files",
+        "plan_snapshot",
+        "plan_snapshot_sha256",
+        "license_material_sha256",
+    ):
+        assert key in payload
     assert "GNU/copyleft" in payload["license_warning"]
     assert str(installed_root) not in json.dumps(payload)
 
@@ -208,14 +330,503 @@ def test_cli_build_reports_c6_gate_without_starting_artifact_work(
     report = json.loads(
         (project / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
-    assert "C6 SourceLock" in captured.err
+    assert "C6.1 SourceLock" in captured.err or "C6 SourceLock" in captured.err
     assert "GNU/copyleft" in captured.err
+    assert "authorization: status=missing" in captured.err
     assert report["status"] == "external-source-c6-blocked"
     assert report["error"]["code"] == "RXT060"
     assert report["external_source_plan"]["execution_authority"] == "preview-only"
+    assert report["external_source_plan"]["authorization"]["status"] == "missing"
+    assert "external_source_authorization" not in report
     assert str(installed_root) not in json.dumps(report)
     assert not (project / ".rextio" / "generated").exists()
     assert not (project / ".rextio" / "build").exists()
+
+
+def test_cli_build_verified_authorization_still_blocks_c5_not_implemented(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = _write_project(tmp_path)
+    installed_root = tmp_path / "fake-site-packages"
+    distribution = _write_distribution(installed_root)
+    _install_distribution(monkeypatch, distribution)
+    plan = _analyze(project).external_source_plan
+    assert plan is not None
+    _write_valid_source_lock(project, plan)
+
+    def unexpected_artifact_work(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("verified C6 must not start toolchain or artifact work")
+
+    monkeypatch.setattr(build_cmd, "_prepare_build_toolchain", unexpected_artifact_work)
+    monkeypatch.setattr(build_cmd, "build_hybrid_artifact", unexpected_artifact_work)
+
+    assert main(["build", str(project), "--fallback=cpython"]) == 1
+    captured = capsys.readouterr()
+    report = json.loads(
+        (project / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    assert report["status"] == "external-source-c5-not-implemented"
+    assert report["error"]["code"] == "RXT060"
+    assert "not implemented" in report["error"]["message"]
+    assert report["external_source_plan"]["c6_gate"] == "authorization-verified"
+    assert report["external_source_plan"]["authorization"]["status"] == "verified"
+    assert "external_source_authorization" not in report
+    assert "call-site linkage" in captured.err
+    assert "authorization: status=verified" in captured.err
+    assert str(installed_root) not in json.dumps(report)
+    assert not (project / ".rextio" / "generated").exists()
+    assert not (project / ".rextio" / "build").exists()
+
+
+def test_check_and_generate_report_verified_authorization_without_local_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = _write_project(tmp_path)
+    installed_root = tmp_path / "fake-site-packages"
+    distribution = _write_distribution(installed_root)
+    _install_distribution(monkeypatch, distribution)
+    plan = _analyze(project).external_source_plan
+    assert plan is not None
+    _write_valid_source_lock(project, plan)
+
+    assert main(["check", str(project)]) == 0
+    captured = capsys.readouterr()
+    assert "authorization: status=verified" in captured.err
+    check_payload = json.loads(
+        (project / ".rextio" / "reports" / "check.json").read_text(encoding="utf-8")
+    )
+    auth = check_payload["external_source_plan"]["authorization"]
+    assert auth["status"] == "verified"
+    assert auth["path"] == SOURCE_LOCK_FILENAME
+    assert auth["license_attestation_verified"] is True
+    assert auth["source_inventory_verified"] is True
+    assert auth["provenance_verified"] is True
+    assert check_payload["external_source_plan"]["plan_snapshot_sha256"]
+    assert "external_source_authorization" not in check_payload
+    assert str(installed_root) not in json.dumps(check_payload)
+    assert str(project) not in json.dumps(auth)
+
+    assert main(["generate", str(project), "--fallback=cpython"]) == 0
+    generate_payload = json.loads(
+        (project / ".rextio" / "reports" / "generate.json").read_text(encoding="utf-8")
+    )
+    gen_auth = generate_payload["external_source_plan"]["authorization"]
+    assert gen_auth["status"] == "verified"
+    assert "external_source_authorization" not in generate_payload
+    assert str(installed_root) not in json.dumps(generate_payload)
+
+
+def _write_distribution_with_license_file(
+    root: Path,
+    *,
+    license_value: str = "LICENSE",
+    license_body: str | bytes = "MIT License text\n",
+    metadata_version: str = "2.4",
+    include_license_expression: bool = True,
+    include_legacy_license: bool = False,
+    record_license: bool = True,
+    nested_license_path: str | None = None,
+) -> external_source.metadata.Distribution:
+    """Write a wheel-shaped layout with License-File under dist-info/licenses/."""
+    root.mkdir(exist_ok=True)
+    package = root / PACKAGE
+    package.mkdir(exist_ok=True)
+    (package / "__init__.py").write_text(SOURCE, encoding="utf-8")
+    dist_info = root / f"{PACKAGE}-{VERSION}.dist-info"
+    dist_info.mkdir(exist_ok=True)
+    licenses_dir = dist_info / "licenses"
+    if nested_license_path is not None:
+        license_rel = nested_license_path
+    else:
+        license_rel = license_value
+    license_path = licenses_dir.joinpath(*PurePosixPath(license_rel).parts)
+    license_path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(license_body, bytes):
+        license_path.write_bytes(license_body)
+    else:
+        license_path.write_text(license_body, encoding="utf-8")
+    headers = [
+        f"Metadata-Version: {metadata_version}",
+        f"Name: {DIST_NAME}",
+        f"Version: {VERSION}",
+    ]
+    if include_license_expression:
+        headers.append("License-Expression: MIT")
+    if include_legacy_license:
+        headers.append("License: MIT")
+    headers.append(f"License-File: {license_value}")
+    headers.append("")
+    (dist_info / "METADATA").write_text("\n".join(headers), encoding="utf-8")
+    (dist_info / "WHEEL").write_text(
+        "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        encoding="utf-8",
+    )
+    rows = [
+        _record_row(root, f"{PACKAGE}/__init__.py"),
+        _record_row(root, f"{dist_info.name}/METADATA"),
+        _record_row(root, f"{dist_info.name}/WHEEL"),
+    ]
+    if record_license:
+        rows.insert(
+            1,
+            _record_row(root, f"{dist_info.name}/licenses/{license_rel}"),
+        )
+    rows.append(f"{dist_info.name}/RECORD,,")
+    rows.append("")
+    (dist_info / "RECORD").write_text("\n".join(rows), encoding="utf-8")
+    return external_source.metadata.Distribution.at(dist_info)
+
+
+def test_analyze_project_includes_license_file_authority_material(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _write_project(tmp_path)
+    installed_root = tmp_path / "fake-site-packages"
+    distribution = _write_distribution_with_license_file(
+        installed_root,
+        license_value="docs/COPYING",
+        nested_license_path="docs/COPYING",
+        license_body="MIT nested license\n",
+    )
+    _install_distribution(monkeypatch, distribution)
+
+    analysis = _analyze(project)
+    plan = analysis.external_source_plan
+    assert plan is not None
+    assert plan.status == "preview-ready"
+    license_roles = [item for item in plan.metadata_files if item.role == "license-file"]
+    assert len(license_roles) == 1
+    assert license_roles[0].path.endswith(
+        f"/{PACKAGE}-{VERSION}.dist-info/licenses/docs/COPYING"
+    )
+    assert license_roles[0].size == len(b"MIT nested license\n")
+
+
+def test_analyze_project_rejects_unrecorded_license_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _write_project(tmp_path)
+    installed_root = tmp_path / "fake-site-packages"
+    distribution = _write_distribution_with_license_file(
+        installed_root,
+        record_license=False,
+    )
+    _install_distribution(monkeypatch, distribution)
+
+    analysis = _analyze(project)
+    plan = analysis.external_source_plan
+    assert plan is not None
+    assert plan.status == "unavailable"
+    assert "License-File" in (plan.reason or "")
+
+
+def test_analyze_project_rejects_license_file_backslash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _write_project(tmp_path)
+    installed_root = tmp_path / "fake-site-packages"
+    distribution = _write_distribution(
+        installed_root,
+        metadata_text="\n".join(
+            (
+                "Metadata-Version: 2.4",
+                f"Name: {DIST_NAME}",
+                f"Version: {VERSION}",
+                "License-Expression: MIT",
+                r"License-File: lic\LICENSE",
+                "",
+            )
+        ),
+    )
+    _install_distribution(monkeypatch, distribution)
+    analysis = _analyze(project)
+    plan = analysis.external_source_plan
+    assert plan is not None
+    assert plan.status == "unavailable"
+    assert "backslash" in (plan.reason or "")
+
+
+def test_analyze_project_rejects_pre_24_license_expression(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _write_project(tmp_path)
+    installed_root = tmp_path / "fake-site-packages"
+    distribution = _write_distribution(
+        installed_root,
+        metadata_text="\n".join(
+            (
+                "Metadata-Version: 2.1",
+                f"Name: {DIST_NAME}",
+                f"Version: {VERSION}",
+                "License-Expression: MIT",
+                "",
+            )
+        ),
+    )
+    _install_distribution(monkeypatch, distribution)
+    analysis = _analyze(project)
+    plan = analysis.external_source_plan
+    assert plan is not None
+    assert plan.status == "unavailable"
+    assert "2.4" in (plan.reason or "")
+
+
+def test_analyze_project_rejects_conflicting_license_headers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _write_project(tmp_path)
+    installed_root = tmp_path / "fake-site-packages"
+    distribution = _write_distribution(
+        installed_root,
+        metadata_text="\n".join(
+            (
+                "Metadata-Version: 2.4",
+                f"Name: {DIST_NAME}",
+                f"Version: {VERSION}",
+                "License-Expression: MIT",
+                "License: MIT",
+                "",
+            )
+        ),
+    )
+    _install_distribution(monkeypatch, distribution)
+    analysis = _analyze(project)
+    plan = analysis.external_source_plan
+    assert plan is not None
+    assert plan.status == "unavailable"
+    assert "combine" in (plan.reason or "")
+
+
+def test_analyze_project_rejects_unknown_license(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _write_project(tmp_path)
+    installed_root = tmp_path / "fake-site-packages"
+    distribution = _write_distribution(
+        installed_root,
+        metadata_text="\n".join(
+            (
+                "Metadata-Version: 2.4",
+                f"Name: {DIST_NAME}",
+                f"Version: {VERSION}",
+                "License-Expression: UNKNOWN",
+                "",
+            )
+        ),
+    )
+    _install_distribution(monkeypatch, distribution)
+    analysis = _analyze(project)
+    plan = analysis.external_source_plan
+    assert plan is not None
+    assert plan.status == "unavailable"
+    assert "unknown" in (plan.reason or "").lower()
+
+
+def test_analyze_project_rejects_invalid_utf8_license_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _write_project(tmp_path)
+    installed_root = tmp_path / "fake-site-packages"
+    distribution = _write_distribution_with_license_file(
+        installed_root,
+        license_body=b"\xff\xfe not utf-8",
+    )
+    _install_distribution(monkeypatch, distribution)
+    analysis = _analyze(project)
+    plan = analysis.external_source_plan
+    assert plan is not None
+    assert plan.status == "unavailable"
+    assert "UTF-8" in (plan.reason or "")
+
+
+def test_json_only_lock_roundtrip_from_check_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Author a lock using only serialized plan fields (no internal helpers)."""
+    project = _write_project(tmp_path)
+    installed_root = tmp_path / "fake-site-packages"
+    distribution = _write_distribution(installed_root)
+    _install_distribution(monkeypatch, distribution)
+
+    assert main(["check", str(project)]) == 0
+    check_payload = json.loads(
+        (project / ".rextio" / "reports" / "check.json").read_text(encoding="utf-8")
+    )
+    plan_json = check_payload["external_source_plan"]
+    # Build lock exclusively from JSON authority surfaces.
+    source_entries = [
+        {
+            "module_name": item["module_name"],
+            "path": item["path"],
+            "sha256": item["sha256"],
+            "size": item["size"],
+            "role": item["role"],
+        }
+        for item in plan_json["source_files"]
+    ]
+    metadata_entries = [
+        {
+            "path": item["path"],
+            "sha256": item["sha256"],
+            "size": item["size"],
+            "role": item["role"],
+        }
+        for item in plan_json["metadata_files"]
+    ]
+    all_files = [
+        {
+            "path": item["path"],
+            "sha256": item["sha256"],
+            "size": item["size"],
+            "role": item["role"],
+        }
+        for item in (*plan_json["source_files"], *plan_json["metadata_files"])
+    ]
+    attestor = "JSON Roundtrip Org"
+    lock = {
+        "schema_version": "1",
+        "kind": "rextio.external-source-authorization",
+        "package": plan_json["package"],
+        "distribution": plan_json["distribution"],
+        "version": plan_json["requested_version"],
+        "content_hashes": {
+            "source_files": source_entries,
+            "metadata_files": metadata_entries,
+            "snapshot_sha256": plan_json["plan_snapshot_sha256"],
+        },
+        "source_inventory": {
+            "format": "rextio-source-inventory-v1",
+            "components": [
+                {
+                    "type": "pypi-distribution",
+                    "name": plan_json["distribution"],
+                    "version": plan_json["requested_version"],
+                    "license_observed": plan_json["license_observed"],
+                    "files": all_files,
+                }
+            ],
+        },
+        "provenance": {
+            "subject_snapshot_sha256": plan_json["plan_snapshot_sha256"],
+            "producer": attestor,
+            "attestor_relationship": "organization-owner",
+            "installed_wheel": {
+                "distribution": plan_json["distribution"],
+                "version": plan_json["requested_version"],
+                "metadata_files": metadata_entries,
+            },
+            "evidence": [
+                "installed-distribution-record",
+                "project-vcs-review",
+            ],
+        },
+        "license_attestation": {
+            "attestor": attestor,
+            "attestor_kind": "organization",
+            "reviewed_license": plan_json["license_observed"],
+            "reviewed_license_material_sha256": plan_json["license_material_sha256"],
+            "decision": "allow",
+            "action_scopes": [
+                "analysis",
+                "translation",
+                "local-build",
+                "package",
+                "redistribution",
+            ],
+            "acknowledgement": LICENSE_ACKNOWLEDGEMENT_V1,
+        },
+    }
+    (project / SOURCE_LOCK_FILENAME).write_text(
+        json.dumps(lock, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    # Re-analyze and verify without using plan_snapshot_sha256 helper APIs.
+    analysis = _analyze(project)
+    assert analysis.external_source_plan is not None
+    auth = analysis.external_source_plan.authorization
+    assert auth is not None
+    assert auth.status == "verified"
+
+
+def test_source_inventory_role_tampering_is_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _write_project(tmp_path)
+    installed_root = tmp_path / "fake-site-packages"
+    distribution = _write_distribution(installed_root)
+    _install_distribution(monkeypatch, distribution)
+    plan = _analyze(project).external_source_plan
+    assert plan is not None
+    _write_valid_source_lock(project, plan)
+    lock_path = project / SOURCE_LOCK_FILENAME
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    # Keep path/hash/size but flip the role on a metadata entry.
+    for entry in lock["source_inventory"]["components"][0]["files"]:
+        if entry["role"] == "wheel":
+            entry["role"] = "source-module"
+            break
+    lock_path.write_text(json.dumps(lock, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    auth = verify_external_source_authorization(project, plan)
+    assert auth.status == "stale"
+
+
+def test_cli_build_stale_lock_after_hash_drift_is_c6_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _write_project(tmp_path)
+    installed_root = tmp_path / "fake-site-packages"
+    distribution = _write_distribution(installed_root)
+    _install_distribution(monkeypatch, distribution)
+    plan = _analyze(project).external_source_plan
+    assert plan is not None
+    _write_valid_source_lock(project, plan)
+    # Mutate installed source after the lock was written so the plan hash drifts.
+    (installed_root / PACKAGE / "__init__.py").write_text(
+        SOURCE.replace("x * scale", "x + scale"),
+        encoding="utf-8",
+    )
+    # Rebuild RECORD hashes so C5 inventory succeeds with new content; the lock
+    # remains bound to the previous snapshot and must be stale.
+    dist_info = installed_root / f"{PACKAGE}-{VERSION}.dist-info"
+    (dist_info / "RECORD").write_text(
+        "\n".join(
+            (
+                _record_row(installed_root, f"{PACKAGE}/__init__.py"),
+                _record_row(installed_root, f"{dist_info.name}/METADATA"),
+                _record_row(installed_root, f"{dist_info.name}/WHEEL"),
+                f"{dist_info.name}/RECORD,,",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    def unexpected_work(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("stale authorization must block before toolchain work")
+
+    monkeypatch.setattr(build_cmd, "_prepare_build_toolchain", unexpected_work)
+    monkeypatch.setattr(build_cmd, "build_hybrid_artifact", unexpected_work)
+
+    assert main(["build", str(project), "--fallback=cpython"]) == 1
+    report = json.loads(
+        (project / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    assert report["status"] == "external-source-c6-blocked"
+    assert report["external_source_plan"]["authorization"]["status"] == "stale"
 
 
 def test_cli_build_unavailable_plan_still_precedes_toolchain_work(
@@ -322,7 +933,7 @@ def test_cli_external_plan_precedes_unrelated_parse_failure(
             },
             "not recorded as a py3-none-any pure-Python wheel",
         ),
-        ({"include_record": False}, "no RECORD source inventory"),
+        ({"include_record": False}, "RECORD is missing"),
         (
             {"name": "totally-other"},
             "name does not match the exact configured distribution",
@@ -331,7 +942,7 @@ def test_cli_external_plan_precedes_unrelated_parse_failure(
             {"source": "import os\n\ndef affine(x: int) -> int:\n    return x + 1\n"},
             "contains an unresolved import",
         ),
-        ({"version": "1.0.1"}, "does not match the exact configured version"),
+        ({"version": "1.0.1"}, "version is not installed"),
     ),
 )
 def test_analyze_project_fails_closed_for_untrusted_distribution_metadata(

@@ -2,7 +2,7 @@
 
 Status: **Unreleased Release Train C**, experimental. The latest published
 Rextio release remains **0.1.4** with tooling contract **2.2.0**. The Train C
-branch emits the additive, unreleased tooling contract **2.5.0**; none of the
+branch emits the additive, unreleased tooling contract **2.6.0**; none of the
 surfaces on this page should be treated as already available from PyPI.
 
 Train C introduces a fail-closed planning layer for host source, output
@@ -57,21 +57,55 @@ solely through a CLI/environment package-policy override.
 
 The resulting `external_source_plan` is sanitized and carries
 `execution_authority: "preview-only"`, `distributable: false`, and
-`c6_gate: "required"`. Its module paths are stable distribution-relative
-references, never installation paths. Candidate function names are lexical
-hints for fully scalar-annotated top-level functions; C5.1 does not inspect
-body lowerability, connect project calls, generate Rust, or copy external source
-into fallback output.
+`c6_gate: "required"` until C6.1 SourceLock verification succeeds. Its module paths are
+stable distribution-relative references, never installation paths. Candidate
+function names are lexical hints for fully scalar-annotated top-level functions;
+C5.1 does not inspect body lowerability, connect project calls, generate Rust,
+or copy external source into fallback output.
 
-Any available or unavailable plan blocks `rextio build` before configured
-CPython/Nuitka/Cargo probes and artifact work. `check` and `generate` may retain
-the evidence, but build/package/executable/Rust-crate/redistribution authority
-requires C6 license lock and decision, SBOM, provenance attestation, and a real
-source-native closure/lowering design.
+## C6.1 SourceLock authorization contract — bounded preview only
+
+**Not full C6.** C6.1 verifies a project-owned
+`rextio.external-source.lock.json` against exactly one available C5.1 plan.
+Author the lock from `rextio check` output (`plan_snapshot`,
+`plan_snapshot_sha256`, `source_files`, `metadata_files`). The lock must bind:
+
+- exact package / distribution / version identity;
+- verified path + SHA-256 + **byte size** for every source module and for
+  RECORD, METADATA, WHEEL, and every METADATA `License-File` resolved under
+  `<dist-info>/licenses/<value>` (PEP 639 / Metadata ≥ 2.4; no backslash
+  normalization; no simultaneous License-Expression + License);
+- domain-separated canonical `plan_snapshot_sha256` and shared
+  `license_material_sha256` (both published in check JSON for lock authoring);
+- custom `source_inventory` (`rextio-source-inventory-v1` — not a full
+  SPDX/CycloneDX SBOM) with exact path/hash/size/**role** binding;
+- provenance with `subject_snapshot_sha256`, installed-wheel metadata material,
+  producer/attestor relationship (`organization-owner`→organization; other
+  closed relationships require human), and exact ordered evidence
+  (`installed-distribution-record`, `project-vcs-review`); project/VCS review
+  is the trust boundary (no signature in this preview);
+- closed license attestation: `reviewed_license` matching observed license,
+  `reviewed_license_material_sha256`, `decision: "allow"`, exact
+  `action_scopes`, and exact constant
+  `acknowledgement: "REXTIO_EXTERNAL_SOURCE_LICENSE_ACK_V1"`.
+  Null/unknown/sentinel observed licenses never become preview-ready or verify.
+
+Verification is fail-closed and offline: safe single-descriptor lock I/O,
+duplicate JSON keys, NaN/Infinity, deep nesting, symlinks/FIFOs, stale
+hashes/sizes, incomplete sections, and unavailable plans all reject. Rextio
+validates structure and binding only; it does not auto-approve licenses or
+give legal advice.
+
+Any available or unavailable plan still blocks `rextio build` before configured
+CPython/Nuitka/Cargo probes and artifact work. Missing/invalid authorization
+uses status `external-source-c6-blocked`. A **verified** SourceLock uses the
+distinct status `external-source-c5-not-implemented` because remaining C5.2
+call-site linkage, body lowerability, Rust codegen, and packaging are not
+implemented.
 
 The plan and CLI include a strong warning: dependency source translation or
 redistribution can create derivative-work obligations, GNU/copyleft terms need
-particular care, and this inventory is not legal advice.
+particular care, and this inventory/authorization gate is not legal advice.
 
 ## Artifact profile authority
 
@@ -180,7 +214,7 @@ function. A detected read blocks the executable before Cargo. The slice proves
 snapshot validation and initializer-before-main ordering; it does not yet
 model Python module global state.
 
-## Tooling-contract 2.5 reports
+## Tooling-contract 2.6 reports
 
 The unreleased additive contract exposes:
 
@@ -193,8 +227,9 @@ The unreleased additive contract exposes:
   executable;
 - declarative `artifact_contract` and `device_provider_contract` objects in
   `rextio capabilities --format json`.
-- sanitized top-level `external_source_plan` evidence in check/generate and the
-  C6-blocked build report.
+- sanitized top-level `external_source_plan` evidence in check/generate and
+  blocked-build reports, including nested `authorization` status only (no
+  top-level authorization mirror).
 
 See the [machine-readable tooling contract](specs/tooling-contract.md) for the
 exact additive shape. Contract-major 2 consumers must ignore unknown fields;
@@ -217,18 +252,27 @@ enumerates a GPU. See
 
 ## Deferred work
 
-Train C does not yet provide:
+Train C through **2.6.0** does not yet provide:
 
 - multiple-module initializer execution or Python import-order emulation;
 - Rust-global publication or native reads of initialized module values;
 - arbitrary top-level statements, calls, annotations, or side effects in a
   Rust executable;
-- project-call linkage, Rust lowering, or recursive source-native promotion of
-  installed pure-Python packages beyond the C5.1 inventory/gate preview;
-- license-lock, SBOM, and provenance gates for vendored dependency source;
+- C5.2 project-call linkage, body lowerability, Rust lowering, packaging, or
+  recursive source-native promotion of installed pure-Python packages;
+- full/signed external-source authorization beyond the C6.1 prebuild lock
+  contract (cryptographic signatures);
+- standards SPDX/CycloneDX SBOM coverage for Python sources, Rust crates,
+  runtimes, and generated artifacts;
+- artifact provenance for packaged/redistributed hybrid outputs;
 - device-provider discovery, privileged build/link contributions, CUDA
   execution, or CUDA certification;
 - WASM artifact profiles or packaging.
+
+**Residual local trust risk (C6.1):** the SourceLock open path hardens against
+symlink/FIFO races with no-follow/nonblocking flags and fstat identity checks,
+but a full installed-site-packages descriptor-relative TOCTOU redesign is out
+of scope for this bounded pass.
 
 Those require separate, reviewable authority and compatibility gates. An
 unsupported case must remain ordinary Python fallback where that preserves

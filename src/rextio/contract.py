@@ -28,7 +28,11 @@ from __future__ import annotations
 # Contract 2.4.0 adds plugin standalone-artifact capability presence/declaration
 # and generate/build resolved per-profile allow/deny details without changing
 # lowering_provided, route, native-status, rejection, or promotion semantics.
-# Contract 2.5.0 adds a sanitized, preview-only external_source_plan.  It never
-# grants build authority; C5 build paths remain blocked pending C6 locks/SBOM.
+# Contract 2.5.0 adds a sanitized, preview-only external_source_plan.
+# Contract 2.6.0 adds C6.1 authority material and SourceLock authorization
+# evidence under that plan (plan_snapshot, sizes, source_inventory/provenance/
+# closed license attestation). Verified authorization still does not grant
+# source-native lowering, packaging, or redistribution; full C6 and remaining
+# C5.2 linkage/codegen are unimplemented.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.5.0"
+TOOLING_CONTRACT_VERSION = "2.6.0"
