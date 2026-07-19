@@ -8,7 +8,7 @@ import re
 import shutil
 import stat
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
@@ -24,14 +24,30 @@ from rextio.artifacts.entry_graph import executable_entry_graph
 from rextio.artifacts.evidence import (
     ARTIFACT_EVIDENCE_POLICY_BEST_EFFORT,
     ARTIFACT_EVIDENCE_POLICY_REQUIRED,
+    MAX_EVIDENCE_FILE_BYTES,
     MAX_SIDECAR_BYTES,
     REASON_EVIDENCE_INTERNAL,
+    REASON_RUNTIME_BINARY_MISMATCH,
+    REASON_RUNTIME_BINARY_MISSING,
+    REASON_RUNTIME_WHEEL_MEMBER_MISMATCH,
     REASON_SIDECAR_WRITE_FAILED,
     REASON_WHEEL_MUTATED,
     ArtifactEvidence,
     ArtifactEvidenceError,
     ArtifactEvidenceGate,
+    _EntryIdentity,
+    _FileReceipt,
+    _dirfd_ops_available,
+    _lstat_at,
+    _open_pinned_parent_dirfd,
+    _quarantine_and_dispose_owned_at,
+    _quarantine_and_dispose_owned_path,
+    _receipt_at,
+    _receipt_matches_at,
+    _receipt_matches_path,
+    _receipt_path,
     hash_regular_file,
+    load_wheel_snapshot,
     project_relative_logical_path,
 )
 from rextio.artifacts.models import ArtifactKind, ArtifactProfile, FallbackStrategy
@@ -431,12 +447,21 @@ def _real_contained_directory(path: Path, *, parent: Path) -> None:
 
 @dataclass
 class _RequiredEvidenceOutputs:
-    """Preserve exact pre-existing outputs until a required gate succeeds."""
+    """Pinned required-output transaction with exact ownership receipts."""
 
     paths: tuple[Path, ...]
     backups: tuple[Path | None, ...]
     backup_dir: Path
+    _backup_receipts: tuple[_FileReceipt | None, ...]
+    _dist_parent: Path
+    _dist_identity: _EntryIdentity
+    _prepared_count: int
+    _dist_fd: int | None = None
+    _build_fd: int | None = None
+    _backup_fd: int | None = None
+    _claimed: dict[int, _FileReceipt] = field(default_factory=dict)
     _active: bool = True
+    _last_rollback: _RequiredEvidenceRollback | None = None
 
     @classmethod
     def prepare(cls, layout: ArtifactLayout, wheel_path: Path) -> _RequiredEvidenceOutputs:
@@ -450,108 +475,420 @@ class _RequiredEvidenceOutputs:
             raise OSError("required evidence output parent is not the dist directory")
         dist_parent.mkdir(parents=True, exist_ok=True)
         _real_contained_directory(dist_parent, parent=layout.root)
-
         _real_contained_directory(layout.build_dir, parent=layout.rextio_dir)
         backup_dir = layout.build_dir / "required-evidence-output-backup"
-        backup_dir.mkdir(mode=0o700, exist_ok=False)
+
+        dist_fd: int | None = None
+        build_fd: int | None = None
+        backup_fd: int | None = None
+        backup_created = False
+        dist_entry = dist_parent.lstat()
+        dist_identity = _EntryIdentity.from_stat(dist_entry)
+        if _dirfd_ops_available():
+            dist_fd, pinned_dist = _open_pinned_parent_dirfd(dist_parent)
+            dist_identity = _EntryIdentity.from_stat(pinned_dist)
+            build_fd, _ = _open_pinned_parent_dirfd(layout.build_dir)
+            try:
+                os.mkdir(backup_dir.name, 0o700, dir_fd=build_fd)
+                backup_created = True
+                flags = os.O_RDONLY
+                if hasattr(os, "O_DIRECTORY"):
+                    flags |= os.O_DIRECTORY
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                backup_fd = os.open(backup_dir.name, flags, dir_fd=build_fd)
+            except OSError:
+                if backup_fd is not None:
+                    try:
+                        os.close(backup_fd)
+                    except OSError:
+                        pass
+                    backup_fd = None
+                if backup_created and build_fd is not None:
+                    try:
+                        os.rmdir(backup_dir.name, dir_fd=build_fd)
+                    except OSError:
+                        pass
+                for open_fd in (build_fd, dist_fd):
+                    if open_fd is not None:
+                        try:
+                            os.close(open_fd)
+                        except OSError:
+                            pass
+                raise
+        else:
+            backup_dir.mkdir(mode=0o700, exist_ok=False)
         try:
             _real_contained_directory(backup_dir, parent=layout.build_dir)
         except OSError:
+            if backup_fd is not None:
+                try:
+                    os.close(backup_fd)
+                except OSError:
+                    pass
+                backup_fd = None
             try:
-                backup_dir.rmdir()
+                if build_fd is not None:
+                    os.rmdir(backup_dir.name, dir_fd=build_fd)
+                else:
+                    backup_dir.rmdir()
             except OSError:
                 pass
+            for containment_fd in (build_fd, dist_fd):
+                if containment_fd is not None:
+                    try:
+                        os.close(containment_fd)
+                    except OSError:
+                        pass
             raise
 
-        backups: list[Path | None] = []
+        backups: list[Path | None] = [None] * len(paths)
+        receipts: list[_FileReceipt | None] = [None] * len(paths)
+        transaction = cls(
+            paths=paths,
+            backups=tuple(backups),
+            backup_dir=backup_dir,
+            _backup_receipts=tuple(receipts),
+            _dist_parent=dist_parent,
+            _dist_identity=dist_identity,
+            _prepared_count=0,
+            _dist_fd=dist_fd,
+            _build_fd=build_fd,
+            _backup_fd=backup_fd,
+        )
         try:
             for index, path in enumerate(paths):
-                entry = _lstat_or_none(path)
+                entry = (
+                    _lstat_at(dist_fd, path.name) if dist_fd is not None else _lstat_or_none(path)
+                )
+                transaction._prepared_count = index + 1
                 if entry is None:
-                    backups.append(None)
                     continue
-                if stat.S_ISDIR(entry.st_mode):
-                    raise OSError("required evidence output path is a directory")
+                if not stat.S_ISREG(entry.st_mode):
+                    raise OSError("required evidence output path is not a regular file")
+                receipt = (
+                    _receipt_at(dist_fd, path.name, max_bytes=MAX_EVIDENCE_FILE_BYTES)
+                    if dist_fd is not None
+                    else _receipt_path(path, max_bytes=MAX_SIDECAR_BYTES * 4)
+                )
                 backup = backup_dir / f"{index}.previous"
-                path.replace(backup)
-                backups.append(backup)
+                # Write-ahead recovery state must exist before rename. A
+                # post-rename receipt failure can then enter ordinary rollback
+                # without rediscovering ownership from a possibly changed file.
+                backups[index] = backup
+                receipts[index] = receipt
+                transaction.backups = tuple(backups)
+                transaction._backup_receipts = tuple(receipts)
+                if dist_fd is not None:
+                    assert backup_fd is not None
+                    os.replace(
+                        path.name,
+                        backup.name,
+                        src_dir_fd=dist_fd,
+                        dst_dir_fd=backup_fd,
+                    )
+                    if not _receipt_matches_at(backup_fd, backup.name, receipt):
+                        raise OSError("required evidence backup identity changed")
+                else:
+                    path.replace(backup)
+                    if not _receipt_matches_path(backup, receipt):
+                        raise OSError("required evidence backup identity changed")
         except BaseException as error:
-            # A signal may arrive between rename and list append. Include the
-            # current slot when its exclusive backup name now exists.
-            current_index = len(backups)
-            if current_index < len(paths):
-                possible_backup = backup_dir / f"{current_index}.previous"
-                # Unknown presence is treated as preserved-but-unverified so
-                # rollback fails safely without deleting either candidate.
-                if _entry_presence_no_follow(possible_backup) is not False:
-                    backups.append(possible_backup)
-            transaction = cls(
-                paths=paths[: len(backups)], backups=tuple(backups), backup_dir=backup_dir
-            )
             outcome = transaction.rollback()
             if not outcome.complete:
-                raise OSError("required evidence output preparation rollback was incomplete") from error
+                raise OSError(
+                    "required evidence output preparation rollback was incomplete"
+                ) from error
             raise
-        return cls(paths=paths, backups=tuple(backups), backup_dir=backup_dir)
+        transaction.backups = tuple(backups)
+        transaction._backup_receipts = tuple(receipts)
+        return transaction
+
+    def _parent_matches(self) -> bool:
+        try:
+            current = self._dist_parent.lstat()
+        except OSError:
+            return False
+        return _EntryIdentity.from_stat(current) == self._dist_identity
+
+    def _current_receipt(self, index: int) -> _FileReceipt | None:
+        path = self.paths[index]
+        try:
+            entry = (
+                _lstat_at(self._dist_fd, path.name)
+                if self._dist_fd is not None
+                else _lstat_or_none(path)
+            )
+            if entry is None:
+                return None
+            if not stat.S_ISREG(entry.st_mode):
+                raise OSError("required evidence output is not a regular file")
+            return (
+                _receipt_at(self._dist_fd, path.name, max_bytes=MAX_EVIDENCE_FILE_BYTES)
+                if self._dist_fd is not None
+                else _receipt_path(path, max_bytes=MAX_EVIDENCE_FILE_BYTES)
+            )
+        except ArtifactEvidenceError as exc:
+            # Transaction state machines use one error domain. Receipt helpers
+            # deliberately raise ArtifactEvidenceError, but allowing it to
+            # escape here would bypass commit/rollback's fixed-reason RXT060
+            # path and could make defensive cleanup fail a second time.
+            raise OSError("required evidence output receipt is unavailable") from exc
+
+    def publish_wheel(self, staged_path: Path) -> _FileReceipt:
+        """Publish the private wheel stage with create-if-absent ownership."""
+        if not self._active:
+            raise OSError("required evidence transaction is inactive")
+        expected = self.paths[0]
+        if staged_path.parent != self.backup_dir or staged_path.name != expected.name:
+            raise OSError("required evidence wheel stage is outside the transaction")
+        if self._backup_fd is not None:
+            assert self._dist_fd is not None
+            receipt = _receipt_at(
+                self._backup_fd,
+                staged_path.name,
+                max_bytes=MAX_EVIDENCE_FILE_BYTES,
+            )
+            try:
+                os.link(
+                    staged_path.name,
+                    expected.name,
+                    src_dir_fd=self._backup_fd,
+                    dst_dir_fd=self._dist_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                if _receipt_matches_at(self._backup_fd, staged_path.name, receipt):
+                    try:
+                        os.unlink(staged_path.name, dir_fd=self._backup_fd)
+                    except OSError:
+                        pass
+                raise OSError("required evidence wheel publication was not exclusive") from exc
+            if not _receipt_matches_at(self._dist_fd, expected.name, receipt):
+                raise OSError("required evidence wheel publication changed")
+            self._claimed[0] = receipt
+            if not _receipt_matches_at(self._backup_fd, staged_path.name, receipt):
+                raise OSError("required evidence wheel stage changed after publication")
+            os.unlink(staged_path.name, dir_fd=self._backup_fd)
+            return receipt
+
+        receipt = _receipt_path(staged_path, max_bytes=MAX_EVIDENCE_FILE_BYTES)
+        try:
+            os.link(staged_path, expected, follow_symlinks=False)
+        except OSError as exc:
+            if _receipt_matches_path(staged_path, receipt):
+                try:
+                    staged_path.unlink()
+                except OSError:
+                    pass
+            raise OSError("required evidence wheel publication was not exclusive") from exc
+        if not _receipt_matches_path(expected, receipt):
+            raise OSError("required evidence wheel publication changed")
+        self._claimed[0] = receipt
+        if not _receipt_matches_path(staged_path, receipt):
+            raise OSError("required evidence wheel stage changed after publication")
+        staged_path.unlink()
+        return receipt
+
+    def claim(self, path: Path, receipt: _FileReceipt | None = None) -> None:
+        """Claim one successfully produced exact output for later rollback."""
+        if not self._active:
+            raise OSError("required evidence transaction is inactive")
+        if receipt is None:
+            raise OSError("required evidence output claim requires a publication receipt")
+        matches = [index for index, expected in enumerate(self.paths) if expected == path]
+        if len(matches) != 1:
+            raise OSError("required evidence output is outside the transaction")
+        index = matches[0]
+        current = self._current_receipt(index)
+        if current is None or current != receipt:
+            raise OSError("required evidence output ownership claim failed")
+        self._claimed[index] = current
+
+    def claim_many(self, outputs: tuple[tuple[Path, _FileReceipt], ...]) -> None:
+        """Atomically validate and record a sidecar publication receipt set."""
+        if len(outputs) != 2:
+            raise OSError("required sidecar claim must contain the exact output pair")
+        pending: dict[int, _FileReceipt] = {}
+        for path, receipt in outputs:
+            matches = [index for index, expected in enumerate(self.paths) if expected == path]
+            if len(matches) != 1:
+                raise OSError("required sidecar claim is outside the transaction")
+            index = matches[0]
+            current = self._current_receipt(index)
+            if current != receipt:
+                raise OSError("required sidecar ownership claim failed")
+            pending[index] = receipt
+        if set(pending) != {1, 2}:
+            raise OSError("required sidecar claim did not name the exact output pair")
+        self._claimed.update(pending)
 
     def commit(self) -> None:
         """Discard preserved prior outputs after required evidence succeeds."""
-        # Crossing this boundary commits the new exact outputs. Cleanup below
-        # is deliberately no-throw and never follows a backup symlink.
+        if not self._active or not self._parent_matches():
+            raise OSError("required evidence output parent changed before commit")
+        if set(self._claimed) != set(range(len(self.paths))):
+            raise OSError("required evidence outputs were not all claimed")
+        for index, receipt in self._claimed.items():
+            if self._current_receipt(index) != receipt:
+                raise OSError("required evidence output changed before commit")
+        for index, backup_receipt in enumerate(self._backup_receipts):
+            if backup_receipt is None:
+                continue
+            backup = self.backups[index]
+            assert backup is not None
+            try:
+                if self._backup_fd is not None:
+                    if _receipt_matches_at(self._backup_fd, backup.name, backup_receipt):
+                        os.unlink(backup.name, dir_fd=self._backup_fd)
+                elif _receipt_matches_path(backup, backup_receipt):
+                    backup.unlink()
+            except OSError:
+                pass
         self._active = False
-        for backup in self.backups:
-            if backup is not None:
-                _unlink_entry_no_follow(backup)
-        try:
-            self.backup_dir.rmdir()
-        except OSError:
-            pass
+        self._remove_backup_dir()
+        self._close()
+
+    def claim_mismatch_reason(self) -> str:
+        """Return a fixed reason for a failed final ownership revalidation."""
+        if not self._parent_matches():
+            return REASON_SIDECAR_WRITE_FAILED
+        for index in range(len(self.paths)):
+            claimed = self._claimed.get(index)
+            if claimed is None:
+                return REASON_SIDECAR_WRITE_FAILED
+            try:
+                current = self._current_receipt(index)
+            except OSError:
+                current = None
+            if current != claimed:
+                return REASON_WHEEL_MUTATED if index == 0 else REASON_SIDECAR_WRITE_FAILED
+        return REASON_SIDECAR_WRITE_FAILED
 
     def rollback(self) -> _RequiredEvidenceRollback:
         """Remove this run's outputs and restore prior entries without following links."""
         if not self._active:
-            return _RequiredEvidenceRollback(True, True, True)
-        self._active = False
-        removed = True
+            return self._last_rollback or _RequiredEvidenceRollback(True, True, True)
+        removed = self._parent_matches()
         restored = True
-        for path, backup in zip(self.paths, self.backups, strict=False):
-            backup_presence = (
-                _entry_presence_no_follow(backup) if backup is not None else False
-            )
-            backup_present = backup_presence is True
-            if backup is None or backup_present:
-                removed = _unlink_entry_no_follow(path) and removed
-            # If a prior entry was recorded but its backup is absent, preparation
-            # did not move it (or preservation was lost). Never delete/follow it.
-            if backup is not None:
-                if backup_presence is not True:
-                    restored = False
-                    continue
-                if _entry_presence_no_follow(path) is not False:
-                    restored = False
-                    continue
-                try:
-                    backup.replace(path)
-                except OSError:
-                    restored = False
+        for index in range(self._prepared_count):
+            claimed = self._claimed.get(index)
+            if claimed is not None:
+                quarantine_name = f"{index}.current-quarantine"
+                if self._dist_fd is not None:
+                    assert self._backup_fd is not None
+                    cleaned = _quarantine_and_dispose_owned_at(
+                        self._dist_fd,
+                        self.paths[index].name,
+                        self._backup_fd,
+                        quarantine_name,
+                        claimed,
+                    )
                 else:
-                    restored = _entry_presence_no_follow(path) is True and restored
-            elif _entry_presence_no_follow(path) is not False:
-                removed = False
+                    cleaned = _quarantine_and_dispose_owned_path(
+                        self.paths[index],
+                        self.backup_dir / quarantine_name,
+                        claimed,
+                    )
+                if not cleaned:
+                    removed = False
+            else:
+                try:
+                    current_present = (
+                        _lstat_at(self._dist_fd, self.paths[index].name)
+                        if self._dist_fd is not None
+                        else _lstat_or_none(self.paths[index])
+                    )
+                except OSError:
+                    current_present = None
+                    removed = False
+                if current_present is not None:
+                    # Unknown output belongs to somebody else.
+                    removed = False
+
+            prior = self._backup_receipts[index]
+            if prior is None:
+                continue
+            backup = self.backups[index]
+            assert backup is not None
+            try:
+                current = self._current_receipt(index)
+            except OSError:
+                restored = False
+                continue
+            if current is not None:
+                restored = False
+                continue
+            try:
+                if self._backup_fd is not None:
+                    assert self._dist_fd is not None
+                    if not _receipt_matches_at(self._backup_fd, backup.name, prior):
+                        restored = False
+                        continue
+                    os.link(
+                        backup.name,
+                        self.paths[index].name,
+                        src_dir_fd=self._backup_fd,
+                        dst_dir_fd=self._dist_fd,
+                        follow_symlinks=False,
+                    )
+                    if not _receipt_matches_at(self._dist_fd, self.paths[index].name, prior):
+                        restored = False
+                        continue
+                    os.unlink(backup.name, dir_fd=self._backup_fd)
+                else:
+                    if not _receipt_matches_path(backup, prior):
+                        restored = False
+                        continue
+                    os.link(backup, self.paths[index], follow_symlinks=False)
+                    if not _receipt_matches_path(self.paths[index], prior):
+                        restored = False
+                        continue
+                    backup.unlink()
+            except OSError:
+                restored = False
+
+        backup_removed = self._remove_backup_dir()
+        result = _RequiredEvidenceRollback(removed, restored, backup_removed)
+        self._active = False
+        self._last_rollback = result
+        self._close()
+        return result
+
+    def _remove_backup_dir(self) -> bool:
+        if self._backup_fd is not None:
+            try:
+                os.close(self._backup_fd)
+            except OSError:
+                pass
+            self._backup_fd = None
         try:
-            self.backup_dir.rmdir()
+            if self._build_fd is not None:
+                os.rmdir(self.backup_dir.name, dir_fd=self._build_fd)
+            else:
+                self.backup_dir.rmdir()
         except OSError:
-            backup_removed = False
-        else:
-            backup_removed = True
-        return _RequiredEvidenceRollback(removed, restored, backup_removed)
+            return False
+        return True
+
+    def _close(self) -> None:
+        for name in ("_backup_fd", "_build_fd", "_dist_fd"):
+            fd = getattr(self, name)
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                setattr(self, name, None)
 
 
 def _required_evidence_output_mismatch_reason(
     *,
     project_root: Path,
+    layout: ArtifactLayout,
     expected_wheel: Path,
     wheel_build: WheelBuildResult,
+    native_build: NativeBuildResult,
     evidence: ArtifactEvidence,
 ) -> str | None:
     """Revalidate the exact final files immediately before satisfying the gate."""
@@ -560,6 +897,7 @@ def _required_evidence_output_mismatch_reason(
         or evidence.subject is None
         or evidence.sbom is None
         or evidence.provenance is None
+        or evidence.native_runtime_inventory is None
     ):
         return REASON_EVIDENCE_INTERNAL
     if wheel_build.status != "built" or wheel_build.path is None:
@@ -568,21 +906,7 @@ def _required_evidence_output_mismatch_reason(
         return REASON_WHEEL_MUTATED
 
     expected_sbom = expected_wheel.with_suffix(expected_wheel.suffix + ".cdx.json")
-    expected_provenance = expected_wheel.with_suffix(
-        expected_wheel.suffix + ".intoto.json"
-    )
-    try:
-        wheel_logical = project_relative_logical_path(project_root, expected_wheel)
-        wheel_digest, wheel_size = hash_regular_file(expected_wheel)
-    except (ArtifactEvidenceError, OSError, ValueError):
-        return REASON_WHEEL_MUTATED
-    if (
-        evidence.subject.logical_path != wheel_logical
-        or evidence.subject.sha256 != wheel_digest
-        or evidence.subject.size != wheel_size
-    ):
-        return REASON_WHEEL_MUTATED
-
+    expected_provenance = expected_wheel.with_suffix(expected_wheel.suffix + ".intoto.json")
     for path, recorded in (
         (expected_sbom, evidence.sbom),
         (expected_provenance, evidence.provenance),
@@ -592,12 +916,127 @@ def _required_evidence_output_mismatch_reason(
             digest, size = hash_regular_file(path, max_bytes=MAX_SIDECAR_BYTES)
         except (ArtifactEvidenceError, OSError, ValueError):
             return REASON_SIDECAR_WRITE_FAILED
-        if (
-            recorded.logical_path != logical
-            or recorded.sha256 != digest
-            or recorded.size != size
-        ):
+        if recorded.logical_path != logical or recorded.sha256 != digest or recorded.size != size:
             return REASON_SIDECAR_WRITE_FAILED
+
+    native_mismatch = _required_native_runtime_mismatch_reason(
+        layout=layout,
+        native_build=native_build,
+        evidence=evidence,
+    )
+    if native_mismatch is not None:
+        return native_mismatch
+
+    # Take one final immutable wheel snapshot after checking both sidecars and
+    # the installed native binary. Besides binding the whole-wheel subject,
+    # this lets required mode revalidate the exact native ZIP member rather
+    # than trusting an earlier basename lookup.
+    try:
+        wheel_logical = project_relative_logical_path(project_root, expected_wheel)
+        final_subject, final_entries = load_wheel_snapshot(
+            expected_wheel,
+            project_root=project_root,
+        )
+    except (ArtifactEvidenceError, OSError, ValueError):
+        return REASON_WHEEL_MUTATED
+    if (
+        evidence.subject.logical_path != wheel_logical
+        or evidence.subject.sha256 != final_subject.sha256
+        or evidence.subject.size != final_subject.size
+    ):
+        return REASON_WHEEL_MUTATED
+
+    runtime_inventory = evidence.native_runtime_inventory
+    final_matches = tuple(
+        entry for entry in final_entries if entry.name == runtime_inventory.wheel_member
+    )
+    recorded_matches = tuple(
+        entry for entry in evidence.wheel_entries if entry.name == runtime_inventory.wheel_member
+    )
+    if len(final_matches) != 1 or len(recorded_matches) != 1:
+        return REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
+    final_member = final_matches[0]
+    recorded_member = recorded_matches[0]
+    if (
+        final_member != recorded_member
+        or final_member.sha256 != runtime_inventory.wheel_member_sha256
+        or final_member.uncompressed_size != runtime_inventory.wheel_member_size
+    ):
+        return REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
+    return None
+
+
+def _required_native_runtime_mismatch_reason(
+    *,
+    layout: ArtifactLayout,
+    native_build: NativeBuildResult,
+    evidence: ArtifactEvidence,
+) -> str | None:
+    """Re-hash the exact contained installed binary recorded by C6.4."""
+    runtime_inventory = evidence.native_runtime_inventory
+    if runtime_inventory is None:
+        return REASON_EVIDENCE_INTERNAL
+    if native_build.status != "built" or native_build.installed_path is None:
+        return REASON_RUNTIME_BINARY_MISSING
+
+    installed = Path(native_build.installed_path)
+    try:
+        # The generated Python root itself must be the real directory created
+        # by this build, not a symlink redirected elsewhere.
+        _real_contained_directory(layout.python_dir, parent=layout.generated_dir)
+        root = Path(os.path.abspath(layout.python_dir))
+        binary = Path(os.path.abspath(installed))
+        relative = binary.relative_to(root)
+        if not relative.parts:
+            return REASON_RUNTIME_BINARY_MISSING
+
+        # Reject symlink ancestors as well as a symlink/non-regular leaf. This
+        # keeps a path lexically below the generated root from redirecting the
+        # final verification to another tree.
+        current = root
+        for part in relative.parts[:-1]:
+            current = current / part
+            entry = current.lstat()
+            if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
+                return REASON_RUNTIME_BINARY_MISSING
+        entry = binary.lstat()
+        if stat.S_ISLNK(entry.st_mode) or not stat.S_ISREG(entry.st_mode):
+            return REASON_RUNTIME_BINARY_MISSING
+        resolved_root = root.resolve(strict=True)
+        resolved_binary = binary.resolve(strict=True)
+        resolved_binary.relative_to(resolved_root)
+    except (OSError, ValueError):
+        return REASON_RUNTIME_BINARY_MISSING
+    try:
+        digest, size = hash_regular_file(binary)
+    except (ArtifactEvidenceError, OSError, ValueError):
+        return REASON_RUNTIME_BINARY_MISMATCH
+
+    expected_member = relative.as_posix()
+    if (
+        binary.name != runtime_inventory.subject_basename
+        or expected_member != runtime_inventory.wheel_member
+    ):
+        return REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
+    if digest != runtime_inventory.subject_sha256 or size != runtime_inventory.subject_size:
+        return REASON_RUNTIME_BINARY_MISMATCH
+    if (
+        digest != runtime_inventory.wheel_member_sha256
+        or size != runtime_inventory.wheel_member_size
+    ):
+        return REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
+
+    recorded_matches = tuple(
+        entry for entry in evidence.wheel_entries if entry.name == runtime_inventory.wheel_member
+    )
+    if len(recorded_matches) != 1:
+        return REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
+    recorded_member = recorded_matches[0]
+    if (
+        recorded_member.sha256 != runtime_inventory.wheel_member_sha256
+        or recorded_member.uncompressed_size != runtime_inventory.wheel_member_size
+    ):
+        return REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
     return None
 
 
@@ -755,8 +1194,7 @@ def build_hybrid_artifact(
     )
     plan = create_build_plan(analysis, fallback, artifact_profiles=artifact_profiles)
     if artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED and not (
-        len(plan.artifact_profiles) == 1
-        and is_in_scope_host_extension_cpython(plan)
+        len(plan.artifact_profiles) == 1 and is_in_scope_host_extension_cpython(plan)
     ):
         raise ArtifactEvidenceRequiredError(ArtifactEvidenceGate.out_of_scope())
     # Resolve each exact ArtifactProfile's capability at most once for this command.
@@ -766,9 +1204,7 @@ def build_hybrid_artifact(
         seed=standalone_contexts,
         executable_analysis=executable_analysis,
         executable_standalone=executable_standalone,
-        include_executable=(
-            executable_backend == "rust" and executable_entrypoint is not None
-        ),
+        include_executable=(executable_backend == "rust" and executable_entrypoint is not None),
     )
     closure_report: NativeClosureReport | None = None
     resolved_executable_standalone = contexts.get(ArtifactKind.HOST_EXECUTABLE)
@@ -808,9 +1244,7 @@ def build_hybrid_artifact(
     # host-extension+cpython builds. Out-of-scope paths skip the work entirely.
     evidence_snapshot: EvidenceInputSnapshot | None = None
     if is_in_scope_host_extension_cpython(plan):
-        evidence_snapshot = capture_project_source_snapshot(
-            project_root=project_root, plan=plan
-        )
+        evidence_snapshot = capture_project_source_snapshot(project_root=project_root, plan=plan)
         evidence_snapshot = capture_generated_python_inputs(
             evidence_snapshot, project_root=project_root, layout=layout
         )
@@ -848,12 +1282,10 @@ def build_hybrid_artifact(
     required_outputs: _RequiredEvidenceOutputs | None = None
     expected_wheel: Path | None = None
     if artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED:
-        expected_wheel = artifact_wheel_path(
-            project_root, layout.build_python_dir, layout.dist_dir
-        )
+        expected_wheel = artifact_wheel_path(project_root, layout.build_python_dir, layout.dist_dir)
         try:
             required_outputs = _RequiredEvidenceOutputs.prepare(layout, expected_wheel)
-        except OSError:
+        except (ArtifactEvidenceError, OSError):
             failed_evidence = ArtifactEvidence.unavailable(
                 reason=REASON_SIDECAR_WRITE_FAILED,
                 target_triple=plan.artifact_profiles[0].target_triple,
@@ -862,21 +1294,50 @@ def build_hybrid_artifact(
             raise ArtifactEvidenceRequiredError(gate) from None
     try:
         wheel_build = _build_wheel_artifact(
-            project_root, layout, native_build, fallback_build
+            project_root,
+            layout,
+            native_build,
+            fallback_build,
+            output_dir=(required_outputs.backup_dir if required_outputs is not None else None),
         )
+        publication_failure_reason: str | None = None
+        if required_outputs is not None:
+            assert expected_wheel is not None
+            if wheel_build.status == "built" and wheel_build.path is not None:
+                staged_wheel = Path(wheel_build.path)
+                try:
+                    required_outputs.publish_wheel(staged_wheel)
+                except (ArtifactEvidenceError, OSError):
+                    publication_failure_reason = REASON_WHEEL_MUTATED
+                else:
+                    wheel_build = WheelBuildResult(
+                        status=wheel_build.status,
+                        path=str(expected_wheel),
+                        message=wheel_build.message,
+                    )
         # C6.2: after the ordinary host-extension+cpython wheel is finalized, emit
         # preview-ready or unavailable evidence. Out-of-scope builds omit the field.
         # Unavailability never raises into the ordinary build success path.
-        artifact_evidence = emit_host_extension_wheel_evidence(
-            project_root=project_root,
-            layout=layout,
-            plan=plan,
-            wheel_build=wheel_build,
-            native_build=native_build,
-            input_snapshot=evidence_snapshot,
-            timeout=build_timeout_seconds,
-            toolchain=toolchain,
-        )
+        artifact_evidence: ArtifactEvidence | None
+        if publication_failure_reason is not None:
+            artifact_evidence = ArtifactEvidence.unavailable(
+                reason=publication_failure_reason,
+                target_triple=plan.artifact_profiles[0].target_triple,
+            )
+        else:
+            artifact_evidence = emit_host_extension_wheel_evidence(
+                project_root=project_root,
+                layout=layout,
+                plan=plan,
+                wheel_build=wheel_build,
+                native_build=native_build,
+                input_snapshot=evidence_snapshot,
+                timeout=build_timeout_seconds,
+                toolchain=toolchain,
+                output_claim=(
+                    required_outputs.claim_many if required_outputs is not None else None
+                ),
+            )
         artifact_evidence_gate: ArtifactEvidenceGate | None = None
         if artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED:
             assert required_outputs is not None
@@ -889,8 +1350,10 @@ def build_hybrid_artifact(
             elif artifact_evidence.status == "preview-ready":
                 mismatch = _required_evidence_output_mismatch_reason(
                     project_root=project_root,
+                    layout=layout,
                     expected_wheel=expected_wheel,
                     wheel_build=wheel_build,
+                    native_build=native_build,
                     evidence=artifact_evidence,
                 )
                 if mismatch is not None:
@@ -915,19 +1378,46 @@ def build_hybrid_artifact(
                     status="failed",
                     path=None,
                     message=(
-                        "RXT060 Required artifact evidence was unavailable; "
-                        + cleanup_message
+                        "RXT060 Required artifact evidence was unavailable; " + cleanup_message
                     ),
                 )
             else:
-                required_outputs.commit()
+                try:
+                    required_outputs.commit()
+                except OSError:
+                    # A final output can still be replaced between the explicit
+                    # evidence revalidation above and transaction commit. Convert
+                    # that ownership failure into the required gate's fixed-reason
+                    # RXT060 path; rollback will remove only still-matching outputs
+                    # and preserve the concurrent replacement.
+                    artifact_evidence = ArtifactEvidence.unavailable(
+                        reason=required_outputs.claim_mismatch_reason(),
+                        target_triple=plan.artifact_profiles[0].target_triple,
+                    )
+                    artifact_evidence_gate = ArtifactEvidenceGate.from_evidence(artifact_evidence)
+                    rollback = required_outputs.rollback()
+                    if rollback.complete:
+                        cleanup_message = (
+                            "the wheel and sidecars created by this run were removed and "
+                            "pre-existing outputs were restored."
+                        )
+                    else:
+                        cleanup_message = (
+                            "output rollback was incomplete; files may remain and "
+                            "pre-existing outputs may require manual recovery."
+                        )
+                    wheel_build = WheelBuildResult(
+                        status="failed",
+                        path=None,
+                        message=(
+                            "RXT060 Required artifact evidence was unavailable; " + cleanup_message
+                        ),
+                    )
     except BaseException as error:
         if required_outputs is not None and required_outputs._active:
             rollback = required_outputs.rollback()
             if not rollback.complete:
-                raise OSError(
-                    "required evidence output rollback was incomplete"
-                ) from error
+                raise OSError("required evidence output rollback was incomplete") from error
         raise
     executable_build = _build_executable_artifact(
         layout,
@@ -1441,9 +1931,7 @@ def _ensure_standalone_contexts(
     contexts: dict[ArtifactKind, StandalonePluginContext] = dict(seed or {})
     profiles_by_kind = {profile.kind: profile for profile in plan.artifact_profiles}
 
-    def validate_context(
-        kind: ArtifactKind, context: StandalonePluginContext
-    ) -> None:
+    def validate_context(kind: ArtifactKind, context: StandalonePluginContext) -> None:
         expected = profiles_by_kind.get(kind)
         if expected is None:
             raise PluginError(
@@ -1614,6 +2102,8 @@ def _build_wheel_artifact(
     layout: ArtifactLayout,
     native_build: NativeBuildResult,
     fallback_build: FallbackBuildResult,
+    *,
+    output_dir: Path | None = None,
 ) -> WheelBuildResult:
     if fallback_build.status != "built":
         return skipped_wheel("Fallback packaging failed, so no wheel was generated.")
@@ -1621,7 +2111,11 @@ def _build_wheel_artifact(
     # tree still works through the Python fallback, so produce a fallback-only
     # (pure-Python, py3-none-any) wheel instead of skipping. The wheel tag
     # reflects the absence of the native extension automatically.
-    return build_artifact_wheel(project_root, layout.build_python_dir, layout.dist_dir)
+    return build_artifact_wheel(
+        project_root,
+        layout.build_python_dir,
+        output_dir if output_dir is not None else layout.dist_dir,
+    )
 
 
 def _build_executable_artifact(

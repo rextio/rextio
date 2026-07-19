@@ -2,7 +2,7 @@
 
 Status: **Unreleased Release Train C**, experimental. The latest published
 Rextio release remains **0.1.4** with tooling contract **2.2.0**. The Train C
-branch emits the additive, unreleased tooling contract **2.8.0**; none of the
+branch emits the additive, unreleased tooling contract **2.9.0**; none of the
 surfaces on this page should be treated as already available from PyPI.
 
 Train C introduces a fail-closed planning layer for host source, output
@@ -106,6 +106,67 @@ implemented.
 The plan and CLI include a strong warning: dependency source translation or
 redistribution can create derivative-work obligations, GNU/copyleft terms need
 particular care, and this inventory/authorization gate is not legal advice.
+
+## C6.2-C6.4 host-extension evidence — bounded preview only
+
+For one ordinary native host-extension + CPython wheel, C6.2 emits incomplete
+CycloneDX 1.6 and unsigned in-toto/SLSA provenance sidecars. C6.3 can make that
+preview mandatory with `[build] artifact_evidence_policy = "required"`. C6.4
+adds one sanitized inventory of the generated extension's **directly observed**
+dynamic link entries:
+
+- macOS Mach-O is inspected with bounded `otool -L` and, only for self-ID
+  validation, bounded `otool -D`;
+- Linux ELF is inspected with bounded `readelf -W -d`;
+- every inspector child uses a reviewed absolute system-tool path, no shell,
+  no inherited parent environment, and only a minimal C locale;
+- the contained installed extension is accepted only when its generated-Python
+  relative identity, SHA-256, and byte size match exactly one wheel member;
+- header and inspector reads use one private same-byte snapshot bound to both
+  the installed original and wheel member, followed by original/snapshot
+  identity and digest revalidation;
+- the binary-header architecture is normalized and checked against the profile;
+- dependencies are admitted through a closed expected-runtime allowlist and
+  serialize only a bounded name, `origin` (`system | unresolved`), and stable
+  path-free `bom_ref`;
+- the binary and wheel are revalidated before the preview becomes
+  `preview-ready`; and
+- reports and sidecars contain only bounded logical names and fixed sanitized
+  failure reasons, never inspector paths, raw output, absolute private paths,
+  source bytes, credentials, or environment secrets.
+
+The inventory records only the extension-to-direct-dependency observations.
+It does not resolve install/search paths, follow transitive dependencies,
+observe runtime `dlopen`, or turn dependency names into verified build inputs.
+Ambiguous or unsafe linkage, a missing/failing/timed-out inspector, excessive
+output, an unsupported platform, architecture/format mismatch, an unexpected
+dependency, and native-to-wheel identity/hash/size mismatch make evidence
+`unavailable`. Mach-O admits only `/usr/lib` and `/System/Library` system
+install roots; ELF rejects arbitrary `NEEDED` names outside its closed expected
+runtime set.
+
+The first `otool -L` row is not generically discarded as a self-reference. It
+may be excluded only for a private Cargo self-ID when the snapshot header is
+`MH_DYLIB` and the exact same ID is independently returned by bounded
+`otool -D`. Without both facts, the row stays in the dependency set and must
+pass the ordinary closed allowlist.
+
+In the default `best-effort` mode, that unavailability does not change ordinary
+build success. In `required` mode, it produces `RXT060` and the existing output
+transaction rolls back this run's exact wheel and sidecars while preserving
+pre-existing and unrelated files. Publication and rollback operate through a
+pinned output-parent identity and exact content receipts. The required wheel is
+built in a private transaction directory and linked into the public path only
+if that path is absent; it is never claimed merely because it was observed.
+Rollback atomically quarantines a candidate before receipt verification and
+deletes only an exact owned match. A mismatch restores or retains pre-existing
+or concurrently replaced content, fails publication closed, and reports
+required rollback as incomplete rather than successful cleanup. Even a
+successful inventory keeps
+`composition: incomplete`, `signed: false`, and
+`distribution_authorized: false`. Windows PE, runtime-bearing plugins,
+signatures, host executables, Rust-importable crates, Nuitka, WASM, dependency
+path resolution, transitive closure, and `dlopen` discovery remain out of scope.
 
 ## Artifact profile authority
 
@@ -252,7 +313,7 @@ enumerates a GPU. See
 
 ## Deferred work
 
-Train C through **2.8.0** does not yet provide:
+Train C through **2.9.0** does not yet provide:
 
 - multiple-module initializer execution or Python import-order emulation;
 - Rust-global publication or native reads of initialized module values;
@@ -262,10 +323,12 @@ Train C through **2.8.0** does not yet provide:
   recursive source-native promotion of installed pure-Python packages;
 - full/signed external-source authorization beyond the C6.1 prebuild lock
   contract (cryptographic signatures);
-- complete standards SPDX/CycloneDX SBOM coverage (C6.2 emits only a bounded
+- complete standards SPDX/CycloneDX SBOM coverage (C6.2-C6.4 emit only a bounded
   incomplete CycloneDX 1.6 preview for ordinary host-extension wheels, plus
-  unsigned in-toto/SLSA provenance; not for host-executable, rust-crate,
-  Nuitka sidecars, WASM, or external-package source-native builds);
+  unsigned in-toto/SLSA provenance and a macOS/Linux direct-linkage observation;
+  not path resolution, transitive closure, `dlopen` discovery, or support for
+  Windows PE, runtime-bearing plugins, host-executable, rust-crate, Nuitka
+  sidecars, WASM, or external-package source-native builds);
 - signed, reproducible, hermetic, or complete artifact provenance for
   packaged/redistributed hybrid outputs;
 - device-provider discovery, privileged build/link contributions, CUDA

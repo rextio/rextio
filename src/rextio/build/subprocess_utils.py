@@ -69,6 +69,7 @@ def run_build_tool(
     cwd: Path | str,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     env: Mapping[str, str] | None = None,
+    inherit_env: bool = True,
     max_output_bytes: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an external build tool with no shell, captured output, and a timeout.
@@ -78,7 +79,9 @@ def run_build_tool(
     completed process; on timeout, returns a synthetic process with a non-zero
     return code (:data:`TIMEOUT_EXIT_CODE`) and an explanatory stderr.
 
-    When ``max_output_bytes`` is set, stdout and stderr are streamed with a hard
+    ``inherit_env=False`` passes exactly ``env`` to the child instead of
+    overlaying it on the parent environment. When ``max_output_bytes`` is set,
+    stdout and stderr are streamed with a hard
     combined byte cap. Crossing the cap terminates the process group immediately
     and returns :data:`OUTPUT_OVERFLOW_EXIT_CODE` with a sanitized stderr note.
     Output is never fully buffered first and then measured.
@@ -95,6 +98,8 @@ def run_build_tool(
         raise ValueError(f"build timeout must be a finite positive number, got {timeout!r}")
     if timeout > MAX_BUILD_TIMEOUT_SECONDS:
         timeout = float(MAX_BUILD_TIMEOUT_SECONDS)
+    if not isinstance(inherit_env, bool):
+        raise ValueError(f"inherit_env must be bool, got {inherit_env!r}")
     if max_output_bytes is not None:
         if not isinstance(max_output_bytes, int) or isinstance(max_output_bytes, bool):
             raise ValueError(
@@ -105,9 +110,14 @@ def run_build_tool(
                 f"max_output_bytes must be a positive int when set, got {max_output_bytes!r}"
             )
         return _run_build_tool_capped(
-            command, cwd=cwd, timeout=timeout, env=env, max_output_bytes=max_output_bytes
+            command,
+            cwd=cwd,
+            timeout=timeout,
+            env=env,
+            inherit_env=inherit_env,
+            max_output_bytes=max_output_bytes,
         )
-    with _start_process(command, cwd, env) as process:
+    with _start_process(command, cwd, env, inherit_env=inherit_env) as process:
         try:
             stdout, stderr = process.communicate(timeout=timeout)
             return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
@@ -152,6 +162,7 @@ def _run_build_tool_capped(
     timeout: float,
     env: Mapping[str, str] | None,
     max_output_bytes: int,
+    inherit_env: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Stream stdout/stderr with a combined hard byte cap; never buffer-then-size.
 
@@ -160,7 +171,12 @@ def _run_build_tool_capped(
     """
     if os.name == "nt":  # pragma: no cover - exercised on Windows only.
         return _run_build_tool_capped_windows(
-            command, cwd=cwd, timeout=timeout, env=env, max_output_bytes=max_output_bytes
+            command,
+            cwd=cwd,
+            timeout=timeout,
+            env=env,
+            inherit_env=inherit_env,
+            max_output_bytes=max_output_bytes,
         )
     if fcntl is None:  # pragma: no cover - defensive
         return subprocess.CompletedProcess(
@@ -173,7 +189,12 @@ def _run_build_tool_capped(
             ),
         )
     return _run_build_tool_capped_posix(
-        command, cwd=cwd, timeout=timeout, env=env, max_output_bytes=max_output_bytes
+        command,
+        cwd=cwd,
+        timeout=timeout,
+        env=env,
+        inherit_env=inherit_env,
+        max_output_bytes=max_output_bytes,
     )
 
 
@@ -199,8 +220,9 @@ def _run_build_tool_capped_posix(
     timeout: float,
     env: Mapping[str, str] | None,
     max_output_bytes: int,
+    inherit_env: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    with _start_process_bytes(command, cwd, env) as process:
+    with _start_process_bytes(command, cwd, env, inherit_env=inherit_env) as process:
         assert process.stdout is not None and process.stderr is not None
         _set_nonblocking(process.stdout)
         _set_nonblocking(process.stderr)
@@ -222,10 +244,7 @@ def _run_build_tool_capped_posix(
                 if process.poll() is not None:
                     if child_exited_at is None:
                         child_exited_at = time.monotonic()
-                    elif (
-                        time.monotonic() - child_exited_at
-                        > _CAPPED_POST_EXIT_DRAIN_SECONDS
-                    ):
+                    elif time.monotonic() - child_exited_at > _CAPPED_POST_EXIT_DRAIN_SECONDS:
                         # Direct child is gone; stop even if a detached holder
                         # keeps pipes open so we never burn the full timeout.
                         break
@@ -251,10 +270,7 @@ def _run_build_tool_capped_posix(
                             break
                         if child_exited_at is None:
                             child_exited_at = time.monotonic()
-                        if (
-                            time.monotonic() - child_exited_at
-                            > _CAPPED_POST_EXIT_DRAIN_SECONDS
-                        ):
+                        if time.monotonic() - child_exited_at > _CAPPED_POST_EXIT_DRAIN_SECONDS:
                             break
                     continue
                 for stream in readable:
@@ -369,6 +385,7 @@ def _run_build_tool_capped_windows(
     timeout: float,
     env: Mapping[str, str] | None,
     max_output_bytes: int,
+    inherit_env: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Windows capped capture via bounded reader threads (no blocking hang).
 
@@ -377,7 +394,7 @@ def _run_build_tool_capped_windows(
     full caller timeout. Readers use one-raw-read operations and must report
     completion explicitly; hung readers fail closed promptly.
     """
-    with _start_process_bytes(command, cwd, env) as process:
+    with _start_process_bytes(command, cwd, env, inherit_env=inherit_env) as process:
         assert process.stdout is not None and process.stderr is not None
         lock = threading.Lock()
         total = [0]
@@ -387,9 +404,7 @@ def _run_build_tool_capped_windows(
         stdout_done = threading.Event()
         stderr_done = threading.Event()
 
-        def _reader(
-            stream: Any, chunks: list[bytes], done: threading.Event
-        ) -> None:
+        def _reader(stream: Any, chunks: list[bytes], done: threading.Event) -> None:
             try:
                 while not overflow.is_set():
                     try:
@@ -442,8 +457,7 @@ def _run_build_tool_capped_windows(
                 returncode=TIMEOUT_EXIT_CODE,
                 stdout="",
                 stderr=(
-                    f"rextio: `{tool}` output readers did not complete and capture "
-                    "failed closed."
+                    f"rextio: `{tool}` output readers did not complete and capture failed closed."
                 ),
             )
 
@@ -459,9 +473,7 @@ def _run_build_tool_capped_windows(
                     command,
                     returncode=TIMEOUT_EXIT_CODE,
                     stdout="",
-                    stderr=(
-                        f"rextio: `{tool}` timed out after {timeout:g}s and was terminated."
-                    ),
+                    stderr=(f"rextio: `{tool}` timed out after {timeout:g}s and was terminated."),
                 )
             # Event-aware short wait: overflow is acted on immediately.
             if overflow.wait(timeout=min(_CAPPED_POLL_SECONDS, remaining)):
@@ -506,10 +518,14 @@ def _run_build_tool_capped_windows(
 
 
 def _start_process_bytes(
-    command: list[str], cwd: Path | str, env: Mapping[str, str] | None = None
+    command: list[str],
+    cwd: Path | str,
+    env: Mapping[str, str] | None = None,
+    *,
+    inherit_env: bool = True,
 ) -> subprocess.Popen[bytes]:
-    """Start the tool with binary pipes for exact byte-cap streaming."""
-    merged_env = {**os.environ, **env} if env else None
+    """Start with binary pipes and overlay or exactly replace the environment."""
+    merged_env = ({**os.environ, **env} if env else None) if inherit_env else dict(env or {})
     if os.name == "nt":  # pragma: no cover - exercised on Windows only.
         new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         return subprocess.Popen(
@@ -533,14 +549,19 @@ def _start_process_bytes(
 
 
 def _start_process(
-    command: list[str], cwd: Path | str, env: Mapping[str, str] | None = None
+    command: list[str],
+    cwd: Path | str,
+    env: Mapping[str, str] | None = None,
+    *,
+    inherit_env: bool = True,
 ) -> subprocess.Popen[str]:
     """Start the tool in its own process group so the whole tree can be killed.
 
-    ``env`` entries are overlaid on the current environment (they extend it,
-    never replace it), so tool discovery via PATH keeps working.
+    By default, ``env`` entries overlay the current environment. With
+    ``inherit_env=False``, the child receives exactly ``env`` (or an empty
+    environment when ``env`` is ``None``).
     """
-    merged_env = {**os.environ, **env} if env else None
+    merged_env = ({**os.environ, **env} if env else None) if inherit_env else dict(env or {})
     if os.name == "nt":  # pragma: no cover - exercised on Windows only.
         new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         return subprocess.Popen(

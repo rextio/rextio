@@ -21,10 +21,11 @@ host-executable), plus a C5.1 external pure-Python source inventory/gate
 preview, a C6.1 bounded prebuild authorization-contract preview, and a C6.2
 bounded host-extension wheel SBOM/provenance preview (incomplete/unsigned; not
 full C6), plus a C6.3 opt-in required-evidence gate for that exact preview
-artifact set. This branch emits additive tooling contract **2.8.0** and plugin API
-**1.4** while keeping package version **0.1.4**; those changes are not yet a
-tagged or PyPI release. Published 0.1.4 remains the plugin API **1.3** /
-contract **2.2.0** producer. See
+artifact set and a C6.4 sanitized, direct-only native runtime linkage inventory
+for macOS Mach-O and Linux ELF extensions. This branch emits additive tooling
+contract **2.9.0** and plugin API **1.4** while keeping package version
+**0.1.4**; those changes are not yet a tagged or PyPI release. Published 0.1.4
+remains the plugin API **1.3** / contract **2.2.0** producer. See
 [Host source-AOT and native executables](docs/source-aot-and-executables.md) and
 [plugin lowering](docs/specs/plugin-lowering.md) §10.
 
@@ -126,11 +127,36 @@ artifacts.
 `--artifact-evidence-policy=required` is deliberately narrower: it accepts
 exactly one native host-extension + CPython wheel backed by an accepted native
 region (a function and/or native top-level segment), with no executable or
-Rust-importable crate, and exits with `RXT060` unless the C6.2 evidence status
-is `preview-ready`. Its gate remains `distribution_authorized: false`,
+Rust-importable crate, and exits with `RXT060` unless the artifact-evidence
+status is `preview-ready`. C6.4 makes that preview include a bounded inventory
+of only the extension's directly observed Mach-O (`otool -L`) or ELF
+(`readelf -W -d`) link entries. The installed native binary must match the
+exact wheel member by generated-Python relative name, SHA-256, and byte size
+before the inventory is accepted. Binary-header and linkage inspection use one
+private same-byte snapshot bound to both that wheel member and the installed
+original; both original and snapshot identity/digest are revalidated. Inspector
+children use reviewed absolute tool paths without a shell or inherited parent
+environment, under only a minimal C locale. It records a normalized binary
+architecture and only a closed set of expected system-runtime dependencies;
+each accepted dependency has a sanitized `origin` and stable `bom_ref`. A
+Mach-O first-row private Cargo self-ID is excluded only when the header is
+`MH_DYLIB` and bounded `otool -D` reports that exact ID. An unexpected
+dependency makes evidence unavailable. The preview does not resolve dependency
+paths or inspect transitive or `dlopen`-loaded dependencies. Its gate remains
+`distribution_authorized: false`,
 `complete: false`, and `signed: false`; it is not a release authorization or a
 full supply-chain attestation. The default `best-effort` policy preserves the
-C6.2 behavior where evidence unavailability does not fail an ordinary build.
+C6.2 behavior where a fixed, sanitized evidence-unavailable reason does not fail
+an ordinary build. Under `required`, the same unavailable evidence produces
+`RXT060`; publication and rollback pin the output parent and verify exact
+content receipts. Required wheels are built privately and exposed only with a
+create-if-absent hard link; rollback quarantines a public candidate before
+receipt verification. It therefore never claims or deletes an observed
+concurrent-owner file. Publication mismatch makes evidence unavailable;
+pre-existing or concurrently replaced content is restored or retained for
+recovery, and a required rollback mismatch is reported as incomplete.
+Windows, runtime-bearing plugins, signatures, path resolution, transitive
+closure, and runtime `dlopen` discovery remain outside this preview.
 
 ## Requirements
 
