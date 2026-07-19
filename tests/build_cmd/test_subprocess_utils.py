@@ -5,6 +5,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -266,3 +267,167 @@ def test_run_build_tool_does_not_use_a_shell(tmp_path) -> None:
     )
     assert result.returncode == 0
     assert result.stdout.strip() == "$(echo pwned)"
+
+
+def test_run_build_tool_caps_streaming_output_and_terminates(tmp_path: Path) -> None:
+    from rextio.build.subprocess_utils import OUTPUT_OVERFLOW_EXIT_CODE, run_build_tool
+
+    # Emit more than the cap without relying on post-buffer measurement.
+    result = run_build_tool(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write('x' * 20000); sys.stdout.flush(); "
+            "import time; time.sleep(30)",
+        ],
+        cwd=tmp_path,
+        timeout=10.0,
+        max_output_bytes=1000,
+    )
+    assert result.returncode == OUTPUT_OVERFLOW_EXIT_CODE
+    assert result.stdout == ""
+    assert "exceeded the allowed 1000 byte bound" in result.stderr
+    assert result.stderr.count("\n") < 5
+
+
+def test_run_build_tool_rejects_invalid_max_output_bytes(tmp_path: Path) -> None:
+    from rextio.build.subprocess_utils import run_build_tool
+
+    with pytest.raises(ValueError, match="max_output_bytes"):
+        run_build_tool([sys.executable, "-c", "pass"], cwd=tmp_path, max_output_bytes=0)
+    with pytest.raises(ValueError, match="max_output_bytes"):
+        run_build_tool([sys.executable, "-c", "pass"], cwd=tmp_path, max_output_bytes=True)  # type: ignore[arg-type]
+
+
+def test_run_build_tool_overflow_is_prompt_when_child_writes_cap_plus_one_then_sleeps(
+    tmp_path: Path,
+) -> None:
+    """Overflow must return 125 promptly without waiting for the full timeout.
+
+    The child writes cap+1 bytes then sleeps; the event-aware / short-poll
+    capture path must kill the tree and finish far below the caller timeout.
+    """
+    from rextio.build.subprocess_utils import OUTPUT_OVERFLOW_EXIT_CODE
+
+    start = time.monotonic()
+    result = run_build_tool(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time; sys.stdout.write('x' * 1001); sys.stdout.flush(); "
+            "time.sleep(60)",
+        ],
+        cwd=tmp_path,
+        timeout=30.0,
+        max_output_bytes=1000,
+    )
+    elapsed = time.monotonic() - start
+    assert result.returncode == OUTPUT_OVERFLOW_EXIT_CODE
+    assert result.stdout == ""
+    assert "exceeded the allowed 1000 byte bound" in result.stderr
+    # Prompt: well under the 30s caller timeout (and under the 60s sleep).
+    assert elapsed < 5.0, f"overflow was not prompt (took {elapsed:.2f}s)"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="setsid pipe-holder escape is POSIX-specific")
+def test_capped_capture_stops_promptly_when_escaped_holder_keeps_pipes_open(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Direct child exits after writing under the cap; a setsid grandchild holds pipes.
+
+    POSIX select must poll in short intervals and stop after the post-exit drain
+    window rather than burning the full timeout.
+    """
+    from rextio.build import subprocess_utils as su
+
+    monkeypatch.setattr(su, "_CAPPED_POST_EXIT_DRAIN_SECONDS", 0.2)
+    monkeypatch.setattr(su, "_CAPPED_POLL_SECONDS", 0.05)
+    pid_file = tmp_path / "holder.pid"
+    # Parent writes a little under the cap, spawns a detached holder that keeps
+    # the inherited write ends open, then exits. Without early stop the drain
+    # would wait until timeout while the holder lives.
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"pid_path = {str(pid_file)!r}\n"
+        "sys.stdout.write('hello'); sys.stdout.flush()\n"
+        "holder = (\n"
+        "    'import os, time; os.setsid(); '\n"
+        "    f'open({pid_path!r}, \"w\").write(str(os.getpid())); '\n"
+        "    'time.sleep(60)'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', holder])\n"
+        "time.sleep(0.3)\n"
+    )
+    try:
+        start = time.monotonic()
+        result = run_build_tool(
+            [sys.executable, "-c", script],
+            cwd=tmp_path,
+            timeout=20.0,
+            max_output_bytes=1_000_000,
+        )
+        elapsed = time.monotonic() - start
+        # Child exit + short drain; must not consume the full 20s timeout.
+        assert elapsed < 5.0, f"escaped pipe holder burned timeout ({elapsed:.2f}s)"
+        assert result.returncode == 0
+        assert "hello" in result.stdout
+    finally:
+        deadline = time.monotonic() + 5
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except (FileNotFoundError, ProcessLookupError, ValueError, OSError):
+                pass
+
+
+def test_windows_capped_path_overflow_prompt_on_this_host(tmp_path: Path) -> None:
+    """Call _run_build_tool_capped_windows directly (not the POSIX dispatcher).
+
+    Proves the Windows reader-thread path returns 125 promptly for cap+1 then
+    sleep, even when the host OS is not Windows.
+    """
+    from rextio.build.subprocess_utils import (
+        OUTPUT_OVERFLOW_EXIT_CODE,
+        _run_build_tool_capped_windows,
+    )
+
+    start = time.monotonic()
+    result = _run_build_tool_capped_windows(
+        [
+            sys.executable,
+            "-c",
+            "import sys, time; sys.stdout.write('x' * 1001); sys.stdout.flush(); "
+            "time.sleep(60)",
+        ],
+        cwd=tmp_path,
+        timeout=30.0,
+        env=None,
+        max_output_bytes=1000,
+    )
+    elapsed = time.monotonic() - start
+    assert result.returncode == OUTPUT_OVERFLOW_EXIT_CODE
+    assert result.stdout == ""
+    assert "exceeded the allowed 1000 byte bound" in result.stderr
+    assert elapsed < 5.0, f"Windows capped path was not prompt (took {elapsed:.2f}s)"
+
+
+def test_read_one_raw_chunk_prefers_read1() -> None:
+    from rextio.build.subprocess_utils import _read_one_raw_chunk
+
+    class FakeStream:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def read1(self, n: int) -> bytes:
+            self.calls.append(f"read1:{n}")
+            return b"abc"
+
+        def read(self, n: int) -> bytes:
+            self.calls.append(f"read:{n}")
+            return b"zzz"
+
+    stream = FakeStream()
+    assert _read_one_raw_chunk(stream, 8) == b"abc"
+    assert stream.calls == ["read1:8"]

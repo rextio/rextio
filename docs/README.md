@@ -31,8 +31,9 @@ An index of the project's documentation. See the top-level
   0.1.2 → core 0.1.4 — and advances the contract to `2.2.0`.
   The **unreleased** Train C branch advances additively through `2.3.0` host
   source/artifact/executable planning and `2.4.0` standalone plugin capability
-  to `2.5.0` sanitized external-source preview evidence and current `2.6.0` C6.1
-  authorization-contract evidence; published 0.1.4 remains the 2.2.0 producer.
+  to `2.5.0` sanitized external-source preview evidence, `2.6.0` C6.1
+  authorization-contract evidence, and current `2.7.0` C6.2 host-extension
+  wheel artifact-evidence preview; published 0.1.4 remains the 2.2.0 producer.
 - [Plugin lowering](specs/plugin-lowering.md) — draft (0.1.1+; plugin API 1.1
   on PyPI 0.1.1, **1.2** additive on published 0.1.2, and **1.3** on published
   0.1.3 and retained in 0.1.4): the claim/lower hook that lets plugins translate

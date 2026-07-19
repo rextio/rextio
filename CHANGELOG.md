@@ -5,13 +5,42 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.6.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.7.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line.
+
+### C6.2 bounded host-extension wheel artifact-evidence preview
+
+This is **not** full C6 completion. The preview is incomplete and unsigned
+(`authority: evidence-only`). It does not claim reproducibility, hermeticity,
+completeness, native dylib/runtime inventory, recursive package inventory,
+signatures, or external-source authorization. Host-executable, rust-crate,
+host-extension+Nuitka, WASM, and external-package source-native builds omit
+the field.
+
+- In-scope host-extension+`cpython` wheels always write
+  `build.json.artifact_evidence` as `preview-ready` or `unavailable` with a
+  sanitized fixed reason. Evidence unavailability never changes ordinary build
+  success or suppresses `build.json`.
+- Snapshot project/generated inputs before native compile; re-verify at evidence
+  time. Concurrent mutation → `unavailable`, never a false claim. No silent
+  skip of unreadable inputs or truncation at count limits.
+- Bounded final-wheel ZIP inventory without extraction (path/dup/encrypt/
+  symlink/zip-bomb bounds) included in incomplete CycloneDX output.
+- Reachable Cargo resolve graph only (`resolve.root`/`nodes`); only the
+  generated root may be path/source-less; reject other path and all git
+  packages; registry packages require lock checksums; streaming metadata output
+  is hard-capped (process group terminated on overflow).
+- CycloneDX: primary component only in `metadata.component`; real wheel version;
+  top-level `dependencies`. Provenance: wheel+SBOM as subjects; SBOM is not a
+  resolvedDependency; no wheel-hash `invocationId`.
+- Tooling contract **2.7.0** (additive minor).
 
 ### C6.1 bounded prebuild authorization-contract preview
 
-This is **not** full C6 completion. Full/signed authorization, standards SBOM,
-artifact provenance, and C5.2 source-native implementation remain pending.
+This is **not** full C6 completion. Full/signed authorization beyond the
+project SourceLock prebuild contract, and C5.2 source-native implementation,
+remain pending. C6.2 wheel evidence is a separate host-extension path and
+does not authorize external-source packaging.
 
 - Extend C5.1 plans with verified byte sizes only on `AuthorityFile` entries
   (not the shared host `SourceModule` wire shape). Bind RECORD, METADATA,
@@ -143,9 +172,10 @@ artifact provenance, and C5.2 source-native implementation remain pending.
   Native reads of those values remain blocked; broader top-level semantics are
   deferred.
 
-### Tooling contract 2.6.0 (and prior Train C additions)
+### Tooling contract 2.7.0 (and prior Train C additions)
 
-- Advance the unreleased producer to **2.6.0** for the C6.1 authorization-
+- Advance the unreleased producer to **2.7.0** for the C6.2 host-extension
+  wheel artifact-evidence preview. Prior **2.6.0** covers the C6.1 authorization-
   contract preview: plan authority material (`source_files`, `metadata_files`,
   `plan_snapshot`, `plan_snapshot_sha256`) plus nested
   `external_source_plan.authorization`. The plan remains non-distributable;

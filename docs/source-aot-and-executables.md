@@ -2,7 +2,7 @@
 
 Status: **Unreleased Release Train C**, experimental. The latest published
 Rextio release remains **0.1.4** with tooling contract **2.2.0**. The Train C
-branch emits the additive, unreleased tooling contract **2.6.0**; none of the
+branch emits the additive, unreleased tooling contract **2.7.0**; none of the
 surfaces on this page should be treated as already available from PyPI.
 
 Train C introduces a fail-closed planning layer for host source, output
@@ -252,7 +252,7 @@ enumerates a GPU. See
 
 ## Deferred work
 
-Train C through **2.6.0** does not yet provide:
+Train C through **2.7.0** does not yet provide:
 
 - multiple-module initializer execution or Python import-order emulation;
 - Rust-global publication or native reads of initialized module values;
@@ -262,9 +262,12 @@ Train C through **2.6.0** does not yet provide:
   recursive source-native promotion of installed pure-Python packages;
 - full/signed external-source authorization beyond the C6.1 prebuild lock
   contract (cryptographic signatures);
-- standards SPDX/CycloneDX SBOM coverage for Python sources, Rust crates,
-  runtimes, and generated artifacts;
-- artifact provenance for packaged/redistributed hybrid outputs;
+- complete standards SPDX/CycloneDX SBOM coverage (C6.2 emits only a bounded
+  incomplete CycloneDX 1.6 preview for ordinary host-extension wheels, plus
+  unsigned in-toto/SLSA provenance; not for host-executable, rust-crate,
+  Nuitka sidecars, WASM, or external-package source-native builds);
+- signed, reproducible, hermetic, or complete artifact provenance for
+  packaged/redistributed hybrid outputs;
 - device-provider discovery, privileged build/link contributions, CUDA
   execution, or CUDA certification;
 - WASM artifact profiles or packaging.

@@ -16,6 +16,7 @@ from rextio.cli.config_overrides import (
 )
 from rextio.cli.check_cmd import write_check_report
 from rextio.cli.reporter import Reporter
+from rextio.contract import TOOLING_CONTRACT_VERSION
 from rextio.plugins.loader import PluginError
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.targets.plan import TargetPlanError, create_target_plan
@@ -99,8 +100,9 @@ def run(args: Namespace) -> int:
         (reports_dir / "generate.json").write_text(
             json.dumps(
                 {
-                    "fallback": fallback,
                     "analysis": analysis.to_dict(),
+                    "contract_version": TOOLING_CONTRACT_VERSION,
+                    "fallback": fallback,
                     "status": "analysis-failed",
                 },
                 indent=2,
@@ -133,6 +135,7 @@ def run(args: Namespace) -> int:
             json.dumps(
                 {
                     "analysis": analysis.to_dict(),
+                    "contract_version": TOOLING_CONTRACT_VERSION,
                     "error": {"code": "RXT060", "message": f"Plugin error: {exc}"},
                     "fallback": fallback,
                     "status": "plugin-capability-failed",
@@ -157,6 +160,7 @@ def run(args: Namespace) -> int:
             json.dumps(
                 {
                     "analysis": analysis.to_dict(),
+                    "contract_version": TOOLING_CONTRACT_VERSION,
                     "error": {"code": "RXT060", "message": str(error)},
                     "fallback": fallback,
                     "status": "artifact-profile-unavailable",

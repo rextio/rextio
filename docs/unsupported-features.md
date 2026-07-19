@@ -12,7 +12,7 @@ fallback.
 The Release Train C branch adds experimental host source/executable planning,
 plugin standalone capability, the C5.1 external-source inventory gate, and the
 C6.1 bounded prebuild authorization-contract preview (not full C6). It emits
-tooling contract **2.6.0**, but remains **unreleased**. PyPI 0.1.4 does not
+tooling contract **2.7.0**, but remains **unreleased**. PyPI 0.1.4 does not
 include those additions. Train C boundaries are called out explicitly below so
 planning records are not mistaken for broad source-AOT support.
 
@@ -568,9 +568,10 @@ The unreleased Train C planning records do not change these additional limits:
 - A `SourceModule` or `ModuleInitIR` report is descriptive evidence, not
   permission to execute or translate that source.
 - Installed pure-Python packages are not recursively promoted, copied, or
-  vendored. C6.1 may verify a project SourceLock prebuild contract, but full
-  C6, remaining C5.2 source-native linkage/codegen/packaging, standards SBOM,
-  and redistribution remain future work.
+  vendored. C6.1 may verify a project SourceLock prebuild contract, and C6.2
+  may emit incomplete/unsigned host-extension wheel evidence, but full C6,
+  remaining C5.2 source-native linkage/codegen/packaging, complete standards
+  SBOM, and redistribution remain future work.
 - Draft device-provider records have no discovery, selection, build/link hook,
   generated helper injection, or runtime dispatch.
 - The CUDA Driver API inventory probe (Windows x64 and Linux x86_64/aarch64) is

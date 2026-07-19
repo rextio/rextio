@@ -103,6 +103,9 @@ def test_build_reports_unavailable_host_artifact_profile(
     assert "RXT060 Artifact profile planning failed" in captured.err
     assert report["status"] == "artifact-profile-unavailable"
     assert report["error"]["code"] == "RXT060"
+    from rextio.contract import TOOLING_CONTRACT_VERSION
+
+    assert report["contract_version"] == TOOLING_CONTRACT_VERSION
     assert (tmp_path / ".rextio" / "reports" / "check.json").exists()
 
 
@@ -596,6 +599,7 @@ def main(argv: list[str]) -> int:
             executable_build=SimpleNamespace(status="skipped", message="ok", path=None),
             wheel_build=SimpleNamespace(path=None),
             plugin_crate_dependencies=(),
+            artifact_evidence=None,
         )
 
     monkeypatch.setattr("rextio.cli.build_cmd.build_hybrid_artifact", fake_build_hybrid_artifact)
@@ -2217,3 +2221,63 @@ def test_cargo_pin_holds_on_the_delegate_only_rust_executable(
     captured = capsys.readouterr()
     assert exit_code == 1
     assert "99.9" in captured.err
+
+
+def test_build_and_generate_report_include_contract_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Additive contract_version must appear on success and failure report dicts."""
+    from rextio.artifacts.profiles import (
+        detect_host_target_triple as real_detect_host_target_triple,
+    )
+    from rextio.contract import TOOLING_CONTRACT_VERSION
+
+    assert TOOLING_CONTRACT_VERSION == "2.7.0"
+
+    (tmp_path / "app.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a + b\n",
+        encoding="utf-8",
+    )
+
+    # Failure path: artifact-profile-unavailable build report.
+    def unsupported_host() -> str:
+        raise ValueError("unsupported host architecture 'armv7l'")
+
+    monkeypatch.setattr(orchestrator, "detect_host_target_triple", unsupported_host)
+    assert main(["build", str(tmp_path), "--fallback=cpython"]) == 1
+    build_fail = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    assert build_fail["status"] == "artifact-profile-unavailable"
+    assert build_fail["contract_version"] == TOOLING_CONTRACT_VERSION
+
+    # Failure path: generate artifact-profile report.
+    assert main(["generate", str(tmp_path), "--fallback=cpython"]) == 1
+    gen_fail = json.loads(
+        (tmp_path / ".rextio" / "reports" / "generate.json").read_text(encoding="utf-8")
+    )
+    assert gen_fail["status"] == "artifact-profile-unavailable"
+    assert gen_fail["contract_version"] == TOOLING_CONTRACT_VERSION
+    capsys.readouterr()
+
+    # Success path: generate.json after a normal generate (host restored).
+    monkeypatch.setattr(orchestrator, "detect_host_target_triple", real_detect_host_target_triple)
+    assert main(["generate", str(tmp_path), "--fallback=cpython"]) == 0
+    gen_ok = json.loads(
+        (tmp_path / ".rextio" / "reports" / "generate.json").read_text(encoding="utf-8")
+    )
+    assert gen_ok.get("status") in {None, "generated"} or "native_source" in gen_ok
+    assert gen_ok["contract_version"] == TOOLING_CONTRACT_VERSION
+
+    # Parse-failure path: analysis-failed report also carries contract_version.
+    bad_project = tmp_path / "parse_fail"
+    bad_project.mkdir()
+    (bad_project / "bad.py").write_text("def broken(\n", encoding="utf-8")
+    assert main(["build", str(bad_project), "--fallback=cpython"]) == 1
+    parse_fail = json.loads(
+        (bad_project / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    assert parse_fail["status"] == "analysis-failed"
+    assert parse_fail["contract_version"] == TOOLING_CONTRACT_VERSION

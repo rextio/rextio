@@ -3,7 +3,7 @@
 Status: **draft** (experimental tier). The current published producer is core
 0.1.4, released on 2026-07-18 with `contract_version` `2.2.0` and plugin API
 **1.3**. The Release Train C branch contains the additive, **unreleased**
-`2.6.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
+`2.7.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
 contract. Package version on the branch remains **0.1.4**.
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
@@ -31,7 +31,7 @@ Both JSON surfaces carry a top-level field. The published 0.1.4 producer emits:
 The unreleased Train C branch emits:
 
 ```json
-{ "contract_version": "2.6.0" }
+{ "contract_version": "2.7.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -49,7 +49,8 @@ to generic guidance when the major is outside what they support.
 | `2.3.0` | **Unreleased additive host-planning shape** (Train C intermediate). Check/generate/build reports gain a fail-closed `host_source_plan`; generate/build plans carry resolved `artifact_profiles`; Rust executable closures add `module_initializers`; capabilities declares `artifact_contract` and a non-operational `device_provider_contract`. |
 | `2.4.0` | **Unreleased additive plugin standalone-capability shape** (Train C intermediate). Capabilities plugins gain `artifact_capability_declared` (presence only; no profile-hook execution). Generate/build may emit `standalone_plugin_capabilities` with resolved per-profile allow/deny details. `lowering_provided`, route, native-status, rejection, and promotion-assessment semantics remain unchanged. |
 | `2.5.0` | **Unreleased additive external-source preview shape** (Train C intermediate). Import-policy decisions add nullable exact `distribution` / `version` metadata; check/generate and blocked-build reports may add one sanitized `external_source_plan`. The plan is inventory evidence only (`execution_authority: "preview-only"`, `distributable: false`, `c6_gate: "required"`) and never grants source execution, lowering, build, packaging, or redistribution authority. |
-| `2.6.0` | **Unreleased additive C6.1 authorization-contract shape** (current Train C producer). The sanitized `external_source_plan` adds authority material (`source_files`, `metadata_files`, `plan_snapshot`, `plan_snapshot_sha256`, `license_material_sha256`, `inventory_schema`) and may nest `authorization` for project-owned `rextio.external-source.lock.json` verification (`*_verified` booleans). `c6_gate` is `required` or `authorization-verified`. Verified authorization still never grants source-native lowering, packaging, or redistribution; remaining C5.2 linkage/codegen is unimplemented (`external-source-c5-not-implemented`). Full C6 remains pending. |
+| `2.6.0` | **Unreleased additive C6.1 authorization-contract shape** (Train C intermediate). The sanitized `external_source_plan` adds authority material (`source_files`, `metadata_files`, `plan_snapshot`, `plan_snapshot_sha256`, `license_material_sha256`, `inventory_schema`) and may nest `authorization` for project-owned `rextio.external-source.lock.json` verification (`*_verified` booleans). `c6_gate` is `required` or `authorization-verified`. Verified authorization still never grants source-native lowering, packaging, or redistribution; remaining C5.2 linkage/codegen is unimplemented (`external-source-c5-not-implemented`). |
+| `2.7.0` | **Unreleased additive C6.2 host-extension wheel artifact-evidence preview** (current Train C producer). In-scope successful host-extension+`cpython` wheels always add top-level `build.json.artifact_evidence` with `status` exactly `preview-ready` or `unavailable`, `authority: "evidence-only"`, `signature_status: "unsigned"`, and `composition: "incomplete"`. Preview-ready may emit bounded CycloneDX 1.6 / unsigned in-toto Statement (SLSA Provenance v1) sidecars; unavailable uses a sanitized fixed reason and never changes ordinary build success. Host-executable, rust-crate, Nuitka host-extension fallback, WASM, and external-package source-native builds omit the field. `ArtifactProvenance` remains planning metadata only. |
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.
@@ -699,9 +700,180 @@ import pin, (3) run `rextio check`, (4) copy authority fields per the rules
 above, (5) fill attestor/producer after human/org review. Trust boundary is
 project/VCS review; this preview has no cryptographic signature.
 `source_inventory` is a custom inventory, not a standards-compliant full SBOM.
-Full/signed authorization, standards SPDX/CycloneDX SBOM for Python sources /
-Rust crates / runtimes / artifacts, artifact provenance, and source-native
-implementation remain deferred (full C6 / C5.2).
+Full/signed authorization, recursive inventory, native dylib/runtime completeness,
+and source-native implementation remain deferred (remaining full C6 / C5.2).
+Contract **2.7.0** adds a separate, bounded host-extension wheel evidence
+preview (see below); it does not complete full C6 and does not authorize
+external-source packaging.
+
+### Host-extension wheel artifact evidence preview (contract 2.7.0)
+
+**In scope:** ordinary successful host-extension wheels whose profile has
+`python_fallback_backend = "cpython"`. **Out of scope (field omitted):**
+host-executable, rust-crate, host-extension with `nuitka` fallback, WASM, and
+external-package source-native builds.
+
+For every in-scope wheel, `build.json` always includes `artifact_evidence` and
+the ordinary build still succeeds. Status is exactly:
+
+- `preview-ready` — sidecars written; subject/inputs/cargo graph/wheel ZIP
+  inventory are bound with SHA-256 digests
+- `unavailable` — sanitized fixed `reason` only; no sidecars; never a false
+  provenance claim
+
+Shared fields on both statuses: `authority: "evidence-only"`,
+`signature_status: "unsigned"`, `composition: "incomplete"`, `preview: true`,
+`complete: false`, `signed: false`.
+
+| Artifact | Location | Notes |
+|---|---|---|
+| CycloneDX 1.6 JSON | `dist/<wheel>.whl.cdx.json` | Only when `preview-ready`. Primary component is only in `metadata.component` (not duplicated in `components`). `compositions[].aggregate = "incomplete"`. Includes input files, wheel ZIP entry digests, and the **reachable** Cargo resolve graph with top-level `dependencies`. |
+| Unsigned in-toto Statement v1 | `dist/<wheel>.whl.intoto.json` | Only when `preview-ready`. SLSA Provenance v1 predicate. Subjects are the wheel **and** the SBOM (outputs). `resolvedDependencies` are inputs/cargo packages only (not the SBOM). No `invocationId`. |
+| Report field | `build.json.artifact_evidence` | Always present for in-scope wheels; `preview-ready` or `unavailable` |
+
+Preview-ready shape (additive; omitted when out of scope):
+
+```json
+{
+  "artifact_evidence": {
+    "kind": "host-extension-wheel",
+    "status": "preview-ready",
+    "authority": "evidence-only",
+    "signature_status": "unsigned",
+    "composition": "incomplete",
+    "preview": true,
+    "complete": false,
+    "signed": false,
+    "target_triple": "aarch64-apple-darwin",
+    "subject": {
+      "logical_path": "dist/demo-0.1.0-cp311-cp311-macosx_14_0_arm64.whl",
+      "sha256": "…",
+      "size": 12345,
+      "role": "host-extension-wheel"
+    },
+    "sbom": {
+      "format": "CycloneDX",
+      "logical_path": "dist/demo-0.1.0-cp311-cp311-macosx_14_0_arm64.whl.cdx.json",
+      "sha256": "…",
+      "size": 6789,
+      "spec_version": "1.6",
+      "aggregate": "incomplete",
+      "signed": false
+    },
+    "provenance": {
+      "format": "in-toto-Statement",
+      "logical_path": "dist/demo-0.1.0-cp311-cp311-macosx_14_0_arm64.whl.intoto.json",
+      "sha256": "…",
+      "size": 4567,
+      "predicate_type": "https://slsa.dev/provenance/v1",
+      "statement_type": "https://in-toto.io/Statement/v1",
+      "signed": false
+    },
+    "inputs": [],
+    "wheel_entries": [],
+    "cargo_packages": [],
+    "cargo_dependencies": [],
+    "limitations": [
+      "preview-only",
+      "composition-incomplete",
+      "unsigned",
+      "not-reproducible-claim",
+      "not-hermetic-claim",
+      "not-completeness-claim",
+      "not-external-source-authorization",
+      "no-native-dylib-runtime-inventory",
+      "no-recursive-package-inventory",
+      "evidence-only-authority"
+    ]
+  }
+}
+```
+
+Unavailable shape:
+
+```json
+{
+  "artifact_evidence": {
+    "kind": "host-extension-wheel",
+    "status": "unavailable",
+    "authority": "evidence-only",
+    "signature_status": "unsigned",
+    "composition": "incomplete",
+    "preview": true,
+    "complete": false,
+    "signed": false,
+    "reason": "source-snapshot-mismatch",
+    "limitations": ["preview-only", "composition-incomplete", "unsigned", "…"]
+  }
+}
+```
+
+Cargo packages come only from the **reachable** resolve graph of sanitized
+`cargo metadata --locked --offline --filter-platform <target>` (streaming
+stdout/stderr hard-capped; POSIX nonblocking select in short intervals with
+prompt stop when the direct child exits while a detached holder keeps pipes
+open; Windows bounded reader threads with an event-aware short wait so
+overflow returns code `125` promptly). The generated root is the only allowed
+path/source-less package; other path packages and all git packages are
+rejected. Registry packages require an exact `Cargo.lock` checksum for the
+same name/version/canonical registry source (no cross-registry fallback).
+Registry sources are canonicalized; credential-bearing, query, fragment, and
+local-file sources are rejected. Reports and sidecars expose only SHA-256
+`source_fingerprint` values — never raw registry URIs. Dependency edges are
+keyed by unique package bom-refs (duplicate normalized bom-refs fail closed)
+and aggregated/deduplicated in CycloneDX `dependencies`. License fields use
+CycloneDX `expression` form. Project/generated inputs are snapshot-hashed
+only for in-scope host-extension+cpython builds before native compilation and
+re-verified after `cargo metadata` and again immediately before a
+`preview-ready` return. Concurrent mutation of those inputs yields
+`unavailable` with a fixed reason (for example `source-snapshot-mismatch`);
+this is best-effort detection, **not** a race-free or TOCTOU-proof guarantee.
+The wheel is read once as an immutable byte snapshot for both subject SHA-256
+and ZIP inventory; immediately before `preview-ready` return the wheel path is
+re-hashed only to confirm digest and size still match that subject (mismatch
+→ `wheel-bytes-mutated` / `unavailable`). Sidecar writes verify path
+containment, reject symlink parents, and on supported POSIX pin the output
+directory with a dirfd for exclusive temp create/replace/fsync/unlink;
+elsewhere a conservative contained path fallback is used. Cleanup removes only
+sidecars actually created by that emission (no directory sweep). A `dist`
+directory that is a symlink pointing outside the project must not alter outside
+sentinels. Sidecars and the report field never serialize absolute paths, source
+bytes, credentials, environment secrets, machine-private paths, or unbounded
+tool output. Planning `ArtifactProvenance` is unchanged.
+
+#### `artifact_evidence` item shapes and fixed reason enum
+
+Top-level `build.json` and `generate.json` carry additive
+`contract_version` (currently `"2.7.0"`). Item fields under
+`artifact_evidence` when `status` is `preview-ready`:
+
+| Field | Shape |
+|---|---|
+| `subject` | `{logical_path, sha256, size, role}` — host-extension wheel subject |
+| `sbom` / `provenance` | `{format, logical_path, sha256, size, …extra}` sidecar refs |
+| `inputs[]` | `{logical_path, sha256, size, role}` project/generated/Cargo.lock refs |
+| `wheel_entries[]` | `{name, sha256, compressed_size, uncompressed_size}` ZIP members |
+| `cargo_packages[]` | `{name, version, source_fingerprint, checksum, kind, features, license, purl, bom_ref}` (no raw registry URI) |
+| `cargo_dependencies[]` | `{dependent_ref, dependency_ref}` bom-ref edges |
+
+When `status` is `unavailable`, `reason` is exactly one of this fixed
+allowlist (no free-text paths or tool output):
+
+| Reason | Meaning |
+|---|---|
+| `native-extension-not-built` | Native extension did not build |
+| `source-snapshot-mismatch` | Captured input digest/size no longer matches |
+| `source-input-unreadable` | An input path could not be read safely |
+| `input-count-exceeded` | Input file/directory bound exceeded |
+| `cargo-lock-missing` | Generated `Cargo.lock` / lock inputs missing |
+| `cargo-metadata-failed` | `cargo metadata` failed or was unusable |
+| `cargo-metadata-output-exceeded` | Metadata stdout/stderr exceeded the byte cap |
+| `cargo-resolve-graph-invalid` | Resolve graph / package graph rejected |
+| `wheel-inventory-invalid` | Wheel ZIP inventory failed closed |
+| `sidecar-write-failed` | Contained atomic sidecar write failed |
+| `evidence-internal-error` | Unexpected evidence path failure |
+| `input-snapshot-missing` | Orchestrator did not supply an input snapshot |
+| `wheel-bytes-mutated` | Wheel digest/size changed after the subject snapshot |
 
 Resolution uses installed metadata only and never imports or executes the
 package. It requires the exact configured distribution name and version, one
@@ -963,7 +1135,7 @@ class RextioPluginV2(Protocol):
 - No incremental-analysis API (deferred until latency measurements demand it;
   v1 tooling calls the batch analyzer).
 - No recursive third-party-package source promotion, device-provider discovery,
-  provider build/link hook, CUDA execution, or device support claim through 2.6.0.
+  provider build/link hook, CUDA execution, or device support claim through 2.7.0.
   C5.1 inventories one exact distribution but authorizes no lowering or build.
 - No name-based reservation of route strings beyond this document; new routes
   bump the contract minor version.
@@ -1010,6 +1182,12 @@ class RextioPluginV2(Protocol):
    `external_source_plan.authorization`, verified against project-owned lock
    content hashes/sizes/source_inventory/provenance/closed license
    attestation. Verified authorization still fails closed with the distinct
-   post-authorization C5-not-implemented block; full C6 remains pending.
-10. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
+   post-authorization C5-not-implemented block.
+10. **Release Train C / contract 2.7.0 (unreleased):** add optional
+    `build.json.artifact_evidence` plus bounded incomplete CycloneDX 1.6 and
+    unsigned in-toto/SLSA provenance sidecars for ordinary successful
+    host-extension wheels only. Do not claim signatures, completeness,
+    hermeticity, reproducibility, or external-source authorization. Full C6
+    remains pending.
+11. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.
