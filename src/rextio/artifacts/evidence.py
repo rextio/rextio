@@ -47,9 +47,25 @@ MAX_WHEEL_TOTAL_UNCOMPRESSED = 64 * 1024 * 1024
 MAX_RUNTIME_DEPS = 64
 MAX_RUNTIME_DEP_NAME_CHARS = 256
 MAX_RUNTIME_INSPECTOR_OUTPUT_BYTES = 256 * 1024
+MAX_SOURCE_TRANSFORMATIONS = 512
+MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS = 32
+MAX_SOURCE_TRANSFORMATION_PLUGIN_REFERENCES = 128
+MAX_SOURCE_TRANSFORMATION_INVENTORY_CHARS = 512 * 1024
+MAX_SOURCE_POSITION = 10_000_000
+
+SOURCE_TRANSFORMATION_INVENTORY_KIND = "source-transformation-inventory"
+SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION = 1
+SOURCE_TRANSFORMATION_INVENTORY_SCOPE = "accepted-project-native-functions"
+SOURCE_TRANSFORMATION_GENERATOR_BACKENDS: frozenset[str] = frozenset(
+    {"rextio-core-rust-pyo3-v1"}
+)
 
 _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_LOGICAL_SEGMENT = re.compile(r"^[A-Za-z0-9._@+%-]+$")
+_TRANSFORMATION_DOTTED_ID = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+_TRANSFORMATION_PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _WHEEL_VERSION_RE = re.compile(
     r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._]*)-(?P<version>[A-Za-z0-9][A-Za-z0-9._+]*)-"
 )
@@ -545,6 +561,226 @@ class NativeRuntimeInventory:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SourceTransformationRange:
+    """One reliable half-open function source range.
+
+    Lines are one-based and columns are zero-based UTF-8 byte offsets, matching
+    tooling-contract 2.x.  The fixed integer bound prevents hostile model
+    mutation from creating unbounded serialized values.
+    """
+
+    start_line: int
+    start_column: int
+    end_line: int
+    end_column: int
+
+    def __post_init__(self) -> None:
+        values = (
+            self.start_line,
+            self.start_column,
+            self.end_line,
+            self.end_column,
+        )
+        if any(type(value) is not int for value in values):
+            raise TypeError("source transformation positions must be integers")
+        if not (1 <= self.start_line <= MAX_SOURCE_POSITION):
+            raise ValueError("source transformation start line is invalid")
+        if not (1 <= self.end_line <= MAX_SOURCE_POSITION):
+            raise ValueError("source transformation end line is invalid")
+        if not (0 <= self.start_column <= MAX_SOURCE_POSITION):
+            raise ValueError("source transformation start column is invalid")
+        if not (0 <= self.end_column <= MAX_SOURCE_POSITION):
+            raise ValueError("source transformation end column is invalid")
+        if (self.end_line, self.end_column) <= (
+            self.start_line,
+            self.start_column,
+        ):
+            raise ValueError("source transformation range must be non-empty")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the canonical tooling-contract range shape."""
+        return {
+            "start": {"line": self.start_line, "column": self.start_column},
+            "end": {"line": self.end_line, "column": self.end_column},
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTransformationRecord:
+    """One bounded source-to-generated-Rust observation.
+
+    The semantic fingerprint is a SHA-256 of the analyzer's attribute-free AST
+    identity.  Neither source text nor an AST dump is retained or serialized.
+    """
+
+    source_path: str
+    source_sha256: str
+    function_module: str
+    function_qualname: str
+    source_range: SourceTransformationRange
+    semantic_ast_sha256: str
+    generated_rust: EvidenceFileRef
+    generator_backend: str
+    plugin_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        validate_logical_reference(self.source_path)
+        if not _HEX_SHA256.fullmatch(self.source_sha256):
+            raise ValueError("source transformation source sha256 is invalid")
+        object.__setattr__(
+            self,
+            "function_module",
+            _bounded_identifier(self.function_module, "function module"),
+        )
+        if not _TRANSFORMATION_DOTTED_ID.fullmatch(self.function_module):
+            raise ValueError("source transformation function module is invalid")
+        object.__setattr__(
+            self,
+            "function_qualname",
+            _bounded_identifier(self.function_qualname, "function qualname"),
+        )
+        if not _TRANSFORMATION_DOTTED_ID.fullmatch(self.function_qualname):
+            raise ValueError("source transformation function qualname is invalid")
+        if not self.function_qualname.startswith(f"{self.function_module}."):
+            raise ValueError("source transformation qualname is not module-bound")
+        if type(self.source_range) is not SourceTransformationRange:
+            raise TypeError("source transformation range model is invalid")
+        if not _HEX_SHA256.fullmatch(self.semantic_ast_sha256):
+            raise ValueError("source transformation semantic AST sha256 is invalid")
+        if type(self.generated_rust) is not EvidenceFileRef:
+            raise TypeError("source transformation generated Rust binding is invalid")
+        if self.generated_rust.role != "generated-rust-input":
+            raise ValueError("source transformation output role is invalid")
+        if PurePosixPath(self.generated_rust.logical_path).parts[-2:] != (
+            "src",
+            "lib.rs",
+        ):
+            raise ValueError("source transformation output must bind Rust src/lib.rs")
+        object.__setattr__(
+            self,
+            "generator_backend",
+            _bounded_identifier(self.generator_backend, "generator backend"),
+        )
+        if self.generator_backend not in SOURCE_TRANSFORMATION_GENERATOR_BACKENDS:
+            raise ValueError("source transformation generator/backend is unsupported")
+        if type(self.plugin_ids) is not tuple:
+            raise TypeError("source transformation plugin ids must be a tuple")
+        if len(self.plugin_ids) > MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS:
+            raise ValueError("source transformation plugin id count exceeds the bound")
+        plugin_ids = tuple(
+            _bounded_identifier(plugin_id, "plugin id") for plugin_id in self.plugin_ids
+        )
+        if any(not _TRANSFORMATION_PLUGIN_ID.fullmatch(plugin_id) for plugin_id in plugin_ids):
+            raise ValueError("source transformation plugin id is invalid")
+        if plugin_ids != tuple(sorted(set(plugin_ids))):
+            raise ValueError("source transformation plugin ids must be sorted and unique")
+        object.__setattr__(self, "plugin_ids", plugin_ids)
+
+    @property
+    def canonical_key(self) -> tuple[object, ...]:
+        """Return the closed deterministic inventory order key."""
+        return (
+            self.source_path,
+            self.function_module,
+            self.function_qualname,
+            self.source_range.start_line,
+            self.source_range.start_column,
+            self.source_range.end_line,
+            self.source_range.end_column,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic, path-bounded observation shape."""
+        return {
+            "source_path": self.source_path,
+            "source_sha256": self.source_sha256,
+            "function_module": self.function_module,
+            "function_qualname": self.function_qualname,
+            "source_range": self.source_range.to_dict(),
+            "semantic_ast_sha256": self.semantic_ast_sha256,
+            "generated_rust": self.generated_rust.to_dict(),
+            "generator_backend": self.generator_backend,
+            "plugin_ids": list(self.plugin_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTransformationInventory:
+    """Immutable closed inventory of accepted project function lowerings."""
+
+    records: tuple[SourceTransformationRecord, ...]
+    kind: str = SOURCE_TRANSFORMATION_INVENTORY_KIND
+    schema_version: int = SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION
+    scope: str = SOURCE_TRANSFORMATION_INVENTORY_SCOPE
+    complete: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        if self.kind != SOURCE_TRANSFORMATION_INVENTORY_KIND:
+            raise ValueError("source transformation inventory kind is invalid")
+        if self.schema_version != SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION:
+            raise ValueError("source transformation inventory schema is invalid")
+        if self.scope != SOURCE_TRANSFORMATION_INVENTORY_SCOPE:
+            raise ValueError("source transformation inventory scope is invalid")
+        if type(self.records) is not tuple:
+            raise TypeError("source transformation records must be a tuple")
+        if len(self.records) > MAX_SOURCE_TRANSFORMATIONS:
+            raise ValueError("source transformation record count exceeds the bound")
+        if not all(type(record) is SourceTransformationRecord for record in self.records):
+            raise TypeError("source transformation inventory record model is invalid")
+        keys = tuple(record.canonical_key for record in self.records)
+        if keys != tuple(sorted(keys)):
+            raise ValueError("source transformation records must use canonical order")
+        if len(keys) != len(set(keys)):
+            raise ValueError("source transformation records must be unique")
+        identities = tuple(
+            (record.function_module, record.function_qualname) for record in self.records
+        )
+        if len(identities) != len(set(identities)):
+            raise ValueError("source transformation function identities must be unique")
+        source_ranges = tuple(
+            (
+                record.source_path,
+                record.source_range.start_line,
+                record.source_range.start_column,
+                record.source_range.end_line,
+                record.source_range.end_column,
+            )
+            for record in self.records
+        )
+        if len(source_ranges) != len(set(source_ranges)):
+            raise ValueError("source transformation source ranges must be unambiguous")
+        generated_bindings = tuple(record.generated_rust for record in self.records)
+        if len(set(generated_bindings)) > 1:
+            raise ValueError("source transformation Rust binding must be unambiguous")
+        if type(self.complete) is not bool or self.complete:
+            raise ValueError("source transformation inventory must remain incomplete")
+        if type(self.authority) is not str or self.authority != "observation-only":
+            raise ValueError("source transformation inventory authority is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_SOURCE_TRANSFORMATION_INVENTORY_CHARS:
+            raise ValueError("source transformation inventory exceeds the character bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic additive artifact-evidence shape."""
+        return {
+            "kind": SOURCE_TRANSFORMATION_INVENTORY_KIND,
+            "schema_version": SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION,
+            "scope": SOURCE_TRANSFORMATION_INVENTORY_SCOPE,
+            "authority": "observation-only",
+            "complete": False,
+            "record_count": len(self.records),
+            "records": [record.to_dict() for record in self.records],
+        }
+
+
 @dataclass(frozen=True)
 class SidecarArtifact:
     """One finalized sidecar written next to the wheel."""
@@ -579,7 +815,7 @@ class SidecarArtifact:
 
 @dataclass(frozen=True)
 class ArtifactEvidence:
-    """Additive ``build.json.artifact_evidence`` record for C6.2/C6.4 preview."""
+    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.6 preview."""
 
     kind: str
     status: str  # preview-ready | unavailable
@@ -596,6 +832,7 @@ class ArtifactEvidence:
     cargo_packages: tuple[CargoPackageRef, ...] = ()
     cargo_dependencies: tuple[CargoDepEdge, ...] = ()
     native_runtime_inventory: NativeRuntimeInventory | None = None
+    source_transformation_inventory: SourceTransformationInventory | None = None
     limitations: tuple[str, ...] = DEFAULT_LIMITATIONS
     preview: bool = True
     complete: bool = False
@@ -629,6 +866,7 @@ class ArtifactEvidence:
                 or self.cargo_packages
                 or self.cargo_dependencies
                 or self.native_runtime_inventory is not None
+                or self.source_transformation_inventory is not None
             ):
                 raise ValueError("unavailable evidence must not carry inventory fields")
         else:
@@ -654,6 +892,28 @@ class ArtifactEvidence:
                 != self.native_runtime_inventory.wheel_member_size
             ):
                 raise ValueError("preview-ready runtime wheel member hash/size must match")
+            if self.source_transformation_inventory is not None:
+                if type(self.source_transformation_inventory) is not SourceTransformationInventory:
+                    raise TypeError("source transformation inventory model is invalid")
+                for record in self.source_transformation_inventory.records:
+                    source_matches = tuple(
+                        item
+                        for item in self.inputs
+                        if item.role == "project-python-source"
+                        and item.logical_path == record.source_path
+                        and item.sha256 == record.source_sha256
+                    )
+                    if len(source_matches) != 1:
+                        raise ValueError(
+                            "source transformation source binding must match one declared input"
+                        )
+                    generated_matches = tuple(
+                        item for item in self.inputs if item == record.generated_rust
+                    )
+                    if len(generated_matches) != 1:
+                        raise ValueError(
+                            "source transformation Rust binding must match one declared input"
+                        )
         if self.target_triple is not None:
             object.__setattr__(
                 self,
@@ -723,6 +983,10 @@ class ArtifactEvidence:
                 data["cargo_dependencies"] = [item.to_dict() for item in self.cargo_dependencies]
                 if self.native_runtime_inventory is not None:
                     data["native_runtime_inventory"] = self.native_runtime_inventory.to_dict()
+                if self.source_transformation_inventory is not None:
+                    data["source_transformation_inventory"] = (
+                        self.source_transformation_inventory.to_dict()
+                    )
         return data
 
 
@@ -2946,6 +3210,7 @@ def build_intoto_provenance_document(
     cargo_packages: Sequence[CargoPackageRef],
     target_triple: str,
     native_runtime_inventory: NativeRuntimeInventory | None = None,
+    source_transformation_inventory: SourceTransformationInventory | None = None,
 ) -> dict[str, object]:
     """Build an unsigned in-toto Statement v1 with SLSA Provenance v1 predicate.
 
@@ -2999,6 +3264,10 @@ def build_intoto_provenance_document(
         "distribution_authorized": False,
         "native_runtime_transitive_closure": False,
         "native_runtime_dlopen": False,
+        "source_transformation_inventory_observed": (
+            source_transformation_inventory is not None
+        ),
+        "source_transformation_provenance_complete": False,
     }
     if native_runtime_inventory is not None:
         internal_parameters["native_runtime_format"] = native_runtime_inventory.format
@@ -3007,6 +3276,10 @@ def build_intoto_provenance_document(
     run_metadata: dict[str, object] = {}
     if native_runtime_inventory is not None:
         run_metadata["rextio:observed_native_runtime"] = native_runtime_inventory.to_dict()
+    if source_transformation_inventory is not None:
+        run_metadata["rextio:source_transformation_inventory"] = (
+            source_transformation_inventory.to_dict()
+        )
 
     document: dict[str, object] = {
         "_type": "https://in-toto.io/Statement/v1",
@@ -3135,6 +3408,10 @@ __all__ = [
     "MAX_RUNTIME_DEP_NAME_CHARS",
     "MAX_RUNTIME_INSPECTOR_OUTPUT_BYTES",
     "MAX_SIDECAR_BYTES",
+    "MAX_SOURCE_TRANSFORMATION_INVENTORY_CHARS",
+    "MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS",
+    "MAX_SOURCE_TRANSFORMATION_PLUGIN_REFERENCES",
+    "MAX_SOURCE_TRANSFORMATIONS",
     "MAX_WHEEL_ENTRIES",
     "MAX_WHEEL_ENTRY_PATH_CHARS",
     "MAX_WHEEL_ENTRY_UNCOMPRESSED",
@@ -3168,6 +3445,13 @@ __all__ = [
     "REASON_WHEEL_INVENTORY_INVALID",
     "REASON_WHEEL_MUTATED",
     "SidecarArtifact",
+    "SourceTransformationInventory",
+    "SourceTransformationRange",
+    "SourceTransformationRecord",
+    "SOURCE_TRANSFORMATION_GENERATOR_BACKENDS",
+    "SOURCE_TRANSFORMATION_INVENTORY_KIND",
+    "SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION",
+    "SOURCE_TRANSFORMATION_INVENTORY_SCOPE",
     "UNAVAILABLE_REASONS",
     "WheelEntryRef",
     "build_cyclonedx_document",

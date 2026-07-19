@@ -5,10 +5,47 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.10.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.11.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR.
+
+### C6.6 bounded source-transformation provenance observation
+
+- Add immutable `artifact_evidence.source_transformation_inventory` for the
+  existing ordinary host-extension + CPython wheel evidence scope. Every
+  accepted project-owned native function is bound to one project-relative
+  source path and exact source SHA-256, module/qualname, reliable half-open
+  source range, SHA-256 of the analyzer's semantic AST identity, the exact
+  generated Rust `src/lib.rs` input path/hash/size, the closed
+  `rextio-core-rust-pyo3-v1` generator/backend id, and sorted unique plugin ids.
+- Serialize the same bounded observation into unsigned provenance metadata
+  without binding the provenance sidecar back into the inventory. Never emit
+  raw source, AST dumps, absolute paths, exception text, credentials, or
+  unbounded output. Cross-check the exact ordered accepted-function coverage
+  against the analyzer list used by code generation; reject malformed
+  hashes/ranges/paths, duplicates, noncanonical order, stale/omitted/extra
+  functions, and orphan, ambiguous, external-source bindings. Cap records,
+  total plugin references, unique plugin ids, and deterministic serialized
+  inventory size.
+- Advance the always-blocked authorization assessment to `policy_version: 2`
+  and add `source-transformation-inventory-bound`. A valid inventory may satisfy
+  that observation, but `source-transformation-provenance-complete` and its
+  blocker remain blocked; completeness, signatures, and distribution authority
+  remain false. Do not claim component-license policy completion.
+- Preserve independent build and C6.3 semantics. Missing/unsupported inventory
+  uses the fixed `source-transformation-inventory-unavailable` observation and
+  blocker without changing best-effort success or required-evidence
+  transaction/publication outcomes. If adding the inventory would exceed the
+  provenance sidecar ceiling, rebuild the provenance with only that observation
+  omitted. Malformed, noncanonical, or source/generated-binding-breaking
+  inventory retains the total all-`not-evaluated`
+  `readiness-assessment-unavailable` shape. The evaluator does not independently
+  re-derive structurally valid observation values from source or `BuildPlan`.
+- Keep package version **0.1.4** and plugin API **1.4**; advance only the
+  unreleased tooling contract to **2.11.0**. Licenses, runtime path/transitive
+  closure, `dlopen`, signatures, executables, Rust crates, Nuitka/WASM/Windows,
+  runtime-bearing plugins, full C6, and C5.2 remain out of scope.
 
 ### C6.5 hard distribution-authorization readiness contract
 

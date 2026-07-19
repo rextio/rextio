@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -457,7 +456,8 @@ def test_sparse_preview_readiness_never_changes_build_or_required_gate(
     def emit_sparse(**kwargs):
         evidence = emit(**kwargs)
         assert evidence is not None and evidence.status == "preview-ready"
-        return replace(evidence, inputs=())
+        object.__setattr__(evidence, "inputs", ())
+        return evidence
 
     monkeypatch.setattr(orchestrator, "emit_host_extension_wheel_evidence", emit_sparse)
 

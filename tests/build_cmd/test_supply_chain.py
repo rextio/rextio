@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -11,13 +12,25 @@ from pathlib import Path
 import pytest
 
 import rextio.artifacts.evidence as evidence_mod
-from rextio.analyzer.models import ModuleAnalysis, ProjectAnalysis
+from rextio.analyzer.executable_identity import executable_ast_fingerprint
+from rextio.analyzer.models import (
+    FunctionAnalysis,
+    ModuleAnalysis,
+    ProjectAnalysis,
+    SourcePosition,
+    SourceRange,
+)
 from rextio.artifacts.evidence import (
+    ArtifactEvidenceGate,
     NativeRuntimeDependency,
     NativeRuntimeInventory,
     REASON_RUNTIME_INSPECTOR_FAILED,
     WheelEntryRef,
     hash_regular_file,
+)
+from rextio.artifacts.authorization import (
+    ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
+    evaluate_artifact_distribution_authorization,
 )
 from rextio.artifacts.models import ArtifactKind
 from rextio.artifacts.profiles import detect_host_target_triple, host_extension_profile
@@ -200,6 +213,72 @@ def _plan(project: Path, profile, source: Path) -> BuildPlan:
     )
 
 
+def _plan_with_accepted_function(
+    project: Path,
+    profile,
+    source: Path,
+) -> tuple[BuildPlan, FunctionAnalysis]:
+    source_text = source.read_text(encoding="utf-8")
+    node = ast.parse(source_text).body[0]
+    assert isinstance(node, ast.FunctionDef)
+    assert node.end_lineno is not None and node.end_col_offset is not None
+    function = FunctionAnalysis(
+        name=node.name,
+        qualname=f"app.{node.name}",
+        module_name="app",
+        file_path=str(source),
+        line=node.lineno,
+        column=node.col_offset,
+        source_range=SourceRange(
+            start=SourcePosition(line=node.lineno, column=node.col_offset),
+            end=SourcePosition(line=node.end_lineno, column=node.end_col_offset),
+        ),
+        is_native_candidate=True,
+        accepted=True,
+        source_ast_fingerprint=executable_ast_fingerprint(node),
+    )
+    source_bytes = source.read_bytes()
+    graph = SourceModuleGraph(
+        modules=(
+            SourceModule(
+                module_name="app",
+                path="app.py",
+                is_package_init=False,
+                source_origin=SourceOrigin.PROJECT,
+                sha256=_sha(source_bytes),
+                dependency_depth=0,
+            ),
+        )
+    )
+    return (
+        BuildPlan(
+            analysis=ProjectAnalysis(
+                project_root=project,
+                modules=[
+                    ModuleAnalysis(
+                        module_name="app",
+                        file_path=str(source),
+                        functions=[function],
+                    ),
+                ],
+            ),
+            native=NativePlan(
+                accepted_functions=(function,),
+                rejected_functions=(),
+                embedded_functions=(),
+            ),
+            fallback=FallbackPlan(backend="cpython", modules=()),
+            host_source_plan=HostSourcePlan(
+                graph=graph,
+                module_initializers=(),
+                unavailable_reason=None,
+            ),
+            artifact_profiles=(profile,),
+        ),
+        function,
+    )
+
+
 def _snapshot(project: Path, layout: ArtifactLayout, plan: BuildPlan) -> EvidenceInputSnapshot:
     snap = capture_project_source_snapshot(project_root=project, plan=plan)
     snap = capture_generated_python_inputs(snap, project_root=project, layout=layout)
@@ -300,7 +379,11 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
 
     project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
     profile = host_extension_profile(detect_host_target_triple())
-    plan = _plan(project, profile, project / "app.py")
+    plan, function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
     snap = _snapshot(project, layout, plan)
     assert snap.unavailable_reason is None
     sbom_path = wheel_path.with_suffix(wheel_path.suffix + ".cdx.json")
@@ -355,6 +438,32 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     assert report["distribution_authorized"] is False
     assert "wheel_entries" in report
     assert "cargo_dependencies" in report
+    transformation = report["source_transformation_inventory"]
+    assert transformation["kind"] == "source-transformation-inventory"
+    assert transformation["record_count"] == 1
+    assert transformation["complete"] is False
+    transformation_record = evidence.source_transformation_inventory.records[0]  # type: ignore[union-attr]
+    source_ref = next(item for item in evidence.inputs if item.role == "project-python-source")
+    generated_ref = next(
+        item
+        for item in evidence.inputs
+        if item.role == "generated-rust-input"
+        and item.logical_path.endswith("/src/lib.rs")
+    )
+    assert transformation_record.source_path == source_ref.logical_path == "app.py"
+    assert transformation_record.source_sha256 == source_ref.sha256
+    assert transformation_record.generated_rust == generated_ref
+    assert transformation_record.function_qualname == function.qualname
+    assert transformation_record.source_range.start_line == function.source_range.start.line  # type: ignore[union-attr]
+    assert transformation_record.source_range.end_line == function.source_range.end.line  # type: ignore[union-attr]
+    assert transformation_record.semantic_ast_sha256 == _sha(
+        function.source_ast_fingerprint.encode("utf-8")  # type: ignore[union-attr]
+    )
+
+    provenance_inventory = prov["predicate"]["runDetails"]["metadata"][
+        "rextio:source_transformation_inventory"
+    ]
+    assert provenance_inventory == transformation
 
     runtime = report["native_runtime_inventory"]
     assert runtime["scope"] == "direct-only"
@@ -388,6 +497,124 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     assert internal["native_runtime_dlopen"] is False
     assert internal["distribution_authorized"] is False
     assert prov["predicate"]["runDetails"]["metadata"]["rextio:observed_native_runtime"] == runtime
+
+
+def _assert_transformation_omission_is_noninterfering(
+    *,
+    project: Path,
+    evidence,
+) -> None:
+    assert evidence.status == "preview-ready"
+    assert evidence.source_transformation_inventory is None
+    assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+    assessment = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    statuses = {item["id"]: item["status"] for item in assessment["checks"]}
+    assert statuses["source-transformation-inventory-bound"] == "unavailable"
+    assert assessment["distribution_authorized"] is False
+    assert ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE in assessment["blockers"]
+    assert evidence.sbom is not None and (project / evidence.sbom.logical_path).is_file()
+    assert evidence.provenance is not None
+    provenance_path = project / evidence.provenance.logical_path
+    assert provenance_path.is_file()
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert "rextio:source_transformation_inventory" not in metadata
+    assert (
+        provenance["predicate"]["buildDefinition"]["internalParameters"][
+            "source_transformation_inventory_observed"
+        ]
+        is False
+    )
+
+
+def test_inventory_character_budget_omits_only_c6_6_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cargo = pytest.importorskip("shutil").which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required")
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+    monkeypatch.setattr(
+        evidence_mod,
+        "MAX_SOURCE_TRANSFORMATION_INVENTORY_CHARS",
+        1,
+    )
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None
+    _assert_transformation_omission_is_noninterfering(
+        project=project,
+        evidence=evidence,
+    )
+
+
+def test_provenance_ceiling_rebuilds_without_c6_6_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cargo = pytest.importorskip("shutil").which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required")
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+    real_builder = supply_chain_module.build_intoto_provenance_document
+    inventory_presence: list[bool] = []
+
+    def inflate_only_inventory_provenance(**kwargs):
+        present = kwargs.get("source_transformation_inventory") is not None
+        inventory_presence.append(present)
+        document = real_builder(**kwargs)
+        if present:
+            document["predicate"]["runDetails"]["metadata"]["test:padding"] = (
+                "x" * evidence_mod.MAX_SIDECAR_BYTES
+            )
+        return document
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "build_intoto_provenance_document",
+        inflate_only_inventory_provenance,
+    )
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None
+    assert inventory_presence == [True, False]
+    _assert_transformation_omission_is_noninterfering(
+        project=project,
+        evidence=evidence,
+    )
 
 
 def test_runtime_inspector_failure_is_best_effort_and_preserves_wheel(

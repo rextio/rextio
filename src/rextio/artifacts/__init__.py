@@ -13,6 +13,9 @@ from rextio.artifacts.evidence import (
     CargoPackageRef,
     EvidenceFileRef,
     SidecarArtifact,
+    SourceTransformationInventory,
+    SourceTransformationRange,
+    SourceTransformationRecord,
     WheelEntryRef,
 )
 from rextio.artifacts.models import (
@@ -51,6 +54,9 @@ __all__ = [
     "FallbackStrategy",
     "RuntimeRequirement",
     "SidecarArtifact",
+    "SourceTransformationInventory",
+    "SourceTransformationRange",
+    "SourceTransformationRecord",
     "TargetCapability",
     "WheelEntryRef",
     "detect_host_target_triple",

@@ -11,11 +11,14 @@ from rextio.artifacts.authorization import (
     ARTIFACT_AUTHORIZATION_CHECK_IDS,
     ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
     ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE,
+    ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
     ArtifactAuthorizationCheck,
     ArtifactDistributionAuthorizationAssessment,
     evaluate_artifact_distribution_authorization,
 )
 from rextio.artifacts.evidence import (
+    MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS,
+    MAX_SOURCE_TRANSFORMATIONS,
     ArtifactEvidence,
     CargoDepEdge,
     CargoPackageRef,
@@ -23,6 +26,10 @@ from rextio.artifacts.evidence import (
     NativeRuntimeDependency,
     NativeRuntimeInventory,
     SidecarArtifact,
+    SourceTransformationInventory,
+    SourceTransformationRange,
+    SourceTransformationRecord,
+    ArtifactEvidenceGate,
     WheelEntryRef,
 )
 
@@ -47,6 +54,18 @@ def _preview_evidence() -> ArtifactEvidence:
         source="registry+https://github.com/rust-lang/crates.io-index",
         checksum="7" * 64,
         kind="registry",
+    )
+    source_ref = EvidenceFileRef(
+        logical_path="app.py",
+        sha256="3" * 64,
+        size=1,
+        role="project-python-source",
+    )
+    generated_rust_ref = EvidenceFileRef(
+        logical_path=".rextio/generated/rust/src/lib.rs",
+        sha256="5" * 64,
+        size=1,
+        role="generated-rust-input",
     )
     return ArtifactEvidence(
         kind="host-extension-wheel",
@@ -77,24 +96,14 @@ def _preview_evidence() -> ArtifactEvidence:
             },
         ),
         inputs=(
-            EvidenceFileRef(
-                logical_path="app.py",
-                sha256="3" * 64,
-                size=1,
-                role="project-python-source",
-            ),
+            source_ref,
             EvidenceFileRef(
                 logical_path=".rextio/generated/python/app.py",
                 sha256="4" * 64,
                 size=1,
                 role="generated-python-input",
             ),
-            EvidenceFileRef(
-                logical_path=".rextio/generated/rust/src/lib.rs",
-                sha256="5" * 64,
-                size=1,
-                role="generated-rust-input",
-            ),
+            generated_rust_ref,
             EvidenceFileRef(
                 logical_path=".rextio/generated/rust/Cargo.lock",
                 sha256="6" * 64,
@@ -122,6 +131,25 @@ def _preview_evidence() -> ArtifactEvidence:
             wheel_member_size=native_entry.uncompressed_size,
             dependencies=(NativeRuntimeDependency(name="libc.so.6"),),
         ),
+        source_transformation_inventory=SourceTransformationInventory(
+            records=(
+                SourceTransformationRecord(
+                    source_path=source_ref.logical_path,
+                    source_sha256=source_ref.sha256,
+                    function_module="app",
+                    function_qualname="app.add",
+                    source_range=SourceTransformationRange(
+                        start_line=1,
+                        start_column=0,
+                        end_line=2,
+                        end_column=16,
+                    ),
+                    semantic_ast_sha256="8" * 64,
+                    generated_rust=generated_rust_ref,
+                    generator_backend="rextio-core-rust-pyo3-v1",
+                ),
+            )
+        ),
     )
 
 
@@ -133,7 +161,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
 
     assert report["kind"] == "artifact-distribution-authorization"
     assert report["policy"] == "host-extension-wheel-cpython-v1"
-    assert report["policy_version"] == 1
+    assert report["policy_version"] == 2
     assert report["scope"] == "host-extension-wheel-cpython-v1"
     assert report["status"] == "blocked"
     assert report["authority"] == "readiness-assessment-only"
@@ -142,13 +170,14 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
     assert [item["id"] for item in report["checks"]] == list(
         ARTIFACT_AUTHORIZATION_CHECK_IDS
     )
-    assert [item["status"] for item in report["checks"][:4]] == [
+    assert [item["status"] for item in report["checks"][:5]] == [
+        "satisfied",
         "satisfied",
         "satisfied",
         "satisfied",
         "satisfied",
     ]
-    assert {item["status"] for item in report["checks"][4:]} == {"blocked"}
+    assert {item["status"] for item in report["checks"][5:]} == {"blocked"}
     assert report["blockers"] == list(ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS)
     assert report["complete"] is False
     assert report["signed"] is False
@@ -163,15 +192,59 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
 
     assert report["evidence_status"] == "unavailable"
     assert report["evidence_reason"] == "cargo-metadata-failed"
-    assert [item["status"] for item in report["checks"][:4]] == [
+    assert [item["status"] for item in report["checks"][:5]] == [
+        "unavailable",
         "unavailable",
         "unavailable",
         "unavailable",
         "unavailable",
     ]
-    assert {item["status"] for item in report["checks"][4:]} == {"not-evaluated"}
+    assert {item["status"] for item in report["checks"][5:]} == {"not-evaluated"}
     assert report["blockers"] == ["evidence-unavailable"]
     assert "/" not in json.dumps(report, sort_keys=True)
+
+
+def test_missing_transformation_inventory_is_a_dedicated_closed_observation() -> None:
+    evidence = replace(_preview_evidence(), source_transformation_inventory=None)
+    report = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    statuses = {item["id"]: item["status"] for item in report["checks"]}
+
+    assert statuses["artifact-subject-bound"] == "satisfied"
+    assert statuses["direct-native-linkage-observed"] == "satisfied"
+    assert statuses["source-transformation-inventory-bound"] == "unavailable"
+    assert statuses["source-transformation-provenance-complete"] == "blocked"
+    assert report["blockers"] == [
+        *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
+        ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
+    ]
+    assert ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE not in report["blockers"]
+    # C6.3 evaluates the existing preview evidence independently.
+    assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+
+
+def test_structurally_valid_semantic_hash_change_remains_unsigned_observation() -> None:
+    evidence = _preview_evidence()
+    inventory = evidence.source_transformation_inventory
+    assert inventory is not None
+    changed_record = replace(
+        inventory.records[0],
+        semantic_ast_sha256="9" * 64,
+    )
+    adjusted = replace(
+        evidence,
+        source_transformation_inventory=replace(
+            inventory,
+            records=(changed_record,),
+        ),
+    )
+
+    report = evaluate_artifact_distribution_authorization(adjusted).to_dict()
+    statuses = {item["id"]: item["status"] for item in report["checks"]}
+    assert statuses["source-transformation-inventory-bound"] == "satisfied"
+    assert statuses["source-transformation-provenance-complete"] == "blocked"
+    assert report["status"] == "blocked"
+    assert report["signed"] is False
+    assert report["distribution_authorized"] is False
 
 
 def test_assessment_is_immutable_and_truthy_authority_fields_are_forced_false() -> None:
@@ -236,10 +309,13 @@ def test_assessment_never_claims_sparse_preview_observations(
     missing_field: str,
 ) -> None:
     evidence = _preview_evidence()
-    replacements = {missing_field: ()}
-    if missing_field == "cargo_packages":
-        replacements["cargo_dependencies"] = ()
-    sparse = replace(evidence, **replacements)
+    if missing_field == "inputs":
+        # Low-level mutation simulates a deserialized/tampered sparse model;
+        # normal construction correctly rejects the orphan transformation.
+        object.__setattr__(evidence, "inputs", ())
+        sparse = evidence
+    else:
+        sparse = replace(evidence, cargo_packages=(), cargo_dependencies=())
 
     report = ArtifactDistributionAuthorizationAssessment.from_evidence(sparse).to_dict()
     assert report["evidence_status"] == "preview-ready"
@@ -260,6 +336,13 @@ def test_assessment_never_claims_sparse_preview_observations(
         "runtime_inventory",
         "runtime_architecture",
         "runtime_dependency",
+        "transformation_inventory",
+        "transformation_record_count",
+        "transformation_plugin_count",
+        "transformation_authority",
+        "transformation_complete",
+        "transformation_range",
+        "transformation_output",
     ],
 )
 def test_nested_low_level_mutation_never_yields_satisfied_observations(
@@ -294,13 +377,53 @@ def test_nested_low_level_mutation_never_yields_satisfied_observations(
     elif nested_model == "runtime_architecture":
         assert evidence.native_runtime_inventory is not None
         object.__setattr__(evidence.native_runtime_inventory, "architecture", "aarch64")
-    else:
+    elif nested_model == "runtime_dependency":
         assert evidence.native_runtime_inventory is not None
         object.__setattr__(
             evidence.native_runtime_inventory.dependencies[0],
             "name",
             injected,
         )
+    elif nested_model == "transformation_inventory":
+        assert evidence.source_transformation_inventory is not None
+        object.__setattr__(evidence.source_transformation_inventory, "scope", injected)
+    elif nested_model == "transformation_record_count":
+        assert evidence.source_transformation_inventory is not None
+        record = evidence.source_transformation_inventory.records[0]
+        object.__setattr__(
+            evidence.source_transformation_inventory,
+            "records",
+            (record,) * (MAX_SOURCE_TRANSFORMATIONS + 1),
+        )
+    elif nested_model == "transformation_plugin_count":
+        assert evidence.source_transformation_inventory is not None
+        object.__setattr__(
+            evidence.source_transformation_inventory.records[0],
+            "plugin_ids",
+            ("plugin",) * (MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS + 1),
+        )
+    elif nested_model == "transformation_authority":
+        assert evidence.source_transformation_inventory is not None
+        object.__setattr__(evidence.source_transformation_inventory, "authority", injected)
+    elif nested_model == "transformation_complete":
+        assert evidence.source_transformation_inventory is not None
+        object.__setattr__(evidence.source_transformation_inventory, "complete", True)
+    elif nested_model == "transformation_range":
+        assert evidence.source_transformation_inventory is not None
+        object.__setattr__(
+            evidence.source_transformation_inventory.records[0].source_range,
+            "start_line",
+            -1,
+        )
+    elif nested_model == "transformation_output":
+        assert evidence.source_transformation_inventory is not None
+        object.__setattr__(
+            evidence.source_transformation_inventory.records[0].generated_rust,
+            "logical_path",
+            injected,
+        )
+    else:  # pragma: no cover - closed parametrization guard
+        raise AssertionError(f"unexpected nested model: {nested_model}")
 
     report = evaluate_artifact_distribution_authorization(evidence).to_dict()
     assert report["evidence_status"] == "preview-ready"
@@ -332,7 +455,7 @@ def test_target_architecture_vocabulary_matches_c6_4_runtime_inventory(
     )
 
     report = evaluate_artifact_distribution_authorization(adjusted).to_dict()
-    assert [item["status"] for item in report["checks"][:4]] == ["satisfied"] * 4
+    assert [item["status"] for item in report["checks"][:5]] == ["satisfied"] * 5
 
 
 def test_evaluator_is_total_for_low_level_invalid_top_level_status() -> None:

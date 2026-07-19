@@ -136,8 +136,8 @@ def kernel(x: float) -> float:
     data = analysis.to_dict()
 
     assert data["contract_version"] == TOOLING_CONTRACT_VERSION
-    # Contract 2.10.0 adds C6.5 authorization readiness while retaining prior shapes.
-    assert data["contract_version"] == "2.10.0"
+    # Contract 2.11.0 adds C6.6 transformation observation while retaining prior shapes.
+    assert data["contract_version"] == "2.11.0"
     assert TOOLING_CONTRACT_VERSION.split(".", 1)[0] == "2"
 
     # Contract 2.1.0 always serializes logger_group_targets on each module.
