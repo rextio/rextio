@@ -78,5 +78,8 @@ from __future__ import annotations
 # to artifact-distribution authorization readiness. It remains additive,
 # unsigned, non-authorizing evidence and does not complete build-input closure,
 # reproducibility, signing, policy, or distribution authorization.
+# Contract 2.19.0 adds C6.14's compact artifact-policy coverage partition and
+# policy-version-10 observation. Identity, license-policy, and transformation-
+# provenance states remain orthogonal, scoped, incomplete, and non-authorizing.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.18.0"
+TOOLING_CONTRACT_VERSION = "2.19.0"

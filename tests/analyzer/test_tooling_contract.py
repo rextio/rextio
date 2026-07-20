@@ -136,8 +136,8 @@ def kernel(x: float) -> float:
     data = analysis.to_dict()
 
     assert data["contract_version"] == TOOLING_CONTRACT_VERSION
-    # Contract 2.18.0 adds C6.13 scoped analysis-input verification additively.
-    assert data["contract_version"] == "2.18.0"
+    # Contract 2.19.0 adds C6.14 artifact-policy coverage additively.
+    assert data["contract_version"] == "2.19.0"
     assert TOOLING_CONTRACT_VERSION.split(".", 1)[0] == "2"
 
     # Contract 2.1.0 always serializes logger_group_targets on each module.
@@ -256,12 +256,8 @@ def outer(value: int) -> int:
         "skip_reason": "explicit-exemption",
     }
     assert by_name["accelerated"]["marker_kind"] == "none"
-    assert by_name["accelerated"]["promotion_assessment"]["provenance"] == (
-        "external-accelerator"
-    )
-    assert by_name["accelerated"]["promotion_assessment"]["skip_reason"] == (
-        "external-accelerator"
-    )
+    assert by_name["accelerated"]["promotion_assessment"]["provenance"] == ("external-accelerator")
+    assert by_name["accelerated"]["promotion_assessment"]["skip_reason"] == ("external-accelerator")
     assert by_name["coroutine"]["promotion_assessment"]["skip_reason"] == (
         "async-auto-promotion-not-supported"
     )
@@ -479,6 +475,6 @@ def test_utf8_half_open_function_ranges_are_token_based(tmp_path: Path) -> None:
         "start": {"line": 2, "column": 14},
         "end": {"line": 2, "column": 23},
     }
-    assert data["name_range"]["end"]["column"] - data["name_range"]["start"][
-        "column"
-    ] == len("계산값".encode("utf-8"))
+    assert data["name_range"]["end"]["column"] - data["name_range"]["start"]["column"] == len(
+        "계산값".encode("utf-8")
+    )
