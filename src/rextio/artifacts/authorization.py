@@ -1,6 +1,6 @@
-"""C6.5-C6.10 distribution-authorization readiness assessment.
+"""C6.5-C6.11 distribution-authorization readiness assessment.
 
-This module deliberately sits between the C6.2-C6.10 preview evidence record
+This module deliberately sits between the C6.2-C6.11 preview evidence record
 and any future distribution authorization.  It converts only a validated
 ``ArtifactEvidence`` instance into a deterministic, closed-vocabulary report.
 The report is readiness information, never an authorization decision: every
@@ -11,7 +11,9 @@ static graph across recursively inspected packaged members. It does not
 implement actual loader selection, complete transitive dependency closure, runtime ``dlopen``
 observation, Windows PE inspection, runtime-bearing
 plugins, executables, Rust crates, Nuitka/WASM evidence, signatures, or final
-distribution authorization.
+distribution authorization. C6.10/C6.11 add narrowly scoped source-replay and
+Cargo license-policy observations without satisfying their corresponding
+global readiness checks.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from rextio.artifacts.evidence import (
     UNAVAILABLE_REASONS,
     ArtifactEvidence,
     ComponentLicenseInventory,
+    ComponentLicensePolicyVerification,
     ComponentLicenseRecord,
     CargoDepEdge,
     CargoPackageRef,
@@ -49,7 +52,7 @@ from rextio.artifacts.evidence import (
 
 ARTIFACT_AUTHORIZATION_KIND = "artifact-distribution-authorization"
 ARTIFACT_AUTHORIZATION_POLICY = ARTIFACT_EVIDENCE_SCOPE
-ARTIFACT_AUTHORIZATION_POLICY_VERSION = 6
+ARTIFACT_AUTHORIZATION_POLICY_VERSION = 7
 ARTIFACT_AUTHORIZATION_STATUS = "blocked"
 ARTIFACT_AUTHORIZATION_AUTHORITY = "readiness-assessment-only"
 
@@ -63,6 +66,7 @@ _OBSERVATION_CHECK_IDS: tuple[str, ...] = (
     "source-transformation-inventory-bound",
     "scoped-source-transformation-verified",
     "component-license-inventory-bound",
+    "scoped-component-license-policy-verified",
 )
 _READINESS_CHECK_IDS: tuple[str, ...] = (
     "component-license-policy-complete",
@@ -102,6 +106,9 @@ ARTIFACT_AUTHORIZATION_TRANSFORMATION_VERIFICATION_UNAVAILABLE = (
     "scoped-source-transformation-verification-unavailable"
 )
 ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE = "component-license-inventory-unavailable"
+ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE = (
+    "scoped-component-license-policy-verification-unavailable"
+)
 ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE = (
     "native-runtime-path-resolution-inventory-unavailable"
 )
@@ -116,6 +123,7 @@ _ALLOWED_BLOCKERS = frozenset(
         ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_TRANSFORMATION_VERIFICATION_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
     }
@@ -151,7 +159,7 @@ class ArtifactAuthorizationCheck:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactDistributionAuthorizationAssessment:
-    """Immutable, fail-closed C6.5-C6.10 distribution-readiness report.
+    """Immutable, fail-closed C6.5-C6.11 distribution-readiness report.
 
     Callers should use :meth:`from_evidence`.  The public fields remain
     validate-on-construction so malformed, reordered, duplicated, or
@@ -236,6 +244,10 @@ class ArtifactDistributionAuthorizationAssessment:
                         "component-license-inventory-bound",
                         ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
                     ),
+                    (
+                        "scoped-component-license-policy-verified",
+                        ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
+                    ),
                 ):
                     status = statuses_by_id[check_id]
                     if status == "unavailable":
@@ -245,12 +257,13 @@ class ArtifactDistributionAuthorizationAssessment:
                 if blockers != tuple(expected_blockers):
                     raise ValueError("preview-ready authorization blockers are not canonical")
                 expected_statuses = (
-                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-5]),
+                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-6]),
                     statuses_by_id["direct-native-path-resolution-bound"],
                     statuses_by_id["bounded-static-native-runtime-graph-bound"],
                     statuses_by_id["source-transformation-inventory-bound"],
                     statuses_by_id["scoped-source-transformation-verified"],
                     statuses_by_id["component-license-inventory-bound"],
+                    statuses_by_id["scoped-component-license-policy-verified"],
                     *("blocked" for _ in _READINESS_CHECK_IDS),
                 )
         else:
@@ -281,7 +294,7 @@ class ArtifactDistributionAuthorizationAssessment:
         cls,
         evidence: ArtifactEvidence,
     ) -> ArtifactDistributionAuthorizationAssessment:
-        """Return the total, no-throw C6.5-C6.10 evaluation for ``evidence``."""
+        """Return the total, no-throw C6.5-C6.11 evaluation for ``evidence``."""
         return evaluate_artifact_distribution_authorization(evidence)
 
     def to_dict(self) -> dict[str, object]:
@@ -306,7 +319,7 @@ class ArtifactDistributionAuthorizationAssessment:
 def evaluate_artifact_distribution_authorization(
     evidence: ArtifactEvidence,
 ) -> ArtifactDistributionAuthorizationAssessment:
-    """Evaluate C6.5-C6.10 without changing the surrounding build outcome.
+    """Evaluate C6.5-C6.11 without changing the surrounding build outcome.
 
     A structurally invalid preview remains reported as preview evidence, but
     no readiness check is claimed: the closed fallback shape contains only
@@ -324,6 +337,7 @@ def evaluate_artifact_distribution_authorization(
                 transformation_bound,
                 transformation_verification_bound,
                 license_bound,
+                license_policy_verification_bound,
             ) = _validate_preview_observations(trusted)
             optional_statuses = (
                 "satisfied" if path_resolution_bound else "unavailable",
@@ -331,6 +345,11 @@ def evaluate_artifact_distribution_authorization(
                 "satisfied" if transformation_bound else "unavailable",
                 "satisfied" if transformation_verification_bound else "unavailable",
                 "satisfied" if license_bound else "unavailable",
+                (
+                    "satisfied"
+                    if license_policy_verification_bound
+                    else "unavailable"
+                ),
             )
             optional_blockers = tuple(
                 blocker
@@ -352,6 +371,10 @@ def evaluate_artifact_distribution_authorization(
                         ARTIFACT_AUTHORIZATION_TRANSFORMATION_VERIFICATION_UNAVAILABLE,
                     ),
                     (license_bound, ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE),
+                    (
+                        license_policy_verification_bound,
+                        ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
+                    ),
                 )
                 if not available
             )
@@ -359,7 +382,7 @@ def evaluate_artifact_distribution_authorization(
                 evidence_status="preview-ready",
                 evidence_reason=None,
                 statuses=(
-                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-5]),
+                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-6]),
                     *optional_statuses,
                     *("blocked" for _ in _READINESS_CHECK_IDS),
                 ),
@@ -476,6 +499,11 @@ def _reconstruct_evidence(evidence: ArtifactEvidence) -> ArtifactEvidence:
         ),
         component_license_inventory=_copy_component_license_inventory(
             evidence.component_license_inventory
+        ),
+        component_license_policy_verification=(
+            _copy_component_license_policy_verification(
+                evidence.component_license_policy_verification
+            )
         ),
         limitations=tuple(evidence.limitations),
         preview=evidence.preview,
@@ -796,16 +824,61 @@ def _copy_component_license_record(
     )
 
 
+def _copy_component_license_policy_verification(
+    value: ComponentLicensePolicyVerification | None,
+) -> ComponentLicensePolicyVerification | None:
+    if value is None:
+        return None
+    if type(value) is not ComponentLicensePolicyVerification:
+        raise TypeError("component license policy verification model is invalid")
+    if (
+        type(value.registry_component_bom_refs) is not tuple
+        or type(value.action_scopes) is not tuple
+    ):
+        raise TypeError("component license policy verification collections must be tuples")
+    return ComponentLicensePolicyVerification(
+        component_license_inventory_sha256=(
+            value.component_license_inventory_sha256
+        ),
+        lock_file=_copy_file_ref(value.lock_file),
+        policy_snapshot_sha256=value.policy_snapshot_sha256,
+        registry_component_bom_refs=tuple(value.registry_component_bom_refs),
+        attestor=value.attestor,
+        attestor_kind=value.attestor_kind,
+        attestor_relationship=value.attestor_relationship,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        policy=value.policy,
+        decision=value.decision,
+        action_scopes=tuple(value.action_scopes),
+        acknowledgement=value.acknowledgement,
+        owner_attestation_bound=value.owner_attestation_bound,
+        attestor_identity_verified=value.attestor_identity_verified,
+        metadata_only=value.metadata_only,
+        generated_root_excluded=value.generated_root_excluded,
+        license_files_verified=value.license_files_verified,
+        legal_approval_verified=value.legal_approval_verified,
+        complete_for_scope=value.complete_for_scope,
+        global_license_policy_complete=value.global_license_policy_complete,
+        complete=value.complete,
+        signed=value.signed,
+        distribution_authorized=value.distribution_authorized,
+        authority=value.authority,
+    )
+
+
 def _validate_preview_observations(
     evidence: ArtifactEvidence,
-) -> tuple[bool, bool, bool, bool, bool]:
+) -> tuple[bool, bool, bool, bool, bool, bool]:
     """Require structural/model bindings before marking observations satisfied.
 
     This intentionally does not reopen or re-inspect output bytes. C6.2-C6.4
-    own those observations; C6.5-C6.10 validates closed model invariants and
-    exact evidence-reference bindings only. C6.10's collector performed the
-    source/AST/IR/codegen replay before evidence construction; this later
-    readiness pass validates only the immutable scoped receipt bindings.
+    own those observations; C6.5-C6.11 validates closed model invariants and
+    exact evidence-reference bindings only. The C6.10/C6.11 collectors
+    performed source replay and owner-lock verification before evidence
+    construction; this later readiness pass validates only the immutable
+    scoped receipt bindings.
     """
     if evidence.kind != "host-extension-wheel":
         raise ValueError("preview authorization evidence kind is invalid")
@@ -897,7 +970,7 @@ def _validate_preview_observations(
         raise ValueError("preview authorization target/runtime binding is invalid")
     if runtime.architecture != _target_architecture(evidence.target_triple):
         raise ValueError("preview authorization target architecture is invalid")
-    # C6.6-C6.10 are intentionally independent of C6.3 evidence satisfaction.
+    # C6.6-C6.11 are intentionally independent of C6.3 evidence satisfaction.
     # Absence is a fixed per-observation unavailable result, while present
     # models have been reconstructed and cross-bound to their exact underlying
     # evidence. Neither is complete provenance/license-policy verification.
@@ -927,12 +1000,16 @@ def _validate_preview_observations(
         if license_inventory.records != expected_records:
             raise ValueError("component license inventory is not exactly Cargo-bound")
         license_bound = True
+    license_policy_verification_bound = (
+        evidence.component_license_policy_verification is not None
+    )
     return (
         path_resolution_bound,
         runtime_graph_bound,
         transformation_bound,
         transformation_verification_bound,
         license_bound,
+        license_policy_verification_bound,
     )
 
 

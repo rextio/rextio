@@ -2234,7 +2234,7 @@ def test_build_and_generate_report_include_contract_version(
     )
     from rextio.contract import TOOLING_CONTRACT_VERSION
 
-    assert TOOLING_CONTRACT_VERSION == "2.15.0"
+    assert TOOLING_CONTRACT_VERSION == "2.16.0"
 
     (tmp_path / "app.py").write_text(
         "def add(a: int, b: int) -> int:\n    return a + b\n",

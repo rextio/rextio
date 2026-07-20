@@ -7,8 +7,10 @@ C6.4 adds a sanitized direct native runtime linkage inventory (macOS Mach-O /
 Linux ELF only) under the same evidence-only authority. C6.8 adds optional
 one-hop static packaged path observations. C6.9 adds a strictly bounded,
 cycle-safe graph over recursively inspected packaged members and logical system
-leaves. Neither observation claims actual loader selection or a complete
-transitive closure. Evidence unavailability never changes ordinary build success.
+leaves. C6.10 adds scoped source replay, and C6.11 adds a scoped owner Cargo
+license-policy receipt. None completes global transformation/license policy,
+signing, or distribution authorization. Evidence unavailability never changes
+ordinary build success.
 """
 
 from __future__ import annotations
@@ -68,6 +70,8 @@ MAX_SOURCE_POSITION = 10_000_000
 MAX_COMPONENT_LICENSE_RECORDS = MAX_CARGO_PACKAGES
 MAX_COMPONENT_LICENSE_OBSERVED_CHARS = MAX_EVIDENCE_STRING_CHARS
 MAX_COMPONENT_LICENSE_INVENTORY_CHARS = 512 * 1024
+MAX_COMPONENT_LICENSE_POLICY_VERIFICATION_CHARS = 256 * 1024
+MAX_CARGO_LICENSE_LOCK_BYTES = 256 * 1024
 
 SOURCE_TRANSFORMATION_INVENTORY_KIND = "source-transformation-inventory"
 SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION = 1
@@ -83,6 +87,40 @@ SOURCE_TRANSFORMATION_VERIFICATION_SCOPE = (
 COMPONENT_LICENSE_INVENTORY_KIND = "component-license-inventory"
 COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION = 1
 COMPONENT_LICENSE_INVENTORY_SCOPE = "reachable-cargo-packages"
+COMPONENT_LICENSE_POLICY_VERIFICATION_KIND = (
+    "component-license-policy-verification"
+)
+COMPONENT_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION = 1
+COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE = (
+    "reachable-registry-cargo-license-metadata-v1"
+)
+CARGO_LICENSE_POLICY_LOCK_FILENAME = "rextio.cargo-license.lock.json"
+CARGO_LICENSE_POLICY_LOCK_KIND = "rextio.cargo-license-policy-lock"
+CARGO_LICENSE_POLICY_LOCK_SCHEMA_VERSION = "1"
+CARGO_LICENSE_POLICY = "project-owner-exact-license-metadata-v1"
+CARGO_LICENSE_POLICY_LOCK_ROLE = "cargo-license-policy-lock"
+CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT = "REXTIO_CARGO_LICENSE_POLICY_ACK_V1"
+CARGO_LICENSE_POLICY_ACTION_SCOPES: tuple[str, ...] = (
+    "local-build",
+    "package",
+    "redistribution",
+)
+_UNKNOWN_CARGO_LICENSE_VALUES = frozenset(
+    {
+        "unknown",
+        "unknown license",
+        "none",
+        "n/a",
+        "na",
+        "null",
+        "undefined",
+        "unspecified",
+        "noassertion",
+    }
+)
+_UNKNOWN_CARGO_LICENSE_TOKENS = frozenset(
+    {"unknown", "none", "na", "null", "undefined", "unspecified", "noassertion"}
+)
 NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND = (
     "native-runtime-path-resolution-inventory"
 )
@@ -106,6 +144,9 @@ _TRANSFORMATION_DOTTED_ID = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
 )
 _TRANSFORMATION_PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_CARGO_LICENSE_ATTESTOR = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9 .,_+-]*[A-Za-z0-9])?$"
+)
 _WHEEL_VERSION_RE = re.compile(
     r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._]*)-(?P<version>[A-Za-z0-9][A-Za-z0-9._+]*)-"
 )
@@ -1629,6 +1670,187 @@ class ComponentLicenseInventory:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ComponentLicensePolicyVerification:
+    """One owner-attested policy receipt for exact Cargo registry metadata.
+
+    This receipt verifies only that a project-owned lock allowed the exact raw
+    C6.7 registry records. It neither authenticates the claimed owner nor
+    validates SPDX syntax, license files, legal compatibility, or obligations.
+    """
+
+    component_license_inventory_sha256: str
+    lock_file: EvidenceFileRef
+    policy_snapshot_sha256: str
+    registry_component_bom_refs: tuple[str, ...]
+    attestor: str
+    attestor_kind: str
+    attestor_relationship: str
+    kind: str = COMPONENT_LICENSE_POLICY_VERIFICATION_KIND
+    schema_version: int = COMPONENT_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION
+    scope: str = COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE
+    policy: str = CARGO_LICENSE_POLICY
+    decision: str = "allow"
+    action_scopes: tuple[str, ...] = CARGO_LICENSE_POLICY_ACTION_SCOPES
+    acknowledgement: str = CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT
+    owner_attestation_bound: bool = True
+    attestor_identity_verified: bool = False
+    metadata_only: bool = True
+    generated_root_excluded: bool = True
+    license_files_verified: bool = False
+    legal_approval_verified: bool = False
+    complete_for_scope: bool = True
+    global_license_policy_complete: bool = False
+    complete: bool = False
+    signed: bool = False
+    distribution_authorized: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.kind, "component license policy verification kind"),
+            (self.scope, "component license policy verification scope"),
+            (self.policy, "component license policy identifier"),
+            (self.decision, "component license policy decision"),
+            (self.acknowledgement, "component license policy acknowledgement"),
+            (self.authority, "component license policy authority"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+        if type(self.schema_version) is not int:
+            raise TypeError("component license policy verification schema must be an integer")
+        if self.kind != COMPONENT_LICENSE_POLICY_VERIFICATION_KIND:
+            raise ValueError("component license policy verification kind is invalid")
+        if self.schema_version != COMPONENT_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION:
+            raise ValueError("component license policy verification schema is invalid")
+        if self.scope != COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE:
+            raise ValueError("component license policy verification scope is invalid")
+        if self.policy != CARGO_LICENSE_POLICY:
+            raise ValueError("component license policy identifier is invalid")
+        if type(self.component_license_inventory_sha256) is not str:
+            raise TypeError("component license policy inventory digest must be a string")
+        if not _HEX_SHA256.fullmatch(self.component_license_inventory_sha256):
+            raise ValueError("component license policy inventory digest is invalid")
+        if type(self.policy_snapshot_sha256) is not str:
+            raise TypeError("component license policy snapshot digest must be a string")
+        if not _HEX_SHA256.fullmatch(self.policy_snapshot_sha256):
+            raise ValueError("component license policy snapshot digest is invalid")
+        if type(self.lock_file) is not EvidenceFileRef:
+            raise TypeError("component license policy lock reference is invalid")
+        if (
+            self.lock_file.logical_path != CARGO_LICENSE_POLICY_LOCK_FILENAME
+            or self.lock_file.role != CARGO_LICENSE_POLICY_LOCK_ROLE
+            or self.lock_file.size <= 0
+            or self.lock_file.size > MAX_CARGO_LICENSE_LOCK_BYTES
+        ):
+            raise ValueError("component license policy lock binding is invalid")
+        if type(self.registry_component_bom_refs) is not tuple:
+            raise TypeError("component license policy component refs must be a tuple")
+        if not self.registry_component_bom_refs or len(
+            self.registry_component_bom_refs
+        ) > MAX_COMPONENT_LICENSE_RECORDS:
+            raise ValueError("component license policy component count is invalid")
+        refs = tuple(
+            _bounded_identifier(reference, "component license policy bom_ref")
+            for reference in self.registry_component_bom_refs
+        )
+        if refs != tuple(sorted(set(refs))):
+            raise ValueError(
+                "component license policy component refs must be sorted and unique"
+            )
+        object.__setattr__(self, "registry_component_bom_refs", refs)
+        if type(self.attestor) is not str:
+            raise TypeError("component license policy attestor must be a string")
+        attestor = _bounded_identifier(self.attestor, "component license policy attestor")
+        if attestor != self.attestor or _CARGO_LICENSE_ATTESTOR.fullmatch(attestor) is None:
+            raise ValueError("component license policy attestor is invalid")
+        if type(self.attestor_kind) is not str:
+            raise TypeError("component license policy attestor kind must be a string")
+        if self.attestor_kind not in {"human", "organization"}:
+            raise ValueError("component license policy attestor kind is invalid")
+        if type(self.attestor_relationship) is not str:
+            raise TypeError("component license policy owner relationship must be a string")
+        expected_relationships = {
+            "human": "human-owner",
+            "organization": "organization-owner",
+        }
+        if self.attestor_relationship != expected_relationships[self.attestor_kind]:
+            raise ValueError("component license policy owner relationship is invalid")
+        if self.decision != "allow":
+            raise ValueError("component license policy decision must be allow")
+        if type(self.action_scopes) is not tuple:
+            raise TypeError("component license policy action scopes must be a tuple")
+        if self.action_scopes != CARGO_LICENSE_POLICY_ACTION_SCOPES:
+            raise ValueError("component license policy action scopes are invalid")
+        if self.acknowledgement != CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT:
+            raise ValueError("component license policy acknowledgement is invalid")
+        fixed_booleans = (
+            (self.owner_attestation_bound, True),
+            (self.attestor_identity_verified, False),
+            (self.metadata_only, True),
+            (self.generated_root_excluded, True),
+            (self.license_files_verified, False),
+            (self.legal_approval_verified, False),
+            (self.complete_for_scope, True),
+            (self.global_license_policy_complete, False),
+            (self.complete, False),
+            (self.signed, False),
+            (self.distribution_authorized, False),
+        )
+        if any(
+            type(value) is not bool or value is not expected
+            for value, expected in fixed_booleans
+        ):
+            raise ValueError("component license policy safety claim is invalid")
+        if self.authority != "observation-only":
+            raise ValueError("component license policy authority is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_COMPONENT_LICENSE_POLICY_VERIFICATION_CHARS:
+            raise ValueError(
+                "component license policy verification exceeds the character bound"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic scoped owner-policy receipt."""
+        return {
+            "kind": COMPONENT_LICENSE_POLICY_VERIFICATION_KIND,
+            "schema_version": COMPONENT_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION,
+            "scope": COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE,
+            "policy": CARGO_LICENSE_POLICY,
+            "authority": "observation-only",
+            "complete": False,
+            "signed": False,
+            "distribution_authorized": False,
+            "complete_for_scope": True,
+            "global_license_policy_complete": False,
+            "metadata_only": True,
+            "generated_root_excluded": True,
+            "license_files_verified": False,
+            "legal_approval_verified": False,
+            "owner_attestation_bound": True,
+            "attestor_identity_verified": False,
+            "component_license_inventory_sha256": (
+                self.component_license_inventory_sha256
+            ),
+            "lock_file": self.lock_file.to_dict(),
+            "policy_snapshot_sha256": self.policy_snapshot_sha256,
+            "registry_component_count": len(self.registry_component_bom_refs),
+            "registry_component_bom_refs": list(self.registry_component_bom_refs),
+            "attestor": self.attestor,
+            "attestor_kind": self.attestor_kind,
+            "attestor_relationship": self.attestor_relationship,
+            "decision": "allow",
+            "action_scopes": list(CARGO_LICENSE_POLICY_ACTION_SCOPES),
+            "acknowledgement": CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT,
+        }
+
+
 @dataclass(frozen=True)
 class SidecarArtifact:
     """One finalized sidecar written next to the wheel."""
@@ -1663,7 +1885,7 @@ class SidecarArtifact:
 
 @dataclass(frozen=True)
 class ArtifactEvidence:
-    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.10 preview."""
+    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.11 preview."""
 
     kind: str
     status: str  # preview-ready | unavailable
@@ -1687,6 +1909,9 @@ class ArtifactEvidence:
     source_transformation_inventory: SourceTransformationInventory | None = None
     source_transformation_verification: SourceTransformationVerification | None = None
     component_license_inventory: ComponentLicenseInventory | None = None
+    component_license_policy_verification: (
+        ComponentLicensePolicyVerification | None
+    ) = None
     limitations: tuple[str, ...] = DEFAULT_LIMITATIONS
     preview: bool = True
     complete: bool = False
@@ -1725,6 +1950,7 @@ class ArtifactEvidence:
                 or self.source_transformation_inventory is not None
                 or self.source_transformation_verification is not None
                 or self.component_license_inventory is not None
+                or self.component_license_policy_verification is not None
             ):
                 raise ValueError("unavailable evidence must not carry inventory fields")
         else:
@@ -1903,6 +2129,15 @@ class ArtifactEvidence:
                     raise ValueError(
                         "component license inventory must exactly bind every Cargo package"
                     )
+            if self.component_license_policy_verification is not None:
+                if self.component_license_inventory is None:
+                    raise ValueError(
+                        "component license policy verification requires its inventory"
+                    )
+                _validate_component_license_policy_verification_binding(
+                    verification=self.component_license_policy_verification,
+                    inventory=self.component_license_inventory,
+                )
         if self.target_triple is not None:
             object.__setattr__(
                 self,
@@ -1992,7 +2227,73 @@ class ArtifactEvidence:
                     data["component_license_inventory"] = (
                         self.component_license_inventory.to_dict()
                     )
+                if self.component_license_policy_verification is not None:
+                    data["component_license_policy_verification"] = (
+                        self.component_license_policy_verification.to_dict()
+                    )
         return data
+
+
+def cargo_license_metadata_is_unknown(value: str) -> bool:
+    """Return whether one raw Cargo license value contains an unknown sentinel."""
+    if type(value) is not str:
+        raise TypeError("Cargo license metadata must be a string")
+    collapsed = " ".join(value.split()).casefold()
+    if collapsed in _UNKNOWN_CARGO_LICENSE_VALUES:
+        return True
+    if re.search(r"(?<![a-z0-9])n\s*/\s*a(?![a-z0-9])", collapsed):
+        return True
+    tokens = re.findall(r"[a-z0-9]+", collapsed)
+    return any(token in _UNKNOWN_CARGO_LICENSE_TOKENS for token in tokens)
+
+
+def _validate_component_license_policy_verification_binding(
+    *,
+    verification: ComponentLicensePolicyVerification,
+    inventory: ComponentLicenseInventory,
+) -> None:
+    """Bind one scoped owner receipt to the exact full C6.7 observation."""
+    if type(verification) is not ComponentLicensePolicyVerification:
+        raise TypeError("component license policy verification model is invalid")
+    if type(inventory) is not ComponentLicenseInventory:
+        raise TypeError("component license inventory model is invalid")
+    inventory_digest = sha256_hex(canonical_json_bytes(inventory.to_dict()))
+    if verification.component_license_inventory_sha256 != inventory_digest:
+        raise ValueError("component license policy inventory digest differs")
+    registry_records = tuple(
+        record for record in inventory.records if record.kind == "registry"
+    )
+    if not registry_records:
+        raise ValueError("component license policy requires registry components")
+    if any(
+        record.license_observed is None
+        or record.license_observation != "declared-unvalidated"
+        or cargo_license_metadata_is_unknown(record.license_observed)
+        for record in registry_records
+    ):
+        raise ValueError("component license policy contains an unknown license")
+    expected_registry_refs = tuple(record.bom_ref for record in registry_records)
+    if verification.registry_component_bom_refs != expected_registry_refs:
+        raise ValueError("component license policy registry coverage differs")
+    policy_document = {
+        "schema_version": CARGO_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
+        "kind": CARGO_LICENSE_POLICY_LOCK_KIND,
+        "scope": COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE,
+        "policy": CARGO_LICENSE_POLICY,
+        "component_license_inventory_sha256": inventory_digest,
+        "registry_components": [record.to_dict() for record in registry_records],
+        "attestation": {
+            "attestor": verification.attestor,
+            "attestor_kind": verification.attestor_kind,
+            "attestor_relationship": verification.attestor_relationship,
+            "decision": verification.decision,
+            "action_scopes": list(verification.action_scopes),
+            "acknowledgement": verification.acknowledgement,
+        },
+    }
+    policy_digest = sha256_hex(canonical_json_bytes(policy_document))
+    if verification.policy_snapshot_sha256 != policy_digest:
+        raise ValueError("component license policy snapshot digest differs")
 
 
 def _validate_source_transformation_verification_binding(
@@ -4346,6 +4647,9 @@ def build_intoto_provenance_document(
     source_transformation_inventory: SourceTransformationInventory | None = None,
     source_transformation_verification: SourceTransformationVerification | None = None,
     component_license_inventory: ComponentLicenseInventory | None = None,
+    component_license_policy_verification: (
+        ComponentLicensePolicyVerification | None
+    ) = None,
 ) -> dict[str, object]:
     """Build an unsigned in-toto Statement v1 with SLSA Provenance v1 predicate.
 
@@ -4383,6 +4687,27 @@ def build_intoto_provenance_document(
             entry["digest"] = {"sha256": package.checksum}
         materials.append(entry)
 
+    if component_license_policy_verification is not None:
+        if component_license_inventory is None:
+            raise ValueError(
+                "component license policy provenance requires its inventory"
+            )
+        _validate_component_license_policy_verification_binding(
+            verification=component_license_policy_verification,
+            inventory=component_license_inventory,
+        )
+        lock_file = component_license_policy_verification.lock_file
+        materials.append(
+            {
+                "uri": f"file:{lock_file.logical_path}",
+                "digest": {"sha256": lock_file.sha256},
+                "annotations": {
+                    "rextio:role": lock_file.role,
+                    "rextio:size": str(lock_file.size),
+                },
+            }
+        )
+
     if len(materials) > MAX_EVIDENCE_COMPONENTS:
         raise ArtifactEvidenceError(
             "provenance material count exceeds the bound",
@@ -4415,6 +4740,9 @@ def build_intoto_provenance_document(
         ),
         "source_transformation_provenance_complete": False,
         "component_license_inventory_observed": component_license_inventory is not None,
+        "scoped_component_license_policy_verified": (
+            component_license_policy_verification is not None
+        ),
         "component_license_policy_complete": False,
     }
     if native_runtime_inventory is not None:
@@ -4433,7 +4761,10 @@ def build_intoto_provenance_document(
         ),
         "rextio:component_license_inventory_observed": (
             component_license_inventory is not None
-        )
+        ),
+        "rextio:component_license_policy_verification_observed": (
+            component_license_policy_verification is not None
+        ),
     }
     if native_runtime_inventory is not None:
         run_metadata["rextio:observed_native_runtime"] = native_runtime_inventory.to_dict()
@@ -4456,6 +4787,10 @@ def build_intoto_provenance_document(
     if component_license_inventory is not None:
         run_metadata["rextio:component_license_inventory"] = (
             component_license_inventory.to_dict()
+        )
+    if component_license_policy_verification is not None:
+        run_metadata["rextio:component_license_policy_verification"] = (
+            component_license_policy_verification.to_dict()
         )
 
     document: dict[str, object] = {
@@ -4572,10 +4907,21 @@ __all__ = [
     "CargoDepEdge",
     "CargoPackageRef",
     "ComponentLicenseInventory",
+    "ComponentLicensePolicyVerification",
     "ComponentLicenseRecord",
+    "CARGO_LICENSE_POLICY",
+    "CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT",
+    "CARGO_LICENSE_POLICY_ACTION_SCOPES",
+    "CARGO_LICENSE_POLICY_LOCK_FILENAME",
+    "CARGO_LICENSE_POLICY_LOCK_KIND",
+    "CARGO_LICENSE_POLICY_LOCK_ROLE",
+    "CARGO_LICENSE_POLICY_LOCK_SCHEMA_VERSION",
     "COMPONENT_LICENSE_INVENTORY_KIND",
     "COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION",
     "COMPONENT_LICENSE_INVENTORY_SCOPE",
+    "COMPONENT_LICENSE_POLICY_VERIFICATION_KIND",
+    "COMPONENT_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION",
+    "COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE",
     "DEFAULT_LIMITATIONS",
     "EvidenceFileRef",
     "MAX_CARGO_EDGES",
@@ -4583,7 +4929,9 @@ __all__ = [
     "MAX_CARGO_PACKAGES",
     "MAX_COMPONENT_LICENSE_INVENTORY_CHARS",
     "MAX_COMPONENT_LICENSE_OBSERVED_CHARS",
+    "MAX_COMPONENT_LICENSE_POLICY_VERIFICATION_CHARS",
     "MAX_COMPONENT_LICENSE_RECORDS",
+    "MAX_CARGO_LICENSE_LOCK_BYTES",
     "MAX_EVIDENCE_COMPONENTS",
     "MAX_EVIDENCE_FILE_BYTES",
     "MAX_EVIDENCE_STRING_CHARS",
@@ -4666,6 +5014,7 @@ __all__ = [
     "WheelEntryRef",
     "build_cyclonedx_document",
     "build_intoto_provenance_document",
+    "cargo_license_metadata_is_unknown",
     "canonicalize_registry_source",
     "canonicalize_zip_entry_name",
     "canonical_json_bytes",

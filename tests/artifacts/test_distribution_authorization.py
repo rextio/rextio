@@ -13,6 +13,7 @@ from rextio.artifacts.authorization import (
     ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
     ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
+    ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
@@ -21,6 +22,12 @@ from rextio.artifacts.authorization import (
     evaluate_artifact_distribution_authorization,
 )
 from rextio.artifacts.evidence import (
+    CARGO_LICENSE_POLICY,
+    CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT,
+    CARGO_LICENSE_POLICY_ACTION_SCOPES,
+    CARGO_LICENSE_POLICY_LOCK_KIND,
+    CARGO_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
+    COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE,
     MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS,
     MAX_SOURCE_TRANSFORMATIONS,
     MAX_COMPONENT_LICENSE_RECORDS,
@@ -28,6 +35,7 @@ from rextio.artifacts.evidence import (
     CargoDepEdge,
     CargoPackageRef,
     ComponentLicenseInventory,
+    ComponentLicensePolicyVerification,
     ComponentLicenseRecord,
     EvidenceFileRef,
     NativeRuntimeDependency,
@@ -172,6 +180,64 @@ def _preview_evidence() -> ArtifactEvidence:
         regenerated_rust_size=generated_rust_ref.size,
         generator_backend="rextio-core-rust-pyo3-v1",
     )
+    component_license_inventory = ComponentLicenseInventory(
+        records=tuple(
+            ComponentLicenseRecord(
+                bom_ref=package.bom_ref(),
+                name=package.name,
+                version=package.version,
+                kind=package.kind,
+                license_observed=package.license,
+                license_observation=(
+                    "declared-unvalidated" if package.license is not None else "missing"
+                ),
+            )
+            for package in sorted(
+                (root_package, registry_package),
+                key=lambda package: package.bom_ref(),
+            )
+        )
+    )
+    license_policy_document = {
+        "schema_version": CARGO_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
+        "kind": CARGO_LICENSE_POLICY_LOCK_KIND,
+        "scope": COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE,
+        "policy": CARGO_LICENSE_POLICY,
+        "component_license_inventory_sha256": hashlib.sha256(
+            canonical_json_bytes(component_license_inventory.to_dict())
+        ).hexdigest(),
+        "registry_components": [
+            record.to_dict()
+            for record in component_license_inventory.records
+            if record.kind == "registry"
+        ],
+        "attestation": {
+            "attestor": "Acme Engineering",
+            "attestor_kind": "organization",
+            "attestor_relationship": "organization-owner",
+            "decision": "allow",
+            "action_scopes": list(CARGO_LICENSE_POLICY_ACTION_SCOPES),
+            "acknowledgement": CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT,
+        },
+    }
+    component_license_policy_verification = ComponentLicensePolicyVerification(
+        component_license_inventory_sha256=hashlib.sha256(
+            canonical_json_bytes(component_license_inventory.to_dict())
+        ).hexdigest(),
+        lock_file=EvidenceFileRef(
+            logical_path="rextio.cargo-license.lock.json",
+            sha256="b" * 64,
+            size=1,
+            role="cargo-license-policy-lock",
+        ),
+        policy_snapshot_sha256=hashlib.sha256(
+            canonical_json_bytes(license_policy_document)
+        ).hexdigest(),
+        registry_component_bom_refs=(registry_package.bom_ref(),),
+        attestor="Acme Engineering",
+        attestor_kind="organization",
+        attestor_relationship="organization-owner",
+    )
     return ArtifactEvidence(
         kind="host-extension-wheel",
         status="preview-ready",
@@ -229,23 +295,9 @@ def _preview_evidence() -> ArtifactEvidence:
         native_runtime_transitive_closure=runtime_closure,
         source_transformation_inventory=transformation_inventory,
         source_transformation_verification=transformation_verification,
-        component_license_inventory=ComponentLicenseInventory(
-            records=tuple(
-                ComponentLicenseRecord(
-                    bom_ref=package.bom_ref(),
-                    name=package.name,
-                    version=package.version,
-                    kind=package.kind,
-                    license_observed=package.license,
-                    license_observation=(
-                        "declared-unvalidated" if package.license is not None else "missing"
-                    ),
-                )
-                for package in sorted(
-                    (root_package, registry_package),
-                    key=lambda package: package.bom_ref(),
-                )
-            )
+        component_license_inventory=component_license_inventory,
+        component_license_policy_verification=(
+            component_license_policy_verification
         ),
     )
 
@@ -258,7 +310,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
 
     assert report["kind"] == "artifact-distribution-authorization"
     assert report["policy"] == "host-extension-wheel-cpython-v1"
-    assert report["policy_version"] == 6
+    assert report["policy_version"] == 7
     assert report["scope"] == "host-extension-wheel-cpython-v1"
     assert report["status"] == "blocked"
     assert report["authority"] == "readiness-assessment-only"
@@ -267,7 +319,8 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
     assert [item["id"] for item in report["checks"]] == list(
         ARTIFACT_AUTHORIZATION_CHECK_IDS
     )
-    assert [item["status"] for item in report["checks"][:9]] == [
+    assert [item["status"] for item in report["checks"][:10]] == [
+        "satisfied",
         "satisfied",
         "satisfied",
         "satisfied",
@@ -278,7 +331,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
         "satisfied",
         "satisfied",
     ]
-    assert {item["status"] for item in report["checks"][9:]} == {"blocked"}
+    assert {item["status"] for item in report["checks"][10:]} == {"blocked"}
     assert report["blockers"] == list(ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS)
     assert report["complete"] is False
     assert report["signed"] is False
@@ -293,7 +346,8 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
 
     assert report["evidence_status"] == "unavailable"
     assert report["evidence_reason"] == "cargo-metadata-failed"
-    assert [item["status"] for item in report["checks"][:9]] == [
+    assert [item["status"] for item in report["checks"][:10]] == [
+        "unavailable",
         "unavailable",
         "unavailable",
         "unavailable",
@@ -304,7 +358,7 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
         "unavailable",
         "unavailable",
     ]
-    assert {item["status"] for item in report["checks"][9:]} == {"not-evaluated"}
+    assert {item["status"] for item in report["checks"][10:]} == {"not-evaluated"}
     assert report["blockers"] == ["evidence-unavailable"]
     assert "/" not in json.dumps(report, sort_keys=True)
 
@@ -340,7 +394,7 @@ def test_missing_scoped_verification_is_a_dedicated_unavailable_observation() ->
     report = evaluate_artifact_distribution_authorization(evidence).to_dict()
     statuses = {item["id"]: item["status"] for item in report["checks"]}
 
-    assert report["policy_version"] == 6
+    assert report["policy_version"] == 7
     assert statuses["source-transformation-inventory-bound"] == "satisfied"
     assert statuses["scoped-source-transformation-verified"] == "unavailable"
     assert statuses["source-transformation-provenance-complete"] == "blocked"
@@ -386,17 +440,45 @@ def test_missing_bounded_runtime_graph_retains_direct_path_observation() -> None
 
 
 def test_missing_license_inventory_is_a_dedicated_closed_observation() -> None:
-    evidence = replace(_preview_evidence(), component_license_inventory=None)
+    evidence = replace(
+        _preview_evidence(),
+        component_license_inventory=None,
+        component_license_policy_verification=None,
+    )
     report = evaluate_artifact_distribution_authorization(evidence).to_dict()
     statuses = {item["id"]: item["status"] for item in report["checks"]}
 
     assert statuses["source-transformation-inventory-bound"] == "satisfied"
     assert statuses["component-license-inventory-bound"] == "unavailable"
+    assert statuses["scoped-component-license-policy-verified"] == "unavailable"
     assert statuses["component-license-policy-complete"] == "blocked"
     assert report["blockers"] == [
         *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
         ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
     ]
+    assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+
+
+def test_missing_scoped_license_policy_receipt_is_dedicated_and_non_authorizing(
+) -> None:
+    evidence = replace(
+        _preview_evidence(),
+        component_license_policy_verification=None,
+    )
+    report = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    statuses = {item["id"]: item["status"] for item in report["checks"]}
+
+    assert statuses["component-license-inventory-bound"] == "satisfied"
+    assert statuses["scoped-component-license-policy-verified"] == "unavailable"
+    assert statuses["component-license-policy-complete"] == "blocked"
+    assert report["blockers"] == [
+        *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
+        ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
+    ]
+    assert report["complete"] is False
+    assert report["signed"] is False
+    assert report["distribution_authorized"] is False
     assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
 
 
@@ -585,6 +667,11 @@ def test_assessment_never_claims_sparse_preview_observations(
         "license_inventory",
         "license_record",
         "license_record_count",
+        "license_policy_verification",
+        "license_policy_lock",
+        "license_policy_refs",
+        "license_policy_collections",
+        "license_policy_authority",
     ],
 )
 def test_nested_low_level_mutation_never_yields_satisfied_observations(
@@ -705,6 +792,43 @@ def test_nested_low_level_mutation_never_yields_satisfied_observations(
             evidence.component_license_inventory,
             "records",
             (record,) * (MAX_COMPONENT_LICENSE_RECORDS + 1),
+        )
+    elif nested_model == "license_policy_verification":
+        assert evidence.component_license_policy_verification is not None
+        object.__setattr__(
+            evidence.component_license_policy_verification,
+            "policy_snapshot_sha256",
+            "not-a-digest",
+        )
+    elif nested_model == "license_policy_lock":
+        assert evidence.component_license_policy_verification is not None
+        object.__setattr__(
+            evidence.component_license_policy_verification.lock_file,
+            "logical_path",
+            injected,
+        )
+    elif nested_model == "license_policy_refs":
+        assert evidence.component_license_policy_verification is not None
+        object.__setattr__(
+            evidence.component_license_policy_verification,
+            "registry_component_bom_refs",
+            ("urn:rextio:cargo:00000000000000000000000000000000",),
+        )
+    elif nested_model == "license_policy_collections":
+        assert evidence.component_license_policy_verification is not None
+        object.__setattr__(
+            evidence.component_license_policy_verification,
+            "registry_component_bom_refs",
+            list(
+                evidence.component_license_policy_verification.registry_component_bom_refs
+            ),
+        )
+    elif nested_model == "license_policy_authority":
+        assert evidence.component_license_policy_verification is not None
+        object.__setattr__(
+            evidence.component_license_policy_verification,
+            "authority",
+            injected,
         )
     else:  # pragma: no cover - closed parametrization guard
         raise AssertionError(f"unexpected nested model: {nested_model}")

@@ -1,4 +1,4 @@
-"""C6.2/C6.4/C6.6-C6.10 evidence emission for host-extension+cpython wheels.
+"""C6.2/C6.4/C6.6-C6.11 evidence emission for host-extension+cpython wheels.
 
 In-scope builds always emit an ``artifact_evidence`` record with status
 ``preview-ready`` or ``unavailable`` (authority ``evidence-only``). Evidence
@@ -18,8 +18,12 @@ unchanged.
 C6.7 adds an exact observation-only inventory of Cargo metadata license
 strings. C6.8 adds exact one-hop static packaged path observations for direct
 native dependencies. C6.9 adds a bounded, cycle-safe static graph over
-recursively inspected packaged nodes. C6.9 is omitted first when the closed
-provenance ceiling would otherwise be exceeded.
+recursively inspected packaged nodes. C6.10 adds scoped transformation replay
+verification.
+
+C6.11 binds an exact project-owner Cargo license-policy lock to the full C6.7
+inventory. It remains optional observation metadata and is omitted before all
+earlier additive observations when the provenance ceiling is reached.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from typing import Callable
 
 from rextio.artifacts.evidence import (
     DEFAULT_LIMITATIONS,
+    MAX_EVIDENCE_COMPONENTS,
     MAX_INPUT_FILES,
     MAX_SIDECAR_BYTES,
     REASON_CARGO_LOCK_MISSING,
@@ -60,6 +65,9 @@ from rextio.artifacts.models import ArtifactKind, ArtifactProfile
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.build.cargo_builder import NativeBuildResult
 from rextio.build.cargo_inventory import resolve_cargo_inventory
+from rextio.build.cargo_license_policy import (
+    collect_component_license_policy_verification,
+)
 from rextio.build.license_inventory import collect_component_license_inventory
 from rextio.build.runtime_inventory import (
     inspect_native_runtime_inventory,
@@ -668,6 +676,21 @@ def _emit_preview_ready(
     component_license_inventory = collect_component_license_inventory(
         inventory.packages
     )
+    component_license_policy_verification = (
+        collect_component_license_policy_verification(
+            project_root=project_root,
+            component_license_inventory=component_license_inventory,
+        )
+        if component_license_inventory is not None
+        else None
+    )
+    if (
+        component_license_policy_verification is not None
+        and len(inputs) + len(inventory.packages) + 1 > MAX_EVIDENCE_COMPONENTS
+    ):
+        # The optional lock material must never turn a C6.2 preview into
+        # unavailable evidence merely because it is the one extra material.
+        component_license_policy_verification = None
 
     sbom_document = build_cyclonedx_document(
         subject=subject,
@@ -701,11 +724,35 @@ def _emit_preview_ready(
         source_transformation_inventory=transformation_inventory,
         source_transformation_verification=transformation_verification,
         component_license_inventory=component_license_inventory,
+        component_license_policy_verification=(
+            component_license_policy_verification
+        ),
     )
     provenance_bytes = pretty_json_bytes(provenance_document)
-    if transformation_verification is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
-        # C6.10 is the newest additive observation and therefore the first
+    if (
+        component_license_policy_verification is not None
+        and len(provenance_bytes) > MAX_SIDECAR_BYTES
+    ):
+        # C6.11 is the newest additive observation and therefore the first
         # deterministic omission at the closed provenance sidecar ceiling.
+        component_license_policy_verification = None
+        provenance_document = build_intoto_provenance_document(
+            subject=subject,
+            sbom=sbom_ref,
+            inputs=inputs,
+            cargo_packages=inventory.packages,
+            target_triple=profile.target_triple,
+            native_runtime_inventory=runtime_inventory,
+            native_runtime_path_resolution=runtime_path_resolution,
+            native_runtime_transitive_closure=runtime_transitive_closure,
+            source_transformation_inventory=transformation_inventory,
+            source_transformation_verification=transformation_verification,
+            component_license_inventory=component_license_inventory,
+            component_license_policy_verification=None,
+        )
+        provenance_bytes = pretty_json_bytes(provenance_document)
+    if transformation_verification is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
+        # Once C6.11 is absent, C6.10 is the next observation omitted.
         transformation_verification = None
         provenance_document = build_intoto_provenance_document(
             subject=subject,
@@ -719,6 +766,9 @@ def _emit_preview_ready(
             source_transformation_inventory=transformation_inventory,
             source_transformation_verification=None,
             component_license_inventory=component_license_inventory,
+            component_license_policy_verification=(
+                component_license_policy_verification
+            ),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     if runtime_transitive_closure is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
@@ -737,6 +787,9 @@ def _emit_preview_ready(
             source_transformation_inventory=transformation_inventory,
             source_transformation_verification=transformation_verification,
             component_license_inventory=component_license_inventory,
+            component_license_policy_verification=(
+                component_license_policy_verification
+            ),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     if runtime_path_resolution is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
@@ -755,6 +808,9 @@ def _emit_preview_ready(
             source_transformation_inventory=transformation_inventory,
             source_transformation_verification=transformation_verification,
             component_license_inventory=component_license_inventory,
+            component_license_policy_verification=(
+                component_license_policy_verification
+            ),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     if (
@@ -765,6 +821,7 @@ def _emit_preview_ready(
         # preserves C6.6 and every earlier evidence/gate result whenever only
         # the license observation caused the remaining ceiling crossing.
         component_license_inventory = None
+        component_license_policy_verification = None
         provenance_document = build_intoto_provenance_document(
             subject=subject,
             sbom=sbom_ref,
@@ -777,6 +834,7 @@ def _emit_preview_ready(
             source_transformation_inventory=transformation_inventory,
             source_transformation_verification=transformation_verification,
             component_license_inventory=None,
+            component_license_policy_verification=None,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     if (
@@ -802,6 +860,7 @@ def _emit_preview_ready(
             source_transformation_inventory=None,
             source_transformation_verification=None,
             component_license_inventory=None,
+            component_license_policy_verification=None,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     provenance_digest = sha256_hex(provenance_bytes)
@@ -872,6 +931,9 @@ def _emit_preview_ready(
             source_transformation_inventory=transformation_inventory,
             source_transformation_verification=transformation_verification,
             component_license_inventory=component_license_inventory,
+            component_license_policy_verification=(
+                component_license_policy_verification
+            ),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
         provenance_digest = sha256_hex(provenance_bytes)
@@ -902,10 +964,45 @@ def _emit_preview_ready(
             source_transformation_inventory=transformation_inventory,
             source_transformation_verification=transformation_verification,
             component_license_inventory=component_license_inventory,
+            component_license_policy_verification=(
+                component_license_policy_verification
+            ),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
         provenance_digest = sha256_hex(provenance_bytes)
         provenance_size = len(provenance_bytes)
+
+    if component_license_policy_verification is not None:
+        final_policy_verification = (
+            collect_component_license_policy_verification(
+                project_root=project_root,
+                component_license_inventory=component_license_inventory,
+            )
+            if component_license_inventory is not None
+            else None
+        )
+        if final_policy_verification != component_license_policy_verification:
+            # Never adopt lock bytes that changed after initial collection.
+            # C6.11 alone is omitted and provenance is rebuilt without either
+            # its receipt or lock material; all earlier observations survive.
+            component_license_policy_verification = None
+            provenance_document = build_intoto_provenance_document(
+                subject=subject,
+                sbom=sbom_ref,
+                inputs=inputs,
+                cargo_packages=inventory.packages,
+                target_triple=profile.target_triple,
+                native_runtime_inventory=runtime_inventory,
+                native_runtime_path_resolution=runtime_path_resolution,
+                native_runtime_transitive_closure=runtime_transitive_closure,
+                source_transformation_inventory=transformation_inventory,
+                source_transformation_verification=transformation_verification,
+                component_license_inventory=component_license_inventory,
+                component_license_policy_verification=None,
+            )
+            provenance_bytes = pretty_json_bytes(provenance_document)
+            provenance_digest = sha256_hex(provenance_bytes)
+            provenance_size = len(provenance_bytes)
 
     evidence = ArtifactEvidence(
         kind="host-extension-wheel",
@@ -944,6 +1041,9 @@ def _emit_preview_ready(
         source_transformation_inventory=transformation_inventory,
         source_transformation_verification=transformation_verification,
         component_license_inventory=component_license_inventory,
+        component_license_policy_verification=(
+            component_license_policy_verification
+        ),
         limitations=DEFAULT_LIMITATIONS,
     )
 
