@@ -5,7 +5,7 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.17.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.18.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR.
@@ -46,6 +46,29 @@ feature PRs target the `0.1.5` integration branch; `main` stays at the published
   `complete: false`, `signed: false`, and `distribution_authorized: false`
   remain unchanged. Advance only the unreleased tooling contract to **2.17.0**;
   package **0.1.4** and plugin API **1.4** remain unchanged.
+
+### C6.13 scoped analysis-input verification
+
+- Add an optional bounded receipt for the exact C6.10 source set's sibling
+  `.pyi` observations. Every source records its sibling as exactly present or
+  absent; present stubs bind logical path, byte SHA-256, size, and the
+  deterministic supported-signature projection/version to the exact C6.10
+  replay and source set.
+- Present stubs are `project-python-stub` in-toto materials. Absent records are
+  metadata observations only; raw bytes, source text, absolute roots, and
+  exception text are never serialized. Secure immutable snapshots are
+  evidence-eligible; compatibility snapshots on Windows or platforms without
+  the required secure-open behavior remain analyzer-compatible but are
+  evidence-ineligible.
+- Advance readiness to policy version 9 with twelve observations and ten
+  readiness checks. Missing C6.13 makes only
+  `scoped-analysis-inputs-verified` unavailable with its dedicated blocker;
+  malformed or forged present receipts fail the readiness assessment closed.
+  `complete_for_scope` covers only the C6.10 sibling-stub scope; global
+  build-input closure, reproducibility, signing, policy satisfaction, and
+  distribution authorization remain false or blocked. Advance only the
+  unreleased tooling contract to **2.18.0**; package **0.1.4** and plugin API
+  **1.4** remain unchanged.
 
 ### C6.11 scoped Cargo component-license policy verification
 

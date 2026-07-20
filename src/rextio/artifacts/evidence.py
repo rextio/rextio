@@ -25,6 +25,7 @@ import re
 import secrets
 import stat
 import sys
+import unicodedata
 import uuid
 import zipfile
 from collections import defaultdict
@@ -74,6 +75,7 @@ MAX_COMPONENT_LICENSE_INVENTORY_CHARS = 512 * 1024
 MAX_COMPONENT_LICENSE_POLICY_VERIFICATION_CHARS = 256 * 1024
 MAX_CARGO_LICENSE_LOCK_BYTES = 256 * 1024
 MAX_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_CHARS = 256 * 1024
+MAX_ANALYSIS_INPUT_EVIDENCE_CHARS = 256 * 1024
 MAX_PROJECT_SOURCE_LICENSE_LOCK_BYTES = 256 * 1024
 
 SOURCE_TRANSFORMATION_INVENTORY_KIND = "source-transformation-inventory"
@@ -124,6 +126,12 @@ PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES: tuple[str, ...] = (
     "package",
     "redistribution",
 )
+ANALYSIS_INPUT_VERIFICATION_KIND = "analysis-input-verification"
+ANALYSIS_INPUT_VERIFICATION_SCHEMA_VERSION = 1
+ANALYSIS_INPUT_VERIFICATION_SCOPE = "c6.10-project-source-sibling-stubs-v1"
+ANALYSIS_INPUT_SET_VERSION = 1
+SUPPORTED_SIGNATURE_PROJECTION_SET_VERSION = 1
+SUPPORTED_SIGNATURE_PROJECTION_VERSION = 1
 _UNKNOWN_CARGO_LICENSE_VALUES = frozenset(
     {
         "unknown",
@@ -370,10 +378,17 @@ class EvidenceFileRef:
     role: str
 
     def __post_init__(self) -> None:
+        if (
+            type(self.logical_path) is not str
+            or type(self.sha256) is not str
+            or type(self.size) is not int
+            or type(self.role) is not str
+        ):
+            raise TypeError("evidence file reference fields have invalid types")
         validate_logical_reference(self.logical_path)
         if not _HEX_SHA256.fullmatch(self.sha256):
             raise ValueError("evidence file sha256 must be 64 lowercase hex characters")
-        if self.size < 0 or self.size > MAX_EVIDENCE_FILE_BYTES:
+        if isinstance(self.size, bool) or self.size < 0 or self.size > MAX_EVIDENCE_FILE_BYTES:
             raise ValueError("evidence file size is outside the allowed range")
         if not self.role.strip() or len(self.role) > MAX_EVIDENCE_STRING_CHARS:
             raise ValueError("evidence file role is invalid")
@@ -1568,6 +1583,194 @@ class SourceTransformationVerification:
 
 
 @dataclass(frozen=True, slots=True)
+class AnalysisInputRecord:
+    """One immutable C6.13 sibling-stub observation for a C6.10 source."""
+
+    source_path: str
+    stub_path: str
+    state: str
+    stub: EvidenceFileRef | None = None
+    supported_signature_projection_version: int | None = None
+    supported_signature_projection_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.source_path) is not str or type(self.stub_path) is not str:
+            raise TypeError("analysis input paths must be strings")
+        validate_logical_reference(self.source_path)
+        validate_logical_reference(self.stub_path)
+        if not self.source_path.endswith(".py") or not self.stub_path.endswith(".pyi"):
+            raise ValueError("analysis input paths have invalid suffixes")
+        if self.stub_path != self.source_path[:-3] + ".pyi":
+            raise ValueError("analysis input stub path is not derived from source path")
+        if type(self.state) is not str or self.state not in {"absent", "present"}:
+            raise ValueError("analysis input state is invalid")
+        if self.state == "absent":
+            if any(
+                value is not None
+                for value in (
+                    self.stub,
+                    self.supported_signature_projection_version,
+                    self.supported_signature_projection_sha256,
+                )
+            ):
+                raise ValueError("absent analysis inputs cannot contain evidence")
+            return
+        if type(self.stub) is not EvidenceFileRef:
+            raise ValueError("present analysis inputs require a project stub reference")
+        try:
+            rebuilt_stub = EvidenceFileRef(
+                self.stub.logical_path,
+                self.stub.sha256,
+                self.stub.size,
+                self.stub.role,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("present analysis input stub reference is invalid") from exc
+        if rebuilt_stub != self.stub or rebuilt_stub.role != "project-python-stub":
+            raise ValueError("present analysis input stub reference is invalid")
+        if self.stub.logical_path != self.stub_path:
+            raise ValueError("analysis input stub reference path differs")
+        projection_values = (
+            self.supported_signature_projection_version,
+            self.supported_signature_projection_sha256,
+        )
+        if projection_values[0] is None or projection_values[1] is None:
+            raise ValueError("present analysis inputs require projection metadata")
+        if type(projection_values[0]) is not int or isinstance(projection_values[0], bool):
+            raise TypeError("analysis input projection version must be an integer")
+        if projection_values[0] != SUPPORTED_SIGNATURE_PROJECTION_VERSION:
+            raise ValueError("analysis input projection version is invalid")
+        if type(projection_values[1]) is not str or not _HEX_SHA256.fullmatch(projection_values[1]):
+            raise ValueError("analysis input projection digest is invalid")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return metadata only; never serialize stub bytes or filesystem paths."""
+        return {
+            "source_path": self.source_path,
+            "stub_path": self.stub_path,
+            "state": self.state,
+            "stub": self.stub.to_dict() if self.stub is not None else None,
+            "supported_signature_projection_version": self.supported_signature_projection_version,
+            "supported_signature_projection_sha256": self.supported_signature_projection_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisInputVerification:
+    """C6.13 evidence bound to one exact C6.10 source transformation receipt."""
+
+    source_transformation_verification_sha256: str
+    source_input_set_sha256: str
+    source_paths: tuple[str, ...]
+    records: tuple[AnalysisInputRecord, ...]
+    analysis_input_set_sha256: str
+    supported_signature_projection_set_sha256: str
+    kind: str = ANALYSIS_INPUT_VERIFICATION_KIND
+    schema_version: int = ANALYSIS_INPUT_VERIFICATION_SCHEMA_VERSION
+    scope: str = ANALYSIS_INPUT_VERIFICATION_SCOPE
+    analysis_input_set_version: int = ANALYSIS_INPUT_SET_VERSION
+    supported_signature_projection_set_version: int = SUPPORTED_SIGNATURE_PROJECTION_SET_VERSION
+    authority: str = "observation-only"
+    complete_for_scope: bool = True
+    global_build_input_closure_complete: bool = False
+    complete: bool = False
+    signed: bool = False
+    distribution_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not str or self.kind != ANALYSIS_INPUT_VERIFICATION_KIND or type(self.schema_version) is not int or isinstance(self.schema_version, bool) or self.schema_version != ANALYSIS_INPUT_VERIFICATION_SCHEMA_VERSION:
+            raise ValueError("analysis input verification identity is invalid")
+        if type(self.scope) is not str or self.scope != ANALYSIS_INPUT_VERIFICATION_SCOPE:
+            raise ValueError("analysis input verification scope is invalid")
+        for value in (
+            self.source_transformation_verification_sha256,
+            self.source_input_set_sha256,
+            self.analysis_input_set_sha256,
+            self.supported_signature_projection_set_sha256,
+        ):
+            if type(value) is not str or not _HEX_SHA256.fullmatch(value):
+                raise ValueError("analysis input evidence digest is invalid")
+        if type(self.analysis_input_set_version) is not int or isinstance(self.analysis_input_set_version, bool) or self.analysis_input_set_version != ANALYSIS_INPUT_SET_VERSION or type(self.supported_signature_projection_set_version) is not int or isinstance(self.supported_signature_projection_set_version, bool) or self.supported_signature_projection_set_version != SUPPORTED_SIGNATURE_PROJECTION_SET_VERSION:
+            raise ValueError("analysis input evidence digest version is invalid")
+        if type(self.source_paths) is not tuple or not self.source_paths or len(self.source_paths) > MAX_INPUT_FILES or any(type(path) is not str for path in self.source_paths):
+            raise ValueError("analysis input source coverage is invalid")
+        if type(self.records) is not tuple or len(self.records) != len(self.source_paths) or len(self.records) > MAX_INPUT_FILES:
+            raise ValueError("analysis input record coverage is invalid")
+        _reject_analysis_input_path_aliases(self.source_paths, "source")
+        if tuple(self.source_paths) != tuple(sorted(self.source_paths)) or len(set(self.source_paths)) != len(self.source_paths):
+            raise ValueError("analysis input source paths are not canonical")
+        if any(type(record) is not AnalysisInputRecord for record in self.records):
+            raise TypeError("analysis input records are invalid")
+        _reject_analysis_input_path_aliases(
+            tuple(record.stub_path for record in self.records), "stub"
+        )
+        if tuple(record.source_path for record in self.records) != self.source_paths:
+            raise ValueError("analysis input records do not cover the source paths")
+        if type(self.authority) is not str or self.authority != "observation-only":
+            raise ValueError("analysis input verification authority is invalid")
+        for claim, expected in ((self.complete_for_scope, True), (self.global_build_input_closure_complete, False), (self.complete, False), (self.signed, False), (self.distribution_authorized, False)):
+            if type(claim) is not bool or claim is not expected:
+                raise ValueError("analysis input verification safety claim is invalid")
+        expected_inputs = analysis_input_records_digest(self.records, self.analysis_input_set_version)
+        if expected_inputs != self.analysis_input_set_sha256:
+            raise ValueError("analysis input-set digest is inconsistent")
+        expected_projection = analysis_input_projections_digest(
+            self.records, self.supported_signature_projection_set_version
+        )
+        if expected_projection != self.supported_signature_projection_set_sha256:
+            raise ValueError("supported signature projection digest is inconsistent")
+        serialized = json.dumps(self.to_dict(), ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if len(serialized) > MAX_ANALYSIS_INPUT_EVIDENCE_CHARS:
+            raise ValueError("analysis input evidence exceeds the character bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return deterministic metadata without raw bytes or absolute paths."""
+        return {
+            "kind": self.kind,
+            "schema_version": self.schema_version,
+            "scope": self.scope,
+            "authority": self.authority,
+            "complete_for_scope": self.complete_for_scope,
+            "global_build_input_closure_complete": self.global_build_input_closure_complete,
+            "complete": self.complete,
+            "signed": self.signed,
+            "distribution_authorized": self.distribution_authorized,
+            "source_transformation_verification_sha256": self.source_transformation_verification_sha256,
+            "source_input_set_sha256": self.source_input_set_sha256,
+            "source_paths": list(self.source_paths),
+            "records": [record.to_dict() for record in self.records],
+            "analysis_input_set_version": self.analysis_input_set_version,
+            "analysis_input_set_sha256": self.analysis_input_set_sha256,
+            "supported_signature_projection_set_version": self.supported_signature_projection_set_version,
+            "supported_signature_projection_set_sha256": self.supported_signature_projection_set_sha256,
+        }
+
+
+def analysis_input_records_digest(records: tuple[AnalysisInputRecord, ...], version: int) -> str:
+    """Hash the fixed-version canonical record envelope."""
+    if type(version) is not int or isinstance(version, bool) or version != ANALYSIS_INPUT_SET_VERSION:
+        raise ValueError("analysis input record digest version is invalid")
+    return sha256_hex(canonical_json_bytes({"version": version, "records": [record.to_dict() for record in records]}))
+
+
+def analysis_input_projections_digest(records: tuple[AnalysisInputRecord, ...], version: int) -> str:
+    """Hash the fixed-version canonical projection envelope."""
+    if type(version) is not int or isinstance(version, bool) or version != SUPPORTED_SIGNATURE_PROJECTION_SET_VERSION:
+        raise ValueError("analysis input projection digest version is invalid")
+    projections = [
+        {
+            "source_path": record.source_path,
+            "stub_path": record.stub_path,
+            "state": record.state,
+            "version": record.supported_signature_projection_version,
+            "sha256": record.supported_signature_projection_sha256,
+        }
+        for record in records
+    ]
+    return sha256_hex(canonical_json_bytes({"version": version, "projections": projections}))
+
+
+@dataclass(frozen=True, slots=True)
 class ComponentLicenseRecord:
     """One unvalidated Cargo metadata license-string observation."""
 
@@ -2169,7 +2372,7 @@ class SidecarArtifact:
 
 @dataclass(frozen=True)
 class ArtifactEvidence:
-    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.12 preview."""
+    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.13 preview."""
 
     kind: str
     status: str  # preview-ready | unavailable
@@ -2192,6 +2395,9 @@ class ArtifactEvidence:
     ) = None
     source_transformation_inventory: SourceTransformationInventory | None = None
     source_transformation_verification: SourceTransformationVerification | None = None
+    analysis_input_verification: AnalysisInputVerification | None = field(
+        default=None, kw_only=True
+    )
     component_license_inventory: ComponentLicenseInventory | None = None
     component_license_policy_verification: (
         ComponentLicensePolicyVerification | None
@@ -2236,6 +2442,7 @@ class ArtifactEvidence:
                 or self.native_runtime_transitive_closure is not None
                 or self.source_transformation_inventory is not None
                 or self.source_transformation_verification is not None
+                or self.analysis_input_verification is not None
                 or self.component_license_inventory is not None
                 or self.component_license_policy_verification is not None
                 or self.project_source_license_policy_verification is not None
@@ -2394,6 +2601,16 @@ class ArtifactEvidence:
                     inventory=self.source_transformation_inventory,
                     inputs=self.inputs,
                 )
+            if self.analysis_input_verification is not None:
+                if self.source_transformation_verification is None:
+                    raise ValueError(
+                        "analysis input verification requires source transformation verification"
+                    )
+                _validate_analysis_input_verification_binding(
+                    verification=self.analysis_input_verification,
+                    transformation_verification=self.source_transformation_verification,
+                    inputs=self.inputs,
+                )
             if self.project_source_license_policy_verification is not None:
                 if self.source_transformation_verification is None:
                     raise ValueError(
@@ -2522,6 +2739,10 @@ class ArtifactEvidence:
                 if self.source_transformation_verification is not None:
                     data["source_transformation_verification"] = (
                         self.source_transformation_verification.to_dict()
+                    )
+                if self.analysis_input_verification is not None:
+                    data["analysis_input_verification"] = (
+                        self.analysis_input_verification.to_dict()
                     )
                 if self.component_license_inventory is not None:
                     data["component_license_inventory"] = (
@@ -2755,6 +2976,149 @@ def _validate_source_transformation_verification_binding(
     )
     if len(generated_matches) != 1:
         raise ValueError("source transformation verification Rust input is ambiguous")
+
+
+def _reconstruct_analysis_input_file_ref(value: EvidenceFileRef) -> EvidenceFileRef:
+    """Re-run the nested C6.13 file-reference model boundary."""
+    if type(value) is not EvidenceFileRef:
+        raise TypeError("analysis input stub reference is invalid")
+    rebuilt = EvidenceFileRef(
+        logical_path=value.logical_path,
+        sha256=value.sha256,
+        size=value.size,
+        role=value.role,
+    )
+    if rebuilt != value:
+        raise ValueError("analysis input stub reference is noncanonical")
+    return rebuilt
+
+
+def _reconstruct_analysis_input_record(
+    value: AnalysisInputRecord,
+) -> AnalysisInputRecord:
+    """Deeply rebuild one C6.13 source/stub record before trusting it."""
+    if type(value) is not AnalysisInputRecord:
+        raise TypeError("analysis input record model is invalid")
+    rebuilt = AnalysisInputRecord(
+        source_path=value.source_path,
+        stub_path=value.stub_path,
+        state=value.state,
+        stub=(
+            _reconstruct_analysis_input_file_ref(value.stub)
+            if value.stub is not None
+            else None
+        ),
+        supported_signature_projection_version=(
+            value.supported_signature_projection_version
+        ),
+        supported_signature_projection_sha256=(
+            value.supported_signature_projection_sha256
+        ),
+    )
+    if rebuilt != value:
+        raise ValueError("analysis input record is noncanonical")
+    return rebuilt
+
+
+def _reconstruct_analysis_input_verification(
+    value: AnalysisInputVerification,
+) -> AnalysisInputVerification:
+    """Deeply rebuild the complete C6.13 receipt at the artifact boundary."""
+    if type(value) is not AnalysisInputVerification:
+        raise TypeError("analysis input verification model is invalid")
+    if type(value.source_paths) is not tuple or type(value.records) is not tuple:
+        raise TypeError("analysis input verification collections must be tuples")
+    if len(value.source_paths) > MAX_INPUT_FILES:
+        raise ValueError("analysis input verification record count exceeds the bound")
+    if len(value.records) > MAX_INPUT_FILES:
+        raise ValueError("analysis input verification record count exceeds the bound")
+    if len(value.source_paths) != len(value.records):
+        raise ValueError("analysis input verification coverage is inconsistent")
+    _reject_analysis_input_path_aliases(value.source_paths, "source")
+    _reject_analysis_input_path_aliases(
+        tuple(record.stub_path for record in value.records), "stub"
+    )
+    rebuilt = AnalysisInputVerification(
+        source_transformation_verification_sha256=(
+            value.source_transformation_verification_sha256
+        ),
+        source_input_set_sha256=value.source_input_set_sha256,
+        source_paths=tuple(value.source_paths),
+        records=tuple(
+            _reconstruct_analysis_input_record(record) for record in value.records
+        ),
+        analysis_input_set_sha256=value.analysis_input_set_sha256,
+        supported_signature_projection_set_sha256=(
+            value.supported_signature_projection_set_sha256
+        ),
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        analysis_input_set_version=value.analysis_input_set_version,
+        supported_signature_projection_set_version=(
+            value.supported_signature_projection_set_version
+        ),
+        authority=value.authority,
+        complete_for_scope=value.complete_for_scope,
+        global_build_input_closure_complete=(
+            value.global_build_input_closure_complete
+        ),
+        complete=value.complete,
+        signed=value.signed,
+        distribution_authorized=value.distribution_authorized,
+    )
+    if rebuilt != value:
+        raise ValueError("analysis input verification is noncanonical")
+    return rebuilt
+
+
+def _reject_analysis_input_path_aliases(
+    paths: tuple[str, ...], label: str
+) -> None:
+    """Reject case- and normalization-insensitive aliases in C6.13 paths."""
+    aliases: set[str] = set()
+    for path in paths:
+        if type(path) is not str:
+            raise TypeError(f"analysis input {label} path is not a string")
+        key = unicodedata.normalize("NFC", path).casefold()
+        if key in aliases:
+            raise ValueError(f"analysis input {label} paths contain aliases")
+        aliases.add(key)
+
+
+def _validate_analysis_input_verification_binding(
+    *,
+    verification: AnalysisInputVerification,
+    transformation_verification: SourceTransformationVerification,
+    inputs: tuple[EvidenceFileRef, ...] | Sequence[EvidenceFileRef],
+) -> None:
+    """Bind C6.13 to the exact C6.10 receipt and project-source inputs."""
+    verification = _reconstruct_analysis_input_verification(verification)
+    if type(transformation_verification) is not SourceTransformationVerification:
+        raise TypeError("analysis input verification requires C6.10 verification")
+    transformation_digest = sha256_hex(
+        canonical_json_bytes(transformation_verification.to_dict())
+    )
+    if (
+        verification.source_transformation_verification_sha256
+        != transformation_digest
+    ):
+        raise ValueError("analysis input verification C6.10 digest differs")
+    source_inputs = tuple(
+        sorted(
+            (item for item in inputs if item.role == "project-python-source"),
+            key=lambda item: item.logical_path,
+        )
+    )
+    if transformation_verification.source_inputs != source_inputs:
+        raise ValueError("analysis input verification source inputs differ")
+    if verification.source_input_set_sha256 != transformation_verification.source_input_set_sha256:
+        raise ValueError("analysis input verification source input-set digest differs")
+    expected_source_paths = tuple(item.logical_path for item in source_inputs)
+    if verification.source_paths != expected_source_paths:
+        raise ValueError("analysis input verification source coverage differs")
+    if tuple(record.source_path for record in verification.records) != expected_source_paths:
+        raise ValueError("analysis input verification record coverage differs")
 
 
 def _validate_runtime_closure_evidence_binding(
@@ -5061,6 +5425,7 @@ def build_intoto_provenance_document(
     ) = None,
     source_transformation_inventory: SourceTransformationInventory | None = None,
     source_transformation_verification: SourceTransformationVerification | None = None,
+    analysis_input_verification: AnalysisInputVerification | None = None,
     component_license_inventory: ComponentLicenseInventory | None = None,
     component_license_policy_verification: (
         ComponentLicensePolicyVerification | None
@@ -5089,6 +5454,35 @@ def build_intoto_provenance_document(
                 },
             }
         )
+    if analysis_input_verification is not None:
+        if source_transformation_verification is None:
+            raise ValueError(
+                "analysis input verification requires C6.10 verification"
+            )
+        _validate_analysis_input_verification_binding(
+            verification=analysis_input_verification,
+            transformation_verification=source_transformation_verification,
+            inputs=inputs,
+        )
+        for record in sorted(
+            analysis_input_verification.records,
+            key=lambda value: (value.stub_path, value.source_path),
+        ):
+            if record.state != "present":
+                continue
+            if record.stub is None:  # pragma: no cover - model invariant
+                raise ValueError("present analysis input is missing its stub reference")
+            item = record.stub
+            materials.append(
+                {
+                    "uri": f"file:{item.logical_path}",
+                    "digest": {"sha256": item.sha256},
+                    "annotations": {
+                        "rextio:role": "project-python-stub",
+                        "rextio:size": str(item.size),
+                    },
+                }
+            )
     for package in sorted(cargo_packages, key=_cargo_package_sort_key):
         annotations: dict[str, str] = {
             "rextio:role": "cargo-package",
@@ -5161,6 +5555,8 @@ def build_intoto_provenance_document(
         "external_source_authorization": False,
         "authority": "evidence-only",
         "distribution_authorized": False,
+        "build_input_closure_complete": False,
+        "scoped_analysis_inputs_verified": analysis_input_verification is not None,
         "native_runtime_transitive_closure": False,
         "native_runtime_dlopen": False,
         "native_runtime_path_resolution_observed": (
@@ -5211,6 +5607,9 @@ def build_intoto_provenance_document(
         "rextio:project_source_license_policy_verification_observed": (
             project_source_license_policy_verification is not None
         ),
+        "rextio:analysis_input_verification_observed": (
+            analysis_input_verification is not None
+        ),
     }
     if native_runtime_inventory is not None:
         run_metadata["rextio:observed_native_runtime"] = native_runtime_inventory.to_dict()
@@ -5241,6 +5640,10 @@ def build_intoto_provenance_document(
     if project_source_license_policy_verification is not None:
         run_metadata["rextio:project_source_license_policy_verification"] = (
             project_source_license_policy_verification.to_dict()
+        )
+    if analysis_input_verification is not None:
+        run_metadata["rextio:analysis_input_verification"] = (
+            analysis_input_verification.to_dict()
         )
 
     document: dict[str, object] = {
@@ -5354,6 +5757,12 @@ __all__ = [
     "ArtifactEvidence",
     "ArtifactEvidenceError",
     "ArtifactEvidenceGate",
+    "ANALYSIS_INPUT_SET_VERSION",
+    "ANALYSIS_INPUT_VERIFICATION_KIND",
+    "ANALYSIS_INPUT_VERIFICATION_SCHEMA_VERSION",
+    "ANALYSIS_INPUT_VERIFICATION_SCOPE",
+    "AnalysisInputRecord",
+    "AnalysisInputVerification",
     "CargoDepEdge",
     "CargoPackageRef",
     "ComponentLicenseInventory",
@@ -5385,6 +5794,7 @@ __all__ = [
     "MAX_EVIDENCE_COMPONENTS",
     "MAX_EVIDENCE_FILE_BYTES",
     "MAX_EVIDENCE_STRING_CHARS",
+    "MAX_ANALYSIS_INPUT_EVIDENCE_CHARS",
     "MAX_INPUT_FILES",
     "MAX_JSON_DEPTH",
     "MAX_RUNTIME_DEPS",
@@ -5460,6 +5870,8 @@ __all__ = [
     "SOURCE_TRANSFORMATION_VERIFICATION_KIND",
     "SOURCE_TRANSFORMATION_VERIFICATION_SCHEMA_VERSION",
     "SOURCE_TRANSFORMATION_VERIFICATION_SCOPE",
+    "SUPPORTED_SIGNATURE_PROJECTION_SET_VERSION",
+    "SUPPORTED_SIGNATURE_PROJECTION_VERSION",
     "UNAVAILABLE_REASONS",
     "WheelEntryRef",
     "build_cyclonedx_document",
@@ -5468,6 +5880,8 @@ __all__ = [
     "canonicalize_registry_source",
     "canonicalize_zip_entry_name",
     "canonical_json_bytes",
+    "analysis_input_projections_digest",
+    "analysis_input_records_digest",
     "cleanup_created_sidecars",
     "cleanup_paths",
     "content_uuid_urn",

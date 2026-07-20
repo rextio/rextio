@@ -136,8 +136,8 @@ def kernel(x: float) -> float:
     data = analysis.to_dict()
 
     assert data["contract_version"] == TOOLING_CONTRACT_VERSION
-    # Contract 2.17.0 adds C6.12 scoped source-license-policy evidence additively.
-    assert data["contract_version"] == "2.17.0"
+    # Contract 2.18.0 adds C6.13 scoped analysis-input verification additively.
+    assert data["contract_version"] == "2.18.0"
     assert TOOLING_CONTRACT_VERSION.split(".", 1)[0] == "2"
 
     # Contract 2.1.0 always serializes logger_group_targets on each module.

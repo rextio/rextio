@@ -29,6 +29,10 @@ from rextio.analyzer.module_parser import (
     module_name_for_path,
     parse_module,
 )
+from rextio.analyzer.stub_inputs import (
+    StubInputSnapshot,
+    capture_sibling_stub_inputs,
+)
 from rextio.analyzer.plugin_claims import ClaimEngine
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.config.schema import ImportsConfig, RextioConfig
@@ -130,8 +134,10 @@ def analyze_project(
     target_language = normalize_target_language(target_language)
     analysis = ProjectAnalysis(project_root=root)
     files = scan_python_files(root)
+    stub_inputs = capture_sibling_stub_inputs(root, tuple(files))
+    analysis._stub_inputs = stub_inputs
     project_modules = _project_module_names(files, root)
-    project_return_types = _project_annotated_return_types(files, root)
+    project_return_types = _project_annotated_return_types(files, root, stub_inputs)
     trusted_annotation_targets = frozenset(
         annotation
         for binding in (() if plugin_registry is None else plugin_registry.types)
@@ -187,6 +193,7 @@ def analyze_project(
             claim_engine=claim_engine,
             project_mutations=project_mutations,
             project_bindings=project_bindings,
+            stub_inputs=stub_inputs,
         )
         for path in files
     ]
@@ -281,7 +288,11 @@ def _strip_divergence_notes_from_non_native(analysis: ProjectAnalysis) -> None:
                 ]
 
 
-def _project_annotated_return_types(files: list[Path], project_root: Path) -> dict[str, str]:
+def _project_annotated_return_types(
+    files: list[Path],
+    project_root: Path,
+    snapshot: StubInputSnapshot | None = None,
+) -> dict[str, str]:
     """Collect supported top-level function return annotations by qualified name.
 
     A sibling ``.pyi`` stub's return annotation overrides the source annotation,
@@ -310,12 +321,27 @@ def _project_annotated_return_types(files: list[Path], project_root: Path) -> di
                 and is_supported_type(item.returns)
             ):
                 return_types[_qualname(item.name)] = annotation_name(item.returns)
-        stub_path = path.with_suffix(".pyi")
-        if not stub_path.exists():
-            continue
+        if snapshot is None:
+            stub_path = path.with_suffix(".pyi")
+            if not stub_path.exists():
+                continue
+            try:
+                stub_source = stub_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            stub_filename = str(stub_path)
+        else:
+            record = snapshot.for_source(path)
+            if not record.analyzer_consumable:
+                continue
+            record_text = record.text
+            if not isinstance(record_text, str):
+                continue
+            stub_source = record_text
+            stub_filename = record.stub_path
         try:
-            stub_tree = ast.parse(stub_path.read_text(encoding="utf-8"), filename=str(stub_path))
-        except SyntaxError:
+            stub_tree = ast.parse(stub_source, filename=stub_filename)
+        except (MemoryError, SyntaxError, RecursionError):
             continue
         for item in stub_tree.body:
             if (

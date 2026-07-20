@@ -45,6 +45,7 @@ from rextio.analyzer.models import (
     SourcePosition,
     SourceRange,
 )
+from rextio.analyzer.stub_inputs import StubInputSnapshot
 from rextio.analyzer.native_marker import (
     NativeMarker,
     dotted_name,
@@ -103,6 +104,7 @@ def parse_module(
     claim_engine: object | None = None,
     project_mutations: ProjectMutations | None = None,
     project_bindings: ProjectBindings | None = None,
+    stub_inputs: StubInputSnapshot | None = None,
 ) -> ModuleAnalysis:
     """Parse a module file into a ModuleAnalysis (functions, imports, top level).
 
@@ -198,7 +200,7 @@ def parse_module(
         module.project_mutations,
         effective_project_modules,
     )
-    stub_signatures = _load_stub_signatures(path)
+    stub_signatures = _load_stub_signatures(path, stub_inputs)
     module.functions = _collect_module_functions(
         tree,
         module,
@@ -1658,13 +1660,30 @@ def _has_supported_signature(node: ast.FunctionDef) -> bool:
     return node.returns is not None and is_supported_type(node.returns)
 
 
-def _load_stub_signatures(path: Path) -> dict[str, StubSignature]:
-    stub_path = path.with_suffix(".pyi")
-    if not stub_path.exists():
-        return {}
+def _load_stub_signatures(
+    path: Path, snapshot: StubInputSnapshot | None = None
+) -> dict[str, StubSignature]:
+    if snapshot is None:
+        stub_path = path.with_suffix(".pyi")
+        if not stub_path.exists():
+            return {}
+        try:
+            stub_source = stub_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return {}
+        filename = str(stub_path)
+    else:
+        record = snapshot.for_source(path)
+        if not record.analyzer_consumable:
+            return {}
+        record_text = record.text
+        if not isinstance(record_text, str):
+            return {}
+        stub_source = record_text
+        filename = record.stub_path
     try:
-        tree = ast.parse(stub_path.read_text(encoding="utf-8"), filename=str(stub_path))
-    except SyntaxError:
+        tree = ast.parse(stub_source, filename=filename)
+    except (MemoryError, SyntaxError, RecursionError):
         return {}
     signatures: dict[str, StubSignature] = {}
     for node in tree.body:

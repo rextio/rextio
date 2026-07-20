@@ -74,5 +74,9 @@ from __future__ import annotations
 # or obligations, establish derivative-work rights, grant legal approval, or
 # authorize distribution. Global source-transformation and license policy
 # therefore remain incomplete.
+# Contract 2.18.0 adds C6.13's scoped analysis-input verification observation
+# to artifact-distribution authorization readiness. It remains additive,
+# unsigned, non-authorizing evidence and does not complete build-input closure,
+# reproducibility, signing, policy, or distribution authorization.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.17.0"
+TOOLING_CONTRACT_VERSION = "2.18.0"
