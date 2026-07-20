@@ -1,13 +1,14 @@
-"""C6.5-C6.8 distribution-authorization readiness assessment.
+"""C6.5-C6.9 distribution-authorization readiness assessment.
 
-This module deliberately sits between the C6.2-C6.8 preview evidence record
+This module deliberately sits between the C6.2-C6.9 preview evidence record
 and any future distribution authorization.  It converts only a validated
 ``ArtifactEvidence`` instance into a deterministic, closed-vocabulary report.
 The report is readiness information, never an authorization decision: every
 instance is blocked, incomplete, unsigned, and non-authorizing.
 
-C6.8 observes one-hop static packaged path candidates. It does not implement
-actual loader selection, transitive dependency closure, runtime ``dlopen``
+C6.8 observes one-hop static packaged path candidates. C6.9 observes a bounded
+static graph across recursively inspected packaged members. It does not
+implement actual loader selection, complete transitive dependency closure, runtime ``dlopen``
 observation, Windows PE inspection, runtime-bearing
 plugins, executables, Rust crates, Nuitka/WASM evidence, signatures, or final
 distribution authorization.
@@ -34,6 +35,9 @@ from rextio.artifacts.evidence import (
     NativeRuntimeInventory,
     NativeRuntimePathResolutionInventory,
     NativeRuntimePathResolutionRecord,
+    NativeRuntimeTransitiveClosureEdge,
+    NativeRuntimeTransitiveClosureInventory,
+    NativeRuntimeTransitiveClosureNode,
     SidecarArtifact,
     SourceTransformationInventory,
     SourceTransformationRange,
@@ -44,7 +48,7 @@ from rextio.artifacts.evidence import (
 
 ARTIFACT_AUTHORIZATION_KIND = "artifact-distribution-authorization"
 ARTIFACT_AUTHORIZATION_POLICY = ARTIFACT_EVIDENCE_SCOPE
-ARTIFACT_AUTHORIZATION_POLICY_VERSION = 4
+ARTIFACT_AUTHORIZATION_POLICY_VERSION = 5
 ARTIFACT_AUTHORIZATION_STATUS = "blocked"
 ARTIFACT_AUTHORIZATION_AUTHORITY = "readiness-assessment-only"
 
@@ -54,6 +58,7 @@ _OBSERVATION_CHECK_IDS: tuple[str, ...] = (
     "cargo-resolve-graph-bound",
     "direct-native-linkage-observed",
     "direct-native-path-resolution-bound",
+    "bounded-static-native-runtime-graph-bound",
     "source-transformation-inventory-bound",
     "component-license-inventory-bound",
 )
@@ -95,6 +100,9 @@ ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE = "component-license-inventory-unavai
 ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE = (
     "native-runtime-path-resolution-inventory-unavailable"
 )
+ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE = (
+    "bounded-static-native-runtime-graph-unavailable"
+)
 _ALLOWED_BLOCKERS = frozenset(
     {
         *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
@@ -103,6 +111,7 @@ _ALLOWED_BLOCKERS = frozenset(
         ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
     }
 )
 _CHECK_STATUSES = frozenset({"satisfied", "blocked", "unavailable", "not-evaluated"})
@@ -136,7 +145,7 @@ class ArtifactAuthorizationCheck:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactDistributionAuthorizationAssessment:
-    """Immutable, fail-closed C6.5-C6.8 distribution-readiness report.
+    """Immutable, fail-closed C6.5-C6.9 distribution-readiness report.
 
     Callers should use :meth:`from_evidence`.  The public fields remain
     validate-on-construction so malformed, reordered, duplicated, or
@@ -206,6 +215,10 @@ class ArtifactDistributionAuthorizationAssessment:
                         ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
                     ),
                     (
+                        "bounded-static-native-runtime-graph-bound",
+                        ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
+                    ),
+                    (
                         "source-transformation-inventory-bound",
                         ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
                     ),
@@ -222,8 +235,9 @@ class ArtifactDistributionAuthorizationAssessment:
                 if blockers != tuple(expected_blockers):
                     raise ValueError("preview-ready authorization blockers are not canonical")
                 expected_statuses = (
-                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-3]),
+                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-4]),
                     statuses_by_id["direct-native-path-resolution-bound"],
+                    statuses_by_id["bounded-static-native-runtime-graph-bound"],
                     statuses_by_id["source-transformation-inventory-bound"],
                     statuses_by_id["component-license-inventory-bound"],
                     *("blocked" for _ in _READINESS_CHECK_IDS),
@@ -256,7 +270,7 @@ class ArtifactDistributionAuthorizationAssessment:
         cls,
         evidence: ArtifactEvidence,
     ) -> ArtifactDistributionAuthorizationAssessment:
-        """Return the total, no-throw C6.5-C6.8 evaluation for ``evidence``."""
+        """Return the total, no-throw C6.5-C6.9 evaluation for ``evidence``."""
         return evaluate_artifact_distribution_authorization(evidence)
 
     def to_dict(self) -> dict[str, object]:
@@ -281,7 +295,7 @@ class ArtifactDistributionAuthorizationAssessment:
 def evaluate_artifact_distribution_authorization(
     evidence: ArtifactEvidence,
 ) -> ArtifactDistributionAuthorizationAssessment:
-    """Evaluate C6.5-C6.8 without ever changing the surrounding build outcome.
+    """Evaluate C6.5-C6.9 without ever changing the surrounding build outcome.
 
     A structurally invalid preview remains reported as preview evidence, but
     no readiness check is claimed: the closed fallback shape contains only
@@ -293,11 +307,15 @@ def evaluate_artifact_distribution_authorization(
     try:
         trusted = _reconstruct_evidence(evidence)
         if trusted.status == "preview-ready":
-            path_resolution_bound, transformation_bound, license_bound = (
-                _validate_preview_observations(trusted)
-            )
+            (
+                path_resolution_bound,
+                runtime_graph_bound,
+                transformation_bound,
+                license_bound,
+            ) = _validate_preview_observations(trusted)
             optional_statuses = (
                 "satisfied" if path_resolution_bound else "unavailable",
+                "satisfied" if runtime_graph_bound else "unavailable",
                 "satisfied" if transformation_bound else "unavailable",
                 "satisfied" if license_bound else "unavailable",
             )
@@ -307,6 +325,10 @@ def evaluate_artifact_distribution_authorization(
                     (
                         path_resolution_bound,
                         ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
+                    ),
+                    (
+                        runtime_graph_bound,
+                        ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
                     ),
                     (
                         transformation_bound,
@@ -320,7 +342,7 @@ def evaluate_artifact_distribution_authorization(
                 evidence_status="preview-ready",
                 evidence_reason=None,
                 statuses=(
-                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-3]),
+                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-4]),
                     *optional_statuses,
                     *("blocked" for _ in _READINESS_CHECK_IDS),
                 ),
@@ -425,6 +447,9 @@ def _reconstruct_evidence(evidence: ArtifactEvidence) -> ArtifactEvidence:
         ),
         native_runtime_path_resolution=_copy_runtime_path_resolution_inventory(
             evidence.native_runtime_path_resolution
+        ),
+        native_runtime_transitive_closure=_copy_runtime_closure_inventory(
+            evidence.native_runtime_transitive_closure
         ),
         source_transformation_inventory=_copy_transformation_inventory(
             evidence.source_transformation_inventory
@@ -579,6 +604,60 @@ def _copy_runtime_path_resolution_record(
     )
 
 
+def _copy_runtime_closure_inventory(
+    value: NativeRuntimeTransitiveClosureInventory | None,
+) -> NativeRuntimeTransitiveClosureInventory | None:
+    if value is None:
+        return None
+    if type(value) is not NativeRuntimeTransitiveClosureInventory:
+        raise TypeError("native runtime closure inventory model is invalid")
+    if type(value.nodes) is not tuple or type(value.edges) is not tuple:
+        raise TypeError("native runtime closure graph collections must be tuples")
+    return NativeRuntimeTransitiveClosureInventory(
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        authority=value.authority,
+        complete=value.complete,
+        format=value.format,
+        architecture=value.architecture,
+        subject_wheel_member=value.subject_wheel_member,
+        subject_sha256=value.subject_sha256,
+        subject_size=value.subject_size,
+        root_node_ref=value.root_node_ref,
+        nodes=tuple(_copy_runtime_closure_node(node) for node in value.nodes),
+        edges=tuple(_copy_runtime_closure_edge(edge) for edge in value.edges),
+    )
+
+
+def _copy_runtime_closure_node(
+    value: NativeRuntimeTransitiveClosureNode,
+) -> NativeRuntimeTransitiveClosureNode:
+    if type(value) is not NativeRuntimeTransitiveClosureNode:
+        raise TypeError("native runtime closure node model is invalid")
+    return NativeRuntimeTransitiveClosureNode(
+        kind=value.kind,
+        format=value.format,
+        name=value.name,
+        wheel_member=value.wheel_member,
+        sha256=value.sha256,
+        size=value.size,
+    )
+
+
+def _copy_runtime_closure_edge(
+    value: NativeRuntimeTransitiveClosureEdge,
+) -> NativeRuntimeTransitiveClosureEdge:
+    if type(value) is not NativeRuntimeTransitiveClosureEdge:
+        raise TypeError("native runtime closure edge model is invalid")
+    return NativeRuntimeTransitiveClosureEdge(
+        source_ref=value.source_ref,
+        target_ref=value.target_ref,
+        dependency_name=value.dependency_name,
+        mechanism=value.mechanism,
+    )
+
+
 def _copy_transformation_inventory(
     value: SourceTransformationInventory | None,
 ) -> SourceTransformationInventory | None:
@@ -668,11 +747,11 @@ def _copy_component_license_record(
 
 def _validate_preview_observations(
     evidence: ArtifactEvidence,
-) -> tuple[bool, bool, bool]:
+) -> tuple[bool, bool, bool, bool]:
     """Require structural/model bindings before marking observations satisfied.
 
     This intentionally does not reopen or re-inspect output bytes. C6.2-C6.4
-    own those observations; C6.5-C6.8 validates closed model invariants and
+    own those observations; C6.5-C6.9 validates closed model invariants and
     exact evidence-reference bindings only. It does not re-derive C6.6
     qualnames, ranges, or semantic hashes from source or a BuildPlan.
     """
@@ -766,11 +845,12 @@ def _validate_preview_observations(
         raise ValueError("preview authorization target/runtime binding is invalid")
     if runtime.architecture != _target_architecture(evidence.target_triple):
         raise ValueError("preview authorization target architecture is invalid")
-    # C6.6-C6.8 are intentionally independent of C6.3 evidence satisfaction.
+    # C6.6-C6.9 are intentionally independent of C6.3 evidence satisfaction.
     # Absence is a fixed per-observation unavailable result, while present
     # models have been reconstructed and cross-bound to their exact underlying
     # evidence. Neither is complete provenance/license-policy verification.
     path_resolution_bound = evidence.native_runtime_path_resolution is not None
+    runtime_graph_bound = evidence.native_runtime_transitive_closure is not None
     transformation_bound = evidence.source_transformation_inventory is not None
     license_inventory = evidence.component_license_inventory
     if license_inventory is None:
@@ -792,7 +872,12 @@ def _validate_preview_observations(
         if license_inventory.records != expected_records:
             raise ValueError("component license inventory is not exactly Cargo-bound")
         license_bound = True
-    return path_resolution_bound, transformation_bound, license_bound
+    return (
+        path_resolution_bound,
+        runtime_graph_bound,
+        transformation_bound,
+        license_bound,
+    )
 
 
 def _target_architecture(target_triple: str) -> str:

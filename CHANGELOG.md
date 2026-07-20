@@ -5,10 +5,57 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.13.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.14.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR.
+
+### C6.9 bounded transitive native-runtime graph observation
+
+- Add immutable `artifact_evidence.native_runtime_transitive_closure` schema 1.
+  It is rooted in the exact C6.4 subject and C6.8 direct records, serializes
+  canonical packaged-content-bound nodes, deterministic name-bound/byte-unbound
+  system leaves, and dependency edges, preserves cycles, and
+  remains explicitly `complete: false`,
+  `transitive_closure_complete: false`, and observation-only.
+- Recursively inspect only exact packaged Mach-O/ELF wheel members reached by
+  the existing loader-path/self-rpath or ORIGIN RPATH/RUNPATH semantics. Rebind
+  every packaged node to one canonical wheel member/SHA-256/size, inspect an
+  immutable private same-byte snapshot, validate object format/architecture
+  (and `MH_DYLIB` for non-root Mach-O nodes), and revalidate final file receipts.
+  System dependencies remain deterministic name-bound, byte-unbound terminal
+  leaves; ELF leaves are rechecked against the target-triple C6.4 allowlist.
+- Apply both the C6.8 path parser and C6.4 strict parser to every recursive ELF
+  inspection and require identical dependency coverage, so malformed,
+  unexpected, or partially parsed dynamic rows fail closed.
+- Make traversal deterministic and cycle-safe with fixed node, edge, depth,
+  per-dependency candidate, aggregate candidate, inspector invocation, total
+  inspector-output, cooperative total-deadline, and serialized-size ceilings. Reject missing
+  or multiple candidate paths, malformed inspectors, byte mutation, symlinks,
+  hardlink/inode aliases, case-fold/Unicode-normalization aliases, unsupported loader forms, and
+  Linux system-SONAME shadowing. Never consult ambient loader variables/cache,
+  `ldd`, `ldconfig`, `dlopen`, or actual loader selection.
+- Build exact and normalization-aware case-folded wheel member/basename indexes once per attempt and
+  charge indexing, candidate loops, and every final receipt I/O to the single
+  total deadline; synchronous filesystem reads are checked before and after but
+  are not preempted mid-call. Keep the generated root's leading-underscore binary basename
+  while enforcing the closed dependency basename grammar on nodes and edges.
+- Keep C6.9 optional and noninterfering. A C6.9-only collection/final-receipt
+  failure retains C6.8; a C6.8 failure omits both dependent observations. At
+  the provenance ceiling omit C6.9, then C6.8, C6.7, and C6.6. The independent
+  C6.3 required-evidence gate is unchanged.
+- Read-only refresh exact C6.8 packaged receipts after every C6.9 attempt. It
+  requires complete prior receipt coverage, preserves exact file and non-root
+  directory identity, and permits only the generated root's size/ctime/mtime
+  delta caused by snapshot create/remove. Refresh failure still omits C6.8 and
+  dependent C6.9. Private snapshot unlink/rmdir/absence-check failures now fail
+  closed while preserving any already-active inspection exception.
+- Advance readiness policy to version 5 with
+  `bounded-static-native-runtime-graph-bound` and the fixed
+  `bounded-static-native-runtime-graph-unavailable` blocker. Keep
+  `native-runtime-transitive-closure-complete` blocked. Advance the tooling
+  contract to **2.14.0** while keeping package **0.1.4**, plugin API **1.4**,
+  signatures, completeness, and distribution authority unchanged.
 
 ### C6.8 one-hop native runtime path-resolution observation
 
@@ -34,13 +81,13 @@ feature PRs target the `0.1.5` integration branch; `main` stays at the published
   omits only this field, adds the dedicated
   `native-runtime-path-resolution-inventory-unavailable` readiness blocker,
   and leaves ordinary builds plus C6.3 unchanged. Malformed present data fails
-  readiness reconstruction closed. At the provenance ceiling omit C6.8 first,
-  then C6.7, then C6.6.
+  readiness reconstruction closed. In the cumulative Train C producer the
+  provenance ceiling omits C6.9 first, then C6.8, C6.7, and C6.6.
 - Advance the always-blocked assessment to policy version 4 with
   `direct-native-path-resolution-bound`, and the unreleased tooling contract to
   **2.13.0**. Keep package **0.1.4**, plugin API **1.4**, all completeness,
   signature, and authorization fields false. Actual loader selection,
-  transitive closure (C6.9), system-library bytes, `dlopen`, Windows PE, WASM,
+  complete transitive closure beyond C6.9's bounded graph, system-library bytes, `dlopen`, Windows PE, WASM,
   runtime-bearing plugins, complete license/legal policy, and signatures remain
   deferred.
 

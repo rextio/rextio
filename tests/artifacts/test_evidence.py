@@ -24,6 +24,9 @@ from rextio.artifacts.evidence import (
     NativeRuntimeInventory,
     NativeRuntimePathResolutionInventory,
     NativeRuntimePathResolutionRecord,
+    NativeRuntimeTransitiveClosureEdge,
+    NativeRuntimeTransitiveClosureInventory,
+    NativeRuntimeTransitiveClosureNode,
     SidecarArtifact,
     WheelEntryRef,
     build_cyclonedx_document,
@@ -52,6 +55,25 @@ def test_c68_runtime_path_resolution_symbols_are_explicitly_exported() -> None:
         "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE",
         "NativeRuntimePathResolutionInventory",
         "NativeRuntimePathResolutionRecord",
+    } <= set(evidence_module.__all__)
+
+
+def test_c69_runtime_closure_symbols_and_bounds_are_explicitly_exported() -> None:
+    assert {
+        "MAX_RUNTIME_CLOSURE_CANDIDATE_ATTEMPTS",
+        "MAX_RUNTIME_CLOSURE_CANDIDATES_PER_DEPENDENCY",
+        "MAX_RUNTIME_CLOSURE_DEPTH",
+        "MAX_RUNTIME_CLOSURE_EDGES",
+        "MAX_RUNTIME_CLOSURE_INSPECTOR_INVOCATIONS",
+        "MAX_RUNTIME_CLOSURE_INSPECTOR_OUTPUT_BYTES",
+        "MAX_RUNTIME_CLOSURE_INVENTORY_CHARS",
+        "MAX_RUNTIME_CLOSURE_NODES",
+        "NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_KIND",
+        "NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCHEMA_VERSION",
+        "NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCOPE",
+        "NativeRuntimeTransitiveClosureEdge",
+        "NativeRuntimeTransitiveClosureInventory",
+        "NativeRuntimeTransitiveClosureNode",
     } <= set(evidence_module.__all__)
 
 
@@ -411,6 +433,9 @@ def test_intoto_sbom_is_subject_not_material() -> None:
             "composition-incomplete",
             "unsigned",
             "not-external-source-authorization",
+            "one-hop-static-native-path-resolution-only",
+            "bounded-static-native-runtime-graph-only",
+            "no-transitive-dylib-closure",
         )
     )
 
@@ -685,6 +710,266 @@ def test_artifact_evidence_exactly_binds_runtime_path_resolution_truth_table() -
     )
     with pytest.raises(ValueError, match="format/origin"):
         ArtifactEvidence(**base, native_runtime_path_resolution=crossed)
+
+
+def test_artifact_evidence_cross_binds_c69_graph_to_c68_and_wheel_bytes() -> None:
+    root_entry = WheelEntryRef(
+        name="native/_rextio_native.so",
+        sha256="a" * 64,
+        compressed_size=1,
+        uncompressed_size=1,
+    )
+    library_entry = WheelEntryRef(
+        name="native/libdemo.so",
+        sha256="b" * 64,
+        compressed_size=2,
+        uncompressed_size=2,
+    )
+    dependency = NativeRuntimeDependency(
+        name=library_entry.name.rsplit("/", 1)[-1],
+        origin="wheel-candidate",
+    )
+    runtime = NativeRuntimeInventory(
+        format="elf",
+        architecture="x86_64",
+        inspector="readelf",
+        subject_basename="_rextio_native.so",
+        subject_sha256=root_entry.sha256,
+        subject_size=root_entry.uncompressed_size,
+        wheel_member=root_entry.name,
+        wheel_member_sha256=root_entry.sha256,
+        wheel_member_size=root_entry.uncompressed_size,
+        dependencies=(dependency,),
+    )
+    resolution = NativeRuntimePathResolutionInventory(
+        subject_wheel_member=root_entry.name,
+        subject_sha256=root_entry.sha256,
+        records=(
+            NativeRuntimePathResolutionRecord(
+                dependency_bom_ref=dependency.bom_ref(),
+                dependency_name=dependency.name,
+                dependency_origin=dependency.origin,
+                resolution="wheel-member",
+                mechanism="elf-origin-rpath",
+                wheel_member=library_entry.name,
+                sha256=library_entry.sha256,
+                size=library_entry.uncompressed_size,
+            ),
+        ),
+    )
+    root_node = NativeRuntimeTransitiveClosureNode(
+        kind="wheel-member",
+        format="elf",
+        name="_rextio_native.so",
+        wheel_member=root_entry.name,
+        sha256=root_entry.sha256,
+        size=root_entry.uncompressed_size,
+    )
+    library_node = NativeRuntimeTransitiveClosureNode(
+        kind="wheel-member",
+        format="elf",
+        name="libdemo.so",
+        wheel_member=library_entry.name,
+        sha256=library_entry.sha256,
+        size=library_entry.uncompressed_size,
+    )
+    closure = NativeRuntimeTransitiveClosureInventory(
+        format="elf",
+        architecture="x86_64",
+        subject_wheel_member=root_entry.name,
+        subject_sha256=root_entry.sha256,
+        subject_size=root_entry.uncompressed_size,
+        root_node_ref=root_node.node_ref,
+        nodes=tuple(sorted((root_node, library_node), key=lambda node: node.node_ref)),
+        edges=(
+            NativeRuntimeTransitiveClosureEdge(
+                source_ref=root_node.node_ref,
+                target_ref=library_node.node_ref,
+                dependency_name="libdemo.so",
+                mechanism="elf-origin-rpath",
+            ),
+        ),
+    )
+    base = {
+        "kind": "host-extension-wheel",
+        "status": "preview-ready",
+        "target_triple": "x86_64-unknown-linux-gnu",
+        "subject": EvidenceFileRef(
+            logical_path="dist/demo.whl",
+            sha256="c" * 64,
+            size=1,
+            role="host-extension-wheel",
+        ),
+        "sbom": SidecarArtifact(
+            format="CycloneDX",
+            logical_path="dist/demo.whl.cdx.json",
+            sha256="d" * 64,
+            size=1,
+        ),
+        "provenance": SidecarArtifact(
+            format="in-toto-Statement",
+            logical_path="dist/demo.whl.intoto.json",
+            sha256="e" * 64,
+            size=1,
+        ),
+        "wheel_entries": (root_entry, library_entry),
+        "native_runtime_inventory": runtime,
+        "native_runtime_path_resolution": resolution,
+    }
+    evidence = ArtifactEvidence(
+        **base,
+        native_runtime_transitive_closure=closure,
+    )
+    assert evidence.to_dict()["native_runtime_transitive_closure"] == closure.to_dict()
+    provenance = build_intoto_provenance_document(
+        subject=evidence.subject,
+        sbom=EvidenceFileRef(
+            logical_path="dist/demo.whl.cdx.json",
+            sha256="d" * 64,
+            size=1,
+            role="cyclonedx-sbom",
+        ),
+        inputs=(),
+        cargo_packages=(),
+        target_triple="x86_64-unknown-linux-gnu",
+        native_runtime_inventory=runtime,
+        native_runtime_path_resolution=resolution,
+        native_runtime_transitive_closure=closure,
+    )
+    internal = provenance["predicate"]["buildDefinition"]["internalParameters"]
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert internal["native_runtime_transitive_closure_observed"] is True
+    assert internal["native_runtime_transitive_closure_complete"] is False
+    assert metadata["rextio:native_runtime_transitive_closure"] == closure.to_dict()
+
+    with pytest.raises(ValueError, match="requires direct path-resolution"):
+        ArtifactEvidence(
+            **{key: value for key, value in base.items() if key != "native_runtime_path_resolution"},
+            native_runtime_transitive_closure=closure,
+        )
+    wrong_target = NativeRuntimeTransitiveClosureNode(
+        kind="system-logical",
+        format="elf",
+        name="libdemo.so",
+    )
+    wrong_edge = NativeRuntimeTransitiveClosureEdge(
+        source_ref=root_node.node_ref,
+        target_ref=wrong_target.node_ref,
+        dependency_name="libdemo.so",
+        mechanism="elf-system-name",
+    )
+    with pytest.raises(ValueError, match="root edge binding"):
+        ArtifactEvidence(
+            **base,
+            native_runtime_transitive_closure=NativeRuntimeTransitiveClosureInventory(
+                format="elf",
+                architecture="x86_64",
+                subject_wheel_member=root_entry.name,
+                subject_sha256=root_entry.sha256,
+                subject_size=root_entry.uncompressed_size,
+                root_node_ref=root_node.node_ref,
+                nodes=tuple(sorted((root_node, wrong_target), key=lambda node: node.node_ref)),
+                edges=(wrong_edge,),
+            ),
+        )
+
+    disallowed = NativeRuntimeDependency(name="libnot-system.so", origin="unresolved")
+    disallowed_runtime = NativeRuntimeInventory(
+        format="elf",
+        architecture="x86_64",
+        inspector="readelf",
+        subject_basename="_rextio_native.so",
+        subject_sha256=root_entry.sha256,
+        subject_size=root_entry.uncompressed_size,
+        wheel_member=root_entry.name,
+        wheel_member_sha256=root_entry.sha256,
+        wheel_member_size=root_entry.uncompressed_size,
+        dependencies=(disallowed,),
+    )
+    disallowed_resolution = NativeRuntimePathResolutionInventory(
+        subject_wheel_member=root_entry.name,
+        subject_sha256=root_entry.sha256,
+        records=(
+            NativeRuntimePathResolutionRecord(
+                dependency_bom_ref=disallowed.bom_ref(),
+                dependency_name=disallowed.name,
+                dependency_origin=disallowed.origin,
+                resolution="system-logical",
+                mechanism="elf-system-name",
+            ),
+        ),
+    )
+    disallowed_node = NativeRuntimeTransitiveClosureNode(
+        kind="system-logical",
+        format="elf",
+        name=disallowed.name,
+    )
+    disallowed_closure = NativeRuntimeTransitiveClosureInventory(
+        format="elf",
+        architecture="x86_64",
+        subject_wheel_member=root_entry.name,
+        subject_sha256=root_entry.sha256,
+        subject_size=root_entry.uncompressed_size,
+        root_node_ref=root_node.node_ref,
+        nodes=tuple(
+            sorted((root_node, disallowed_node), key=lambda node: node.node_ref)
+        ),
+        edges=(
+            NativeRuntimeTransitiveClosureEdge(
+                source_ref=root_node.node_ref,
+                target_ref=disallowed_node.node_ref,
+                dependency_name=disallowed.name,
+                mechanism="elf-system-name",
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="outside target allowlist"):
+        ArtifactEvidence(
+            **{
+                **base,
+                "wheel_entries": (root_entry,),
+                "native_runtime_inventory": disallowed_runtime,
+                "native_runtime_path_resolution": disallowed_resolution,
+            },
+            native_runtime_transitive_closure=disallowed_closure,
+        )
+
+
+def test_runtime_closure_basename_grammar_allows_root_underscore_only() -> None:
+    root = NativeRuntimeTransitiveClosureNode(
+        kind="wheel-member",
+        format="elf",
+        name="_rextio_native.so",
+        wheel_member="pkg/_rextio_native.so",
+        sha256="a" * 64,
+        size=1,
+    )
+    dependency = NativeRuntimeTransitiveClosureNode(
+        kind="system-logical",
+        format="elf",
+        name="libc.so.6",
+    )
+    assert root.name.startswith("_")
+    NativeRuntimeTransitiveClosureEdge(
+        source_ref=root.node_ref,
+        target_ref=dependency.node_ref,
+        dependency_name=dependency.name,
+        mechanism="elf-system-name",
+    )
+
+    with pytest.raises(ValueError, match="node name is unsafe"):
+        NativeRuntimeTransitiveClosureNode(
+            kind="system-logical",
+            format="elf",
+            name="_private.so",
+        )
+    with pytest.raises(ValueError, match="dependency name is unsafe"):
+        NativeRuntimeTransitiveClosureEdge(
+            source_ref=root.node_ref,
+            target_ref=root.node_ref,
+            dependency_name="_rextio_native.so",
+            mechanism="elf-origin-rpath",
+        )
 
 
 def test_artifact_evidence_rejects_runtime_resolution_with_unrelated_basename() -> None:

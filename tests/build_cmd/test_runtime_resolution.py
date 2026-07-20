@@ -144,6 +144,35 @@ def test_macho_rejects_traversal_executable_and_private_forms(dependency: str) -
 
 
 @pytest.mark.parametrize(
+    "dependency",
+    [
+        "/usr/lib/../../tmp/libevil.dylib",
+        "/usr/lib//libevil.dylib",
+        "/usr/lib/./libevil.dylib",
+        "/System/Library/../tmp/libevil.dylib",
+    ],
+)
+def test_macho_rejects_noncanonical_system_dependency_paths(dependency: str) -> None:
+    with pytest.raises(ArtifactEvidenceError):
+        runtime_resolution.parse_macho_load_commands(_macho_output(dependency=dependency))
+
+
+@pytest.mark.parametrize(
+    "dependency",
+    [
+        "/usr/lib/libSystem.B.dylib",
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+    ],
+)
+def test_macho_accepts_canonical_system_dependency_paths(dependency: str) -> None:
+    plan = runtime_resolution.parse_macho_load_commands(
+        _macho_output(dependency=dependency)
+    )
+
+    assert plan.dependencies == (dependency,)
+
+
+@pytest.mark.parametrize(
     "command",
     ["LC_LOAD_WEAK_DYLIB", "LC_REEXPORT_DYLIB", "LC_LOAD_UPWARD_DYLIB"],
 )
@@ -470,6 +499,202 @@ def test_candidate_receipt_detects_parent_swap_and_restore(tmp_path: Path) -> No
     assert not runtime_resolution.verify_native_runtime_path_resolution(
         observation,
         expected_python_root=root,
+    )
+
+
+def test_refresh_rebuilds_receipts_after_private_snapshot_lifecycle(
+    tmp_path: Path,
+) -> None:
+    dependency = NativeRuntimeDependency(name="libchild.so", origin="wheel-candidate")
+    root, subject_member, inventory, entries = _layout(
+        tmp_path,
+        dependency=dependency,
+        candidate="pkg/libchild.so",
+        format="elf",
+    )
+    child = root / "pkg/libchild.so"
+    child_entry = next(entry for entry in entries if entry.name == "pkg/libchild.so")
+    path_inventory = NativeRuntimePathResolutionInventory(
+        subject_wheel_member=subject_member,
+        subject_sha256=inventory.subject_sha256,
+        records=(
+            NativeRuntimePathResolutionRecord(
+                dependency_bom_ref=dependency.bom_ref(),
+                dependency_name=dependency.name,
+                dependency_origin=dependency.origin,
+                resolution="wheel-member",
+                mechanism="elf-origin-rpath",
+                wheel_member=child_entry.name,
+                sha256=child_entry.sha256,
+                size=child_entry.uncompressed_size,
+            ),
+        ),
+    )
+    seed = runtime_resolution.NativeRuntimePathResolutionObservation(
+        inventory=path_inventory,
+        receipts=(
+            runtime_resolution._read_candidate_secure(
+                root=root,
+                parts=("pkg", "libchild.so"),
+            ),
+        ),
+    )
+    before = runtime_resolution.refresh_native_runtime_path_resolution_observation(
+        seed,
+        expected_python_root=root,
+    )
+    assert before is not None
+    assert runtime_resolution.verify_native_runtime_path_resolution(
+        before,
+        expected_python_root=root,
+    )
+
+    with runtime_resolution._private_binary_snapshot(child, expected_root=root):
+        pass
+
+    assert not runtime_resolution.verify_native_runtime_path_resolution(
+        before,
+        expected_python_root=root,
+    )
+    refreshed = runtime_resolution.refresh_native_runtime_path_resolution_observation(
+        before,
+        expected_python_root=root,
+    )
+    assert refreshed is not None
+    assert refreshed.inventory == path_inventory
+    assert runtime_resolution.verify_native_runtime_path_resolution(
+        refreshed,
+        expected_python_root=root,
+    )
+
+
+def test_refresh_requires_prior_coverage_and_rejects_non_root_changes(
+    tmp_path: Path,
+) -> None:
+    dependency = NativeRuntimeDependency(name="libchild.so", origin="wheel-candidate")
+    root, subject_member, inventory, entries = _layout(
+        tmp_path,
+        dependency=dependency,
+        candidate="pkg/libchild.so",
+        format="elf",
+    )
+    child_entry = next(entry for entry in entries if entry.name == "pkg/libchild.so")
+    path_inventory = NativeRuntimePathResolutionInventory(
+        subject_wheel_member=subject_member,
+        subject_sha256=inventory.subject_sha256,
+        records=(
+            NativeRuntimePathResolutionRecord(
+                dependency_bom_ref=dependency.bom_ref(),
+                dependency_name=dependency.name,
+                dependency_origin=dependency.origin,
+                resolution="wheel-member",
+                mechanism="elf-origin-rpath",
+                wheel_member=child_entry.name,
+                sha256=child_entry.sha256,
+                size=child_entry.uncompressed_size,
+            ),
+        ),
+    )
+    missing = runtime_resolution.NativeRuntimePathResolutionObservation(
+        inventory=path_inventory,
+        receipts=(),
+    )
+    assert (
+        runtime_resolution.refresh_native_runtime_path_resolution_observation(
+            missing,
+            expected_python_root=root,
+        )
+        is None
+    )
+
+    child = root / "pkg/libchild.so"
+    receipt = runtime_resolution._read_candidate_secure(
+        root=root,
+        parts=("pkg", "libchild.so"),
+    )
+    observed = runtime_resolution.NativeRuntimePathResolutionObservation(
+        inventory=path_inventory,
+        receipts=(receipt,),
+    )
+    unrelated = root / "pkg/unrelated.tmp"
+    unrelated.write_bytes(b"temporary")
+    unrelated.unlink()
+    assert (
+        runtime_resolution.refresh_native_runtime_path_resolution_observation(
+            observed,
+            expected_python_root=root,
+        )
+        is None
+    )
+
+    receipt = runtime_resolution._read_candidate_secure(
+        root=root,
+        parts=("pkg", "libchild.so"),
+    )
+    observed = runtime_resolution.NativeRuntimePathResolutionObservation(
+        inventory=path_inventory,
+        receipts=(receipt,),
+    )
+    original = child.read_bytes()
+    child.write_bytes(b"changed")
+    child.write_bytes(original)
+    assert (
+        runtime_resolution.refresh_native_runtime_path_resolution_observation(
+            observed,
+            expected_python_root=root,
+        )
+        is None
+    )
+
+
+def test_path_resolution_entrypoints_reject_symlink_generated_root(
+    tmp_path: Path,
+) -> None:
+    dependency = NativeRuntimeDependency(name="libchild.so", origin="wheel-candidate")
+    root, subject_member, inventory, entries = _layout(
+        tmp_path,
+        dependency=dependency,
+        candidate="pkg/libchild.so",
+        format="elf",
+    )
+    path_inventory = NativeRuntimePathResolutionInventory(
+        subject_wheel_member=subject_member,
+        subject_sha256=inventory.subject_sha256,
+        records=(),
+    )
+    empty = runtime_resolution.NativeRuntimePathResolutionObservation(
+        inventory=path_inventory,
+        receipts=(),
+    )
+    refreshed = runtime_resolution.refresh_native_runtime_path_resolution_observation(
+        empty,
+        expected_python_root=root,
+    )
+    assert refreshed is not None and refreshed.receipts == ()
+
+    linked_root = tmp_path / "linked-python"
+    linked_root.symlink_to(root, target_is_directory=True)
+    assert not runtime_resolution.verify_native_runtime_path_resolution(
+        empty,
+        expected_python_root=linked_root,
+    )
+    assert (
+        runtime_resolution.refresh_native_runtime_path_resolution_observation(
+            empty,
+            expected_python_root=linked_root,
+        )
+        is None
+    )
+    assert (
+        runtime_resolution.collect_native_runtime_path_resolution(
+            installed_path=linked_root / subject_member,
+            expected_python_root=linked_root,
+            wheel_entries=entries,
+            runtime_inventory=inventory,
+            target_triple="x86_64-unknown-linux-gnu",
+            timeout=1.0,
+        )
+        is None
     )
 
 

@@ -1,4 +1,4 @@
-"""C6.2/C6.4/C6.6-C6.8 evidence emission for host-extension+cpython wheels.
+"""C6.2/C6.4/C6.6-C6.9 evidence emission for host-extension+cpython wheels.
 
 In-scope builds always emit an ``artifact_evidence`` record with status
 ``preview-ready`` or ``unavailable`` (authority ``evidence-only``). Evidence
@@ -17,8 +17,9 @@ unchanged.
 
 C6.7 adds an exact observation-only inventory of Cargo metadata license
 strings. C6.8 adds exact one-hop static packaged path observations for direct
-native dependencies. It is the newest sidecar payload and is therefore omitted
-first when the closed provenance ceiling would otherwise be exceeded.
+native dependencies. C6.9 adds a bounded, cycle-safe static graph over
+recursively inspected packaged nodes. C6.9 is omitted first when the closed
+provenance ceiling would otherwise be exceeded.
 """
 
 from __future__ import annotations
@@ -64,8 +65,13 @@ from rextio.build.runtime_inventory import (
     inspect_native_runtime_inventory,
     resolve_installed_native_binary,
 )
+from rextio.build.runtime_closure import (
+    collect_native_runtime_transitive_closure,
+    verify_native_runtime_transitive_closure,
+)
 from rextio.build.runtime_resolution import (
     collect_native_runtime_path_resolution,
+    refresh_native_runtime_path_resolution_observation,
     verify_native_runtime_path_resolution,
 )
 from rextio.build.transformation_inventory import (
@@ -575,6 +581,38 @@ def _emit_preview_ready(
         if runtime_resolution_observation is not None
         else None
     )
+    runtime_closure_observation = collect_native_runtime_transitive_closure(
+        installed_path=installed,
+        expected_python_root=layout.python_dir,
+        wheel_entries=wheel_entries,
+        runtime_inventory=runtime_inventory,
+        path_resolution=runtime_path_resolution,
+        target_triple=profile.target_triple,
+        timeout=timeout,
+    )
+    if runtime_resolution_observation is not None:
+        # C6.9 snapshots are created below the generated Python root and their
+        # lifecycle changes directory stamps captured by C6.8. Refresh from the
+        # already exact C6.8 inventory after every C6.9 attempt, including an
+        # attempt that returned None after partial snapshot work. Refreshing
+        # only reopens exact packaged candidates; it creates no snapshot and
+        # performs no filesystem mutation.
+        runtime_resolution_observation = (
+            refresh_native_runtime_path_resolution_observation(
+                runtime_resolution_observation,
+                expected_python_root=layout.python_dir,
+            )
+        )
+        if runtime_resolution_observation is None:
+            runtime_path_resolution = None
+            runtime_closure_observation = None
+        else:
+            runtime_path_resolution = runtime_resolution_observation.inventory
+    runtime_transitive_closure = (
+        runtime_closure_observation.inventory
+        if runtime_closure_observation is not None
+        else None
+    )
 
     # Re-verify inputs and re-hash the wheel after native inspection.
     mismatch = verify_input_snapshot(input_snapshot, project_root=project_root)
@@ -642,13 +680,31 @@ def _emit_preview_ready(
         target_triple=profile.target_triple,
         native_runtime_inventory=runtime_inventory,
         native_runtime_path_resolution=runtime_path_resolution,
+        native_runtime_transitive_closure=runtime_transitive_closure,
         source_transformation_inventory=transformation_inventory,
         component_license_inventory=component_license_inventory,
     )
     provenance_bytes = pretty_json_bytes(provenance_document)
-    if runtime_path_resolution is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
-        # C6.8 is the newest additive observation and therefore the first
+    if runtime_transitive_closure is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
+        # C6.9 is the newest additive observation and therefore the first
         # deterministic omission at the closed provenance sidecar ceiling.
+        runtime_transitive_closure = None
+        runtime_closure_observation = None
+        provenance_document = build_intoto_provenance_document(
+            subject=subject,
+            sbom=sbom_ref,
+            inputs=inputs,
+            cargo_packages=inventory.packages,
+            target_triple=profile.target_triple,
+            native_runtime_inventory=runtime_inventory,
+            native_runtime_path_resolution=runtime_path_resolution,
+            native_runtime_transitive_closure=None,
+            source_transformation_inventory=transformation_inventory,
+            component_license_inventory=component_license_inventory,
+        )
+        provenance_bytes = pretty_json_bytes(provenance_document)
+    if runtime_path_resolution is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
+        # Once C6.9 is absent, C6.8 is the next additive observation omitted.
         runtime_path_resolution = None
         runtime_resolution_observation = None
         provenance_document = build_intoto_provenance_document(
@@ -659,6 +715,7 @@ def _emit_preview_ready(
             target_triple=profile.target_triple,
             native_runtime_inventory=runtime_inventory,
             native_runtime_path_resolution=None,
+            native_runtime_transitive_closure=None,
             source_transformation_inventory=transformation_inventory,
             component_license_inventory=component_license_inventory,
         )
@@ -667,7 +724,7 @@ def _emit_preview_ready(
         component_license_inventory is not None
         and len(provenance_bytes) > MAX_SIDECAR_BYTES
     ):
-        # After the newer C6.8 payload has been omitted, omit C6.7 next. This
+        # After C6.9 and C6.8 have been omitted, omit C6.7 next. This
         # preserves C6.6 and every earlier evidence/gate result whenever only
         # the license observation caused the remaining ceiling crossing.
         component_license_inventory = None
@@ -679,6 +736,7 @@ def _emit_preview_ready(
             target_triple=profile.target_triple,
             native_runtime_inventory=runtime_inventory,
             native_runtime_path_resolution=None,
+            native_runtime_transitive_closure=None,
             source_transformation_inventory=transformation_inventory,
             component_license_inventory=None,
         )
@@ -701,6 +759,7 @@ def _emit_preview_ready(
             target_triple=profile.target_triple,
             native_runtime_inventory=runtime_inventory,
             native_runtime_path_resolution=None,
+            native_runtime_transitive_closure=None,
             source_transformation_inventory=None,
             component_license_inventory=None,
         )
@@ -751,6 +810,32 @@ def _emit_preview_ready(
             reason=REASON_RUNTIME_BINARY_MISMATCH,
         )
 
+    if runtime_closure_observation is not None and not (
+        verify_native_runtime_transitive_closure(
+            runtime_closure_observation,
+            expected_python_root=layout.python_dir,
+        )
+    ):
+        # A C6.9-only identity failure removes only the bounded graph. The
+        # independently verified C6.8 direct observation remains available.
+        runtime_transitive_closure = None
+        runtime_closure_observation = None
+        provenance_document = build_intoto_provenance_document(
+            subject=subject,
+            sbom=sbom_ref,
+            inputs=inputs,
+            cargo_packages=inventory.packages,
+            target_triple=profile.target_triple,
+            native_runtime_inventory=runtime_inventory,
+            native_runtime_path_resolution=runtime_path_resolution,
+            native_runtime_transitive_closure=None,
+            source_transformation_inventory=transformation_inventory,
+            component_license_inventory=component_license_inventory,
+        )
+        provenance_bytes = pretty_json_bytes(provenance_document)
+        provenance_digest = sha256_hex(provenance_bytes)
+        provenance_size = len(provenance_bytes)
+
     if runtime_resolution_observation is not None and not (
         verify_native_runtime_path_resolution(
             runtime_resolution_observation,
@@ -758,10 +843,12 @@ def _emit_preview_ready(
         )
     ):
         # A packaged candidate changed or its pinned path identity no longer
-        # matches. C6.8 remains optional: omit only its observation and rebuild
-        # deterministic provenance without changing earlier evidence/gates.
+        # matches. C6.8 remains optional; because C6.9 is rooted in C6.8, omit
+        # both observations and rebuild without changing earlier evidence/gates.
         runtime_path_resolution = None
         runtime_resolution_observation = None
+        runtime_transitive_closure = None
+        runtime_closure_observation = None
         provenance_document = build_intoto_provenance_document(
             subject=subject,
             sbom=sbom_ref,
@@ -770,6 +857,7 @@ def _emit_preview_ready(
             target_triple=profile.target_triple,
             native_runtime_inventory=runtime_inventory,
             native_runtime_path_resolution=None,
+            native_runtime_transitive_closure=None,
             source_transformation_inventory=transformation_inventory,
             component_license_inventory=component_license_inventory,
         )
@@ -810,6 +898,7 @@ def _emit_preview_ready(
         cargo_dependencies=inventory.dependencies,
         native_runtime_inventory=runtime_inventory,
         native_runtime_path_resolution=runtime_path_resolution,
+        native_runtime_transitive_closure=runtime_transitive_closure,
         source_transformation_inventory=transformation_inventory,
         component_license_inventory=component_license_inventory,
         limitations=DEFAULT_LIMITATIONS,

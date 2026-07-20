@@ -12,12 +12,13 @@ fallback.
 The Release Train C branch adds experimental host source/executable planning,
 plugin standalone capability, the C5.1 external-source inventory gate, and the
 C6.1 bounded prebuild authorization-contract preview (not full C6). It emits
-tooling contract **2.13.0**, including C6.2 preview evidence, the C6.3
+tooling contract **2.14.0**, including C6.2 preview evidence, the C6.3
 required-evidence gate, and the C6.4 macOS/Linux direct native runtime linkage
 inventory plus C6.5's always-blocked distribution-readiness assessment and
 C6.6's bounded source-transformation inventory observation, C6.7's
-unvalidated reachable-Cargo component-license string observation, and C6.8's
-one-hop static packaged path-resolution observation, but
+unvalidated reachable-Cargo component-license string observation, C6.8's
+one-hop static packaged path-resolution observation, and C6.9's bounded static
+native-runtime graph observation, but
 remains **unreleased**. PyPI 0.1.4 does not
 include those additions. Train C boundaries are called out explicitly below so
 planning records are not mistaken for broad source-AOT support.
@@ -583,10 +584,13 @@ The unreleased Train C planning records do not change these additional limits:
   only through a closed expected-runtime allowlist; it is not general native
   dependency support. C6.8 may observe exact contained wheel candidates for
   direct Mach-O loader-path/self-rpath and ELF ORIGIN RPATH/RUNPATH forms, while
-  system dependencies remain logical leaves. It does not prove actual loader
-  selection/environment, compute a transitive closure, bind system-library
+  system dependencies remain logical leaves. C6.9 recursively inspects only
+  those exact packaged members under strict graph, candidate, inspector,
+  deadline, output, and serialization bounds; cycles are recorded and system
+  names remain unhashed leaves. It does not prove actual loader
+  selection/environment, compute a complete transitive closure, bind system-library
   bytes, observe `dlopen`, cover Windows or runtime-bearing plugins, or produce
-  signatures. C6.5-C6.8 reports these gaps through a closed,
+  signatures. C6.5-C6.9 reports these gaps through a closed,
   always-blocked readiness assessment; it cannot authorize distribution. C6.6
   observes only accepted project-owned function lowerings and binds hashes,
   ranges, closed ids, and the shared generated `src/lib.rs` input. It does not

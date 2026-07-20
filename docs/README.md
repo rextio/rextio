@@ -37,8 +37,9 @@ An index of the project's documentation. See the top-level
   runtime linkage inventory for macOS/Linux, `2.10.0` C6.5 always-blocked
   distribution-authorization readiness, `2.11.0` C6.6 bounded
   source-transformation observation, `2.12.0` C6.7 component-license
-  observation, and current `2.13.0` C6.8 one-hop native path-resolution
-  observation; published 0.1.4
+  observation, `2.13.0` C6.8 one-hop native path-resolution observation, and
+  current `2.14.0` C6.9 bounded static native-runtime graph observation;
+  published 0.1.4
   remains the 2.2.0 producer.
 - [Plugin lowering](specs/plugin-lowering.md) — draft (0.1.1+; plugin API 1.1
   on PyPI 0.1.1, **1.2** additive on published 0.1.2, and **1.3** on published

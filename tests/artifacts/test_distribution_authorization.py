@@ -12,6 +12,7 @@ from rextio.artifacts.authorization import (
     ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
     ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
+    ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
     ArtifactAuthorizationCheck,
@@ -32,6 +33,9 @@ from rextio.artifacts.evidence import (
     NativeRuntimeInventory,
     NativeRuntimePathResolutionInventory,
     NativeRuntimePathResolutionRecord,
+    NativeRuntimeTransitiveClosureEdge,
+    NativeRuntimeTransitiveClosureInventory,
+    NativeRuntimeTransitiveClosureNode,
     SidecarArtifact,
     SourceTransformationInventory,
     SourceTransformationRange,
@@ -74,6 +78,62 @@ def _preview_evidence() -> ArtifactEvidence:
         sha256="5" * 64,
         size=1,
         role="generated-rust-input",
+    )
+    runtime_dependency = NativeRuntimeDependency(name="libc.so.6")
+    runtime_inventory = NativeRuntimeInventory(
+        format="elf",
+        architecture="x86_64",
+        inspector="readelf",
+        subject_basename=native_entry.name,
+        subject_sha256=native_entry.sha256,
+        subject_size=native_entry.uncompressed_size,
+        wheel_member=native_entry.name,
+        wheel_member_sha256=native_entry.sha256,
+        wheel_member_size=native_entry.uncompressed_size,
+        dependencies=(runtime_dependency,),
+    )
+    path_resolution = NativeRuntimePathResolutionInventory(
+        subject_wheel_member=native_entry.name,
+        subject_sha256=native_entry.sha256,
+        records=(
+            NativeRuntimePathResolutionRecord(
+                dependency_bom_ref=runtime_dependency.bom_ref(),
+                dependency_name="libc.so.6",
+                dependency_origin="unresolved",
+                resolution="system-logical",
+                mechanism="elf-system-name",
+            ),
+        ),
+    )
+    root_node = NativeRuntimeTransitiveClosureNode(
+        kind="wheel-member",
+        format="elf",
+        name=native_entry.name,
+        wheel_member=native_entry.name,
+        sha256=native_entry.sha256,
+        size=native_entry.uncompressed_size,
+    )
+    system_node = NativeRuntimeTransitiveClosureNode(
+        kind="system-logical",
+        format="elf",
+        name="libc.so.6",
+    )
+    runtime_closure = NativeRuntimeTransitiveClosureInventory(
+        format="elf",
+        architecture="x86_64",
+        subject_wheel_member=native_entry.name,
+        subject_sha256=native_entry.sha256,
+        subject_size=native_entry.uncompressed_size,
+        root_node_ref=root_node.node_ref,
+        nodes=tuple(sorted((root_node, system_node), key=lambda node: node.node_ref)),
+        edges=(
+            NativeRuntimeTransitiveClosureEdge(
+                source_ref=root_node.node_ref,
+                target_ref=system_node.node_ref,
+                dependency_name=system_node.name,
+                mechanism="elf-system-name",
+            ),
+        ),
     )
     return ArtifactEvidence(
         kind="host-extension-wheel",
@@ -127,33 +187,9 @@ def _preview_evidence() -> ArtifactEvidence:
             ),
         ),
         wheel_entries=(native_entry,),
-        native_runtime_inventory=NativeRuntimeInventory(
-            format="elf",
-            architecture="x86_64",
-            inspector="readelf",
-            subject_basename=native_entry.name,
-            subject_sha256=native_entry.sha256,
-            subject_size=native_entry.uncompressed_size,
-            wheel_member=native_entry.name,
-            wheel_member_sha256=native_entry.sha256,
-            wheel_member_size=native_entry.uncompressed_size,
-            dependencies=(NativeRuntimeDependency(name="libc.so.6"),),
-        ),
-        native_runtime_path_resolution=NativeRuntimePathResolutionInventory(
-            subject_wheel_member=native_entry.name,
-            subject_sha256=native_entry.sha256,
-            records=(
-                NativeRuntimePathResolutionRecord(
-                    dependency_bom_ref=NativeRuntimeDependency(
-                        name="libc.so.6"
-                    ).bom_ref(),
-                    dependency_name="libc.so.6",
-                    dependency_origin="unresolved",
-                    resolution="system-logical",
-                    mechanism="elf-system-name",
-                ),
-            ),
-        ),
+        native_runtime_inventory=runtime_inventory,
+        native_runtime_path_resolution=path_resolution,
+        native_runtime_transitive_closure=runtime_closure,
         source_transformation_inventory=SourceTransformationInventory(
             records=(
                 SourceTransformationRecord(
@@ -202,7 +238,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
 
     assert report["kind"] == "artifact-distribution-authorization"
     assert report["policy"] == "host-extension-wheel-cpython-v1"
-    assert report["policy_version"] == 4
+    assert report["policy_version"] == 5
     assert report["scope"] == "host-extension-wheel-cpython-v1"
     assert report["status"] == "blocked"
     assert report["authority"] == "readiness-assessment-only"
@@ -211,7 +247,8 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
     assert [item["id"] for item in report["checks"]] == list(
         ARTIFACT_AUTHORIZATION_CHECK_IDS
     )
-    assert [item["status"] for item in report["checks"][:7]] == [
+    assert [item["status"] for item in report["checks"][:8]] == [
+        "satisfied",
         "satisfied",
         "satisfied",
         "satisfied",
@@ -220,7 +257,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
         "satisfied",
         "satisfied",
     ]
-    assert {item["status"] for item in report["checks"][7:]} == {"blocked"}
+    assert {item["status"] for item in report["checks"][8:]} == {"blocked"}
     assert report["blockers"] == list(ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS)
     assert report["complete"] is False
     assert report["signed"] is False
@@ -235,7 +272,8 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
 
     assert report["evidence_status"] == "unavailable"
     assert report["evidence_reason"] == "cargo-metadata-failed"
-    assert [item["status"] for item in report["checks"][:7]] == [
+    assert [item["status"] for item in report["checks"][:8]] == [
+        "unavailable",
         "unavailable",
         "unavailable",
         "unavailable",
@@ -244,7 +282,7 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
         "unavailable",
         "unavailable",
     ]
-    assert {item["status"] for item in report["checks"][7:]} == {"not-evaluated"}
+    assert {item["status"] for item in report["checks"][8:]} == {"not-evaluated"}
     assert report["blockers"] == ["evidence-unavailable"]
     assert "/" not in json.dumps(report, sort_keys=True)
 
@@ -268,18 +306,38 @@ def test_missing_transformation_inventory_is_a_dedicated_closed_observation() ->
 
 
 def test_missing_runtime_path_resolution_is_a_dedicated_closed_observation() -> None:
-    evidence = replace(_preview_evidence(), native_runtime_path_resolution=None)
+    evidence = replace(
+        _preview_evidence(),
+        native_runtime_path_resolution=None,
+        native_runtime_transitive_closure=None,
+    )
     report = evaluate_artifact_distribution_authorization(evidence).to_dict()
     statuses = {item["id"]: item["status"] for item in report["checks"]}
 
     assert statuses["direct-native-linkage-observed"] == "satisfied"
     assert statuses["direct-native-path-resolution-bound"] == "unavailable"
+    assert statuses["bounded-static-native-runtime-graph-bound"] == "unavailable"
     assert statuses["native-runtime-resolution-complete"] == "blocked"
     assert report["blockers"] == [
         *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
         ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
     ]
     assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+
+
+def test_missing_bounded_runtime_graph_retains_direct_path_observation() -> None:
+    evidence = replace(_preview_evidence(), native_runtime_transitive_closure=None)
+    report = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    statuses = {item["id"]: item["status"] for item in report["checks"]}
+
+    assert statuses["direct-native-path-resolution-bound"] == "satisfied"
+    assert statuses["bounded-static-native-runtime-graph-bound"] == "unavailable"
+    assert statuses["native-runtime-transitive-closure-complete"] == "blocked"
+    assert report["blockers"] == [
+        *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
+        ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
+    ]
 
 
 def test_missing_license_inventory_is_a_dedicated_closed_observation() -> None:
@@ -605,10 +663,14 @@ def test_target_architecture_vocabulary_matches_c6_4_runtime_inventory(
         evidence,
         target_triple=target_triple,
         native_runtime_inventory=runtime,
+        native_runtime_transitive_closure=replace(
+            evidence.native_runtime_transitive_closure,
+            architecture=architecture,
+        ),
     )
 
     report = evaluate_artifact_distribution_authorization(adjusted).to_dict()
-    assert [item["status"] for item in report["checks"][:6]] == ["satisfied"] * 6
+    assert [item["status"] for item in report["checks"][:8]] == ["satisfied"] * 8
 
 
 def test_evaluator_is_total_for_low_level_invalid_top_level_status() -> None:

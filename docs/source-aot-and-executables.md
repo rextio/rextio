@@ -2,7 +2,7 @@
 
 Status: **Unreleased Release Train C**, experimental. The latest published
 Rextio release remains **0.1.4** with tooling contract **2.2.0**. The Train C
-branch emits the additive, unreleased tooling contract **2.13.0**; none of the
+branch emits the additive, unreleased tooling contract **2.14.0**; none of the
 surfaces on this page should be treated as already available from PyPI.
 
 Train C introduces a fail-closed planning layer for host source, output
@@ -107,7 +107,7 @@ The plan and CLI include a strong warning: dependency source translation or
 redistribution can create derivative-work obligations, GNU/copyleft terms need
 particular care, and this inventory/authorization gate is not legal advice.
 
-## C6.2-C6.8 host-extension evidence/readiness — bounded and blocked
+## C6.2-C6.9 host-extension evidence/readiness — bounded and blocked
 
 For one ordinary native host-extension + CPython wheel, C6.2 emits incomplete
 CycloneDX 1.6 and unsigned in-toto/SLSA provenance sidecars. C6.3 can make that
@@ -170,8 +170,8 @@ successful inventory keeps
 `distribution_authorized: false`.
 
 C6.5 serializes a separate `artifact_distribution_authorization` readiness
-assessment for this same evidence path. C6.8 advances that assessment to policy
-version 4 and revalidates seven bounded observations through closed-model
+assessment for this same evidence path. C6.9 advances that assessment to policy
+version 5 and revalidates eight bounded observations through closed-model
 reconstruction and exact source/generated evidence-reference cross-binding
 before marking them satisfied. It does not reopen artifacts, re-inspect bytes,
 or independently re-derive qualnames, ranges, or semantic-AST hashes from
@@ -184,7 +184,7 @@ identity, reproducibility, signature, and complete SBOM composition. Unavailable
 evidence produces only `evidence-unavailable` plus the existing fixed reason.
 A structurally invalid preview produces only
 `readiness-assessment-unavailable` with every check `not-evaluated`; C6.5
-through C6.8 change neither best-effort build success nor the C6.3 required preview
+through C6.9 change neither best-effort build success nor the C6.3 required preview
 gate.
 
 C6.6 also places a deterministic observation-only
@@ -229,8 +229,8 @@ Missing C6.7 inventory makes only `component-license-inventory-bound`
 unavailable with `component-license-inventory-unavailable`. Malformed,
 noncanonical, stale, extra, omitted, or otherwise non-exact Cargo bindings use
 the existing all-`not-evaluated` readiness-unavailable shape. Provenance records
-whether the observation is present. Under current C6.8, a crossed sidecar
-ceiling omits C6.8 first and C6.7 next, preserving C6.6 and earlier
+whether the observation is present. Under current C6.9, a crossed sidecar
+ceiling omits C6.9 first, then C6.8 and C6.7, preserving C6.6 and earlier
 evidence/gate results whenever possible. The separate
 `component-license-policy-complete` check remains blocked.
 
@@ -248,17 +248,50 @@ used to execute or load the artifact, and ambient loader environment, cache,
 `ldd`, `dlopen`, and `ldconfig` are never consulted.
 
 Unsafe, unsupported, missing, ambiguous, changed, or over-bound candidates omit
-only C6.8; the corresponding observation is unavailable with
+C6.8 and its dependent C6.9 graph; the corresponding observation is unavailable with
 `native-runtime-path-resolution-inventory-unavailable`. A malformed present
 model fails the full readiness reconstruction closed. At the provenance
-ceiling C6.8 is omitted first, then C6.7, then C6.6. A satisfied C6.8 check is
+ceiling C6.9 is omitted first, then C6.8, C6.7, and C6.6. A satisfied C6.8 check is
 still not `native-runtime-resolution-complete`: actual loader precedence and
-environment, transitive closure (planned C6.9), system-library bytes, runtime
+environment, complete transitive closure, system-library bytes, runtime
 `dlopen`, and signatures remain unverified.
 
+C6.9 adds `native_runtime_transitive_closure`, a deterministic static graph
+rooted in the exact C6.8 records. Only reached wheel members are eligible for
+recursion. Each packaged node must match one canonical C6.4 wheel-inventory
+member by path, SHA-256, and size, must be a regular unaliased file, and is
+inspected from an immutable private snapshot with the target object
+format/architecture (`MH_DYLIB` for non-root Mach-O). System dependencies are
+logical terminal nodes with no system-byte hash. Cycles remain ordinary edges;
+each packaged node is inspected at most once.
+
+The collector has independent limits for nodes, edges, graph depth, candidate
+paths per dependency, aggregate candidate attempts, inspector invocations,
+aggregate inspector output, a cooperative total deadline, and serialized
+characters. The deadline is checked around synchronous filesystem reads and
+strictly prevents accepting late evidence, but it does not preempt an in-flight
+filesystem call.
+It requires exactly one canonical packaged candidate path, rejects
+case-fold/Unicode-normalization and device/inode aliases, and rejects a Linux
+allowlisted SONAME when a filesystem entry (including a dangling symlink) or
+wheel member could shadow it. Missing, ambiguous, noncanonical, malformed,
+unsupported, tampered, aliased, or exhausted observations omit only C6.9 and
+leave C6.8 intact. Policy version 5 reports
+`bounded-static-native-runtime-graph-bound`; absence adds
+`bounded-static-native-runtime-graph-unavailable`. The graph always carries
+`complete: false`, `transitive_closure_complete: false`, and
+`actual_loader_selection: false`, so
+`native-runtime-transitive-closure-complete` remains blocked.
+
+After recursive snapshot cleanup, C6.8 receipt refresh requires exact prior
+coverage and preserves file plus ancestor/descendant stamps. Only the generated
+root directory's size/ctime/mtime may differ; its device, inode, and mode remain
+fixed. Snapshot unlink/rmdir or final-absence failures make the observation
+unavailable and never replace an already-active inspection exception.
+
 Windows PE, runtime-bearing plugins,
-signatures, host executables, Rust-importable crates, Nuitka, WASM, dependency
-transitive closure, actual loader selection, system-library bytes, and `dlopen`
+signatures, host executables, Rust-importable crates, Nuitka, WASM, complete
+dependency transitive closure, actual loader selection, system-library bytes, and `dlopen`
 discovery remain out of scope.
 
 ## Artifact profile authority
@@ -406,7 +439,7 @@ enumerates a GPU. See
 
 ## Deferred work
 
-Train C through **2.13.0** does not yet provide:
+Train C through **2.14.0** does not yet provide:
 
 - multiple-module initializer execution or Python import-order emulation;
 - Rust-global publication or native reads of initialized module values;
@@ -416,10 +449,10 @@ Train C through **2.13.0** does not yet provide:
   recursive source-native promotion of installed pure-Python packages;
 - full/signed external-source authorization beyond the C6.1 prebuild lock
   contract (cryptographic signatures);
-- complete standards SPDX/CycloneDX SBOM coverage (C6.2-C6.8 emit only a bounded
+- complete standards SPDX/CycloneDX SBOM coverage (C6.2-C6.9 emit only a bounded
   incomplete CycloneDX 1.6 preview for ordinary host-extension wheels, plus
   unsigned in-toto/SLSA provenance and a macOS/Linux direct-linkage observation;
-  not complete or actual-loader path resolution, transitive closure, `dlopen`
+  not complete or actual-loader path resolution, complete transitive closure, `dlopen`
   discovery, or support for
   Windows PE, runtime-bearing plugins, host-executable, rust-crate, Nuitka
   sidecars, WASM, or external-package source-native builds);
