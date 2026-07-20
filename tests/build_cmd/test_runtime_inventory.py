@@ -10,7 +10,11 @@ from pathlib import Path
 import pytest
 
 from rextio.artifacts import evidence as evidence_mod
-from rextio.artifacts.evidence import ArtifactEvidenceError, WheelEntryRef
+from rextio.artifacts.evidence import (
+    ArtifactEvidenceError,
+    NativeRuntimeDependency,
+    WheelEntryRef,
+)
 from rextio.build import runtime_inventory
 
 
@@ -143,18 +147,27 @@ def test_wheel_binding_requires_exact_relative_path_hash_and_size(
     assert raised.value.reason == evidence_mod.REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
 
 
-def test_otool_rejects_rpath_and_private_absolute_dependency_paths() -> None:
-    for dependency in (
-        "@rpath/libprivate.dylib",
-        "/Users/example/private/libprivate.dylib",
-    ):
-        output = (
-            "/generated/_rextio_native.so:\n"
-            f"\t{dependency} (compatibility version 1.0.0, current version 1.0.0)\n"
-        )
-        with pytest.raises(ArtifactEvidenceError) as raised:
-            runtime_inventory.parse_otool_l_output(output)
-        assert raised.value.reason == evidence_mod.REASON_RUNTIME_UNSAFE_PATH
+def test_otool_marks_bounded_rpath_as_wheel_candidate() -> None:
+    output = (
+        "/generated/_rextio_native.so:\n"
+        "\t@rpath/libprivate.dylib "
+        "(compatibility version 1.0.0, current version 1.0.0)\n"
+    )
+    parsed = runtime_inventory.parse_otool_l_output(output)
+    assert parsed.dependencies == (
+        NativeRuntimeDependency(name="libprivate.dylib", origin="wheel-candidate"),
+    )
+
+
+def test_otool_still_rejects_private_absolute_dependency_path() -> None:
+    output = (
+        "/generated/_rextio_native.so:\n"
+        "\t/Users/example/private/libprivate.dylib "
+        "(compatibility version 1.0.0, current version 1.0.0)\n"
+    )
+    with pytest.raises(ArtifactEvidenceError) as raised:
+        runtime_inventory.parse_otool_l_output(output)
+    assert raised.value.reason == evidence_mod.REASON_RUNTIME_UNSAFE_PATH
 
 
 def test_otool_drops_only_first_exact_private_cargo_self_install_name() -> None:
@@ -405,12 +418,23 @@ def test_macho_bundle_never_uses_dylib_self_id_exception(
     assert raised.value.reason == evidence_mod.REASON_RUNTIME_UNSAFE_PATH
 
 
-def test_readelf_rejects_every_rpath_and_runpath() -> None:
+def test_readelf_accepts_only_origin_anchored_rpath_and_runpath() -> None:
     for tag, label in (("RPATH", "rpath"), ("RUNPATH", "runpath")):
         output = (
             "Dynamic section at offset 0x1000 contains 1 entry:\n"
             "  Tag        Type                         Name/Value\n"
             f" 0x000000000000001d ({tag}) Library {label}: [$ORIGIN/lib]\n"
+        )
+        parsed = runtime_inventory.parse_readelf_d_output(
+            output, target_triple="x86_64-unknown-linux-gnu"
+        )
+        assert parsed.dependencies == ()
+
+    for unsafe in ("/private/lib", "$LIB/lib", "$ORIGIN/../lib", "$ORIGIN::/lib"):
+        output = (
+            "Dynamic section at offset 0x1000 contains 1 entry:\n"
+            "  Tag        Type                         Name/Value\n"
+            f" 0x000000000000001d (RUNPATH) Library runpath: [{unsafe}]\n"
         )
         with pytest.raises(ArtifactEvidenceError) as raised:
             runtime_inventory.parse_readelf_d_output(

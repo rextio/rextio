@@ -12,6 +12,7 @@ from rextio.artifacts.authorization import (
     ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
     ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
+    ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
     ArtifactAuthorizationCheck,
     ArtifactDistributionAuthorizationAssessment,
@@ -29,6 +30,8 @@ from rextio.artifacts.evidence import (
     EvidenceFileRef,
     NativeRuntimeDependency,
     NativeRuntimeInventory,
+    NativeRuntimePathResolutionInventory,
+    NativeRuntimePathResolutionRecord,
     SidecarArtifact,
     SourceTransformationInventory,
     SourceTransformationRange,
@@ -136,6 +139,21 @@ def _preview_evidence() -> ArtifactEvidence:
             wheel_member_size=native_entry.uncompressed_size,
             dependencies=(NativeRuntimeDependency(name="libc.so.6"),),
         ),
+        native_runtime_path_resolution=NativeRuntimePathResolutionInventory(
+            subject_wheel_member=native_entry.name,
+            subject_sha256=native_entry.sha256,
+            records=(
+                NativeRuntimePathResolutionRecord(
+                    dependency_bom_ref=NativeRuntimeDependency(
+                        name="libc.so.6"
+                    ).bom_ref(),
+                    dependency_name="libc.so.6",
+                    dependency_origin="unresolved",
+                    resolution="system-logical",
+                    mechanism="elf-system-name",
+                ),
+            ),
+        ),
         source_transformation_inventory=SourceTransformationInventory(
             records=(
                 SourceTransformationRecord(
@@ -184,7 +202,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
 
     assert report["kind"] == "artifact-distribution-authorization"
     assert report["policy"] == "host-extension-wheel-cpython-v1"
-    assert report["policy_version"] == 3
+    assert report["policy_version"] == 4
     assert report["scope"] == "host-extension-wheel-cpython-v1"
     assert report["status"] == "blocked"
     assert report["authority"] == "readiness-assessment-only"
@@ -193,7 +211,8 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
     assert [item["id"] for item in report["checks"]] == list(
         ARTIFACT_AUTHORIZATION_CHECK_IDS
     )
-    assert [item["status"] for item in report["checks"][:6]] == [
+    assert [item["status"] for item in report["checks"][:7]] == [
+        "satisfied",
         "satisfied",
         "satisfied",
         "satisfied",
@@ -201,7 +220,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
         "satisfied",
         "satisfied",
     ]
-    assert {item["status"] for item in report["checks"][6:]} == {"blocked"}
+    assert {item["status"] for item in report["checks"][7:]} == {"blocked"}
     assert report["blockers"] == list(ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS)
     assert report["complete"] is False
     assert report["signed"] is False
@@ -216,7 +235,8 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
 
     assert report["evidence_status"] == "unavailable"
     assert report["evidence_reason"] == "cargo-metadata-failed"
-    assert [item["status"] for item in report["checks"][:6]] == [
+    assert [item["status"] for item in report["checks"][:7]] == [
+        "unavailable",
         "unavailable",
         "unavailable",
         "unavailable",
@@ -224,7 +244,7 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
         "unavailable",
         "unavailable",
     ]
-    assert {item["status"] for item in report["checks"][6:]} == {"not-evaluated"}
+    assert {item["status"] for item in report["checks"][7:]} == {"not-evaluated"}
     assert report["blockers"] == ["evidence-unavailable"]
     assert "/" not in json.dumps(report, sort_keys=True)
 
@@ -244,6 +264,21 @@ def test_missing_transformation_inventory_is_a_dedicated_closed_observation() ->
     ]
     assert ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE not in report["blockers"]
     # C6.3 evaluates the existing preview evidence independently.
+    assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+
+
+def test_missing_runtime_path_resolution_is_a_dedicated_closed_observation() -> None:
+    evidence = replace(_preview_evidence(), native_runtime_path_resolution=None)
+    report = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    statuses = {item["id"]: item["status"] for item in report["checks"]}
+
+    assert statuses["direct-native-linkage-observed"] == "satisfied"
+    assert statuses["direct-native-path-resolution-bound"] == "unavailable"
+    assert statuses["native-runtime-resolution-complete"] == "blocked"
+    assert report["blockers"] == [
+        *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
+        ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
+    ]
     assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
 
 
@@ -405,6 +440,10 @@ def test_assessment_never_claims_sparse_preview_observations(
         "runtime_inventory",
         "runtime_architecture",
         "runtime_dependency",
+        "runtime_path_inventory",
+        "runtime_path_subject",
+        "runtime_path_record",
+        "runtime_path_mechanism",
         "transformation_inventory",
         "transformation_record_count",
         "transformation_plugin_count",
@@ -455,6 +494,30 @@ def test_nested_low_level_mutation_never_yields_satisfied_observations(
             evidence.native_runtime_inventory.dependencies[0],
             "name",
             injected,
+        )
+    elif nested_model == "runtime_path_inventory":
+        assert evidence.native_runtime_path_resolution is not None
+        object.__setattr__(evidence.native_runtime_path_resolution, "scope", injected)
+    elif nested_model == "runtime_path_subject":
+        assert evidence.native_runtime_path_resolution is not None
+        object.__setattr__(
+            evidence.native_runtime_path_resolution,
+            "subject_wheel_member",
+            injected,
+        )
+    elif nested_model == "runtime_path_record":
+        assert evidence.native_runtime_path_resolution is not None
+        object.__setattr__(
+            evidence.native_runtime_path_resolution.records[0],
+            "dependency_name",
+            injected,
+        )
+    elif nested_model == "runtime_path_mechanism":
+        assert evidence.native_runtime_path_resolution is not None
+        object.__setattr__(
+            evidence.native_runtime_path_resolution.records[0],
+            "mechanism",
+            "macho-system",
         )
     elif nested_model == "transformation_inventory":
         assert evidence.source_transformation_inventory is not None

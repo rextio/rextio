@@ -5,10 +5,44 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.12.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.13.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR.
+
+### C6.8 one-hop native runtime path-resolution observation
+
+- Add immutable `artifact_evidence.native_runtime_path_resolution` schema 1,
+  exactly bound to the C6.4 native subject and every direct dependency in
+  canonical `dependency_bom_ref` order. Records distinguish only
+  `wheel-member | system-logical | unresolved` and the closed Mach-O/ELF
+  mechanisms; successful evidence accepts the exact format/origin truth table
+  and does not treat `unresolved` as a completed path observation.
+- Resolve Mach-O packaged candidates only through contained `@loader_path` or
+  `@rpath` with self `@loader_path`-anchored run paths. Resolve Linux packaged
+  SONAMEs only through bounded `$ORIGIN`/`${ORIGIN}` RUNPATH or RPATH segments.
+  Reject traversal, absolute/private/executable/inherited paths, unsupported
+  variables and alternate load commands/tags, conflicting path tags,
+  ambiguity, missing candidates, symlinks, and hash/size mismatch. Use fixed
+  inspectors and pinned `O_NOFOLLOW` file receipts; never execute or load a
+  candidate and never consult ambient loader state.
+- Treat trusted macOS system paths and the existing Linux system-name allowlist
+  as logical leaves without claiming their bytes. Keep Linux C6.4's historical
+  `unresolved` origin serialization for those names; C6.8 adds the separate
+  `system-logical` observation.
+- Keep collection optional and noninterfering. Missing or unsafe C6.8 data
+  omits only this field, adds the dedicated
+  `native-runtime-path-resolution-inventory-unavailable` readiness blocker,
+  and leaves ordinary builds plus C6.3 unchanged. Malformed present data fails
+  readiness reconstruction closed. At the provenance ceiling omit C6.8 first,
+  then C6.7, then C6.6.
+- Advance the always-blocked assessment to policy version 4 with
+  `direct-native-path-resolution-bound`, and the unreleased tooling contract to
+  **2.13.0**. Keep package **0.1.4**, plugin API **1.4**, all completeness,
+  signature, and authorization fields false. Actual loader selection,
+  transitive closure (C6.9), system-library bytes, `dlopen`, Windows PE, WASM,
+  runtime-bearing plugins, complete license/legal policy, and signatures remain
+  deferred.
 
 ### C6.7 reachable Cargo component-license observation
 

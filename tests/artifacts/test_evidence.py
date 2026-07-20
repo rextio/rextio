@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import rextio.artifacts.evidence as evidence_module
 from rextio.artifacts.evidence import (
     DEFAULT_LIMITATIONS,
     REASON_CARGO_GRAPH_INVALID,
@@ -21,6 +22,8 @@ from rextio.artifacts.evidence import (
     EvidenceFileRef,
     NativeRuntimeDependency,
     NativeRuntimeInventory,
+    NativeRuntimePathResolutionInventory,
+    NativeRuntimePathResolutionRecord,
     SidecarArtifact,
     WheelEntryRef,
     build_cyclonedx_document,
@@ -39,6 +42,17 @@ from rextio.artifacts.evidence import (
     validate_logical_reference,
     write_atomic_bytes,
 )
+
+
+def test_c68_runtime_path_resolution_symbols_are_explicitly_exported() -> None:
+    assert {
+        "MAX_RUNTIME_PATH_RESOLUTION_INVENTORY_CHARS",
+        "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND",
+        "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION",
+        "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE",
+        "NativeRuntimePathResolutionInventory",
+        "NativeRuntimePathResolutionRecord",
+    } <= set(evidence_module.__all__)
 
 
 def _synthetic_native_inventory(
@@ -485,6 +499,20 @@ def test_native_runtime_sbom_reuses_wheel_entry_and_provenance_observes_not_mate
         wheel_member_size=native_entry.uncompressed_size,
         dependencies=(dependency,),
     )
+    path_resolution = NativeRuntimePathResolutionInventory(
+        subject_wheel_member=inventory.wheel_member,
+        subject_sha256=inventory.subject_sha256,
+        records=(
+            NativeRuntimePathResolutionRecord(
+                dependency_bom_ref=dependency.bom_ref(),
+                dependency_name=dependency.name,
+                dependency_origin=dependency.origin,
+                resolution="system-logical",
+                mechanism="elf-system-name",
+            ),
+        ),
+    )
+    assert path_resolution.to_dict()["subject_wheel_member"] == inventory.wheel_member
     cdx = build_cyclonedx_document(
         subject=subject,
         inputs=(),
@@ -520,11 +548,13 @@ def test_native_runtime_sbom_reuses_wheel_entry_and_provenance_observes_not_mate
         cargo_packages=(),
         target_triple="x86_64-unknown-linux-gnu",
         native_runtime_inventory=inventory,
+        native_runtime_path_resolution=path_resolution,
     )
     materials = provenance["predicate"]["buildDefinition"]["resolvedDependencies"]
     assert materials == []
     metadata = provenance["predicate"]["runDetails"]["metadata"]
     assert metadata["rextio:observed_native_runtime"] == inventory.to_dict()
+    assert metadata["rextio:native_runtime_path_resolution"] == path_resolution.to_dict()
 
     ready = ArtifactEvidence(
         kind="host-extension-wheel",
@@ -545,6 +575,7 @@ def test_native_runtime_sbom_reuses_wheel_entry_and_provenance_observes_not_mate
         ),
         wheel_entries=(native_entry,),
         native_runtime_inventory=inventory,
+        native_runtime_path_resolution=path_resolution,
     )
     assert ready.status == "preview-ready"
     assert ready.distribution_authorized is False
@@ -559,6 +590,242 @@ def test_native_runtime_sbom_reuses_wheel_entry_and_provenance_observes_not_mate
             provenance=ready.provenance,
             wheel_entries=(),
             native_runtime_inventory=inventory,
+        )
+
+
+def test_artifact_evidence_exactly_binds_runtime_path_resolution_truth_table() -> None:
+    native_entry = WheelEntryRef(
+        name="native/_rextio_native.so",
+        sha256="a" * 64,
+        compressed_size=1,
+        uncompressed_size=1,
+    )
+    dependency = NativeRuntimeDependency(name="libc.so.6", origin="unresolved")
+    runtime = NativeRuntimeInventory(
+        format="elf",
+        architecture="x86_64",
+        inspector="readelf",
+        subject_basename="_rextio_native.so",
+        subject_sha256=native_entry.sha256,
+        subject_size=native_entry.uncompressed_size,
+        wheel_member=native_entry.name,
+        wheel_member_sha256=native_entry.sha256,
+        wheel_member_size=native_entry.uncompressed_size,
+        dependencies=(dependency,),
+    )
+    record = NativeRuntimePathResolutionRecord(
+        dependency_bom_ref=dependency.bom_ref(),
+        dependency_name=dependency.name,
+        dependency_origin=dependency.origin,
+        resolution="system-logical",
+        mechanism="elf-system-name",
+    )
+    resolution = NativeRuntimePathResolutionInventory(
+        subject_wheel_member=runtime.wheel_member,
+        subject_sha256=runtime.subject_sha256,
+        records=(record,),
+    )
+    base = {
+        "kind": "host-extension-wheel",
+        "status": "preview-ready",
+        "target_triple": "x86_64-unknown-linux-gnu",
+        "subject": EvidenceFileRef(
+            logical_path="dist/demo.whl",
+            sha256="b" * 64,
+            size=1,
+            role="host-extension-wheel",
+        ),
+        "sbom": SidecarArtifact(
+            format="CycloneDX", logical_path="dist/demo.whl.cdx.json", sha256="c" * 64, size=1
+        ),
+        "provenance": SidecarArtifact(
+            format="in-toto-Statement",
+            logical_path="dist/demo.whl.intoto.json",
+            sha256="d" * 64,
+            size=1,
+        ),
+        "wheel_entries": (native_entry,),
+        "native_runtime_inventory": runtime,
+    }
+
+    assert ArtifactEvidence(
+        **base,
+        native_runtime_path_resolution=resolution,
+    ).native_runtime_path_resolution == resolution
+    with pytest.raises(ValueError, match="subject"):
+        ArtifactEvidence(
+            **base,
+            native_runtime_path_resolution=NativeRuntimePathResolutionInventory(
+                subject_wheel_member=runtime.wheel_member,
+                subject_sha256="e" * 64,
+                records=(record,),
+            ),
+        )
+    with pytest.raises(ValueError, match="subject"):
+        ArtifactEvidence(
+            **base,
+            native_runtime_path_resolution=NativeRuntimePathResolutionInventory(
+                subject_wheel_member="other/_rextio_native.so",
+                subject_sha256=runtime.subject_sha256,
+                records=(record,),
+            ),
+        )
+    crossed = NativeRuntimePathResolutionInventory(
+        subject_wheel_member=runtime.wheel_member,
+        subject_sha256=runtime.subject_sha256,
+        records=(
+            NativeRuntimePathResolutionRecord(
+                dependency_bom_ref=dependency.bom_ref(),
+                dependency_name=dependency.name,
+                dependency_origin=dependency.origin,
+                resolution="system-logical",
+                mechanism="macho-system",
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="format/origin"):
+        ArtifactEvidence(**base, native_runtime_path_resolution=crossed)
+
+
+def test_artifact_evidence_rejects_runtime_resolution_with_unrelated_basename() -> None:
+    native_entry = WheelEntryRef(
+        name="native/_rextio_native.so",
+        sha256="a" * 64,
+        compressed_size=1,
+        uncompressed_size=1,
+    )
+    unrelated_entry = WheelEntryRef(
+        name="native/libother.so",
+        sha256="e" * 64,
+        compressed_size=1,
+        uncompressed_size=1,
+    )
+    dependency = NativeRuntimeDependency(
+        name="libwanted.so", origin="wheel-candidate"
+    )
+    runtime = NativeRuntimeInventory(
+        format="elf",
+        architecture="x86_64",
+        inspector="readelf",
+        subject_basename="_rextio_native.so",
+        subject_sha256=native_entry.sha256,
+        subject_size=native_entry.uncompressed_size,
+        wheel_member=native_entry.name,
+        wheel_member_sha256=native_entry.sha256,
+        wheel_member_size=native_entry.uncompressed_size,
+        dependencies=(dependency,),
+    )
+    resolution = NativeRuntimePathResolutionInventory(
+        subject_wheel_member=runtime.wheel_member,
+        subject_sha256=runtime.subject_sha256,
+        records=(
+            NativeRuntimePathResolutionRecord(
+                dependency_bom_ref=dependency.bom_ref(),
+                dependency_name=dependency.name,
+                dependency_origin=dependency.origin,
+                resolution="wheel-member",
+                mechanism="elf-origin-rpath",
+                wheel_member=unrelated_entry.name,
+                sha256=unrelated_entry.sha256,
+                size=unrelated_entry.uncompressed_size,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="basename"):
+        ArtifactEvidence(
+            kind="host-extension-wheel",
+            status="preview-ready",
+            target_triple="x86_64-unknown-linux-gnu",
+            subject=EvidenceFileRef(
+                logical_path="dist/demo.whl",
+                sha256="b" * 64,
+                size=1,
+                role="host-extension-wheel",
+            ),
+            sbom=SidecarArtifact(
+                format="CycloneDX",
+                logical_path="dist/demo.whl.cdx.json",
+                sha256="c" * 64,
+                size=1,
+            ),
+            provenance=SidecarArtifact(
+                format="in-toto-Statement",
+                logical_path="dist/demo.whl.intoto.json",
+                sha256="d" * 64,
+                size=1,
+            ),
+            wheel_entries=(native_entry, unrelated_entry),
+            native_runtime_inventory=runtime,
+            native_runtime_path_resolution=resolution,
+        )
+
+
+def test_artifact_evidence_rejects_runtime_resolution_subject_self_binding() -> None:
+    native_entry = WheelEntryRef(
+        name="native/_rextio_native.so",
+        sha256="a" * 64,
+        compressed_size=1,
+        uncompressed_size=1,
+    )
+    dependency = NativeRuntimeDependency(
+        name="_rextio_native.so", origin="wheel-candidate"
+    )
+    runtime = NativeRuntimeInventory(
+        format="elf",
+        architecture="x86_64",
+        inspector="readelf",
+        subject_basename="_rextio_native.so",
+        subject_sha256=native_entry.sha256,
+        subject_size=native_entry.uncompressed_size,
+        wheel_member=native_entry.name,
+        wheel_member_sha256=native_entry.sha256,
+        wheel_member_size=native_entry.uncompressed_size,
+        dependencies=(dependency,),
+    )
+    resolution = NativeRuntimePathResolutionInventory(
+        subject_wheel_member=runtime.wheel_member,
+        subject_sha256=runtime.subject_sha256,
+        records=(
+            NativeRuntimePathResolutionRecord(
+                dependency_bom_ref=dependency.bom_ref(),
+                dependency_name=dependency.name,
+                dependency_origin=dependency.origin,
+                resolution="wheel-member",
+                mechanism="elf-origin-rpath",
+                wheel_member=native_entry.name,
+                sha256=native_entry.sha256,
+                size=native_entry.uncompressed_size,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="subject wheel member"):
+        ArtifactEvidence(
+            kind="host-extension-wheel",
+            status="preview-ready",
+            target_triple="x86_64-unknown-linux-gnu",
+            subject=EvidenceFileRef(
+                logical_path="dist/demo.whl",
+                sha256="b" * 64,
+                size=1,
+                role="host-extension-wheel",
+            ),
+            sbom=SidecarArtifact(
+                format="CycloneDX",
+                logical_path="dist/demo.whl.cdx.json",
+                sha256="c" * 64,
+                size=1,
+            ),
+            provenance=SidecarArtifact(
+                format="in-toto-Statement",
+                logical_path="dist/demo.whl.intoto.json",
+                sha256="d" * 64,
+                size=1,
+            ),
+            wheel_entries=(native_entry,),
+            native_runtime_inventory=runtime,
+            native_runtime_path_resolution=resolution,
         )
 
 
