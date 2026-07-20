@@ -5,10 +5,40 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.19.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.20.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR.
+
+### C6.15 scoped artifact-class policy verification
+
+- Add optional `artifact_evidence.artifact_class_policy_verification` schema 1
+  for `host-extension-wheel-cpython-v1`. The strict project-root
+  `rextio.artifact-policy.lock.json` binds the canonical SHA-256 and partition
+  digest of one exact C6.14 inventory plus exactly thirteen ordered nested
+  coverage rows.
+- Require a closed, deterministic disposition pair for every class. Existing
+  C6.10-C6.13 receipt-bound license or transformation states remain
+  `prerequisite-receipt-bound` and cannot be weakened; unobserved,
+  logical-system-leaf, not-applicable, and owner-declared-unverified cases use
+  fixed tokens rather than free-form policy text.
+- Reuse the bounded descriptor-pinned, no-follow, single-link strict JSON
+  reader; reject duplicate keys, non-finite/deep/oversized JSON, boolean-as-
+  integer confusion, missing/extra/reordered rows, stale digests, path aliases,
+  and any disposition/state mismatch. Final collection recollects C6.10-C6.13,
+  re-derives C6.14, and rereads the lock, requiring full equality without
+  adopting changed bytes.
+- Add the exact lock once as provenance material outside C6.14, avoiding a
+  cyclic digest. Count or sidecar pressure omits C6.15 before C6.14; any C6.15
+  failure leaves ordinary build success and the independent C6.3 gate
+  unchanged.
+- Advance readiness to policy version 11 with the fourteenth observation
+  `scoped-artifact-class-policy-declaration-bound` and fixed
+  `scoped-artifact-class-policy-declaration-unavailable` blocker. Attestor
+  identity, SPDX, files/notices, obligations, compatibility, ownership/rights,
+  legal approval, technical provenance, global completion, signatures, and
+  distribution authority remain false. Advance only the unreleased tooling
+  contract to **2.20.0**; package **0.1.4** and plugin API **1.4** are unchanged.
 
 ### C6.14 artifact-policy coverage inventory
 

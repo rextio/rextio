@@ -70,7 +70,11 @@ evidence-ineligible. C6.14 adds a compact, thirteen-class policy-coverage
 inventory over only the exact components already observed by C6.2-C6.13.
 Identity strength, scoped license-owner receipts, and transformation/input
 provenance are reported separately; all global coverage claims remain false.
-This branch emits additive tooling contract **2.19.0** and plugin API **1.4**
+C6.15 optionally binds `rextio.artifact-policy.lock.json` to the semantic
+SHA-256 and exact ordered rows of that C6.14 partition. Its closed dispositions
+cannot weaken an existing C6.10-C6.13 receipt; the lock is one provenance
+material only, and every global policy/provenance/signing/authority claim stays
+false. This branch emits additive tooling contract **2.20.0** and plugin API **1.4**
 while keeping package version
 **0.1.4**; those changes are not yet a tagged or PyPI release. Published 0.1.4
 remains the plugin API **1.3** / contract **2.2.0** producer. See
@@ -216,12 +220,12 @@ Windows, runtime-bearing plugins, signatures, transitive
 closure, and runtime `dlopen` discovery remain outside this preview.
 
 For that same in-scope wheel path, `build.json` also includes
-`artifact_distribution_authorization`. This C6.5-C6.14 policy-version-10 record is derived from the
+`artifact_distribution_authorization`. This C6.5-C6.15 policy-version-11 record is derived from the
 final `artifact_evidence` record after required-mode revalidation/transaction
 handling. It always reports `status: "blocked"`,
 `authority: "readiness-assessment-only"`, and false values for `complete`,
 `signed`, and `distribution_authorized`. Preview-ready evidence can satisfy
-thirteen bounded observation checks after closed-model reconstruction and exact
+fourteen bounded observation checks after closed-model reconstruction and exact
 cross-binding. The ninth check means the in-process C6.10 collector already
 replayed one narrowly supported source/AST/IR/codegen closure; the later report
 does not itself reopen source or generated artifacts. The tenth check means an
@@ -233,7 +237,9 @@ check verifies the exact C6.10 sibling-stub set; present stubs become
 `project-python-stub` materials and compatibility snapshots are not
 evidence-eligible. The thirteenth binds C6.14's compact disjoint partition to
 the exact surviving C6.9-C6.13 receipts without claiming global policy or
-provenance completeness. License
+provenance completeness. The fourteenth binds C6.15's exact owner lock and
+closed class dispositions to C6.14; it authenticates no owner and grants no
+distribution authority. License
 policy, runtime path/transitive closure, runtime dynamic loading, complete build
 inputs, complete source-transformation provenance, builder identity, reproducibility,
 signatures, and complete SBOM composition remain selected current-scope fixed
@@ -288,7 +294,7 @@ over-budget values fail closed. Missing inventory makes only
 `component-license-inventory-unavailable` blocker. Malformed, reordered,
 duplicated, stale, or non-exactly-bound records use the all-`not-evaluated`
 readiness-unavailable shape. If provenance still exceeds its ceiling after the
-newer C6.14, C6.13, C6.12, C6.11, C6.10, C6.9, and C6.8 observations are omitted, C6.7 is omitted next so C6.6 and all earlier evidence/gate results are preserved whenever
+newer C6.15, C6.14, C6.13, C6.12, C6.11, C6.10, C6.9, and C6.8 observations are omitted, C6.7 is omitted next so C6.6 and all earlier evidence/gate results are preserved whenever
 possible. `component-license-policy-complete` remains blocked: this is not SPDX
 validation, a license allow/deny lock, legal approval, or distribution authority.
 
@@ -317,7 +323,7 @@ C6.8. The readiness report then marks
 `direct-native-path-resolution-bound` unavailable and adds
 `native-runtime-path-resolution-inventory-unavailable`; the ordinary build and
 C6.3 gate are unchanged. A present malformed or format-crossed record fails the
-readiness reconstruction closed. C6.14 is omitted first, then C6.13, C6.12, C6.11, C6.10, C6.9, C6.8,
+readiness reconstruction closed. C6.15 is omitted first, then C6.14, C6.13, C6.12, C6.11, C6.10, C6.9, C6.8,
 C6.7, and C6.6 at the provenance ceiling. Actual loader precedence/environment, complete
 transitive closure beyond the bounded C6.9 graph, system-library bytes, runtime `dlopen`, Windows PE, WASM,
 runtime-bearing plugins, signatures, and distribution authorization remain out

@@ -12,7 +12,7 @@ fallback.
 The Release Train C branch adds experimental host source/executable planning,
 plugin standalone capability, the C5.1 external-source inventory gate, and the
 C6.1 bounded prebuild authorization-contract preview (not full C6). It emits
-tooling contract **2.19.0**, including C6.2 preview evidence, the C6.3
+tooling contract **2.20.0**, including C6.2 preview evidence, the C6.3
 required-evidence gate, and the C6.4 macOS/Linux direct native runtime linkage
 inventory plus C6.5's always-blocked distribution-readiness assessment and
 C6.6's bounded source-transformation inventory observation, C6.7's
@@ -22,7 +22,8 @@ native-runtime graph observation, plus C6.10's narrow plugin-free
 source-transformation replay verification, C6.11's scoped project-owner
 Cargo component-license policy receipt, and C6.12's separate scoped
 project-source/generated-Rust owner-declaration receipt, C6.13's scoped
-analysis-input receipt, and C6.14's compact artifact-policy coverage inventory,
+analysis-input receipt, C6.14's compact artifact-policy coverage inventory,
+and C6.15's exact scoped artifact-class policy receipt,
 but
 remains **unreleased**. PyPI 0.1.4 does not
 include those additions. Train C boundaries are called out explicitly below so
@@ -595,7 +596,7 @@ The unreleased Train C planning records do not change these additional limits:
   names remain unhashed leaves. It does not prove actual loader
   selection/environment, compute a complete transitive closure, bind system-library
   bytes, observe `dlopen`, cover Windows or runtime-bearing plugins, or produce
-  signatures. C6.5-C6.14 reports these gaps through a closed,
+  signatures. C6.5-C6.15 reports these gaps through a closed,
   always-blocked readiness assessment; it cannot authorize distribution. C6.6
   observes only accepted project-owned function lowerings and binds hashes,
   ranges, closed ids, and the shared generated `src/lib.rs` input. It does not

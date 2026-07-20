@@ -2,7 +2,7 @@
 
 Status: **Unreleased Release Train C**, experimental. The latest published
 Rextio release remains **0.1.4** with tooling contract **2.2.0**. The Train C
-branch emits the additive, unreleased tooling contract **2.19.0**; none of the
+branch emits the additive, unreleased tooling contract **2.20.0**; none of the
 surfaces on this page should be treated as already available from PyPI.
 
 Train C introduces a fail-closed planning layer for host source, output
@@ -256,7 +256,7 @@ Unsafe, unsupported, missing, ambiguous, changed, or over-bound candidates omit
 C6.8 and its dependent C6.9 graph; the corresponding observation is unavailable with
 `native-runtime-path-resolution-inventory-unavailable`. A malformed present
 model fails the full readiness reconstruction closed. At the provenance
-ceiling C6.14 is omitted first, then C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, and
+ceiling C6.15 is omitted first, then C6.14, C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, and
 C6.6. A satisfied C6.8 check is
 still not `native-runtime-resolution-complete`: actual loader precedence and
 environment, complete transitive closure, system-library bytes, runtime
@@ -331,8 +331,8 @@ unsigned provenance, with explicit observation-presence metadata. A replay or
 scope mismatch makes only `scoped-source-transformation-verified` unavailable
 and adds `scoped-source-transformation-verification-unavailable`; a malformed
 present model still collapses the readiness report to the closed
-all-`not-evaluated` shape. At the sidecar ceiling C6.14 is omitted first;
-C6.13, C6.12, and C6.11 follow, then C6.10, C6.9, C6.8, C6.7, and C6.6.
+all-`not-evaluated` shape. At the sidecar ceiling C6.15 is omitted first;
+C6.14, C6.13, C6.12, and C6.11 follow, then C6.10, C6.9, C6.8, C6.7, and C6.6.
 
 `complete_for_scope: true` is intentionally paired with `complete: false` and
 `global_provenance_complete: false`. C6.10 therefore does not satisfy
@@ -440,7 +440,7 @@ Readiness policy v9 has twelve observations and ten readiness checks. Missing
 C6.13 makes only `scoped-analysis-inputs-verified` unavailable and adds
 `scoped-analysis-input-verification-unavailable`; malformed or forged present
 receipts fail the readiness assessment closed. Deterministic omission order is
-C6.14, C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, C6.6. Removing C6.10 also removes
+C6.15, C6.14, C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, C6.6. Removing C6.10 also removes
 dependent C6.12 and C6.13.
 
 ### C6.14 artifact-policy coverage inventory
@@ -465,6 +465,36 @@ Readiness policy v10 adds `artifact-policy-coverage-bound` and the fixed
 makes every check `not-evaluated`; absence remains an additive unavailable
 observation. C6.14 is unsigned provenance metadata, never a material, and is
 the first omission at the sidecar ceiling.
+
+### C6.15 scoped artifact-class policy verification
+
+C6.15 adds `artifact_class_policy_verification` only when the complete exact
+C6.14 inventory is present. The strict root file
+`rextio.artifact-policy.lock.json` repeats the semantic C6.14 SHA-256 and
+canonical partition digest plus exactly thirteen ordered rows. Each row nests
+the complete C6.14 class/count/set/state/receipt binding and supplies one
+license and one transformation disposition from a deterministic closed matrix.
+Receipt-backed C6.10-C6.13 states must remain
+`prerequisite-receipt-bound`; they cannot be replaced by an owner declaration
+or not-applicable token.
+
+The shared descriptor-pinned, no-follow, single-link strict JSON reader rejects
+duplicate keys, non-finite/deep/oversized content, boolean-as-integer confusion,
+row changes/order/count mismatches, stale digests, links/races, and path aliases.
+Final collection recollects C6.10-C6.13, re-derives C6.14, and rereads the
+exact lock, requiring full equality. The lock is added exactly once as
+provenance material outside C6.14,
+which avoids a cyclic digest. Failure or count/sidecar pressure omits only
+C6.15; C6.15 is always removed before C6.14.
+
+Readiness policy v11 adds the fourteenth observation
+`scoped-artifact-class-policy-declaration-bound` and fixed blocker
+`scoped-artifact-class-policy-declaration-unavailable`. A malformed present
+receipt makes all readiness checks `not-evaluated`; an absent receipt is only
+the new unavailable observation. Attestor identity, SPDX, license/NOTICE files,
+obligations, compatibility, ownership/derivative rights, legal approval,
+technical provenance, global completion, signatures, and distribution
+authority remain false.
 
 ## Artifact profile authority
 
@@ -611,7 +641,7 @@ enumerates a GPU. See
 
 ## Deferred work
 
-Train C through **2.19.0** does not yet provide:
+Train C through **2.20.0** does not yet provide:
 
 - multiple-module initializer execution or Python import-order emulation;
 - Rust-global publication or native reads of initialized module values;
@@ -621,7 +651,7 @@ Train C through **2.19.0** does not yet provide:
   recursive source-native promotion of installed pure-Python packages;
 - full/signed external-source authorization beyond the C6.1 prebuild lock
   contract (cryptographic signatures);
-- complete standards SPDX/CycloneDX SBOM coverage (C6.2-C6.13 emit only a bounded
+- complete standards SPDX/CycloneDX SBOM coverage (C6.2-C6.15 emit only a bounded
   incomplete CycloneDX 1.6 preview for ordinary host-extension wheels, plus
   unsigned in-toto/SLSA provenance and a macOS/Linux direct-linkage observation;
   not complete or actual-loader path resolution, complete transitive closure, `dlopen`

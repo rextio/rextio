@@ -25,6 +25,13 @@ from rextio.analyzer.models import (
     SourceRange,
 )
 from rextio.artifacts.evidence import (
+    ARTIFACT_CLASS_POLICY,
+    ARTIFACT_CLASS_POLICY_ACKNOWLEDGEMENT,
+    ARTIFACT_CLASS_POLICY_ACTION_SCOPES,
+    ARTIFACT_CLASS_POLICY_LOCK_FILENAME,
+    ARTIFACT_CLASS_POLICY_LOCK_KIND,
+    ARTIFACT_CLASS_POLICY_LOCK_ROLE,
+    ARTIFACT_CLASS_POLICY_LOCK_SCHEMA_VERSION,
     CARGO_LICENSE_POLICY,
     CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT,
     CARGO_LICENSE_POLICY_ACTION_SCOPES,
@@ -40,6 +47,10 @@ from rextio.artifacts.evidence import (
     PROJECT_SOURCE_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
     PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE,
     ArtifactEvidenceGate,
+    ArtifactClassPolicyDeclaration,
+    ArtifactClassPolicyVerification,
+    ArtifactPolicyCoverageInventory,
+    EvidenceFileRef,
     CargoDepEdge,
     CargoPackageRef,
     NativeRuntimeDependency,
@@ -51,7 +62,10 @@ from rextio.artifacts.evidence import (
     SourceTransformationVerification,
     WheelEntryRef,
     canonical_json_bytes,
+    artifact_class_policy_dispositions,
+    artifact_policy_coverage_inventory_digest,
     hash_regular_file,
+    sha256_hex,
 )
 from rextio.artifacts.authorization import (
     ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
@@ -1123,6 +1137,56 @@ def test_c6_13_final_stub_mutation_drops_only_c6_13(
     assert evidence.analysis_input_verification is None
 
 
+def _synthetic_c615(
+    coverage: ArtifactPolicyCoverageInventory,
+    *,
+    lock_sha256: str = "f" * 64,
+) -> ArtifactClassPolicyVerification:
+    classes = tuple(
+        ArtifactClassPolicyDeclaration(
+            coverage=row,
+            license_policy_disposition=artifact_class_policy_dispositions(row)[0],
+            transformation_provenance_disposition=(
+                artifact_class_policy_dispositions(row)[1]
+            ),
+        )
+        for row in coverage.classes
+    )
+    coverage_digest = artifact_policy_coverage_inventory_digest(coverage)
+    policy_document = {
+        "schema_version": ARTIFACT_CLASS_POLICY_LOCK_SCHEMA_VERSION,
+        "kind": ARTIFACT_CLASS_POLICY_LOCK_KIND,
+        "scope": "host-extension-wheel-cpython-v1",
+        "policy": ARTIFACT_CLASS_POLICY,
+        "artifact_policy_coverage_inventory_sha256": coverage_digest,
+        "canonical_partition_sha256": coverage.canonical_partition_sha256,
+        "classes": [item.to_dict() for item in classes],
+        "attestation": {
+            "attestor": "Project Owner",
+            "attestor_kind": "human",
+            "attestor_relationship": "human-owner",
+            "decision": "allow",
+            "action_scopes": list(ARTIFACT_CLASS_POLICY_ACTION_SCOPES),
+            "acknowledgement": ARTIFACT_CLASS_POLICY_ACKNOWLEDGEMENT,
+        },
+    }
+    return ArtifactClassPolicyVerification(
+        artifact_policy_coverage_inventory_sha256=coverage_digest,
+        canonical_partition_sha256=coverage.canonical_partition_sha256,
+        classes=classes,
+        lock_file=EvidenceFileRef(
+            logical_path=ARTIFACT_CLASS_POLICY_LOCK_FILENAME,
+            sha256=lock_sha256,
+            size=1,
+            role=ARTIFACT_CLASS_POLICY_LOCK_ROLE,
+        ),
+        policy_snapshot_sha256=sha256_hex(canonical_json_bytes(policy_document)),
+        attestor="Project Owner",
+        attestor_kind="human",
+        attestor_relationship="human-owner",
+    )
+
+
 def test_c6_14_final_inventory_matches_unsigned_provenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1169,6 +1233,277 @@ def test_c6_14_final_inventory_matches_unsigned_provenance(
     assert internal["artifact_policy_coverage_scope_complete"] is False
     assert internal["component_license_policy_complete"] is False
     assert internal["source_transformation_provenance_complete"] is False
+
+
+def test_c6_15_final_receipt_is_recollected_and_is_one_provenance_material(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c613_stub(project=project, plan=plan, present=True)
+    _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+    calls = 0
+
+    def collect_policy(**kwargs):
+        nonlocal calls
+        calls += 1
+        return _synthetic_c615(kwargs["artifact_policy_coverage_inventory"])
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_artifact_class_policy_verification",
+        collect_policy,
+    )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert calls == 2
+    assert evidence is not None and evidence.status == "preview-ready"
+    verification = evidence.artifact_class_policy_verification
+    assert verification is not None
+    assert evidence.artifact_policy_coverage_inventory is not None
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
+    )
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert metadata["rextio:artifact_class_policy_verification_observed"] is True
+    assert metadata["rextio:artifact_class_policy_verification"] == verification.to_dict()
+    internal = provenance["predicate"]["buildDefinition"]["internalParameters"]
+    assert internal["scoped_artifact_class_policy_declaration_bound"] is True
+    assert internal["artifact_class_policy_scope_complete"] is False
+    matching_materials = [
+        item
+        for item in provenance["predicate"]["buildDefinition"]["resolvedDependencies"]
+        if item["uri"] == f"file:{ARTIFACT_CLASS_POLICY_LOCK_FILENAME}"
+    ]
+    assert len(matching_materials) == 1
+    assert matching_materials[0]["digest"] == {"sha256": verification.lock_file.sha256}
+
+
+@pytest.mark.parametrize("changed_stage", ["lock", "prerequisite"])
+def test_c6_15_final_recollection_change_omits_only_c6_15(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changed_stage: str,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c613_stub(project=project, plan=plan, present=True)
+    _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+    policy_calls = 0
+
+    def changing_policy(**kwargs):
+        nonlocal policy_calls
+        policy_calls += 1
+        lock_sha256 = (
+            ("e" if policy_calls == 1 else "f") * 64
+            if changed_stage == "lock"
+            else "f" * 64
+        )
+        return _synthetic_c615(
+            kwargs["artifact_policy_coverage_inventory"],
+            lock_sha256=lock_sha256,
+        )
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_artifact_class_policy_verification",
+        changing_policy,
+    )
+    analysis_calls = 0
+    if changed_stage == "prerequisite":
+        real_analysis_collector = (
+            supply_chain_module.collect_scoped_analysis_input_verification
+        )
+
+        def changing_analysis(**kwargs):
+            nonlocal analysis_calls
+            analysis_calls += 1
+            receipt = real_analysis_collector(**kwargs)
+            return None if analysis_calls >= 3 else receipt
+
+        monkeypatch.setattr(
+            supply_chain_module,
+            "collect_scoped_analysis_input_verification",
+            changing_analysis,
+        )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert policy_calls == (2 if changed_stage == "lock" else 1)
+    if changed_stage == "prerequisite":
+        assert analysis_calls == 3
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert evidence.artifact_class_policy_verification is None
+    assert evidence.artifact_policy_coverage_inventory is not None
+    assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+
+
+def test_c6_15_is_omitted_before_c6_14_at_sidecar_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c613_stub(project=project, plan=plan, present=True)
+    _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_artifact_class_policy_verification",
+        lambda **kwargs: _synthetic_c615(
+            kwargs["artifact_policy_coverage_inventory"]
+        ),
+    )
+    real_builder = supply_chain_module.build_intoto_provenance_document
+    presence: list[tuple[bool, bool]] = []
+
+    def inflate_only_c615(**kwargs):
+        c615 = kwargs.get("artifact_class_policy_verification") is not None
+        c614 = kwargs.get("artifact_policy_coverage_inventory") is not None
+        presence.append((c615, c614))
+        document = real_builder(**kwargs)
+        if c615:
+            document["predicate"]["runDetails"]["metadata"]["test:padding"] = (
+                "x" * evidence_mod.MAX_SIDECAR_BYTES
+            )
+        return document
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "build_intoto_provenance_document",
+        inflate_only_c615,
+    )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert presence[-2:] == [(True, True), (False, True)], presence
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert evidence.artifact_class_policy_verification is None
+    assert evidence.artifact_policy_coverage_inventory is not None
+    assert evidence.analysis_input_verification is not None
+
+
+def test_c6_15_material_count_boundary_preserves_c6_14_and_prior_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    cargo_inventory = _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c613_stub(project=project, plan=plan, present=True)
+    _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+    # Inputs + Cargo packages + one present stub + C6.11/C6.12 locks exactly
+    # fill the bounded material set. The one C6.15 lock alone would exceed it.
+    existing_material_count = (
+        len(snapshot.all_inputs) + len(cargo_inventory.packages) + 1 + 1 + 1
+    )
+    monkeypatch.setattr(
+        supply_chain_module,
+        "MAX_EVIDENCE_COMPONENTS",
+        existing_material_count,
+    )
+    policy_calls = 0
+
+    def collect_policy(**kwargs):
+        nonlocal policy_calls
+        policy_calls += 1
+        return _synthetic_c615(kwargs["artifact_policy_coverage_inventory"])
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_artifact_class_policy_verification",
+        collect_policy,
+    )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert policy_calls == 0
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert evidence.artifact_class_policy_verification is None
+    assert evidence.artifact_policy_coverage_inventory is not None
+    assert evidence.analysis_input_verification is not None
+    assert evidence.project_source_license_policy_verification is not None
+    assert evidence.component_license_policy_verification is not None
 
 
 def test_c6_14_is_first_sidecar_ceiling_omission(

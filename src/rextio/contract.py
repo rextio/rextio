@@ -81,5 +81,9 @@ from __future__ import annotations
 # Contract 2.19.0 adds C6.14's compact artifact-policy coverage partition and
 # policy-version-10 observation. Identity, license-policy, and transformation-
 # provenance states remain orthogonal, scoped, incomplete, and non-authorizing.
+# Contract 2.20.0 adds C6.15's exact owner artifact-class policy lock and
+# policy-version-11 observation. It binds closed dispositions to the full
+# C6.14 partition without completing global policy, provenance, signing, or
+# distribution authority.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.19.0"
+TOOLING_CONTRACT_VERSION = "2.20.0"

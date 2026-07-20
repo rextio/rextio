@@ -1,4 +1,4 @@
-"""C6.2/C6.4/C6.6-C6.12 evidence emission for host-extension+cpython wheels.
+"""C6.2-C6.15 evidence emission for host-extension+cpython wheels.
 
 In-scope builds always emit an ``artifact_evidence`` record with status
 ``preview-ready`` or ``unavailable`` (authority ``evidence-only``). Evidence
@@ -35,6 +35,10 @@ non-authorizing observation metadata and is omitted before C6.12.
 C6.14 compactly partitions the exact components already observed by C6.2-C6.13
 into orthogonal identity, license-policy, and transformation-provenance states.
 It adds no material and is omitted before C6.13.
+
+C6.15 binds one strict project-owner lock to the exact C6.14 partition and
+adds only that lock as provenance material. It is omitted before C6.14 and
+does not grant global policy completeness or distribution authority.
 """
 
 from __future__ import annotations
@@ -74,6 +78,9 @@ from rextio.artifacts.evidence import (
 )
 from rextio.artifacts.models import ArtifactKind, ArtifactProfile
 from rextio.build.artifact_layout import ArtifactLayout
+from rextio.build.artifact_class_policy import (
+    collect_artifact_class_policy_verification,
+)
 from rextio.build.cargo_builder import NativeBuildResult
 from rextio.build.cargo_inventory import resolve_cargo_inventory
 from rextio.build.cargo_license_policy import (
@@ -730,8 +737,9 @@ def _emit_preview_ready(
         # unavailable evidence merely because it is the one extra material.
         component_license_policy_verification = None
 
-    # C6.14 is derived only after every late C6.9-C6.13 recollection below.
+    # C6.14/C6.15 are derived only after every late C6.9-C6.13 recollection below.
     artifact_policy_coverage_inventory = None
+    artifact_class_policy_verification = None
 
     sbom_document = build_cyclonedx_document(
         subject=subject,
@@ -1168,9 +1176,9 @@ def _emit_preview_ready(
         provenance_digest = sha256_hex(provenance_bytes)
         provenance_size = len(provenance_bytes)
 
-    # Derive C6.14 from the final surviving C6.9-C6.13 receipts only. Rebuild
-    # provenance once with that exact inventory so sidecar metadata and the
-    # returned ArtifactEvidence cannot drift apart.
+    # Derive C6.14 from the final surviving C6.9-C6.13 receipts only, then bind
+    # C6.15 to that exact semantic inventory. The C6.15 lock stays outside
+    # C6.14 to avoid a cyclic policy-inventory digest.
     artifact_policy_coverage_inventory = collect_artifact_policy_coverage_inventory(
         target_triple=profile.target_triple,
         subject=subject,
@@ -1188,6 +1196,143 @@ def _emit_preview_ready(
         project_source_license_policy_verification=(project_source_license_policy_verification),
     )
     if artifact_policy_coverage_inventory is not None:
+        occupied_policy_paths = tuple(item.logical_path for item in inputs)
+        if analysis_input_verification is not None:
+            occupied_policy_paths += tuple(
+                record.stub.logical_path
+                for record in analysis_input_verification.records
+                if record.state == "present" and record.stub is not None
+            )
+        if component_license_policy_verification is not None:
+            occupied_policy_paths += (
+                component_license_policy_verification.lock_file.logical_path,
+            )
+        if project_source_license_policy_verification is not None:
+            occupied_policy_paths += (
+                project_source_license_policy_verification.lock_file.logical_path,
+            )
+        existing_material_count = (
+            len(inputs)
+            + len(inventory.packages)
+            + sum(
+                record.state == "present"
+                for record in analysis_input_verification.records
+            )
+            if analysis_input_verification is not None
+            else len(inputs) + len(inventory.packages)
+        )
+        existing_material_count += int(component_license_policy_verification is not None)
+        existing_material_count += int(
+            project_source_license_policy_verification is not None
+        )
+        if existing_material_count + 1 <= MAX_EVIDENCE_COMPONENTS:
+            artifact_class_policy_verification = (
+                collect_artifact_class_policy_verification(
+                    project_root=project_root,
+                    artifact_policy_coverage_inventory=(
+                        artifact_policy_coverage_inventory
+                    ),
+                    occupied_logical_paths=occupied_policy_paths,
+                )
+            )
+
+        if artifact_class_policy_verification is not None:
+            # Recollect every filesystem-backed C6.10-C6.13 prerequisite,
+            # re-derive C6.14, and reread C6.15 one last time. Never adopt
+            # changed prerequisite or lock bytes into this final receipt.
+            c615_transformation_verification = (
+                collect_scoped_source_transformation_verification(
+                    project_root=project_root,
+                    plan=plan,
+                    input_snapshot=input_snapshot,
+                    transformation_inventory=transformation_inventory,
+                    embedding_enabled=embedding_enabled,
+                )
+                if transformation_inventory is not None
+                else None
+            )
+            c615_component_license_policy_verification = (
+                collect_component_license_policy_verification(
+                    project_root=project_root,
+                    component_license_inventory=component_license_inventory,
+                )
+                if component_license_inventory is not None
+                else None
+            )
+            c615_project_source_license_policy_verification = (
+                collect_project_source_license_policy_verification(
+                    project_root=project_root,
+                    source_transformation_verification=(
+                        c615_transformation_verification
+                    ),
+                )
+                if c615_transformation_verification is not None
+                else None
+            )
+            c615_analysis_input_verification = (
+                collect_scoped_analysis_input_verification(
+                    project_root=project_root,
+                    plan=plan,
+                    source_transformation_verification=(
+                        c615_transformation_verification
+                    ),
+                )
+                if c615_transformation_verification is not None
+                else None
+            )
+            prerequisites_unchanged = (
+                c615_transformation_verification == transformation_verification
+                and c615_component_license_policy_verification
+                == component_license_policy_verification
+                and c615_project_source_license_policy_verification
+                == project_source_license_policy_verification
+                and c615_analysis_input_verification == analysis_input_verification
+            )
+            final_policy_coverage_inventory = (
+                collect_artifact_policy_coverage_inventory(
+                    target_triple=profile.target_triple,
+                    subject=subject,
+                    inputs=inputs,
+                    wheel_entries=wheel_entries,
+                    cargo_packages=inventory.packages,
+                    native_runtime_inventory=runtime_inventory,
+                    native_runtime_path_resolution=runtime_path_resolution,
+                    native_runtime_transitive_closure=runtime_transitive_closure,
+                    source_transformation_inventory=transformation_inventory,
+                    source_transformation_verification=(
+                        c615_transformation_verification
+                    ),
+                    analysis_input_verification=c615_analysis_input_verification,
+                    component_license_inventory=component_license_inventory,
+                    component_license_policy_verification=(
+                        c615_component_license_policy_verification
+                    ),
+                    project_source_license_policy_verification=(
+                        c615_project_source_license_policy_verification
+                    ),
+                )
+                if prerequisites_unchanged
+                else None
+            )
+            final_artifact_class_policy_verification = (
+                collect_artifact_class_policy_verification(
+                    project_root=project_root,
+                    artifact_policy_coverage_inventory=(
+                        final_policy_coverage_inventory
+                    ),
+                    occupied_logical_paths=occupied_policy_paths,
+                )
+                if final_policy_coverage_inventory is not None
+                else None
+            )
+            if (
+                final_policy_coverage_inventory
+                != artifact_policy_coverage_inventory
+                or final_artifact_class_policy_verification
+                != artifact_class_policy_verification
+            ):
+                artifact_class_policy_verification = None
+
         provenance_document = build_intoto_provenance_document(
             subject=subject,
             sbom=sbom_ref,
@@ -1205,11 +1350,45 @@ def _emit_preview_ready(
             component_license_policy_verification=(component_license_policy_verification),
             project_source_license_policy_verification=(project_source_license_policy_verification),
             artifact_policy_coverage_inventory=(artifact_policy_coverage_inventory),
+            artifact_class_policy_verification=(artifact_class_policy_verification),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
+        if (
+            artifact_class_policy_verification is not None
+            and len(provenance_bytes) > MAX_SIDECAR_BYTES
+        ):
+            # C6.15 is the newest additive metadata and its single lock
+            # material is always omitted before the C6.14 inventory.
+            artifact_class_policy_verification = None
+            provenance_document = build_intoto_provenance_document(
+                subject=subject,
+                sbom=sbom_ref,
+                inputs=inputs,
+                wheel_entries=wheel_entries,
+                cargo_packages=inventory.packages,
+                target_triple=profile.target_triple,
+                native_runtime_inventory=runtime_inventory,
+                native_runtime_path_resolution=runtime_path_resolution,
+                native_runtime_transitive_closure=runtime_transitive_closure,
+                source_transformation_inventory=transformation_inventory,
+                source_transformation_verification=transformation_verification,
+                analysis_input_verification=analysis_input_verification,
+                component_license_inventory=component_license_inventory,
+                component_license_policy_verification=(
+                    component_license_policy_verification
+                ),
+                project_source_license_policy_verification=(
+                    project_source_license_policy_verification
+                ),
+                artifact_policy_coverage_inventory=(
+                    artifact_policy_coverage_inventory
+                ),
+            )
+            provenance_bytes = pretty_json_bytes(provenance_document)
         if len(provenance_bytes) > MAX_SIDECAR_BYTES:
-            # C6.14 is the newest additive metadata and is always omitted before
-            # C6.13 or any earlier observation at the sidecar byte ceiling.
+            # Once C6.15 is absent, C6.14 is omitted before C6.13 or any
+            # earlier observation at the sidecar byte ceiling.
+            artifact_class_policy_verification = None
             artifact_policy_coverage_inventory = None
             provenance_document = build_intoto_provenance_document(
                 subject=subject,
@@ -1272,6 +1451,7 @@ def _emit_preview_ready(
         source_transformation_verification=transformation_verification,
         analysis_input_verification=analysis_input_verification,
         artifact_policy_coverage_inventory=artifact_policy_coverage_inventory,
+        artifact_class_policy_verification=artifact_class_policy_verification,
         component_license_inventory=component_license_inventory,
         component_license_policy_verification=(component_license_policy_verification),
         project_source_license_policy_verification=(project_source_license_policy_verification),

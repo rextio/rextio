@@ -1,4 +1,4 @@
-"""Bounded C6.2/C6.4 artifact-evidence models and sidecar helpers.
+"""Bounded C6.2-C6.15 artifact-evidence models and sidecar helpers.
 
 This module is intentionally separate from :class:`ArtifactProvenance`, which
 remains planning metadata only. C6.2 emits preview-only, incomplete, unsigned
@@ -9,8 +9,10 @@ one-hop static packaged path observations. C6.9 adds a strictly bounded,
 cycle-safe graph over recursively inspected packaged members and logical system
 leaves. C6.10 adds scoped source replay, C6.11 adds a scoped owner Cargo
 license-policy receipt, C6.12 adds an owner declaration for the exact
-C6.10 project-source/generated-Rust scope, and C6.14 partitions the currently
-observed artifact universe into compact policy-coverage classes. None completes global
+C6.10 project-source/generated-Rust scope, C6.13 binds sibling-stub analysis
+inputs, C6.14 partitions the currently
+observed artifact universe into compact policy-coverage classes, and C6.15
+binds closed owner dispositions to that exact partition. None completes global
 transformation/license policy, signing, or distribution authorization.
 Evidence unavailability never changes ordinary build success.
 """
@@ -79,6 +81,8 @@ MAX_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_CHARS = 256 * 1024
 MAX_ANALYSIS_INPUT_EVIDENCE_CHARS = 256 * 1024
 MAX_ARTIFACT_POLICY_COVERAGE_CHARS = 64 * 1024
 MAX_PROJECT_SOURCE_LICENSE_LOCK_BYTES = 256 * 1024
+MAX_ARTIFACT_CLASS_POLICY_LOCK_BYTES = 256 * 1024
+MAX_ARTIFACT_CLASS_POLICY_VERIFICATION_CHARS = 128 * 1024
 
 SOURCE_TRANSFORMATION_INVENTORY_KIND = "source-transformation-inventory"
 SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION = 1
@@ -341,6 +345,35 @@ ARTIFACT_EVIDENCE_SCOPE = "host-extension-wheel-cpython-v1"
 ARTIFACT_EVIDENCE_REQUIRED_STATUS = "preview-ready"
 ARTIFACT_EVIDENCE_GATE_OUT_OF_SCOPE = "artifact-set-out-of-scope"
 ARTIFACT_EVIDENCE_GATE_UNAVAILABLE = "evidence-unavailable"
+ARTIFACT_CLASS_POLICY_VERIFICATION_KIND = "artifact-class-policy-verification"
+ARTIFACT_CLASS_POLICY_VERIFICATION_SCHEMA_VERSION = 1
+ARTIFACT_CLASS_POLICY_LOCK_FILENAME = "rextio.artifact-policy.lock.json"
+ARTIFACT_CLASS_POLICY_LOCK_KIND = "rextio.artifact-class-policy-lock"
+ARTIFACT_CLASS_POLICY_LOCK_SCHEMA_VERSION = "1"
+ARTIFACT_CLASS_POLICY = "project-owner-exact-artifact-class-policy-v1"
+ARTIFACT_CLASS_POLICY_LOCK_ROLE = "artifact-class-policy-lock"
+ARTIFACT_CLASS_POLICY_ACKNOWLEDGEMENT = "REXTIO_ARTIFACT_CLASS_POLICY_ACK_V1"
+ARTIFACT_CLASS_POLICY_ACTION_SCOPES: tuple[str, ...] = (
+    "local-build",
+    "package",
+    "redistribution",
+)
+ARTIFACT_CLASS_LICENSE_DISPOSITIONS = frozenset(
+    {
+        "prerequisite-receipt-bound",
+        "owner-declared-allow",
+        "not-applicable-logical-system-leaf",
+        "not-observed",
+    }
+)
+ARTIFACT_CLASS_TRANSFORMATION_DISPOSITIONS = frozenset(
+    {
+        "prerequisite-receipt-bound",
+        "owner-declared-unverified",
+        "not-applicable",
+        "not-observed",
+    }
+)
 
 # Deterministic UUID namespace for CycloneDX serialNumber (RFC 4122 UUIDv5).
 _CDX_UUID_NAMESPACE = uuid.UUID("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
@@ -2103,6 +2136,298 @@ class ArtifactPolicyCoverageInventory:
         }
 
 
+def artifact_policy_coverage_inventory_digest(
+    value: ArtifactPolicyCoverageInventory,
+) -> str:
+    """Hash one deeply reconstructed C6.14 semantic inventory."""
+    rebuilt = _reconstruct_artifact_policy_coverage_inventory(value)
+    return sha256_hex(canonical_json_bytes(rebuilt.to_dict()))
+
+
+def artifact_class_policy_dispositions(
+    coverage: ArtifactPolicyCoverageClass,
+) -> tuple[str, str]:
+    """Return the sole closed C6.15 disposition pair for one C6.14 row."""
+    coverage = _reconstruct_artifact_policy_coverage_class(coverage)
+    if coverage.license_policy_state != "unassessed":
+        license_disposition = "prerequisite-receipt-bound"
+    elif coverage.observed_count == 0:
+        license_disposition = "not-observed"
+    elif coverage.class_id == "native-runtime:logical-system-leaf":
+        license_disposition = "not-applicable-logical-system-leaf"
+    else:
+        license_disposition = "owner-declared-allow"
+
+    if coverage.transformation_provenance_state.startswith("scoped-"):
+        transformation_disposition = "prerequisite-receipt-bound"
+    elif coverage.transformation_provenance_state == "not-applicable":
+        transformation_disposition = "not-applicable"
+    elif coverage.observed_count == 0:
+        transformation_disposition = "not-observed"
+    else:
+        transformation_disposition = "owner-declared-unverified"
+    return license_disposition, transformation_disposition
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactClassPolicyDeclaration:
+    """Closed owner disposition for one exact C6.14 artifact class."""
+
+    coverage: ArtifactPolicyCoverageClass
+    license_policy_disposition: str
+    transformation_provenance_disposition: str
+
+    def __post_init__(self) -> None:
+        rebuilt = _reconstruct_artifact_policy_coverage_class(self.coverage)
+        if rebuilt != self.coverage:
+            raise ValueError("artifact class policy coverage row is noncanonical")
+        object.__setattr__(self, "coverage", rebuilt)
+        if (
+            type(self.license_policy_disposition) is not str
+            or self.license_policy_disposition not in ARTIFACT_CLASS_LICENSE_DISPOSITIONS
+        ):
+            raise ValueError("artifact class license disposition is invalid")
+        if (
+            type(self.transformation_provenance_disposition) is not str
+            or self.transformation_provenance_disposition
+            not in ARTIFACT_CLASS_TRANSFORMATION_DISPOSITIONS
+        ):
+            raise ValueError("artifact class transformation disposition is invalid")
+        if (
+            self.license_policy_disposition,
+            self.transformation_provenance_disposition,
+        ) != artifact_class_policy_dispositions(rebuilt):
+            raise ValueError("artifact class policy disposition weakens prerequisite coverage")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the fixed policy-lock row without raw component identities."""
+        return {
+            "coverage": self.coverage.to_dict(),
+            "license_policy_disposition": self.license_policy_disposition,
+            "transformation_provenance_disposition": (
+                self.transformation_provenance_disposition
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactClassPolicyVerification:
+    """One bounded owner policy receipt for the exact C6.14 class partition.
+
+    The receipt records closed per-class dispositions only. It does not verify
+    attestor identity, SPDX expressions, license obligations or files,
+    ownership/rights, technical transformation provenance, signatures, or
+    distribution authority.
+    """
+
+    artifact_policy_coverage_inventory_sha256: str
+    canonical_partition_sha256: str
+    classes: tuple[ArtifactClassPolicyDeclaration, ...]
+    lock_file: EvidenceFileRef
+    policy_snapshot_sha256: str
+    attestor: str
+    attestor_kind: str
+    attestor_relationship: str
+    kind: str = ARTIFACT_CLASS_POLICY_VERIFICATION_KIND
+    schema_version: int = ARTIFACT_CLASS_POLICY_VERIFICATION_SCHEMA_VERSION
+    scope: str = ARTIFACT_EVIDENCE_SCOPE
+    policy: str = ARTIFACT_CLASS_POLICY
+    decision: str = "allow"
+    action_scopes: tuple[str, ...] = ARTIFACT_CLASS_POLICY_ACTION_SCOPES
+    acknowledgement: str = ARTIFACT_CLASS_POLICY_ACKNOWLEDGEMENT
+    owner_attestation_bound: bool = True
+    attestor_identity_verified: bool = False
+    declarations_only: bool = True
+    spdx_verified: bool = False
+    license_files_verified: bool = False
+    notice_files_verified: bool = False
+    obligations_verified: bool = False
+    license_compatibility_verified: bool = False
+    source_ownership_verified: bool = False
+    derivative_work_rights_verified: bool = False
+    legal_approval_verified: bool = False
+    technical_provenance_verified: bool = False
+    complete_for_observed_classes: bool = True
+    scope_complete: bool = False
+    global_license_policy_complete: bool = False
+    global_transformation_provenance_complete: bool = False
+    complete: bool = False
+    signed: bool = False
+    distribution_authorized: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.kind, "artifact class policy verification kind"),
+            (self.scope, "artifact class policy verification scope"),
+            (self.policy, "artifact class policy identifier"),
+            (self.decision, "artifact class policy decision"),
+            (self.acknowledgement, "artifact class policy acknowledgement"),
+            (self.authority, "artifact class policy authority"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+        if (
+            self.kind != ARTIFACT_CLASS_POLICY_VERIFICATION_KIND
+            or type(self.schema_version) is not int
+            or isinstance(self.schema_version, bool)
+            or self.schema_version != ARTIFACT_CLASS_POLICY_VERIFICATION_SCHEMA_VERSION
+            or self.scope != ARTIFACT_EVIDENCE_SCOPE
+            or self.policy != ARTIFACT_CLASS_POLICY
+            or self.authority != "observation-only"
+        ):
+            raise ValueError("artifact class policy verification identity is invalid")
+        for value, label in (
+            (
+                self.artifact_policy_coverage_inventory_sha256,
+                "artifact class policy coverage digest",
+            ),
+            (self.canonical_partition_sha256, "artifact class policy partition digest"),
+            (self.policy_snapshot_sha256, "artifact class policy snapshot digest"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+            if not _HEX_SHA256.fullmatch(value):
+                raise ValueError(f"{label} is invalid")
+        if type(self.classes) is not tuple or len(self.classes) != len(
+            ARTIFACT_POLICY_COVERAGE_CLASS_IDS
+        ):
+            raise TypeError("artifact class policy declarations must be the fixed tuple")
+        rebuilt_classes = tuple(
+            ArtifactClassPolicyDeclaration(
+                coverage=_reconstruct_artifact_policy_coverage_class(item.coverage),
+                license_policy_disposition=item.license_policy_disposition,
+                transformation_provenance_disposition=(
+                    item.transformation_provenance_disposition
+                ),
+            )
+            for item in self.classes
+            if type(item) is ArtifactClassPolicyDeclaration
+        )
+        if len(rebuilt_classes) != len(self.classes) or rebuilt_classes != self.classes:
+            raise ValueError("artifact class policy declarations are noncanonical")
+        if tuple(item.coverage.class_id for item in rebuilt_classes) != (
+            ARTIFACT_POLICY_COVERAGE_CLASS_IDS
+        ):
+            raise ValueError("artifact class policy declarations are not canonically ordered")
+        object.__setattr__(self, "classes", rebuilt_classes)
+        if type(self.lock_file) is not EvidenceFileRef:
+            raise TypeError("artifact class policy lock reference is invalid")
+        if (
+            self.lock_file.logical_path != ARTIFACT_CLASS_POLICY_LOCK_FILENAME
+            or self.lock_file.role != ARTIFACT_CLASS_POLICY_LOCK_ROLE
+            or self.lock_file.size <= 0
+            or self.lock_file.size > MAX_ARTIFACT_CLASS_POLICY_LOCK_BYTES
+        ):
+            raise ValueError("artifact class policy lock binding is invalid")
+        if type(self.attestor) is not str:
+            raise TypeError("artifact class policy attestor must be a string")
+        attestor = _bounded_identifier(self.attestor, "artifact class policy attestor")
+        if attestor != self.attestor or _OWNER_POLICY_ATTESTOR.fullmatch(attestor) is None:
+            raise ValueError("artifact class policy attestor is invalid")
+        if type(self.attestor_kind) is not str or self.attestor_kind not in {
+            "human",
+            "organization",
+        }:
+            raise ValueError("artifact class policy attestor kind is invalid")
+        expected_relationship = {
+            "human": "human-owner",
+            "organization": "organization-owner",
+        }[self.attestor_kind]
+        if (
+            type(self.attestor_relationship) is not str
+            or self.attestor_relationship != expected_relationship
+        ):
+            raise ValueError("artifact class policy attestor relationship is invalid")
+        if self.decision != "allow":
+            raise ValueError("artifact class policy decision must be allow")
+        if (
+            type(self.action_scopes) is not tuple
+            or self.action_scopes != ARTIFACT_CLASS_POLICY_ACTION_SCOPES
+        ):
+            raise ValueError("artifact class policy action scopes are invalid")
+        if self.acknowledgement != ARTIFACT_CLASS_POLICY_ACKNOWLEDGEMENT:
+            raise ValueError("artifact class policy acknowledgement is invalid")
+        fixed_booleans = (
+            (self.owner_attestation_bound, True),
+            (self.attestor_identity_verified, False),
+            (self.declarations_only, True),
+            (self.spdx_verified, False),
+            (self.license_files_verified, False),
+            (self.notice_files_verified, False),
+            (self.obligations_verified, False),
+            (self.license_compatibility_verified, False),
+            (self.source_ownership_verified, False),
+            (self.derivative_work_rights_verified, False),
+            (self.legal_approval_verified, False),
+            (self.technical_provenance_verified, False),
+            (self.complete_for_observed_classes, True),
+            (self.scope_complete, False),
+            (self.global_license_policy_complete, False),
+            (self.global_transformation_provenance_complete, False),
+            (self.complete, False),
+            (self.signed, False),
+            (self.distribution_authorized, False),
+        )
+        if any(
+            type(value) is not bool or value is not expected
+            for value, expected in fixed_booleans
+        ):
+            raise ValueError("artifact class policy safety claim is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_ARTIFACT_CLASS_POLICY_VERIFICATION_CHARS:
+            raise ValueError("artifact class policy verification exceeds the bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic scoped, non-authorizing policy receipt."""
+        return {
+            "kind": ARTIFACT_CLASS_POLICY_VERIFICATION_KIND,
+            "schema_version": ARTIFACT_CLASS_POLICY_VERIFICATION_SCHEMA_VERSION,
+            "scope": ARTIFACT_EVIDENCE_SCOPE,
+            "policy": ARTIFACT_CLASS_POLICY,
+            "authority": "observation-only",
+            "complete": False,
+            "signed": False,
+            "distribution_authorized": False,
+            "complete_for_observed_classes": True,
+            "scope_complete": False,
+            "global_license_policy_complete": False,
+            "global_transformation_provenance_complete": False,
+            "declarations_only": True,
+            "spdx_verified": False,
+            "license_files_verified": False,
+            "notice_files_verified": False,
+            "obligations_verified": False,
+            "license_compatibility_verified": False,
+            "source_ownership_verified": False,
+            "derivative_work_rights_verified": False,
+            "legal_approval_verified": False,
+            "technical_provenance_verified": False,
+            "owner_attestation_bound": True,
+            "attestor_identity_verified": False,
+            "artifact_policy_coverage_inventory_sha256": (
+                self.artifact_policy_coverage_inventory_sha256
+            ),
+            "canonical_partition_sha256": self.canonical_partition_sha256,
+            "class_count": len(self.classes),
+            "classes": [item.to_dict() for item in self.classes],
+            "lock_file": self.lock_file.to_dict(),
+            "policy_snapshot_sha256": self.policy_snapshot_sha256,
+            "attestor": self.attestor,
+            "attestor_kind": self.attestor_kind,
+            "attestor_relationship": self.attestor_relationship,
+            "decision": "allow",
+            "action_scopes": list(ARTIFACT_CLASS_POLICY_ACTION_SCOPES),
+            "acknowledgement": ARTIFACT_CLASS_POLICY_ACKNOWLEDGEMENT,
+        }
+
+
 def artifact_policy_identity_set_digest(class_id: str, identities: Sequence[str]) -> str:
     """Hash one sorted unique set of opaque, domain-qualified identities."""
     if class_id not in ARTIFACT_POLICY_COVERAGE_CLASS_IDS:
@@ -2179,6 +2504,41 @@ def _reconstruct_artifact_policy_coverage_class(
         transformation_provenance_receipt_kind=(value.transformation_provenance_receipt_kind),
         transformation_provenance_receipt_sha256=(value.transformation_provenance_receipt_sha256),
     )
+
+
+def _reconstruct_artifact_policy_coverage_inventory(
+    value: ArtifactPolicyCoverageInventory,
+) -> ArtifactPolicyCoverageInventory:
+    """Deeply rebuild one complete C6.14 inventory before hashing/binding it."""
+    if type(value) is not ArtifactPolicyCoverageInventory:
+        raise TypeError("artifact policy coverage inventory model is invalid")
+    if type(value.classes) is not tuple or len(value.classes) != len(
+        ARTIFACT_POLICY_COVERAGE_CLASS_IDS
+    ):
+        raise TypeError("artifact policy coverage classes must be the fixed tuple")
+    rebuilt = ArtifactPolicyCoverageInventory(
+        classes=tuple(
+            _reconstruct_artifact_policy_coverage_class(item) for item in value.classes
+        ),
+        observed_component_count=value.observed_component_count,
+        canonical_partition_sha256=value.canonical_partition_sha256,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        identity_scheme=value.identity_scheme,
+        authority=value.authority,
+        scope_complete=value.scope_complete,
+        global_license_policy_complete=value.global_license_policy_complete,
+        global_transformation_provenance_complete=(
+            value.global_transformation_provenance_complete
+        ),
+        complete=value.complete,
+        signed=value.signed,
+        distribution_authorized=value.distribution_authorized,
+    )
+    if rebuilt != value:
+        raise ValueError("artifact policy coverage inventory is noncanonical")
+    return rebuilt
 
 
 @dataclass(frozen=True, slots=True)
@@ -2777,7 +3137,7 @@ class SidecarArtifact:
 
 @dataclass(frozen=True)
 class ArtifactEvidence:
-    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.14 preview."""
+    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.15 preview."""
 
     kind: str
     status: str  # preview-ready | unavailable
@@ -2802,6 +3162,9 @@ class ArtifactEvidence:
         default=None, kw_only=True
     )
     artifact_policy_coverage_inventory: ArtifactPolicyCoverageInventory | None = field(
+        default=None, kw_only=True
+    )
+    artifact_class_policy_verification: ArtifactClassPolicyVerification | None = field(
         default=None, kw_only=True
     )
     component_license_inventory: ComponentLicenseInventory | None = None
@@ -2846,6 +3209,7 @@ class ArtifactEvidence:
                 or self.source_transformation_verification is not None
                 or self.analysis_input_verification is not None
                 or self.artifact_policy_coverage_inventory is not None
+                or self.artifact_class_policy_verification is not None
                 or self.component_license_inventory is not None
                 or self.component_license_policy_verification is not None
                 or self.project_source_license_policy_verification is not None
@@ -3057,6 +3421,41 @@ class ArtifactEvidence:
                 )
                 if self.artifact_policy_coverage_inventory != expected_policy_coverage:
                     raise ValueError("artifact policy coverage inventory differs from evidence")
+            if self.artifact_class_policy_verification is not None:
+                if self.artifact_policy_coverage_inventory is None:
+                    raise ValueError(
+                        "artifact class policy verification requires C6.14 coverage"
+                    )
+                occupied_policy_paths = [item.logical_path for item in self.inputs]
+                if self.analysis_input_verification is not None:
+                    occupied_policy_paths.extend(
+                        record.stub.logical_path
+                        for record in self.analysis_input_verification.records
+                        if record.state == "present" and record.stub is not None
+                    )
+                if self.component_license_policy_verification is not None:
+                    occupied_policy_paths.append(
+                        self.component_license_policy_verification.lock_file.logical_path
+                    )
+                if self.project_source_license_policy_verification is not None:
+                    occupied_policy_paths.append(
+                        self.project_source_license_policy_verification.lock_file.logical_path
+                    )
+                lock_key = unicodedata.normalize(
+                    "NFC",
+                    self.artifact_class_policy_verification.lock_file.logical_path,
+                ).casefold()
+                if lock_key in {
+                    unicodedata.normalize("NFC", path).casefold()
+                    for path in occupied_policy_paths
+                }:
+                    raise ValueError(
+                        "artifact class policy lock aliases an existing evidence material"
+                    )
+                _validate_artifact_class_policy_verification_binding(
+                    verification=self.artifact_class_policy_verification,
+                    inventory=self.artifact_policy_coverage_inventory,
+                )
             if self.project_source_license_policy_verification is not None:
                 if self.source_transformation_verification is None:
                     raise ValueError(
@@ -3188,6 +3587,10 @@ class ArtifactEvidence:
                     data["artifact_policy_coverage_inventory"] = (
                         self.artifact_policy_coverage_inventory.to_dict()
                     )
+                if self.artifact_class_policy_verification is not None:
+                    data["artifact_class_policy_verification"] = (
+                        self.artifact_class_policy_verification.to_dict()
+                    )
                 if self.component_license_inventory is not None:
                     data["component_license_inventory"] = self.component_license_inventory.to_dict()
                 if self.component_license_policy_verification is not None:
@@ -3285,6 +3688,135 @@ def _validate_project_source_license_policy_verification_binding(
         raise ValueError("project source license policy source binding differs")
     if verification.generated_rust != transformation_verification.generated_rust:
         raise ValueError("project source license policy Rust binding differs")
+
+
+def _artifact_class_policy_snapshot(
+    *,
+    coverage_digest: str,
+    canonical_partition_sha256: str,
+    classes: Sequence[ArtifactClassPolicyDeclaration],
+    attestor: str,
+    attestor_kind: str,
+    attestor_relationship: str,
+) -> dict[str, object]:
+    """Return the exact semantic C6.15 lock document used for its digest."""
+    return {
+        "schema_version": ARTIFACT_CLASS_POLICY_LOCK_SCHEMA_VERSION,
+        "kind": ARTIFACT_CLASS_POLICY_LOCK_KIND,
+        "scope": ARTIFACT_EVIDENCE_SCOPE,
+        "policy": ARTIFACT_CLASS_POLICY,
+        "artifact_policy_coverage_inventory_sha256": coverage_digest,
+        "canonical_partition_sha256": canonical_partition_sha256,
+        "classes": [item.to_dict() for item in classes],
+        "attestation": {
+            "attestor": attestor,
+            "attestor_kind": attestor_kind,
+            "attestor_relationship": attestor_relationship,
+            "decision": "allow",
+            "action_scopes": list(ARTIFACT_CLASS_POLICY_ACTION_SCOPES),
+            "acknowledgement": ARTIFACT_CLASS_POLICY_ACKNOWLEDGEMENT,
+        },
+    }
+
+
+def _reconstruct_artifact_class_policy_verification(
+    value: ArtifactClassPolicyVerification,
+) -> ArtifactClassPolicyVerification:
+    """Deeply rebuild every C6.15 receipt field before trusting it."""
+    if type(value) is not ArtifactClassPolicyVerification:
+        raise TypeError("artifact class policy verification model is invalid")
+    if type(value.classes) is not tuple or type(value.action_scopes) is not tuple:
+        raise TypeError("artifact class policy verification collections must be tuples")
+    if len(value.classes) != len(ARTIFACT_POLICY_COVERAGE_CLASS_IDS) or len(
+        value.action_scopes
+    ) > len(ARTIFACT_CLASS_POLICY_ACTION_SCOPES):
+        raise ValueError("artifact class policy verification collections exceed the bound")
+    rebuilt = ArtifactClassPolicyVerification(
+        artifact_policy_coverage_inventory_sha256=(
+            value.artifact_policy_coverage_inventory_sha256
+        ),
+        canonical_partition_sha256=value.canonical_partition_sha256,
+        classes=tuple(
+            ArtifactClassPolicyDeclaration(
+                coverage=_reconstruct_artifact_policy_coverage_class(item.coverage),
+                license_policy_disposition=item.license_policy_disposition,
+                transformation_provenance_disposition=(
+                    item.transformation_provenance_disposition
+                ),
+            )
+            for item in value.classes
+            if type(item) is ArtifactClassPolicyDeclaration
+        ),
+        lock_file=EvidenceFileRef(
+            logical_path=value.lock_file.logical_path,
+            sha256=value.lock_file.sha256,
+            size=value.lock_file.size,
+            role=value.lock_file.role,
+        ),
+        policy_snapshot_sha256=value.policy_snapshot_sha256,
+        attestor=value.attestor,
+        attestor_kind=value.attestor_kind,
+        attestor_relationship=value.attestor_relationship,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        policy=value.policy,
+        decision=value.decision,
+        action_scopes=tuple(value.action_scopes),
+        acknowledgement=value.acknowledgement,
+        owner_attestation_bound=value.owner_attestation_bound,
+        attestor_identity_verified=value.attestor_identity_verified,
+        declarations_only=value.declarations_only,
+        spdx_verified=value.spdx_verified,
+        license_files_verified=value.license_files_verified,
+        notice_files_verified=value.notice_files_verified,
+        obligations_verified=value.obligations_verified,
+        license_compatibility_verified=value.license_compatibility_verified,
+        source_ownership_verified=value.source_ownership_verified,
+        derivative_work_rights_verified=value.derivative_work_rights_verified,
+        legal_approval_verified=value.legal_approval_verified,
+        technical_provenance_verified=value.technical_provenance_verified,
+        complete_for_observed_classes=value.complete_for_observed_classes,
+        scope_complete=value.scope_complete,
+        global_license_policy_complete=value.global_license_policy_complete,
+        global_transformation_provenance_complete=(
+            value.global_transformation_provenance_complete
+        ),
+        complete=value.complete,
+        signed=value.signed,
+        distribution_authorized=value.distribution_authorized,
+        authority=value.authority,
+    )
+    if len(rebuilt.classes) != len(value.classes) or rebuilt != value:
+        raise ValueError("artifact class policy verification is noncanonical")
+    return rebuilt
+
+
+def _validate_artifact_class_policy_verification_binding(
+    *,
+    verification: ArtifactClassPolicyVerification,
+    inventory: ArtifactPolicyCoverageInventory,
+) -> None:
+    """Bind C6.15 to the exact complete C6.14 semantic partition."""
+    verification = _reconstruct_artifact_class_policy_verification(verification)
+    inventory = _reconstruct_artifact_policy_coverage_inventory(inventory)
+    coverage_digest = artifact_policy_coverage_inventory_digest(inventory)
+    if verification.artifact_policy_coverage_inventory_sha256 != coverage_digest:
+        raise ValueError("artifact class policy C6.14 digest differs")
+    if verification.canonical_partition_sha256 != inventory.canonical_partition_sha256:
+        raise ValueError("artifact class policy partition digest differs")
+    if tuple(item.coverage for item in verification.classes) != inventory.classes:
+        raise ValueError("artifact class policy class coverage differs")
+    snapshot = _artifact_class_policy_snapshot(
+        coverage_digest=coverage_digest,
+        canonical_partition_sha256=inventory.canonical_partition_sha256,
+        classes=verification.classes,
+        attestor=verification.attestor,
+        attestor_kind=verification.attestor_kind,
+        attestor_relationship=verification.attestor_relationship,
+    )
+    if verification.policy_snapshot_sha256 != sha256_hex(canonical_json_bytes(snapshot)):
+        raise ValueError("artifact class policy snapshot digest differs")
 
 
 def _reconstruct_project_source_license_policy_verification(
@@ -6467,6 +6999,7 @@ def build_intoto_provenance_document(
         ProjectSourceLicensePolicyVerification | None
     ) = None,
     artifact_policy_coverage_inventory: (ArtifactPolicyCoverageInventory | None) = None,
+    artifact_class_policy_verification: (ArtifactClassPolicyVerification | None) = None,
 ) -> dict[str, object]:
     """Build an unsigned in-toto Statement v1 with SLSA Provenance v1 predicate.
 
@@ -6601,6 +7134,33 @@ def build_intoto_provenance_document(
         if artifact_policy_coverage_inventory != expected_policy_coverage:
             raise ValueError("artifact policy coverage provenance binding differs")
 
+    if artifact_class_policy_verification is not None:
+        if artifact_policy_coverage_inventory is None:
+            raise ValueError("artifact class policy provenance requires C6.14 coverage")
+        _validate_artifact_class_policy_verification_binding(
+            verification=artifact_class_policy_verification,
+            inventory=artifact_policy_coverage_inventory,
+        )
+        lock_file = artifact_class_policy_verification.lock_file
+        lock_key = unicodedata.normalize("NFC", lock_file.logical_path).casefold()
+        existing_file_keys = {
+            unicodedata.normalize("NFC", uri.removeprefix("file:")).casefold()
+            for material in materials
+            if type((uri := material.get("uri"))) is str and uri.startswith("file:")
+        }
+        if lock_key in existing_file_keys:
+            raise ValueError("artifact class policy lock aliases an existing material")
+        materials.append(
+            {
+                "uri": f"file:{lock_file.logical_path}",
+                "digest": {"sha256": lock_file.sha256},
+                "annotations": {
+                    "rextio:role": lock_file.role,
+                    "rextio:size": str(lock_file.size),
+                },
+            }
+        )
+
     if len(materials) > MAX_EVIDENCE_COMPONENTS:
         raise ArtifactEvidenceError(
             "provenance material count exceeds the bound",
@@ -6639,6 +7199,10 @@ def build_intoto_provenance_document(
         "project_source_license_policy_complete": False,
         "artifact_policy_coverage_observed": (artifact_policy_coverage_inventory is not None),
         "artifact_policy_coverage_scope_complete": False,
+        "scoped_artifact_class_policy_declaration_bound": (
+            artifact_class_policy_verification is not None
+        ),
+        "artifact_class_policy_scope_complete": False,
     }
     if native_runtime_inventory is not None:
         internal_parameters["native_runtime_format"] = native_runtime_inventory.format
@@ -6664,6 +7228,9 @@ def build_intoto_provenance_document(
         "rextio:analysis_input_verification_observed": (analysis_input_verification is not None),
         "rextio:artifact_policy_coverage_observed": (
             artifact_policy_coverage_inventory is not None
+        ),
+        "rextio:artifact_class_policy_verification_observed": (
+            artifact_class_policy_verification is not None
         ),
     }
     if native_runtime_inventory is not None:
@@ -6699,6 +7266,10 @@ def build_intoto_provenance_document(
     if artifact_policy_coverage_inventory is not None:
         run_metadata["rextio:artifact_policy_coverage_inventory"] = (
             artifact_policy_coverage_inventory.to_dict()
+        )
+    if artifact_class_policy_verification is not None:
+        run_metadata["rextio:artifact_class_policy_verification"] = (
+            artifact_class_policy_verification.to_dict()
         )
 
     document: dict[str, object] = {
