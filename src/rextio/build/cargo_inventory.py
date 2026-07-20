@@ -455,7 +455,7 @@ def _sanitize_reachable_package(
 
     license_text: str | None = None
     if license_value is not None:
-        if not isinstance(license_value, str) or not license_value.strip():
+        if not isinstance(license_value, str):
             raise ArtifactEvidenceError(
                 "cargo package license is invalid", reason=REASON_CARGO_GRAPH_INVALID
             )
@@ -463,11 +463,17 @@ def _sanitize_reachable_package(
             raise ArtifactEvidenceError(
                 "cargo package license is too long", reason=REASON_CARGO_GRAPH_INVALID
             )
-        if any(ord(ch) < 32 for ch in license_value):
+        # Use stripping only to detect missing/blank metadata. Preserve every
+        # nonblank string verbatim, including leading/trailing whitespace.
+        # C6.7 performs no SPDX parsing or normalization.
+        if not license_value.strip():
+            license_text = None
+        elif any(ord(character) < 32 for character in license_value):
             raise ArtifactEvidenceError(
                 "cargo package license is invalid", reason=REASON_CARGO_GRAPH_INVALID
             )
-        license_text = license_value.strip()
+        else:
+            license_text = license_value
 
     if source is None:
         if not is_root:

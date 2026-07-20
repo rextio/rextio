@@ -5,10 +5,37 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.11.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.12.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR.
+
+### C6.7 reachable Cargo component-license observation
+
+- Add immutable `artifact_evidence.component_license_inventory` with exact
+  coverage of every reachable `cargo_package`, including the generated path
+  root, in canonical `bom_ref` order. Each record binds only package identity,
+  kind, the bounded Cargo metadata license string or null, and the closed
+  `declared-unvalidated | missing` observation.
+- Treat null and whitespace-only metadata as missing. Preserve every other
+  string verbatim (including surrounding whitespace) while rejecting control
+  characters and fixed per-string/count/serialized-size bounds. Do not parse or
+  normalize SPDX, classify sentinel/compound strings, read license files, make
+  owner allow/deny decisions, change SourceLock, or claim legal approval.
+- Advance the always-blocked readiness assessment to `policy_version: 3` and
+  add `component-license-inventory-bound`. Missing inventory makes only that
+  observation unavailable with the fixed
+  `component-license-inventory-unavailable` blocker; malformed, reordered,
+  duplicated, stale, extra, omitted, or non-exactly-bound models retain the
+  all-`not-evaluated` `readiness-assessment-unavailable` shape.
+- Emit the inventory in `build.json` and unsigned provenance with explicit
+  observation-presence metadata. Under the closed sidecar ceiling, omit C6.7
+  first and preserve C6.6 whenever possible; only then apply the existing C6.6
+  omission rule. Ordinary build and C6.3 gate outcomes are unchanged.
+- Keep package version **0.1.4** and plugin API **1.4**. Advance only the
+  unreleased tooling contract to **2.12.0**. The existing
+  `component-license-policy-complete` check and blocker remain blocked, and all
+  completeness/signature/distribution-authority fields remain false.
 
 ### C6.6 bounded source-transformation provenance observation
 
@@ -43,7 +70,7 @@ feature PRs target the `0.1.5` integration branch; `main` stays at the published
   `readiness-assessment-unavailable` shape. The evaluator does not independently
   re-derive structurally valid observation values from source or `BuildPlan`.
 - Keep package version **0.1.4** and plugin API **1.4**; advance only the
-  unreleased tooling contract to **2.11.0**. Licenses, runtime path/transitive
+  unreleased tooling contract to **2.11.0**. Validated license policy, runtime path/transitive
   closure, `dlopen`, signatures, executables, Rust crates, Nuitka/WASM/Windows,
   runtime-bearing plugins, full C6, and C5.2 remain out of scope.
 
