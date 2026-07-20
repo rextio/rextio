@@ -33,7 +33,12 @@ C6.7 adds an exact, bounded observation-only inventory for every reachable
 Cargo package (including the generated path root), preserving each nonblank
 Cargo metadata license string verbatim as `declared-unvalidated` and recording
 blank/null values as `missing`. It performs no SPDX validation or legal/policy
-decision. This branch emits additive tooling contract **2.12.0** and plugin API **1.4**
+decision. C6.8 adds an exact, observation-only one-hop path record for every
+direct native dependency: trusted system names remain logical leaves, while
+contained Mach-O `@loader_path`/self-anchored `@rpath` and ELF `$ORIGIN`
+RPATH/RUNPATH candidates must bind one exact regular non-symlink wheel member.
+It does not claim actual loader selection or transitive closure. This branch
+emits additive tooling contract **2.13.0** and plugin API **1.4**
 while keeping package version
 **0.1.4**; those changes are not yet a tagged or PyPI release. Published 0.1.4
 remains the plugin API **1.3** / contract **2.2.0** producer. See
@@ -152,8 +157,12 @@ architecture and only a closed set of expected system-runtime dependencies;
 each accepted dependency has a sanitized `origin` and stable `bom_ref`. A
 Mach-O first-row private Cargo self-ID is excluded only when the header is
 `MH_DYLIB` and bounded `otool -D` reports that exact ID. An unexpected
-dependency makes evidence unavailable. The preview does not resolve dependency
-paths or inspect transitive or `dlopen`-loaded dependencies. Its gate remains
+dependency makes evidence unavailable. C6.8 may additionally bind each direct
+dependency to one packaged wheel member or a system logical leaf. The packaged
+path observation uses fixed `otool -l` / `readelf -W -d` inspection, only
+contained loader/ORIGIN-anchored candidates, exact wheel hash/size binding, and
+pinned non-symlink file receipts. It does not model actual loader-environment
+selection, system library bytes, transitive dependencies, or `dlopen`. Its gate remains
 `distribution_authorized: false`,
 `complete: false`, and `signed: false`; it is not a release authorization or a
 full supply-chain attestation. The default `best-effort` policy preserves the
@@ -166,16 +175,16 @@ receipt verification. It therefore never claims or deletes an observed
 concurrent-owner file. Publication mismatch makes evidence unavailable;
 pre-existing or concurrently replaced content is restored or retained for
 recovery, and a required rollback mismatch is reported as incomplete.
-Windows, runtime-bearing plugins, signatures, path resolution, transitive
+Windows, runtime-bearing plugins, signatures, transitive
 closure, and runtime `dlopen` discovery remain outside this preview.
 
 For that same in-scope wheel path, `build.json` also includes
-`artifact_distribution_authorization`. This C6.5-C6.7 policy-version-3 record is derived from the
+`artifact_distribution_authorization`. This C6.5-C6.8 policy-version-4 record is derived from the
 final `artifact_evidence` record after required-mode revalidation/transaction
 handling. It always reports `status: "blocked"`,
 `authority: "readiness-assessment-only"`, and false values for `complete`,
 `signed`, and `distribution_authorized`. Preview-ready evidence with a valid
-C6.6 and C6.7 inventories satisfy only six bounded observation checks after closed-model
+C6.6-C6.8 inventories satisfy only seven bounded observation checks after closed-model
 reconstruction and exact source/generated `EvidenceFileRef` cross-binding; it
 does not reopen artifacts, re-inspect output bytes, or independently re-derive
 the recorded qualname, range, or semantic-AST hash from source, `BuildPlan`, or
@@ -220,10 +229,25 @@ over-budget values fail closed. Missing inventory makes only
 `component-license-inventory-bound` unavailable and adds the fixed
 `component-license-inventory-unavailable` blocker. Malformed, reordered,
 duplicated, stale, or non-exactly-bound records use the all-`not-evaluated`
-readiness-unavailable shape. If provenance exceeds its ceiling, C6.7 is omitted
-first so C6.6 and all earlier evidence/gate results are preserved whenever
+readiness-unavailable shape. If provenance still exceeds its ceiling after the
+newer C6.8 observation is omitted, C6.7 is omitted next so C6.6 and all earlier evidence/gate results are preserved whenever
 possible. `component-license-policy-complete` remains blocked: this is not SPDX
 validation, a license allow/deny lock, legal approval, or distribution authority.
+
+The C6.8 `native_runtime_path_resolution` remains incomplete and
+observation-only. Records are in direct-dependency `bom_ref` order and bind the
+exact dependency name/origin plus one closed result/mechanism. Packaged records
+also bind one unique canonical `WheelEntryRef` name, SHA-256, and size; missing,
+ambiguous, symlinked, escaping, unsupported, or changed candidates omit only
+C6.8. The readiness report then marks
+`direct-native-path-resolution-bound` unavailable and adds
+`native-runtime-path-resolution-inventory-unavailable`; the ordinary build and
+C6.3 gate are unchanged. A present malformed or format-crossed record fails the
+readiness reconstruction closed. C6.8 is omitted before C6.7 and C6.6 at the
+provenance ceiling. Actual loader precedence/environment, transitive closure
+(planned C6.9), system-library bytes, runtime `dlopen`, Windows PE, WASM,
+runtime-bearing plugins, signatures, and distribution authorization remain out
+of scope.
 
 ## Requirements
 

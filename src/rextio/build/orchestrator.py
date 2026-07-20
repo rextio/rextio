@@ -319,7 +319,7 @@ class BuildResult:
     # C6.3: emitted only for the opt-in required evidence policy. Even a
     # satisfied gate remains incomplete, unsigned, and non-authorizing.
     artifact_evidence_gate: ArtifactEvidenceGate | None = None
-    # C6.5-C6.7: derived only from final C6.2-C6.7 evidence. This readiness
+    # C6.5-C6.8: derived only from final C6.2-C6.8 evidence. This readiness
     # report is always blocked and never authorizes distribution.
     artifact_distribution_authorization: (
         ArtifactDistributionAuthorizationAssessment | None

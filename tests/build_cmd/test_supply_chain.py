@@ -24,12 +24,15 @@ from rextio.artifacts.evidence import (
     ArtifactEvidenceGate,
     NativeRuntimeDependency,
     NativeRuntimeInventory,
+    NativeRuntimePathResolutionInventory,
+    NativeRuntimePathResolutionRecord,
     REASON_RUNTIME_INSPECTOR_FAILED,
     WheelEntryRef,
     hash_regular_file,
 )
 from rextio.artifacts.authorization import (
     ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
+    ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
     evaluate_artifact_distribution_authorization,
 )
@@ -56,6 +59,7 @@ from rextio.source.planning import HostSourcePlan
 @pytest.fixture(autouse=True)
 def _synthetic_runtime_inspector(monkeypatch: pytest.MonkeyPatch) -> None:
     from rextio.build import supply_chain as supply_chain_module
+    from rextio.build.runtime_resolution import NativeRuntimePathResolutionObservation
 
     def inspect(
         *,
@@ -102,6 +106,36 @@ def _synthetic_runtime_inspector(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(supply_chain_module, "inspect_native_runtime_inventory", inspect)
+
+    def resolve(*, runtime_inventory: NativeRuntimeInventory, **_kwargs):
+        records = tuple(
+            NativeRuntimePathResolutionRecord(
+                dependency_bom_ref=dependency.bom_ref(),
+                dependency_name=dependency.name,
+                dependency_origin=dependency.origin,
+                resolution="system-logical",
+                mechanism=(
+                    "macho-system"
+                    if runtime_inventory.format == "mach-o"
+                    else "elf-system-name"
+                ),
+            )
+            for dependency in runtime_inventory.dependencies
+        )
+        return NativeRuntimePathResolutionObservation(
+            inventory=NativeRuntimePathResolutionInventory(
+                subject_wheel_member=runtime_inventory.wheel_member,
+                subject_sha256=runtime_inventory.subject_sha256,
+                records=tuple(sorted(records, key=lambda record: record.dependency_bom_ref)),
+            ),
+            receipts=(),
+        )
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_native_runtime_path_resolution",
+        resolve,
+    )
 
 
 def _sha(data: bytes) -> str:
@@ -480,6 +514,13 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     assert runtime["runtime_dlopen"] is False
     assert runtime["dependency_count"] == 1
     dependency = runtime["dependencies"][0]
+    path_resolution = report["native_runtime_path_resolution"]
+    assert path_resolution["scope"] == "direct-native-dependencies"
+    assert path_resolution["record_count"] == 1
+    assert path_resolution["complete"] is False
+    assert path_resolution["records"][0]["dependency_bom_ref"] == dependency["bom_ref"]
+    assert provenance_metadata["rextio:native_runtime_path_resolution"] == path_resolution
+    assert provenance_metadata["rextio:native_runtime_path_resolution_observed"] is True
 
     native_component = next(
         component
@@ -504,6 +545,8 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     assert internal["native_runtime_scope"] == "direct-only"
     assert internal["native_runtime_transitive_closure"] is False
     assert internal["native_runtime_dlopen"] is False
+    assert internal["native_runtime_path_resolution_observed"] is True
+    assert internal["native_runtime_path_resolution_complete"] is False
     assert internal["distribution_authorized"] is False
     assert internal["component_license_inventory_observed"] is True
     assert internal["component_license_policy_complete"] is False
@@ -621,7 +664,7 @@ def test_provenance_ceiling_rebuilds_without_c6_6_inventory(
     )
 
     assert evidence is not None
-    assert inventory_presence == [True, True, False]
+    assert inventory_presence == [True, True, True, False]
     _assert_transformation_omission_is_noninterfering(
         project=project,
         evidence=evidence,
@@ -646,12 +689,13 @@ def test_provenance_ceiling_omits_c6_7_before_preserving_c6_6(
     )
     snapshot = _snapshot(project, layout, plan)
     real_builder = supply_chain_module.build_intoto_provenance_document
-    inventory_presence: list[tuple[bool, bool]] = []
+    inventory_presence: list[tuple[bool, bool, bool]] = []
 
     def inflate_only_license_provenance(**kwargs):
         transformation_present = kwargs.get("source_transformation_inventory") is not None
         license_present = kwargs.get("component_license_inventory") is not None
-        inventory_presence.append((transformation_present, license_present))
+        path_present = kwargs.get("native_runtime_path_resolution") is not None
+        inventory_presence.append((path_present, transformation_present, license_present))
         document = real_builder(**kwargs)
         if license_present:
             document["predicate"]["runDetails"]["metadata"]["test:padding"] = (
@@ -674,7 +718,8 @@ def test_provenance_ceiling_omits_c6_7_before_preserving_c6_6(
     )
 
     assert evidence is not None and evidence.status == "preview-ready"
-    assert inventory_presence == [(True, True), (True, False)]
+    assert inventory_presence == [(True, True, True), (False, True, True), (False, True, False)]
+    assert evidence.native_runtime_path_resolution is None
     assert evidence.source_transformation_inventory is not None
     assert evidence.component_license_inventory is None
     assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
@@ -689,6 +734,115 @@ def test_provenance_ceiling_omits_c6_7_before_preserving_c6_6(
     assert metadata["rextio:component_license_inventory_observed"] is False
     assert "rextio:component_license_inventory" not in metadata
     assert "rextio:source_transformation_inventory" in metadata
+
+
+def test_provenance_ceiling_omits_c6_8_first_and_retains_c6_7_c6_6(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cargo = pytest.importorskip("shutil").which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required")
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
+    snapshot = _snapshot(project, layout, plan)
+    real_builder = supply_chain_module.build_intoto_provenance_document
+    presence: list[tuple[bool, bool, bool]] = []
+
+    def inflate_only_path_resolution(**kwargs):
+        path_present = kwargs.get("native_runtime_path_resolution") is not None
+        transformation_present = kwargs.get("source_transformation_inventory") is not None
+        license_present = kwargs.get("component_license_inventory") is not None
+        presence.append((path_present, transformation_present, license_present))
+        document = real_builder(**kwargs)
+        if path_present:
+            document["predicate"]["runDetails"]["metadata"]["test:padding"] = (
+                "x" * evidence_mod.MAX_SIDECAR_BYTES
+            )
+        return document
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "build_intoto_provenance_document",
+        inflate_only_path_resolution,
+    )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert presence == [(True, True, True), (False, True, True)]
+    assert evidence.native_runtime_path_resolution is None
+    assert evidence.source_transformation_inventory is not None
+    assert evidence.component_license_inventory is not None
+    assessment = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    statuses = {item["id"]: item["status"] for item in assessment["checks"]}
+    assert statuses["direct-native-path-resolution-bound"] == "unavailable"
+    assert statuses["source-transformation-inventory-bound"] == "satisfied"
+    assert statuses["component-license-inventory-bound"] == "satisfied"
+    assert ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE in assessment[
+        "blockers"
+    ]
+
+
+@pytest.mark.parametrize("failure_stage", ["collection", "final-verification"])
+def test_c6_8_failure_omits_only_path_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    cargo = pytest.importorskip("shutil").which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required")
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
+    snapshot = _snapshot(project, layout, plan)
+    if failure_stage == "collection":
+        monkeypatch.setattr(
+            supply_chain_module,
+            "collect_native_runtime_path_resolution",
+            lambda **_kwargs: None,
+        )
+    else:
+        monkeypatch.setattr(
+            supply_chain_module,
+            "verify_native_runtime_path_resolution",
+            lambda *_args, **_kwargs: False,
+        )
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+    assert evidence.native_runtime_inventory is not None
+    assert evidence.native_runtime_path_resolution is None
+    assert evidence.source_transformation_inventory is not None
+    assert evidence.component_license_inventory is not None
+    assessment = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    statuses = {item["id"]: item["status"] for item in assessment["checks"]}
+    assert statuses["direct-native-linkage-observed"] == "satisfied"
+    assert statuses["direct-native-path-resolution-bound"] == "unavailable"
+    assert ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE in assessment[
+        "blockers"
+    ]
 
 
 def test_runtime_inspector_failure_is_best_effort_and_preserves_wheel(

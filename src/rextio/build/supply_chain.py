@@ -1,4 +1,4 @@
-"""C6.2/C6.4/C6.6/C6.7 evidence emission for host-extension+cpython wheels.
+"""C6.2/C6.4/C6.6-C6.8 evidence emission for host-extension+cpython wheels.
 
 In-scope builds always emit an ``artifact_evidence`` record with status
 ``preview-ready`` or ``unavailable`` (authority ``evidence-only``). Evidence
@@ -16,8 +16,9 @@ inventory is omitted; the existing evidence and required-gate outcomes remain
 unchanged.
 
 C6.7 adds an exact observation-only inventory of Cargo metadata license
-strings. It is the newest sidecar payload and is therefore omitted first when
-the closed provenance ceiling would otherwise be exceeded.
+strings. C6.8 adds exact one-hop static packaged path observations for direct
+native dependencies. It is the newest sidecar payload and is therefore omitted
+first when the closed provenance ceiling would otherwise be exceeded.
 """
 
 from __future__ import annotations
@@ -62,6 +63,10 @@ from rextio.build.license_inventory import collect_component_license_inventory
 from rextio.build.runtime_inventory import (
     inspect_native_runtime_inventory,
     resolve_installed_native_binary,
+)
+from rextio.build.runtime_resolution import (
+    collect_native_runtime_path_resolution,
+    verify_native_runtime_path_resolution,
 )
 from rextio.build.transformation_inventory import (
     collect_source_transformation_inventory,
@@ -557,6 +562,19 @@ def _emit_preview_ready(
         target_triple=profile.target_triple,
         timeout=timeout,
     )
+    runtime_resolution_observation = collect_native_runtime_path_resolution(
+        installed_path=installed,
+        expected_python_root=layout.python_dir,
+        wheel_entries=wheel_entries,
+        runtime_inventory=runtime_inventory,
+        target_triple=profile.target_triple,
+        timeout=timeout,
+    )
+    runtime_path_resolution = (
+        runtime_resolution_observation.inventory
+        if runtime_resolution_observation is not None
+        else None
+    )
 
     # Re-verify inputs and re-hash the wheel after native inspection.
     mismatch = verify_input_snapshot(input_snapshot, project_root=project_root)
@@ -623,17 +641,35 @@ def _emit_preview_ready(
         cargo_packages=inventory.packages,
         target_triple=profile.target_triple,
         native_runtime_inventory=runtime_inventory,
+        native_runtime_path_resolution=runtime_path_resolution,
         source_transformation_inventory=transformation_inventory,
         component_license_inventory=component_license_inventory,
     )
     provenance_bytes = pretty_json_bytes(provenance_document)
+    if runtime_path_resolution is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
+        # C6.8 is the newest additive observation and therefore the first
+        # deterministic omission at the closed provenance sidecar ceiling.
+        runtime_path_resolution = None
+        runtime_resolution_observation = None
+        provenance_document = build_intoto_provenance_document(
+            subject=subject,
+            sbom=sbom_ref,
+            inputs=inputs,
+            cargo_packages=inventory.packages,
+            target_triple=profile.target_triple,
+            native_runtime_inventory=runtime_inventory,
+            native_runtime_path_resolution=None,
+            source_transformation_inventory=transformation_inventory,
+            component_license_inventory=component_license_inventory,
+        )
+        provenance_bytes = pretty_json_bytes(provenance_document)
     if (
         component_license_inventory is not None
         and len(provenance_bytes) > MAX_SIDECAR_BYTES
     ):
-        # Omit the newest C6.7 payload first. This preserves C6.6 and every
-        # earlier evidence/gate result whenever only the license observation
-        # caused the sidecar to cross the closed ceiling.
+        # After the newer C6.8 payload has been omitted, omit C6.7 next. This
+        # preserves C6.6 and every earlier evidence/gate result whenever only
+        # the license observation caused the remaining ceiling crossing.
         component_license_inventory = None
         provenance_document = build_intoto_provenance_document(
             subject=subject,
@@ -642,6 +678,7 @@ def _emit_preview_ready(
             cargo_packages=inventory.packages,
             target_triple=profile.target_triple,
             native_runtime_inventory=runtime_inventory,
+            native_runtime_path_resolution=None,
             source_transformation_inventory=transformation_inventory,
             component_license_inventory=None,
         )
@@ -663,6 +700,7 @@ def _emit_preview_ready(
             cargo_packages=inventory.packages,
             target_triple=profile.target_triple,
             native_runtime_inventory=runtime_inventory,
+            native_runtime_path_resolution=None,
             source_transformation_inventory=None,
             component_license_inventory=None,
         )
@@ -713,6 +751,32 @@ def _emit_preview_ready(
             reason=REASON_RUNTIME_BINARY_MISMATCH,
         )
 
+    if runtime_resolution_observation is not None and not (
+        verify_native_runtime_path_resolution(
+            runtime_resolution_observation,
+            expected_python_root=layout.python_dir,
+        )
+    ):
+        # A packaged candidate changed or its pinned path identity no longer
+        # matches. C6.8 remains optional: omit only its observation and rebuild
+        # deterministic provenance without changing earlier evidence/gates.
+        runtime_path_resolution = None
+        runtime_resolution_observation = None
+        provenance_document = build_intoto_provenance_document(
+            subject=subject,
+            sbom=sbom_ref,
+            inputs=inputs,
+            cargo_packages=inventory.packages,
+            target_triple=profile.target_triple,
+            native_runtime_inventory=runtime_inventory,
+            native_runtime_path_resolution=None,
+            source_transformation_inventory=transformation_inventory,
+            component_license_inventory=component_license_inventory,
+        )
+        provenance_bytes = pretty_json_bytes(provenance_document)
+        provenance_digest = sha256_hex(provenance_bytes)
+        provenance_size = len(provenance_bytes)
+
     evidence = ArtifactEvidence(
         kind="host-extension-wheel",
         status="preview-ready",
@@ -745,6 +809,7 @@ def _emit_preview_ready(
         cargo_packages=inventory.packages,
         cargo_dependencies=inventory.dependencies,
         native_runtime_inventory=runtime_inventory,
+        native_runtime_path_resolution=runtime_path_resolution,
         source_transformation_inventory=transformation_inventory,
         component_license_inventory=component_license_inventory,
         limitations=DEFAULT_LIMITATIONS,

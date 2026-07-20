@@ -260,13 +260,14 @@ def parse_otool_l_output(
 ) -> _ParsedLinkage:
     """Parse sanitized direct load dependencies from ``otool -L`` stdout.
 
-    Only absolute install names under ``/usr/lib`` or ``/System/Library`` are
-    accepted and serialized as basenames. The sole exception is the first row
-    of each section when it is a private absolute Cargo ``LC_ID_DYLIB`` whose
-    basename exactly matches ``expected_self_install_basename`` *and* the full
-    install name was independently verified by bounded ``otool -D`` output;
-    that self row is dropped. Bare names, every ``@``-relative name, all other
-    private paths, and a matching self name in any later row fail closed.
+    Absolute install names under ``/usr/lib`` or ``/System/Library`` and bounded
+    ``@loader_path/`` or ``@rpath/`` packaged-candidate forms are accepted and
+    serialized as basenames. The sole private-absolute exception is the first
+    row of each section when it is a Cargo ``LC_ID_DYLIB`` whose basename
+    exactly matches ``expected_self_install_basename`` *and* the full install
+    name was independently verified by bounded ``otool -D`` output; that self
+    row is dropped. Bare names, other ``@``-relative forms, all other private
+    paths, and a matching self name in any later row fail closed.
     """
     if not isinstance(stdout, str):
         raise ArtifactEvidenceError("otool output is malformed", reason=REASON_RUNTIME_MALFORMED)
@@ -296,10 +297,12 @@ def parse_otool_l_output(
                 reason=REASON_RUNTIME_UNSAFE_PATH,
             )
 
-    sections: dict[str, list[str]] = {}
+    sections: dict[str, list[NativeRuntimeDependency]] = {}
+    section_install_names: dict[str, dict[str, str]] = {}
     section_row_counts: dict[str, int] = {}
     current_arch = "_default"
     sections[current_arch] = []
+    section_install_names[current_arch] = {}
     section_row_counts[current_arch] = 0
     consumed_self_names: set[str] = set()
     saw_header = False
@@ -316,6 +319,7 @@ def parse_otool_l_output(
             else:
                 current_arch = "_default"
             sections.setdefault(current_arch, [])
+            section_install_names.setdefault(current_arch, {})
             section_row_counts.setdefault(current_arch, 0)
             continue
         if not line.startswith("\t"):
@@ -339,8 +343,17 @@ def parse_otool_l_output(
         ):
             consumed_self_names.add(install_path)
             continue
-        name = _sanitize_macho_install_name(install_path)
-        sections.setdefault(current_arch, []).append(name)
+        dependency = _sanitize_macho_install_name(install_path)
+        existing_install_name = section_install_names.setdefault(current_arch, {}).get(
+            dependency.name
+        )
+        if existing_install_name is not None and existing_install_name != install_path:
+            raise ArtifactEvidenceError(
+                "Mach-O dependency basenames are ambiguous",
+                reason=REASON_RUNTIME_UNSAFE_PATH,
+            )
+        section_install_names[current_arch][dependency.name] = install_path
+        sections.setdefault(current_arch, []).append(dependency)
 
     if not saw_header:
         raise ArtifactEvidenceError(
@@ -349,7 +362,7 @@ def parse_otool_l_output(
     if consumed_self_names != set(verified_self_install_names):
         raise ArtifactEvidenceError(
             "verified Mach-O self identity does not match otool linkage",
-            reason=REASON_RUNTIME_MALFORMED,
+            reason=REASON_RUNTIME_UNSAFE_PATH,
         )
 
     # Drop empty default when only architecture-specific sections exist.
@@ -363,14 +376,14 @@ def parse_otool_l_output(
     # Normalize each section: drop self-reference if first entry equals subject
     # is not possible here (we only have basenames). Deduplicate while preserving
     # first-seen order within a section.
-    normalized: dict[str, tuple[str, ...]] = {}
+    normalized: dict[str, tuple[NativeRuntimeDependency, ...]] = {}
     for arch, deps in non_empty.items():
-        ordered: list[str] = []
+        ordered: list[NativeRuntimeDependency] = []
         seen: set[str] = set()
         for dep in deps:
-            if dep in seen:
+            if dep.name in seen:
                 continue
-            seen.add(dep)
+            seen.add(dep.name)
             ordered.append(dep)
         if len(ordered) > MAX_RUNTIME_DEPS:
             raise ArtifactEvidenceError(
@@ -385,13 +398,19 @@ def parse_otool_l_output(
             "native runtime multi-arch dependency sets disagree",
             reason=REASON_RUNTIME_ARCHITECTURE_MISMATCH,
         )
+    raw_install_sets = {
+        tuple(sorted(section_install_names.get(arch, {}).items())) for arch in normalized
+    }
+    if len(raw_install_sets) > 1:
+        raise ArtifactEvidenceError(
+            "native runtime multi-arch install names disagree",
+            reason=REASON_RUNTIME_ARCHITECTURE_MISMATCH,
+        )
     dependencies = next(iter(unique_sets))
     architectures = tuple(arch for arch in arch_keys if arch != "_default")
     return _ParsedLinkage(
         format="mach-o",
-        dependencies=tuple(
-            NativeRuntimeDependency(name=name, origin="system") for name in dependencies
-        ),
+        dependencies=dependencies,
         architectures=architectures,
     )
 
@@ -469,6 +488,7 @@ def parse_readelf_d_output(stdout: str, *, target_triple: str) -> _ParsedLinkage
         raise ArtifactEvidenceError("readelf output is empty", reason=REASON_RUNTIME_MALFORMED)
 
     needed: list[str] = []
+    search_paths: list[tuple[str, str]] = []
     saw_dynamic = False
     for raw_line in stdout.splitlines():
         line = raw_line.rstrip("\r")
@@ -481,10 +501,11 @@ def parse_readelf_d_output(stdout: str, *, target_triple: str) -> _ParsedLinkage
         rpath_match = _READELF_RPATH.fullmatch(line)
         if rpath_match is not None:
             _validate_elf_search_path(rpath_match.group("value"))
+            search_paths.append((rpath_match.group("tag"), rpath_match.group("value")))
             continue
         needed_match = _READELF_NEEDED.fullmatch(line)
         if needed_match is not None:
-            name = _sanitize_elf_needed(needed_match.group("name"), target_triple=target_triple)
+            name = _sanitize_elf_basename(needed_match.group("name"))
             needed.append(name)
             continue
         tag_match = _READELF_TAG.fullmatch(line)
@@ -542,6 +563,11 @@ def parse_readelf_d_output(stdout: str, *, target_triple: str) -> _ParsedLinkage
             reason=REASON_RUNTIME_MALFORMED,
         )
 
+    if len(search_paths) > 1 or len({tag for tag, _value in search_paths}) > 1:
+        raise ArtifactEvidenceError(
+            "ELF runtime search path tags are ambiguous",
+            reason=REASON_RUNTIME_UNSAFE_PATH,
+        )
     ordered: list[str] = []
     seen: set[str] = set()
     for name in needed:
@@ -557,7 +583,20 @@ def parse_readelf_d_output(stdout: str, *, target_triple: str) -> _ParsedLinkage
     return _ParsedLinkage(
         format="elf",
         dependencies=tuple(
-            NativeRuntimeDependency(name=name, origin="unresolved") for name in ordered
+            NativeRuntimeDependency(
+                name=name,
+                origin=(
+                    "unresolved"
+                    if name in _allowed_elf_dependencies(target_triple)
+                    else "wheel-candidate"
+                ),
+            )
+            for name in ordered
+            if _require_supported_elf_needed(
+                name,
+                target_triple=target_triple,
+                has_origin_search_path=bool(search_paths),
+            )
         ),
         architectures=(),
     )
@@ -697,7 +736,7 @@ def _is_safe_private_macho_self_install_name(
     return PurePosixPath(install_path).name == expected_self_install_basename
 
 
-def _sanitize_macho_install_name(install_path: str) -> str:
+def _sanitize_macho_install_name(install_path: str) -> NativeRuntimeDependency:
     if not install_path or len(install_path) > MAX_RUNTIME_DEP_NAME_CHARS * 4:
         raise ArtifactEvidenceError(
             "mach-o install name is invalid", reason=REASON_RUNTIME_UNSAFE_PATH
@@ -712,11 +751,30 @@ def _sanitize_macho_install_name(install_path: str) -> str:
             "mach-o install name is unsafe", reason=REASON_RUNTIME_UNSAFE_PATH
         )
 
-    if not (install_path.startswith("/usr/lib/") or install_path.startswith("/System/Library/")):
+    is_system = install_path.startswith("/usr/lib/") or install_path.startswith(
+        "/System/Library/"
+    )
+    is_wheel_candidate = install_path.startswith("@loader_path/") or install_path.startswith(
+        "@rpath/"
+    )
+    if not is_system and not is_wheel_candidate:
         raise ArtifactEvidenceError(
-            "mach-o dependency is outside the trusted system roots",
+            "mach-o dependency is outside the bounded path forms",
             reason=REASON_RUNTIME_UNSAFE_PATH,
         )
+    if is_wheel_candidate:
+        relative = install_path.split("/", 1)[1]
+        parts = PurePosixPath(relative).parts
+        if (
+            not parts
+            or "//" in relative
+            or any(part in {"", ".", ".."} for part in parts)
+            or relative.startswith("/")
+        ):
+            raise ArtifactEvidenceError(
+                "mach-o wheel dependency path is unsafe",
+                reason=REASON_RUNTIME_UNSAFE_PATH,
+            )
 
     # Trusted system absolute paths are reduced to basenames before serialization.
     basename = PurePosixPath(install_path).name
@@ -730,7 +788,10 @@ def _sanitize_macho_install_name(install_path: str) -> str:
             "mach-o dependency basename is unsafe",
             reason=REASON_RUNTIME_UNSAFE_PATH,
         )
-    return basename
+    return NativeRuntimeDependency(
+        name=basename,
+        origin="system" if is_system else "wheel-candidate",
+    )
 
 
 def _sanitize_elf_basename(name: str) -> str:
@@ -766,6 +827,21 @@ def _sanitize_elf_needed(name: str, *, target_triple: str) -> str:
             reason=REASON_RUNTIME_UNEXPECTED_DEPENDENCY,
         )
     return text
+
+
+def _require_supported_elf_needed(
+    name: str,
+    *,
+    target_triple: str,
+    has_origin_search_path: bool,
+) -> bool:
+    """Accept an existing system name or a safely searchable wheel candidate."""
+    if name in _allowed_elf_dependencies(target_triple) or has_origin_search_path:
+        return True
+    raise ArtifactEvidenceError(
+        "ELF NEEDED dependency is outside the closed allowlist",
+        reason=REASON_RUNTIME_UNEXPECTED_DEPENDENCY,
+    )
 
 
 def _allowed_elf_dependencies(target_triple: str) -> frozenset[str]:
@@ -819,12 +895,43 @@ def _allowed_elf_dependencies(target_triple: str) -> frozenset[str]:
 
 
 def _validate_elf_search_path(value: str) -> None:
-    """Fail closed on every RPATH/RUNPATH, including ``$ORIGIN``."""
-    del value
-    raise ArtifactEvidenceError(
-        "ELF RPATH/RUNPATH is unsupported",
-        reason=REASON_RUNTIME_UNSAFE_PATH,
-    )
+    """Accept only bounded, relative ``$ORIGIN``-anchored search segments."""
+    if not value or len(value) > MAX_RUNTIME_DEP_NAME_CHARS * 4:
+        raise ArtifactEvidenceError(
+            "ELF RPATH/RUNPATH is invalid",
+            reason=REASON_RUNTIME_UNSAFE_PATH,
+        )
+    for segment in value.split(":"):
+        if not segment or any(ord(character) < 32 for character in segment):
+            raise ArtifactEvidenceError(
+                "ELF RPATH/RUNPATH contains an unsafe segment",
+                reason=REASON_RUNTIME_UNSAFE_PATH,
+            )
+        prefix = "${ORIGIN}" if segment.startswith("${ORIGIN}") else "$ORIGIN"
+        if not segment.startswith(prefix):
+            raise ArtifactEvidenceError(
+                "ELF RPATH/RUNPATH is not ORIGIN-anchored",
+                reason=REASON_RUNTIME_UNSAFE_PATH,
+            )
+        suffix = segment[len(prefix) :]
+        if suffix and not suffix.startswith("/"):
+            raise ArtifactEvidenceError(
+                "ELF RPATH/RUNPATH ORIGIN suffix is malformed",
+                reason=REASON_RUNTIME_UNSAFE_PATH,
+            )
+        relative = suffix.removeprefix("/")
+        if "$" in relative or "\\" in relative:
+            raise ArtifactEvidenceError(
+                "ELF RPATH/RUNPATH contains an unsupported variable",
+                reason=REASON_RUNTIME_UNSAFE_PATH,
+            )
+        if relative and any(
+            part in {"", ".", ".."} for part in PurePosixPath(relative).parts
+        ):
+            raise ArtifactEvidenceError(
+                "ELF RPATH/RUNPATH escapes its origin",
+                reason=REASON_RUNTIME_UNSAFE_PATH,
+            )
 
 
 def _path_contains_symlink(path: Path) -> bool:

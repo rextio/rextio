@@ -36,7 +36,8 @@ An index of the project's documentation. See the top-level
   `2.8.0` C6.3 required-evidence gate, `2.9.0` C6.4 sanitized direct native
   runtime linkage inventory for macOS/Linux, `2.10.0` C6.5 always-blocked
   distribution-authorization readiness, `2.11.0` C6.6 bounded
-  source-transformation observation, and current `2.12.0` C6.7 component-license
+  source-transformation observation, `2.12.0` C6.7 component-license
+  observation, and current `2.13.0` C6.8 one-hop native path-resolution
   observation; published 0.1.4
   remains the 2.2.0 producer.
 - [Plugin lowering](specs/plugin-lowering.md) — draft (0.1.1+; plugin API 1.1

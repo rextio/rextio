@@ -4,8 +4,9 @@ This module is intentionally separate from :class:`ArtifactProvenance`, which
 remains planning metadata only. C6.2 emits preview-only, incomplete, unsigned
 supply-chain sidecars for ordinary successful host-extension+cpython wheels.
 C6.4 adds a sanitized direct native runtime linkage inventory (macOS Mach-O /
-Linux ELF only) under the same evidence-only authority. Evidence unavailability
-never changes ordinary build success.
+Linux ELF only) under the same evidence-only authority. C6.8 adds optional
+one-hop static packaged path observations without claiming loader selection or
+transitive closure. Evidence unavailability never changes ordinary build success.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ MAX_WHEEL_TOTAL_UNCOMPRESSED = 64 * 1024 * 1024
 MAX_RUNTIME_DEPS = 64
 MAX_RUNTIME_DEP_NAME_CHARS = 256
 MAX_RUNTIME_INSPECTOR_OUTPUT_BYTES = 256 * 1024
+MAX_RUNTIME_PATH_RESOLUTION_INVENTORY_CHARS = 256 * 1024
 MAX_SOURCE_TRANSFORMATIONS = 512
 MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS = 32
 MAX_SOURCE_TRANSFORMATION_PLUGIN_REFERENCES = 128
@@ -65,6 +67,11 @@ SOURCE_TRANSFORMATION_GENERATOR_BACKENDS: frozenset[str] = frozenset(
 COMPONENT_LICENSE_INVENTORY_KIND = "component-license-inventory"
 COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION = 1
 COMPONENT_LICENSE_INVENTORY_SCOPE = "reachable-cargo-packages"
+NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND = (
+    "native-runtime-path-resolution-inventory"
+)
+NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION = 1
+NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE = "direct-native-dependencies"
 
 _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_LOGICAL_SEGMENT = re.compile(r"^[A-Za-z0-9._@+%-]+$")
@@ -86,6 +93,8 @@ DEFAULT_LIMITATIONS: tuple[str, ...] = (
     "not-completeness-claim",
     "not-external-source-authorization",
     "direct-native-linkage-only",
+    "one-hop-static-native-path-resolution-only",
+    "no-loader-environment-selection-claim",
     "no-transitive-dylib-closure",
     "no-runtime-dlopen-inventory",
     "no-recursive-package-inventory",
@@ -449,7 +458,7 @@ class NativeRuntimeDependency:
     """One sanitized direct dynamic dependency name (basename or install-name)."""
 
     name: str
-    origin: str = "unresolved"  # system | unresolved
+    origin: str = "unresolved"  # system | unresolved | wheel-candidate
 
     def __post_init__(self) -> None:
         text = self.name.strip()
@@ -468,7 +477,7 @@ class NativeRuntimeDependency:
         object.__setattr__(
             self, "origin", _bounded_identifier(self.origin, "runtime dependency origin")
         )
-        if self.origin not in {"system", "unresolved"}:
+        if self.origin not in {"system", "unresolved", "wheel-candidate"}:
             raise ValueError("native runtime dependency origin is invalid")
 
     def bom_ref(self) -> str:
@@ -574,6 +583,181 @@ class NativeRuntimeInventory:
             "scope": "direct-only",
             "transitive_closure": False,
             "runtime_dlopen": False,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRuntimePathResolutionRecord:
+    """One exact, observation-only resolution of a direct native dependency."""
+
+    dependency_bom_ref: str
+    dependency_name: str
+    dependency_origin: str
+    resolution: str
+    mechanism: str
+    wheel_member: str | None = None
+    sha256: str | None = None
+    size: int | None = None
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.dependency_bom_ref, "runtime resolution dependency bom-ref"),
+            (self.dependency_name, "runtime resolution dependency name"),
+            (self.dependency_origin, "runtime resolution dependency origin"),
+            (self.resolution, "runtime resolution result"),
+            (self.mechanism, "runtime resolution mechanism"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+            if _bounded_identifier(value, label) != value:
+                raise ValueError(f"{label} must be canonical")
+        if not re.fullmatch(
+            r"urn:rextio:native-dep:[0-9a-f]{32}", self.dependency_bom_ref
+        ):
+            raise ValueError("runtime resolution dependency bom-ref is invalid")
+        if len(self.dependency_name) > MAX_RUNTIME_DEP_NAME_CHARS:
+            raise ValueError("runtime resolution dependency name exceeds the bound")
+        if self.dependency_origin not in {"system", "unresolved", "wheel-candidate"}:
+            raise ValueError("runtime resolution dependency origin is invalid")
+        allowed = {
+            ("wheel-member", "macho-loader-path"),
+            ("wheel-member", "macho-rpath"),
+            ("wheel-member", "elf-origin-rpath"),
+            ("system-logical", "macho-system"),
+            ("system-logical", "elf-system-name"),
+            ("unresolved", "none"),
+        }
+        if (self.resolution, self.mechanism) not in allowed:
+            raise ValueError("runtime resolution result/mechanism is invalid")
+        wheel_values = (self.wheel_member, self.sha256, self.size)
+        if self.resolution == "wheel-member":
+            if self.dependency_origin != "wheel-candidate":
+                raise ValueError("wheel-member resolution requires a wheel candidate")
+            if (
+                type(self.wheel_member) is not str
+                or type(self.sha256) is not str
+                or type(self.size) is not int
+            ):
+                raise TypeError("wheel-member resolution requires exact wheel fields")
+            try:
+                canonical = canonicalize_zip_entry_name(self.wheel_member)
+            except ArtifactEvidenceError as exc:
+                raise ValueError(str(exc)) from exc
+            if canonical != self.wheel_member or self.wheel_member.endswith("/"):
+                raise ValueError("runtime resolution wheel member is noncanonical")
+            if not _HEX_SHA256.fullmatch(self.sha256):
+                raise ValueError("runtime resolution wheel sha256 is invalid")
+            if self.size < 0 or self.size > MAX_EVIDENCE_FILE_BYTES:
+                raise ValueError("runtime resolution wheel size is outside the bound")
+        elif any(value is not None for value in wheel_values):
+            raise ValueError("non-wheel runtime resolution must not carry wheel fields")
+
+    @property
+    def canonical_key(self) -> str:
+        """Return the exact direct-dependency identity ordering key."""
+        return self.dependency_bom_ref
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic direct path-resolution record."""
+        return {
+            "dependency_bom_ref": self.dependency_bom_ref,
+            "dependency_name": self.dependency_name,
+            "dependency_origin": self.dependency_origin,
+            "resolution": self.resolution,
+            "mechanism": self.mechanism,
+            "wheel_member": self.wheel_member,
+            "sha256": self.sha256,
+            "size": self.size,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRuntimePathResolutionInventory:
+    """Exact one-hop static path observations for direct native dependencies."""
+
+    subject_wheel_member: str
+    subject_sha256: str
+    records: tuple[NativeRuntimePathResolutionRecord, ...]
+    kind: str = NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND
+    schema_version: int = NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION
+    scope: str = NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE
+    complete: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not str or (
+            self.kind != NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND
+        ):
+            raise ValueError("native runtime path-resolution inventory kind is invalid")
+        if type(self.schema_version) is not int or (
+            self.schema_version != NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION
+        ):
+            raise ValueError("native runtime path-resolution inventory schema is invalid")
+        if type(self.scope) is not str or (
+            self.scope != NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE
+        ):
+            raise ValueError("native runtime path-resolution inventory scope is invalid")
+        try:
+            canonical_subject = canonicalize_zip_entry_name(self.subject_wheel_member)
+        except ArtifactEvidenceError as exc:
+            raise ValueError(str(exc)) from exc
+        if (
+            canonical_subject != self.subject_wheel_member
+            or self.subject_wheel_member.endswith("/")
+        ):
+            raise ValueError(
+                "native runtime path-resolution subject wheel member is noncanonical"
+            )
+        if not _HEX_SHA256.fullmatch(self.subject_sha256):
+            raise ValueError("native runtime path-resolution subject sha256 is invalid")
+        if type(self.records) is not tuple:
+            raise TypeError("native runtime path-resolution records must be a tuple")
+        if len(self.records) > MAX_RUNTIME_DEPS:
+            raise ValueError("native runtime path-resolution record count exceeds the bound")
+        if not all(
+            type(record) is NativeRuntimePathResolutionRecord for record in self.records
+        ):
+            raise TypeError("native runtime path-resolution record model is invalid")
+        keys = tuple(record.canonical_key for record in self.records)
+        if keys != tuple(sorted(keys)) or len(keys) != len(set(keys)):
+            raise ValueError(
+                "native runtime path-resolution records must be canonical and unique"
+            )
+        wheel_members = tuple(
+            record.wheel_member
+            for record in self.records
+            if record.wheel_member is not None
+        )
+        if len(wheel_members) != len(set(wheel_members)):
+            raise ValueError(
+                "native runtime path-resolution wheel bindings must be unique"
+            )
+        if type(self.complete) is not bool or self.complete:
+            raise ValueError("native runtime path-resolution inventory must remain incomplete")
+        if type(self.authority) is not str or self.authority != "observation-only":
+            raise ValueError("native runtime path-resolution inventory authority is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_RUNTIME_PATH_RESOLUTION_INVENTORY_CHARS:
+            raise ValueError("native runtime path-resolution inventory exceeds the bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic additive artifact-evidence shape."""
+        return {
+            "kind": NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND,
+            "schema_version": NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION,
+            "scope": NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE,
+            "authority": "observation-only",
+            "complete": False,
+            "subject_wheel_member": self.subject_wheel_member,
+            "subject_sha256": self.subject_sha256,
+            "record_count": len(self.records),
+            "records": [record.to_dict() for record in self.records],
         }
 
 
@@ -957,7 +1141,7 @@ class SidecarArtifact:
 
 @dataclass(frozen=True)
 class ArtifactEvidence:
-    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.7 preview."""
+    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.8 preview."""
 
     kind: str
     status: str  # preview-ready | unavailable
@@ -974,6 +1158,7 @@ class ArtifactEvidence:
     cargo_packages: tuple[CargoPackageRef, ...] = ()
     cargo_dependencies: tuple[CargoDepEdge, ...] = ()
     native_runtime_inventory: NativeRuntimeInventory | None = None
+    native_runtime_path_resolution: NativeRuntimePathResolutionInventory | None = None
     source_transformation_inventory: SourceTransformationInventory | None = None
     component_license_inventory: ComponentLicenseInventory | None = None
     limitations: tuple[str, ...] = DEFAULT_LIMITATIONS
@@ -1009,6 +1194,7 @@ class ArtifactEvidence:
                 or self.cargo_packages
                 or self.cargo_dependencies
                 or self.native_runtime_inventory is not None
+                or self.native_runtime_path_resolution is not None
                 or self.source_transformation_inventory is not None
                 or self.component_license_inventory is not None
             ):
@@ -1036,23 +1222,109 @@ class ArtifactEvidence:
                 != self.native_runtime_inventory.wheel_member_size
             ):
                 raise ValueError("preview-ready runtime wheel member hash/size must match")
+            if self.native_runtime_path_resolution is not None:
+                resolution = self.native_runtime_path_resolution
+                if type(resolution) is not NativeRuntimePathResolutionInventory:
+                    raise TypeError("native runtime path-resolution model is invalid")
+                if (
+                    resolution.subject_wheel_member
+                    != self.native_runtime_inventory.wheel_member
+                    or resolution.subject_sha256
+                    != self.native_runtime_inventory.subject_sha256
+                ):
+                    raise ValueError(
+                        "native runtime path-resolution subject must exactly bind "
+                        "runtime inventory"
+                    )
+                expected_dependencies = {
+                    dependency.bom_ref(): dependency
+                    for dependency in self.native_runtime_inventory.dependencies
+                }
+                if len(resolution.records) != len(expected_dependencies):
+                    raise ValueError(
+                        "native runtime path-resolution must bind every direct dependency"
+                    )
+                for resolution_record in resolution.records:
+                    dependency = expected_dependencies.get(
+                        resolution_record.dependency_bom_ref
+                    )
+                    if dependency is None or (
+                        resolution_record.dependency_name != dependency.name
+                        or resolution_record.dependency_origin != dependency.origin
+                    ):
+                        raise ValueError(
+                            "native runtime path-resolution dependency binding is invalid"
+                        )
+                    if self.native_runtime_inventory.format == "mach-o":
+                        if dependency.origin == "system":
+                            expected_shapes = {("system-logical", "macho-system")}
+                        elif dependency.origin == "wheel-candidate":
+                            expected_shapes = {
+                                ("wheel-member", "macho-loader-path"),
+                                ("wheel-member", "macho-rpath"),
+                            }
+                        else:
+                            expected_shapes = set()
+                    else:
+                        if dependency.origin == "unresolved":
+                            expected_shapes = {("system-logical", "elf-system-name")}
+                        elif dependency.origin == "wheel-candidate":
+                            expected_shapes = {("wheel-member", "elf-origin-rpath")}
+                        else:
+                            expected_shapes = set()
+                    if (
+                        resolution_record.resolution,
+                        resolution_record.mechanism,
+                    ) not in expected_shapes:
+                        raise ValueError(
+                            "native runtime path-resolution format/origin shape is invalid"
+                        )
+                    if resolution_record.resolution == "wheel-member":
+                        wheel_member = resolution_record.wheel_member
+                        if (
+                            wheel_member is None
+                            or PurePosixPath(wheel_member).name
+                            != resolution_record.dependency_name
+                        ):
+                            raise ValueError(
+                                "native runtime path-resolution wheel basename "
+                                "must match the dependency name"
+                            )
+                        if wheel_member == self.native_runtime_inventory.wheel_member:
+                            raise ValueError(
+                                "native runtime path-resolution dependency must not "
+                                "bind the subject wheel member"
+                            )
+                        wheel_matches = tuple(
+                            entry
+                            for entry in self.wheel_entries
+                            if entry.name == wheel_member
+                            and entry.sha256 == resolution_record.sha256
+                            and entry.uncompressed_size == resolution_record.size
+                        )
+                        if len(wheel_matches) != 1:
+                            raise ValueError(
+                                "native runtime path-resolution wheel binding is invalid"
+                            )
             if self.source_transformation_inventory is not None:
                 if type(self.source_transformation_inventory) is not SourceTransformationInventory:
                     raise TypeError("source transformation inventory model is invalid")
-                for record in self.source_transformation_inventory.records:
+                for transformation_record in self.source_transformation_inventory.records:
                     source_matches = tuple(
                         item
                         for item in self.inputs
                         if item.role == "project-python-source"
-                        and item.logical_path == record.source_path
-                        and item.sha256 == record.source_sha256
+                        and item.logical_path == transformation_record.source_path
+                        and item.sha256 == transformation_record.source_sha256
                     )
                     if len(source_matches) != 1:
                         raise ValueError(
                             "source transformation source binding must match one declared input"
                         )
                     generated_matches = tuple(
-                        item for item in self.inputs if item == record.generated_rust
+                        item
+                        for item in self.inputs
+                        if item == transformation_record.generated_rust
                     )
                     if len(generated_matches) != 1:
                         raise ValueError(
@@ -1150,6 +1422,10 @@ class ArtifactEvidence:
                 data["cargo_dependencies"] = [item.to_dict() for item in self.cargo_dependencies]
                 if self.native_runtime_inventory is not None:
                     data["native_runtime_inventory"] = self.native_runtime_inventory.to_dict()
+                if self.native_runtime_path_resolution is not None:
+                    data["native_runtime_path_resolution"] = (
+                        self.native_runtime_path_resolution.to_dict()
+                    )
                 if self.source_transformation_inventory is not None:
                     data["source_transformation_inventory"] = (
                         self.source_transformation_inventory.to_dict()
@@ -3381,6 +3657,7 @@ def build_intoto_provenance_document(
     cargo_packages: Sequence[CargoPackageRef],
     target_triple: str,
     native_runtime_inventory: NativeRuntimeInventory | None = None,
+    native_runtime_path_resolution: NativeRuntimePathResolutionInventory | None = None,
     source_transformation_inventory: SourceTransformationInventory | None = None,
     component_license_inventory: ComponentLicenseInventory | None = None,
 ) -> dict[str, object]:
@@ -3436,6 +3713,10 @@ def build_intoto_provenance_document(
         "distribution_authorized": False,
         "native_runtime_transitive_closure": False,
         "native_runtime_dlopen": False,
+        "native_runtime_path_resolution_observed": (
+            native_runtime_path_resolution is not None
+        ),
+        "native_runtime_path_resolution_complete": False,
         "source_transformation_inventory_observed": (
             source_transformation_inventory is not None
         ),
@@ -3448,12 +3729,19 @@ def build_intoto_provenance_document(
         internal_parameters["native_runtime_scope"] = "direct-only"
 
     run_metadata: dict[str, object] = {
+        "rextio:native_runtime_path_resolution_observed": (
+            native_runtime_path_resolution is not None
+        ),
         "rextio:component_license_inventory_observed": (
             component_license_inventory is not None
         )
     }
     if native_runtime_inventory is not None:
         run_metadata["rextio:observed_native_runtime"] = native_runtime_inventory.to_dict()
+    if native_runtime_path_resolution is not None:
+        run_metadata["rextio:native_runtime_path_resolution"] = (
+            native_runtime_path_resolution.to_dict()
+        )
     if source_transformation_inventory is not None:
         run_metadata["rextio:source_transformation_inventory"] = (
             source_transformation_inventory.to_dict()
@@ -3597,6 +3885,7 @@ __all__ = [
     "MAX_RUNTIME_DEPS",
     "MAX_RUNTIME_DEP_NAME_CHARS",
     "MAX_RUNTIME_INSPECTOR_OUTPUT_BYTES",
+    "MAX_RUNTIME_PATH_RESOLUTION_INVENTORY_CHARS",
     "MAX_SIDECAR_BYTES",
     "MAX_SOURCE_TRANSFORMATION_INVENTORY_CHARS",
     "MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS",
@@ -3608,6 +3897,11 @@ __all__ = [
     "MAX_WHEEL_TOTAL_UNCOMPRESSED",
     "NativeRuntimeDependency",
     "NativeRuntimeInventory",
+    "NativeRuntimePathResolutionInventory",
+    "NativeRuntimePathResolutionRecord",
+    "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND",
+    "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION",
+    "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE",
     "REASON_CARGO_GRAPH_INVALID",
     "REASON_CARGO_LOCK_MISSING",
     "REASON_CARGO_METADATA_FAILED",

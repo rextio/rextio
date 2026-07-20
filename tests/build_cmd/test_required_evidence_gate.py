@@ -19,12 +19,14 @@ from rextio.artifacts.evidence import (
     ArtifactEvidence,
     ArtifactEvidenceError,
     NativeRuntimeInventory,
+    NativeRuntimePathResolutionInventory,
     WheelEntryRef,
     hash_regular_file,
 )
 from rextio.build.orchestrator import ArtifactEvidenceRequiredError
 from rextio.build.orchestrator import required_artifact_evidence_scope_is_valid
 from rextio.build.artifact_layout import ArtifactLayout
+from rextio.build.runtime_resolution import NativeRuntimePathResolutionObservation
 from rextio.cli.main import main
 
 
@@ -391,6 +393,18 @@ def _use_synthetic_runtime_inventory(
         supply_chain,
         "inspect_native_runtime_inventory",
         _synthetic_runtime_inventory,
+    )
+    monkeypatch.setattr(
+        supply_chain,
+        "collect_native_runtime_path_resolution",
+        lambda *, runtime_inventory, **_kwargs: NativeRuntimePathResolutionObservation(
+            inventory=NativeRuntimePathResolutionInventory(
+                subject_wheel_member=runtime_inventory.wheel_member,
+                subject_sha256=runtime_inventory.subject_sha256,
+                records=(),
+            ),
+            receipts=(),
+        ),
     )
 
 
