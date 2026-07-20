@@ -1,12 +1,12 @@
-"""C6.5/C6.6 distribution-authorization readiness assessment.
+"""C6.5-C6.7 distribution-authorization readiness assessment.
 
-This module deliberately sits between the C6.2-C6.6 preview evidence record
+This module deliberately sits between the C6.2-C6.7 preview evidence record
 and any future distribution authorization.  It converts only a validated
 ``ArtifactEvidence`` instance into a deterministic, closed-vocabulary report.
 The report is readiness information, never an authorization decision: every
 instance is blocked, incomplete, unsigned, and non-authorizing.
 
-C6.5/C6.6 do not implement native-runtime path resolution, transitive dependency
+C6.5-C6.7 do not implement native-runtime path resolution, transitive dependency
 closure, runtime ``dlopen`` observation, Windows PE inspection, runtime-bearing
 plugins, executables, Rust crates, Nuitka/WASM evidence, signatures, or final
 distribution authorization.
@@ -18,11 +18,14 @@ from dataclasses import dataclass
 
 from rextio.artifacts.evidence import (
     ARTIFACT_EVIDENCE_SCOPE,
+    MAX_COMPONENT_LICENSE_RECORDS,
     MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS,
     MAX_SOURCE_TRANSFORMATIONS,
     REASON_EVIDENCE_INTERNAL,
     UNAVAILABLE_REASONS,
     ArtifactEvidence,
+    ComponentLicenseInventory,
+    ComponentLicenseRecord,
     CargoDepEdge,
     CargoPackageRef,
     EvidenceFileRef,
@@ -38,7 +41,7 @@ from rextio.artifacts.evidence import (
 
 ARTIFACT_AUTHORIZATION_KIND = "artifact-distribution-authorization"
 ARTIFACT_AUTHORIZATION_POLICY = ARTIFACT_EVIDENCE_SCOPE
-ARTIFACT_AUTHORIZATION_POLICY_VERSION = 2
+ARTIFACT_AUTHORIZATION_POLICY_VERSION = 3
 ARTIFACT_AUTHORIZATION_STATUS = "blocked"
 ARTIFACT_AUTHORIZATION_AUTHORITY = "readiness-assessment-only"
 
@@ -48,6 +51,7 @@ _OBSERVATION_CHECK_IDS: tuple[str, ...] = (
     "cargo-resolve-graph-bound",
     "direct-native-linkage-observed",
     "source-transformation-inventory-bound",
+    "component-license-inventory-bound",
 )
 _READINESS_CHECK_IDS: tuple[str, ...] = (
     "component-license-policy-complete",
@@ -83,16 +87,14 @@ ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE = "readiness-assessment-unavailable
 ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE = (
     "source-transformation-inventory-unavailable"
 )
-ARTIFACT_AUTHORIZATION_OBSERVATION_UNAVAILABLE_BLOCKERS: tuple[str, ...] = (
-    *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
-    ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
-)
+ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE = "component-license-inventory-unavailable"
 _ALLOWED_BLOCKERS = frozenset(
     {
         *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
         ARTIFACT_AUTHORIZATION_EVIDENCE_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
     }
 )
 _CHECK_STATUSES = frozenset({"satisfied", "blocked", "unavailable", "not-evaluated"})
@@ -126,7 +128,7 @@ class ArtifactAuthorizationCheck:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactDistributionAuthorizationAssessment:
-    """Immutable, fail-closed C6.5/C6.6 distribution-readiness report.
+    """Immutable, fail-closed C6.5-C6.7 distribution-readiness report.
 
     Callers should use :meth:`from_evidence`.  The public fields remain
     validate-on-construction so malformed, reordered, duplicated, or
@@ -183,23 +185,36 @@ class ArtifactDistributionAuthorizationAssessment:
         if self.evidence_status == "preview-ready":
             if self.evidence_reason is not None:
                 raise ValueError("preview-ready authorization assessment has no evidence reason")
-            if blockers == ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS:
-                expected_statuses = (
-                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS),
-                    *("blocked" for _ in _READINESS_CHECK_IDS),
-                )
-            elif blockers == ARTIFACT_AUTHORIZATION_OBSERVATION_UNAVAILABLE_BLOCKERS:
-                expected_statuses = (
-                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-1]),
-                    "unavailable",
-                    *("blocked" for _ in _READINESS_CHECK_IDS),
-                )
-            elif blockers == (ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE,):
+            if blockers == (ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE,):
                 expected_statuses = tuple(
                     "not-evaluated" for _ in ARTIFACT_AUTHORIZATION_CHECK_IDS
                 )
             else:
-                raise ValueError("preview-ready authorization blockers are not canonical")
+                statuses_by_id = {item.id: item.status for item in checks}
+                expected_blockers = [*ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS]
+                for check_id, blocker in (
+                    (
+                        "source-transformation-inventory-bound",
+                        ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
+                    ),
+                    (
+                        "component-license-inventory-bound",
+                        ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
+                    ),
+                ):
+                    status = statuses_by_id[check_id]
+                    if status == "unavailable":
+                        expected_blockers.append(blocker)
+                    elif status != "satisfied":
+                        raise ValueError("preview-ready observation status is not canonical")
+                if blockers != tuple(expected_blockers):
+                    raise ValueError("preview-ready authorization blockers are not canonical")
+                expected_statuses = (
+                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-2]),
+                    statuses_by_id["source-transformation-inventory-bound"],
+                    statuses_by_id["component-license-inventory-bound"],
+                    *("blocked" for _ in _READINESS_CHECK_IDS),
+                )
         else:
             if self.evidence_reason not in UNAVAILABLE_REASONS:
                 raise ValueError("unavailable authorization assessment needs a fixed evidence reason")
@@ -228,7 +243,7 @@ class ArtifactDistributionAuthorizationAssessment:
         cls,
         evidence: ArtifactEvidence,
     ) -> ArtifactDistributionAuthorizationAssessment:
-        """Return the total, no-throw C6.5/C6.6 evaluation for ``evidence``."""
+        """Return the total, no-throw C6.5-C6.7 evaluation for ``evidence``."""
         return evaluate_artifact_distribution_authorization(evidence)
 
     def to_dict(self) -> dict[str, object]:
@@ -253,7 +268,7 @@ class ArtifactDistributionAuthorizationAssessment:
 def evaluate_artifact_distribution_authorization(
     evidence: ArtifactEvidence,
 ) -> ArtifactDistributionAuthorizationAssessment:
-    """Evaluate C6.5/C6.6 without ever changing the surrounding build outcome.
+    """Evaluate C6.5-C6.7 without ever changing the surrounding build outcome.
 
     A structurally invalid preview remains reported as preview evidence, but
     no readiness check is claimed: the closed fallback shape contains only
@@ -265,25 +280,31 @@ def evaluate_artifact_distribution_authorization(
     try:
         trusted = _reconstruct_evidence(evidence)
         if trusted.status == "preview-ready":
-            transformation_bound = _validate_preview_observations(trusted)
+            transformation_bound, license_bound = _validate_preview_observations(trusted)
+            optional_statuses = (
+                "satisfied" if transformation_bound else "unavailable",
+                "satisfied" if license_bound else "unavailable",
+            )
+            optional_blockers = tuple(
+                blocker
+                for available, blocker in (
+                    (
+                        transformation_bound,
+                        ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
+                    ),
+                    (license_bound, ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE),
+                )
+                if not available
+            )
             return _build_assessment(
                 evidence_status="preview-ready",
                 evidence_reason=None,
                 statuses=(
-                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS),
-                    *("blocked" for _ in _READINESS_CHECK_IDS),
-                )
-                if transformation_bound
-                else (
-                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-1]),
-                    "unavailable",
+                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-2]),
+                    *optional_statuses,
                     *("blocked" for _ in _READINESS_CHECK_IDS),
                 ),
-                blockers=(
-                    ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS
-                    if transformation_bound
-                    else ARTIFACT_AUTHORIZATION_OBSERVATION_UNAVAILABLE_BLOCKERS
-                ),
+                blockers=(*ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS, *optional_blockers),
             )
         return _build_assessment(
             evidence_status="unavailable",
@@ -384,6 +405,9 @@ def _reconstruct_evidence(evidence: ArtifactEvidence) -> ArtifactEvidence:
         ),
         source_transformation_inventory=_copy_transformation_inventory(
             evidence.source_transformation_inventory
+        ),
+        component_license_inventory=_copy_component_license_inventory(
+            evidence.component_license_inventory
         ),
         limitations=tuple(evidence.limitations),
         preview=evidence.preview,
@@ -545,11 +569,47 @@ def _copy_transformation_record(
     )
 
 
-def _validate_preview_observations(evidence: ArtifactEvidence) -> bool:
+def _copy_component_license_inventory(
+    value: ComponentLicenseInventory | None,
+) -> ComponentLicenseInventory | None:
+    if value is None:
+        return None
+    if type(value) is not ComponentLicenseInventory:
+        raise TypeError("component license inventory model is invalid")
+    if type(value.records) is not tuple:
+        raise TypeError("component license records must be a tuple")
+    if len(value.records) > MAX_COMPONENT_LICENSE_RECORDS:
+        raise ValueError("component license record count exceeds the bound")
+    return ComponentLicenseInventory(
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        authority=value.authority,
+        complete=value.complete,
+        records=tuple(_copy_component_license_record(item) for item in value.records),
+    )
+
+
+def _copy_component_license_record(
+    value: ComponentLicenseRecord,
+) -> ComponentLicenseRecord:
+    if type(value) is not ComponentLicenseRecord:
+        raise TypeError("component license record model is invalid")
+    return ComponentLicenseRecord(
+        bom_ref=value.bom_ref,
+        name=value.name,
+        version=value.version,
+        kind=value.kind,
+        license_observed=value.license_observed,
+        license_observation=value.license_observation,
+    )
+
+
+def _validate_preview_observations(evidence: ArtifactEvidence) -> tuple[bool, bool]:
     """Require structural/model bindings before marking observations satisfied.
 
     This intentionally does not reopen or re-inspect output bytes. C6.2-C6.4
-    own those observations; C6.5/C6.6 validates closed model invariants and
+    own those observations; C6.5-C6.7 validates closed model invariants and
     exact evidence-reference bindings only. It does not re-derive C6.6
     qualnames, ranges, or semantic hashes from source or a BuildPlan.
     """
@@ -643,11 +703,32 @@ def _validate_preview_observations(evidence: ArtifactEvidence) -> bool:
         raise ValueError("preview authorization target/runtime binding is invalid")
     if runtime.architecture != _target_architecture(evidence.target_triple):
         raise ValueError("preview authorization target architecture is invalid")
-    # C6.6 is intentionally independent of C6.3 evidence satisfaction. Absence
-    # is a fixed unavailable observation, while a present model has been
-    # reconstructed and cross-bound to exact source/generated EvidenceFileRefs.
-    # This is not independent semantic transformation-provenance verification.
-    return evidence.source_transformation_inventory is not None
+    # C6.6/C6.7 are intentionally independent of C6.3 evidence satisfaction.
+    # Absence is a fixed per-observation unavailable result, while present
+    # models have been reconstructed and cross-bound to their exact underlying
+    # evidence. Neither is complete provenance/license-policy verification.
+    transformation_bound = evidence.source_transformation_inventory is not None
+    license_inventory = evidence.component_license_inventory
+    if license_inventory is None:
+        license_bound = False
+    else:
+        expected_records = tuple(
+            ComponentLicenseRecord(
+                bom_ref=package.bom_ref(),
+                name=package.name,
+                version=package.version,
+                kind=package.kind,
+                license_observed=package.license,
+                license_observation=(
+                    "declared-unvalidated" if package.license is not None else "missing"
+                ),
+            )
+            for package in sorted(packages, key=lambda package: package.bom_ref())
+        )
+        if license_inventory.records != expected_records:
+            raise ValueError("component license inventory is not exactly Cargo-bound")
+        license_bound = True
+    return transformation_bound, license_bound
 
 
 def _target_architecture(target_triple: str) -> str:

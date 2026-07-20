@@ -234,6 +234,73 @@ def test_inventory_requires_registry_checksum_and_records_edges() -> None:
     assert len(cfg_report["source_fingerprint"]) == 64
 
 
+@pytest.mark.parametrize(
+    ("license_value", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("\t", None),
+        ("\n", None),
+        (" UNKNOWN ", " UNKNOWN "),
+        ("NOASSERTION", "NOASSERTION"),
+        ("MIT OR Apache-2.0", "MIT OR Apache-2.0"),
+    ],
+)
+def test_inventory_preserves_nonblank_license_metadata_verbatim(
+    license_value: str | None,
+    expected: str | None,
+) -> None:
+    root_id = "path+file://generated#rextio_generated_native@0.1.0"
+    inventory = _inventory_from_metadata(
+        {
+            "packages": [
+                {
+                    "name": "rextio_generated_native",
+                    "version": "0.1.0",
+                    "source": None,
+                    "id": root_id,
+                    "license": license_value,
+                }
+            ],
+            "resolve": {
+                "root": root_id,
+                "nodes": [{"id": root_id, "dependencies": [], "features": []}],
+            },
+        },
+        lock_checksums={},
+        target_triple="aarch64-apple-darwin",
+        expected_root_name="rextio_generated_native",
+    )
+    assert inventory.packages[0].license == expected
+
+
+def test_inventory_rejects_license_control_characters() -> None:
+    root_id = "path+file://generated#rextio_generated_native@0.1.0"
+    with pytest.raises(ArtifactEvidenceError) as exc:
+        _inventory_from_metadata(
+            {
+                "packages": [
+                    {
+                        "name": "rextio_generated_native",
+                        "version": "0.1.0",
+                        "source": None,
+                        "id": root_id,
+                        "license": "MIT\x00hidden",
+                    }
+                ],
+                "resolve": {
+                    "root": root_id,
+                    "nodes": [{"id": root_id, "dependencies": [], "features": []}],
+                },
+            },
+            lock_checksums={},
+            target_triple="aarch64-apple-darwin",
+            expected_root_name="rextio_generated_native",
+        )
+    assert exc.value.reason == REASON_CARGO_GRAPH_INVALID
+
+
 def test_inventory_rejects_credential_registry_uri() -> None:
     root_id = "path+file://generated#rextio_generated_native@0.1.0"
     dirty = "registry+https://user:token@github.com/rust-lang/crates.io-index"

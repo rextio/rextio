@@ -29,6 +29,7 @@ from rextio.artifacts.evidence import (
     hash_regular_file,
 )
 from rextio.artifacts.authorization import (
+    ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
     evaluate_artifact_distribution_authorization,
 )
@@ -464,6 +465,14 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
         "rextio:source_transformation_inventory"
     ]
     assert provenance_inventory == transformation
+    component_licenses = report["component_license_inventory"]
+    assert component_licenses["kind"] == "component-license-inventory"
+    assert component_licenses["scope"] == "reachable-cargo-packages"
+    assert component_licenses["record_count"] == len(evidence.cargo_packages)
+    assert any(record["kind"] == "path-root" for record in component_licenses["records"])
+    provenance_metadata = prov["predicate"]["runDetails"]["metadata"]
+    assert provenance_metadata["rextio:component_license_inventory"] == component_licenses
+    assert provenance_metadata["rextio:component_license_inventory_observed"] is True
 
     runtime = report["native_runtime_inventory"]
     assert runtime["scope"] == "direct-only"
@@ -496,6 +505,8 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     assert internal["native_runtime_transitive_closure"] is False
     assert internal["native_runtime_dlopen"] is False
     assert internal["distribution_authorized"] is False
+    assert internal["component_license_inventory_observed"] is True
+    assert internal["component_license_policy_complete"] is False
     assert prov["predicate"]["runDetails"]["metadata"]["rextio:observed_native_runtime"] == runtime
 
 
@@ -610,11 +621,74 @@ def test_provenance_ceiling_rebuilds_without_c6_6_inventory(
     )
 
     assert evidence is not None
-    assert inventory_presence == [True, False]
+    assert inventory_presence == [True, True, False]
     _assert_transformation_omission_is_noninterfering(
         project=project,
         evidence=evidence,
     )
+
+
+def test_provenance_ceiling_omits_c6_7_before_preserving_c6_6(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cargo = pytest.importorskip("shutil").which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required")
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+    real_builder = supply_chain_module.build_intoto_provenance_document
+    inventory_presence: list[tuple[bool, bool]] = []
+
+    def inflate_only_license_provenance(**kwargs):
+        transformation_present = kwargs.get("source_transformation_inventory") is not None
+        license_present = kwargs.get("component_license_inventory") is not None
+        inventory_presence.append((transformation_present, license_present))
+        document = real_builder(**kwargs)
+        if license_present:
+            document["predicate"]["runDetails"]["metadata"]["test:padding"] = (
+                "x" * evidence_mod.MAX_SIDECAR_BYTES
+            )
+        return document
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "build_intoto_provenance_document",
+        inflate_only_license_provenance,
+    )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert inventory_presence == [(True, True), (True, False)]
+    assert evidence.source_transformation_inventory is not None
+    assert evidence.component_license_inventory is None
+    assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+    assessment = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    statuses = {item["id"]: item["status"] for item in assessment["checks"]}
+    assert statuses["source-transformation-inventory-bound"] == "satisfied"
+    assert statuses["component-license-inventory-bound"] == "unavailable"
+    assert ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE in assessment["blockers"]
+    provenance_path = project / evidence.provenance.logical_path  # type: ignore[union-attr]
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert metadata["rextio:component_license_inventory_observed"] is False
+    assert "rextio:component_license_inventory" not in metadata
+    assert "rextio:source_transformation_inventory" in metadata
 
 
 def test_runtime_inspector_failure_is_best_effort_and_preserves_wheel(

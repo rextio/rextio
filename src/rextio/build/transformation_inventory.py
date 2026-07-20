@@ -3,7 +3,7 @@
 This collector is deliberately total for the build path: unsupported or
 internally inconsistent analyzer/plan state yields ``None``.  The surrounding
 C6.2 evidence and C6.3 required-evidence transaction therefore retain their
-independent outcome, while C6.5/C6.6 readiness evaluation fails closed.
+independent outcome, while C6.5-C6.7 readiness evaluation fails closed.
 """
 
 from __future__ import annotations

@@ -29,7 +29,11 @@ authority. C6.6 adds a bounded observation-only inventory binding each accepted
 project-owned native function to its project-relative source hash, reliable
 range, semantic-AST hash, generated `src/lib.rs` input, closed generator/backend,
 and sorted plugin ids. It does not complete source-transformation provenance.
-This branch emits additive tooling contract **2.11.0** and plugin API **1.4**
+C6.7 adds an exact, bounded observation-only inventory for every reachable
+Cargo package (including the generated path root), preserving each nonblank
+Cargo metadata license string verbatim as `declared-unvalidated` and recording
+blank/null values as `missing`. It performs no SPDX validation or legal/policy
+decision. This branch emits additive tooling contract **2.12.0** and plugin API **1.4**
 while keeping package version
 **0.1.4**; those changes are not yet a tagged or PyPI release. Published 0.1.4
 remains the plugin API **1.3** / contract **2.2.0** producer. See
@@ -166,12 +170,12 @@ Windows, runtime-bearing plugins, signatures, path resolution, transitive
 closure, and runtime `dlopen` discovery remain outside this preview.
 
 For that same in-scope wheel path, `build.json` also includes
-`artifact_distribution_authorization`. This C6.5/C6.6 policy-version-2 record is derived from the
+`artifact_distribution_authorization`. This C6.5-C6.7 policy-version-3 record is derived from the
 final `artifact_evidence` record after required-mode revalidation/transaction
 handling. It always reports `status: "blocked"`,
 `authority: "readiness-assessment-only"`, and false values for `complete`,
 `signed`, and `distribution_authorized`. Preview-ready evidence with a valid
-C6.6 inventory satisfies only five bounded observation checks after closed-model
+C6.6 and C6.7 inventories satisfy only six bounded observation checks after closed-model
 reconstruction and exact source/generated `EvidenceFileRef` cross-binding; it
 does not reopen artifacts, re-inspect output bytes, or independently re-derive
 the recorded qualname, range, or semantic-AST hash from source, `BuildPlan`, or
@@ -203,6 +207,23 @@ uses the existing all-`not-evaluated`
 structurally valid changed observation value is not independently detected by
 this report-only evaluator and still cannot become signed, complete, or
 distribution-authorizing.
+
+The C6.7 `component_license_inventory` is likewise deterministic, immutable,
+and observation-only. Its records exactly cover the reachable
+`cargo_packages` set in canonical `bom_ref` order and bind only `bom_ref`,
+name, version, package kind, the raw bounded metadata string or null, and
+`declared-unvalidated | missing`. Nonblank values such as `UNKNOWN`,
+`NOASSERTION`, compound expressions, and sentinel-looking text are not parsed,
+normalized, approved, or denied. Whitespace-only values are missing; otherwise
+leading and trailing whitespace is retained. NUL/control characters and
+over-budget values fail closed. Missing inventory makes only
+`component-license-inventory-bound` unavailable and adds the fixed
+`component-license-inventory-unavailable` blocker. Malformed, reordered,
+duplicated, stale, or non-exactly-bound records use the all-`not-evaluated`
+readiness-unavailable shape. If provenance exceeds its ceiling, C6.7 is omitted
+first so C6.6 and all earlier evidence/gate results are preserved whenever
+possible. `component-license-policy-complete` remains blocked: this is not SPDX
+validation, a license allow/deny lock, legal approval, or distribution authority.
 
 ## Requirements
 

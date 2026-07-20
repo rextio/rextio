@@ -35,8 +35,9 @@ An index of the project's documentation. See the top-level
   authorization-contract evidence, `2.7.0` C6.2 host-extension wheel evidence,
   `2.8.0` C6.3 required-evidence gate, `2.9.0` C6.4 sanitized direct native
   runtime linkage inventory for macOS/Linux, `2.10.0` C6.5 always-blocked
-  distribution-authorization readiness, and current `2.11.0` C6.6 bounded
-  source-transformation observation; published 0.1.4
+  distribution-authorization readiness, `2.11.0` C6.6 bounded
+  source-transformation observation, and current `2.12.0` C6.7 component-license
+  observation; published 0.1.4
   remains the 2.2.0 producer.
 - [Plugin lowering](specs/plugin-lowering.md) — draft (0.1.1+; plugin API 1.1
   on PyPI 0.1.1, **1.2** additive on published 0.1.2, and **1.3** on published

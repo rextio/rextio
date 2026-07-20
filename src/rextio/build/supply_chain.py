@@ -1,4 +1,4 @@
-"""C6.2/C6.4/C6.6 evidence emission for host-extension+cpython wheels.
+"""C6.2/C6.4/C6.6/C6.7 evidence emission for host-extension+cpython wheels.
 
 In-scope builds always emit an ``artifact_evidence`` record with status
 ``preview-ready`` or ``unavailable`` (authority ``evidence-only``). Evidence
@@ -14,6 +14,10 @@ C6.6 adds a bounded, observation-only source-transformation inventory. If it
 cannot be collected or would exceed the provenance sidecar ceiling, only that
 inventory is omitted; the existing evidence and required-gate outcomes remain
 unchanged.
+
+C6.7 adds an exact observation-only inventory of Cargo metadata license
+strings. It is the newest sidecar payload and is therefore omitted first when
+the closed provenance ceiling would otherwise be exceeded.
 """
 
 from __future__ import annotations
@@ -54,6 +58,7 @@ from rextio.artifacts.models import ArtifactKind, ArtifactProfile
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.build.cargo_builder import NativeBuildResult
 from rextio.build.cargo_inventory import resolve_cargo_inventory
+from rextio.build.license_inventory import collect_component_license_inventory
 from rextio.build.runtime_inventory import (
     inspect_native_runtime_inventory,
     resolve_installed_native_binary,
@@ -587,6 +592,9 @@ def _emit_preview_ready(
         plan=plan,
         input_snapshot=input_snapshot,
     )
+    component_license_inventory = collect_component_license_inventory(
+        inventory.packages
+    )
 
     sbom_document = build_cyclonedx_document(
         subject=subject,
@@ -616,8 +624,28 @@ def _emit_preview_ready(
         target_triple=profile.target_triple,
         native_runtime_inventory=runtime_inventory,
         source_transformation_inventory=transformation_inventory,
+        component_license_inventory=component_license_inventory,
     )
     provenance_bytes = pretty_json_bytes(provenance_document)
+    if (
+        component_license_inventory is not None
+        and len(provenance_bytes) > MAX_SIDECAR_BYTES
+    ):
+        # Omit the newest C6.7 payload first. This preserves C6.6 and every
+        # earlier evidence/gate result whenever only the license observation
+        # caused the sidecar to cross the closed ceiling.
+        component_license_inventory = None
+        provenance_document = build_intoto_provenance_document(
+            subject=subject,
+            sbom=sbom_ref,
+            inputs=inputs,
+            cargo_packages=inventory.packages,
+            target_triple=profile.target_triple,
+            native_runtime_inventory=runtime_inventory,
+            source_transformation_inventory=transformation_inventory,
+            component_license_inventory=None,
+        )
+        provenance_bytes = pretty_json_bytes(provenance_document)
     if (
         transformation_inventory is not None
         and len(provenance_bytes) > MAX_SIDECAR_BYTES
@@ -636,6 +664,7 @@ def _emit_preview_ready(
             target_triple=profile.target_triple,
             native_runtime_inventory=runtime_inventory,
             source_transformation_inventory=None,
+            component_license_inventory=None,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     provenance_digest = sha256_hex(provenance_bytes)
@@ -717,6 +746,7 @@ def _emit_preview_ready(
         cargo_dependencies=inventory.dependencies,
         native_runtime_inventory=runtime_inventory,
         source_transformation_inventory=transformation_inventory,
+        component_license_inventory=component_license_inventory,
         limitations=DEFAULT_LIMITATIONS,
     )
 

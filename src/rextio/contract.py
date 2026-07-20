@@ -47,5 +47,8 @@ from __future__ import annotations
 # Contract 2.11.0 adds C6.6's bounded source-transformation inventory
 # observation and policy-version-2 readiness check. It still does not claim
 # complete source-transformation provenance or distribution authorization.
+# Contract 2.12.0 adds C6.7's exact reachable-Cargo component-license string
+# inventory and policy-version-3 observation check. Strings remain unvalidated,
+# and the component license policy remains incomplete and non-authorizing.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.11.0"
+TOOLING_CONTRACT_VERSION = "2.12.0"

@@ -52,6 +52,9 @@ MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS = 32
 MAX_SOURCE_TRANSFORMATION_PLUGIN_REFERENCES = 128
 MAX_SOURCE_TRANSFORMATION_INVENTORY_CHARS = 512 * 1024
 MAX_SOURCE_POSITION = 10_000_000
+MAX_COMPONENT_LICENSE_RECORDS = MAX_CARGO_PACKAGES
+MAX_COMPONENT_LICENSE_OBSERVED_CHARS = MAX_EVIDENCE_STRING_CHARS
+MAX_COMPONENT_LICENSE_INVENTORY_CHARS = 512 * 1024
 
 SOURCE_TRANSFORMATION_INVENTORY_KIND = "source-transformation-inventory"
 SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION = 1
@@ -59,6 +62,9 @@ SOURCE_TRANSFORMATION_INVENTORY_SCOPE = "accepted-project-native-functions"
 SOURCE_TRANSFORMATION_GENERATOR_BACKENDS: frozenset[str] = frozenset(
     {"rextio-core-rust-pyo3-v1"}
 )
+COMPONENT_LICENSE_INVENTORY_KIND = "component-license-inventory"
+COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION = 1
+COMPONENT_LICENSE_INVENTORY_SCOPE = "reachable-cargo-packages"
 
 _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_LOGICAL_SEGMENT = re.compile(r"^[A-Za-z0-9._@+%-]+$")
@@ -351,7 +357,17 @@ class CargoPackageRef:
         features = tuple(_bounded_identifier(item, "feature") for item in self.features)
         object.__setattr__(self, "features", tuple(sorted(set(features))))
         if self.license is not None:
-            object.__setattr__(self, "license", _bounded_string(self.license, "license"))
+            if type(self.license) is not str:
+                raise TypeError("license must be a string or null")
+            if len(self.license) > MAX_COMPONENT_LICENSE_OBSERVED_CHARS:
+                raise ValueError("license exceeds the allowed length")
+            # Cargo metadata license strings are observation-only. Preserve
+            # nonblank values byte-for-byte at the Python string boundary;
+            # stripping is used only to classify all-whitespace as missing.
+            if not self.license.strip():
+                object.__setattr__(self, "license", None)
+            elif any(ord(character) < 32 for character in self.license):
+                raise ValueError("license contains control characters")
         if self.package_id:
             object.__setattr__(self, "package_id", _bounded_string(self.package_id, "package id"))
 
@@ -781,6 +797,132 @@ class SourceTransformationInventory:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ComponentLicenseRecord:
+    """One unvalidated Cargo metadata license-string observation."""
+
+    bom_ref: str
+    name: str
+    version: str
+    kind: str
+    license_observed: str | None
+    license_observation: str
+
+    def __post_init__(self) -> None:
+        if type(self.license_observation) is not str:
+            raise TypeError("component license observation must be a string")
+        for value, label in (
+            (self.bom_ref, "component license bom_ref"),
+            (self.name, "component license name"),
+            (self.version, "component license version"),
+            (self.kind, "component license kind"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+            if _bounded_identifier(value, label) != value:
+                raise ValueError(f"{label} must be canonical")
+        if self.kind not in {"path-root", "registry"}:
+            raise ValueError("component license kind is invalid")
+        if self.license_observed is None:
+            if self.license_observation != "missing":
+                raise ValueError("missing component license observation is inconsistent")
+        else:
+            if type(self.license_observed) is not str:
+                raise TypeError("observed component license must be a string or null")
+            if not self.license_observed.strip():
+                raise ValueError("observed component license must not be blank")
+            if len(self.license_observed) > MAX_COMPONENT_LICENSE_OBSERVED_CHARS:
+                raise ValueError("observed component license exceeds the character bound")
+            if any(ord(character) < 32 for character in self.license_observed):
+                raise ValueError("observed component license contains control characters")
+            if self.license_observation != "declared-unvalidated":
+                raise ValueError("declared component license observation is inconsistent")
+
+    @property
+    def canonical_key(self) -> str:
+        """Return the exact Cargo component identity ordering key."""
+        return self.bom_ref
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic observation-only record shape."""
+        return {
+            "bom_ref": self.bom_ref,
+            "name": self.name,
+            "version": self.version,
+            "kind": self.kind,
+            "license_observed": self.license_observed,
+            "license_observation": self.license_observation,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentLicenseInventory:
+    """Exact bounded license-string inventory for every reachable Cargo package."""
+
+    records: tuple[ComponentLicenseRecord, ...]
+    kind: str = COMPONENT_LICENSE_INVENTORY_KIND
+    schema_version: int = COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION
+    scope: str = COMPONENT_LICENSE_INVENTORY_SCOPE
+    complete: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not str:
+            raise TypeError("component license inventory kind must be a string")
+        if self.kind != COMPONENT_LICENSE_INVENTORY_KIND:
+            raise ValueError("component license inventory kind is invalid")
+        if type(self.schema_version) is not int:
+            raise TypeError("component license inventory schema must be an integer")
+        if self.schema_version != COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION:
+            raise ValueError("component license inventory schema is invalid")
+        if type(self.scope) is not str:
+            raise TypeError("component license inventory scope must be a string")
+        if self.scope != COMPONENT_LICENSE_INVENTORY_SCOPE:
+            raise ValueError("component license inventory scope is invalid")
+        if type(self.records) is not tuple:
+            raise TypeError("component license records must be a tuple")
+        if len(self.records) > MAX_COMPONENT_LICENSE_RECORDS:
+            raise ValueError("component license record count exceeds the bound")
+        if not self.records:
+            raise ValueError("component license inventory requires the Cargo path root")
+        if not all(type(record) is ComponentLicenseRecord for record in self.records):
+            raise TypeError("component license inventory record model is invalid")
+        keys = tuple(record.canonical_key for record in self.records)
+        if keys != tuple(sorted(keys)):
+            raise ValueError("component license records must use canonical bom_ref order")
+        if len(keys) != len(set(keys)):
+            raise ValueError("component license records must be unique")
+        if sum(record.kind == "path-root" for record in self.records) != 1:
+            raise ValueError("component license inventory requires exactly one Cargo path root")
+        if type(self.complete) is not bool or self.complete:
+            raise ValueError("component license inventory must remain incomplete")
+        if type(self.authority) is not str:
+            raise TypeError("component license inventory authority must be a string")
+        if self.authority != "observation-only":
+            raise ValueError("component license inventory authority is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_COMPONENT_LICENSE_INVENTORY_CHARS:
+            raise ValueError("component license inventory exceeds the character bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic additive artifact-evidence shape."""
+        return {
+            "kind": COMPONENT_LICENSE_INVENTORY_KIND,
+            "schema_version": COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION,
+            "scope": COMPONENT_LICENSE_INVENTORY_SCOPE,
+            "authority": "observation-only",
+            "complete": False,
+            "record_count": len(self.records),
+            "records": [record.to_dict() for record in self.records],
+        }
+
+
 @dataclass(frozen=True)
 class SidecarArtifact:
     """One finalized sidecar written next to the wheel."""
@@ -815,7 +957,7 @@ class SidecarArtifact:
 
 @dataclass(frozen=True)
 class ArtifactEvidence:
-    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.6 preview."""
+    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.7 preview."""
 
     kind: str
     status: str  # preview-ready | unavailable
@@ -833,6 +975,7 @@ class ArtifactEvidence:
     cargo_dependencies: tuple[CargoDepEdge, ...] = ()
     native_runtime_inventory: NativeRuntimeInventory | None = None
     source_transformation_inventory: SourceTransformationInventory | None = None
+    component_license_inventory: ComponentLicenseInventory | None = None
     limitations: tuple[str, ...] = DEFAULT_LIMITATIONS
     preview: bool = True
     complete: bool = False
@@ -867,6 +1010,7 @@ class ArtifactEvidence:
                 or self.cargo_dependencies
                 or self.native_runtime_inventory is not None
                 or self.source_transformation_inventory is not None
+                or self.component_license_inventory is not None
             ):
                 raise ValueError("unavailable evidence must not carry inventory fields")
         else:
@@ -914,6 +1058,29 @@ class ArtifactEvidence:
                         raise ValueError(
                             "source transformation Rust binding must match one declared input"
                         )
+            if self.component_license_inventory is not None:
+                if type(self.component_license_inventory) is not ComponentLicenseInventory:
+                    raise TypeError("component license inventory model is invalid")
+                expected = tuple(
+                    ComponentLicenseRecord(
+                        bom_ref=package.bom_ref(),
+                        name=package.name,
+                        version=package.version,
+                        kind=package.kind,
+                        license_observed=package.license,
+                        license_observation=(
+                            "declared-unvalidated" if package.license is not None else "missing"
+                        ),
+                    )
+                    for package in sorted(
+                        self.cargo_packages,
+                        key=lambda package: package.bom_ref(),
+                    )
+                )
+                if self.component_license_inventory.records != expected:
+                    raise ValueError(
+                        "component license inventory must exactly bind every Cargo package"
+                    )
         if self.target_triple is not None:
             object.__setattr__(
                 self,
@@ -986,6 +1153,10 @@ class ArtifactEvidence:
                 if self.source_transformation_inventory is not None:
                     data["source_transformation_inventory"] = (
                         self.source_transformation_inventory.to_dict()
+                    )
+                if self.component_license_inventory is not None:
+                    data["component_license_inventory"] = (
+                        self.component_license_inventory.to_dict()
                     )
         return data
 
@@ -3211,6 +3382,7 @@ def build_intoto_provenance_document(
     target_triple: str,
     native_runtime_inventory: NativeRuntimeInventory | None = None,
     source_transformation_inventory: SourceTransformationInventory | None = None,
+    component_license_inventory: ComponentLicenseInventory | None = None,
 ) -> dict[str, object]:
     """Build an unsigned in-toto Statement v1 with SLSA Provenance v1 predicate.
 
@@ -3268,17 +3440,27 @@ def build_intoto_provenance_document(
             source_transformation_inventory is not None
         ),
         "source_transformation_provenance_complete": False,
+        "component_license_inventory_observed": component_license_inventory is not None,
+        "component_license_policy_complete": False,
     }
     if native_runtime_inventory is not None:
         internal_parameters["native_runtime_format"] = native_runtime_inventory.format
         internal_parameters["native_runtime_scope"] = "direct-only"
 
-    run_metadata: dict[str, object] = {}
+    run_metadata: dict[str, object] = {
+        "rextio:component_license_inventory_observed": (
+            component_license_inventory is not None
+        )
+    }
     if native_runtime_inventory is not None:
         run_metadata["rextio:observed_native_runtime"] = native_runtime_inventory.to_dict()
     if source_transformation_inventory is not None:
         run_metadata["rextio:source_transformation_inventory"] = (
             source_transformation_inventory.to_dict()
+        )
+    if component_license_inventory is not None:
+        run_metadata["rextio:component_license_inventory"] = (
+            component_license_inventory.to_dict()
         )
 
     document: dict[str, object] = {
@@ -3394,11 +3576,19 @@ __all__ = [
     "ArtifactEvidenceGate",
     "CargoDepEdge",
     "CargoPackageRef",
+    "ComponentLicenseInventory",
+    "ComponentLicenseRecord",
+    "COMPONENT_LICENSE_INVENTORY_KIND",
+    "COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION",
+    "COMPONENT_LICENSE_INVENTORY_SCOPE",
     "DEFAULT_LIMITATIONS",
     "EvidenceFileRef",
     "MAX_CARGO_EDGES",
     "MAX_CARGO_METADATA_BYTES",
     "MAX_CARGO_PACKAGES",
+    "MAX_COMPONENT_LICENSE_INVENTORY_CHARS",
+    "MAX_COMPONENT_LICENSE_OBSERVED_CHARS",
+    "MAX_COMPONENT_LICENSE_RECORDS",
     "MAX_EVIDENCE_COMPONENTS",
     "MAX_EVIDENCE_FILE_BYTES",
     "MAX_EVIDENCE_STRING_CHARS",
