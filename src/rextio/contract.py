@@ -44,5 +44,8 @@ from __future__ import annotations
 # Contract 2.10.0 adds C6.5's deterministic, always-blocked distribution-
 # authorization readiness assessment. It distinguishes preview evidence and
 # the required preview gate from any future hard distribution authorization.
+# Contract 2.11.0 adds C6.6's bounded source-transformation inventory
+# observation and policy-version-2 readiness check. It still does not claim
+# complete source-transformation provenance or distribution authorization.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.10.0"
+TOOLING_CONTRACT_VERSION = "2.11.0"

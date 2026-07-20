@@ -1,4 +1,4 @@
-"""C6.2/C6.4 supply-chain evidence emission for host-extension+cpython wheels.
+"""C6.2/C6.4/C6.6 evidence emission for host-extension+cpython wheels.
 
 In-scope builds always emit an ``artifact_evidence`` record with status
 ``preview-ready`` or ``unavailable`` (authority ``evidence-only``). Evidence
@@ -9,6 +9,11 @@ C6.4 adds a sanitized direct native runtime linkage inventory (macOS Mach-O via
 ``/usr/bin/otool -L``; Linux ELF via ``/usr/bin/readelf -W -d``) bound to the
 installed extension and matching wheel member. Failures still map to
 ``unavailable`` and never break ordinary best-effort builds.
+
+C6.6 adds a bounded, observation-only source-transformation inventory. If it
+cannot be collected or would exceed the provenance sidecar ceiling, only that
+inventory is omitted; the existing evidence and required-gate outcomes remain
+unchanged.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from typing import Callable
 from rextio.artifacts.evidence import (
     DEFAULT_LIMITATIONS,
     MAX_INPUT_FILES,
+    MAX_SIDECAR_BYTES,
     REASON_CARGO_LOCK_MISSING,
     REASON_EVIDENCE_INTERNAL,
     REASON_INPUT_COUNT_EXCEEDED,
@@ -51,6 +57,9 @@ from rextio.build.cargo_inventory import resolve_cargo_inventory
 from rextio.build.runtime_inventory import (
     inspect_native_runtime_inventory,
     resolve_installed_native_binary,
+)
+from rextio.build.transformation_inventory import (
+    collect_source_transformation_inventory,
 )
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS
 from rextio.build.wheel_builder import WheelBuildResult
@@ -456,6 +465,7 @@ def emit_host_extension_wheel_evidence(
         return _emit_preview_ready(
             project_root=project_root,
             layout=layout,
+            plan=plan,
             profile=profile,
             wheel_path=wheel_path,
             sbom_path=sbom_path,
@@ -481,6 +491,7 @@ def _emit_preview_ready(
     *,
     project_root: Path,
     layout: ArtifactLayout,
+    plan: BuildPlan,
     profile: ArtifactProfile,
     wheel_path: Path,
     sbom_path: Path,
@@ -568,6 +579,14 @@ def _emit_preview_ready(
         )
 
     inputs = input_snapshot.all_inputs
+    # C6.6 is an observation layered on top of the already captured inputs.
+    # Unsupported/malformed plan bindings yield None without changing evidence
+    # publication or the independent required-evidence gate outcome.
+    transformation_inventory = collect_source_transformation_inventory(
+        project_root=project_root,
+        plan=plan,
+        input_snapshot=input_snapshot,
+    )
 
     sbom_document = build_cyclonedx_document(
         subject=subject,
@@ -596,8 +615,29 @@ def _emit_preview_ready(
         cargo_packages=inventory.packages,
         target_triple=profile.target_triple,
         native_runtime_inventory=runtime_inventory,
+        source_transformation_inventory=transformation_inventory,
     )
     provenance_bytes = pretty_json_bytes(provenance_document)
+    if (
+        transformation_inventory is not None
+        and len(provenance_bytes) > MAX_SIDECAR_BYTES
+    ):
+        # C6.6 is additive observation metadata, not part of the independent
+        # C6.2/C6.3 evidence success contract. If it alone pushes provenance
+        # beyond the closed sidecar ceiling, deterministically omit only that
+        # inventory and rebuild. A baseline oversize retains the existing
+        # evidence-unavailable behavior through SidecarArtifact validation.
+        transformation_inventory = None
+        provenance_document = build_intoto_provenance_document(
+            subject=subject,
+            sbom=sbom_ref,
+            inputs=inputs,
+            cargo_packages=inventory.packages,
+            target_triple=profile.target_triple,
+            native_runtime_inventory=runtime_inventory,
+            source_transformation_inventory=None,
+        )
+        provenance_bytes = pretty_json_bytes(provenance_document)
     provenance_digest = sha256_hex(provenance_bytes)
     provenance_size = len(provenance_bytes)
     provenance_logical = project_relative_logical_path(project_root, provenance_path)
@@ -676,6 +716,7 @@ def _emit_preview_ready(
         cargo_packages=inventory.packages,
         cargo_dependencies=inventory.dependencies,
         native_runtime_inventory=runtime_inventory,
+        source_transformation_inventory=transformation_inventory,
         limitations=DEFAULT_LIMITATIONS,
     )
 

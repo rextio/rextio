@@ -2,7 +2,7 @@
 
 Status: **Unreleased Release Train C**, experimental. The latest published
 Rextio release remains **0.1.4** with tooling contract **2.2.0**. The Train C
-branch emits the additive, unreleased tooling contract **2.10.0**; none of the
+branch emits the additive, unreleased tooling contract **2.11.0**; none of the
 surfaces on this page should be treated as already available from PyPI.
 
 Train C introduces a fail-closed planning layer for host source, output
@@ -107,7 +107,7 @@ The plan and CLI include a strong warning: dependency source translation or
 redistribution can create derivative-work obligations, GNU/copyleft terms need
 particular care, and this inventory/authorization gate is not legal advice.
 
-## C6.2-C6.5 host-extension evidence/readiness — bounded and blocked
+## C6.2-C6.6 host-extension evidence/readiness — bounded and blocked
 
 For one ordinary native host-extension + CPython wheel, C6.2 emits incomplete
 CycloneDX 1.6 and unsigned in-toto/SLSA provenance sidecars. C6.3 can make that
@@ -167,9 +167,12 @@ successful inventory keeps
 `distribution_authorized: false`.
 
 C6.5 serializes a separate `artifact_distribution_authorization` readiness
-assessment for this same evidence path. It revalidates the four bounded
-observations through deep structural/model-binding reconstruction before
-marking them satisfied; it does not reopen artifacts or re-inspect bytes. The
+assessment for this same evidence path. C6.6 advances that assessment to policy
+version 2 and revalidates five bounded observations through closed-model
+reconstruction and exact source/generated evidence-reference cross-binding
+before marking them satisfied. It does not reopen artifacts, re-inspect bytes,
+or independently re-derive qualnames, ranges, or semantic-AST hashes from
+source, the build plan, or unsigned provenance. The
 assessment remains unconditionally `blocked`, incomplete, unsigned, and
 non-authorizing. Its closed blockers name selected current-scope missing license
 policy, resolved/transitive runtime closure, dynamic-loading observation,
@@ -178,7 +181,36 @@ identity, reproducibility, signature, and complete SBOM composition. Unavailable
 evidence produces only `evidence-unavailable` plus the existing fixed reason.
 A structurally invalid preview produces only
 `readiness-assessment-unavailable` with every check `not-evaluated`; C6.5
-changes neither best-effort build success nor the C6.3 required preview gate.
+and C6.6 change neither best-effort build success nor the C6.3 required preview
+gate.
+
+C6.6 also places a deterministic observation-only
+`source_transformation_inventory` under `artifact_evidence` and in the unsigned
+provenance metadata. Each accepted project-owned native function binds one
+project `SourceModule` path/SHA-256, module and qualname, reliable half-open
+source range, SHA-256 of the analyzer's attribute-free semantic AST identity,
+the exact generated Rust `src/lib.rs` evidence input path/hash/size, the closed
+Rust/PyO3 generator/backend id, and sorted unique plugin ids. It never serializes
+source bytes, the AST dump itself, absolute paths, exception text, credentials,
+or unbounded output. The collector first requires exact ordered value-level
+coverage between `NativePlan.accepted_functions` and the analyzer accepted list
+used by code generation. Records, scanned plugin references, unique plugin ids,
+and deterministic inventory characters are independently capped.
+
+Missing, unsupported, over-budget, or sidecar-ceiling-exceeding inventory does
+not change wheel evidence publication or the independent C6.3 gate. Provenance
+is rebuilt with only that observation omitted when necessary, and the new
+observation becomes `unavailable` with the
+fixed `source-transformation-inventory-unavailable` blocker. Low-level malformed
+or noncanonical inventory, or one whose exact source/generated evidence binding
+is broken, remains the all-`not-evaluated`
+`readiness-assessment-unavailable` shape. In both cases the overall assessment
+stays blocked, and even a valid inventory leaves
+`source-transformation-provenance-complete` blocked. A structurally valid
+changed qualname/range/semantic hash is not independently re-derived by the
+readiness evaluator and remains only an unsigned observation. Top-level initialization,
+external packages, runtime-bearing plugins, executables, Rust crates, Nuitka,
+WASM, and Windows are not covered by this inventory.
 
 Windows PE, runtime-bearing plugins,
 signatures, host executables, Rust-importable crates, Nuitka, WASM, dependency
@@ -329,7 +361,7 @@ enumerates a GPU. See
 
 ## Deferred work
 
-Train C through **2.10.0** does not yet provide:
+Train C through **2.11.0** does not yet provide:
 
 - multiple-module initializer execution or Python import-order emulation;
 - Rust-global publication or native reads of initialized module values;
@@ -339,7 +371,7 @@ Train C through **2.10.0** does not yet provide:
   recursive source-native promotion of installed pure-Python packages;
 - full/signed external-source authorization beyond the C6.1 prebuild lock
   contract (cryptographic signatures);
-- complete standards SPDX/CycloneDX SBOM coverage (C6.2-C6.5 emit only a bounded
+- complete standards SPDX/CycloneDX SBOM coverage (C6.2-C6.6 emit only a bounded
   incomplete CycloneDX 1.6 preview for ordinary host-extension wheels, plus
   unsigned in-toto/SLSA provenance and a macOS/Linux direct-linkage observation;
   not path resolution, transitive closure, `dlopen` discovery, or support for

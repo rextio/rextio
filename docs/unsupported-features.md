@@ -12,9 +12,10 @@ fallback.
 The Release Train C branch adds experimental host source/executable planning,
 plugin standalone capability, the C5.1 external-source inventory gate, and the
 C6.1 bounded prebuild authorization-contract preview (not full C6). It emits
-tooling contract **2.10.0**, including C6.2 preview evidence, the C6.3
+tooling contract **2.11.0**, including C6.2 preview evidence, the C6.3
 required-evidence gate, and the C6.4 macOS/Linux direct native runtime linkage
-inventory plus C6.5's always-blocked distribution-readiness assessment, but
+inventory plus C6.5's always-blocked distribution-readiness assessment and
+C6.6's bounded source-transformation inventory observation, but
 remains **unreleased**. PyPI 0.1.4 does not
 include those additions. Train C boundaries are called out explicitly below so
 planning records are not mistaken for broad source-AOT support.
@@ -580,8 +581,13 @@ The unreleased Train C planning records do not change these additional limits:
   only through a closed expected-runtime allowlist; it is not general native
   dependency support. It does not resolve dependency paths, compute a
   transitive closure, observe `dlopen`, cover Windows or runtime-bearing
-  plugins, or produce signatures. C6.5 reports these gaps through a closed,
-  always-blocked readiness assessment; it cannot authorize distribution. Full C6,
+  plugins, or produce signatures. C6.5/C6.6 reports these gaps through a closed,
+  always-blocked readiness assessment; it cannot authorize distribution. C6.6
+  observes only accepted project-owned function lowerings and binds hashes,
+  ranges, closed ids, and the shared generated `src/lib.rs` input. It does not
+  record raw source/AST dumps, cover top-level initialization, external package
+  source, executables, Rust crates, Nuitka, WASM, or runtime-bearing plugins,
+  and it does not make transformation provenance complete. Full C6,
   remaining C5.2 source-native linkage/codegen/packaging, complete standards
   SBOM, and redistribution remain future work.
 - Draft device-provider records have no discovery, selection, build/link hook,

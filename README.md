@@ -25,8 +25,11 @@ artifact set and a C6.4 sanitized, direct-only native runtime linkage inventory
 for macOS Mach-O and Linux ELF extensions. C6.5 adds an always-blocked,
 closed-vocabulary distribution-authorization readiness assessment that makes
 selected current-scope hard-authorization gaps explicit without granting
-authority.
-This branch emits additive tooling contract **2.10.0** and plugin API **1.4**
+authority. C6.6 adds a bounded observation-only inventory binding each accepted
+project-owned native function to its project-relative source hash, reliable
+range, semantic-AST hash, generated `src/lib.rs` input, closed generator/backend,
+and sorted plugin ids. It does not complete source-transformation provenance.
+This branch emits additive tooling contract **2.11.0** and plugin API **1.4**
 while keeping package version
 **0.1.4**; those changes are not yet a tagged or PyPI release. Published 0.1.4
 remains the plugin API **1.3** / contract **2.2.0** producer. See
@@ -163,15 +166,18 @@ Windows, runtime-bearing plugins, signatures, path resolution, transitive
 closure, and runtime `dlopen` discovery remain outside this preview.
 
 For that same in-scope wheel path, `build.json` also includes
-`artifact_distribution_authorization`. This C6.5 record is derived from the
+`artifact_distribution_authorization`. This C6.5/C6.6 policy-version-2 record is derived from the
 final `artifact_evidence` record after required-mode revalidation/transaction
 handling. It always reports `status: "blocked"`,
 `authority: "readiness-assessment-only"`, and false values for `complete`,
-`signed`, and `distribution_authorized`. Preview-ready evidence satisfies only
-the four bounded observation checks after deep structural/model-binding
-validation; it does not reopen artifacts or re-inspect output bytes. License
+`signed`, and `distribution_authorized`. Preview-ready evidence with a valid
+C6.6 inventory satisfies only five bounded observation checks after closed-model
+reconstruction and exact source/generated `EvidenceFileRef` cross-binding; it
+does not reopen artifacts, re-inspect output bytes, or independently re-derive
+the recorded qualname, range, or semantic-AST hash from source, `BuildPlan`, or
+the unsigned provenance. License
 policy, runtime path/transitive closure, runtime dynamic loading, complete build
-inputs, source-transformation provenance, builder identity, reproducibility,
+inputs, complete source-transformation provenance, builder identity, reproducibility,
 signatures, and complete SBOM composition remain selected current-scope fixed
 blockers. Unavailable evidence reports only `evidence-unavailable` plus its
 existing sanitized reason. If a preview evidence model cannot pass the stricter
@@ -179,6 +185,24 @@ readiness validation, every check becomes `not-evaluated` and the only blocker
 is `readiness-assessment-unavailable`; this cannot fail an otherwise successful
 best-effort build or satisfied C6.3 required gate. No configuration flag can
 turn this assessment into authorization.
+
+The C6.6 `source_transformation_inventory` is deterministic and immutable. It
+serializes SHA-256 identities, bounded logical paths/ranges, and closed ids only;
+raw Python source, AST dumps, absolute paths, exception text, credentials, and
+unbounded output are excluded. Accepted-function count, total plugin references,
+unique plugin ids, and deterministic serialized inventory size have closed
+bounds. If the inventory cannot be bound, or would make provenance exceed its
+sidecar ceiling, evidence and
+the independent C6.3 gate keep their prior outcome, while the new observation is
+`unavailable` with the fixed
+`source-transformation-inventory-unavailable` blocker. A malformed,
+noncanonical, or source/generated-reference-binding-breaking inventory instead
+uses the existing all-`not-evaluated`
+`readiness-assessment-unavailable` shape. The separate
+`source-transformation-provenance-complete` check remains blocked. A
+structurally valid changed observation value is not independently detected by
+this report-only evaluator and still cannot become signed, complete, or
+distribution-authorizing.
 
 ## Requirements
 
