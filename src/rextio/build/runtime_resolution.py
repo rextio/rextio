@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -34,6 +35,7 @@ from rextio.build.runtime_inventory import (
     _hash_open_regular_file,
     _open_absolute_directory_chain,
     _open_relative_regular_file,
+    _path_contains_symlink,
     _private_binary_snapshot,
     _record_directory_stamps,
     _require_regular_stamp,
@@ -103,6 +105,61 @@ class NativeRuntimePathResolutionObservation:
     receipts: tuple[_CandidateReceipt, ...]
 
 
+def _validated_lexical_root(expected_python_root: Path) -> Path:
+    """Return one absolute non-symlink root without erasing lexical policy."""
+    try:
+        lexical = Path(os.path.abspath(expected_python_root))
+        if _path_contains_symlink(lexical):
+            raise ArtifactEvidenceError(
+                "native runtime generated root contains a symlink",
+                reason=REASON_RUNTIME_UNSAFE_PATH,
+            )
+        linked = lexical.lstat()
+        if not stat.S_ISDIR(linked.st_mode):
+            raise ArtifactEvidenceError(
+                "native runtime generated root is not a directory",
+                reason=REASON_RUNTIME_UNSAFE_PATH,
+            )
+        if lexical.resolve(strict=True) != lexical:
+            raise ArtifactEvidenceError(
+                "native runtime generated root is noncanonical",
+                reason=REASON_RUNTIME_UNSAFE_PATH,
+            )
+        return lexical
+    except ArtifactEvidenceError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise ArtifactEvidenceError(
+            "native runtime generated root is unavailable",
+            reason=REASON_RUNTIME_UNSAFE_PATH,
+        ) from exc
+
+
+def _refresh_directory_stamps_match(
+    *,
+    previous: tuple[_FilesystemStamp, ...],
+    current: tuple[_FilesystemStamp, ...],
+    root: Path,
+) -> bool:
+    """Allow only the generated root metadata delta caused by C6.9 snapshots."""
+    if len(previous) != len(current):
+        return False
+    root_index = len(root.parts) - 1
+    if root_index < 0 or root_index >= len(previous):
+        return False
+    for index, (old_stamp, new_stamp) in enumerate(zip(previous, current, strict=True)):
+        if index == root_index:
+            if (
+                old_stamp.device != new_stamp.device
+                or old_stamp.inode != new_stamp.inode
+                or old_stamp.mode != new_stamp.mode
+            ):
+                return False
+        elif old_stamp != new_stamp:
+            return False
+    return True
+
+
 def collect_native_runtime_path_resolution(
     *,
     installed_path: Path | None,
@@ -139,17 +196,17 @@ def _collect_native_runtime_path_resolution(
 ) -> NativeRuntimePathResolutionObservation:
     if type(runtime_inventory) is not NativeRuntimeInventory:
         raise TypeError("native runtime inventory model is invalid")
+    root = _validated_lexical_root(expected_python_root)
     reported = None if installed_path is None else str(installed_path)
     binary = resolve_installed_native_binary(
         installed_path=reported,
-        expected_python_root=expected_python_root,
+        expected_python_root=root,
     )
     if binary is None:
         raise ArtifactEvidenceError(
             "native runtime path-resolution subject is unavailable",
             reason=REASON_RUNTIME_UNSAFE_PATH,
         )
-    root = expected_python_root.resolve(strict=True)
     subject_member = binary.relative_to(root).as_posix()
     if (
         subject_member != runtime_inventory.wheel_member
@@ -246,7 +303,7 @@ def verify_native_runtime_path_resolution(
     try:
         if type(observation) is not NativeRuntimePathResolutionObservation:
             return False
-        root = expected_python_root.resolve(strict=True)
+        root = _validated_lexical_root(expected_python_root)
         for receipt in observation.receipts:
             current = _read_candidate_secure(root=root, parts=receipt.parts)
             if (
@@ -259,6 +316,115 @@ def verify_native_runtime_path_resolution(
         return True
     except Exception:
         return False
+
+
+def refresh_native_runtime_path_resolution_observation(
+    observation: NativeRuntimePathResolutionObservation,
+    *,
+    expected_python_root: Path,
+) -> NativeRuntimePathResolutionObservation | None:
+    """Refresh C6.8 receipts only across C6.9's bounded root-stamp delta.
+
+    C6.9 private snapshot directories intentionally live below the generated
+    Python root. Their create/remove lifecycle changes directory metadata that
+    an earlier C6.8 receipt observed. Require exact prior receipt coverage and
+    preserve every file and ancestor/descendant stamp, allowing only the root
+    directory's size/ctime/mtime to differ while its identity and mode remain.
+    """
+    try:
+        if type(observation) is not NativeRuntimePathResolutionObservation:
+            return None
+        root = _validated_lexical_root(expected_python_root)
+        source = observation.inventory
+        if type(source) is not NativeRuntimePathResolutionInventory:
+            return None
+        records = tuple(
+            NativeRuntimePathResolutionRecord(
+                dependency_bom_ref=record.dependency_bom_ref,
+                dependency_name=record.dependency_name,
+                dependency_origin=record.dependency_origin,
+                resolution=record.resolution,
+                mechanism=record.mechanism,
+                wheel_member=record.wheel_member,
+                sha256=record.sha256,
+                size=record.size,
+            )
+            for record in source.records
+        )
+        inventory = NativeRuntimePathResolutionInventory(
+            subject_wheel_member=source.subject_wheel_member,
+            subject_sha256=source.subject_sha256,
+            records=records,
+            kind=source.kind,
+            schema_version=source.schema_version,
+            scope=source.scope,
+            complete=source.complete,
+            authority=source.authority,
+        )
+        packaged_records = tuple(
+            record for record in inventory.records if record.resolution == "wheel-member"
+        )
+        expected_parts: list[tuple[str, ...]] = []
+        for record in packaged_records:
+            if (
+                record.wheel_member is None
+                or record.sha256 is None
+                or record.size is None
+            ):
+                return None
+            parts = PurePosixPath(record.wheel_member).parts
+            _validate_parts(parts)
+            expected_parts.append(parts)
+        if len(expected_parts) != len(set(expected_parts)):
+            return None
+
+        prior_by_parts: dict[tuple[str, ...], _CandidateReceipt] = {}
+        for receipt in observation.receipts:
+            if type(receipt) is not _CandidateReceipt or receipt.parts in prior_by_parts:
+                return None
+            prior_by_parts[receipt.parts] = receipt
+        if set(prior_by_parts) != set(expected_parts):
+            return None
+
+        if not packaged_records:
+            return NativeRuntimePathResolutionObservation(
+                inventory=inventory,
+                receipts=(),
+            )
+
+        receipts: list[_CandidateReceipt] = []
+        for record, parts in zip(packaged_records, expected_parts, strict=True):
+            if record.sha256 is None or record.size is None:  # closed model/type guard
+                return None
+            previous = prior_by_parts[parts]
+            if previous.sha256 != record.sha256 or previous.size != record.size:
+                return None
+            receipt = _read_candidate_secure(
+                root=root,
+                parts=parts,
+            )
+            if (
+                receipt.parts != previous.parts
+                or receipt.sha256 != previous.sha256
+                or receipt.size != previous.size
+                or receipt.file_stamp != previous.file_stamp
+                or not _refresh_directory_stamps_match(
+                    previous=previous.directory_stamps,
+                    current=receipt.directory_stamps,
+                    root=root,
+                )
+            ):
+                return None
+            receipts.append(receipt)
+        ordered = tuple(sorted(receipts, key=lambda receipt: receipt.parts))
+        if len({receipt.parts for receipt in ordered}) != len(ordered):
+            return None
+        return NativeRuntimePathResolutionObservation(
+            inventory=inventory,
+            receipts=ordered,
+        )
+    except Exception:
+        return None
 
 
 def parse_macho_load_commands(stdout: str) -> MachoLoadPlan:
@@ -711,8 +877,7 @@ def _run_resolution_inspector(command: list[str], *, cwd: Path, timeout: float) 
 def _validate_macho_dependency_form(value: str) -> str:
     _validate_path_text(value)
     if value.startswith(("/usr/lib/", "/System/Library/")):
-        _validate_basename(PurePosixPath(value).name)
-        return value
+        return _validate_macho_system_dependency_path(value)
     for prefix in ("@loader_path/", "@rpath/"):
         if value.startswith(prefix):
             _relative_parts(value.removeprefix(prefix))
@@ -721,6 +886,31 @@ def _validate_macho_dependency_form(value: str) -> str:
         "Mach-O dependency path form is unsupported",
         reason=REASON_RUNTIME_UNSAFE_PATH,
     )
+
+
+def _validate_macho_system_dependency_path(value: str) -> str:
+    """Require one canonical absolute Apple system-library path."""
+    _validate_path_text(value)
+    if not value.startswith(("/usr/lib/", "/System/Library/")):
+        raise ArtifactEvidenceError(
+            "Mach-O system dependency path is unsupported",
+            reason=REASON_RUNTIME_UNSAFE_PATH,
+        )
+    raw_parts = value.split("/")
+    if not raw_parts or raw_parts[0] != "":
+        raise ArtifactEvidenceError(
+            "Mach-O system dependency path is noncanonical",
+            reason=REASON_RUNTIME_UNSAFE_PATH,
+        )
+    parts = tuple(raw_parts[1:])
+    _validate_parts(parts)
+    if PurePosixPath(value).as_posix() != value:
+        raise ArtifactEvidenceError(
+            "Mach-O system dependency path is noncanonical",
+            reason=REASON_RUNTIME_UNSAFE_PATH,
+        )
+    _validate_basename(parts[-1])
+    return value
 
 
 def _validate_loader_anchored_path(value: str) -> str:

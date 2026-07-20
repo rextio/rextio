@@ -846,6 +846,84 @@ def test_private_snapshot_is_removed_when_inspector_fails(
     assert not observed["snapshot"].exists()
 
 
+@pytest.mark.parametrize("operation", ["unlink", "rmdir"])
+def test_private_snapshot_cleanup_failure_is_observable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    root, binary, _payload, _entries = _elf_runtime_case(tmp_path)
+    real_unlink = runtime_inventory.os.unlink
+    real_rmdir = runtime_inventory.os.rmdir
+    observed: dict[str, Path] = {}
+
+    def fail_unlink(path: str, *, dir_fd: int | None = None) -> None:
+        if operation == "unlink" and path == binary.name and dir_fd is not None:
+            raise OSError("simulated unlink failure")
+        real_unlink(path, dir_fd=dir_fd)
+
+    def fail_rmdir(path: str, *, dir_fd: int | None = None) -> None:
+        if (
+            operation == "rmdir"
+            and path.startswith(runtime_inventory._SNAPSHOT_PREFIX)
+            and dir_fd is not None
+        ):
+            raise OSError("simulated rmdir failure")
+        real_rmdir(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(runtime_inventory.os, "unlink", fail_unlink)
+    monkeypatch.setattr(runtime_inventory.os, "rmdir", fail_rmdir)
+    with pytest.raises(ArtifactEvidenceError, match="cleanup failed") as raised:
+        with runtime_inventory._private_binary_snapshot(
+            binary,
+            expected_root=root,
+        ) as snapshot:
+            observed["snapshot"] = snapshot.path
+
+    monkeypatch.setattr(runtime_inventory.os, "unlink", real_unlink)
+    monkeypatch.setattr(runtime_inventory.os, "rmdir", real_rmdir)
+    snapshot_path = observed["snapshot"]
+    if snapshot_path.exists():
+        snapshot_path.unlink()
+    if snapshot_path.parent.exists():
+        snapshot_path.parent.rmdir()
+    assert raised.value.reason == evidence_mod.REASON_RUNTIME_BINARY_MISMATCH
+
+
+def test_private_snapshot_cleanup_preserves_active_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PrimaryFailure(RuntimeError):
+        pass
+
+    root, binary, _payload, _entries = _elf_runtime_case(tmp_path)
+    real_rmdir = runtime_inventory.os.rmdir
+    observed: dict[str, Path] = {}
+
+    def fail_rmdir(path: str, *, dir_fd: int | None = None) -> None:
+        if path.startswith(runtime_inventory._SNAPSHOT_PREFIX) and dir_fd is not None:
+            raise OSError("simulated rmdir failure")
+        real_rmdir(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(runtime_inventory.os, "rmdir", fail_rmdir)
+    with pytest.raises(PrimaryFailure, match="primary failure") as raised:
+        with runtime_inventory._private_binary_snapshot(
+            binary,
+            expected_root=root,
+        ) as snapshot:
+            observed["snapshot"] = snapshot.path
+            raise PrimaryFailure("primary failure")
+
+    monkeypatch.setattr(runtime_inventory.os, "rmdir", real_rmdir)
+    snapshot_directory = observed["snapshot"].parent
+    if snapshot_directory.exists():
+        snapshot_directory.rmdir()
+    assert any(
+        "cleanup also failed" in note for note in getattr(raised.value, "__notes__", ())
+    )
+
+
 def test_successful_inspector_with_malformed_output_uses_fixed_reason(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

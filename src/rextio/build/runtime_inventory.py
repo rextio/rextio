@@ -1330,6 +1330,85 @@ def _verify_private_snapshot(
         )
 
 
+def _attempt_private_snapshot_cleanup(
+    *,
+    root_fd: int,
+    snapshot_directory_fd: int,
+    snapshot_directory_name: str,
+    snapshot_name: str,
+    snapshot_stamp: _FilesystemStamp | None,
+) -> list[BaseException]:
+    """Remove only the held private snapshot and prove its root entry is gone."""
+    errors: list[BaseException] = []
+    if snapshot_stamp is None:
+        errors.append(
+            ArtifactEvidenceError(
+                "private native snapshot cleanup identity is unavailable",
+                reason=REASON_RUNTIME_BINARY_MISMATCH,
+            )
+        )
+    else:
+        try:
+            linked_snapshot = _require_regular_stamp(
+                os.stat(
+                    snapshot_name,
+                    dir_fd=snapshot_directory_fd,
+                    follow_symlinks=False,
+                )
+            )
+            if not _same_stamp(linked_snapshot, snapshot_stamp):
+                raise ArtifactEvidenceError(
+                    "private native snapshot cleanup identity changed",
+                    reason=REASON_RUNTIME_BINARY_MISMATCH,
+                )
+            os.unlink(snapshot_name, dir_fd=snapshot_directory_fd)
+        except (ArtifactEvidenceError, OSError) as exc:
+            errors.append(exc)
+
+    directory_is_linked = False
+    try:
+        held_directory = _require_directory_stamp(os.fstat(snapshot_directory_fd))
+        linked_directory = _require_directory_stamp(
+            os.stat(
+                snapshot_directory_name,
+                dir_fd=root_fd,
+                follow_symlinks=False,
+            )
+        )
+        if not _same_stamp(held_directory, linked_directory):
+            raise ArtifactEvidenceError(
+                "private native snapshot directory cleanup identity changed",
+                reason=REASON_RUNTIME_BINARY_MISMATCH,
+            )
+        directory_is_linked = True
+    except (ArtifactEvidenceError, OSError) as exc:
+        errors.append(exc)
+    if directory_is_linked:
+        try:
+            os.rmdir(snapshot_directory_name, dir_fd=root_fd)
+        except OSError as exc:
+            errors.append(exc)
+
+    try:
+        os.stat(
+            snapshot_directory_name,
+            dir_fd=root_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        errors.append(exc)
+    else:
+        errors.append(
+            ArtifactEvidenceError(
+                "private native snapshot directory remains after cleanup",
+                reason=REASON_RUNTIME_BINARY_MISMATCH,
+            )
+        )
+    return errors
+
+
 @contextmanager
 def _private_binary_snapshot(
     binary: Path, *, expected_root: Path
@@ -1354,6 +1433,7 @@ def _private_binary_snapshot(
     snapshot_fd = -1
     snapshot_directory_name: str | None = None
     snapshot_name = absolute_binary.name
+    primary_error: BaseException | None = None
     try:
         absolute_chain = _open_absolute_directory_chain(absolute_root)
         root_fd = absolute_chain[-1][0]
@@ -1441,46 +1521,70 @@ def _private_binary_snapshot(
                 snapshot_stamp=snapshot_stamp,
                 expected_digest=digest,
             )
-    except ArtifactEvidenceError:
+    except ArtifactEvidenceError as exc:
+        primary_error = exc
         raise
     except OSError as exc:
-        raise ArtifactEvidenceError(
+        wrapped = ArtifactEvidenceError(
             "private native snapshot operation failed",
             reason=REASON_RUNTIME_BINARY_MISMATCH,
-        ) from exc
+        )
+        primary_error = wrapped
+        raise wrapped from exc
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
+        cleanup_errors: list[BaseException] = []
+        cleanup_snapshot_stamp: _FilesystemStamp | None = None
+        cleanup_snapshot_fd = snapshot_fd if snapshot_fd >= 0 else snapshot_write_fd
+        if cleanup_snapshot_fd >= 0:
+            try:
+                cleanup_snapshot_stamp = _require_regular_stamp(
+                    os.fstat(cleanup_snapshot_fd)
+                )
+            except (ArtifactEvidenceError, OSError) as exc:
+                cleanup_errors.append(exc)
         if snapshot_write_fd >= 0:
             try:
                 os.close(snapshot_write_fd)
-            except OSError:
-                pass
+            except OSError as exc:
+                cleanup_errors.append(exc)
         if snapshot_fd >= 0:
             try:
                 os.close(snapshot_fd)
-            except OSError:
-                pass
+            except OSError as exc:
+                cleanup_errors.append(exc)
         root_fd = absolute_chain[-1][0] if absolute_chain else -1
         if snapshot_directory_fd >= 0:
-            try:
-                os.unlink(snapshot_name, dir_fd=snapshot_directory_fd)
-            except OSError:
-                pass
             if root_fd >= 0 and snapshot_directory_name is not None:
-                try:
-                    held = os.fstat(snapshot_directory_fd)
-                    linked = os.stat(
-                        snapshot_directory_name,
-                        dir_fd=root_fd,
-                        follow_symlinks=False,
+                cleanup_errors.extend(
+                    _attempt_private_snapshot_cleanup(
+                        root_fd=root_fd,
+                        snapshot_directory_fd=snapshot_directory_fd,
+                        snapshot_directory_name=snapshot_directory_name,
+                        snapshot_name=snapshot_name,
+                        snapshot_stamp=cleanup_snapshot_stamp,
                     )
-                    if held.st_dev == linked.st_dev and held.st_ino == linked.st_ino:
-                        os.rmdir(snapshot_directory_name, dir_fd=root_fd)
-                except OSError:
-                    pass
+                )
+            else:
+                cleanup_errors.append(
+                    ArtifactEvidenceError(
+                        "private native snapshot cleanup root is unavailable",
+                        reason=REASON_RUNTIME_BINARY_MISMATCH,
+                    )
+                )
             try:
                 os.close(snapshot_directory_fd)
-            except OSError:
-                pass
+            except OSError as exc:
+                cleanup_errors.append(exc)
+        elif snapshot_directory_name is not None:
+            cleanup_errors.append(
+                ArtifactEvidenceError(
+                    "private native snapshot cleanup directory is unavailable",
+                    reason=REASON_RUNTIME_BINARY_MISMATCH,
+                )
+            )
         if source_fd >= 0:
             try:
                 os.close(source_fd)
@@ -1496,6 +1600,16 @@ def _private_binary_snapshot(
                 os.close(handle)
             except OSError:
                 pass
+        if cleanup_errors:
+            cleanup_error = ArtifactEvidenceError(
+                "private native snapshot cleanup failed",
+                reason=REASON_RUNTIME_BINARY_MISMATCH,
+            )
+            if primary_error is None:
+                raise cleanup_error from cleanup_errors[0]
+            primary_error.add_note(
+                "Private native snapshot cleanup also failed; no evidence was accepted."
+            )
 
 
 def _clamp_inspector_timeout(timeout: float) -> float:

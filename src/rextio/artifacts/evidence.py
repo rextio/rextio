@@ -5,7 +5,9 @@ remains planning metadata only. C6.2 emits preview-only, incomplete, unsigned
 supply-chain sidecars for ordinary successful host-extension+cpython wheels.
 C6.4 adds a sanitized direct native runtime linkage inventory (macOS Mach-O /
 Linux ELF only) under the same evidence-only authority. C6.8 adds optional
-one-hop static packaged path observations without claiming loader selection or
+one-hop static packaged path observations. C6.9 adds a strictly bounded,
+cycle-safe graph over recursively inspected packaged members and logical system
+leaves. Neither observation claims actual loader selection or a complete
 transitive closure. Evidence unavailability never changes ordinary build success.
 """
 
@@ -49,6 +51,14 @@ MAX_RUNTIME_DEPS = 64
 MAX_RUNTIME_DEP_NAME_CHARS = 256
 MAX_RUNTIME_INSPECTOR_OUTPUT_BYTES = 256 * 1024
 MAX_RUNTIME_PATH_RESOLUTION_INVENTORY_CHARS = 256 * 1024
+MAX_RUNTIME_CLOSURE_NODES = 128
+MAX_RUNTIME_CLOSURE_EDGES = 512
+MAX_RUNTIME_CLOSURE_DEPTH = 8
+MAX_RUNTIME_CLOSURE_CANDIDATES_PER_DEPENDENCY = 64
+MAX_RUNTIME_CLOSURE_CANDIDATE_ATTEMPTS = 2048
+MAX_RUNTIME_CLOSURE_INSPECTOR_INVOCATIONS = 128
+MAX_RUNTIME_CLOSURE_INSPECTOR_OUTPUT_BYTES = 2 * 1024 * 1024
+MAX_RUNTIME_CLOSURE_INVENTORY_CHARS = 512 * 1024
 MAX_SOURCE_TRANSFORMATIONS = 512
 MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS = 32
 MAX_SOURCE_TRANSFORMATION_PLUGIN_REFERENCES = 128
@@ -72,8 +82,19 @@ NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND = (
 )
 NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION = 1
 NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE = "direct-native-dependencies"
+NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_KIND = (
+    "native-runtime-transitive-closure-inventory"
+)
+NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCHEMA_VERSION = 1
+NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCOPE = (
+    "bounded-static-packaged-native-runtime-graph"
+)
 
 _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_RUNTIME_DEPENDENCY_BASENAME = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,254}$"
+)
+_RUNTIME_ROOT_BASENAME = re.compile(r"^_[A-Za-z0-9][A-Za-z0-9._+-]{0,253}$")
 _SAFE_LOGICAL_SEGMENT = re.compile(r"^[A-Za-z0-9._@+%-]+$")
 _TRANSFORMATION_DOTTED_ID = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
@@ -94,6 +115,7 @@ DEFAULT_LIMITATIONS: tuple[str, ...] = (
     "not-external-source-authorization",
     "direct-native-linkage-only",
     "one-hop-static-native-path-resolution-only",
+    "bounded-static-native-runtime-graph-only",
     "no-loader-environment-selection-claim",
     "no-transitive-dylib-closure",
     "no-runtime-dlopen-inventory",
@@ -762,6 +784,359 @@ class NativeRuntimePathResolutionInventory:
 
 
 @dataclass(frozen=True, slots=True)
+class NativeRuntimeTransitiveClosureNode:
+    """One canonical node in the bounded C6.9 static runtime graph."""
+
+    kind: str  # wheel-member | system-logical
+    format: str  # mach-o | elf
+    name: str
+    wheel_member: str | None = None
+    sha256: str | None = None
+    size: int | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not str or self.kind not in {
+            "wheel-member",
+            "system-logical",
+        }:
+            raise ValueError("native runtime closure node kind is invalid")
+        if type(self.format) is not str or self.format not in {"mach-o", "elf"}:
+            raise ValueError("native runtime closure node format is invalid")
+        if type(self.name) is not str:
+            raise TypeError("native runtime closure node name must be a string")
+        name = _bounded_identifier(self.name, "native runtime closure node name")
+        if self.kind == "system-logical":
+            name_is_safe = _RUNTIME_DEPENDENCY_BASENAME.fullmatch(name) is not None
+        else:
+            name_is_safe = bool(
+                _RUNTIME_DEPENDENCY_BASENAME.fullmatch(name)
+                or _RUNTIME_ROOT_BASENAME.fullmatch(name)
+            )
+        if len(name) > MAX_RUNTIME_DEP_NAME_CHARS or not name_is_safe:
+            raise ValueError("native runtime closure node name is unsafe")
+        object.__setattr__(self, "name", name)
+        byte_fields = (self.wheel_member, self.sha256, self.size)
+        if self.kind == "wheel-member":
+            if (
+                type(self.wheel_member) is not str
+                or type(self.sha256) is not str
+                or type(self.size) is not int
+            ):
+                raise TypeError("packaged runtime closure node requires exact bytes")
+            try:
+                canonical = canonicalize_zip_entry_name(self.wheel_member)
+            except ArtifactEvidenceError as exc:
+                raise ValueError(str(exc)) from exc
+            if canonical != self.wheel_member or self.wheel_member.endswith("/"):
+                raise ValueError("native runtime closure wheel member is noncanonical")
+            if PurePosixPath(self.wheel_member).name != self.name:
+                raise ValueError("native runtime closure node basename is inconsistent")
+            if not _HEX_SHA256.fullmatch(self.sha256):
+                raise ValueError("native runtime closure node sha256 is invalid")
+            if self.size < 0 or self.size > MAX_EVIDENCE_FILE_BYTES:
+                raise ValueError("native runtime closure node size is outside the bound")
+        elif any(value is not None for value in byte_fields):
+            raise ValueError("system runtime closure leaf must not carry byte identity")
+
+    @property
+    def node_ref(self) -> str:
+        """Return a deterministic packaged-content or logical-name identity."""
+        identity = hashlib.sha256(
+            "|".join(
+                (
+                    self.kind,
+                    self.format,
+                    self.name,
+                    self.wheel_member or "",
+                    self.sha256 or "",
+                    "" if self.size is None else str(self.size),
+                )
+            ).encode("utf-8")
+        ).hexdigest()
+        return f"urn:rextio:native-runtime-node:{identity[:32]}"
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the canonical serialized node."""
+        return {
+            "node_ref": self.node_ref,
+            "kind": self.kind,
+            "format": self.format,
+            "name": self.name,
+            "wheel_member": self.wheel_member,
+            "sha256": self.sha256,
+            "size": self.size,
+            "terminal": self.kind == "system-logical",
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRuntimeTransitiveClosureEdge:
+    """One statically observed dependency edge between canonical nodes."""
+
+    source_ref: str
+    target_ref: str
+    dependency_name: str
+    mechanism: str
+
+    def __post_init__(self) -> None:
+        node_ref_pattern = r"urn:rextio:native-runtime-node:[0-9a-f]{32}"
+        if type(self.source_ref) is not str or not re.fullmatch(
+            node_ref_pattern, self.source_ref
+        ):
+            raise ValueError("native runtime closure source ref is invalid")
+        if type(self.target_ref) is not str or not re.fullmatch(
+            node_ref_pattern, self.target_ref
+        ):
+            raise ValueError("native runtime closure target ref is invalid")
+        if type(self.dependency_name) is not str:
+            raise TypeError("native runtime closure dependency name must be a string")
+        dependency_name = _bounded_identifier(
+            self.dependency_name, "native runtime closure dependency name"
+        )
+        if (
+            len(dependency_name) > MAX_RUNTIME_DEP_NAME_CHARS
+            or _RUNTIME_DEPENDENCY_BASENAME.fullmatch(dependency_name) is None
+        ):
+            raise ValueError("native runtime closure dependency name is unsafe")
+        object.__setattr__(self, "dependency_name", dependency_name)
+        if type(self.mechanism) is not str or self.mechanism not in {
+            "macho-loader-path",
+            "macho-rpath",
+            "macho-system",
+            "elf-origin-rpath",
+            "elf-system-name",
+        }:
+            raise ValueError("native runtime closure edge mechanism is invalid")
+
+    @property
+    def canonical_key(self) -> tuple[str, str, str, str]:
+        """Return the total deterministic edge order."""
+        return (
+            self.source_ref,
+            self.dependency_name,
+            self.target_ref,
+            self.mechanism,
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        """Return the canonical serialized edge."""
+        return {
+            "source_ref": self.source_ref,
+            "target_ref": self.target_ref,
+            "dependency_name": self.dependency_name,
+            "mechanism": self.mechanism,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRuntimeTransitiveClosureInventory:
+    """Strictly bounded, cycle-safe static graph; never a completeness claim."""
+
+    format: str
+    architecture: str
+    subject_wheel_member: str
+    subject_sha256: str
+    subject_size: int
+    root_node_ref: str
+    nodes: tuple[NativeRuntimeTransitiveClosureNode, ...]
+    edges: tuple[NativeRuntimeTransitiveClosureEdge, ...]
+    kind: str = NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_KIND
+    schema_version: int = NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCHEMA_VERSION
+    scope: str = NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCOPE
+    complete: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        if self.kind != NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_KIND:
+            raise ValueError("native runtime closure inventory kind is invalid")
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version
+            != NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCHEMA_VERSION
+        ):
+            raise ValueError("native runtime closure inventory schema is invalid")
+        if self.scope != NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCOPE:
+            raise ValueError("native runtime closure inventory scope is invalid")
+        if self.format not in {"mach-o", "elf"}:
+            raise ValueError("native runtime closure inventory format is invalid")
+        if self.architecture not in {
+            "aarch64",
+            "arm",
+            "powerpc",
+            "powerpc64",
+            "riscv64",
+            "s390x",
+            "x86",
+            "x86_64",
+        }:
+            raise ValueError("native runtime closure architecture is invalid")
+        try:
+            canonical_subject = canonicalize_zip_entry_name(self.subject_wheel_member)
+        except ArtifactEvidenceError as exc:
+            raise ValueError(str(exc)) from exc
+        if (
+            canonical_subject != self.subject_wheel_member
+            or self.subject_wheel_member.endswith("/")
+        ):
+            raise ValueError("native runtime closure subject is noncanonical")
+        if not _HEX_SHA256.fullmatch(self.subject_sha256):
+            raise ValueError("native runtime closure subject sha256 is invalid")
+        if (
+            type(self.subject_size) is not int
+            or self.subject_size < 0
+            or self.subject_size > MAX_EVIDENCE_FILE_BYTES
+        ):
+            raise ValueError("native runtime closure subject size is outside the bound")
+        if type(self.nodes) is not tuple or not all(
+            type(node) is NativeRuntimeTransitiveClosureNode for node in self.nodes
+        ):
+            raise TypeError("native runtime closure nodes must use the closed model")
+        if type(self.edges) is not tuple or not all(
+            type(edge) is NativeRuntimeTransitiveClosureEdge for edge in self.edges
+        ):
+            raise TypeError("native runtime closure edges must use the closed model")
+        if not self.nodes or len(self.nodes) > MAX_RUNTIME_CLOSURE_NODES:
+            raise ValueError("native runtime closure node count exceeds the bound")
+        if len(self.edges) > MAX_RUNTIME_CLOSURE_EDGES:
+            raise ValueError("native runtime closure edge count exceeds the bound")
+        node_refs = tuple(node.node_ref for node in self.nodes)
+        if node_refs != tuple(sorted(node_refs)) or len(node_refs) != len(set(node_refs)):
+            raise ValueError("native runtime closure nodes must be canonical and unique")
+        edge_keys = tuple(edge.canonical_key for edge in self.edges)
+        if edge_keys != tuple(sorted(edge_keys)) or len(edge_keys) != len(set(edge_keys)):
+            raise ValueError("native runtime closure edges must be canonical and unique")
+        dependency_keys = tuple(
+            (edge.source_ref, edge.dependency_name) for edge in self.edges
+        )
+        if len(dependency_keys) != len(set(dependency_keys)):
+            raise ValueError("native runtime closure dependency resolutions are ambiguous")
+        nodes_by_ref = {node.node_ref: node for node in self.nodes}
+        root = nodes_by_ref.get(self.root_node_ref)
+        if root is None or root.kind != "wheel-member":
+            raise ValueError("native runtime closure root node is invalid")
+        if (
+            root.format != self.format
+            or root.wheel_member != self.subject_wheel_member
+            or root.sha256 != self.subject_sha256
+            or root.size != self.subject_size
+            or _RUNTIME_ROOT_BASENAME.fullmatch(root.name) is None
+        ):
+            raise ValueError("native runtime closure root binding is inconsistent")
+        adjacency: dict[str, list[str]] = {reference: [] for reference in node_refs}
+        for edge in self.edges:
+            source = nodes_by_ref.get(edge.source_ref)
+            target = nodes_by_ref.get(edge.target_ref)
+            if source is None or target is None:
+                raise ValueError("native runtime closure edge endpoint is unknown")
+            if source.kind != "wheel-member":
+                raise ValueError("native runtime closure system leaves cannot have edges")
+            if (
+                source.node_ref != self.root_node_ref
+                and _RUNTIME_DEPENDENCY_BASENAME.fullmatch(source.name) is None
+            ):
+                raise ValueError("native runtime closure dependency node name is invalid")
+            if target.name != edge.dependency_name:
+                raise ValueError("native runtime closure edge target name is inconsistent")
+            if source.format != self.format or target.format != self.format:
+                raise ValueError("native runtime closure node format is inconsistent")
+            if self.format == "mach-o":
+                allowed_mechanisms = {
+                    "macho-loader-path",
+                    "macho-rpath",
+                    "macho-system",
+                }
+            else:
+                allowed_mechanisms = {"elf-origin-rpath", "elf-system-name"}
+            if edge.mechanism not in allowed_mechanisms:
+                raise ValueError("native runtime closure edge format is inconsistent")
+            system_mechanism = edge.mechanism in {
+                "macho-system",
+                "elf-system-name",
+            }
+            if system_mechanism != (target.kind == "system-logical"):
+                raise ValueError("native runtime closure edge resolution kind is invalid")
+            adjacency[edge.source_ref].append(edge.target_ref)
+        depths = {self.root_node_ref: 0}
+        pending = [self.root_node_ref]
+        while pending:
+            current = pending.pop(0)
+            for target_ref in sorted(adjacency[current]):
+                candidate_depth = depths[current] + 1
+                if target_ref not in depths or candidate_depth < depths[target_ref]:
+                    depths[target_ref] = candidate_depth
+                    pending.append(target_ref)
+        if set(depths) != set(node_refs):
+            raise ValueError("native runtime closure graph contains unreachable nodes")
+        if max(depths.values()) > MAX_RUNTIME_CLOSURE_DEPTH:
+            raise ValueError("native runtime closure depth exceeds the bound")
+        if type(self.complete) is not bool or self.complete:
+            raise ValueError("native runtime closure inventory must remain incomplete")
+        if self.authority != "observation-only":
+            raise ValueError("native runtime closure inventory authority is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_RUNTIME_CLOSURE_INVENTORY_CHARS:
+            raise ValueError("native runtime closure inventory exceeds the bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic additive artifact-evidence graph."""
+        adjacency: dict[str, tuple[str, ...]] = {
+            node.node_ref: tuple(
+                edge.target_ref for edge in self.edges if edge.source_ref == node.node_ref
+            )
+            for node in self.nodes
+        }
+        depths = {self.root_node_ref: 0}
+        pending = [self.root_node_ref]
+        while pending:
+            current = pending.pop(0)
+            for target_ref in sorted(adjacency[current]):
+                candidate_depth = depths[current] + 1
+                if target_ref not in depths or candidate_depth < depths[target_ref]:
+                    depths[target_ref] = candidate_depth
+                    pending.append(target_ref)
+        return {
+            "kind": NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_KIND,
+            "schema_version": NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCHEMA_VERSION,
+            "scope": NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCOPE,
+            "authority": "observation-only",
+            "complete": False,
+            "bounded_graph_observed": True,
+            "transitive_closure_complete": False,
+            "actual_loader_selection": False,
+            "runtime_dlopen": False,
+            "format": self.format,
+            "architecture": self.architecture,
+            "subject_wheel_member": self.subject_wheel_member,
+            "subject_sha256": self.subject_sha256,
+            "subject_size": self.subject_size,
+            "root_node_ref": self.root_node_ref,
+            "node_count": len(self.nodes),
+            "edge_count": len(self.edges),
+            "max_depth_observed": max(depths.values()),
+            "limits": {
+                "nodes": MAX_RUNTIME_CLOSURE_NODES,
+                "edges": MAX_RUNTIME_CLOSURE_EDGES,
+                "depth": MAX_RUNTIME_CLOSURE_DEPTH,
+                "candidates_per_dependency": (
+                    MAX_RUNTIME_CLOSURE_CANDIDATES_PER_DEPENDENCY
+                ),
+                "candidate_attempts": MAX_RUNTIME_CLOSURE_CANDIDATE_ATTEMPTS,
+                "inspector_invocations": MAX_RUNTIME_CLOSURE_INSPECTOR_INVOCATIONS,
+                "inspector_output_bytes": MAX_RUNTIME_CLOSURE_INSPECTOR_OUTPUT_BYTES,
+                "serialized_chars": MAX_RUNTIME_CLOSURE_INVENTORY_CHARS,
+            },
+            "nodes": [node.to_dict() for node in self.nodes],
+            "edges": [edge.to_dict() for edge in self.edges],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SourceTransformationRange:
     """One reliable half-open function source range.
 
@@ -1141,7 +1516,7 @@ class SidecarArtifact:
 
 @dataclass(frozen=True)
 class ArtifactEvidence:
-    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.8 preview."""
+    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.9 preview."""
 
     kind: str
     status: str  # preview-ready | unavailable
@@ -1159,6 +1534,9 @@ class ArtifactEvidence:
     cargo_dependencies: tuple[CargoDepEdge, ...] = ()
     native_runtime_inventory: NativeRuntimeInventory | None = None
     native_runtime_path_resolution: NativeRuntimePathResolutionInventory | None = None
+    native_runtime_transitive_closure: (
+        NativeRuntimeTransitiveClosureInventory | None
+    ) = None
     source_transformation_inventory: SourceTransformationInventory | None = None
     component_license_inventory: ComponentLicenseInventory | None = None
     limitations: tuple[str, ...] = DEFAULT_LIMITATIONS
@@ -1195,6 +1573,7 @@ class ArtifactEvidence:
                 or self.cargo_dependencies
                 or self.native_runtime_inventory is not None
                 or self.native_runtime_path_resolution is not None
+                or self.native_runtime_transitive_closure is not None
                 or self.source_transformation_inventory is not None
                 or self.component_license_inventory is not None
             ):
@@ -1306,6 +1685,18 @@ class ArtifactEvidence:
                             raise ValueError(
                                 "native runtime path-resolution wheel binding is invalid"
                             )
+            if self.native_runtime_transitive_closure is not None:
+                if self.native_runtime_path_resolution is None:
+                    raise ValueError(
+                        "native runtime closure requires direct path-resolution evidence"
+                    )
+                _validate_runtime_closure_evidence_binding(
+                    closure=self.native_runtime_transitive_closure,
+                    runtime=self.native_runtime_inventory,
+                    path_resolution=self.native_runtime_path_resolution,
+                    wheel_entries=self.wheel_entries,
+                    target_triple=self.target_triple,
+                )
             if self.source_transformation_inventory is not None:
                 if type(self.source_transformation_inventory) is not SourceTransformationInventory:
                     raise TypeError("source transformation inventory model is invalid")
@@ -1426,6 +1817,10 @@ class ArtifactEvidence:
                     data["native_runtime_path_resolution"] = (
                         self.native_runtime_path_resolution.to_dict()
                     )
+                if self.native_runtime_transitive_closure is not None:
+                    data["native_runtime_transitive_closure"] = (
+                        self.native_runtime_transitive_closure.to_dict()
+                    )
                 if self.source_transformation_inventory is not None:
                     data["source_transformation_inventory"] = (
                         self.source_transformation_inventory.to_dict()
@@ -1435,6 +1830,84 @@ class ArtifactEvidence:
                         self.component_license_inventory.to_dict()
                     )
         return data
+
+
+def _validate_runtime_closure_evidence_binding(
+    *,
+    closure: NativeRuntimeTransitiveClosureInventory,
+    runtime: NativeRuntimeInventory,
+    path_resolution: NativeRuntimePathResolutionInventory,
+    wheel_entries: tuple[WheelEntryRef, ...],
+    target_triple: str,
+) -> None:
+    """Cross-bind the C6.9 graph to C6.4 bytes and C6.8 root edges."""
+    if type(closure) is not NativeRuntimeTransitiveClosureInventory:
+        raise TypeError("native runtime closure model is invalid")
+    if (
+        closure.format != runtime.format
+        or closure.architecture != runtime.architecture
+        or closure.subject_wheel_member != runtime.wheel_member
+        or closure.subject_sha256 != runtime.subject_sha256
+        or closure.subject_size != runtime.subject_size
+    ):
+        raise ValueError("native runtime closure subject must exactly bind runtime inventory")
+    if (
+        path_resolution.subject_wheel_member != closure.subject_wheel_member
+        or path_resolution.subject_sha256 != closure.subject_sha256
+    ):
+        raise ValueError("native runtime closure subject must bind path resolution")
+    wheel_nodes = tuple(node for node in closure.nodes if node.kind == "wheel-member")
+    wheel_members = tuple(node.wheel_member for node in wheel_nodes)
+    if len(wheel_members) != len(set(wheel_members)):
+        raise ValueError("native runtime closure wheel members must be unique")
+    for node in wheel_nodes:
+        matches = tuple(
+            entry
+            for entry in wheel_entries
+            if entry.name == node.wheel_member
+            and entry.sha256 == node.sha256
+            and entry.uncompressed_size == node.size
+        )
+        if len(matches) != 1:
+            raise ValueError("native runtime closure wheel binding is invalid")
+
+    nodes_by_ref = {node.node_ref: node for node in closure.nodes}
+    root_edges = tuple(
+        edge for edge in closure.edges if edge.source_ref == closure.root_node_ref
+    )
+    if len(root_edges) != len(path_resolution.records):
+        raise ValueError("native runtime closure root edge coverage is incomplete")
+    edges_by_name = {edge.dependency_name: edge for edge in root_edges}
+    if len(edges_by_name) != len(root_edges):
+        raise ValueError("native runtime closure root edges are ambiguous")
+    for record in path_resolution.records:
+        edge = edges_by_name.get(record.dependency_name)
+        if edge is None or edge.mechanism != record.mechanism:
+            raise ValueError("native runtime closure root edge binding is invalid")
+        target = nodes_by_ref[edge.target_ref]
+        if record.resolution == "wheel-member":
+            if (
+                target.kind != "wheel-member"
+                or target.wheel_member != record.wheel_member
+                or target.sha256 != record.sha256
+                or target.size != record.size
+            ):
+                raise ValueError("native runtime closure root wheel edge is inconsistent")
+        elif target.kind != "system-logical" or target.name != record.dependency_name:
+            raise ValueError("native runtime closure root system edge is inconsistent")
+    if closure.format == "elf":
+        # Imported lazily to avoid the build layer's evidence-model import
+        # cycle while still enforcing the same target-specific C6.4 allowlist.
+        from rextio.build.runtime_inventory import _allowed_elf_dependencies
+
+        allowed_system_names = _allowed_elf_dependencies(target_triple)
+        if any(
+            node.kind == "system-logical" and node.name not in allowed_system_names
+            for node in closure.nodes
+        ):
+            raise ValueError(
+                "native runtime closure ELF system leaf is outside target allowlist"
+            )
 
 
 def validate_logical_reference(reference: str) -> None:
@@ -3658,6 +4131,9 @@ def build_intoto_provenance_document(
     target_triple: str,
     native_runtime_inventory: NativeRuntimeInventory | None = None,
     native_runtime_path_resolution: NativeRuntimePathResolutionInventory | None = None,
+    native_runtime_transitive_closure: (
+        NativeRuntimeTransitiveClosureInventory | None
+    ) = None,
     source_transformation_inventory: SourceTransformationInventory | None = None,
     component_license_inventory: ComponentLicenseInventory | None = None,
 ) -> dict[str, object]:
@@ -3717,6 +4193,10 @@ def build_intoto_provenance_document(
             native_runtime_path_resolution is not None
         ),
         "native_runtime_path_resolution_complete": False,
+        "native_runtime_transitive_closure_observed": (
+            native_runtime_transitive_closure is not None
+        ),
+        "native_runtime_transitive_closure_complete": False,
         "source_transformation_inventory_observed": (
             source_transformation_inventory is not None
         ),
@@ -3732,6 +4212,9 @@ def build_intoto_provenance_document(
         "rextio:native_runtime_path_resolution_observed": (
             native_runtime_path_resolution is not None
         ),
+        "rextio:native_runtime_transitive_closure_observed": (
+            native_runtime_transitive_closure is not None
+        ),
         "rextio:component_license_inventory_observed": (
             component_license_inventory is not None
         )
@@ -3741,6 +4224,10 @@ def build_intoto_provenance_document(
     if native_runtime_path_resolution is not None:
         run_metadata["rextio:native_runtime_path_resolution"] = (
             native_runtime_path_resolution.to_dict()
+        )
+    if native_runtime_transitive_closure is not None:
+        run_metadata["rextio:native_runtime_transitive_closure"] = (
+            native_runtime_transitive_closure.to_dict()
         )
     if source_transformation_inventory is not None:
         run_metadata["rextio:source_transformation_inventory"] = (
@@ -3884,6 +4371,14 @@ __all__ = [
     "MAX_JSON_DEPTH",
     "MAX_RUNTIME_DEPS",
     "MAX_RUNTIME_DEP_NAME_CHARS",
+    "MAX_RUNTIME_CLOSURE_CANDIDATE_ATTEMPTS",
+    "MAX_RUNTIME_CLOSURE_CANDIDATES_PER_DEPENDENCY",
+    "MAX_RUNTIME_CLOSURE_DEPTH",
+    "MAX_RUNTIME_CLOSURE_EDGES",
+    "MAX_RUNTIME_CLOSURE_INSPECTOR_INVOCATIONS",
+    "MAX_RUNTIME_CLOSURE_INSPECTOR_OUTPUT_BYTES",
+    "MAX_RUNTIME_CLOSURE_INVENTORY_CHARS",
+    "MAX_RUNTIME_CLOSURE_NODES",
     "MAX_RUNTIME_INSPECTOR_OUTPUT_BYTES",
     "MAX_RUNTIME_PATH_RESOLUTION_INVENTORY_CHARS",
     "MAX_SIDECAR_BYTES",
@@ -3899,9 +4394,15 @@ __all__ = [
     "NativeRuntimeInventory",
     "NativeRuntimePathResolutionInventory",
     "NativeRuntimePathResolutionRecord",
+    "NativeRuntimeTransitiveClosureEdge",
+    "NativeRuntimeTransitiveClosureInventory",
+    "NativeRuntimeTransitiveClosureNode",
     "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND",
     "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION",
     "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE",
+    "NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_KIND",
+    "NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCHEMA_VERSION",
+    "NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCOPE",
     "REASON_CARGO_GRAPH_INVALID",
     "REASON_CARGO_LOCK_MISSING",
     "REASON_CARGO_METADATA_FAILED",

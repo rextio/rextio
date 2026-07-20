@@ -53,5 +53,9 @@ from __future__ import annotations
 # Contract 2.13.0 adds C6.8's exact one-hop native runtime path-resolution
 # observation and policy-version-4 check. It observes only packaged candidates
 # and system logical leaves; loader selection and transitive closure stay open.
+# Contract 2.14.0 adds C6.9's deterministic, cycle-safe, strictly bounded
+# static graph across recursively inspected packaged native members and logical
+# system leaves plus policy-version-5 observation. Complete transitive closure,
+# actual loader selection, runtime dlopen, and authorization remain blocked.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.13.0"
+TOOLING_CONTRACT_VERSION = "2.14.0"

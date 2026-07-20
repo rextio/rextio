@@ -37,8 +37,14 @@ decision. C6.8 adds an exact, observation-only one-hop path record for every
 direct native dependency: trusted system names remain logical leaves, while
 contained Mach-O `@loader_path`/self-anchored `@rpath` and ELF `$ORIGIN`
 RPATH/RUNPATH candidates must bind one exact regular non-symlink wheel member.
-It does not claim actual loader selection or transitive closure. This branch
-emits additive tooling contract **2.13.0** and plugin API **1.4**
+It does not claim actual loader selection or transitive closure. C6.9 builds on
+that root with a deterministic, cycle-safe graph over recursively inspected
+packaged Mach-O/ELF members and logical system leaves. Every packaged node is
+rebound to exact wheel bytes and inspected through an immutable private
+snapshot under closed node/edge/depth/candidate/inspector/output/size bounds.
+The graph remains observation-only and explicitly incomplete: it does not use
+ambient loader state, choose the actual loader result, hash system libraries,
+or observe `dlopen`. This branch emits additive tooling contract **2.14.0** and plugin API **1.4**
 while keeping package version
 **0.1.4**; those changes are not yet a tagged or PyPI release. Published 0.1.4
 remains the plugin API **1.3** / contract **2.2.0** producer. See
@@ -162,7 +168,12 @@ dependency to one packaged wheel member or a system logical leaf. The packaged
 path observation uses fixed `otool -l` / `readelf -W -d` inspection, only
 contained loader/ORIGIN-anchored candidates, exact wheel hash/size binding, and
 pinned non-symlink file receipts. It does not model actual loader-environment
-selection, system library bytes, transitive dependencies, or `dlopen`. Its gate remains
+selection, system library bytes, transitive dependencies, or `dlopen`. C6.9 may
+then recursively inspect only those exact packaged members, preserving cycles
+as canonical graph edges while inspecting each packaged node at most once.
+Strict global and per-dependency bounds, exact wheel/hash/size rebinding,
+case/hardlink alias rejection, Linux system-SONAME shadow checks, and final
+receipt verification fail closed by omitting only C6.9. Its gate remains
 `distribution_authorized: false`,
 `complete: false`, and `signed: false`; it is not a release authorization or a
 full supply-chain attestation. The default `best-effort` policy preserves the
@@ -179,12 +190,12 @@ Windows, runtime-bearing plugins, signatures, transitive
 closure, and runtime `dlopen` discovery remain outside this preview.
 
 For that same in-scope wheel path, `build.json` also includes
-`artifact_distribution_authorization`. This C6.5-C6.8 policy-version-4 record is derived from the
+`artifact_distribution_authorization`. This C6.5-C6.9 policy-version-5 record is derived from the
 final `artifact_evidence` record after required-mode revalidation/transaction
 handling. It always reports `status: "blocked"`,
 `authority: "readiness-assessment-only"`, and false values for `complete`,
 `signed`, and `distribution_authorized`. Preview-ready evidence with a valid
-C6.6-C6.8 inventories satisfy only seven bounded observation checks after closed-model
+C6.6-C6.9 inventories satisfy only eight bounded observation checks after closed-model
 reconstruction and exact source/generated `EvidenceFileRef` cross-binding; it
 does not reopen artifacts, re-inspect output bytes, or independently re-derive
 the recorded qualname, range, or semantic-AST hash from source, `BuildPlan`, or
@@ -230,7 +241,7 @@ over-budget values fail closed. Missing inventory makes only
 `component-license-inventory-unavailable` blocker. Malformed, reordered,
 duplicated, stale, or non-exactly-bound records use the all-`not-evaluated`
 readiness-unavailable shape. If provenance still exceeds its ceiling after the
-newer C6.8 observation is omitted, C6.7 is omitted next so C6.6 and all earlier evidence/gate results are preserved whenever
+newer C6.9 and C6.8 observations are omitted, C6.7 is omitted next so C6.6 and all earlier evidence/gate results are preserved whenever
 possible. `component-license-policy-complete` remains blocked: this is not SPDX
 validation, a license allow/deny lock, legal approval, or distribution authority.
 
@@ -243,11 +254,23 @@ C6.8. The readiness report then marks
 `direct-native-path-resolution-bound` unavailable and adds
 `native-runtime-path-resolution-inventory-unavailable`; the ordinary build and
 C6.3 gate are unchanged. A present malformed or format-crossed record fails the
-readiness reconstruction closed. C6.8 is omitted before C6.7 and C6.6 at the
-provenance ceiling. Actual loader precedence/environment, transitive closure
-(planned C6.9), system-library bytes, runtime `dlopen`, Windows PE, WASM,
+readiness reconstruction closed. C6.9 is omitted first, then C6.8, C6.7, and
+C6.6 at the provenance ceiling. Actual loader precedence/environment, complete
+transitive closure beyond the bounded C6.9 graph, system-library bytes, runtime `dlopen`, Windows PE, WASM,
 runtime-bearing plugins, signatures, and distribution authorization remain out
 of scope.
+
+The C6.9 `native_runtime_transitive_closure` field is deliberately named for
+the graph it observes, not a completeness claim. Its fixed fields keep
+`complete: false`, `transitive_closure_complete: false`, and
+`actual_loader_selection: false`. Missing, ambiguous, noncanonical, aliased,
+tampered, unsupported, malformed, deadline-exhausted, or over-budget recursive
+observations make only `bounded-static-native-runtime-graph-bound`
+`unavailable` with the fixed
+`bounded-static-native-runtime-graph-unavailable` blocker. C6.8 remains when a
+C6.9-only check fails; a C6.8 failure necessarily removes both dependent
+observations. The readiness check
+`native-runtime-transitive-closure-complete` remains blocked.
 
 ## Requirements
 
