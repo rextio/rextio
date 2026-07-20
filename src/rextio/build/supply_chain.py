@@ -1,4 +1,4 @@
-"""C6.2/C6.4/C6.6-C6.9 evidence emission for host-extension+cpython wheels.
+"""C6.2/C6.4/C6.6-C6.10 evidence emission for host-extension+cpython wheels.
 
 In-scope builds always emit an ``artifact_evidence`` record with status
 ``preview-ready`` or ``unavailable`` (authority ``evidence-only``). Evidence
@@ -76,6 +76,9 @@ from rextio.build.runtime_resolution import (
 )
 from rextio.build.transformation_inventory import (
     collect_source_transformation_inventory,
+)
+from rextio.build.transformation_verification import (
+    collect_scoped_source_transformation_verification,
 )
 from rextio.build.subprocess_utils import DEFAULT_BUILD_TIMEOUT_SECONDS
 from rextio.build.wheel_builder import WheelBuildResult
@@ -444,6 +447,7 @@ def emit_host_extension_wheel_evidence(
     wheel_build: WheelBuildResult,
     native_build: NativeBuildResult,
     input_snapshot: EvidenceInputSnapshot | None,
+    embedding_enabled: bool = False,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
     output_claim: Callable[
@@ -487,6 +491,7 @@ def emit_host_extension_wheel_evidence(
             sbom_path=sbom_path,
             provenance_path=provenance_path,
             input_snapshot=input_snapshot,
+            embedding_enabled=embedding_enabled,
             native_build=native_build,
             timeout=timeout,
             toolchain=toolchain,
@@ -513,6 +518,7 @@ def _emit_preview_ready(
     sbom_path: Path,
     provenance_path: Path,
     input_snapshot: EvidenceInputSnapshot,
+    embedding_enabled: bool,
     native_build: NativeBuildResult,
     timeout: float,
     toolchain: ToolchainConfig | None,
@@ -648,6 +654,17 @@ def _emit_preview_ready(
         plan=plan,
         input_snapshot=input_snapshot,
     )
+    transformation_verification = (
+        collect_scoped_source_transformation_verification(
+            project_root=project_root,
+            plan=plan,
+            input_snapshot=input_snapshot,
+            transformation_inventory=transformation_inventory,
+            embedding_enabled=embedding_enabled,
+        )
+        if transformation_inventory is not None
+        else None
+    )
     component_license_inventory = collect_component_license_inventory(
         inventory.packages
     )
@@ -682,12 +699,30 @@ def _emit_preview_ready(
         native_runtime_path_resolution=runtime_path_resolution,
         native_runtime_transitive_closure=runtime_transitive_closure,
         source_transformation_inventory=transformation_inventory,
+        source_transformation_verification=transformation_verification,
         component_license_inventory=component_license_inventory,
     )
     provenance_bytes = pretty_json_bytes(provenance_document)
-    if runtime_transitive_closure is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
-        # C6.9 is the newest additive observation and therefore the first
+    if transformation_verification is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
+        # C6.10 is the newest additive observation and therefore the first
         # deterministic omission at the closed provenance sidecar ceiling.
+        transformation_verification = None
+        provenance_document = build_intoto_provenance_document(
+            subject=subject,
+            sbom=sbom_ref,
+            inputs=inputs,
+            cargo_packages=inventory.packages,
+            target_triple=profile.target_triple,
+            native_runtime_inventory=runtime_inventory,
+            native_runtime_path_resolution=runtime_path_resolution,
+            native_runtime_transitive_closure=runtime_transitive_closure,
+            source_transformation_inventory=transformation_inventory,
+            source_transformation_verification=None,
+            component_license_inventory=component_license_inventory,
+        )
+        provenance_bytes = pretty_json_bytes(provenance_document)
+    if runtime_transitive_closure is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
+        # Once C6.10 is absent, C6.9 is the next observation omitted.
         runtime_transitive_closure = None
         runtime_closure_observation = None
         provenance_document = build_intoto_provenance_document(
@@ -700,6 +735,7 @@ def _emit_preview_ready(
             native_runtime_path_resolution=runtime_path_resolution,
             native_runtime_transitive_closure=None,
             source_transformation_inventory=transformation_inventory,
+            source_transformation_verification=transformation_verification,
             component_license_inventory=component_license_inventory,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
@@ -717,6 +753,7 @@ def _emit_preview_ready(
             native_runtime_path_resolution=None,
             native_runtime_transitive_closure=None,
             source_transformation_inventory=transformation_inventory,
+            source_transformation_verification=transformation_verification,
             component_license_inventory=component_license_inventory,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
@@ -738,6 +775,7 @@ def _emit_preview_ready(
             native_runtime_path_resolution=None,
             native_runtime_transitive_closure=None,
             source_transformation_inventory=transformation_inventory,
+            source_transformation_verification=transformation_verification,
             component_license_inventory=None,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
@@ -751,6 +789,7 @@ def _emit_preview_ready(
         # inventory and rebuild. A baseline oversize retains the existing
         # evidence-unavailable behavior through SidecarArtifact validation.
         transformation_inventory = None
+        transformation_verification = None
         provenance_document = build_intoto_provenance_document(
             subject=subject,
             sbom=sbom_ref,
@@ -761,6 +800,7 @@ def _emit_preview_ready(
             native_runtime_path_resolution=None,
             native_runtime_transitive_closure=None,
             source_transformation_inventory=None,
+            source_transformation_verification=None,
             component_license_inventory=None,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
@@ -830,6 +870,7 @@ def _emit_preview_ready(
             native_runtime_path_resolution=runtime_path_resolution,
             native_runtime_transitive_closure=None,
             source_transformation_inventory=transformation_inventory,
+            source_transformation_verification=transformation_verification,
             component_license_inventory=component_license_inventory,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
@@ -859,6 +900,7 @@ def _emit_preview_ready(
             native_runtime_path_resolution=None,
             native_runtime_transitive_closure=None,
             source_transformation_inventory=transformation_inventory,
+            source_transformation_verification=transformation_verification,
             component_license_inventory=component_license_inventory,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
@@ -900,6 +942,7 @@ def _emit_preview_ready(
         native_runtime_path_resolution=runtime_path_resolution,
         native_runtime_transitive_closure=runtime_transitive_closure,
         source_transformation_inventory=transformation_inventory,
+        source_transformation_verification=transformation_verification,
         component_license_inventory=component_license_inventory,
         limitations=DEFAULT_LIMITATIONS,
     )

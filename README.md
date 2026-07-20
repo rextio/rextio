@@ -44,7 +44,11 @@ rebound to exact wheel bytes and inspected through an immutable private
 snapshot under closed node/edge/depth/candidate/inspector/output/size bounds.
 The graph remains observation-only and explicitly incomplete: it does not use
 ambient loader state, choose the actual loader result, hash system libraries,
-or observe `dlopen`. This branch emits additive tooling contract **2.14.0** and plugin API **1.4**
+or observe `dlopen`. C6.10 adds a separate narrow replay receipt for nonempty,
+project-owned, plugin-free PyO3 function closures. It rereads source securely,
+rederives AST identities and UTF-8 ranges, relowers the complete accepted set,
+and requires byte-identical full `src/lib.rs` regeneration. This branch emits
+additive tooling contract **2.15.0** and plugin API **1.4**
 while keeping package version
 **0.1.4**; those changes are not yet a tagged or PyPI release. Published 0.1.4
 remains the plugin API **1.3** / contract **2.2.0** producer. See
@@ -190,16 +194,15 @@ Windows, runtime-bearing plugins, signatures, transitive
 closure, and runtime `dlopen` discovery remain outside this preview.
 
 For that same in-scope wheel path, `build.json` also includes
-`artifact_distribution_authorization`. This C6.5-C6.9 policy-version-5 record is derived from the
+`artifact_distribution_authorization`. This C6.5-C6.10 policy-version-6 record is derived from the
 final `artifact_evidence` record after required-mode revalidation/transaction
 handling. It always reports `status: "blocked"`,
 `authority: "readiness-assessment-only"`, and false values for `complete`,
-`signed`, and `distribution_authorized`. Preview-ready evidence with a valid
-C6.6-C6.9 inventories satisfy only eight bounded observation checks after closed-model
-reconstruction and exact source/generated `EvidenceFileRef` cross-binding; it
-does not reopen artifacts, re-inspect output bytes, or independently re-derive
-the recorded qualname, range, or semantic-AST hash from source, `BuildPlan`, or
-the unsigned provenance. License
+`signed`, and `distribution_authorized`. Preview-ready evidence can satisfy
+nine bounded observation checks after closed-model reconstruction and exact
+cross-binding. The ninth check means the in-process C6.10 collector already
+replayed one narrowly supported source/AST/IR/codegen closure; the later report
+does not itself reopen source or generated artifacts. License
 policy, runtime path/transitive closure, runtime dynamic loading, complete build
 inputs, complete source-transformation provenance, builder identity, reproducibility,
 signatures, and complete SBOM composition remain selected current-scope fixed
@@ -228,6 +231,19 @@ structurally valid changed observation value is not independently detected by
 this report-only evaluator and still cannot become signed, complete, or
 distribution-authorizing.
 
+The C6.10 `source_transformation_verification` is a sibling observation, not a
+replacement for C6.6. Its scope is exactly
+`project-functions-pyo3-plugin-free-v1`: project-owned module-level direct
+native functions, CPython/PyO3 host-extension wheel, no plugins, embedding,
+native top-level, runtime shim, delegated fallback, or Python boundary call.
+It binds the canonical C6.6 inventory, exact project-source set, canonical
+ModuleIR, complete accepted qualnames, and captured/regenerated Rust digest and
+size. Any scope or replay mismatch omits only this receipt and reports
+`scoped-source-transformation-verified: unavailable`; C6.6 and C6.3 remain
+independent. `complete_for_scope: true` never changes
+`global_provenance_complete: false`, the blocked
+`source-transformation-provenance-complete` check, or distribution authority.
+
 The C6.7 `component_license_inventory` is likewise deterministic, immutable,
 and observation-only. Its records exactly cover the reachable
 `cargo_packages` set in canonical `bom_ref` order and bind only `bom_ref`,
@@ -241,7 +257,7 @@ over-budget values fail closed. Missing inventory makes only
 `component-license-inventory-unavailable` blocker. Malformed, reordered,
 duplicated, stale, or non-exactly-bound records use the all-`not-evaluated`
 readiness-unavailable shape. If provenance still exceeds its ceiling after the
-newer C6.9 and C6.8 observations are omitted, C6.7 is omitted next so C6.6 and all earlier evidence/gate results are preserved whenever
+newer C6.10, C6.9, and C6.8 observations are omitted, C6.7 is omitted next so C6.6 and all earlier evidence/gate results are preserved whenever
 possible. `component-license-policy-complete` remains blocked: this is not SPDX
 validation, a license allow/deny lock, legal approval, or distribution authority.
 
@@ -254,8 +270,8 @@ C6.8. The readiness report then marks
 `direct-native-path-resolution-bound` unavailable and adds
 `native-runtime-path-resolution-inventory-unavailable`; the ordinary build and
 C6.3 gate are unchanged. A present malformed or format-crossed record fails the
-readiness reconstruction closed. C6.9 is omitted first, then C6.8, C6.7, and
-C6.6 at the provenance ceiling. Actual loader precedence/environment, complete
+readiness reconstruction closed. C6.10 is omitted first, then C6.9, C6.8,
+C6.7, and C6.6 at the provenance ceiling. Actual loader precedence/environment, complete
 transitive closure beyond the bounded C6.9 graph, system-library bytes, runtime `dlopen`, Windows PE, WASM,
 runtime-bearing plugins, signatures, and distribution authorization remain out
 of scope.

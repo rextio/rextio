@@ -3,7 +3,7 @@
 Status: **draft** (experimental tier). The current published producer is core
 0.1.4, released on 2026-07-18 with `contract_version` `2.2.0` and plugin API
 **1.3**. The Release Train C branch contains the additive, **unreleased**
-`2.14.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
+`2.15.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
 contract. Package version on the branch remains **0.1.4**.
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
@@ -31,7 +31,7 @@ Both JSON surfaces carry a top-level field. The published 0.1.4 producer emits:
 The unreleased Train C branch emits:
 
 ```json
-{ "contract_version": "2.14.0" }
+{ "contract_version": "2.15.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -57,7 +57,8 @@ to generic guidance when the major is outside what they support.
 | `2.11.0` | **Unreleased additive C6.6 source-transformation observation** (Train C intermediate). Preview-ready evidence may add an immutable bounded `source_transformation_inventory` binding accepted project-owned native functions to source/hash/range/semantic-AST-hash, exact generated Rust input, closed generator/backend id, and sorted plugin ids. Collection cross-checks exact ordered value-level coverage against the analyzer list used by code generation and caps records, plugin references/ids, and total deterministic inventory characters. Authorization policy version 2 adds `source-transformation-inventory-bound`; valid inventory may satisfy only that structural/reference-binding observation while complete transformation provenance remains blocked. Missing or over-budget inventory uses one dedicated fixed unavailable blocker; malformed, noncanonical, or exact-reference-binding-breaking models retain the total all-`not-evaluated` readiness-unavailable shape. Build, C6.3 gate, transaction, and publication outcomes are unchanged. |
 | `2.12.0` | **Unreleased additive C6.7 component-license observation** (Train C intermediate). Preview-ready evidence may add an immutable bounded `component_license_inventory` exactly covering every reachable Cargo package, including the generated path root, in canonical `bom_ref` order. Null/whitespace-only Cargo metadata values are `missing`; every other bounded value is preserved verbatim as `declared-unvalidated`. This is not SPDX parsing, normalization, classification, owner policy, legal approval, or authorization. Authorization policy version 3 adds `component-license-inventory-bound`; missing inventory affects only that observation, while malformed/noncanonical/non-exact binding fails the whole readiness assessment closed. Provenance records presence and omits C6.7 first at its ceiling so C6.6 is retained whenever possible. Build and C6.3 semantics remain unchanged; `component-license-policy-complete` remains blocked. |
 | `2.13.0` | **Unreleased additive C6.8 one-hop native path-resolution observation** (Train C intermediate). Preview-ready evidence may add immutable `native_runtime_path_resolution` schema 1, exactly covering C6.4 direct dependency identities. Trusted system names are logical leaves; contained Mach-O loader-path/self-rpath and ELF ORIGIN RPATH/RUNPATH candidates bind one exact non-symlink wheel member by logical name, SHA-256, and size. Policy version 4 adds `direct-native-path-resolution-bound` and its dedicated unavailable blocker. Collection is optional/noninterfering and C6.8 is omitted before C6.7/C6.6 at the provenance ceiling. Actual loader selection/environment, transitive closure, system-library bytes, `dlopen`, Windows PE, plugin runtime closure, signatures, and authorization remain absent. |
-| `2.14.0` | **Unreleased additive C6.9 bounded static native-runtime graph observation** (current Train C producer). Preview-ready evidence may add immutable `native_runtime_transitive_closure` schema 1 rooted in the exact C6.4 subject and C6.8 direct edges. Exact packaged Mach-O/ELF wheel members are recursively inspected under closed path semantics, while trusted system names remain byte-unbound terminal leaves. The deterministic cycle-safe graph is bounded by node, edge, depth, candidate, inspector, output, deadline, and serialized-size limits and explicitly keeps `transitive_closure_complete`, actual loader selection, and runtime `dlopen` false. Policy version 5 adds `bounded-static-native-runtime-graph-bound` plus a dedicated unavailable blocker. C6.9-only failure retains C6.8; C6.8 failure necessarily omits both. The provenance-ceiling omission order is C6.9, C6.8, C6.7, then C6.6. Complete loader-faithful closure, system-library bytes, Windows PE, signatures, and authorization remain absent. |
+| `2.14.0` | **Unreleased additive C6.9 bounded static native-runtime graph observation** (Train C intermediate). Preview-ready evidence may add immutable `native_runtime_transitive_closure` schema 1 rooted in the exact C6.4 subject and C6.8 direct edges. Exact packaged Mach-O/ELF wheel members are recursively inspected under closed path semantics, while trusted system names remain byte-unbound terminal leaves. The deterministic cycle-safe graph is bounded by node, edge, depth, candidate, inspector, output, deadline, and serialized-size limits and explicitly keeps `transitive_closure_complete`, actual loader selection, and runtime `dlopen` false. Policy version 5 adds `bounded-static-native-runtime-graph-bound` plus a dedicated unavailable blocker. C6.9-only failure retains C6.8; C6.8 failure necessarily omits both. At that contract's provenance ceiling the omission order was C6.9, C6.8, C6.7, then C6.6. Complete loader-faithful closure, system-library bytes, Windows PE, signatures, and authorization remain absent. |
+| `2.15.0` | **Unreleased additive C6.10 scoped source-transformation replay verification** (current Train C producer). Preview-ready evidence may add immutable `source_transformation_verification` schema 1 for the fixed `project-functions-pyo3-plugin-free-v1` scope. The collector securely rereads the exact project-source input set, rederives function AST identities/ranges, reanalyzes and relowers the complete accepted plugin-free PyO3 closure, and requires byte-identical full `src/lib.rs` regeneration. The receipt binds the canonical C6.6 inventory, source-input set, ModuleIR, qualnames, and captured/regenerated Rust. Policy version 6 adds `scoped-source-transformation-verified` plus a dedicated unavailable blocker. Scope/replay failure omits only C6.10; at the provenance ceiling C6.10 is omitted before C6.9/C6.8/C6.7/C6.6. `complete_for_scope` never makes global transformation provenance complete, signed, or distribution-authorizing. |
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.
@@ -881,7 +882,7 @@ the post-rename inspection-failure path.
 #### `artifact_evidence` item shapes and fixed reason enum
 
 Top-level `build.json` and `generate.json` carry additive
-`contract_version` (currently `"2.14.0"`). Item fields under
+`contract_version` (currently `"2.15.0"`). Item fields under
 `artifact_evidence` when `status` is `preview-ready`:
 
 | Field | Shape |
@@ -897,6 +898,7 @@ Top-level `build.json` and `generate.json` carry additive
 | `native_runtime_path_resolution` | Contract 2.13.0 only: immutable observation-only `{kind, schema_version, scope, authority, complete, subject_wheel_member, subject_sha256, record_count, records}`. The canonical subject wheel member and SHA-256 exactly bind the C6.4 native runtime subject. Records exactly cover direct dependency identities as `{dependency_bom_ref, dependency_name, dependency_origin, resolution, mechanism, wheel_member, sha256, size}`; wheel fields are all exact/non-null only for `wheel-member`, otherwise all null. |
 | `native_runtime_transitive_closure` | Contract 2.14.0 only: immutable observation-only `{kind, schema_version, scope, authority, complete, bounded_graph_observed, transitive_closure_complete, actual_loader_selection, runtime_dlopen, format, architecture, subject_wheel_member, subject_sha256, subject_size, root_node_ref, node_count, edge_count, max_depth_observed, limits, nodes, edges}`. It is a deterministic bounded static graph rooted in C6.4/C6.8, not a complete loader-faithful closure. Wheel-member nodes carry exact member/hash/size bytes; system-logical terminal leaves carry no byte identity. |
 | `source_transformation_inventory` | Contract 2.11.0 only: immutable observation-only `{kind, schema_version, scope, authority, complete, record_count, records}`. Each record binds `{source_path, source_sha256, function_module, function_qualname, source_range, semantic_ast_sha256, generated_rust, generator_backend, plugin_ids}`; `generated_rust` is the exact declared `generated-rust-input` ref for `src/lib.rs`. |
+| `source_transformation_verification` | Contract 2.15.0 only: immutable observation-only `{kind, schema_version, scope, authority, complete, complete_for_scope, global_provenance_complete, scoped_verification, plugin_free, full_accepted_function_closure, source_transformation_inventory_sha256, source_input_set_sha256, module_ir_sha256, function_count, function_qualnames, source_input_count, source_inputs, generated_rust, regenerated_rust_sha256, regenerated_rust_size, generator_backend}`. The fixed scope is `project-functions-pyo3-plugin-free-v1`; exact replay completeness does not imply global provenance completeness. |
 | `component_license_inventory` | Contract 2.12.0 only: immutable observation-only `{kind, schema_version, scope, authority, complete, record_count, records}`. Each record exactly binds one reachable Cargo component as `{bom_ref, name, version, kind, license_observed, license_observation}` in canonical `bom_ref` order. `license_observation` is exactly `declared-unvalidated | missing`; no SPDX or legal/policy meaning is inferred. |
 
 When `status` is `unavailable`, `reason` is exactly one member of the fixed
@@ -1265,8 +1267,8 @@ Unsigned provenance records
 `component_license_inventory_observed` and
 `runDetails.metadata.rextio:component_license_inventory_observed`; when
 present, it also carries the exact inventory under
-`runDetails.metadata.rextio:component_license_inventory`. Under current 2.14.0,
-the provenance ceiling first omits C6.9, then C6.8. If still oversized, C6.7
+`runDetails.metadata.rextio:component_license_inventory`. Under current 2.15.0,
+the provenance ceiling first omits C6.10, then C6.9 and C6.8. If still oversized, C6.7
 is omitted next and the document is rebuilt while retaining C6.6. Only if it
 remains oversized does the existing C6.6 omission rule apply.
 
@@ -1356,12 +1358,12 @@ inode/device values, and credentials never enter evidence or sidecars.
 
 Unsupported, unavailable, malformed, unsafe, over-bound, or changed C6.8
 collection omits C6.8 and its dependent C6.9 graph while retaining C6.7/C6.6
-and all earlier evidence. Under current policy version 5 both
+and all earlier evidence. Under current policy version 6 both
 `direct-native-path-resolution-bound` and
 `bounded-static-native-runtime-graph-bound` become unavailable, with their two
 dedicated blockers. A malformed present model still produces the total
 all-`not-evaluated`, sole `readiness-assessment-unavailable` shape. At the
-provenance ceiling the omission order is C6.9, C6.8, C6.7, then C6.6. The
+provenance ceiling the omission order is C6.10, C6.9, C6.8, C6.7, then C6.6. The
 independent `native-runtime-resolution-complete`, complete transitive-closure,
 and dynamic-loading checks remain blocked. Actual loader selection/environment,
 system library bytes, runtime `dlopen`, Windows PE, WASM, runtime-bearing
@@ -1483,7 +1485,7 @@ C6.8 remains present and appends
 `bounded-static-native-runtime-graph-unavailable`; malformed present graph
 models use the all-`not-evaluated`, sole `readiness-assessment-unavailable`
 shape. Provenance records both observation presence and the exact graph when
-present; its ceiling omits C6.9 first, then C6.8, C6.7, and C6.6.
+present; the current ceiling omits C6.10 first, then C6.9, C6.8, C6.7, and C6.6.
 
 Because each C6.9 private snapshot directory is created and removed below the
 generated Python root, that safe lifecycle changes directory stamps captured
@@ -1504,7 +1506,102 @@ system-library bytes, weak/optional or dynamically loaded dependencies,
 runtime `dlopen`, Windows PE, runtime-bearing plugins, WASM, signatures, or a
 complete loader-faithful closure. It grants no distribution authority.
 
-### Hard distribution-authorization readiness (contracts 2.10.0-2.14.0)
+### Scoped source-transformation replay verification (contract 2.15.0)
+
+C6.10 keeps the C6.2-C6.9 artifact scope, ordinary build result, and C6.3
+required-evidence gate unchanged. Its optional
+`artifact_evidence.source_transformation_verification` is a sibling of, and
+requires, the exact C6.6 inventory. The sole initial scope is
+`project-functions-pyo3-plugin-free-v1`: one nonempty complete accepted closure
+of project-owned module-level direct-native functions for an ordinary
+CPython/PyO3 host-extension wheel. Plugins, embedded helpers, native top-level
+segments, runtime-semantics shims, delegated fallback calls, Python boundary
+calls, external source, additional artifact profiles, Nuitka, WASM, and Windows
+are excluded.
+
+The fixed envelope is:
+
+```json
+{
+  "kind": "source-transformation-verification",
+  "schema_version": 1,
+  "scope": "project-functions-pyo3-plugin-free-v1",
+  "authority": "observation-only",
+  "complete": false,
+  "complete_for_scope": true,
+  "global_provenance_complete": false,
+  "scoped_verification": true,
+  "plugin_free": true,
+  "full_accepted_function_closure": true,
+  "source_transformation_inventory_sha256": "…",
+  "source_input_set_sha256": "…",
+  "module_ir_sha256": "…",
+  "function_count": 1,
+  "function_qualnames": ["demo.math.add"],
+  "source_input_count": 1,
+  "source_inputs": [
+    {
+      "logical_path": "src/demo/math.py",
+      "sha256": "…",
+      "size": 42,
+      "role": "project-python-source"
+    }
+  ],
+  "generated_rust": {
+    "logical_path": ".rextio/generated/rust/src/lib.rs",
+    "sha256": "…",
+    "size": 1234,
+    "role": "generated-rust-input"
+  },
+  "regenerated_rust_sha256": "…",
+  "regenerated_rust_size": 1234,
+  "generator_backend": "rextio-core-rust-pyo3-v1"
+}
+```
+
+Collection securely reopens the lexical project root and each project-source
+and generated-Rust path through component-by-component dirfd traversal with
+`O_NOFOLLOW`. The producer rejects symlinked roots/components, hardlinks,
+path escape, nonregular files, size overflow, and file/directory identity or
+timestamp drift. Source is decoded as UTF-8 and parsed without import or
+execution. For every accepted function the collector independently rederives
+the module-level qualname, half-open UTF-8 AST range, and semantic AST identity
+and requires exact agreement with both the build analysis and C6.6 record.
+
+The producer then reanalyzes the complete project with automatic native intent,
+no active plugin registry, no embedding, no native top-level, and no delegated
+fallback. It requires the same complete accepted-function identity set, lowers
+the canonical ModuleIR, rejects runtime/plugin/boundary/embedded IR flags, and
+regenerates the full Rust module with empty plugin and boundary bindings. The
+regenerated `src/lib.rs` bytes, SHA-256, and size must exactly equal the captured
+generated-Rust input. Source and generated receipts are reopened once more
+after replay. The receipt binds SHA-256 of canonical compact JSON for the exact
+C6.6 inventory, exact sorted project-source input set, and canonical ModuleIR,
+plus the sorted accepted qualnames and the captured/regenerated Rust identity.
+
+Unsigned in-toto provenance exposes
+`buildDefinition.internalParameters.scoped_source_transformation_verified`,
+keeps `source_transformation_provenance_complete: false`, records
+`runDetails.metadata.rextio:source_transformation_verification_observed`, and,
+when present, carries the exact receipt under
+`runDetails.metadata.rextio:source_transformation_verification`. No source bytes,
+AST dump, absolute path, inode/device value, exception text, environment value,
+credential, or unbounded output is serialized.
+
+Unsupported scope, replay mismatch, race, or bound exhaustion omits only C6.10
+and policy version 6 marks `scoped-source-transformation-verified` unavailable
+with `scoped-source-transformation-verification-unavailable`. C6.6 and the C6.3
+gate retain their independent outcomes. A malformed present receipt or broken
+inventory/source/generated cross-binding uses the total all-`not-evaluated`,
+sole `readiness-assessment-unavailable` shape. At the closed provenance ceiling
+the omission order is C6.10, C6.9, C6.8, C6.7, then C6.6.
+
+`complete_for_scope: true` is deliberately local. `complete: false`,
+`global_provenance_complete: false`, the blocked
+`source-transformation-provenance-complete` readiness check, unsigned
+attestation, and false distribution authority are invariant.
+
+### Hard distribution-authorization readiness (contracts 2.10.0-2.15.0)
 
 C6.5 adds `build.json.artifact_distribution_authorization` only where the same
 ordinary host-extension + CPython wheel path emits `artifact_evidence`. It is
@@ -1519,17 +1616,18 @@ Contract 2.10.0 emitted policy version 1 with four observation checks; contract
 check; 2.12.0 emitted policy version 3 with the sixth C6.7 component-license
 inventory check; 2.13.0 emits policy version 4 with the seventh C6.8 direct
 path-resolution check; 2.14.0 emits policy version 5 with the eighth C6.9
-bounded static runtime-graph check. The current fixed envelope is `kind:
+bounded static runtime-graph check; 2.15.0 emits policy version 6 with the ninth
+C6.10 scoped replay-verification check. The current fixed envelope is `kind:
 "artifact-distribution-authorization"`, both `policy` and `scope` equal
-`host-extension-wheel-cpython-v1`, `policy_version: 5`, `status: "blocked"`, and
+`host-extension-wheel-cpython-v1`, `policy_version: 6`, `status: "blocked"`, and
 `authority: "readiness-assessment-only"`. `complete`, `signed`, and
 `distribution_authorized` are mandatory and always `false`; no configuration
 setting or constructor value can change them. C6.3's required evidence gate
 continues to answer only whether bounded preview evidence is present. A
-`satisfied` C6.3 gate and a C6.5-C6.9 `blocked` readiness assessment therefore
+`satisfied` C6.3 gate and a C6.5-C6.10 `blocked` readiness assessment therefore
 coexist on a successful required build.
 
-For current contract 2.14.0 with `evidence_status: "preview-ready"`, the exact
+For current contract 2.15.0 with `evidence_status: "preview-ready"`, the exact
 shape is:
 
 ```json
@@ -1537,7 +1635,7 @@ shape is:
   "artifact_distribution_authorization": {
     "kind": "artifact-distribution-authorization",
     "policy": "host-extension-wheel-cpython-v1",
-    "policy_version": 5,
+    "policy_version": 6,
     "scope": "host-extension-wheel-cpython-v1",
     "status": "blocked",
     "authority": "readiness-assessment-only",
@@ -1551,6 +1649,7 @@ shape is:
       {"id": "direct-native-path-resolution-bound", "status": "satisfied"},
       {"id": "bounded-static-native-runtime-graph-bound", "status": "satisfied"},
       {"id": "source-transformation-inventory-bound", "status": "satisfied"},
+      {"id": "scoped-source-transformation-verified", "status": "satisfied"},
       {"id": "component-license-inventory-bound", "status": "satisfied"},
       {"id": "component-license-policy-complete", "status": "blocked"},
       {"id": "native-runtime-resolution-complete", "status": "blocked"},
@@ -1584,7 +1683,7 @@ shape is:
 
 Check IDs, statuses, blocker IDs, coverage, uniqueness, and order are a closed
 contract. Unknown, duplicated, reordered, or free-text items are rejected.
-Before the eight observation statuses become `satisfied`, the producer
+Before the nine observation statuses become `satisfied`, the producer
 reconstructs every nested evidence model and structurally validates the wheel
 subject/sidecar relationships, all required declared-input role snapshots, one
 bound Cargo path root and its fully reachable package graph, and the exact
@@ -1597,8 +1696,18 @@ changed value can therefore retain a `satisfied` status for
 `source-transformation-inventory-bound`;
 `source-transformation-provenance-complete` remains blocked and the
 assessment remains unsigned and non-authorizing. This is model/reference-binding
-validation only: the C6.5-C6.9 assessment does not reopen artifacts, re-hash
+validation only: the C6.5-C6.10 assessment does not reopen artifacts, re-hash
 outputs, or rerun C6.4 inspectors.
+
+For C6.10 the reconstructed evidence must bind the canonical C6.6-inventory
+digest, exact full project-source input set and its canonical digest, the same
+sorted qualname coverage, a plugin-free fixed backend, and one exact generated
+Rust input shared by every C6.6 record. The receipt itself also enforces
+regenerated-Rust digest/size equality with that captured input. The readiness
+pass does not independently reparse source, recompute ModuleIR, or regenerate
+Rust; those operations already occurred in the in-process collector before the
+immutable receipt was admitted. The global transformation-provenance check
+therefore remains blocked.
 
 For C6.7 the same reconstruction requires exact full coverage and canonical
 order against every Cargo package identity and its raw/null metadata value.
@@ -1620,7 +1729,7 @@ members, rerun inspectors, infer actual loader selection, or satisfy the
 separate complete-transitive-closure check.
 
 For `evidence_status: "unavailable"`, `evidence_reason` is exactly the existing
-fixed `artifact_evidence.reason`; the eight observation checks use
+fixed `artifact_evidence.reason`; the nine observation checks use
 `"unavailable"`, the ten downstream readiness checks use `"not-evaluated"`,
 and `blockers` is exactly `["evidence-unavailable"]`. This avoids inventing
 downstream findings and prevents raw errors, tool output, credentials, or
@@ -1633,37 +1742,47 @@ is absent, the first four mandatory observation checks stay `satisfied`, both
 readiness checks stay `blocked`. Blockers are the ordinary ten readiness
 blockers plus `native-runtime-path-resolution-inventory-unavailable` and
 `bounded-static-native-runtime-graph-unavailable`, in that order, followed by
-any independent C6.6/C6.7 unavailable blockers. This does not change either
+any independent C6.6/C6.10/C6.7 unavailable blockers. This does not change either
 complete-runtime readiness check from blocked.
 
 When C6.8 is present but the C6.9 graph is absent, the first five observations
 stay `satisfied`, `bounded-static-native-runtime-graph-bound` alone is
-`unavailable`, and the independent C6.6/C6.7 observations retain their own
+`unavailable`, and the independent C6.6/C6.10/C6.7 observations retain their own
 states. The dedicated
 `bounded-static-native-runtime-graph-unavailable` blocker follows the ordinary
-ten readiness blockers and precedes any C6.6/C6.7 unavailable blockers. A
+ten readiness blockers and precedes any C6.6/C6.10/C6.7 unavailable blockers. A
 valid bounded graph still never changes
 `native-runtime-transitive-closure-complete` from `blocked`.
 
 When the C6.6 inventory is absent, the first four mandatory observations and
 the independent C6.8/C6.9 observations retain their own states,
-`source-transformation-inventory-bound` is `unavailable`, and downstream
+both `source-transformation-inventory-bound` and the dependent
+`scoped-source-transformation-verified` are `unavailable`, and downstream
 readiness checks stay `blocked`. After the ordinary ten readiness blockers,
 any C6.8/C6.9 unavailable blockers come first, followed by exactly
-`source-transformation-inventory-unavailable` for this missing observation and
-then any C6.7 blocker. This dedicated shape is distinct from a malformed,
+`source-transformation-inventory-unavailable` and
+`scoped-source-transformation-verification-unavailable`, then any C6.7 blocker.
+This dedicated shape is distinct from a malformed,
 noncanonical, or
 exact-reference-binding-breaking evidence model.
 
-The C6.7 missing shape is independent: the preceding seven observations retain
+When C6.6 is present but C6.10 is absent, the other eight observations retain
+their own `satisfied | unavailable` states,
+`scoped-source-transformation-verified` alone is `unavailable`, and
+`scoped-source-transformation-verification-unavailable` follows any C6.8/C6.9
+and C6.6 unavailable blockers but precedes any C6.7 blocker. A valid scoped
+receipt still never changes `source-transformation-provenance-complete` from
+`blocked`.
+
+The C6.7 missing shape is independent: the preceding eight observations retain
 their own `satisfied | unavailable` states,
 `component-license-inventory-bound` alone is `unavailable`, and the fixed
 `component-license-inventory-unavailable` blocker follows the ordinary ten
-readiness blockers and any C6.8/C6.9/C6.6 unavailable blockers. A valid C6.7
+readiness blockers and any C6.8/C6.9/C6.6/C6.10 unavailable blockers. A valid C6.7
 inventory never changes `component-license-policy-complete` from `blocked`.
 
 If an object still says `evidence_status: "preview-ready"` but fails the
-stricter structural readiness evaluation, C6.5-C6.9 preserves that evidence status,
+stricter structural readiness evaluation, C6.5-C6.10 preserves that evidence status,
 sets **every** check to `"not-evaluated"`, keeps `evidence_reason: null`, and
 sets `blockers` exactly to `["readiness-assessment-unavailable"]`. Evaluation
 is total and exception text never serializes. This fallback is report-only: a
@@ -1676,7 +1795,7 @@ selection/environment, transitive native dependency closure, system-library
 byte binding, runtime `dlopen` discovery, Windows PE, runtime-bearing plugins,
 host executables, Rust-importable crates,
 Nuitka/WASM evidence, signatures, and final distribution authorization remain
-outside C6.5-C6.9.
+outside C6.5-C6.10.
 
 ### Resolved `artifact_profiles`
 
@@ -1912,12 +2031,12 @@ class RextioPluginV2(Protocol):
 - No incremental-analysis API (deferred until latency measurements demand it;
   v1 tooling calls the batch analyzer).
 - No recursive third-party-package source promotion, device-provider discovery,
-  provider build/link hook, CUDA execution, or device support claim through 2.14.0.
+  provider build/link hook, CUDA execution, or device support claim through 2.15.0.
   C5.1 inventories one exact distribution but authorizes no lowering or build.
 - No actual loader selection, complete transitive dynamic-library closure,
   system-library byte binding, runtime `dlopen` observation, Windows PE linkage
   inventory, runtime-bearing plugin inventory, or artifact signatures through
-  2.14.0. C6.8 observes one-hop packaged candidates and C6.9 recursively
+  2.15.0. C6.8 observes one-hop packaged candidates and C6.9 recursively
   observes only a bounded static packaged graph from the generated macOS/Linux
   extension; neither is loader authority.
 - No name-based reservation of route strings beyond this document; new routes
@@ -2019,5 +2138,13 @@ class RextioPluginV2(Protocol):
    C6.8 on C6.9-only failure, omit both when C6.8 fails, and use provenance
    omission order C6.9 → C6.8 → C6.7 → C6.6. Keep complete closure, actual
    loader selection, runtime `dlopen`, signatures, and authorization blocked.
-18. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
+18. **Release Train C / contract 2.15.0 (unreleased):** add C6.10's immutable
+   scoped replay receipt for one nonempty project-owned, plugin-free,
+   module-level PyO3 function closure. Securely reread the exact source/input
+   set, rederive AST identities and UTF-8 ranges, relower the complete accepted
+   set, and require byte-identical full `src/lib.rs` regeneration. Add the
+   policy-version-6 observation/unavailable shape and omit C6.10 first at the
+   provenance ceiling. Keep global transformation provenance, signatures, and
+   authorization blocked.
+19. Promote the contract to stable once rextio-agent-skill and rextio-lsp have
    consumed it across one release cycle without breaking changes.

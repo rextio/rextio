@@ -28,7 +28,10 @@ from rextio.artifacts.evidence import (
     NativeRuntimePathResolutionInventory,
     NativeRuntimePathResolutionRecord,
     REASON_RUNTIME_INSPECTOR_FAILED,
+    SourceTransformationInventory,
+    SourceTransformationVerification,
     WheelEntryRef,
+    canonical_json_bytes,
     hash_regular_file,
 )
 from rextio.artifacts.authorization import (
@@ -324,6 +327,31 @@ def _snapshot(project: Path, layout: ArtifactLayout, plan: BuildPlan) -> Evidenc
     return snap
 
 
+def _synthetic_scoped_verification(
+    input_snapshot: EvidenceInputSnapshot,
+    transformation_inventory: SourceTransformationInventory,
+) -> SourceTransformationVerification:
+    source_inputs = tuple(input_snapshot.project_inputs)
+    generated = transformation_inventory.records[0].generated_rust
+    return SourceTransformationVerification(
+        source_transformation_inventory_sha256=hashlib.sha256(
+            canonical_json_bytes(transformation_inventory.to_dict())
+        ).hexdigest(),
+        source_input_set_sha256=hashlib.sha256(
+            canonical_json_bytes([item.to_dict() for item in source_inputs])
+        ).hexdigest(),
+        module_ir_sha256="a" * 64,
+        function_qualnames=tuple(
+            record.function_qualname for record in transformation_inventory.records
+        ),
+        source_inputs=source_inputs,
+        generated_rust=generated,
+        regenerated_rust_sha256=generated.sha256,
+        regenerated_rust_size=generated.size,
+        generator_backend="rextio-core-rust-pyo3-v1",
+    )
+
+
 def test_nuitka_host_extension_is_out_of_scope(tmp_path: Path) -> None:
     project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
     profile = host_extension_profile(
@@ -437,7 +465,7 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
         input_snapshot=snap,
     )
     assert evidence is not None
-    assert evidence.status == "preview-ready"
+    assert evidence.status == "preview-ready", evidence.reason
     assert evidence.preview is True
     assert evidence.complete is False
     assert evidence.signed is False
@@ -534,7 +562,6 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
         provenance_metadata["rextio:native_runtime_transitive_closure_observed"]
         is True
     )
-
     native_component = next(
         component
         for component in sbom["components"]
@@ -566,6 +593,157 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     assert internal["component_license_inventory_observed"] is True
     assert internal["component_license_policy_complete"] is False
     assert prov["predicate"]["runDetails"]["metadata"]["rextio:observed_native_runtime"] == runtime
+
+
+def test_preview_evidence_embeds_scoped_transformation_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cargo = pytest.importorskip("shutil").which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required")
+
+    from rextio.build import supply_chain as supply_chain_module
+
+    calls: list[bool] = []
+
+    def collect_verification(
+        *,
+        input_snapshot: EvidenceInputSnapshot,
+        transformation_inventory,
+        embedding_enabled: bool,
+        **_kwargs,
+    ) -> SourceTransformationVerification:
+        calls.append(embedding_enabled)
+        return _synthetic_scoped_verification(
+            input_snapshot,
+            transformation_inventory,
+        )
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_scoped_source_transformation_verification",
+        collect_verification,
+        raising=False,
+    )
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(
+            status="built",
+            path=str(wheel_path),
+            message="ok",
+        ),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert calls == [False]
+    assert evidence is not None
+    assert evidence.status == "preview-ready", evidence.reason
+    assert evidence.source_transformation_verification is not None
+    assert (
+        evidence.to_dict()["source_transformation_verification"]
+        == evidence.source_transformation_verification.to_dict()
+    )
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")
+    )
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert metadata.get("rextio:source_transformation_verification") == (
+        evidence.source_transformation_verification.to_dict()
+    )
+    assert metadata.get("rextio:source_transformation_verification_observed") is True
+
+
+def test_provenance_ceiling_omits_c6_10_before_c6_9(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cargo = pytest.importorskip("shutil").which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required")
+
+    from rextio.build import supply_chain as supply_chain_module
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_scoped_source_transformation_verification",
+        lambda *, input_snapshot, transformation_inventory, **_kwargs: (
+            _synthetic_scoped_verification(
+                input_snapshot,
+                transformation_inventory,
+            )
+        ),
+    )
+    real_builder = supply_chain_module.build_intoto_provenance_document
+    presence: list[tuple[bool, bool]] = []
+
+    def inflate_only_scoped_verification(**kwargs):
+        verification_present = (
+            kwargs.get("source_transformation_verification") is not None
+        )
+        closure_present = kwargs.get("native_runtime_transitive_closure") is not None
+        presence.append((verification_present, closure_present))
+        document = real_builder(**kwargs)
+        if verification_present:
+            document["predicate"]["runDetails"]["metadata"]["test:padding"] = (
+                "x" * evidence_mod.MAX_SIDECAR_BYTES
+            )
+        return document
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "build_intoto_provenance_document",
+        inflate_only_scoped_verification,
+    )
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(
+            status="built",
+            path=str(wheel_path),
+            message="ok",
+        ),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert presence == [(True, True), (False, True)]
+    assert evidence.source_transformation_verification is None
+    assert evidence.source_transformation_inventory is not None
+    assert evidence.native_runtime_transitive_closure is not None
+    assessment = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    statuses = {item["id"]: item["status"] for item in assessment["checks"]}
+    assert statuses["scoped-source-transformation-verified"] == "unavailable"
+    assert statuses["bounded-static-native-runtime-graph-bound"] == "satisfied"
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")
+    )
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert metadata["rextio:source_transformation_verification_observed"] is False
+    assert "rextio:source_transformation_verification" not in metadata
 
 
 def test_c69_snapshot_receipt_refresh_preserves_c68_and_c69(

@@ -1359,6 +1359,7 @@ def build_hybrid_artifact(
                 wheel_build=wheel_build,
                 native_build=native_build,
                 input_snapshot=evidence_snapshot,
+                embedding_enabled=embedding_enabled,
                 timeout=build_timeout_seconds,
                 toolchain=toolchain,
                 output_claim=(
