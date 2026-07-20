@@ -1,0 +1,365 @@
+"""Fail-closed, immutable build-input identities for bounded Full C6 work.
+
+This module is deliberately independent from artifact evidence and build
+orchestration.  It captures exact regular-file bytes through one no-follow
+descriptor and exposes only canonical logical identities; callers retain the
+local path separately and must reverify immediately before each trust-boundary
+transition.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+import unicodedata
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+
+MAX_BUILD_INPUT_BYTES = 64 * 1024 * 1024
+MAX_BUILD_INPUT_NAME_CHARS = 512
+MAX_BUILD_INPUT_FILES = 1024
+MAX_BUILD_INPUT_TOTAL_BYTES = 256 * 1024 * 1024
+BUILD_INPUT_CLOSURE_DOMAIN = "rextio.build-input-closure.v1"
+BUILD_INPUT_CLOSURE_SCOPE = (
+    "host-extension-wheel-cpython-external-source-depth1-plugin-free-v1"
+)
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_LOGICAL_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+@=-]*$")
+_ROLE_RE = re.compile(r"^[a-z][a-z0-9-]{0,127}$")
+
+
+class BuildInputIdentityError(RuntimeError):
+    """A build input could not be captured or no longer matches its receipt."""
+
+
+@dataclass(frozen=True, slots=True)
+class ExactFileIdentity:
+    """Canonical content identity for one local regular file.
+
+    Absolute paths, inode numbers, timestamps, and other machine-private
+    details are intentionally excluded from the serializable receipt.
+    """
+
+    logical_name: str
+    role: str
+    sha256: str
+    size: int
+    executable: bool
+
+    def __post_init__(self) -> None:
+        _validate_logical_name(self.logical_name)
+        if type(self.role) is not str or _ROLE_RE.fullmatch(self.role) is None:
+            raise ValueError("build-input role is invalid")
+        if type(self.sha256) is not str or _SHA256_RE.fullmatch(self.sha256) is None:
+            raise ValueError("build-input SHA-256 is invalid")
+        if type(self.size) is not int or isinstance(self.size, bool):
+            raise TypeError("build-input size must be an integer")
+        if self.size < 0 or self.size > MAX_BUILD_INPUT_BYTES:
+            raise ValueError("build-input size is outside the allowed range")
+        if type(self.executable) is not bool:
+            raise TypeError("build-input executable flag must be boolean")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic, path-sanitized receipt shape."""
+        return {
+            "logical_name": self.logical_name,
+            "role": self.role,
+            "sha256": self.sha256,
+            "size": self.size,
+            "executable": self.executable,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class InputFileSpec:
+    """Private path plus the public identity labels used to capture one input."""
+
+    path: Path
+    logical_name: str
+    role: str
+    require_executable: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "path", Path(self.path))
+        _validate_logical_name(self.logical_name)
+        if type(self.role) is not str or _ROLE_RE.fullmatch(self.role) is None:
+            raise ValueError("build-input role is invalid")
+        if type(self.require_executable) is not bool:
+            raise TypeError("build-input executable requirement must be boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class BuildInputClosure:
+    """Canonical exact-file closure for one deliberately bounded build scope."""
+
+    files: tuple[ExactFileIdentity, ...]
+    domain: str = BUILD_INPUT_CLOSURE_DOMAIN
+    scope: str = BUILD_INPUT_CLOSURE_SCOPE
+    complete_for_scope: bool = True
+
+    def __post_init__(self) -> None:
+        if self.domain != BUILD_INPUT_CLOSURE_DOMAIN:
+            raise ValueError("build-input closure domain is invalid")
+        if self.scope != BUILD_INPUT_CLOSURE_SCOPE:
+            raise ValueError("build-input closure scope is invalid")
+        if self.complete_for_scope is not True:
+            raise ValueError("build-input closure must be complete for its bounded scope")
+        files = tuple(self.files)
+        if not files or len(files) > MAX_BUILD_INPUT_FILES:
+            raise ValueError("build-input closure file count is outside the allowed range")
+        if not all(type(item) is ExactFileIdentity for item in files):
+            raise TypeError("build-input closure files have an invalid type")
+        canonical = tuple(sorted(files, key=lambda item: (item.role, item.logical_name)))
+        if files != canonical:
+            raise ValueError("build-input closure files are not in canonical order")
+        aliases = [_logical_alias(item.logical_name) for item in files]
+        if len(aliases) != len(set(aliases)):
+            raise ValueError("build-input closure contains a logical path alias")
+        if sum(item.size for item in files) > MAX_BUILD_INPUT_TOTAL_BYTES:
+            raise ValueError("build-input closure exceeds the aggregate byte bound")
+        object.__setattr__(self, "files", files)
+
+    @property
+    def digest(self) -> str:
+        """SHA-256 of the canonical receipt payload (excluding the digest itself)."""
+        return hashlib.sha256(_canonical_json(self._payload())).hexdigest()
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "domain": self.domain,
+            "scope": self.scope,
+            "complete_for_scope": True,
+            "files": [item.to_dict() for item in self.files],
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the canonical receipt plus its semantic digest."""
+        return {**self._payload(), "digest": self.digest}
+
+
+def capture_exact_file(
+    path: Path | str,
+    *,
+    logical_name: str,
+    role: str,
+    require_executable: bool = False,
+    max_bytes: int = MAX_BUILD_INPUT_BYTES,
+) -> ExactFileIdentity:
+    """Capture one exact non-symlink regular file through a pinned descriptor."""
+    identity, _data = capture_exact_file_bytes(
+        path,
+        logical_name=logical_name,
+        role=role,
+        require_executable=require_executable,
+        max_bytes=max_bytes,
+    )
+    return identity
+
+
+def capture_exact_file_bytes(
+    path: Path | str,
+    *,
+    logical_name: str,
+    role: str,
+    require_executable: bool = False,
+    max_bytes: int = MAX_BUILD_INPUT_BYTES,
+) -> tuple[ExactFileIdentity, bytes]:
+    """Return one exact identity and the same securely-read immutable bytes."""
+    _validate_logical_name(logical_name)
+    if _ROLE_RE.fullmatch(role) is None:
+        raise BuildInputIdentityError("build-input role is invalid")
+    if type(max_bytes) is not int or isinstance(max_bytes, bool) or not (1 <= max_bytes <= MAX_BUILD_INPUT_BYTES):
+        raise BuildInputIdentityError("build-input byte bound is invalid")
+
+    candidate = Path(path)
+    try:
+        before = os.lstat(candidate)
+    except FileNotFoundError as exc:
+        raise BuildInputIdentityError("build input is missing") from exc
+    except OSError as exc:
+        raise BuildInputIdentityError("build input could not be inspected") from exc
+    if stat.S_ISLNK(before.st_mode):
+        raise BuildInputIdentityError("build input must not be a symlink")
+    if not stat.S_ISREG(before.st_mode):
+        raise BuildInputIdentityError("build input must be a regular file")
+    if before.st_size < 0 or before.st_size > max_bytes:
+        raise BuildInputIdentityError("build input exceeds the byte bound")
+    executable = bool(before.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+    if require_executable and not executable:
+        raise BuildInputIdentityError("toolchain input is not executable")
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(candidate, flags)
+    except OSError as exc:
+        raise BuildInputIdentityError("build input could not be opened safely") from exc
+    try:
+        opened = os.fstat(fd)
+        _require_same_regular_file(before, opened, "changed during open")
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            try:
+                chunk = os.read(fd, min(65536, remaining))
+            except BlockingIOError as exc:
+                raise BuildInputIdentityError("build input could not be read safely") from exc
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > max_bytes:
+            raise BuildInputIdentityError("build input exceeds the byte bound")
+        after = os.fstat(fd)
+        _require_same_regular_file(opened, after, "changed during read")
+        if after.st_size != len(data):
+            raise BuildInputIdentityError("build input changed during read")
+    finally:
+        os.close(fd)
+
+    return (
+        ExactFileIdentity(
+            logical_name=logical_name,
+            role=role,
+            sha256=hashlib.sha256(data).hexdigest(),
+            size=len(data),
+            executable=executable,
+        ),
+        data,
+    )
+
+
+def verify_exact_file(
+    path: Path | str,
+    expected: ExactFileIdentity,
+    *,
+    max_bytes: int = MAX_BUILD_INPUT_BYTES,
+) -> None:
+    """Fail unless a fresh secure capture exactly matches ``expected``."""
+    if type(expected) is not ExactFileIdentity:
+        raise BuildInputIdentityError("expected build-input receipt has an invalid type")
+    observed = capture_exact_file(
+        path,
+        logical_name=expected.logical_name,
+        role=expected.role,
+        require_executable=expected.executable,
+        max_bytes=max_bytes,
+    )
+    if observed != expected:
+        raise BuildInputIdentityError("build input changed after capture")
+
+
+def capture_build_input_closure(
+    specs: tuple[InputFileSpec, ...] | list[InputFileSpec],
+) -> BuildInputClosure:
+    """Securely capture and canonically order one exact bounded input set."""
+    items = tuple(specs)
+    if not items or len(items) > MAX_BUILD_INPUT_FILES:
+        raise BuildInputIdentityError("build-input closure file count is outside the bound")
+    if not all(type(item) is InputFileSpec for item in items):
+        raise BuildInputIdentityError("build-input closure specifications are invalid")
+    aliases = [_logical_alias(item.logical_name) for item in items]
+    if len(aliases) != len(set(aliases)):
+        raise BuildInputIdentityError("build-input closure contains a logical path alias")
+    captured = tuple(
+        sorted(
+            (
+                capture_exact_file(
+                    item.path,
+                    logical_name=item.logical_name,
+                    role=item.role,
+                    require_executable=item.require_executable,
+                )
+                for item in items
+            ),
+            key=lambda item: (item.role, item.logical_name),
+        )
+    )
+    try:
+        return BuildInputClosure(files=captured)
+    except (TypeError, ValueError) as exc:
+        raise BuildInputIdentityError(str(exc)) from exc
+
+
+def verify_build_input_closure(
+    specs: tuple[InputFileSpec, ...] | list[InputFileSpec],
+    expected: BuildInputClosure,
+) -> None:
+    """Fail unless a complete fresh capture equals the immutable receipt."""
+    if type(expected) is not BuildInputClosure:
+        raise BuildInputIdentityError("expected build-input closure has an invalid type")
+    observed = capture_build_input_closure(specs)
+    if observed != expected or observed.digest != expected.digest:
+        raise BuildInputIdentityError("build-input closure changed after capture")
+
+
+def _require_same_regular_file(
+    earlier: os.stat_result,
+    later: os.stat_result,
+    reason: str,
+) -> None:
+    if not stat.S_ISREG(later.st_mode):
+        raise BuildInputIdentityError(f"build input {reason}")
+    if (earlier.st_dev, earlier.st_ino) != (later.st_dev, later.st_ino):
+        raise BuildInputIdentityError(f"build input {reason}")
+    if earlier.st_size != later.st_size:
+        raise BuildInputIdentityError(f"build input {reason}")
+    for attribute in ("st_mtime_ns", "st_ctime_ns"):
+        if hasattr(earlier, attribute) and getattr(earlier, attribute) != getattr(later, attribute):
+            raise BuildInputIdentityError(f"build input {reason}")
+
+
+def _validate_logical_name(value: str) -> None:
+    if type(value) is not str or not value or value != value.strip():
+        raise ValueError("build-input logical name is invalid")
+    if len(value) > MAX_BUILD_INPUT_NAME_CHARS or "\\" in value or "\0" in value:
+        raise ValueError("build-input logical name is invalid")
+    if any(ord(character) < 32 for character in value):
+        raise ValueError("build-input logical name is invalid")
+    posix = PurePosixPath(value)
+    windows = PureWindowsPath(value)
+    if posix.is_absolute() or windows.is_absolute() or ".." in posix.parts or ".." in windows.parts:
+        raise ValueError("build-input logical name must be relative")
+    if not posix.parts or any(_LOGICAL_SEGMENT_RE.fullmatch(part) is None for part in posix.parts):
+        raise ValueError("build-input logical name is invalid")
+
+
+def _logical_alias(value: str) -> str:
+    return unicodedata.normalize("NFC", value).casefold()
+
+
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+__all__ = [
+    "BuildInputIdentityError",
+    "BuildInputClosure",
+    "BUILD_INPUT_CLOSURE_DOMAIN",
+    "BUILD_INPUT_CLOSURE_SCOPE",
+    "ExactFileIdentity",
+    "InputFileSpec",
+    "MAX_BUILD_INPUT_BYTES",
+    "capture_build_input_closure",
+    "capture_exact_file",
+    "capture_exact_file_bytes",
+    "verify_build_input_closure",
+    "verify_exact_file",
+]
