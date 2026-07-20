@@ -47,12 +47,19 @@ ambient loader state, choose the actual loader result, hash system libraries,
 or observe `dlopen`. C6.10 adds a separate narrow replay receipt for nonempty,
 project-owned, plugin-free PyO3 function closures. It rereads source securely,
 rederives AST identities and UTF-8 ranges, relowers the complete accepted set,
-and requires byte-identical full `src/lib.rs` regeneration. This branch emits
-C6.11 adds a separate, narrower project-owner policy receipt for the exact raw
+and requires byte-identical full `src/lib.rs` regeneration. C6.11 adds a
+separate, narrower project-owner policy receipt for the exact raw
 license metadata of every reachable Cargo registry component. It binds a fixed
 project-root lock and the full C6.7 inventory, but does not authenticate the
 owner, validate SPDX or license files, provide legal approval, or authorize
-distribution. This branch emits additive tooling contract **2.16.0** and plugin API **1.4**
+distribution. C6.12 adds an independent owner-declaration receipt only when a
+valid C6.10 replay is present. The strict project-root
+`rextio.source-license.lock.json` binds that exact C6.10 receipt, its complete
+scoped project-source set, generated Rust `src/lib.rs`, and separate declared
+licenses for the source and generated output. It does not verify identity,
+SPDX, license/NOTICE files, obligations, compatibility, ownership,
+derivative-work rights, legal approval, signing, global policy, or distribution
+authority. This branch emits additive tooling contract **2.17.0** and plugin API **1.4**
 while keeping package version
 **0.1.4**; those changes are not yet a tagged or PyPI release. Published 0.1.4
 remains the plugin API **1.3** / contract **2.2.0** producer. See
@@ -198,17 +205,19 @@ Windows, runtime-bearing plugins, signatures, transitive
 closure, and runtime `dlopen` discovery remain outside this preview.
 
 For that same in-scope wheel path, `build.json` also includes
-`artifact_distribution_authorization`. This C6.5-C6.11 policy-version-7 record is derived from the
+`artifact_distribution_authorization`. This C6.5-C6.12 policy-version-8 record is derived from the
 final `artifact_evidence` record after required-mode revalidation/transaction
 handling. It always reports `status: "blocked"`,
 `authority: "readiness-assessment-only"`, and false values for `complete`,
 `signed`, and `distribution_authorized`. Preview-ready evidence can satisfy
-ten bounded observation checks after closed-model reconstruction and exact
+eleven bounded observation checks after closed-model reconstruction and exact
 cross-binding. The ninth check means the in-process C6.10 collector already
 replayed one narrowly supported source/AST/IR/codegen closure; the later report
 does not itself reopen source or generated artifacts. The tenth check means an
 exact C6.11 owner lock was structurally bound to all registry-license metadata;
-it is still not the blocked global license-policy check. License
+it is still not the blocked global license-policy check. The eleventh means a
+separate C6.12 owner lock was bound to the exact C6.10 project-source set and
+generated Rust output; it proves no ownership or output rights. License
 policy, runtime path/transitive closure, runtime dynamic loading, complete build
 inputs, complete source-transformation provenance, builder identity, reproducibility,
 signatures, and complete SBOM composition remain selected current-scope fixed
@@ -263,7 +272,7 @@ over-budget values fail closed. Missing inventory makes only
 `component-license-inventory-unavailable` blocker. Malformed, reordered,
 duplicated, stale, or non-exactly-bound records use the all-`not-evaluated`
 readiness-unavailable shape. If provenance still exceeds its ceiling after the
-newer C6.11, C6.10, C6.9, and C6.8 observations are omitted, C6.7 is omitted next so C6.6 and all earlier evidence/gate results are preserved whenever
+newer C6.12, C6.11, C6.10, C6.9, and C6.8 observations are omitted, C6.7 is omitted next so C6.6 and all earlier evidence/gate results are preserved whenever
 possible. `component-license-policy-complete` remains blocked: this is not SPDX
 validation, a license allow/deny lock, legal approval, or distribution authority.
 
@@ -292,7 +301,7 @@ C6.8. The readiness report then marks
 `direct-native-path-resolution-bound` unavailable and adds
 `native-runtime-path-resolution-inventory-unavailable`; the ordinary build and
 C6.3 gate are unchanged. A present malformed or format-crossed record fails the
-readiness reconstruction closed. C6.11 is omitted first, then C6.10, C6.9, C6.8,
+readiness reconstruction closed. C6.12 is omitted first, then C6.11, C6.10, C6.9, C6.8,
 C6.7, and C6.6 at the provenance ceiling. Actual loader precedence/environment, complete
 transitive closure beyond the bounded C6.9 graph, system-library bytes, runtime `dlopen`, Windows PE, WASM,
 runtime-bearing plugins, signatures, and distribution authorization remain out

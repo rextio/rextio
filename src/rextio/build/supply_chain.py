@@ -1,4 +1,4 @@
-"""C6.2/C6.4/C6.6-C6.11 evidence emission for host-extension+cpython wheels.
+"""C6.2/C6.4/C6.6-C6.12 evidence emission for host-extension+cpython wheels.
 
 In-scope builds always emit an ``artifact_evidence`` record with status
 ``preview-ready`` or ``unavailable`` (authority ``evidence-only``). Evidence
@@ -24,6 +24,10 @@ verification.
 C6.11 binds an exact project-owner Cargo license-policy lock to the full C6.7
 inventory. It remains optional observation metadata and is omitted before all
 earlier additive observations when the provenance ceiling is reached.
+
+C6.12 binds an owner source-license declaration to one exact present C6.10
+replay receipt. It remains optional, non-authorizing observation metadata and
+is omitted before C6.11 and every earlier additive observation.
 """
 
 from __future__ import annotations
@@ -81,6 +85,9 @@ from rextio.build.runtime_resolution import (
     collect_native_runtime_path_resolution,
     refresh_native_runtime_path_resolution_observation,
     verify_native_runtime_path_resolution,
+)
+from rextio.build.source_license_policy import (
+    collect_project_source_license_policy_verification,
 )
 from rextio.build.transformation_inventory import (
     collect_source_transformation_inventory,
@@ -673,6 +680,14 @@ def _emit_preview_ready(
         if transformation_inventory is not None
         else None
     )
+    project_source_license_policy_verification = (
+        collect_project_source_license_policy_verification(
+            project_root=project_root,
+            source_transformation_verification=transformation_verification,
+        )
+        if transformation_verification is not None
+        else None
+    )
     component_license_inventory = collect_component_license_inventory(
         inventory.packages
     )
@@ -684,11 +699,21 @@ def _emit_preview_ready(
         if component_license_inventory is not None
         else None
     )
+    base_material_count = len(inputs) + len(inventory.packages)
+    if (
+        project_source_license_policy_verification is not None
+        and base_material_count
+        + int(component_license_policy_verification is not None)
+        + 1
+        > MAX_EVIDENCE_COMPONENTS
+    ):
+        # C6.12 is the newest optional material and is omitted first.
+        project_source_license_policy_verification = None
     if (
         component_license_policy_verification is not None
-        and len(inputs) + len(inventory.packages) + 1 > MAX_EVIDENCE_COMPONENTS
+        and base_material_count + 1 > MAX_EVIDENCE_COMPONENTS
     ):
-        # The optional lock material must never turn a C6.2 preview into
+        # The optional C6.11 lock material must never turn a C6.2 preview into
         # unavailable evidence merely because it is the one extra material.
         component_license_policy_verification = None
 
@@ -727,14 +752,41 @@ def _emit_preview_ready(
         component_license_policy_verification=(
             component_license_policy_verification
         ),
+        project_source_license_policy_verification=(
+            project_source_license_policy_verification
+        ),
     )
     provenance_bytes = pretty_json_bytes(provenance_document)
+    if (
+        project_source_license_policy_verification is not None
+        and len(provenance_bytes) > MAX_SIDECAR_BYTES
+    ):
+        # C6.12 is the newest additive observation and therefore the first
+        # deterministic omission at the closed provenance sidecar ceiling.
+        project_source_license_policy_verification = None
+        provenance_document = build_intoto_provenance_document(
+            subject=subject,
+            sbom=sbom_ref,
+            inputs=inputs,
+            cargo_packages=inventory.packages,
+            target_triple=profile.target_triple,
+            native_runtime_inventory=runtime_inventory,
+            native_runtime_path_resolution=runtime_path_resolution,
+            native_runtime_transitive_closure=runtime_transitive_closure,
+            source_transformation_inventory=transformation_inventory,
+            source_transformation_verification=transformation_verification,
+            component_license_inventory=component_license_inventory,
+            component_license_policy_verification=(
+                component_license_policy_verification
+            ),
+            project_source_license_policy_verification=None,
+        )
+        provenance_bytes = pretty_json_bytes(provenance_document)
     if (
         component_license_policy_verification is not None
         and len(provenance_bytes) > MAX_SIDECAR_BYTES
     ):
-        # C6.11 is the newest additive observation and therefore the first
-        # deterministic omission at the closed provenance sidecar ceiling.
+        # Once C6.12 is absent, C6.11 is the next observation omitted.
         component_license_policy_verification = None
         provenance_document = build_intoto_provenance_document(
             subject=subject,
@@ -749,11 +801,13 @@ def _emit_preview_ready(
             source_transformation_verification=transformation_verification,
             component_license_inventory=component_license_inventory,
             component_license_policy_verification=None,
+            project_source_license_policy_verification=None,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     if transformation_verification is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
-        # Once C6.11 is absent, C6.10 is the next observation omitted.
+        # Once C6.12 and C6.11 are absent, C6.10 is omitted next.
         transformation_verification = None
+        project_source_license_policy_verification = None
         provenance_document = build_intoto_provenance_document(
             subject=subject,
             sbom=sbom_ref,
@@ -769,6 +823,7 @@ def _emit_preview_ready(
             component_license_policy_verification=(
                 component_license_policy_verification
             ),
+            project_source_license_policy_verification=None,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     if runtime_transitive_closure is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
@@ -790,6 +845,9 @@ def _emit_preview_ready(
             component_license_policy_verification=(
                 component_license_policy_verification
             ),
+            project_source_license_policy_verification=(
+                project_source_license_policy_verification
+            ),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     if runtime_path_resolution is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
@@ -810,6 +868,9 @@ def _emit_preview_ready(
             component_license_inventory=component_license_inventory,
             component_license_policy_verification=(
                 component_license_policy_verification
+            ),
+            project_source_license_policy_verification=(
+                project_source_license_policy_verification
             ),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
@@ -835,6 +896,9 @@ def _emit_preview_ready(
             source_transformation_verification=transformation_verification,
             component_license_inventory=None,
             component_license_policy_verification=None,
+            project_source_license_policy_verification=(
+                project_source_license_policy_verification
+            ),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     if (
@@ -848,6 +912,7 @@ def _emit_preview_ready(
         # evidence-unavailable behavior through SidecarArtifact validation.
         transformation_inventory = None
         transformation_verification = None
+        project_source_license_policy_verification = None
         provenance_document = build_intoto_provenance_document(
             subject=subject,
             sbom=sbom_ref,
@@ -861,6 +926,7 @@ def _emit_preview_ready(
             source_transformation_verification=None,
             component_license_inventory=None,
             component_license_policy_verification=None,
+            project_source_license_policy_verification=None,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     provenance_digest = sha256_hex(provenance_bytes)
@@ -934,6 +1000,9 @@ def _emit_preview_ready(
             component_license_policy_verification=(
                 component_license_policy_verification
             ),
+            project_source_license_policy_verification=(
+                project_source_license_policy_verification
+            ),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
         provenance_digest = sha256_hex(provenance_bytes)
@@ -967,6 +1036,9 @@ def _emit_preview_ready(
             component_license_policy_verification=(
                 component_license_policy_verification
             ),
+            project_source_license_policy_verification=(
+                project_source_license_policy_verification
+            ),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
         provenance_digest = sha256_hex(provenance_bytes)
@@ -999,6 +1071,63 @@ def _emit_preview_ready(
                 source_transformation_verification=transformation_verification,
                 component_license_inventory=component_license_inventory,
                 component_license_policy_verification=None,
+                project_source_license_policy_verification=(
+                    project_source_license_policy_verification
+                ),
+            )
+            provenance_bytes = pretty_json_bytes(provenance_document)
+            provenance_digest = sha256_hex(provenance_bytes)
+            provenance_size = len(provenance_bytes)
+
+    if project_source_license_policy_verification is not None:
+        # C6.12 is valid only for the exact C6.10 replay observed above. Rerun
+        # C6.10 with identical inputs immediately before return, then reopen
+        # and fully recollect the owner lock. Any source/generated-Rust/lock
+        # change removes only this optional newest receipt.
+        final_transformation_verification = (
+            collect_scoped_source_transformation_verification(
+                project_root=project_root,
+                plan=plan,
+                input_snapshot=input_snapshot,
+                transformation_inventory=transformation_inventory,
+                embedding_enabled=embedding_enabled,
+            )
+            if transformation_inventory is not None
+            and transformation_verification is not None
+            else None
+        )
+        final_project_source_license_policy_verification = (
+            collect_project_source_license_policy_verification(
+                project_root=project_root,
+                source_transformation_verification=(
+                    final_transformation_verification
+                ),
+            )
+            if final_transformation_verification == transformation_verification
+            and final_transformation_verification is not None
+            else None
+        )
+        if (
+            final_project_source_license_policy_verification
+            != project_source_license_policy_verification
+        ):
+            project_source_license_policy_verification = None
+            provenance_document = build_intoto_provenance_document(
+                subject=subject,
+                sbom=sbom_ref,
+                inputs=inputs,
+                cargo_packages=inventory.packages,
+                target_triple=profile.target_triple,
+                native_runtime_inventory=runtime_inventory,
+                native_runtime_path_resolution=runtime_path_resolution,
+                native_runtime_transitive_closure=runtime_transitive_closure,
+                source_transformation_inventory=transformation_inventory,
+                source_transformation_verification=transformation_verification,
+                component_license_inventory=component_license_inventory,
+                component_license_policy_verification=(
+                    component_license_policy_verification
+                ),
+                project_source_license_policy_verification=None,
             )
             provenance_bytes = pretty_json_bytes(provenance_document)
             provenance_digest = sha256_hex(provenance_bytes)
@@ -1043,6 +1172,9 @@ def _emit_preview_ready(
         component_license_inventory=component_license_inventory,
         component_license_policy_verification=(
             component_license_policy_verification
+        ),
+        project_source_license_policy_verification=(
+            project_source_license_policy_verification
         ),
         limitations=DEFAULT_LIMITATIONS,
     )
