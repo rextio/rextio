@@ -2,7 +2,7 @@
 
 Status: **Unreleased Release Train C**, experimental. The latest published
 Rextio release remains **0.1.4** with tooling contract **2.2.0**. The Train C
-branch emits the additive, unreleased tooling contract **2.17.0**; none of the
+branch emits the additive, unreleased tooling contract **2.18.0**; none of the
 surfaces on this page should be treated as already available from PyPI.
 
 Train C introduces a fail-closed planning layer for host source, output
@@ -107,7 +107,7 @@ The plan and CLI include a strong warning: dependency source translation or
 redistribution can create derivative-work obligations, GNU/copyleft terms need
 particular care, and this inventory/authorization gate is not legal advice.
 
-## C6.2-C6.12 host-extension evidence/readiness — bounded and blocked
+## C6.2-C6.13 host-extension evidence/readiness — bounded and blocked
 
 For one ordinary native host-extension + CPython wheel, C6.2 emits incomplete
 CycloneDX 1.6 and unsigned in-toto/SLSA provenance sidecars. C6.3 can make that
@@ -171,7 +171,8 @@ successful inventory keeps
 
 C6.5 serializes a separate `artifact_distribution_authorization` readiness
 assessment for this same evidence path. C6.12 advances that assessment to
-policy version 8 and revalidates eleven bounded observations through
+policy version 8 and revalidates eleven bounded observations; C6.13 advances
+it to policy version 9 and adds the twelfth observation, both through
 closed-model reconstruction and exact evidence cross-binding before marking
 them satisfied.
 The ninth observation reflects an earlier in-process C6.10 source/AST/IR/codegen
@@ -188,7 +189,7 @@ identity, reproducibility, signature, and complete SBOM composition. Unavailable
 evidence produces only `evidence-unavailable` plus the existing fixed reason.
 A structurally invalid preview produces only
 `readiness-assessment-unavailable` with every check `not-evaluated`; C6.5
-through C6.12 change neither best-effort build success nor the C6.3 required preview
+through C6.13 change neither best-effort build success nor the C6.3 required preview
 gate.
 
 C6.6 also places a deterministic observation-only
@@ -233,8 +234,8 @@ Missing C6.7 inventory makes only `component-license-inventory-bound`
 unavailable with `component-license-inventory-unavailable`. Malformed,
 noncanonical, stale, extra, omitted, or otherwise non-exact Cargo bindings use
 the existing all-`not-evaluated` readiness-unavailable shape. Provenance records
-whether the observation is present. Under current C6.12, a crossed sidecar
-ceiling omits C6.12 first, then C6.11, C6.10, C6.9, C6.8, and C6.7,
+whether the observation is present. Under current C6.13, a crossed sidecar
+ceiling omits C6.13 first, then C6.12, C6.11, C6.10, C6.9, C6.8, and C6.7,
 preserving C6.6 and earlier evidence/gate results whenever possible. The separate
 `component-license-policy-complete` check remains blocked.
 
@@ -255,7 +256,7 @@ Unsafe, unsupported, missing, ambiguous, changed, or over-bound candidates omit
 C6.8 and its dependent C6.9 graph; the corresponding observation is unavailable with
 `native-runtime-path-resolution-inventory-unavailable`. A malformed present
 model fails the full readiness reconstruction closed. At the provenance
-ceiling C6.12 is omitted first, then C6.11, C6.10, C6.9, C6.8, C6.7, and
+ceiling C6.13 is omitted first, then C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, and
 C6.6. A satisfied C6.8 check is
 still not `native-runtime-resolution-complete`: actual loader precedence and
 environment, complete transitive closure, system-library bytes, runtime
@@ -330,7 +331,7 @@ unsigned provenance, with explicit observation-presence metadata. A replay or
 scope mismatch makes only `scoped-source-transformation-verified` unavailable
 and adds `scoped-source-transformation-verification-unavailable`; a malformed
 present model still collapses the readiness report to the closed
-all-`not-evaluated` shape. At the sidecar ceiling C6.12 is omitted first;
+all-`not-evaluated` shape. At the sidecar ceiling C6.13 is omitted first;
 C6.11 follows, then C6.10, C6.9, C6.8, C6.7, and C6.6.
 
 `complete_for_scope: true` is intentionally paired with `complete: false` and
@@ -360,7 +361,7 @@ removes only C6.11 and rebuilds provenance.
 While present, the receipt is serialized in evidence and unsigned provenance,
 and its exact lock reference is one separate provenance material. The lock is
 not added to the C6.2 input snapshot or CycloneDX SBOM. It is omitted after
-C6.12 but before C6.10 for material-count or sidecar-ceiling pressure. Missing
+C6.13/C6.12 but before C6.10 for material-count or sidecar-ceiling pressure. Missing
 C6.7 makes both the inventory and dependent C6.11 observation unavailable;
 malformed present receipt data fails the total readiness reconstruction
 closed. The scoped
@@ -395,7 +396,8 @@ snapshot.
 While present, the receipt is serialized in evidence and unsigned provenance,
 and its exact lock reference is one separate provenance material. It is not a
 C6.2 declared input or CycloneDX SBOM component. Material-count or sidecar
-pressure omits C6.12 first and rebuilds provenance without it. Immediately
+pressure omits C6.13 first, then C6.12, and rebuilds provenance without the
+omitted observation. Immediately
 before final evidence return, the producer reruns C6.10 with the same plan,
 input snapshot, transformation inventory, and embedding setting; it requires
 full receipt equality and only then fully recollects C6.12. Any source,
@@ -416,6 +418,30 @@ derivative-work rights, legal approval, signing, global license-policy
 completion, or distribution authority. Existing readiness blockers remain;
 `complete`, `signed`, and `distribution_authorized` remain false. C6.12 is a
 bounded owner-declaration receipt, not Full C6.
+
+### C6.13 scoped analysis-input verification
+
+C6.13 adds the optional `analysis_input_verification` receipt for the exact
+C6.10 replay/source set. It records every C6.10 source's sibling `.pyi` as
+exactly `present` or `absent`. A present stub binds its project-relative
+logical path, byte SHA-256, size, and deterministic supported-signature
+projection/version; it is emitted as an in-toto `project-python-stub` material.
+Absent records remain metadata observations and create no material. Raw stub
+bytes, source text, absolute roots, and exception text are never serialized.
+
+Secure immutable byte snapshots are evidence-eligible. Windows and platforms
+without the required secure-open behavior may use compatibility snapshots for
+conservative analysis, but those snapshots are explicitly evidence-ineligible.
+`complete_for_scope: true` covers only the C6.10 sibling-stub scope; global
+build-input closure, reproducibility, signing, policy satisfaction, and
+distribution authorization remain false or blocked.
+
+Readiness policy v9 has twelve observations and ten readiness checks. Missing
+C6.13 makes only `scoped-analysis-inputs-verified` unavailable and adds
+`scoped-analysis-input-verification-unavailable`; malformed or forged present
+receipts fail the readiness assessment closed. Deterministic omission order is
+C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, C6.6. Removing C6.10 also removes
+dependent C6.12 and C6.13.
 
 ## Artifact profile authority
 
@@ -562,7 +588,7 @@ enumerates a GPU. See
 
 ## Deferred work
 
-Train C through **2.17.0** does not yet provide:
+Train C through **2.18.0** does not yet provide:
 
 - multiple-module initializer execution or Python import-order emulation;
 - Rust-global publication or native reads of initialized module values;
@@ -572,7 +598,7 @@ Train C through **2.17.0** does not yet provide:
   recursive source-native promotion of installed pure-Python packages;
 - full/signed external-source authorization beyond the C6.1 prebuild lock
   contract (cryptographic signatures);
-- complete standards SPDX/CycloneDX SBOM coverage (C6.2-C6.12 emit only a bounded
+- complete standards SPDX/CycloneDX SBOM coverage (C6.2-C6.13 emit only a bounded
   incomplete CycloneDX 1.6 preview for ordinary host-extension wheels, plus
   unsigned in-toto/SLSA provenance and a macOS/Linux direct-linkage observation;
   not complete or actual-loader path resolution, complete transitive closure, `dlopen`

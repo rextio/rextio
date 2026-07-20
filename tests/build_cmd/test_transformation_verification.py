@@ -25,6 +25,7 @@ from rextio.build.transformation_inventory import (
 from rextio.build.transformation_verification import (
     collect_scoped_source_transformation_verification,
 )
+import rextio.build.transformation_verification as transformation_verification_module
 from rextio.codegen.rust.generator import generate_rust_module
 from rextio.ir.lowering import lower_project
 from rextio.partition.build_plan import BuildPlan, create_build_plan
@@ -266,3 +267,37 @@ def test_scoped_replay_rejects_symlinked_source(tmp_path: Path) -> None:
         )
         is None
     )
+
+
+def test_scoped_replay_rejects_sibling_stub_changed_only_during_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, snapshot, inventory = _real_plugin_free_native_closure(tmp_path)
+    stub = tmp_path / "worker.pyi"
+    assert not stub.exists()
+    real_analyze = transformation_verification_module.analyze_project
+
+    def analyze_with_temporary_stub_change(*args: object, **kwargs: object) -> object:
+        stub.write_bytes(b"# replay-only mutation\n")
+        try:
+            return real_analyze(*args, **kwargs)
+        finally:
+            stub.unlink()
+
+    monkeypatch.setattr(
+        transformation_verification_module,
+        "analyze_project",
+        analyze_with_temporary_stub_change,
+    )
+    assert (
+        collect_scoped_source_transformation_verification(
+            project_root=tmp_path,
+            plan=plan,
+            input_snapshot=snapshot,
+            transformation_inventory=inventory,
+            embedding_enabled=False,
+        )
+        is None
+    )
+    assert not stub.exists()

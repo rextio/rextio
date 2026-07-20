@@ -41,7 +41,8 @@ An index of the project's documentation. See the top-level
   `2.14.0` C6.9 bounded static native-runtime graph observation,
   `2.15.0` C6.10 scoped source-transformation replay verification,
   `2.16.0` C6.11 scoped Cargo component-license policy verification, and current
-  `2.17.0` C6.12 scoped project-source license-policy verification;
+  `2.18.0` C6.13 scoped analysis-input verification (C6.12 remains the
+  preceding scoped project-source license-policy verification);
   published 0.1.4
   remains the 2.2.0 producer.
 - [Plugin lowering](specs/plugin-lowering.md) — draft (0.1.1+; plugin API 1.1

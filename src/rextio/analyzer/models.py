@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rextio.analyzer.diagnostics import Diagnostic
+from rextio.analyzer.stub_inputs import StubInputSnapshot
 from rextio.analyzer.final_bindings import (
     ModuleBindings,
     ProjectBindings,
@@ -727,6 +728,10 @@ class ProjectAnalysis:
     """The analysis of a whole project: its modules and the derived candidate views."""
 
     project_root: Path
+    # Private build-consistency input; intentionally omitted from reports.
+    _stub_inputs: StubInputSnapshot | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
     modules: list[ModuleAnalysis] = field(default_factory=list)
     # The single project-wide final-binding authority (one ``ModuleBindings`` per
     # module), built once and shared by module parsing, callable indexing, the

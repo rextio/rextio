@@ -59,7 +59,14 @@ scoped project-source set, generated Rust `src/lib.rs`, and separate declared
 licenses for the source and generated output. It does not verify identity,
 SPDX, license/NOTICE files, obligations, compatibility, ownership,
 derivative-work rights, legal approval, signing, global policy, or distribution
-authority. This branch emits additive tooling contract **2.17.0** and plugin API **1.4**
+authority. C6.13 adds an optional, bounded analysis-input verification receipt
+for every C6.10 source's sibling `.pyi`: present stubs bind logical path, byte
+SHA-256, size, and deterministic supported-signature projection/version to the
+exact replay and source set; absent records remain metadata only. Present stubs
+are `project-python-stub` materials, while raw bytes, source text, absolute
+roots, and exception text are never serialized. Secure immutable snapshots are
+evidence-eligible; compatibility snapshots are analyzer-only and
+evidence-ineligible. This branch emits additive tooling contract **2.18.0** and plugin API **1.4**
 while keeping package version
 **0.1.4**; those changes are not yet a tagged or PyPI release. Published 0.1.4
 remains the plugin API **1.3** / contract **2.2.0** producer. See
@@ -205,19 +212,22 @@ Windows, runtime-bearing plugins, signatures, transitive
 closure, and runtime `dlopen` discovery remain outside this preview.
 
 For that same in-scope wheel path, `build.json` also includes
-`artifact_distribution_authorization`. This C6.5-C6.12 policy-version-8 record is derived from the
+`artifact_distribution_authorization`. This C6.5-C6.13 policy-version-9 record is derived from the
 final `artifact_evidence` record after required-mode revalidation/transaction
 handling. It always reports `status: "blocked"`,
 `authority: "readiness-assessment-only"`, and false values for `complete`,
 `signed`, and `distribution_authorized`. Preview-ready evidence can satisfy
-eleven bounded observation checks after closed-model reconstruction and exact
+twelve bounded observation checks after closed-model reconstruction and exact
 cross-binding. The ninth check means the in-process C6.10 collector already
 replayed one narrowly supported source/AST/IR/codegen closure; the later report
 does not itself reopen source or generated artifacts. The tenth check means an
 exact C6.11 owner lock was structurally bound to all registry-license metadata;
 it is still not the blocked global license-policy check. The eleventh means a
 separate C6.12 owner lock was bound to the exact C6.10 project-source set and
-generated Rust output; it proves no ownership or output rights. License
+generated Rust output; it proves no ownership or output rights. The twelfth
+check verifies the exact C6.10 sibling-stub set; present stubs become
+`project-python-stub` materials and compatibility snapshots are not
+evidence-eligible. License
 policy, runtime path/transitive closure, runtime dynamic loading, complete build
 inputs, complete source-transformation provenance, builder identity, reproducibility,
 signatures, and complete SBOM composition remain selected current-scope fixed
@@ -272,7 +282,7 @@ over-budget values fail closed. Missing inventory makes only
 `component-license-inventory-unavailable` blocker. Malformed, reordered,
 duplicated, stale, or non-exactly-bound records use the all-`not-evaluated`
 readiness-unavailable shape. If provenance still exceeds its ceiling after the
-newer C6.12, C6.11, C6.10, C6.9, and C6.8 observations are omitted, C6.7 is omitted next so C6.6 and all earlier evidence/gate results are preserved whenever
+newer C6.13, C6.12, C6.11, C6.10, C6.9, and C6.8 observations are omitted, C6.7 is omitted next so C6.6 and all earlier evidence/gate results are preserved whenever
 possible. `component-license-policy-complete` remains blocked: this is not SPDX
 validation, a license allow/deny lock, legal approval, or distribution authority.
 
@@ -301,7 +311,7 @@ C6.8. The readiness report then marks
 `direct-native-path-resolution-bound` unavailable and adds
 `native-runtime-path-resolution-inventory-unavailable`; the ordinary build and
 C6.3 gate are unchanged. A present malformed or format-crossed record fails the
-readiness reconstruction closed. C6.12 is omitted first, then C6.11, C6.10, C6.9, C6.8,
+readiness reconstruction closed. C6.13 is omitted first, then C6.12, C6.11, C6.10, C6.9, C6.8,
 C6.7, and C6.6 at the provenance ceiling. Actual loader precedence/environment, complete
 transitive closure beyond the bounded C6.9 graph, system-library bytes, runtime `dlopen`, Windows PE, WASM,
 runtime-bearing plugins, signatures, and distribution authorization remain out

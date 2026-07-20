@@ -16,6 +16,7 @@ import pytest
 
 import rextio.artifacts.evidence as evidence_mod
 from rextio.analyzer.executable_identity import executable_ast_fingerprint
+from rextio.analyzer.stub_inputs import capture_sibling_stub_inputs
 from rextio.analyzer.models import (
     FunctionAnalysis,
     ModuleAnalysis,
@@ -435,6 +436,21 @@ def _install_synthetic_c610_and_source_lock(
         lambda **_kwargs: verification,
     )
     return verification
+
+
+def _install_synthetic_c613_stub(
+    *, project: Path, plan: BuildPlan, present: bool
+) -> None:
+    stub = project / "app.pyi"
+    if present:
+        stub.write_text(
+            "def add(a: int, b: int) -> int: ...\n", encoding="utf-8"
+        )
+    elif stub.exists():
+        stub.unlink()
+    plan.analysis._stub_inputs = capture_sibling_stub_inputs(
+        project, (project / "app.py",)
+    )
 
 
 def _install_cargo_inventory_with_registry(
@@ -914,6 +930,246 @@ def test_c6_12_is_absent_without_present_c6_10(
         is False
     )
     assert "rextio:project_source_license_policy_verification" not in metadata
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_c6_13_initial_stub_observation_and_materials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    present: bool,
+) -> None:
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    plan, _function = _plan_with_accepted_function(
+        project, profile, project / "app.py"
+    )
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c613_stub(project=project, plan=plan, present=present)
+    _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    analysis = evidence.analysis_input_verification
+    assert analysis is not None
+    assert [record.state for record in analysis.records] == [
+        "present" if present else "absent"
+    ]
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
+    )
+    materials = provenance["predicate"]["buildDefinition"]["resolvedDependencies"]
+    stub_materials = [
+        item
+        for item in materials
+        if item.get("annotations", {}).get("rextio:role") == "project-python-stub"
+    ]
+    assert len(stub_materials) == int(present)
+
+
+def test_material_pressure_omits_c6_13_before_c6_12_and_c6_11(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c613_stub(project=project, plan=plan, present=True)
+    _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+    # Leave exactly two optional slots: C6.12 and C6.11. C6.13 is the
+    # newest material and must be omitted first.
+    monkeypatch.setattr(
+        supply_chain_module,
+        "MAX_EVIDENCE_COMPONENTS",
+        len(snapshot.all_inputs) + 2 + 2,
+    )
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert evidence.analysis_input_verification is None
+    assert evidence.project_source_license_policy_verification is not None
+    assert evidence.component_license_policy_verification is not None
+    assert evidence.source_transformation_verification is not None
+
+
+def test_sidecar_pressure_rebuilds_without_c6_13_and_preserves_earlier_observations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c613_stub(project=project, plan=plan, present=True)
+    _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+    original_limit = supply_chain_module.MAX_SIDECAR_BYTES
+    real_builder = supply_chain_module.build_intoto_provenance_document
+
+    def omit_c613_only(**kwargs):
+        document = real_builder(**kwargs)
+        if kwargs.get("analysis_input_verification") is not None:
+            supply_chain_module.MAX_SIDECAR_BYTES = 1
+        else:
+            supply_chain_module.MAX_SIDECAR_BYTES = original_limit
+        return document
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "build_intoto_provenance_document",
+        omit_c613_only,
+    )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert evidence.analysis_input_verification is None
+    assert evidence.project_source_license_policy_verification is not None
+    assert evidence.component_license_policy_verification is not None
+    assert evidence.source_transformation_verification is not None
+
+
+def test_c6_13_cannot_survive_c6_10_sidecar_omission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c613_stub(project=project, plan=plan, present=True)
+    _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setattr(supply_chain_module, "MAX_EVIDENCE_COMPONENTS", 10_000)
+    monkeypatch.setattr(supply_chain_module, "MAX_SIDECAR_BYTES", 1)
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert evidence.source_transformation_verification is None
+    assert evidence.analysis_input_verification is None
+
+
+def test_c6_13_final_stub_mutation_drops_only_c6_13(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(
+        project, profile, project / "app.py"
+    )
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c613_stub(project=project, plan=plan, present=True)
+    verification = _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+    replay_calls = 0
+
+    def replay(**_kwargs):
+        nonlocal replay_calls
+        replay_calls += 1
+        if replay_calls == 2:
+            stub = project / "app.pyi"
+            stub.write_bytes(stub.read_bytes() + b"\n")
+        return verification
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_scoped_source_transformation_verification",
+        replay,
+    )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert replay_calls == 2
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert evidence.project_source_license_policy_verification is not None
+    assert evidence.analysis_input_verification is None
 
 
 def test_provenance_ceiling_omits_c6_12_before_c6_11_and_c6_10(

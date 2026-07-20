@@ -185,6 +185,11 @@ def _collect_scoped_source_transformation_verification(
         plugin_registry=None,
         plugin_config=None,
     )
+    original_stub_inputs = plan.analysis._stub_inputs
+    if original_stub_inputs is not None:
+        if replay_analysis._stub_inputs != original_stub_inputs:
+            raise ValueError("source transformation verification replay stub inputs differ")
+        replay_analysis._stub_inputs = original_stub_inputs
     replay_accepted = _accepted_function_map(replay_analysis)
     if replay_accepted != accepted:
         raise ValueError("source transformation verification replay closure differs")

@@ -12,7 +12,7 @@ fallback.
 The Release Train C branch adds experimental host source/executable planning,
 plugin standalone capability, the C5.1 external-source inventory gate, and the
 C6.1 bounded prebuild authorization-contract preview (not full C6). It emits
-tooling contract **2.17.0**, including C6.2 preview evidence, the C6.3
+tooling contract **2.18.0**, including C6.2 preview evidence, the C6.3
 required-evidence gate, and the C6.4 macOS/Linux direct native runtime linkage
 inventory plus C6.5's always-blocked distribution-readiness assessment and
 C6.6's bounded source-transformation inventory observation, C6.7's
@@ -593,7 +593,7 @@ The unreleased Train C planning records do not change these additional limits:
   names remain unhashed leaves. It does not prove actual loader
   selection/environment, compute a complete transitive closure, bind system-library
   bytes, observe `dlopen`, cover Windows or runtime-bearing plugins, or produce
-  signatures. C6.5-C6.12 reports these gaps through a closed,
+  signatures. C6.5-C6.13 reports these gaps through a closed,
   always-blocked readiness assessment; it cannot authorize distribution. C6.6
   observes only accepted project-owned function lowerings and binds hashes,
   ranges, closed ids, and the shared generated `src/lib.rs` input. It does not
@@ -616,7 +616,11 @@ The unreleased Train C planning records do not change these additional limits:
   license/NOTICE files, analyze obligations or compatibility, prove source
   ownership or generated-output/derivative-work rights, provide legal
   approval, sign evidence, complete global license policy, or authorize
-  distribution. Missing C6.12 adds only its scoped unavailable blocker;
+  distribution. Missing C6.13 adds only its scoped unavailable blocker;
+  compatibility snapshots may support conservative analysis but are not
+  evidence-eligible. The receipt covers only the C6.10 sibling-stub scope;
+  present stubs become `project-python-stub` materials, absent records do not.
+  Missing C6.12 adds only its scoped unavailable blocker;
   malformed present evidence makes every readiness check `not-evaluated` with
   only `readiness-assessment-unavailable`. Full C6, remaining C5.2 source-native
   linkage/codegen/packaging, complete standards

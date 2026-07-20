@@ -16,6 +16,7 @@ from rextio.artifacts.authorization import (
     ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
+    ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
@@ -40,6 +41,8 @@ from rextio.artifacts.evidence import (
     MAX_SOURCE_TRANSFORMATIONS,
     MAX_COMPONENT_LICENSE_RECORDS,
     ArtifactEvidence,
+    AnalysisInputRecord,
+    AnalysisInputVerification,
     CargoDepEdge,
     CargoPackageRef,
     ComponentLicenseInventory,
@@ -62,6 +65,8 @@ from rextio.artifacts.evidence import (
     ArtifactEvidenceGate,
     WheelEntryRef,
     canonical_json_bytes,
+    analysis_input_records_digest,
+    analysis_input_projections_digest,
 )
 
 
@@ -367,6 +372,26 @@ def _preview_evidence() -> ArtifactEvidence:
     )
 
 
+def _preview_evidence_with_c613() -> ArtifactEvidence:
+    evidence = _preview_evidence()
+    verification = evidence.source_transformation_verification
+    assert verification is not None
+    records = (AnalysisInputRecord("app.py", "app.pyi", "absent"),)
+    analysis_inputs = AnalysisInputVerification(
+        source_transformation_verification_sha256=hashlib.sha256(
+            canonical_json_bytes(verification.to_dict())
+        ).hexdigest(),
+        source_input_set_sha256=verification.source_input_set_sha256,
+        source_paths=("app.py",),
+        records=records,
+        analysis_input_set_sha256=analysis_input_records_digest(records, 1),
+        supported_signature_projection_set_sha256=(
+            analysis_input_projections_digest(records, 1)
+        ),
+    )
+    return replace(evidence, analysis_input_verification=analysis_inputs)
+
+
 def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
     assessment = ArtifactDistributionAuthorizationAssessment.from_evidence(
         _preview_evidence()
@@ -375,7 +400,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
 
     assert report["kind"] == "artifact-distribution-authorization"
     assert report["policy"] == "host-extension-wheel-cpython-v1"
-    assert report["policy_version"] == 8
+    assert report["policy_version"] == 9
     assert report["scope"] == "host-extension-wheel-cpython-v1"
     assert report["status"] == "blocked"
     assert report["authority"] == "readiness-assessment-only"
@@ -384,7 +409,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
     assert [item["id"] for item in report["checks"]] == list(
         ARTIFACT_AUTHORIZATION_CHECK_IDS
     )
-    assert [item["status"] for item in report["checks"][:11]] == [
+    assert [item["status"] for item in report["checks"][:12]] == [
         "satisfied",
         "satisfied",
         "satisfied",
@@ -396,12 +421,67 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
         "satisfied",
         "satisfied",
         "satisfied",
+        "unavailable",
     ]
-    assert {item["status"] for item in report["checks"][11:]} == {"blocked"}
+    assert {item["status"] for item in report["checks"][12:]} == {"blocked"}
+    assert report["blockers"] == [
+        *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
+        ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE,
+    ]
+    assert report["complete"] is False
+    assert report["signed"] is False
+    assert report["distribution_authorized"] is False
+
+
+def test_valid_c613_is_the_twelfth_observation_only() -> None:
+    report = evaluate_artifact_distribution_authorization(
+        _preview_evidence_with_c613()
+    ).to_dict()
+    statuses = {item["id"]: item["status"] for item in report["checks"]}
+
+    assert len(report["checks"]) == 22
+    assert statuses["scoped-analysis-inputs-verified"] == "satisfied"
+    assert all(
+        statuses[check_id] == "blocked"
+        for check_id in (
+            "build-input-closure-complete",
+            "reproducibility-verified",
+            "attestation-signed",
+            "component-license-policy-complete",
+            "sbom-composition-complete",
+        )
+    )
     assert report["blockers"] == list(ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS)
     assert report["complete"] is False
     assert report["signed"] is False
     assert report["distribution_authorized"] is False
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda receipt: object.__setattr__(
+            receipt, "analysis_input_set_sha256", "0" * 64
+        ),
+        lambda receipt: object.__setattr__(
+            receipt, "source_paths", ("app.py", "other.py")
+        ),
+        lambda receipt: object.__setattr__(
+            receipt, "records", [receipt.records[0]]
+        ),
+    ],
+)
+def test_forged_c613_receipts_are_not_evaluated(mutation) -> None:
+    evidence = _preview_evidence_with_c613()
+    receipt = copy.deepcopy(evidence.analysis_input_verification)
+    assert receipt is not None
+    mutation(receipt)
+    object.__setattr__(evidence, "analysis_input_verification", receipt)
+
+    report = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    assert len(report["checks"]) == 22
+    assert {item["status"] for item in report["checks"]} == {"not-evaluated"}
+    assert report["blockers"] == [ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE]
 
 
 def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
@@ -412,7 +492,8 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
 
     assert report["evidence_status"] == "unavailable"
     assert report["evidence_reason"] == "cargo-metadata-failed"
-    assert [item["status"] for item in report["checks"][:11]] == [
+    assert [item["status"] for item in report["checks"][:12]] == [
+        "unavailable",
         "unavailable",
         "unavailable",
         "unavailable",
@@ -425,7 +506,7 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
         "unavailable",
         "unavailable",
     ]
-    assert {item["status"] for item in report["checks"][11:]} == {"not-evaluated"}
+    assert {item["status"] for item in report["checks"][12:]} == {"not-evaluated"}
     assert report["blockers"] == ["evidence-unavailable"]
     assert "/" not in json.dumps(report, sort_keys=True)
 
@@ -449,6 +530,7 @@ def test_missing_transformation_inventory_is_a_dedicated_closed_observation() ->
         ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
         "scoped-source-transformation-verification-unavailable",
         ARTIFACT_AUTHORIZATION_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE,
     ]
     assert ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE not in report["blockers"]
     # C6.3 evaluates the existing preview evidence independently.
@@ -464,7 +546,7 @@ def test_missing_scoped_verification_is_a_dedicated_unavailable_observation() ->
     report = evaluate_artifact_distribution_authorization(evidence).to_dict()
     statuses = {item["id"]: item["status"] for item in report["checks"]}
 
-    assert report["policy_version"] == 8
+    assert report["policy_version"] == 9
     assert statuses["source-transformation-inventory-bound"] == "satisfied"
     assert statuses["scoped-source-transformation-verified"] == "unavailable"
     assert statuses["source-transformation-provenance-complete"] == "blocked"
@@ -495,6 +577,7 @@ def test_missing_runtime_path_resolution_is_a_dedicated_closed_observation() -> 
         *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
         ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE,
     ]
     assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
 
@@ -510,6 +593,7 @@ def test_missing_bounded_runtime_graph_retains_direct_path_observation() -> None
     assert report["blockers"] == [
         *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
         ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE,
     ]
 
 
@@ -530,6 +614,7 @@ def test_missing_license_inventory_is_a_dedicated_closed_observation() -> None:
         *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
         ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE,
     ]
     assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
 
@@ -549,6 +634,7 @@ def test_missing_scoped_license_policy_receipt_is_dedicated_and_non_authorizing(
     assert report["blockers"] == [
         *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
         ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE,
     ]
     assert report["complete"] is False
     assert report["signed"] is False
@@ -574,6 +660,7 @@ def test_missing_project_source_license_policy_receipt_is_scoped_only() -> None:
     assert report["blockers"] == [
         *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
         ARTIFACT_AUTHORIZATION_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE,
     ]
     assert report["complete"] is False
     assert report["signed"] is False

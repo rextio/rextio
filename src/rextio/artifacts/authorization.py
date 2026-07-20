@@ -1,6 +1,6 @@
-"""C6.5-C6.12 distribution-authorization readiness assessment.
+"""C6.5-C6.13 distribution-authorization readiness assessment.
 
-This module deliberately sits between the C6.2-C6.12 preview evidence record
+This module deliberately sits between the C6.2-C6.13 preview evidence record
 and any future distribution authorization.  It converts only a validated
 ``ArtifactEvidence`` instance into a deterministic, closed-vocabulary report.
 The report is readiness information, never an authorization decision: every
@@ -11,23 +11,27 @@ static graph across recursively inspected packaged members. It does not
 implement actual loader selection, complete transitive dependency closure, runtime ``dlopen``
 observation, Windows PE inspection, runtime-bearing
 plugins, executables, Rust crates, Nuitka/WASM evidence, signatures, or final
-distribution authorization. C6.10-C6.12 add narrowly scoped source-replay,
-Cargo license-policy, and project-source license-policy observations without
+distribution authorization. C6.10-C6.13 add narrowly scoped source-replay,
+Cargo license-policy, project-source license-policy, and analysis-input observations without
 satisfying their corresponding global readiness checks.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import unicodedata
 
 from rextio.artifacts.evidence import (
     ARTIFACT_EVIDENCE_SCOPE,
     MAX_COMPONENT_LICENSE_RECORDS,
     MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS,
     MAX_SOURCE_TRANSFORMATIONS,
+    MAX_INPUT_FILES,
     REASON_EVIDENCE_INTERNAL,
     UNAVAILABLE_REASONS,
     ArtifactEvidence,
+    AnalysisInputRecord,
+    AnalysisInputVerification,
     ComponentLicenseInventory,
     ComponentLicensePolicyVerification,
     ComponentLicenseRecord,
@@ -53,7 +57,7 @@ from rextio.artifacts.evidence import (
 
 ARTIFACT_AUTHORIZATION_KIND = "artifact-distribution-authorization"
 ARTIFACT_AUTHORIZATION_POLICY = ARTIFACT_EVIDENCE_SCOPE
-ARTIFACT_AUTHORIZATION_POLICY_VERSION = 8
+ARTIFACT_AUTHORIZATION_POLICY_VERSION = 9
 ARTIFACT_AUTHORIZATION_STATUS = "blocked"
 ARTIFACT_AUTHORIZATION_AUTHORITY = "readiness-assessment-only"
 
@@ -69,6 +73,7 @@ _OBSERVATION_CHECK_IDS: tuple[str, ...] = (
     "component-license-inventory-bound",
     "scoped-component-license-policy-verified",
     "scoped-project-source-license-policy-verified",
+    "scoped-analysis-inputs-verified",
 )
 _READINESS_CHECK_IDS: tuple[str, ...] = (
     "component-license-policy-complete",
@@ -114,6 +119,9 @@ ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE = (
 ARTIFACT_AUTHORIZATION_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_UNAVAILABLE = (
     "scoped-project-source-license-policy-verification-unavailable"
 )
+ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE = (
+    "scoped-analysis-input-verification-unavailable"
+)
 ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE = (
     "native-runtime-path-resolution-inventory-unavailable"
 )
@@ -130,10 +138,15 @@ _ALLOWED_BLOCKERS = frozenset(
         ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
     }
 )
+_OBSERVATION_COUNT = len(_OBSERVATION_CHECK_IDS)
+_READINESS_COUNT = len(_READINESS_CHECK_IDS)
+_OPTIONAL_OBSERVATION_COUNT = 8
+_MANDATORY_OBSERVATION_COUNT = _OBSERVATION_COUNT - _OPTIONAL_OBSERVATION_COUNT
 _CHECK_STATUSES = frozenset({"satisfied", "blocked", "unavailable", "not-evaluated"})
 _REQUIRED_INPUT_ROLES = frozenset(
     {
@@ -165,7 +178,7 @@ class ArtifactAuthorizationCheck:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactDistributionAuthorizationAssessment:
-    """Immutable, fail-closed C6.5-C6.12 distribution-readiness report.
+    """Immutable, fail-closed C6.5-C6.13 distribution-readiness report.
 
     Callers should use :meth:`from_evidence`.  The public fields remain
     validate-on-construction so malformed, reordered, duplicated, or
@@ -258,6 +271,10 @@ class ArtifactDistributionAuthorizationAssessment:
                         "scoped-project-source-license-policy-verified",
                         ARTIFACT_AUTHORIZATION_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
                     ),
+                    (
+                        "scoped-analysis-inputs-verified",
+                        ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE,
+                    ),
                 ):
                     status = statuses_by_id[check_id]
                     if status == "unavailable":
@@ -267,7 +284,7 @@ class ArtifactDistributionAuthorizationAssessment:
                 if blockers != tuple(expected_blockers):
                     raise ValueError("preview-ready authorization blockers are not canonical")
                 expected_statuses = (
-                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-7]),
+                    *("satisfied" for _ in range(_MANDATORY_OBSERVATION_COUNT)),
                     statuses_by_id["direct-native-path-resolution-bound"],
                     statuses_by_id["bounded-static-native-runtime-graph-bound"],
                     statuses_by_id["source-transformation-inventory-bound"],
@@ -277,14 +294,15 @@ class ArtifactDistributionAuthorizationAssessment:
                     statuses_by_id[
                         "scoped-project-source-license-policy-verified"
                     ],
+                    statuses_by_id["scoped-analysis-inputs-verified"],
                     *("blocked" for _ in _READINESS_CHECK_IDS),
                 )
         else:
             if self.evidence_reason not in UNAVAILABLE_REASONS:
                 raise ValueError("unavailable authorization assessment needs a fixed evidence reason")
             expected_statuses = (
-                *("unavailable" for _ in _OBSERVATION_CHECK_IDS),
-                *("not-evaluated" for _ in _READINESS_CHECK_IDS),
+                *("unavailable" for _ in range(_OBSERVATION_COUNT)),
+                *("not-evaluated" for _ in range(_READINESS_COUNT)),
             )
             # Do not speculate about downstream readiness when the source
             # evidence itself is unavailable.
@@ -307,7 +325,7 @@ class ArtifactDistributionAuthorizationAssessment:
         cls,
         evidence: ArtifactEvidence,
     ) -> ArtifactDistributionAuthorizationAssessment:
-        """Return the total, no-throw C6.5-C6.12 evaluation for ``evidence``."""
+        """Return the total, no-throw C6.5-C6.13 evaluation for ``evidence``."""
         return evaluate_artifact_distribution_authorization(evidence)
 
     def to_dict(self) -> dict[str, object]:
@@ -332,7 +350,7 @@ class ArtifactDistributionAuthorizationAssessment:
 def evaluate_artifact_distribution_authorization(
     evidence: ArtifactEvidence,
 ) -> ArtifactDistributionAuthorizationAssessment:
-    """Evaluate C6.5-C6.12 without changing the surrounding build outcome.
+    """Evaluate C6.5-C6.13 without changing the surrounding build outcome.
 
     A structurally invalid preview remains reported as preview evidence, but
     no readiness check is claimed: the closed fallback shape contains only
@@ -352,6 +370,7 @@ def evaluate_artifact_distribution_authorization(
                 license_bound,
                 license_policy_verification_bound,
                 project_source_license_policy_verification_bound,
+                analysis_inputs_bound,
             ) = _validate_preview_observations(trusted)
             optional_statuses = (
                 "satisfied" if path_resolution_bound else "unavailable",
@@ -369,6 +388,7 @@ def evaluate_artifact_distribution_authorization(
                     if project_source_license_policy_verification_bound
                     else "unavailable"
                 ),
+                "satisfied" if analysis_inputs_bound else "unavailable",
             )
             optional_blockers = tuple(
                 blocker
@@ -398,6 +418,10 @@ def evaluate_artifact_distribution_authorization(
                         project_source_license_policy_verification_bound,
                         ARTIFACT_AUTHORIZATION_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
                     ),
+                    (
+                        analysis_inputs_bound,
+                        ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE,
+                    ),
                 )
                 if not available
             )
@@ -405,7 +429,7 @@ def evaluate_artifact_distribution_authorization(
                 evidence_status="preview-ready",
                 evidence_reason=None,
                 statuses=(
-                    *("satisfied" for _ in _OBSERVATION_CHECK_IDS[:-7]),
+                    *("satisfied" for _ in range(_MANDATORY_OBSERVATION_COUNT)),
                     *optional_statuses,
                     *("blocked" for _ in _READINESS_CHECK_IDS),
                 ),
@@ -415,8 +439,8 @@ def evaluate_artifact_distribution_authorization(
             evidence_status="unavailable",
             evidence_reason=trusted.reason,
             statuses=(
-                *("unavailable" for _ in _OBSERVATION_CHECK_IDS),
-                *("not-evaluated" for _ in _READINESS_CHECK_IDS),
+                *("unavailable" for _ in range(_OBSERVATION_COUNT)),
+                *("not-evaluated" for _ in range(_READINESS_COUNT)),
             ),
             blockers=(ARTIFACT_AUTHORIZATION_EVIDENCE_UNAVAILABLE,),
         )
@@ -434,8 +458,8 @@ def evaluate_artifact_distribution_authorization(
             evidence_status="unavailable",
             evidence_reason=REASON_EVIDENCE_INTERNAL,
             statuses=(
-                *("unavailable" for _ in _OBSERVATION_CHECK_IDS),
-                *("not-evaluated" for _ in _READINESS_CHECK_IDS),
+                *("unavailable" for _ in range(_OBSERVATION_COUNT)),
+                *("not-evaluated" for _ in range(_READINESS_COUNT)),
             ),
             blockers=(ARTIFACT_AUTHORIZATION_EVIDENCE_UNAVAILABLE,),
         )
@@ -519,6 +543,9 @@ def _reconstruct_evidence(evidence: ArtifactEvidence) -> ArtifactEvidence:
         ),
         source_transformation_verification=_copy_transformation_verification(
             evidence.source_transformation_verification
+        ),
+        analysis_input_verification=_copy_analysis_input_verification(
+            evidence.analysis_input_verification
         ),
         component_license_inventory=_copy_component_license_inventory(
             evidence.component_license_inventory
@@ -816,6 +843,89 @@ def _copy_transformation_verification(
     )
 
 
+def _copy_analysis_input_verification(
+    value: AnalysisInputVerification | None,
+) -> AnalysisInputVerification | None:
+    """Deep-copy and revalidate the complete C6.13 receipt before evaluation."""
+    if value is None:
+        return None
+    if type(value) is not AnalysisInputVerification:
+        raise TypeError("analysis input verification model is invalid")
+    if type(value.source_paths) is not tuple or type(value.records) is not tuple:
+        raise TypeError("analysis input verification collections must be tuples")
+    if (
+        len(value.source_paths) > MAX_INPUT_FILES
+        or len(value.records) > MAX_INPUT_FILES
+    ):
+        raise ValueError("analysis input verification record count exceeds the bound")
+    if len(value.source_paths) != len(value.records):
+        raise ValueError("analysis input verification coverage is inconsistent")
+    _reject_path_aliases(value.source_paths, "analysis source")
+    _reject_path_aliases(
+        tuple(record.stub_path for record in value.records), "analysis stub"
+    )
+    source_paths = tuple(value.source_paths)
+    records = tuple(_copy_analysis_input_record(item) for item in value.records)
+    rebuilt = AnalysisInputVerification(
+        source_transformation_verification_sha256=(
+            value.source_transformation_verification_sha256
+        ),
+        source_input_set_sha256=value.source_input_set_sha256,
+        source_paths=source_paths,
+        records=records,
+        analysis_input_set_sha256=value.analysis_input_set_sha256,
+        supported_signature_projection_set_sha256=(
+            value.supported_signature_projection_set_sha256
+        ),
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        analysis_input_set_version=value.analysis_input_set_version,
+        supported_signature_projection_set_version=(
+            value.supported_signature_projection_set_version
+        ),
+        authority=value.authority,
+        complete_for_scope=value.complete_for_scope,
+        global_build_input_closure_complete=(
+            value.global_build_input_closure_complete
+        ),
+        complete=value.complete,
+        signed=value.signed,
+        distribution_authorized=value.distribution_authorized,
+    )
+    if rebuilt != value:
+        raise ValueError("analysis input verification is not canonical")
+    return rebuilt
+
+
+def _copy_analysis_input_record(value: AnalysisInputRecord) -> AnalysisInputRecord:
+    if type(value) is not AnalysisInputRecord:
+        raise TypeError("analysis input record model is invalid")
+    return AnalysisInputRecord(
+        source_path=value.source_path,
+        stub_path=value.stub_path,
+        state=value.state,
+        stub=_copy_file_ref(value.stub) if value.stub is not None else None,
+        supported_signature_projection_version=(
+            value.supported_signature_projection_version
+        ),
+        supported_signature_projection_sha256=(
+            value.supported_signature_projection_sha256
+        ),
+    )
+
+
+def _reject_path_aliases(paths: tuple[str, ...], label: str) -> None:
+    aliases: set[str] = set()
+    for path in paths:
+        if type(path) is not str:
+            raise TypeError(f"{label} path must be a string")
+        key = unicodedata.normalize("NFC", path).casefold()
+        if key in aliases:
+            raise ValueError(f"{label} paths contain aliases")
+        aliases.add(key)
+
+
 def _copy_component_license_inventory(
     value: ComponentLicenseInventory | None,
 ) -> ComponentLicenseInventory | None:
@@ -951,12 +1061,12 @@ def _copy_project_source_license_policy_verification(
 
 def _validate_preview_observations(
     evidence: ArtifactEvidence,
-) -> tuple[bool, bool, bool, bool, bool, bool, bool]:
+) -> tuple[bool, bool, bool, bool, bool, bool, bool, bool]:
     """Require structural/model bindings before marking observations satisfied.
 
     This intentionally does not reopen or re-inspect output bytes. C6.2-C6.4
-    own those observations; C6.5-C6.12 validates closed model invariants and
-    exact evidence-reference bindings only. The C6.10-C6.12 collectors
+    own those observations; C6.5-C6.13 validates closed model invariants and
+    exact evidence-reference bindings only. The C6.10-C6.13 collectors
     performed source replay and owner-lock verification before evidence
     construction; this later readiness pass validates only the immutable
     scoped receipt bindings.
@@ -1051,7 +1161,7 @@ def _validate_preview_observations(
         raise ValueError("preview authorization target/runtime binding is invalid")
     if runtime.architecture != _target_architecture(evidence.target_triple):
         raise ValueError("preview authorization target architecture is invalid")
-    # C6.6-C6.12 are intentionally independent of C6.3 evidence satisfaction.
+    # C6.6-C6.13 are intentionally independent of C6.3 evidence satisfaction.
     # Absence is a fixed per-observation unavailable result, while present
     # models have been reconstructed and cross-bound to their exact underlying
     # evidence. Neither is complete provenance/license-policy verification.
@@ -1087,6 +1197,14 @@ def _validate_preview_observations(
     project_source_license_policy_verification_bound = (
         evidence.project_source_license_policy_verification is not None
     )
+    # C6.13 is meaningful only when both prerequisite C6.6 inventory and
+    # C6.10 scoped replay are present. ArtifactEvidence reconstruction above
+    # has already re-run the exact cross-binding invariants.
+    analysis_inputs_bound = (
+        transformation_bound
+        and transformation_verification_bound
+        and evidence.analysis_input_verification is not None
+    )
     return (
         path_resolution_bound,
         runtime_graph_bound,
@@ -1095,6 +1213,7 @@ def _validate_preview_observations(
         license_bound,
         license_policy_verification_bound,
         project_source_license_policy_verification_bound,
+        analysis_inputs_bound,
     )
 
 

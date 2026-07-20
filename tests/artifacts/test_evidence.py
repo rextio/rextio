@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import inspect
 import json
 import struct
 import zipfile
@@ -75,6 +76,61 @@ def test_c69_runtime_closure_symbols_and_bounds_are_explicitly_exported() -> Non
         "NativeRuntimeTransitiveClosureInventory",
         "NativeRuntimeTransitiveClosureNode",
     } <= set(evidence_module.__all__)
+
+
+def test_c613_analysis_input_verification_is_additive_keyword_only() -> None:
+    parameters = list(inspect.signature(ArtifactEvidence).parameters.values())
+    by_name = {parameter.name: parameter for parameter in parameters}
+
+    assert by_name["analysis_input_verification"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert [parameter.name for parameter in parameters[:19]] == [
+        "kind",
+        "status",
+        "authority",
+        "signature_status",
+        "composition",
+        "reason",
+        "target_triple",
+        "subject",
+        "sbom",
+        "provenance",
+        "inputs",
+        "wheel_entries",
+        "cargo_packages",
+        "cargo_dependencies",
+        "native_runtime_inventory",
+        "native_runtime_path_resolution",
+        "native_runtime_transitive_closure",
+        "source_transformation_inventory",
+        "source_transformation_verification",
+    ]
+    assert [
+        (parameter.name, parameter.kind)
+        for parameter in parameters[19:27]
+    ] == [
+        ("component_license_inventory", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        (
+            "component_license_policy_verification",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ),
+        (
+            "project_source_license_policy_verification",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ),
+        ("limitations", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        ("preview", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        ("complete", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        ("signed", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        ("distribution_authorized", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+    ]
+
+    evidence = ArtifactEvidence(
+        "host-extension-wheel",
+        "unavailable",
+        reason="native-extension-not-built",
+        analysis_input_verification=None,
+    )
+    assert evidence.analysis_input_verification is None
 
 
 def _synthetic_native_inventory(
