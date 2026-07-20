@@ -438,6 +438,10 @@ def test_required_policy_succeeds_only_with_preview_ready_evidence(
     assert authorization["status"] == "blocked"
     assert authorization["authority"] == "readiness-assessment-only"
     assert authorization["evidence_status"] == "preview-ready"
+    statuses = {item["id"]: item["status"] for item in authorization["checks"]}
+    assert statuses["component-license-inventory-bound"] == "satisfied"
+    assert statuses["scoped-component-license-policy-verified"] == "unavailable"
+    assert statuses["component-license-policy-complete"] == "blocked"
     assert authorization["blockers"] == [
         "component-license-policy-incomplete",
         "native-runtime-resolution-incomplete",
@@ -449,6 +453,7 @@ def test_required_policy_succeeds_only_with_preview_ready_evidence(
         "reproducibility-unverified",
         "attestation-unsigned",
         "sbom-composition-incomplete",
+        "scoped-component-license-policy-verification-unavailable",
     ]
     assert authorization["distribution_authorized"] is False
     output = capsys.readouterr().out

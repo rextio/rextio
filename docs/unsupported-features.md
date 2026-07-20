@@ -12,14 +12,15 @@ fallback.
 The Release Train C branch adds experimental host source/executable planning,
 plugin standalone capability, the C5.1 external-source inventory gate, and the
 C6.1 bounded prebuild authorization-contract preview (not full C6). It emits
-tooling contract **2.15.0**, including C6.2 preview evidence, the C6.3
+tooling contract **2.16.0**, including C6.2 preview evidence, the C6.3
 required-evidence gate, and the C6.4 macOS/Linux direct native runtime linkage
 inventory plus C6.5's always-blocked distribution-readiness assessment and
 C6.6's bounded source-transformation inventory observation, C6.7's
 unvalidated reachable-Cargo component-license string observation, C6.8's
 one-hop static packaged path-resolution observation, and C6.9's bounded static
 native-runtime graph observation, plus C6.10's narrow plugin-free
-source-transformation replay verification, but
+source-transformation replay verification and C6.11's scoped project-owner
+Cargo component-license policy receipt, but
 remains **unreleased**. PyPI 0.1.4 does not
 include those additions. Train C boundaries are called out explicitly below so
 planning records are not mistaken for broad source-AOT support.
@@ -591,7 +592,7 @@ The unreleased Train C planning records do not change these additional limits:
   names remain unhashed leaves. It does not prove actual loader
   selection/environment, compute a complete transitive closure, bind system-library
   bytes, observe `dlopen`, cover Windows or runtime-bearing plugins, or produce
-  signatures. C6.5-C6.10 reports these gaps through a closed,
+  signatures. C6.5-C6.11 reports these gaps through a closed,
   always-blocked readiness assessment; it cannot authorize distribution. C6.6
   observes only accepted project-owned function lowerings and binds hashes,
   ranges, closed ids, and the shared generated `src/lib.rs` input. It does not
@@ -602,8 +603,13 @@ The unreleased Train C planning records do not change these additional limits:
   direct-native PyO3 function closure; it excludes embedding, native top-level,
   runtime shims, delegated fallback, Python boundary calls, and all external
   source. Byte-identical `src/lib.rs` regeneration is complete only for that
-  fixed scope and does not make global transformation provenance complete. Full C6,
-  remaining C5.2 source-native linkage/codegen/packaging, complete standards
+  fixed scope and does not make global transformation provenance complete.
+  C6.11 can bind only exact raw registry-license metadata to a strict
+  project-owner allow lock. It does not authenticate the claimed owner, parse
+  SPDX, inspect license/NOTICE files, evaluate obligations or compatibility,
+  provide legal approval, sign evidence, complete global license policy, or
+  authorize distribution. Full C6, remaining C5.2 source-native
+  linkage/codegen/packaging, complete standards
   SBOM, and redistribution remain future work.
 - Draft device-provider records have no discovery, selection, build/link hook,
   generated helper injection, or runtime dispatch.

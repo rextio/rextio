@@ -62,5 +62,10 @@ from __future__ import annotations
 # project-source set, rederives function identities, relowers the complete
 # plugin-free PyO3 closure, and requires byte-identical src/lib.rs regeneration.
 # Global transformation provenance and distribution authorization stay blocked.
+# Contract 2.16.0 adds C6.11's exact project-owner Cargo license-policy lock
+# receipt and policy-version-7 observation. It binds the full C6.7 inventory,
+# exact raw registry-license rows, and exact lock bytes, but does not authenticate
+# the attestor, validate SPDX/license files, grant legal approval, or authorize
+# distribution. Global component-license policy therefore remains incomplete.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.15.0"
+TOOLING_CONTRACT_VERSION = "2.16.0"

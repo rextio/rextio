@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,7 +23,16 @@ from rextio.analyzer.models import (
     SourceRange,
 )
 from rextio.artifacts.evidence import (
+    CARGO_LICENSE_POLICY,
+    CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT,
+    CARGO_LICENSE_POLICY_ACTION_SCOPES,
+    CARGO_LICENSE_POLICY_LOCK_FILENAME,
+    CARGO_LICENSE_POLICY_LOCK_KIND,
+    CARGO_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
+    COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE,
     ArtifactEvidenceGate,
+    CargoDepEdge,
+    CargoPackageRef,
     NativeRuntimeDependency,
     NativeRuntimeInventory,
     NativeRuntimePathResolutionInventory,
@@ -45,6 +55,8 @@ from rextio.artifacts.models import ArtifactKind
 from rextio.artifacts.profiles import detect_host_target_triple, host_extension_profile
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.build.cargo_builder import NativeBuildResult
+from rextio.build.cargo_inventory import CargoInventory
+from rextio.build.license_inventory import collect_component_license_inventory
 from rextio.build.supply_chain import (
     EvidenceInputSnapshot,
     capture_cargo_lock_input,
@@ -352,6 +364,80 @@ def _synthetic_scoped_verification(
     )
 
 
+def _install_cargo_inventory_with_registry(
+    *,
+    project: Path,
+    target_triple: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> CargoInventory:
+    """Install a bounded synthetic Cargo graph and its exact C6.11 lock."""
+    from rextio.build import supply_chain as supply_chain_module
+
+    root = CargoPackageRef(
+        name="rextio_generated_native",
+        version="0.1.0",
+        source=None,
+        checksum=None,
+        kind="path-root",
+    )
+    registry = CargoPackageRef(
+        name="pyo3",
+        version="0.23.5",
+        source="registry+https://github.com/rust-lang/crates.io-index",
+        checksum="7" * 64,
+        kind="registry",
+        license="MIT OR Apache-2.0",
+    )
+    cargo_inventory = CargoInventory(
+        target_triple=target_triple,
+        root_package=root.bom_ref(),
+        packages=tuple(sorted((root, registry), key=lambda package: package.bom_ref())),
+        dependencies=(
+            CargoDepEdge(
+                dependent_ref=root.bom_ref(),
+                dependency_ref=registry.bom_ref(),
+            ),
+        ),
+        lockfile_present=True,
+    )
+    component_inventory = collect_component_license_inventory(
+        cargo_inventory.packages
+    )
+    assert component_inventory is not None
+    inventory_digest = hashlib.sha256(
+        canonical_json_bytes(component_inventory.to_dict())
+    ).hexdigest()
+    document = {
+        "schema_version": CARGO_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
+        "kind": CARGO_LICENSE_POLICY_LOCK_KIND,
+        "scope": COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE,
+        "policy": CARGO_LICENSE_POLICY,
+        "component_license_inventory_sha256": inventory_digest,
+        "registry_components": [
+            record.to_dict()
+            for record in component_inventory.records
+            if record.kind == "registry"
+        ],
+        "attestation": {
+            "attestor": "Acme Engineering",
+            "attestor_kind": "organization",
+            "attestor_relationship": "organization-owner",
+            "decision": "allow",
+            "action_scopes": list(CARGO_LICENSE_POLICY_ACTION_SCOPES),
+            "acknowledgement": CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT,
+        },
+    }
+    (project / CARGO_LICENSE_POLICY_LOCK_FILENAME).write_bytes(
+        canonical_json_bytes(document)
+    )
+    monkeypatch.setattr(
+        supply_chain_module,
+        "resolve_cargo_inventory",
+        lambda *_args, **_kwargs: cargo_inventory,
+    )
+    return cargo_inventory
+
+
 def test_nuitka_host_extension_is_out_of_scope(tmp_path: Path) -> None:
     project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
     profile = host_extension_profile(
@@ -593,6 +679,295 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     assert internal["component_license_inventory_observed"] is True
     assert internal["component_license_policy_complete"] is False
     assert prov["predicate"]["runDetails"]["metadata"]["rextio:observed_native_runtime"] == runtime
+
+
+def test_preview_evidence_embeds_exact_c6_11_receipt_and_lock_material(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(
+            status="built",
+            path=str(wheel_path),
+            message="ok",
+        ),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    receipt = evidence.component_license_policy_verification
+    assert receipt is not None
+    assert evidence.component_license_inventory is not None
+    assert (
+        evidence.to_dict()["component_license_policy_verification"]
+        == receipt.to_dict()
+    )
+    assert all(
+        item.role != "cargo-license-policy-lock" for item in evidence.inputs
+    )
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
+    )
+    predicate = provenance["predicate"]
+    materials = predicate["buildDefinition"]["resolvedDependencies"]
+    lock_materials = [
+        item
+        for item in materials
+        if item.get("annotations", {}).get("rextio:role")
+        == "cargo-license-policy-lock"
+    ]
+    assert lock_materials == [
+        {
+            "uri": f"file:{CARGO_LICENSE_POLICY_LOCK_FILENAME}",
+            "digest": {"sha256": receipt.lock_file.sha256},
+            "annotations": {
+                "rextio:role": "cargo-license-policy-lock",
+                "rextio:size": str(receipt.lock_file.size),
+            },
+        }
+    ]
+    internal = predicate["buildDefinition"]["internalParameters"]
+    metadata = predicate["runDetails"]["metadata"]
+    assert internal["scoped_component_license_policy_verified"] is True
+    assert internal["component_license_policy_complete"] is False
+    assert metadata["rextio:component_license_policy_verification_observed"] is True
+    assert metadata["rextio:component_license_policy_verification"] == receipt.to_dict()
+    sbom_text = (project / evidence.sbom.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
+    assert CARGO_LICENSE_POLICY_LOCK_FILENAME not in sbom_text
+    assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+
+
+def test_provenance_ceiling_omits_c6_11_before_c6_10(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_scoped_source_transformation_verification",
+        lambda *, input_snapshot, transformation_inventory, **_kwargs: (
+            _synthetic_scoped_verification(
+                input_snapshot,
+                transformation_inventory,
+            )
+        ),
+    )
+    real_builder = supply_chain_module.build_intoto_provenance_document
+    presence: list[tuple[bool, bool]] = []
+
+    def inflate_only_policy(**kwargs):
+        policy_present = (
+            kwargs.get("component_license_policy_verification") is not None
+        )
+        replay_present = kwargs.get("source_transformation_verification") is not None
+        presence.append((policy_present, replay_present))
+        document = real_builder(**kwargs)
+        if policy_present:
+            document["predicate"]["runDetails"]["metadata"]["test:padding"] = (
+                "x" * evidence_mod.MAX_SIDECAR_BYTES
+            )
+        return document
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "build_intoto_provenance_document",
+        inflate_only_policy,
+    )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(
+            status="built",
+            path=str(wheel_path),
+            message="ok",
+        ),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert presence == [(True, True), (False, True)]
+    assert evidence.component_license_policy_verification is None
+    assert evidence.component_license_inventory is not None
+    assert evidence.source_transformation_verification is not None
+    assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
+    )
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert metadata["rextio:component_license_policy_verification_observed"] is False
+    assert "rextio:component_license_policy_verification" not in metadata
+    assert metadata["rextio:source_transformation_verification_observed"] is True
+    assert not any(
+        material.get("annotations", {}).get("rextio:role")
+        == "cargo-license-policy-lock"
+        for material in provenance["predicate"]["buildDefinition"][
+            "resolvedDependencies"
+        ]
+    )
+
+
+def test_c6_11_material_count_overflow_omits_only_scoped_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    cargo_inventory = _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+    monkeypatch.setattr(
+        supply_chain_module,
+        "MAX_EVIDENCE_COMPONENTS",
+        len(snapshot.all_inputs) + len(cargo_inventory.packages),
+    )
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(
+            status="built",
+            path=str(wheel_path),
+            message="ok",
+        ),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert evidence.component_license_inventory is not None
+    assert evidence.component_license_policy_verification is None
+    assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
+    )
+    assert not any(
+        material.get("annotations", {}).get("rextio:role")
+        == "cargo-license-policy-lock"
+        for material in provenance["predicate"]["buildDefinition"][
+            "resolvedDependencies"
+        ]
+    )
+
+
+@pytest.mark.parametrize("final_result", ["missing", "changed"])
+def test_final_c6_11_recollection_drops_only_changed_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    final_result: str,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+    real_collector = (
+        supply_chain_module.collect_component_license_policy_verification
+    )
+    calls = 0
+
+    def collect_twice(**kwargs):
+        nonlocal calls
+        calls += 1
+        receipt = real_collector(**kwargs)
+        assert receipt is not None
+        if calls == 1:
+            return receipt
+        if final_result == "missing":
+            return None
+        return replace(receipt, policy_snapshot_sha256="f" * 64)
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_component_license_policy_verification",
+        collect_twice,
+    )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(
+            status="built",
+            path=str(wheel_path),
+            message="ok",
+        ),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert calls == 2
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert evidence.component_license_policy_verification is None
+    assert evidence.component_license_inventory is not None
+    assert evidence.source_transformation_inventory is not None
+    assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
+    )
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert metadata["rextio:component_license_policy_verification_observed"] is False
+    assert "rextio:component_license_policy_verification" not in metadata
+    assert not any(
+        material.get("annotations", {}).get("rextio:role")
+        == "cargo-license-policy-lock"
+        for material in provenance["predicate"]["buildDefinition"][
+            "resolvedDependencies"
+        ]
+    )
 
 
 def test_preview_evidence_embeds_scoped_transformation_verification(

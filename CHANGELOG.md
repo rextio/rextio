@@ -5,10 +5,50 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.15.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.16.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR.
+
+### C6.11 scoped Cargo component-license policy verification
+
+- Add optional immutable
+  `artifact_evidence.component_license_policy_verification` schema 1 for the
+  narrow `reachable-registry-cargo-license-metadata-v1` scope. It binds the
+  canonical full C6.7 inventory digest, exact sorted registry `bom_ref` set,
+  exact bytes of project-root `rextio.cargo-license.lock.json`, and a canonical
+  semantic snapshot of that strict JSON document. The generated path root is
+  excluded from the allow rows but remains bound through the full inventory
+  digest.
+- Require every reachable registry component to have a nonblank raw Cargo
+  metadata license value that is neither an exact nor compound unknown sentinel.
+  The owner lock must reproduce every registry record verbatim and in order,
+  carry `decision: allow`, the exact local-build/package/redistribution scopes,
+  the fixed acknowledgement, and a closed human-owner or organization-owner
+  relationship. This is metadata policy only: no SPDX parsing, normalization,
+  license-file/NOTICE review, obligation or compatibility analysis, legal
+  approval, authenticated attestor identity, signature, or distribution
+  authorization is claimed.
+- Read the fixed lock through bounded `openat`/`O_NOFOLLOW` traversal that pins
+  and revalidates every absolute project-root ancestor, with regular-file,
+  single-link, inode/device/time/size, UTF-8, duplicate-key, nonfinite-number,
+  and JSON-depth checks. Recollect immediately before final evidence
+  construction and require exact receipt equality; a missing or changed lock
+  drops only C6.11 and rebuilds provenance without its material.
+- Record the exact receipt in unsigned provenance and add its lock reference as
+  a separate resolved material only while C6.11 is present. It is not added to
+  C6.2 inputs or the SBOM. The additive ceiling now omits C6.11, C6.10, C6.9,
+  C6.8, C6.7, then C6.6; material-count exhaustion caused only by the lock also
+  omits C6.11 without changing the ordinary build or C6.3 gate.
+- Advance readiness to policy version 7 with the tenth observation
+  `scoped-component-license-policy-verified` and fixed
+  `scoped-component-license-policy-verification-unavailable` blocker. The
+  evidence-model binding independently reconstructs the canonical policy
+  snapshot and rejects missing or compound unknown registry licenses. The
+  existing global `component-license-policy-complete` check remains blocked;
+  `complete`, `signed`, and `distribution_authorized` remain false. Advance
+  only the unreleased tooling contract to **2.16.0**; package **0.1.4** and
+  plugin API **1.4** remain unchanged.
 
 ### C6.10 scoped source-transformation replay verification
 
@@ -68,7 +108,8 @@ feature PRs target the `0.1.5` integration branch; `main` stays at the published
 - Keep C6.9 optional and noninterfering. A C6.9-only collection/final-receipt
   failure retains C6.8; a C6.8 failure omits both dependent observations. At
   the 2.14.0 provenance ceiling omit C6.9, then C6.8, C6.7, and C6.6; the
-  cumulative 2.15.0 producer now omits C6.10 before that sequence. The
+  cumulative 2.15.0 producer added C6.10 before that sequence, and 2.16.0 now
+  omits C6.11 before C6.10. The
   independent C6.3 required-evidence gate is unchanged.
 - Read-only refresh exact C6.8 packaged receipts after every C6.9 attempt. It
   requires complete prior receipt coverage, preserves exact file and non-root
