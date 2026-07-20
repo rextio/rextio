@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
+import copy
 import hashlib
+import json
 from dataclasses import FrozenInstanceError, replace
 
 import pytest
@@ -14,6 +15,7 @@ from rextio.artifacts.authorization import (
     ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
+    ARTIFACT_AUTHORIZATION_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
@@ -28,6 +30,12 @@ from rextio.artifacts.evidence import (
     CARGO_LICENSE_POLICY_LOCK_KIND,
     CARGO_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
     COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE,
+    PROJECT_SOURCE_LICENSE_POLICY,
+    PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT,
+    PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES,
+    PROJECT_SOURCE_LICENSE_POLICY_LOCK_KIND,
+    PROJECT_SOURCE_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
+    PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE,
     MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS,
     MAX_SOURCE_TRANSFORMATIONS,
     MAX_COMPONENT_LICENSE_RECORDS,
@@ -45,6 +53,7 @@ from rextio.artifacts.evidence import (
     NativeRuntimeTransitiveClosureEdge,
     NativeRuntimeTransitiveClosureInventory,
     NativeRuntimeTransitiveClosureNode,
+    ProjectSourceLicensePolicyVerification,
     SidecarArtifact,
     SourceTransformationInventory,
     SourceTransformationRange,
@@ -238,6 +247,59 @@ def _preview_evidence() -> ArtifactEvidence:
         attestor_kind="organization",
         attestor_relationship="organization-owner",
     )
+    transformation_verification_digest = hashlib.sha256(
+        canonical_json_bytes(transformation_verification.to_dict())
+    ).hexdigest()
+    project_source_license_policy_document = {
+        "schema_version": PROJECT_SOURCE_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
+        "kind": PROJECT_SOURCE_LICENSE_POLICY_LOCK_KIND,
+        "scope": PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE,
+        "policy": PROJECT_SOURCE_LICENSE_POLICY,
+        "source_transformation_verification_sha256": (
+            transformation_verification_digest
+        ),
+        "source_input_set_sha256": transformation_verification.source_input_set_sha256,
+        "project_sources": [source_ref.to_dict()],
+        "generated_rust": generated_rust_ref.to_dict(),
+        "license_declarations": {
+            "project_sources": "MIT",
+            "generated_rust": "MIT",
+        },
+        "attestation": {
+            "attestor": "Acme Engineering",
+            "attestor_kind": "organization",
+            "attestor_relationship": "organization-owner",
+            "decision": "allow",
+            "action_scopes": list(PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES),
+            "acknowledgement": PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT,
+        },
+    }
+    project_source_license_policy_verification = (
+        ProjectSourceLicensePolicyVerification(
+            source_transformation_verification_sha256=(
+                transformation_verification_digest
+            ),
+            source_input_set_sha256=(
+                transformation_verification.source_input_set_sha256
+            ),
+            source_inputs=(source_ref,),
+            generated_rust=generated_rust_ref,
+            lock_file=EvidenceFileRef(
+                logical_path="rextio.source-license.lock.json",
+                sha256="c" * 64,
+                size=1,
+                role="project-source-license-policy-lock",
+            ),
+            policy_snapshot_sha256=hashlib.sha256(
+                canonical_json_bytes(project_source_license_policy_document)
+            ).hexdigest(),
+            project_source_license_declared="MIT",
+            generated_rust_license_declared="MIT",
+            attestor="Acme Engineering",
+            attestor_kind="organization",
+            attestor_relationship="organization-owner",
+        )
+    )
     return ArtifactEvidence(
         kind="host-extension-wheel",
         status="preview-ready",
@@ -299,6 +361,9 @@ def _preview_evidence() -> ArtifactEvidence:
         component_license_policy_verification=(
             component_license_policy_verification
         ),
+        project_source_license_policy_verification=(
+            project_source_license_policy_verification
+        ),
     )
 
 
@@ -310,7 +375,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
 
     assert report["kind"] == "artifact-distribution-authorization"
     assert report["policy"] == "host-extension-wheel-cpython-v1"
-    assert report["policy_version"] == 7
+    assert report["policy_version"] == 8
     assert report["scope"] == "host-extension-wheel-cpython-v1"
     assert report["status"] == "blocked"
     assert report["authority"] == "readiness-assessment-only"
@@ -319,7 +384,8 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
     assert [item["id"] for item in report["checks"]] == list(
         ARTIFACT_AUTHORIZATION_CHECK_IDS
     )
-    assert [item["status"] for item in report["checks"][:10]] == [
+    assert [item["status"] for item in report["checks"][:11]] == [
+        "satisfied",
         "satisfied",
         "satisfied",
         "satisfied",
@@ -331,7 +397,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
         "satisfied",
         "satisfied",
     ]
-    assert {item["status"] for item in report["checks"][10:]} == {"blocked"}
+    assert {item["status"] for item in report["checks"][11:]} == {"blocked"}
     assert report["blockers"] == list(ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS)
     assert report["complete"] is False
     assert report["signed"] is False
@@ -346,7 +412,8 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
 
     assert report["evidence_status"] == "unavailable"
     assert report["evidence_reason"] == "cargo-metadata-failed"
-    assert [item["status"] for item in report["checks"][:10]] == [
+    assert [item["status"] for item in report["checks"][:11]] == [
+        "unavailable",
         "unavailable",
         "unavailable",
         "unavailable",
@@ -358,7 +425,7 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
         "unavailable",
         "unavailable",
     ]
-    assert {item["status"] for item in report["checks"][10:]} == {"not-evaluated"}
+    assert {item["status"] for item in report["checks"][11:]} == {"not-evaluated"}
     assert report["blockers"] == ["evidence-unavailable"]
     assert "/" not in json.dumps(report, sort_keys=True)
 
@@ -368,6 +435,7 @@ def test_missing_transformation_inventory_is_a_dedicated_closed_observation() ->
         _preview_evidence(),
         source_transformation_inventory=None,
         source_transformation_verification=None,
+        project_source_license_policy_verification=None,
     )
     report = evaluate_artifact_distribution_authorization(evidence).to_dict()
     statuses = {item["id"]: item["status"] for item in report["checks"]}
@@ -380,6 +448,7 @@ def test_missing_transformation_inventory_is_a_dedicated_closed_observation() ->
         *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
         ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
         "scoped-source-transformation-verification-unavailable",
+        ARTIFACT_AUTHORIZATION_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
     ]
     assert ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE not in report["blockers"]
     # C6.3 evaluates the existing preview evidence independently.
@@ -390,17 +459,22 @@ def test_missing_scoped_verification_is_a_dedicated_unavailable_observation() ->
     evidence = replace(
         _preview_evidence(),
         source_transformation_verification=None,
+        project_source_license_policy_verification=None,
     )
     report = evaluate_artifact_distribution_authorization(evidence).to_dict()
     statuses = {item["id"]: item["status"] for item in report["checks"]}
 
-    assert report["policy_version"] == 7
+    assert report["policy_version"] == 8
     assert statuses["source-transformation-inventory-bound"] == "satisfied"
     assert statuses["scoped-source-transformation-verified"] == "unavailable"
     assert statuses["source-transformation-provenance-complete"] == "blocked"
     assert "scoped-source-transformation-verification-unavailable" in report[
         "blockers"
     ]
+    assert (
+        ARTIFACT_AUTHORIZATION_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_UNAVAILABLE
+        in report["blockers"]
+    )
     assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
 
 
@@ -482,6 +556,58 @@ def test_missing_scoped_license_policy_receipt_is_dedicated_and_non_authorizing(
     assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
 
 
+def test_missing_project_source_license_policy_receipt_is_scoped_only() -> None:
+    evidence = replace(
+        _preview_evidence(),
+        project_source_license_policy_verification=None,
+    )
+    report = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    statuses = {item["id"]: item["status"] for item in report["checks"]}
+
+    assert statuses["scoped-source-transformation-verified"] == "satisfied"
+    assert (
+        statuses["scoped-project-source-license-policy-verified"]
+        == "unavailable"
+    )
+    assert statuses["component-license-policy-complete"] == "blocked"
+    assert statuses["source-transformation-provenance-complete"] == "blocked"
+    assert report["blockers"] == [
+        *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
+        ARTIFACT_AUTHORIZATION_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
+    ]
+    assert report["complete"] is False
+    assert report["signed"] is False
+    assert report["distribution_authorized"] is False
+
+
+def test_artifact_evidence_rejects_low_level_mutated_c6_12_receipt() -> None:
+    evidence = _preview_evidence()
+    receipt = copy.deepcopy(evidence.project_source_license_policy_verification)
+    assert receipt is not None
+    object.__setattr__(
+        receipt,
+        "project_source_license_declared",
+        "Apache-2.0",
+    )
+
+    with pytest.raises(ValueError, match="snapshot digest differs"):
+        replace(
+            evidence,
+            project_source_license_policy_verification=receipt,
+        )
+
+
+def test_source_transformation_schema_versions_reject_boolean_type_confusion() -> None:
+    evidence = _preview_evidence()
+    assert evidence.source_transformation_inventory is not None
+    assert evidence.source_transformation_verification is not None
+
+    with pytest.raises(TypeError, match="inventory schema must be an integer"):
+        replace(evidence.source_transformation_inventory, schema_version=True)
+    with pytest.raises(TypeError, match="verification schema must be an integer"):
+        replace(evidence.source_transformation_verification, schema_version=True)
+
+
 def test_structurally_valid_semantic_hash_change_remains_unsigned_observation() -> None:
     evidence = _preview_evidence()
     inventory = evidence.source_transformation_inventory
@@ -497,6 +623,7 @@ def test_structurally_valid_semantic_hash_change_remains_unsigned_observation() 
             records=(changed_record,),
         ),
         source_transformation_verification=None,
+        project_source_license_policy_verification=None,
     )
 
     report = evaluate_artifact_distribution_authorization(adjusted).to_dict()
@@ -658,12 +785,14 @@ def test_assessment_never_claims_sparse_preview_observations(
         "runtime_path_record",
         "runtime_path_mechanism",
         "transformation_inventory",
+        "transformation_inventory_schema",
         "transformation_record_count",
         "transformation_plugin_count",
         "transformation_authority",
         "transformation_complete",
         "transformation_range",
         "transformation_output",
+        "transformation_verification_schema",
         "license_inventory",
         "license_record",
         "license_record_count",
@@ -672,6 +801,11 @@ def test_assessment_never_claims_sparse_preview_observations(
         "license_policy_refs",
         "license_policy_collections",
         "license_policy_authority",
+        "project_source_license_policy_verification",
+        "project_source_license_policy_lock",
+        "project_source_license_policy_inputs",
+        "project_source_license_policy_scopes",
+        "project_source_license_policy_authority",
     ],
 )
 def test_nested_low_level_mutation_never_yields_satisfied_observations(
@@ -740,6 +874,9 @@ def test_nested_low_level_mutation_never_yields_satisfied_observations(
     elif nested_model == "transformation_inventory":
         assert evidence.source_transformation_inventory is not None
         object.__setattr__(evidence.source_transformation_inventory, "scope", injected)
+    elif nested_model == "transformation_inventory_schema":
+        assert evidence.source_transformation_inventory is not None
+        object.__setattr__(evidence.source_transformation_inventory, "schema_version", True)
     elif nested_model == "transformation_record_count":
         assert evidence.source_transformation_inventory is not None
         record = evidence.source_transformation_inventory.records[0]
@@ -774,6 +911,13 @@ def test_nested_low_level_mutation_never_yields_satisfied_observations(
             evidence.source_transformation_inventory.records[0].generated_rust,
             "logical_path",
             injected,
+        )
+    elif nested_model == "transformation_verification_schema":
+        assert evidence.source_transformation_verification is not None
+        object.__setattr__(
+            evidence.source_transformation_verification,
+            "schema_version",
+            True,
         )
     elif nested_model == "license_inventory":
         assert evidence.component_license_inventory is not None
@@ -827,6 +971,41 @@ def test_nested_low_level_mutation_never_yields_satisfied_observations(
         assert evidence.component_license_policy_verification is not None
         object.__setattr__(
             evidence.component_license_policy_verification,
+            "authority",
+            injected,
+        )
+    elif nested_model == "project_source_license_policy_verification":
+        assert evidence.project_source_license_policy_verification is not None
+        object.__setattr__(
+            evidence.project_source_license_policy_verification,
+            "policy_snapshot_sha256",
+            "not-a-digest",
+        )
+    elif nested_model == "project_source_license_policy_lock":
+        assert evidence.project_source_license_policy_verification is not None
+        object.__setattr__(
+            evidence.project_source_license_policy_verification.lock_file,
+            "logical_path",
+            injected,
+        )
+    elif nested_model == "project_source_license_policy_inputs":
+        assert evidence.project_source_license_policy_verification is not None
+        object.__setattr__(
+            evidence.project_source_license_policy_verification,
+            "source_inputs",
+            list(evidence.project_source_license_policy_verification.source_inputs),
+        )
+    elif nested_model == "project_source_license_policy_scopes":
+        assert evidence.project_source_license_policy_verification is not None
+        object.__setattr__(
+            evidence.project_source_license_policy_verification,
+            "action_scopes",
+            list(evidence.project_source_license_policy_verification.action_scopes),
+        )
+    elif nested_model == "project_source_license_policy_authority":
+        assert evidence.project_source_license_policy_verification is not None
+        object.__setattr__(
+            evidence.project_source_license_policy_verification,
             "authority",
             injected,
         )

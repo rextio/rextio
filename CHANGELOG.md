@@ -5,10 +5,47 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.16.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.17.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR.
+
+### C6.12 scoped project-source license-policy verification
+
+- Add optional immutable
+  `artifact_evidence.project_source_license_policy_verification` schema 1 for
+  the fixed `project-functions-pyo3-plugin-free-source-license-v1` scope. It is
+  collected only for a present valid C6.10 receipt and binds that receipt's
+  canonical digest, exact project-source `EvidenceFileRef` set and input-set
+  digest, and exact generated Rust `src/lib.rs` reference.
+- Add the strict project-root `rextio.source-license.lock.json` schema 1
+  (`kind: rextio.project-source-license-policy-lock`, policy
+  `project-owner-exact-source-license-declaration-v1`). The closed document
+  repeats the C6.10/source/output bindings, declares separate nonblank licenses
+  for `project_sources` and `generated_rust`, and carries the fixed owner
+  relationship, `allow` decision, local-build/package/redistribution scopes,
+  and `REXTIO_PROJECT_SOURCE_LICENSE_POLICY_ACK_V1` acknowledgement.
+- Use the bounded descriptor-relative, no-follow, single-link strict JSON
+  reader shared with C6.11. Immediately before evidence return, rerun the C6.10
+  collector with the same plan, snapshot, inventory, and embedding setting and
+  require full receipt equality; only then recollect C6.12 and require full
+  equality. A source, generated `src/lib.rs`, or lock change removes only
+  C6.12 and rebuilds provenance without its material.
+- Serialize the exact receipt in evidence and unsigned provenance and add the
+  source-license lock as a separate resolved provenance material, never as a
+  C6.2 input or CycloneDX component. Material-count and provenance ceilings
+  omit in deterministic order C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, then
+  C6.6.
+- Advance readiness to policy version 8 with the eleventh observation
+  `scoped-project-source-license-policy-verified` and fixed
+  `scoped-project-source-license-policy-verification-unavailable` blocker.
+  This is an owner declaration, not proof of attestor identity, SPDX validity,
+  license/NOTICE files, obligations, compatibility, source ownership,
+  generated-output or derivative-work rights, legal approval, signing, global
+  license policy, or distribution authority. All existing readiness blockers,
+  `complete: false`, `signed: false`, and `distribution_authorized: false`
+  remain unchanged. Advance only the unreleased tooling contract to **2.17.0**;
+  package **0.1.4** and plugin API **1.4** remain unchanged.
 
 ### C6.11 scoped Cargo component-license policy verification
 

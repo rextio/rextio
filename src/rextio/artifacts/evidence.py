@@ -7,10 +7,11 @@ C6.4 adds a sanitized direct native runtime linkage inventory (macOS Mach-O /
 Linux ELF only) under the same evidence-only authority. C6.8 adds optional
 one-hop static packaged path observations. C6.9 adds a strictly bounded,
 cycle-safe graph over recursively inspected packaged members and logical system
-leaves. C6.10 adds scoped source replay, and C6.11 adds a scoped owner Cargo
-license-policy receipt. None completes global transformation/license policy,
-signing, or distribution authorization. Evidence unavailability never changes
-ordinary build success.
+leaves. C6.10 adds scoped source replay, C6.11 adds a scoped owner Cargo
+license-policy receipt, and C6.12 adds an owner declaration for the exact
+C6.10 project-source/generated-Rust scope. None completes global
+transformation/license policy, signing, or distribution authorization.
+Evidence unavailability never changes ordinary build success.
 """
 
 from __future__ import annotations
@@ -72,6 +73,8 @@ MAX_COMPONENT_LICENSE_OBSERVED_CHARS = MAX_EVIDENCE_STRING_CHARS
 MAX_COMPONENT_LICENSE_INVENTORY_CHARS = 512 * 1024
 MAX_COMPONENT_LICENSE_POLICY_VERIFICATION_CHARS = 256 * 1024
 MAX_CARGO_LICENSE_LOCK_BYTES = 256 * 1024
+MAX_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_CHARS = 256 * 1024
+MAX_PROJECT_SOURCE_LICENSE_LOCK_BYTES = 256 * 1024
 
 SOURCE_TRANSFORMATION_INVENTORY_KIND = "source-transformation-inventory"
 SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION = 1
@@ -101,6 +104,22 @@ CARGO_LICENSE_POLICY = "project-owner-exact-license-metadata-v1"
 CARGO_LICENSE_POLICY_LOCK_ROLE = "cargo-license-policy-lock"
 CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT = "REXTIO_CARGO_LICENSE_POLICY_ACK_V1"
 CARGO_LICENSE_POLICY_ACTION_SCOPES: tuple[str, ...] = (
+    "local-build",
+    "package",
+    "redistribution",
+)
+PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_KIND = "project-source-license-policy-verification"
+PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION = 1
+PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE = (
+    "project-functions-pyo3-plugin-free-source-license-v1"
+)
+PROJECT_SOURCE_LICENSE_POLICY_LOCK_FILENAME = "rextio.source-license.lock.json"
+PROJECT_SOURCE_LICENSE_POLICY_LOCK_KIND = "rextio.project-source-license-policy-lock"
+PROJECT_SOURCE_LICENSE_POLICY_LOCK_SCHEMA_VERSION = "1"
+PROJECT_SOURCE_LICENSE_POLICY = "project-owner-exact-source-license-declaration-v1"
+PROJECT_SOURCE_LICENSE_POLICY_LOCK_ROLE = "project-source-license-policy-lock"
+PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT = "REXTIO_PROJECT_SOURCE_LICENSE_POLICY_ACK_V1"
+PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES: tuple[str, ...] = (
     "local-build",
     "package",
     "redistribution",
@@ -144,7 +163,7 @@ _TRANSFORMATION_DOTTED_ID = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
 )
 _TRANSFORMATION_PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_CARGO_LICENSE_ATTESTOR = re.compile(
+_OWNER_POLICY_ATTESTOR = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9 .,_+-]*[A-Za-z0-9])?$"
 )
 _WHEEL_VERSION_RE = re.compile(
@@ -1341,6 +1360,8 @@ class SourceTransformationInventory:
     def __post_init__(self) -> None:
         if self.kind != SOURCE_TRANSFORMATION_INVENTORY_KIND:
             raise ValueError("source transformation inventory kind is invalid")
+        if type(self.schema_version) is not int:
+            raise TypeError("source transformation inventory schema must be an integer")
         if self.schema_version != SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION:
             raise ValueError("source transformation inventory schema is invalid")
         if self.scope != SOURCE_TRANSFORMATION_INVENTORY_SCOPE:
@@ -1427,6 +1448,8 @@ class SourceTransformationVerification:
     def __post_init__(self) -> None:
         if self.kind != SOURCE_TRANSFORMATION_VERIFICATION_KIND:
             raise ValueError("source transformation verification kind is invalid")
+        if type(self.schema_version) is not int:
+            raise TypeError("source transformation verification schema must be an integer")
         if self.schema_version != SOURCE_TRANSFORMATION_VERIFICATION_SCHEMA_VERSION:
             raise ValueError("source transformation verification schema is invalid")
         if self.scope != SOURCE_TRANSFORMATION_VERIFICATION_SCOPE:
@@ -1762,7 +1785,7 @@ class ComponentLicensePolicyVerification:
         if type(self.attestor) is not str:
             raise TypeError("component license policy attestor must be a string")
         attestor = _bounded_identifier(self.attestor, "component license policy attestor")
-        if attestor != self.attestor or _CARGO_LICENSE_ATTESTOR.fullmatch(attestor) is None:
+        if attestor != self.attestor or _OWNER_POLICY_ATTESTOR.fullmatch(attestor) is None:
             raise ValueError("component license policy attestor is invalid")
         if type(self.attestor_kind) is not str:
             raise TypeError("component license policy attestor kind must be a string")
@@ -1851,6 +1874,267 @@ class ComponentLicensePolicyVerification:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectSourceLicensePolicyVerification:
+    """One owner declaration for the exact C6.10 project/source-output scope.
+
+    The receipt binds declarations to a complete plugin-free C6.10 replay
+    receipt, but does not establish ownership, SPDX validity, legal approval,
+    derivative-work rights, signing, or distribution authority.
+    """
+
+    source_transformation_verification_sha256: str
+    source_input_set_sha256: str
+    source_inputs: tuple[EvidenceFileRef, ...]
+    generated_rust: EvidenceFileRef
+    lock_file: EvidenceFileRef
+    policy_snapshot_sha256: str
+    project_source_license_declared: str
+    generated_rust_license_declared: str
+    attestor: str
+    attestor_kind: str
+    attestor_relationship: str
+    kind: str = PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_KIND
+    schema_version: int = PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION
+    scope: str = PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE
+    policy: str = PROJECT_SOURCE_LICENSE_POLICY
+    decision: str = "allow"
+    action_scopes: tuple[str, ...] = PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES
+    acknowledgement: str = PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT
+    owner_attestation_bound: bool = True
+    attestor_identity_verified: bool = False
+    license_declarations_only: bool = True
+    source_ownership_verified: bool = False
+    generated_output_rights_verified: bool = False
+    derivative_work_rights_verified: bool = False
+    spdx_verified: bool = False
+    license_files_verified: bool = False
+    notice_files_verified: bool = False
+    obligations_verified: bool = False
+    license_compatibility_verified: bool = False
+    legal_approval_verified: bool = False
+    complete_for_scope: bool = True
+    global_license_policy_complete: bool = False
+    complete: bool = False
+    signed: bool = False
+    distribution_authorized: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.kind, "project source license policy verification kind"),
+            (self.scope, "project source license policy verification scope"),
+            (self.policy, "project source license policy identifier"),
+            (self.decision, "project source license policy decision"),
+            (self.acknowledgement, "project source license policy acknowledgement"),
+            (self.authority, "project source license policy authority"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+        if type(self.schema_version) is not int:
+            raise TypeError("project source license policy schema must be an integer")
+        if self.kind != PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_KIND:
+            raise ValueError("project source license policy verification kind is invalid")
+        if self.schema_version != PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION:
+            raise ValueError("project source license policy schema is invalid")
+        if self.scope != PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE:
+            raise ValueError("project source license policy scope is invalid")
+        if self.policy != PROJECT_SOURCE_LICENSE_POLICY:
+            raise ValueError("project source license policy identifier is invalid")
+        for value, label in (
+            (
+                self.source_transformation_verification_sha256,
+                "source transformation verification digest",
+            ),
+            (self.source_input_set_sha256, "project source input-set digest"),
+            (self.policy_snapshot_sha256, "project source policy snapshot digest"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+            if not _HEX_SHA256.fullmatch(value):
+                raise ValueError(f"{label} is invalid")
+        if type(self.source_inputs) is not tuple:
+            raise TypeError("project source license policy inputs must be a tuple")
+        if not self.source_inputs or len(self.source_inputs) > MAX_INPUT_FILES:
+            raise ValueError("project source license policy input count is invalid")
+        if not all(type(item) is EvidenceFileRef for item in self.source_inputs):
+            raise TypeError("project source license policy input model is invalid")
+        if any(item.role != "project-python-source" for item in self.source_inputs):
+            raise ValueError("project source license policy input role is invalid")
+        source_paths = tuple(item.logical_path for item in self.source_inputs)
+        if source_paths != tuple(sorted(set(source_paths))):
+            raise ValueError("project source license policy inputs must be canonical and unique")
+        expected_input_set_sha256 = sha256_hex(
+            canonical_json_bytes([item.to_dict() for item in self.source_inputs])
+        )
+        if self.source_input_set_sha256 != expected_input_set_sha256:
+            raise ValueError("project source license policy input-set digest differs")
+        if type(self.generated_rust) is not EvidenceFileRef:
+            raise TypeError("project source license policy Rust binding is invalid")
+        if self.generated_rust.role != "generated-rust-input" or PurePosixPath(
+            self.generated_rust.logical_path
+        ).parts[-2:] != ("src", "lib.rs"):
+            raise ValueError("project source license policy must bind Rust src/lib.rs")
+        if type(self.lock_file) is not EvidenceFileRef:
+            raise TypeError("project source license policy lock reference is invalid")
+        if (
+            self.lock_file.logical_path != PROJECT_SOURCE_LICENSE_POLICY_LOCK_FILENAME
+            or self.lock_file.role != PROJECT_SOURCE_LICENSE_POLICY_LOCK_ROLE
+            or self.lock_file.size <= 0
+            or self.lock_file.size > MAX_PROJECT_SOURCE_LICENSE_LOCK_BYTES
+        ):
+            raise ValueError("project source license policy lock binding is invalid")
+        for value, label in (
+            (self.project_source_license_declared, "project source license declaration"),
+            (self.generated_rust_license_declared, "generated Rust license declaration"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+            if (
+                value != value.strip()
+                or not value
+                or len(value) > MAX_COMPONENT_LICENSE_OBSERVED_CHARS
+                or any(ord(character) < 32 for character in value)
+                or license_declaration_is_unknown(value)
+            ):
+                raise ValueError(f"{label} is invalid or unknown")
+        if type(self.attestor) is not str:
+            raise TypeError("project source license policy attestor must be a string")
+        attestor = _bounded_identifier(self.attestor, "project source license policy attestor")
+        if attestor != self.attestor or _OWNER_POLICY_ATTESTOR.fullmatch(attestor) is None:
+            raise ValueError("project source license policy attestor is invalid")
+        if type(self.attestor_kind) is not str:
+            raise TypeError("project source license policy attestor kind must be a string")
+        if self.attestor_kind not in {"human", "organization"}:
+            raise ValueError("project source license policy attestor kind is invalid")
+        if type(self.attestor_relationship) is not str:
+            raise TypeError("project source license policy relationship must be a string")
+        expected_relationships = {
+            "human": "human-owner",
+            "organization": "organization-owner",
+        }
+        if self.attestor_relationship != expected_relationships[self.attestor_kind]:
+            raise ValueError("project source license policy relationship is invalid")
+        if self.decision != "allow":
+            raise ValueError("project source license policy decision must be allow")
+        if type(self.action_scopes) is not tuple:
+            raise TypeError("project source license policy action scopes must be a tuple")
+        if self.action_scopes != PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES:
+            raise ValueError("project source license policy action scopes are invalid")
+        if self.acknowledgement != PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT:
+            raise ValueError("project source license policy acknowledgement is invalid")
+        fixed_booleans = (
+            (self.owner_attestation_bound, True),
+            (self.attestor_identity_verified, False),
+            (self.license_declarations_only, True),
+            (self.source_ownership_verified, False),
+            (self.generated_output_rights_verified, False),
+            (self.derivative_work_rights_verified, False),
+            (self.spdx_verified, False),
+            (self.license_files_verified, False),
+            (self.notice_files_verified, False),
+            (self.obligations_verified, False),
+            (self.license_compatibility_verified, False),
+            (self.legal_approval_verified, False),
+            (self.complete_for_scope, True),
+            (self.global_license_policy_complete, False),
+            (self.complete, False),
+            (self.signed, False),
+            (self.distribution_authorized, False),
+        )
+        if any(
+            type(value) is not bool or value is not expected for value, expected in fixed_booleans
+        ):
+            raise ValueError("project source license policy safety claim is invalid")
+        if self.authority != "observation-only":
+            raise ValueError("project source license policy authority is invalid")
+        expected_policy_digest = sha256_hex(canonical_json_bytes(self.policy_document()))
+        if self.policy_snapshot_sha256 != expected_policy_digest:
+            raise ValueError("project source license policy snapshot digest differs")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_CHARS:
+            raise ValueError(
+                "project source license policy verification exceeds the character bound"
+            )
+
+    def policy_document(self) -> dict[str, object]:
+        """Return the exact semantic project-owner lock document."""
+        return {
+            "schema_version": PROJECT_SOURCE_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
+            "kind": PROJECT_SOURCE_LICENSE_POLICY_LOCK_KIND,
+            "scope": PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE,
+            "policy": PROJECT_SOURCE_LICENSE_POLICY,
+            "source_transformation_verification_sha256": (
+                self.source_transformation_verification_sha256
+            ),
+            "source_input_set_sha256": self.source_input_set_sha256,
+            "project_sources": [item.to_dict() for item in self.source_inputs],
+            "generated_rust": self.generated_rust.to_dict(),
+            "license_declarations": {
+                "project_sources": self.project_source_license_declared,
+                "generated_rust": self.generated_rust_license_declared,
+            },
+            "attestation": {
+                "attestor": self.attestor,
+                "attestor_kind": self.attestor_kind,
+                "attestor_relationship": self.attestor_relationship,
+                "decision": self.decision,
+                "action_scopes": list(self.action_scopes),
+                "acknowledgement": self.acknowledgement,
+            },
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic scoped owner-declaration receipt."""
+        return {
+            "kind": PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_KIND,
+            "schema_version": PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION,
+            "scope": PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE,
+            "policy": PROJECT_SOURCE_LICENSE_POLICY,
+            "authority": "observation-only",
+            "complete": False,
+            "signed": False,
+            "distribution_authorized": False,
+            "complete_for_scope": True,
+            "global_license_policy_complete": False,
+            "owner_attestation_bound": True,
+            "attestor_identity_verified": False,
+            "license_declarations_only": True,
+            "source_ownership_verified": False,
+            "generated_output_rights_verified": False,
+            "derivative_work_rights_verified": False,
+            "spdx_verified": False,
+            "license_files_verified": False,
+            "notice_files_verified": False,
+            "obligations_verified": False,
+            "license_compatibility_verified": False,
+            "legal_approval_verified": False,
+            "source_transformation_verification_sha256": (
+                self.source_transformation_verification_sha256
+            ),
+            "source_input_set_sha256": self.source_input_set_sha256,
+            "source_input_count": len(self.source_inputs),
+            "source_inputs": [item.to_dict() for item in self.source_inputs],
+            "generated_rust": self.generated_rust.to_dict(),
+            "lock_file": self.lock_file.to_dict(),
+            "policy_snapshot_sha256": self.policy_snapshot_sha256,
+            "project_source_license_declared": self.project_source_license_declared,
+            "generated_rust_license_declared": self.generated_rust_license_declared,
+            "attestor": self.attestor,
+            "attestor_kind": self.attestor_kind,
+            "attestor_relationship": self.attestor_relationship,
+            "decision": "allow",
+            "action_scopes": list(PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES),
+            "acknowledgement": PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT,
+        }
+
+
 @dataclass(frozen=True)
 class SidecarArtifact:
     """One finalized sidecar written next to the wheel."""
@@ -1885,7 +2169,7 @@ class SidecarArtifact:
 
 @dataclass(frozen=True)
 class ArtifactEvidence:
-    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.11 preview."""
+    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.12 preview."""
 
     kind: str
     status: str  # preview-ready | unavailable
@@ -1911,6 +2195,9 @@ class ArtifactEvidence:
     component_license_inventory: ComponentLicenseInventory | None = None
     component_license_policy_verification: (
         ComponentLicensePolicyVerification | None
+    ) = None
+    project_source_license_policy_verification: (
+        ProjectSourceLicensePolicyVerification | None
     ) = None
     limitations: tuple[str, ...] = DEFAULT_LIMITATIONS
     preview: bool = True
@@ -1951,6 +2238,7 @@ class ArtifactEvidence:
                 or self.source_transformation_verification is not None
                 or self.component_license_inventory is not None
                 or self.component_license_policy_verification is not None
+                or self.project_source_license_policy_verification is not None
             ):
                 raise ValueError("unavailable evidence must not carry inventory fields")
         else:
@@ -2106,6 +2394,18 @@ class ArtifactEvidence:
                     inventory=self.source_transformation_inventory,
                     inputs=self.inputs,
                 )
+            if self.project_source_license_policy_verification is not None:
+                if self.source_transformation_verification is None:
+                    raise ValueError(
+                        "project source license policy verification requires "
+                        "source transformation verification"
+                    )
+                _validate_project_source_license_policy_verification_binding(
+                    verification=self.project_source_license_policy_verification,
+                    transformation_verification=(
+                        self.source_transformation_verification
+                    ),
+                )
             if self.component_license_inventory is not None:
                 if type(self.component_license_inventory) is not ComponentLicenseInventory:
                     raise TypeError("component license inventory model is invalid")
@@ -2231,13 +2531,17 @@ class ArtifactEvidence:
                     data["component_license_policy_verification"] = (
                         self.component_license_policy_verification.to_dict()
                     )
+                if self.project_source_license_policy_verification is not None:
+                    data["project_source_license_policy_verification"] = (
+                        self.project_source_license_policy_verification.to_dict()
+                    )
         return data
 
 
-def cargo_license_metadata_is_unknown(value: str) -> bool:
-    """Return whether one raw Cargo license value contains an unknown sentinel."""
+def license_declaration_is_unknown(value: str) -> bool:
+    """Return whether a bounded license declaration contains an unknown sentinel."""
     if type(value) is not str:
-        raise TypeError("Cargo license metadata must be a string")
+        raise TypeError("license declaration must be a string")
     collapsed = " ".join(value.split()).casefold()
     if collapsed in _UNKNOWN_CARGO_LICENSE_VALUES:
         return True
@@ -2245,6 +2549,11 @@ def cargo_license_metadata_is_unknown(value: str) -> bool:
         return True
     tokens = re.findall(r"[a-z0-9]+", collapsed)
     return any(token in _UNKNOWN_CARGO_LICENSE_TOKENS for token in tokens)
+
+
+def cargo_license_metadata_is_unknown(value: str) -> bool:
+    """Return whether one raw Cargo license value contains an unknown sentinel."""
+    return license_declaration_is_unknown(value)
 
 
 def _validate_component_license_policy_verification_binding(
@@ -2294,6 +2603,112 @@ def _validate_component_license_policy_verification_binding(
     policy_digest = sha256_hex(canonical_json_bytes(policy_document))
     if verification.policy_snapshot_sha256 != policy_digest:
         raise ValueError("component license policy snapshot digest differs")
+
+
+def _validate_project_source_license_policy_verification_binding(
+    *,
+    verification: ProjectSourceLicensePolicyVerification,
+    transformation_verification: SourceTransformationVerification,
+) -> None:
+    """Bind one C6.12 receipt to the exact present C6.10 replay receipt."""
+    verification = _reconstruct_project_source_license_policy_verification(
+        verification
+    )
+    if type(transformation_verification) is not SourceTransformationVerification:
+        raise TypeError("project source license policy requires C6.10 verification")
+    transformation_digest = sha256_hex(
+        canonical_json_bytes(transformation_verification.to_dict())
+    )
+    if (
+        verification.source_transformation_verification_sha256
+        != transformation_digest
+    ):
+        raise ValueError("project source license policy C6.10 digest differs")
+    if (
+        verification.source_input_set_sha256
+        != transformation_verification.source_input_set_sha256
+        or verification.source_inputs != transformation_verification.source_inputs
+    ):
+        raise ValueError("project source license policy source binding differs")
+    if verification.generated_rust != transformation_verification.generated_rust:
+        raise ValueError("project source license policy Rust binding differs")
+
+
+def _reconstruct_project_source_license_policy_verification(
+    value: ProjectSourceLicensePolicyVerification,
+) -> ProjectSourceLicensePolicyVerification:
+    """Deeply rebuild one C6.12 receipt before trusting any serialized claim."""
+    if type(value) is not ProjectSourceLicensePolicyVerification:
+        raise TypeError("project source license policy verification model is invalid")
+    if type(value.source_inputs) is not tuple or type(value.action_scopes) is not tuple:
+        raise TypeError(
+            "project source license policy verification collections must be tuples"
+        )
+    rebuilt = ProjectSourceLicensePolicyVerification(
+        source_transformation_verification_sha256=(
+            value.source_transformation_verification_sha256
+        ),
+        source_input_set_sha256=value.source_input_set_sha256,
+        source_inputs=tuple(
+            _reconstruct_project_source_license_file_ref(item)
+            for item in value.source_inputs
+        ),
+        generated_rust=_reconstruct_project_source_license_file_ref(
+            value.generated_rust
+        ),
+        lock_file=_reconstruct_project_source_license_file_ref(value.lock_file),
+        policy_snapshot_sha256=value.policy_snapshot_sha256,
+        project_source_license_declared=value.project_source_license_declared,
+        generated_rust_license_declared=value.generated_rust_license_declared,
+        attestor=value.attestor,
+        attestor_kind=value.attestor_kind,
+        attestor_relationship=value.attestor_relationship,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        policy=value.policy,
+        decision=value.decision,
+        action_scopes=tuple(value.action_scopes),
+        acknowledgement=value.acknowledgement,
+        owner_attestation_bound=value.owner_attestation_bound,
+        attestor_identity_verified=value.attestor_identity_verified,
+        license_declarations_only=value.license_declarations_only,
+        source_ownership_verified=value.source_ownership_verified,
+        generated_output_rights_verified=value.generated_output_rights_verified,
+        derivative_work_rights_verified=value.derivative_work_rights_verified,
+        spdx_verified=value.spdx_verified,
+        license_files_verified=value.license_files_verified,
+        notice_files_verified=value.notice_files_verified,
+        obligations_verified=value.obligations_verified,
+        license_compatibility_verified=value.license_compatibility_verified,
+        legal_approval_verified=value.legal_approval_verified,
+        complete_for_scope=value.complete_for_scope,
+        global_license_policy_complete=value.global_license_policy_complete,
+        complete=value.complete,
+        signed=value.signed,
+        distribution_authorized=value.distribution_authorized,
+        authority=value.authority,
+    )
+    if rebuilt != value:
+        raise ValueError("project source license policy receipt is noncanonical")
+    return rebuilt
+
+
+def _reconstruct_project_source_license_file_ref(
+    value: EvidenceFileRef,
+) -> EvidenceFileRef:
+    """Re-run one nested C6.12 file-reference model boundary."""
+    if type(value) is not EvidenceFileRef:
+        raise TypeError("project source license policy file binding is invalid")
+    rebuilt = EvidenceFileRef(
+        logical_path=value.logical_path,
+        sha256=value.sha256,
+        size=value.size,
+        role=value.role,
+    )
+    if rebuilt != value:
+        raise ValueError("project source license policy file binding is noncanonical")
+    return rebuilt
 
 
 def _validate_source_transformation_verification_binding(
@@ -4650,6 +5065,9 @@ def build_intoto_provenance_document(
     component_license_policy_verification: (
         ComponentLicensePolicyVerification | None
     ) = None,
+    project_source_license_policy_verification: (
+        ProjectSourceLicensePolicyVerification | None
+    ) = None,
 ) -> dict[str, object]:
     """Build an unsigned in-toto Statement v1 with SLSA Provenance v1 predicate.
 
@@ -4708,6 +5126,27 @@ def build_intoto_provenance_document(
             }
         )
 
+    if project_source_license_policy_verification is not None:
+        if source_transformation_verification is None:
+            raise ValueError(
+                "project source license policy provenance requires C6.10 verification"
+            )
+        _validate_project_source_license_policy_verification_binding(
+            verification=project_source_license_policy_verification,
+            transformation_verification=source_transformation_verification,
+        )
+        lock_file = project_source_license_policy_verification.lock_file
+        materials.append(
+            {
+                "uri": f"file:{lock_file.logical_path}",
+                "digest": {"sha256": lock_file.sha256},
+                "annotations": {
+                    "rextio:role": lock_file.role,
+                    "rextio:size": str(lock_file.size),
+                },
+            }
+        )
+
     if len(materials) > MAX_EVIDENCE_COMPONENTS:
         raise ArtifactEvidenceError(
             "provenance material count exceeds the bound",
@@ -4744,6 +5183,10 @@ def build_intoto_provenance_document(
             component_license_policy_verification is not None
         ),
         "component_license_policy_complete": False,
+        "scoped_project_source_license_policy_verified": (
+            project_source_license_policy_verification is not None
+        ),
+        "project_source_license_policy_complete": False,
     }
     if native_runtime_inventory is not None:
         internal_parameters["native_runtime_format"] = native_runtime_inventory.format
@@ -4764,6 +5207,9 @@ def build_intoto_provenance_document(
         ),
         "rextio:component_license_policy_verification_observed": (
             component_license_policy_verification is not None
+        ),
+        "rextio:project_source_license_policy_verification_observed": (
+            project_source_license_policy_verification is not None
         ),
     }
     if native_runtime_inventory is not None:
@@ -4791,6 +5237,10 @@ def build_intoto_provenance_document(
     if component_license_policy_verification is not None:
         run_metadata["rextio:component_license_policy_verification"] = (
             component_license_policy_verification.to_dict()
+        )
+    if project_source_license_policy_verification is not None:
+        run_metadata["rextio:project_source_license_policy_verification"] = (
+            project_source_license_policy_verification.to_dict()
         )
 
     document: dict[str, object] = {

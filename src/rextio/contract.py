@@ -67,5 +67,12 @@ from __future__ import annotations
 # exact raw registry-license rows, and exact lock bytes, but does not authenticate
 # the attestor, validate SPDX/license files, grant legal approval, or authorize
 # distribution. Global component-license policy therefore remains incomplete.
+# Contract 2.17.0 adds C6.12's exact project-owner source-license declaration
+# receipt and policy-version-8 observation. It binds one present C6.10 replay,
+# its complete scoped project-source set, generated Rust src/lib.rs, and exact
+# lock bytes. It does not authenticate ownership, validate SPDX/license files
+# or obligations, establish derivative-work rights, grant legal approval, or
+# authorize distribution. Global source-transformation and license policy
+# therefore remain incomplete.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.16.0"
+TOOLING_CONTRACT_VERSION = "2.17.0"

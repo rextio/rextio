@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import json
 import os
@@ -30,6 +31,13 @@ from rextio.artifacts.evidence import (
     CARGO_LICENSE_POLICY_LOCK_KIND,
     CARGO_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
     COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE,
+    PROJECT_SOURCE_LICENSE_POLICY,
+    PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT,
+    PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES,
+    PROJECT_SOURCE_LICENSE_POLICY_LOCK_FILENAME,
+    PROJECT_SOURCE_LICENSE_POLICY_LOCK_KIND,
+    PROJECT_SOURCE_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
+    PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE,
     ArtifactEvidenceGate,
     CargoDepEdge,
     CargoPackageRef,
@@ -46,6 +54,7 @@ from rextio.artifacts.evidence import (
 )
 from rextio.artifacts.authorization import (
     ARTIFACT_AUTHORIZATION_LICENSE_UNAVAILABLE,
+    ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
     ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
@@ -64,6 +73,9 @@ from rextio.build.supply_chain import (
     capture_generated_rust_inputs,
     capture_project_source_snapshot,
     emit_host_extension_wheel_evidence,
+)
+from rextio.build.transformation_inventory import (
+    collect_source_transformation_inventory,
 )
 from rextio.build.wheel_builder import WheelBuildResult, build_artifact_wheel
 from rextio.partition.build_plan import BuildPlan
@@ -362,6 +374,67 @@ def _synthetic_scoped_verification(
         regenerated_rust_size=generated.size,
         generator_backend="rextio-core-rust-pyo3-v1",
     )
+
+
+def _write_project_source_license_policy_lock(
+    project: Path,
+    verification: SourceTransformationVerification,
+) -> None:
+    verification_digest = hashlib.sha256(
+        canonical_json_bytes(verification.to_dict())
+    ).hexdigest()
+    document = {
+        "schema_version": PROJECT_SOURCE_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
+        "kind": PROJECT_SOURCE_LICENSE_POLICY_LOCK_KIND,
+        "scope": PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE,
+        "policy": PROJECT_SOURCE_LICENSE_POLICY,
+        "source_transformation_verification_sha256": verification_digest,
+        "source_input_set_sha256": verification.source_input_set_sha256,
+        "project_sources": [item.to_dict() for item in verification.source_inputs],
+        "generated_rust": verification.generated_rust.to_dict(),
+        "license_declarations": {
+            "project_sources": "MIT",
+            "generated_rust": "MIT",
+        },
+        "attestation": {
+            "attestor": "Acme Engineering",
+            "attestor_kind": "organization",
+            "attestor_relationship": "organization-owner",
+            "decision": "allow",
+            "action_scopes": list(PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES),
+            "acknowledgement": (
+                PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT
+            ),
+        },
+    }
+    (project / PROJECT_SOURCE_LICENSE_POLICY_LOCK_FILENAME).write_bytes(
+        canonical_json_bytes(document)
+    )
+
+
+def _install_synthetic_c610_and_source_lock(
+    *,
+    project: Path,
+    plan: BuildPlan,
+    snapshot: EvidenceInputSnapshot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> SourceTransformationVerification:
+    from rextio.build import supply_chain as supply_chain_module
+
+    inventory = collect_source_transformation_inventory(
+        project_root=project,
+        plan=plan,
+        input_snapshot=snapshot,
+    )
+    assert inventory is not None
+    verification = _synthetic_scoped_verification(snapshot, inventory)
+    _write_project_source_license_policy_lock(project, verification)
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_scoped_source_transformation_verification",
+        lambda **_kwargs: verification,
+    )
+    return verification
 
 
 def _install_cargo_inventory_with_registry(
@@ -679,6 +752,324 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     assert internal["component_license_inventory_observed"] is True
     assert internal["component_license_policy_complete"] is False
     assert prov["predicate"]["runDetails"]["metadata"]["rextio:observed_native_runtime"] == runtime
+
+
+def test_preview_evidence_embeds_exact_c6_12_receipt_and_lock_material(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(
+            status="built",
+            path=str(wheel_path),
+            message="ok",
+        ),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    receipt = evidence.project_source_license_policy_verification
+    assert receipt is not None
+    assert evidence.source_transformation_verification is not None
+    assert (
+        evidence.to_dict()["project_source_license_policy_verification"]
+        == receipt.to_dict()
+    )
+    assert all(
+        item.role != "project-source-license-policy-lock"
+        for item in evidence.inputs
+    )
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
+    )
+    predicate = provenance["predicate"]
+    materials = predicate["buildDefinition"]["resolvedDependencies"]
+    assert [
+        item
+        for item in materials
+        if item.get("annotations", {}).get("rextio:role")
+        == "project-source-license-policy-lock"
+    ] == [
+        {
+            "uri": f"file:{PROJECT_SOURCE_LICENSE_POLICY_LOCK_FILENAME}",
+            "digest": {"sha256": receipt.lock_file.sha256},
+            "annotations": {
+                "rextio:role": "project-source-license-policy-lock",
+                "rextio:size": str(receipt.lock_file.size),
+            },
+        }
+    ]
+    internal = predicate["buildDefinition"]["internalParameters"]
+    metadata = predicate["runDetails"]["metadata"]
+    assert internal["scoped_project_source_license_policy_verified"] is True
+    assert internal["project_source_license_policy_complete"] is False
+    assert (
+        metadata["rextio:project_source_license_policy_verification_observed"]
+        is True
+    )
+    assert (
+        metadata["rextio:project_source_license_policy_verification"]
+        == receipt.to_dict()
+    )
+    authorization = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    authorization_statuses = {
+        item["id"]: item["status"] for item in authorization["checks"]
+    }
+    assert (
+        authorization_statuses["scoped-project-source-license-policy-verified"]
+        == "satisfied"
+    )
+    assert (
+        "scoped-project-source-license-policy-verification-unavailable"
+        not in authorization["blockers"]
+    )
+
+    forged_receipt = copy.deepcopy(receipt)
+    object.__setattr__(
+        forged_receipt,
+        "source_transformation_verification_sha256",
+        "0" * 64,
+    )
+    with pytest.raises(ValueError, match="snapshot digest differs"):
+        replace(
+            evidence,
+            project_source_license_policy_verification=forged_receipt,
+        )
+
+    forged_evidence = copy.deepcopy(evidence)
+    forged_nested = forged_evidence.project_source_license_policy_verification
+    assert forged_nested is not None
+    object.__setattr__(forged_nested, "source_inputs", list(forged_nested.source_inputs))
+    assessment = evaluate_artifact_distribution_authorization(forged_evidence)
+    assert assessment.blockers == (ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE,)
+
+
+def test_c6_12_is_absent_without_present_c6_10(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_scoped_source_transformation_verification",
+        lambda **_kwargs: None,
+    )
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert evidence.source_transformation_verification is None
+    assert evidence.project_source_license_policy_verification is None
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
+    )
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert (
+        metadata["rextio:project_source_license_policy_verification_observed"]
+        is False
+    )
+    assert "rextio:project_source_license_policy_verification" not in metadata
+
+
+def test_provenance_ceiling_omits_c6_12_before_c6_11_and_c6_10(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+    real_builder = supply_chain_module.build_intoto_provenance_document
+    presence: list[tuple[bool, bool, bool]] = []
+
+    def inflate_only_c612(**kwargs):
+        c612_present = (
+            kwargs.get("project_source_license_policy_verification") is not None
+        )
+        c611_present = kwargs.get("component_license_policy_verification") is not None
+        c610_present = kwargs.get("source_transformation_verification") is not None
+        presence.append((c612_present, c611_present, c610_present))
+        document = real_builder(**kwargs)
+        if c612_present:
+            document["predicate"]["runDetails"]["metadata"]["test:padding"] = (
+                "x" * evidence_mod.MAX_SIDECAR_BYTES
+            )
+        return document
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "build_intoto_provenance_document",
+        inflate_only_c612,
+    )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert presence == [(True, True, True), (False, True, True)]
+    assert evidence.project_source_license_policy_verification is None
+    assert evidence.component_license_policy_verification is not None
+    assert evidence.source_transformation_verification is not None
+
+
+@pytest.mark.parametrize("mutated", ["source", "generated-rust", "lock"])
+def test_final_c6_12_reverification_drops_only_changed_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutated: str,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(
+        project,
+        profile,
+        project / "app.py",
+    )
+    snapshot = _snapshot(project, layout, plan)
+    inventory = collect_source_transformation_inventory(
+        project_root=project,
+        plan=plan,
+        input_snapshot=snapshot,
+    )
+    assert inventory is not None
+    verification = _synthetic_scoped_verification(snapshot, inventory)
+    _write_project_source_license_policy_lock(project, verification)
+
+    replay_calls = 0
+
+    def collect_replay(**_kwargs):
+        nonlocal replay_calls
+        replay_calls += 1
+        if replay_calls == 2 and mutated in {"source", "generated-rust"}:
+            path = (
+                project / "app.py"
+                if mutated == "source"
+                else layout.rust_dir / "src" / "lib.rs"
+            )
+            path.write_bytes(path.read_bytes() + b"\n# changed")
+            return None
+        return verification
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_scoped_source_transformation_verification",
+        collect_replay,
+    )
+    real_source_policy_collector = (
+        supply_chain_module.collect_project_source_license_policy_verification
+    )
+    policy_calls = 0
+
+    def collect_policy(**kwargs):
+        nonlocal policy_calls
+        policy_calls += 1
+        if policy_calls == 2 and mutated == "lock":
+            lock_path = project / PROJECT_SOURCE_LICENSE_POLICY_LOCK_FILENAME
+            lock_path.write_bytes(lock_path.read_bytes() + b" ")
+        return real_source_policy_collector(**kwargs)
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "collect_project_source_license_policy_verification",
+        collect_policy,
+    )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert replay_calls == 2
+    assert policy_calls == (1 if mutated != "lock" else 2)
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert evidence.project_source_license_policy_verification is None
+    assert evidence.source_transformation_verification == verification
+    assert evidence.component_license_policy_verification is not None
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
+    )
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert (
+        metadata["rextio:project_source_license_policy_verification_observed"]
+        is False
+    )
 
 
 def test_preview_evidence_embeds_exact_c6_11_receipt_and_lock_material(

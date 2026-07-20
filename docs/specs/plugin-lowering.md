@@ -8,14 +8,15 @@ First consumer: rextio-numpy
 contract **2.2.0**. The unreleased Train C branch (package version still
 **0.1.4**) advances to plugin API **1.4**; the standalone artifact capability
 shape below was added in tooling contract **2.4.0**. The current branch producer
-is **2.16.0** because C5.1/C6.1/C6.2/C6.3/C6.4/C6.5/C6.6/C6.7/C6.8/C6.9/C6.10/C6.11 add unrelated external-source
+is **2.17.0** because C5.1/C6.1/C6.2/C6.3/C6.4/C6.5/C6.6/C6.7/C6.8/C6.9/C6.10/C6.11/C6.12 add unrelated external-source
 inventory, authorization-contract evidence, host-extension wheel artifact
 evidence, its opt-in required gate, and a direct native runtime linkage
 inventory plus an always-blocked distribution-readiness assessment and bounded
 source-transformation observation, reachable-Cargo license-string observation,
 one-hop native path-resolution observation, and a bounded static native-runtime
 graph observation, plus scoped plugin-free source-transformation replay
-verification and scoped Cargo component-license policy verification. Plugin API remains **1.4**; C6.4-C6.11 do
+verification, scoped Cargo component-license policy verification, and scoped
+project-source license-policy verification. Plugin API remains **1.4**; C6.4-C6.12 do
 not add runtime-bearing plugin support.
 
 ## Purpose
