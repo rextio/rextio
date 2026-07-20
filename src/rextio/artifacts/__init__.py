@@ -18,6 +18,7 @@ from rextio.artifacts.evidence import (
     SourceTransformationInventory,
     SourceTransformationRange,
     SourceTransformationRecord,
+    SourceTransformationVerification,
     WheelEntryRef,
 )
 from rextio.artifacts.models import (
@@ -61,6 +62,7 @@ __all__ = [
     "SourceTransformationInventory",
     "SourceTransformationRange",
     "SourceTransformationRecord",
+    "SourceTransformationVerification",
     "TargetCapability",
     "WheelEntryRef",
     "detect_host_target_triple",

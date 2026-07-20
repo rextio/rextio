@@ -2,7 +2,7 @@
 
 Status: **Unreleased Release Train C**, experimental. The latest published
 Rextio release remains **0.1.4** with tooling contract **2.2.0**. The Train C
-branch emits the additive, unreleased tooling contract **2.14.0**; none of the
+branch emits the additive, unreleased tooling contract **2.15.0**; none of the
 surfaces on this page should be treated as already available from PyPI.
 
 Train C introduces a fail-closed planning layer for host source, output
@@ -107,7 +107,7 @@ The plan and CLI include a strong warning: dependency source translation or
 redistribution can create derivative-work obligations, GNU/copyleft terms need
 particular care, and this inventory/authorization gate is not legal advice.
 
-## C6.2-C6.9 host-extension evidence/readiness — bounded and blocked
+## C6.2-C6.10 host-extension evidence/readiness — bounded and blocked
 
 For one ordinary native host-extension + CPython wheel, C6.2 emits incomplete
 CycloneDX 1.6 and unsigned in-toto/SLSA provenance sidecars. C6.3 can make that
@@ -170,12 +170,12 @@ successful inventory keeps
 `distribution_authorized: false`.
 
 C6.5 serializes a separate `artifact_distribution_authorization` readiness
-assessment for this same evidence path. C6.9 advances that assessment to policy
-version 5 and revalidates eight bounded observations through closed-model
-reconstruction and exact source/generated evidence-reference cross-binding
-before marking them satisfied. It does not reopen artifacts, re-inspect bytes,
-or independently re-derive qualnames, ranges, or semantic-AST hashes from
-source, the build plan, or unsigned provenance. The
+assessment for this same evidence path. C6.10 advances that assessment to
+policy version 6 and revalidates nine bounded observations through closed-model
+reconstruction and exact evidence cross-binding before marking them satisfied.
+The ninth observation reflects an earlier in-process C6.10 source/AST/IR/codegen
+replay; the later report does not itself reopen artifacts, re-inspect bytes, or
+repeat that replay. The
 assessment remains unconditionally `blocked`, incomplete, unsigned, and
 non-authorizing. Its closed blockers name selected current-scope missing license
 policy, resolved/transitive runtime closure, dynamic-loading observation,
@@ -184,7 +184,7 @@ identity, reproducibility, signature, and complete SBOM composition. Unavailable
 evidence produces only `evidence-unavailable` plus the existing fixed reason.
 A structurally invalid preview produces only
 `readiness-assessment-unavailable` with every check `not-evaluated`; C6.5
-through C6.9 change neither best-effort build success nor the C6.3 required preview
+through C6.10 change neither best-effort build success nor the C6.3 required preview
 gate.
 
 C6.6 also places a deterministic observation-only
@@ -229,8 +229,8 @@ Missing C6.7 inventory makes only `component-license-inventory-bound`
 unavailable with `component-license-inventory-unavailable`. Malformed,
 noncanonical, stale, extra, omitted, or otherwise non-exact Cargo bindings use
 the existing all-`not-evaluated` readiness-unavailable shape. Provenance records
-whether the observation is present. Under current C6.9, a crossed sidecar
-ceiling omits C6.9 first, then C6.8 and C6.7, preserving C6.6 and earlier
+whether the observation is present. Under current C6.10, a crossed sidecar
+ceiling omits C6.10 first, then C6.9, C6.8, and C6.7, preserving C6.6 and earlier
 evidence/gate results whenever possible. The separate
 `component-license-policy-complete` check remains blocked.
 
@@ -251,7 +251,7 @@ Unsafe, unsupported, missing, ambiguous, changed, or over-bound candidates omit
 C6.8 and its dependent C6.9 graph; the corresponding observation is unavailable with
 `native-runtime-path-resolution-inventory-unavailable`. A malformed present
 model fails the full readiness reconstruction closed. At the provenance
-ceiling C6.9 is omitted first, then C6.8, C6.7, and C6.6. A satisfied C6.8 check is
+ceiling C6.10 is omitted first, then C6.9, C6.8, C6.7, and C6.6. A satisfied C6.8 check is
 still not `native-runtime-resolution-complete`: actual loader precedence and
 environment, complete transitive closure, system-library bytes, runtime
 `dlopen`, and signatures remain unverified.
@@ -293,6 +293,45 @@ Windows PE, runtime-bearing plugins,
 signatures, host executables, Rust-importable crates, Nuitka, WASM, complete
 dependency transitive closure, actual loader selection, system-library bytes, and `dlopen`
 discovery remain out of scope.
+
+C6.10 adds the sibling `source_transformation_verification` observation for
+one deliberately narrow replay scope:
+`project-functions-pyo3-plugin-free-v1`. The accepted closure must be nonempty
+and consist entirely of project-owned module-level direct-native functions for
+one CPython/PyO3 host-extension wheel. Plugins, embedding, native top-level
+segments, runtime-semantics shims, delegated fallback, Python boundary calls,
+external source, executable/crate profiles, and every other lowering surface
+are excluded. An unsupported or inconsistent plan simply omits C6.10 without
+changing the ordinary build, C6.3 gate, C6.6 inventory, or publication result.
+
+For an in-scope plan, the collector securely reopens the exact project-source
+input set with component-by-component `O_NOFOLLOW` traversal. It rejects
+symlinked roots/components, hardlinked source/generated files, path escape,
+file or directory identity/stamp drift, nonregular files, and oversized input.
+It reparses UTF-8 source without importing it, rederives module-level
+qualnames, half-open UTF-8 ranges, and semantic AST identities, and requires
+exact agreement with the accepted analysis and every C6.6 record. It then
+reanalyzes the whole project with plugins/embedding disabled, requires the same
+complete accepted-function closure, lowers the resulting canonical `ModuleIR`,
+regenerates the full `src/lib.rs`, and compares exact bytes, SHA-256, and size
+with the captured generated-Rust input. Source and output receipts are checked
+again after replay.
+
+The immutable receipt binds the canonical C6.6-inventory digest, exact
+project-source input-set digest and entries, canonical ModuleIR digest, sorted
+accepted qualnames, the captured `src/lib.rs` reference, the regenerated Rust
+digest/size, and the fixed generator backend. The same model is included in
+unsigned provenance, with explicit observation-presence metadata. A replay or
+scope mismatch makes only `scoped-source-transformation-verified` unavailable
+and adds `scoped-source-transformation-verification-unavailable`; a malformed
+present model still collapses the readiness report to the closed
+all-`not-evaluated` shape. At the sidecar ceiling C6.10 is the first payload
+omitted, followed by C6.9, C6.8, C6.7, and C6.6.
+
+`complete_for_scope: true` is intentionally paired with `complete: false` and
+`global_provenance_complete: false`. C6.10 therefore does not satisfy
+`source-transformation-provenance-complete`, sign an attestation, or authorize
+distribution.
 
 ## Artifact profile authority
 
@@ -439,7 +478,7 @@ enumerates a GPU. See
 
 ## Deferred work
 
-Train C through **2.14.0** does not yet provide:
+Train C through **2.15.0** does not yet provide:
 
 - multiple-module initializer execution or Python import-order emulation;
 - Rust-global publication or native reads of initialized module values;
@@ -449,7 +488,7 @@ Train C through **2.14.0** does not yet provide:
   recursive source-native promotion of installed pure-Python packages;
 - full/signed external-source authorization beyond the C6.1 prebuild lock
   contract (cryptographic signatures);
-- complete standards SPDX/CycloneDX SBOM coverage (C6.2-C6.9 emit only a bounded
+- complete standards SPDX/CycloneDX SBOM coverage (C6.2-C6.10 emit only a bounded
   incomplete CycloneDX 1.6 preview for ordinary host-extension wheels, plus
   unsigned in-toto/SLSA provenance and a macOS/Linux direct-linkage observation;
   not complete or actual-loader path resolution, complete transitive closure, `dlopen`

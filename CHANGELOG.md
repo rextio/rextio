@@ -5,10 +5,35 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.14.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.15.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR.
+
+### C6.10 scoped source-transformation replay verification
+
+- Add optional immutable `artifact_evidence.source_transformation_verification`
+  schema 1 for the narrow `project-functions-pyo3-plugin-free-v1` scope. It
+  binds the canonical C6.6 inventory digest, exact project-source input set,
+  canonical ModuleIR digest, complete accepted-function qualname set, and the
+  captured plus independently regenerated `src/lib.rs` SHA-256/size.
+- Reopen every project-owned source through bounded component-by-component
+  `O_NOFOLLOW` traversal, reject symlink/hardlink/path/identity changes, parse
+  the AST again, and rederive module qualname, UTF-8 byte range, and semantic
+  fingerprint. Reanalyze the project with plugins, embedding, native top-level,
+  runtime shims, and fallback boundary calls excluded; relower the entire
+  accepted native closure and require byte-identical full Rust regeneration.
+- Keep the collector total and noninterfering. Unsupported scope, mutation,
+  replay mismatch, or resource-limit failure omits only C6.10; C6.6 and the
+  independent C6.3 gate retain their outcomes. At the provenance ceiling omit
+  C6.10 first, then C6.9, C6.8, C6.7, and C6.6.
+- Advance readiness policy to version 6 with
+  `scoped-source-transformation-verified` and the fixed
+  `scoped-source-transformation-verification-unavailable` blocker. The receipt
+  is complete only for its narrow scope; global transformation provenance,
+  license policy, signatures, and distribution authorization remain blocked.
+  Advance the unreleased tooling contract to **2.15.0** while keeping package
+  **0.1.4** and plugin API **1.4** unchanged.
 
 ### C6.9 bounded transitive native-runtime graph observation
 
@@ -42,8 +67,9 @@ feature PRs target the `0.1.5` integration branch; `main` stays at the published
   while enforcing the closed dependency basename grammar on nodes and edges.
 - Keep C6.9 optional and noninterfering. A C6.9-only collection/final-receipt
   failure retains C6.8; a C6.8 failure omits both dependent observations. At
-  the provenance ceiling omit C6.9, then C6.8, C6.7, and C6.6. The independent
-  C6.3 required-evidence gate is unchanged.
+  the 2.14.0 provenance ceiling omit C6.9, then C6.8, C6.7, and C6.6; the
+  cumulative 2.15.0 producer now omits C6.10 before that sequence. The
+  independent C6.3 required-evidence gate is unchanged.
 - Read-only refresh exact C6.8 packaged receipts after every C6.9 attempt. It
   requires complete prior receipt coverage, preserves exact file and non-root
   directory identity, and permits only the generated root's size/ctime/mtime

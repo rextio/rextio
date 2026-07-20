@@ -57,5 +57,10 @@ from __future__ import annotations
 # static graph across recursively inspected packaged native members and logical
 # system leaves plus policy-version-5 observation. Complete transitive closure,
 # actual loader selection, runtime dlopen, and authorization remain blocked.
+# Contract 2.15.0 adds C6.10's narrowly scoped source-transformation replay
+# verification and policy-version-6 observation. It securely rereads the exact
+# project-source set, rederives function identities, relowers the complete
+# plugin-free PyO3 closure, and requires byte-identical src/lib.rs regeneration.
+# Global transformation provenance and distribution authorization stay blocked.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.14.0"
+TOOLING_CONTRACT_VERSION = "2.15.0"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import FrozenInstanceError, replace
 
 import pytest
@@ -40,8 +41,10 @@ from rextio.artifacts.evidence import (
     SourceTransformationInventory,
     SourceTransformationRange,
     SourceTransformationRecord,
+    SourceTransformationVerification,
     ArtifactEvidenceGate,
     WheelEntryRef,
+    canonical_json_bytes,
 )
 
 
@@ -135,6 +138,40 @@ def _preview_evidence() -> ArtifactEvidence:
             ),
         ),
     )
+    transformation_inventory = SourceTransformationInventory(
+        records=(
+            SourceTransformationRecord(
+                source_path=source_ref.logical_path,
+                source_sha256=source_ref.sha256,
+                function_module="app",
+                function_qualname="app.add",
+                source_range=SourceTransformationRange(
+                    start_line=1,
+                    start_column=0,
+                    end_line=2,
+                    end_column=16,
+                ),
+                semantic_ast_sha256="8" * 64,
+                generated_rust=generated_rust_ref,
+                generator_backend="rextio-core-rust-pyo3-v1",
+            ),
+        )
+    )
+    transformation_verification = SourceTransformationVerification(
+        source_transformation_inventory_sha256=hashlib.sha256(
+            canonical_json_bytes(transformation_inventory.to_dict())
+        ).hexdigest(),
+        source_input_set_sha256=hashlib.sha256(
+            canonical_json_bytes([source_ref.to_dict()])
+        ).hexdigest(),
+        module_ir_sha256="a" * 64,
+        function_qualnames=("app.add",),
+        source_inputs=(source_ref,),
+        generated_rust=generated_rust_ref,
+        regenerated_rust_sha256=generated_rust_ref.sha256,
+        regenerated_rust_size=generated_rust_ref.size,
+        generator_backend="rextio-core-rust-pyo3-v1",
+    )
     return ArtifactEvidence(
         kind="host-extension-wheel",
         status="preview-ready",
@@ -190,25 +227,8 @@ def _preview_evidence() -> ArtifactEvidence:
         native_runtime_inventory=runtime_inventory,
         native_runtime_path_resolution=path_resolution,
         native_runtime_transitive_closure=runtime_closure,
-        source_transformation_inventory=SourceTransformationInventory(
-            records=(
-                SourceTransformationRecord(
-                    source_path=source_ref.logical_path,
-                    source_sha256=source_ref.sha256,
-                    function_module="app",
-                    function_qualname="app.add",
-                    source_range=SourceTransformationRange(
-                        start_line=1,
-                        start_column=0,
-                        end_line=2,
-                        end_column=16,
-                    ),
-                    semantic_ast_sha256="8" * 64,
-                    generated_rust=generated_rust_ref,
-                    generator_backend="rextio-core-rust-pyo3-v1",
-                ),
-            )
-        ),
+        source_transformation_inventory=transformation_inventory,
+        source_transformation_verification=transformation_verification,
         component_license_inventory=ComponentLicenseInventory(
             records=tuple(
                 ComponentLicenseRecord(
@@ -238,7 +258,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
 
     assert report["kind"] == "artifact-distribution-authorization"
     assert report["policy"] == "host-extension-wheel-cpython-v1"
-    assert report["policy_version"] == 5
+    assert report["policy_version"] == 6
     assert report["scope"] == "host-extension-wheel-cpython-v1"
     assert report["status"] == "blocked"
     assert report["authority"] == "readiness-assessment-only"
@@ -247,7 +267,8 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
     assert [item["id"] for item in report["checks"]] == list(
         ARTIFACT_AUTHORIZATION_CHECK_IDS
     )
-    assert [item["status"] for item in report["checks"][:8]] == [
+    assert [item["status"] for item in report["checks"][:9]] == [
+        "satisfied",
         "satisfied",
         "satisfied",
         "satisfied",
@@ -257,7 +278,7 @@ def test_preview_ready_assessment_is_canonical_and_always_blocked() -> None:
         "satisfied",
         "satisfied",
     ]
-    assert {item["status"] for item in report["checks"][8:]} == {"blocked"}
+    assert {item["status"] for item in report["checks"][9:]} == {"blocked"}
     assert report["blockers"] == list(ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS)
     assert report["complete"] is False
     assert report["signed"] is False
@@ -272,7 +293,8 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
 
     assert report["evidence_status"] == "unavailable"
     assert report["evidence_reason"] == "cargo-metadata-failed"
-    assert [item["status"] for item in report["checks"][:8]] == [
+    assert [item["status"] for item in report["checks"][:9]] == [
+        "unavailable",
         "unavailable",
         "unavailable",
         "unavailable",
@@ -282,13 +304,17 @@ def test_unavailable_assessment_does_not_speculate_or_leak_free_text() -> None:
         "unavailable",
         "unavailable",
     ]
-    assert {item["status"] for item in report["checks"][8:]} == {"not-evaluated"}
+    assert {item["status"] for item in report["checks"][9:]} == {"not-evaluated"}
     assert report["blockers"] == ["evidence-unavailable"]
     assert "/" not in json.dumps(report, sort_keys=True)
 
 
 def test_missing_transformation_inventory_is_a_dedicated_closed_observation() -> None:
-    evidence = replace(_preview_evidence(), source_transformation_inventory=None)
+    evidence = replace(
+        _preview_evidence(),
+        source_transformation_inventory=None,
+        source_transformation_verification=None,
+    )
     report = evaluate_artifact_distribution_authorization(evidence).to_dict()
     statuses = {item["id"]: item["status"] for item in report["checks"]}
 
@@ -299,9 +325,28 @@ def test_missing_transformation_inventory_is_a_dedicated_closed_observation() ->
     assert report["blockers"] == [
         *ARTIFACT_AUTHORIZATION_PREVIEW_BLOCKERS,
         ARTIFACT_AUTHORIZATION_TRANSFORMATION_UNAVAILABLE,
+        "scoped-source-transformation-verification-unavailable",
     ]
     assert ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE not in report["blockers"]
     # C6.3 evaluates the existing preview evidence independently.
+    assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
+
+
+def test_missing_scoped_verification_is_a_dedicated_unavailable_observation() -> None:
+    evidence = replace(
+        _preview_evidence(),
+        source_transformation_verification=None,
+    )
+    report = evaluate_artifact_distribution_authorization(evidence).to_dict()
+    statuses = {item["id"]: item["status"] for item in report["checks"]}
+
+    assert report["policy_version"] == 6
+    assert statuses["source-transformation-inventory-bound"] == "satisfied"
+    assert statuses["scoped-source-transformation-verified"] == "unavailable"
+    assert statuses["source-transformation-provenance-complete"] == "blocked"
+    assert "scoped-source-transformation-verification-unavailable" in report[
+        "blockers"
+    ]
     assert ArtifactEvidenceGate.from_evidence(evidence).status == "satisfied"
 
 
@@ -369,14 +414,42 @@ def test_structurally_valid_semantic_hash_change_remains_unsigned_observation() 
             inventory,
             records=(changed_record,),
         ),
+        source_transformation_verification=None,
     )
 
     report = evaluate_artifact_distribution_authorization(adjusted).to_dict()
     statuses = {item["id"]: item["status"] for item in report["checks"]}
     assert statuses["source-transformation-inventory-bound"] == "satisfied"
+    assert statuses["scoped-source-transformation-verified"] == "unavailable"
     assert statuses["source-transformation-provenance-complete"] == "blocked"
     assert report["status"] == "blocked"
     assert report["signed"] is False
+    assert report["distribution_authorized"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_transformation_inventory_sha256", "0" * 64),
+        ("source_input_set_sha256", "0" * 64),
+        ("function_qualnames", ("app.other",)),
+        ("regenerated_rust_sha256", "0" * 64),
+        ("complete_for_scope", False),
+    ],
+)
+def test_tampered_scoped_verification_never_yields_satisfied_observation(
+    field: str,
+    value: object,
+) -> None:
+    evidence = _preview_evidence()
+    verification = evidence.source_transformation_verification
+    assert verification is not None
+    object.__setattr__(verification, field, value)
+
+    report = evaluate_artifact_distribution_authorization(evidence).to_dict()
+
+    assert report["blockers"] == [ARTIFACT_AUTHORIZATION_READINESS_UNAVAILABLE]
+    assert {item["status"] for item in report["checks"]} == {"not-evaluated"}
     assert report["distribution_authorized"] is False
 
 

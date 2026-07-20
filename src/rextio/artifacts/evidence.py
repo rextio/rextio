@@ -63,6 +63,7 @@ MAX_SOURCE_TRANSFORMATIONS = 512
 MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS = 32
 MAX_SOURCE_TRANSFORMATION_PLUGIN_REFERENCES = 128
 MAX_SOURCE_TRANSFORMATION_INVENTORY_CHARS = 512 * 1024
+MAX_SOURCE_TRANSFORMATION_VERIFICATION_CHARS = 512 * 1024
 MAX_SOURCE_POSITION = 10_000_000
 MAX_COMPONENT_LICENSE_RECORDS = MAX_CARGO_PACKAGES
 MAX_COMPONENT_LICENSE_OBSERVED_CHARS = MAX_EVIDENCE_STRING_CHARS
@@ -73,6 +74,11 @@ SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION = 1
 SOURCE_TRANSFORMATION_INVENTORY_SCOPE = "accepted-project-native-functions"
 SOURCE_TRANSFORMATION_GENERATOR_BACKENDS: frozenset[str] = frozenset(
     {"rextio-core-rust-pyo3-v1"}
+)
+SOURCE_TRANSFORMATION_VERIFICATION_KIND = "source-transformation-verification"
+SOURCE_TRANSFORMATION_VERIFICATION_SCHEMA_VERSION = 1
+SOURCE_TRANSFORMATION_VERIFICATION_SCOPE = (
+    "project-functions-pyo3-plugin-free-v1"
 )
 COMPONENT_LICENSE_INVENTORY_KIND = "component-license-inventory"
 COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION = 1
@@ -1357,6 +1363,147 @@ class SourceTransformationInventory:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceTransformationVerification:
+    """One bounded replay verification of a complete accepted PyO3 closure."""
+
+    source_transformation_inventory_sha256: str
+    source_input_set_sha256: str
+    module_ir_sha256: str
+    function_qualnames: tuple[str, ...]
+    source_inputs: tuple[EvidenceFileRef, ...]
+    generated_rust: EvidenceFileRef
+    regenerated_rust_sha256: str
+    regenerated_rust_size: int
+    generator_backend: str
+    kind: str = SOURCE_TRANSFORMATION_VERIFICATION_KIND
+    schema_version: int = SOURCE_TRANSFORMATION_VERIFICATION_SCHEMA_VERSION
+    scope: str = SOURCE_TRANSFORMATION_VERIFICATION_SCOPE
+    complete_for_scope: bool = True
+    global_provenance_complete: bool = False
+    complete: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        if self.kind != SOURCE_TRANSFORMATION_VERIFICATION_KIND:
+            raise ValueError("source transformation verification kind is invalid")
+        if self.schema_version != SOURCE_TRANSFORMATION_VERIFICATION_SCHEMA_VERSION:
+            raise ValueError("source transformation verification schema is invalid")
+        if self.scope != SOURCE_TRANSFORMATION_VERIFICATION_SCOPE:
+            raise ValueError("source transformation verification scope is invalid")
+        if not _HEX_SHA256.fullmatch(self.source_transformation_inventory_sha256):
+            raise ValueError("source transformation inventory digest is invalid")
+        if not _HEX_SHA256.fullmatch(self.source_input_set_sha256):
+            raise ValueError("source transformation input-set digest is invalid")
+        if not _HEX_SHA256.fullmatch(self.module_ir_sha256):
+            raise ValueError("source transformation ModuleIR digest is invalid")
+        if type(self.function_qualnames) is not tuple:
+            raise TypeError("verified function qualnames must be a tuple")
+        if not self.function_qualnames or len(self.function_qualnames) > MAX_SOURCE_TRANSFORMATIONS:
+            raise ValueError("verified function count is outside the bound")
+        qualnames = tuple(
+            _bounded_identifier(qualname, "verified function qualname")
+            for qualname in self.function_qualnames
+        )
+        if any(not _TRANSFORMATION_DOTTED_ID.fullmatch(qualname) for qualname in qualnames):
+            raise ValueError("verified function qualname is invalid")
+        if qualnames != tuple(sorted(set(qualnames))):
+            raise ValueError("verified function qualnames must be sorted and unique")
+        object.__setattr__(self, "function_qualnames", qualnames)
+        if type(self.source_inputs) is not tuple:
+            raise TypeError("verified source inputs must be a tuple")
+        if not self.source_inputs or len(self.source_inputs) > MAX_INPUT_FILES:
+            raise ValueError("verified source input count is outside the bound")
+        if not all(type(item) is EvidenceFileRef for item in self.source_inputs):
+            raise TypeError("verified source input model is invalid")
+        if any(item.role != "project-python-source" for item in self.source_inputs):
+            raise ValueError("verified source input role is invalid")
+        source_paths = tuple(item.logical_path for item in self.source_inputs)
+        if source_paths != tuple(sorted(source_paths)) or len(source_paths) != len(
+            set(source_paths)
+        ):
+            raise ValueError("verified source inputs must be canonical and unique")
+        expected_input_set_sha256 = sha256_hex(
+            canonical_json_bytes([item.to_dict() for item in self.source_inputs])
+        )
+        if self.source_input_set_sha256 != expected_input_set_sha256:
+            raise ValueError("verified source input-set digest is inconsistent")
+        if type(self.generated_rust) is not EvidenceFileRef:
+            raise TypeError("verified generated Rust binding is invalid")
+        if self.generated_rust.role != "generated-rust-input" or PurePosixPath(
+            self.generated_rust.logical_path
+        ).parts[-2:] != ("src", "lib.rs"):
+            raise ValueError("verified generated Rust output must bind src/lib.rs")
+        if not _HEX_SHA256.fullmatch(self.regenerated_rust_sha256):
+            raise ValueError("regenerated Rust digest is invalid")
+        if (
+            type(self.regenerated_rust_size) is not int
+            or self.regenerated_rust_size < 0
+            or self.regenerated_rust_size > MAX_EVIDENCE_FILE_BYTES
+        ):
+            raise ValueError("regenerated Rust size is invalid")
+        if (
+            self.regenerated_rust_sha256 != self.generated_rust.sha256
+            or self.regenerated_rust_size != self.generated_rust.size
+        ):
+            raise ValueError("regenerated Rust does not bind the captured output")
+        object.__setattr__(
+            self,
+            "generator_backend",
+            _bounded_identifier(self.generator_backend, "verification generator backend"),
+        )
+        if self.generator_backend not in SOURCE_TRANSFORMATION_GENERATOR_BACKENDS:
+            raise ValueError("verification generator backend is unsupported")
+        if type(self.complete_for_scope) is not bool or not self.complete_for_scope:
+            raise ValueError("source transformation verification scope is incomplete")
+        if (
+            type(self.global_provenance_complete) is not bool
+            or self.global_provenance_complete
+        ):
+            raise ValueError("source transformation global provenance must remain incomplete")
+        if type(self.complete) is not bool or self.complete:
+            raise ValueError("source transformation verification must remain incomplete")
+        if type(self.authority) is not str or self.authority != "observation-only":
+            raise ValueError("source transformation verification authority is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_SOURCE_TRANSFORMATION_VERIFICATION_CHARS:
+            raise ValueError("source transformation verification exceeds the character bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic scoped replay-verification shape."""
+        return {
+            "kind": SOURCE_TRANSFORMATION_VERIFICATION_KIND,
+            "schema_version": SOURCE_TRANSFORMATION_VERIFICATION_SCHEMA_VERSION,
+            "scope": SOURCE_TRANSFORMATION_VERIFICATION_SCOPE,
+            "authority": "observation-only",
+            "complete": False,
+            "complete_for_scope": True,
+            "global_provenance_complete": False,
+            "scoped_verification": True,
+            "plugin_free": True,
+            "full_accepted_function_closure": True,
+            "source_transformation_inventory_sha256": (
+                self.source_transformation_inventory_sha256
+            ),
+            "source_input_set_sha256": self.source_input_set_sha256,
+            "module_ir_sha256": self.module_ir_sha256,
+            "function_count": len(self.function_qualnames),
+            "function_qualnames": list(self.function_qualnames),
+            "source_input_count": len(self.source_inputs),
+            "source_inputs": [item.to_dict() for item in self.source_inputs],
+            "generated_rust": self.generated_rust.to_dict(),
+            "regenerated_rust_sha256": self.regenerated_rust_sha256,
+            "regenerated_rust_size": self.regenerated_rust_size,
+            "generator_backend": self.generator_backend,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ComponentLicenseRecord:
     """One unvalidated Cargo metadata license-string observation."""
 
@@ -1516,7 +1663,7 @@ class SidecarArtifact:
 
 @dataclass(frozen=True)
 class ArtifactEvidence:
-    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.9 preview."""
+    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.10 preview."""
 
     kind: str
     status: str  # preview-ready | unavailable
@@ -1538,6 +1685,7 @@ class ArtifactEvidence:
         NativeRuntimeTransitiveClosureInventory | None
     ) = None
     source_transformation_inventory: SourceTransformationInventory | None = None
+    source_transformation_verification: SourceTransformationVerification | None = None
     component_license_inventory: ComponentLicenseInventory | None = None
     limitations: tuple[str, ...] = DEFAULT_LIMITATIONS
     preview: bool = True
@@ -1575,6 +1723,7 @@ class ArtifactEvidence:
                 or self.native_runtime_path_resolution is not None
                 or self.native_runtime_transitive_closure is not None
                 or self.source_transformation_inventory is not None
+                or self.source_transformation_verification is not None
                 or self.component_license_inventory is not None
             ):
                 raise ValueError("unavailable evidence must not carry inventory fields")
@@ -1721,6 +1870,16 @@ class ArtifactEvidence:
                         raise ValueError(
                             "source transformation Rust binding must match one declared input"
                         )
+            if self.source_transformation_verification is not None:
+                if self.source_transformation_inventory is None:
+                    raise ValueError(
+                        "source transformation verification requires its inventory"
+                    )
+                _validate_source_transformation_verification_binding(
+                    verification=self.source_transformation_verification,
+                    inventory=self.source_transformation_inventory,
+                    inputs=self.inputs,
+                )
             if self.component_license_inventory is not None:
                 if type(self.component_license_inventory) is not ComponentLicenseInventory:
                     raise TypeError("component license inventory model is invalid")
@@ -1825,11 +1984,61 @@ class ArtifactEvidence:
                     data["source_transformation_inventory"] = (
                         self.source_transformation_inventory.to_dict()
                     )
+                if self.source_transformation_verification is not None:
+                    data["source_transformation_verification"] = (
+                        self.source_transformation_verification.to_dict()
+                    )
                 if self.component_license_inventory is not None:
                     data["component_license_inventory"] = (
                         self.component_license_inventory.to_dict()
                     )
         return data
+
+
+def _validate_source_transformation_verification_binding(
+    *,
+    verification: SourceTransformationVerification,
+    inventory: SourceTransformationInventory,
+    inputs: tuple[EvidenceFileRef, ...],
+) -> None:
+    """Bind the scoped replay receipt to the exact C6.6/input observations."""
+    if type(verification) is not SourceTransformationVerification:
+        raise TypeError("source transformation verification model is invalid")
+    inventory_digest = sha256_hex(canonical_json_bytes(inventory.to_dict()))
+    if verification.source_transformation_inventory_sha256 != inventory_digest:
+        raise ValueError("source transformation verification inventory digest differs")
+    project_inputs = tuple(
+        sorted(
+            (item for item in inputs if item.role == "project-python-source"),
+            key=lambda item: item.logical_path,
+        )
+    )
+    if verification.source_inputs != project_inputs:
+        raise ValueError("source transformation verification input set differs")
+    source_input_set_digest = sha256_hex(
+        canonical_json_bytes([item.to_dict() for item in project_inputs])
+    )
+    if verification.source_input_set_sha256 != source_input_set_digest:
+        raise ValueError("source transformation verification input-set digest differs")
+    expected_qualnames = tuple(
+        sorted(record.function_qualname for record in inventory.records)
+    )
+    if verification.function_qualnames != expected_qualnames:
+        raise ValueError("source transformation verification function coverage differs")
+    if any(record.plugin_ids for record in inventory.records):
+        raise ValueError("source transformation verification inventory is not plugin-free")
+    if any(
+        record.generator_backend != verification.generator_backend
+        for record in inventory.records
+    ):
+        raise ValueError("source transformation verification backend differs")
+    if any(record.generated_rust != verification.generated_rust for record in inventory.records):
+        raise ValueError("source transformation verification Rust binding differs")
+    generated_matches = tuple(
+        item for item in inputs if item == verification.generated_rust
+    )
+    if len(generated_matches) != 1:
+        raise ValueError("source transformation verification Rust input is ambiguous")
 
 
 def _validate_runtime_closure_evidence_binding(
@@ -4135,6 +4344,7 @@ def build_intoto_provenance_document(
         NativeRuntimeTransitiveClosureInventory | None
     ) = None,
     source_transformation_inventory: SourceTransformationInventory | None = None,
+    source_transformation_verification: SourceTransformationVerification | None = None,
     component_license_inventory: ComponentLicenseInventory | None = None,
 ) -> dict[str, object]:
     """Build an unsigned in-toto Statement v1 with SLSA Provenance v1 predicate.
@@ -4200,6 +4410,9 @@ def build_intoto_provenance_document(
         "source_transformation_inventory_observed": (
             source_transformation_inventory is not None
         ),
+        "scoped_source_transformation_verified": (
+            source_transformation_verification is not None
+        ),
         "source_transformation_provenance_complete": False,
         "component_license_inventory_observed": component_license_inventory is not None,
         "component_license_policy_complete": False,
@@ -4214,6 +4427,9 @@ def build_intoto_provenance_document(
         ),
         "rextio:native_runtime_transitive_closure_observed": (
             native_runtime_transitive_closure is not None
+        ),
+        "rextio:source_transformation_verification_observed": (
+            source_transformation_verification is not None
         ),
         "rextio:component_license_inventory_observed": (
             component_license_inventory is not None
@@ -4232,6 +4448,10 @@ def build_intoto_provenance_document(
     if source_transformation_inventory is not None:
         run_metadata["rextio:source_transformation_inventory"] = (
             source_transformation_inventory.to_dict()
+        )
+    if source_transformation_verification is not None:
+        run_metadata["rextio:source_transformation_verification"] = (
+            source_transformation_verification.to_dict()
         )
     if component_license_inventory is not None:
         run_metadata["rextio:component_license_inventory"] = (
@@ -4385,6 +4605,7 @@ __all__ = [
     "MAX_SOURCE_TRANSFORMATION_INVENTORY_CHARS",
     "MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS",
     "MAX_SOURCE_TRANSFORMATION_PLUGIN_REFERENCES",
+    "MAX_SOURCE_TRANSFORMATION_VERIFICATION_CHARS",
     "MAX_SOURCE_TRANSFORMATIONS",
     "MAX_WHEEL_ENTRIES",
     "MAX_WHEEL_ENTRY_PATH_CHARS",
@@ -4433,10 +4654,14 @@ __all__ = [
     "SourceTransformationInventory",
     "SourceTransformationRange",
     "SourceTransformationRecord",
+    "SourceTransformationVerification",
     "SOURCE_TRANSFORMATION_GENERATOR_BACKENDS",
     "SOURCE_TRANSFORMATION_INVENTORY_KIND",
     "SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION",
     "SOURCE_TRANSFORMATION_INVENTORY_SCOPE",
+    "SOURCE_TRANSFORMATION_VERIFICATION_KIND",
+    "SOURCE_TRANSFORMATION_VERIFICATION_SCHEMA_VERSION",
+    "SOURCE_TRANSFORMATION_VERIFICATION_SCOPE",
     "UNAVAILABLE_REASONS",
     "WheelEntryRef",
     "build_cyclonedx_document",
