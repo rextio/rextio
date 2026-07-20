@@ -20,6 +20,12 @@ class BuildConfig:
     # blocking indefinitely.
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS
     artifact_evidence_policy: str = "best-effort"
+    # Final Full-C6 distribution is an independent, opt-in hard gate.  It does
+    # not promote the preview artifact-evidence policy by implication.
+    artifact_distribution_policy: str = "disabled"
+    artifact_trusted_public_key: str | None = None
+    artifact_trusted_public_key_sha256: str | None = None
+    artifact_repeat_builds: int = 2
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,10 @@ class ImportPackagePolicy:
     # Older try-native declarations intentionally remain metadata-only.
     distribution: str | None = None
     version: str | None = None
+    # Exact, project-owned source archive used by the strict Full-C6/C5.2
+    # profile.  The hard gate securely opens and revalidates these bytes.
+    source_archive: str | None = None
+    source_archive_sha256: str | None = None
 
 
 @dataclass(frozen=True)

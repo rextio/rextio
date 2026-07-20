@@ -85,5 +85,8 @@ from __future__ import annotations
 # policy-version-11 observation. It binds closed dispositions to the full
 # C6.14 partition without completing global policy, provenance, signing, or
 # distribution authority.
+# Contract 2.21.0 adds the separate immutable strict Full-C6 final-evidence /
+# distribution-authorization contract and its opt-in frozen-profile config
+# shape. Preview C6.2-C6.15 evidence remains incomplete and non-authorizing.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.20.0"
+TOOLING_CONTRACT_VERSION = "2.21.0"

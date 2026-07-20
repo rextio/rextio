@@ -7,6 +7,125 @@ import pytest
 from rextio.config.loader import ConfigError, load_config, override_config
 
 
+_SHA_A = "a" * 64
+_SHA_B = "b" * 64
+
+
+def _full_c6_toml(
+    *,
+    build_extra: str = "",
+    package_extra: str = "",
+    extra: str = "",
+) -> str:
+    return f"""
+[build]
+artifact_evidence_policy = "required"
+artifact_distribution_policy = "full-c6-required"
+artifact_trusted_public_key = "keys/release.pub"
+artifact_trusted_public_key_sha256 = "{_SHA_A}"
+artifact_repeat_builds = 2
+{build_extra}
+
+[imports]
+default_external_policy = "fallback"
+
+[imports.packages.demo_math]
+policy = "try-native"
+max_depth = 1
+distribution = "demo-math"
+version = "1.2.3"
+source_archive = "vendor/demo_math-1.2.3-py3-none-any.whl"
+source_archive_sha256 = "{_SHA_B}"
+{package_extra}
+{extra}
+""".strip() + "\n"
+
+
+def test_full_c6_distribution_config_defaults_are_inactive(tmp_path: Path) -> None:
+    config = load_config(tmp_path)
+
+    assert config.build.artifact_distribution_policy == "disabled"
+    assert config.build.artifact_trusted_public_key is None
+    assert config.build.artifact_trusted_public_key_sha256 is None
+    assert config.build.artifact_repeat_builds == 2
+
+
+def test_full_c6_distribution_config_accepts_exact_frozen_profile(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(_full_c6_toml(), encoding="utf-8")
+
+    config = load_config(tmp_path)
+    package = config.imports.packages["demo_math"]
+
+    assert config.build.artifact_distribution_policy == "full-c6-required"
+    assert config.build.artifact_trusted_public_key == "keys/release.pub"
+    assert config.build.artifact_trusted_public_key_sha256 == _SHA_A
+    assert config.build.artifact_repeat_builds == 2
+    assert package.source_archive == "vendor/demo_math-1.2.3-py3-none-any.whl"
+    assert package.source_archive_sha256 == _SHA_B
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ('artifact_evidence_policy = "required"', 'artifact_evidence_policy = "best-effort"', "evidence_policy"),
+        ("artifact_repeat_builds = 2", "artifact_repeat_builds = 1", "repeat_builds"),
+        ('artifact_trusted_public_key = "keys/release.pub"', 'artifact_trusted_public_key = "/tmp/key"', "project-relative"),
+        (f'artifact_trusted_public_key_sha256 = "{_SHA_A}"', 'artifact_trusted_public_key_sha256 = "ABC"', "lowercase hexadecimal"),
+        ('source_archive = "vendor/demo_math-1.2.3-py3-none-any.whl"', 'source_archive = "../source.whl"', "project-relative"),
+        (f'source_archive_sha256 = "{_SHA_B}"', 'source_archive_sha256 = "bad"', "lowercase hexadecimal"),
+    ],
+)
+def test_full_c6_distribution_config_rejects_missing_or_unsafe_identity(
+    tmp_path: Path, old: str, new: str, message: str
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        _full_c6_toml().replace(old, new), encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        '\n[plugins]\nenabled = ["numpy-rust"]',
+        "\n[embedding]\nenabled = true",
+        '\n[executable]\nentrypoint = "app:main"',
+        "\n[policy]\nnative_top_level = true",
+        "\n[rust]\nimportable = true",
+        '\n[rust]\nbuild_tool = "maturin"',
+        "replace-default-external-policy",
+    ],
+)
+def test_full_c6_distribution_config_rejects_profile_expansion(
+    tmp_path: Path, extra: str
+) -> None:
+    config_text = _full_c6_toml(extra="" if extra == "replace-default-external-policy" else extra)
+    if extra == "replace-default-external-policy":
+        config_text = config_text.replace(
+            'default_external_policy = "fallback"',
+            'default_external_policy = "try-native"',
+        )
+    (tmp_path / "rextio.toml").write_text(
+        config_text, encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigError, match="full-c6-required"):
+        load_config(tmp_path)
+
+
+def test_full_c6_config_survives_override_serialization(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(_full_c6_toml(), encoding="utf-8")
+    config = load_config(tmp_path)
+
+    rebuilt = override_config(config, {("build", "fallback_threshold"): 7})
+
+    assert rebuilt.build.artifact_distribution_policy == "full-c6-required"
+    assert rebuilt.build.artifact_trusted_public_key == "keys/release.pub"
+    assert rebuilt.imports.packages["demo_math"].source_archive_sha256 == _SHA_B
+
+
 def test_external_source_preview_requires_one_exact_depth_one_declaration(
     tmp_path: Path,
 ) -> None:
