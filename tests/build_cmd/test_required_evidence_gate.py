@@ -445,6 +445,7 @@ def test_required_policy_succeeds_only_with_preview_ready_evidence(
         statuses["scoped-project-source-license-policy-verified"]
         == "unavailable"
     )
+    assert statuses["artifact-policy-coverage-bound"] == "unavailable"
     assert statuses["component-license-policy-complete"] == "blocked"
     assert authorization["blockers"] == [
         "component-license-policy-incomplete",
@@ -459,6 +460,7 @@ def test_required_policy_succeeds_only_with_preview_ready_evidence(
         "sbom-composition-incomplete",
         "scoped-component-license-policy-verification-unavailable",
         "scoped-project-source-license-policy-verification-unavailable",
+        "artifact-policy-coverage-unavailable",
     ]
     assert authorization["distribution_authorized"] is False
     output = capsys.readouterr().out

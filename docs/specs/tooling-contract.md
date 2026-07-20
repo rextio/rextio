@@ -3,7 +3,7 @@
 Status: **draft** (experimental tier). The current published producer is core
 0.1.4, released on 2026-07-18 with `contract_version` `2.2.0` and plugin API
 **1.3**. The Release Train C branch contains the additive, **unreleased**
-`2.18.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
+`2.19.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
 contract. Package version on the branch remains **0.1.4**.
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
@@ -31,7 +31,7 @@ Both JSON surfaces carry a top-level field. The published 0.1.4 producer emits:
 The unreleased Train C branch emits:
 
 ```json
-{ "contract_version": "2.18.0" }
+{ "contract_version": "2.19.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -61,7 +61,8 @@ to generic guidance when the major is outside what they support.
 | `2.15.0` | **Unreleased additive C6.10 scoped source-transformation replay verification** (Train C intermediate). Preview-ready evidence may add immutable `source_transformation_verification` schema 1 for the fixed `project-functions-pyo3-plugin-free-v1` scope. The collector securely rereads the exact project-source input set, rederives function AST identities/ranges, reanalyzes and relowers the complete accepted plugin-free PyO3 closure, and requires byte-identical full `src/lib.rs` regeneration. The receipt binds the canonical C6.6 inventory, source-input set, ModuleIR, qualnames, and captured/regenerated Rust. Policy version 6 adds `scoped-source-transformation-verified` plus a dedicated unavailable blocker. Scope/replay failure omits only C6.10; at that contract's provenance ceiling C6.10 was omitted before C6.9/C6.8/C6.7/C6.6. `complete_for_scope` never makes global transformation provenance complete, signed, or distribution-authorizing. |
 | `2.16.0` | **Unreleased additive C6.11 scoped Cargo component-license policy verification** (Train C intermediate). Preview-ready evidence may add immutable `component_license_policy_verification` schema 1 for exact reachable registry-license metadata. A strict project-owner lock must reproduce every raw C6.7 registry row, bind the full C6.7 digest and exact lock bytes, and attest the fixed allow scopes. Policy version 7 adds `scoped-component-license-policy-verified` plus a dedicated unavailable blocker. Attestor identity, SPDX/license-file/legal analysis, signatures, global policy completion, and distribution authority remain unverified. At that contract's provenance ceiling C6.11 was omitted before C6.10/C6.9/C6.8/C6.7/C6.6, and it never changed ordinary-build or C6.3 gate outcomes. |
 | `2.17.0` | **Unreleased additive C6.12 scoped project-source license-policy verification** (Train C intermediate). Preview-ready evidence may add immutable `project_source_license_policy_verification` schema 1 only for an exact present C6.10 receipt. A strict project-owner lock binds the full C6.10 digest, exact source-input set, generated `src/lib.rs`, separate project-source/generated-output license declarations, exact lock bytes, and fixed allow scopes. Policy version 8 adds `scoped-project-source-license-policy-verified` plus a dedicated unavailable blocker. Final admission reruns C6.10 with identical inputs, requires full receipt equality, and then recollects C6.12. This does not prove attestor identity, SPDX validity, license/NOTICE files, obligations, compatibility, ownership or output/derivative-work rights, legal approval, signatures, global policy completion, or distribution authority. C6.12 is omitted before C6.11/C6.10/C6.9/C6.8/C6.7/C6.6 at the provenance ceiling and never changes ordinary-build or C6.3 gate outcomes. |
-| `2.18.0` | **Unreleased additive C6.13 scoped analysis-input verification** (current Train C producer). Preview-ready evidence may add an optional receipt for every C6.10 source's sibling `.pyi`, binding present logical path, byte SHA-256/size, and deterministic supported-signature projection/version to the exact replay/source set. Present stubs are `project-python-stub` materials; absent records are metadata only. Secure immutable snapshots are evidence-eligible, compatibility snapshots are analyzer-only. Policy version 9 adds the twelfth observation `scoped-analysis-inputs-verified` and its dedicated unavailable blocker; malformed/forged present receipts fail readiness closed. Omission order starts C6.13, then C6.12/C6.11/C6.10/C6.9/C6.8/C6.7/C6.6, and removing C6.10 removes dependent C6.12/C6.13. |
+| `2.18.0` | **Unreleased additive C6.13 scoped analysis-input verification** (Train C intermediate). Preview-ready evidence may add an optional receipt for every C6.10 source's sibling `.pyi`, binding present logical path, byte SHA-256/size, and deterministic supported-signature projection/version to the exact replay/source set. Present stubs are `project-python-stub` materials; absent records are metadata only. Secure immutable snapshots are evidence-eligible, compatibility snapshots are analyzer-only. Policy version 9 adds the twelfth observation `scoped-analysis-inputs-verified` and its dedicated unavailable blocker; malformed/forged present receipts fail readiness closed. At that contract's ceiling omission started with C6.13, then C6.12/C6.11/C6.10/C6.9/C6.8/C6.7/C6.6, and removing C6.10 removed dependent C6.12/C6.13. |
+| `2.19.0` | **Unreleased additive C6.14 artifact-policy coverage inventory** (current Train C producer). Preview-ready evidence may add an immutable, bounded `artifact_policy_coverage_inventory` that partitions only the exact C6.2-C6.13 observed component universe into thirteen fixed disjoint classes. Each row carries a count, domain-qualified canonical identity-set SHA-256, identity strength, separate license-policy and transformation-provenance states, and only the exact applicable prerequisite receipt kind/digest. It never infers coverage beyond C6.10-C6.13 receipts, adds no provenance material, and keeps scope/global completeness, signing, and distribution authority false. Policy version 10 adds the thirteenth observation `artifact-policy-coverage-bound` and `artifact-policy-coverage-unavailable`; all ten global readiness checks remain blocked. Current omission order starts C6.14, then C6.13/C6.12/C6.11/C6.10/C6.9/C6.8/C6.7/C6.6. |
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.
@@ -885,7 +886,7 @@ the post-rename inspection-failure path.
 #### `artifact_evidence` item shapes and fixed reason enum
 
 Top-level `build.json` and `generate.json` carry additive
-`contract_version` (currently `"2.18.0"`). Item fields under
+`contract_version` (currently `"2.19.0"`). Item fields under
 `artifact_evidence` when `status` is `preview-ready`:
 
 | Field | Shape |
@@ -906,6 +907,7 @@ Top-level `build.json` and `generate.json` carry additive
 | `component_license_policy_verification` | Contract 2.16.0 only: immutable scoped receipt `{kind, schema_version, scope, policy, authority, complete, signed, distribution_authorized, complete_for_scope, global_license_policy_complete, metadata_only, generated_root_excluded, license_files_verified, legal_approval_verified, owner_attestation_bound, attestor_identity_verified, component_license_inventory_sha256, lock_file, policy_snapshot_sha256, registry_component_count, registry_component_bom_refs, attestor, attestor_kind, attestor_relationship, decision, action_scopes, acknowledgement}`. It exactly binds the full C6.7 digest, registry `bom_ref` coverage, and project-owner lock bytes but remains observation-only and non-authorizing. |
 | `project_source_license_policy_verification` | Contract 2.17.0 only: immutable scoped receipt `{kind, schema_version, scope, policy, authority, complete, signed, distribution_authorized, complete_for_scope, global_license_policy_complete, owner_attestation_bound, attestor_identity_verified, license_declarations_only, source_ownership_verified, generated_output_rights_verified, derivative_work_rights_verified, spdx_verified, license_files_verified, notice_files_verified, obligations_verified, license_compatibility_verified, legal_approval_verified, source_transformation_verification_sha256, source_input_set_sha256, source_input_count, source_inputs, generated_rust, lock_file, policy_snapshot_sha256, project_source_license_declared, generated_rust_license_declared, attestor, attestor_kind, attestor_relationship, decision, action_scopes, acknowledgement}`. It exactly binds a full present C6.10 receipt, project-source set, generated `src/lib.rs`, separate declarations, and owner-lock bytes but remains observation-only and non-authorizing. |
 | `analysis_input_verification` | Contract 2.18.0 only: immutable scoped receipt `{kind, schema_version, scope, authority, complete_for_scope, global_build_input_closure_complete, complete, signed, distribution_authorized, source_transformation_verification_sha256, source_input_set_sha256, source_paths, records, analysis_input_set_sha256, analysis_input_set_version, supported_signature_projection_set_sha256, supported_signature_projection_set_version}`. Records are exact `absent` or `present`; present records bind a `project-python-stub` logical path, byte SHA-256/size, and supported-signature projection/version. Raw bytes, source text, absolute roots, and exception text are excluded. |
+| `artifact_policy_coverage_inventory` | Contract 2.19.0 only: immutable observation-only `{kind, schema_version, scope, identity_scheme, authority, scope_complete, global_license_policy_complete, global_transformation_provenance_complete, complete, signed, distribution_authorized, class_count, observed_component_count, canonical_partition_sha256, classes}`. It always has exactly thirteen canonical class rows; each row is `{class_id, observed_count, canonical_identity_set_sha256, identity_state, license_policy_state, license_policy_receipt_kind, license_policy_receipt_sha256, transformation_provenance_state, transformation_provenance_receipt_kind, transformation_provenance_receipt_sha256}`. It classifies only already-observed components and all completeness/authority booleans remain false. |
 
 When `status` is `unavailable`, `reason` is exactly one member of the fixed
 allowlist (no free-text paths or tool output). The C6.2 entries are below;
@@ -1273,8 +1275,9 @@ Unsigned provenance records
 `component_license_inventory_observed` and
 `runDetails.metadata.rextio:component_license_inventory_observed`; when
 present, it also carries the exact inventory under
-`runDetails.metadata.rextio:component_license_inventory`. Under current 2.18.0,
-the provenance ceiling first omits C6.13, then C6.12, C6.11, C6.10, C6.9, and C6.8. If still oversized, C6.7
+`runDetails.metadata.rextio:component_license_inventory`. Under current 2.19.0,
+the provenance ceiling first omits C6.14, then C6.13, C6.12, C6.11, C6.10,
+C6.9, and C6.8. If still oversized, C6.7
 is omitted next and the document is rebuilt while retaining C6.6. Only if it
 remains oversized does the existing C6.6 omission rule apply.
 
@@ -1365,12 +1368,13 @@ inode/device values, and credentials never enter evidence or sidecars.
 
 Unsupported, unavailable, malformed, unsafe, over-bound, or changed C6.8
 collection omits C6.8 and its dependent C6.9 graph while retaining C6.7/C6.6
-and all earlier evidence. Under current policy version 9 both
+and all earlier evidence. Under current policy version 10 both
 `direct-native-path-resolution-bound` and
 `bounded-static-native-runtime-graph-bound` become unavailable, with their two
 dedicated blockers. A malformed present model still produces the total
 all-`not-evaluated`, sole `readiness-assessment-unavailable` shape. At the
-provenance ceiling the omission order is C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, then C6.6. The
+provenance ceiling the omission order is C6.14, C6.13, C6.12, C6.11, C6.10,
+C6.9, C6.8, C6.7, then C6.6. The
 independent `native-runtime-resolution-complete`, complete transitive-closure,
 and dynamic-loading checks remain blocked. Actual loader selection/environment,
 system library bytes, runtime `dlopen`, Windows PE, WASM, runtime-bearing
@@ -1492,7 +1496,8 @@ C6.8 remains present and appends
 `bounded-static-native-runtime-graph-unavailable`; malformed present graph
 models use the all-`not-evaluated`, sole `readiness-assessment-unavailable`
 shape. Provenance records both observation presence and the exact graph when
-present; the current ceiling omits C6.13 first, then C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, and C6.6.
+present; the current ceiling omits C6.14 first, then C6.13, C6.12, C6.11,
+C6.10, C6.9, C6.8, C6.7, and C6.6.
 
 Because each C6.9 private snapshot directory is created and removed below the
 generated Python root, that safe lifecycle changes directory stamps captured
@@ -1596,12 +1601,13 @@ AST dump, absolute path, inode/device value, exception text, environment value,
 credential, or unbounded output is serialized.
 
 Unsupported scope, replay mismatch, race, or bound exhaustion omits only C6.10
-and current policy version 9 marks `scoped-source-transformation-verified` unavailable
+and current policy version 10 marks `scoped-source-transformation-verified` unavailable
 with `scoped-source-transformation-verification-unavailable`. C6.6 and the C6.3
 gate retain their independent outcomes. A malformed present receipt or broken
 inventory/source/generated cross-binding uses the total all-`not-evaluated`,
 sole `readiness-assessment-unavailable` shape. At the closed provenance ceiling
-the omission order is C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, then C6.6.
+the omission order is C6.14, C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7,
+then C6.6.
 
 `complete_for_scope: true` is deliberately local. `complete: false`,
 `global_provenance_complete: false`, the blocked
@@ -1677,8 +1683,8 @@ the CycloneDX SBOM.
 
 Collection failure, final mismatch, material-count pressure caused only by the
 lock, or sidecar-ceiling pressure omits C6.11 alone. Under the current producer,
-C6.13 is omitted first; the full order is C6.13, C6.12, C6.11, C6.10, C6.9, C6.8,
-C6.7, then C6.6. Dropping C6.7 also drops its
+C6.14 is omitted first; the full order is C6.14, C6.13, C6.12, C6.11, C6.10,
+C6.9, C6.8, C6.7, then C6.6. Dropping C6.7 also drops its
 dependent C6.11 receipt/material. Policy version 7 marks the tenth observation
 `scoped-component-license-policy-verified` unavailable with
 `scoped-component-license-policy-verification-unavailable`. A malformed present
@@ -1766,15 +1772,16 @@ lock is one separate resolved `file:` material with role
 `project-source-license-policy-lock`; it is not a C6.2 input or CycloneDX SBOM
 component.
 
-C6.13 is the first optional material and provenance payload omitted for count
-or sidecar-ceiling pressure; C6.12 follows it and provenance is rebuilt
+C6.14 is the first optional provenance payload omitted for count or sidecar-
+ceiling pressure; it adds no material. C6.13 and then C6.12 follow it and
+provenance is rebuilt
 without the omitted observation. Immediately
 before final evidence return the producer reruns C6.10 using the same plan,
 input snapshot, transformation inventory, and embedding setting, requires full
 C6.10 receipt equality, and only then fully recollects C6.12. Any replay,
 source, generated-output, or lock mismatch omits only C6.12 and never adopts
-changed evidence. The current omission order is C6.13, C6.12, C6.11, C6.10, C6.9,
-C6.8, C6.7, then C6.6.
+changed evidence. The current omission order is C6.14, C6.13, C6.12, C6.11,
+C6.10, C6.9, C6.8, C6.7, then C6.6.
 
 Policy version 8 adds the eleventh observation
 `scoped-project-source-license-policy-verified`. An absent receipt makes only
@@ -1825,7 +1832,64 @@ closed: every check is `not-evaluated` and the sole blocker is
 omission order is C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, C6.6;
 removing C6.10 also removes dependent C6.12 and C6.13.
 
-### Hard distribution-authorization readiness (contracts 2.10.0-2.18.0)
+### C6.14 artifact-policy coverage inventory (contract 2.19.0)
+
+C6.14 adds optional
+`artifact_evidence.artifact_policy_coverage_inventory` schema 1 for the same
+`host-extension-wheel-cpython-v1` scope. It is derived only when the exact
+C6.9-C6.13 prerequisite chain is present and valid. It partitions components
+already observed by C6.2-C6.13; it does not discover a complete artifact
+closure. Evidence sidecars and C6.14 itself are excluded.
+
+The inventory uses identity scheme `rextio-artifact-component-v1`, carries an
+`observed_component_count` and canonical partition SHA-256, and always emits
+these thirteen rows in this order:
+
+| Class id | Identity | License policy | Transformation provenance |
+|---|---|---|---|
+| `file-input:project-python-source` | `byte-bound` | `scoped-owner-declaration-bound` (C6.12) | `scoped-replay-input-bound` (C6.10) |
+| `file-input:present-project-python-stub` | `byte-bound` | `unassessed` | `scoped-analysis-input-projection-bound` (C6.13) |
+| `file-input:generated-python-input` | `byte-bound` | `unassessed` | `unassessed` |
+| `file-input:generated-rust-lib` | `byte-bound` | `scoped-owner-declaration-bound` (C6.12) | `scoped-replay-output-verified` (C6.10) |
+| `file-input:generated-rust-build-input` | `byte-bound` | `unassessed` | `unassessed` |
+| `file-input:generated-cargo-lock` | `byte-bound` | `unassessed` | `unassessed` |
+| `cargo-component:registry-package` | `declared-checksum-bound` | `scoped-cargo-owner-receipt-bound` (C6.11) | `not-applicable` |
+| `cargo-component:path-root-package` | `logical-only` | `unassessed` | `not-applicable` |
+| `wheel-entry:packaged-native-runtime-member` | `byte-bound` | `unassessed` | `not-applicable` |
+| `native-runtime:logical-system-leaf` | `logical-only` | `unassessed` | `not-applicable` |
+| `file-input:policy-lock` | `byte-bound` | `unassessed` | `unassessed` |
+| `wheel-output:subject` | `byte-bound` | `unassessed` | `unassessed` |
+| `wheel-entry:other` | `byte-bound` | `unassessed` | `unassessed` |
+
+Every row carries its observed count and a class-qualified canonical identity-
+set SHA-256. Empty classes remain distinct because the class id is part of the
+digest domain. A covered dimension includes the exact prerequisite receipt
+kind and canonical receipt SHA-256; an `unassessed` or `not-applicable`
+dimension carries neither. C6.11/C6.12 declarations are reported only at
+their exact scoped meaning and are not treated as SPDX validation, ownership
+proof, legal approval, or global license policy. Likewise, C6.10 replay and
+C6.13 signature projection do not complete global transformation provenance
+or build-input closure.
+
+The producer deeply reconstructs and cross-binds all prerequisite models,
+rejects canonical-path/case aliases and cross-class overlaps, deduplicates the
+C6.4 root with C6.9 packaged nodes by exact wheel bytes, and keeps logical
+system leaves byte-unbound. Collection is bounded and fail-closed: absence or
+failure omits only C6.14 and adds `artifact-policy-coverage-unavailable`; a
+malformed present inventory makes the complete readiness assessment
+`not-evaluated` with only `readiness-assessment-unavailable`. Policy version 10
+adds the thirteenth observation `artifact-policy-coverage-bound`; all ten
+global readiness checks stay blocked. `scope_complete`, both global coverage
+booleans, `complete`, `signed`, and `distribution_authorized` are always
+false.
+
+Unsigned provenance records the exact inventory as metadata and adds no new
+material. The current count/sidecar-ceiling omission order is C6.14, C6.13,
+C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, then C6.6. Removing any prerequisite
+also removes dependent C6.14. Ordinary-build and C6.3 gate outcomes are
+unchanged.
+
+### Hard distribution-authorization readiness (contracts 2.10.0-2.19.0)
 
 C6.5 adds `build.json.artifact_distribution_authorization` only where the same
 ordinary host-extension + CPython wheel path emits `artifact_evidence`. It is
@@ -1845,17 +1909,18 @@ C6.10 scoped replay-verification check; 2.16.0 emits policy version 7 with the
 tenth C6.11 scoped Cargo license-policy check; 2.17.0 emits policy version 8
 with the eleventh C6.12 scoped project-source license-policy check; 2.18.0
 emits policy version 9 with the twelfth C6.13 scoped analysis-input
-verification check. The current fixed envelope is `kind:
+verification check; 2.19.0 emits policy version 10 with the thirteenth C6.14
+artifact-policy coverage check. The current fixed envelope is `kind:
 "artifact-distribution-authorization"`, both `policy` and `scope` equal
-`host-extension-wheel-cpython-v1`, `policy_version: 9`, `status: "blocked"`, and
+`host-extension-wheel-cpython-v1`, `policy_version: 10`, `status: "blocked"`, and
 `authority: "readiness-assessment-only"`. `complete`, `signed`, and
 `distribution_authorized` are mandatory and always `false`; no configuration
 setting or constructor value can change them. C6.3's required evidence gate
 continues to answer only whether bounded preview evidence is present. A
-`satisfied` C6.3 gate and a C6.5-C6.13 `blocked` readiness assessment therefore
+`satisfied` C6.3 gate and a C6.5-C6.14 `blocked` readiness assessment therefore
 coexist on a successful required build.
 
-For current contract 2.18.0 with `evidence_status: "preview-ready"`, the exact
+For current contract 2.19.0 with `evidence_status: "preview-ready"`, the exact
 shape is:
 
 ```json
@@ -1863,7 +1928,7 @@ shape is:
   "artifact_distribution_authorization": {
     "kind": "artifact-distribution-authorization",
     "policy": "host-extension-wheel-cpython-v1",
-    "policy_version": 9,
+    "policy_version": 10,
     "scope": "host-extension-wheel-cpython-v1",
     "status": "blocked",
     "authority": "readiness-assessment-only",
@@ -1882,6 +1947,7 @@ shape is:
       {"id": "scoped-component-license-policy-verified", "status": "satisfied"},
       {"id": "scoped-project-source-license-policy-verified", "status": "satisfied"},
       {"id": "scoped-analysis-inputs-verified", "status": "satisfied"},
+      {"id": "artifact-policy-coverage-bound", "status": "satisfied"},
       {"id": "component-license-policy-complete", "status": "blocked"},
       {"id": "native-runtime-resolution-complete", "status": "blocked"},
       {"id": "native-runtime-transitive-closure-complete", "status": "blocked"},
@@ -1914,7 +1980,7 @@ shape is:
 
 Check IDs, statuses, blocker IDs, coverage, uniqueness, and order are a closed
 contract. Unknown, duplicated, reordered, or free-text items are rejected.
-Before the twelve observation statuses become `satisfied`, the producer
+Before the thirteen observation statuses become `satisfied`, the producer
 reconstructs every nested evidence model and structurally validates the wheel
 subject/sidecar relationships, all required declared-input role snapshots, one
 bound Cargo path root and its fully reachable package graph, and the exact
@@ -1927,7 +1993,7 @@ changed value can therefore retain a `satisfied` status for
 `source-transformation-inventory-bound`;
 `source-transformation-provenance-complete` remains blocked and the
 assessment remains unsigned and non-authorizing. This is model/reference-binding
-validation only: the C6.5-C6.13 assessment does not reopen artifacts, re-hash
+validation only: the C6.5-C6.14 assessment does not reopen artifacts, re-hash
 outputs, or rerun C6.4 inspectors.
 
 For C6.10 the reconstructed evidence must bind the canonical C6.6-inventory
@@ -1981,11 +2047,19 @@ or compatibility, prove source ownership or generated-output/derivative-work
 rights, perform legal review, sign evidence, complete global policy, or
 authorize distribution.
 
+For C6.14 reconstruction requires exactly thirteen canonical, disjoint class
+rows derived from the complete present C6.9-C6.13 chain. Counts, class-
+qualified identity-set digests, the partition digest, identity strengths, and
+the exact applicable C6.10-C6.13 receipt kind/digest bindings must all match
+fresh derivation. This validates only the compact observed-component
+partition; it neither discovers omitted components nor changes any global
+readiness check from `blocked`.
+
 For `evidence_status: "unavailable"`, `evidence_reason` is exactly the existing
-fixed `artifact_evidence.reason`; the twelve observation checks use
+fixed `artifact_evidence.reason`; the thirteen observation checks use
 `"unavailable"`, the ten downstream readiness checks use `"not-evaluated"`,
 and `blockers` is exactly `["evidence-unavailable"]`: unavailable evidence is
-12 `unavailable` observations plus 10 `not-evaluated` readiness checks. This
+13 `unavailable` observations plus 10 `not-evaluated` readiness checks. This
 avoids inventing downstream findings and prevents raw errors, tool output,
 credentials, or machine-private paths from entering the report.
 
@@ -1996,16 +2070,17 @@ is absent, the first four mandatory observation checks stay `satisfied`, both
 readiness checks stay `blocked`. Blockers are the ordinary ten readiness
 blockers plus `native-runtime-path-resolution-inventory-unavailable` and
 `bounded-static-native-runtime-graph-unavailable`, in that order, followed by
-any independent C6.6/C6.10/C6.7/C6.11/C6.12/C6.13 unavailable blockers. This does not
+any independent C6.6/C6.10/C6.7/C6.11/C6.12/C6.13 unavailable blockers and the
+dependent `artifact-policy-coverage-unavailable` blocker last. This does not
 change either complete-runtime readiness check from blocked.
 
 When C6.8 is present but the C6.9 graph is absent, the first five observations
 stay `satisfied`, `bounded-static-native-runtime-graph-bound` alone is
-`unavailable`, and the independent C6.6/C6.10/C6.7/C6.11/C6.12/C6.13 observations retain
-their own states. The dedicated
+`unavailable`, the independent C6.6/C6.10/C6.7/C6.11/C6.12/C6.13 observations retain
+their own states, and dependent C6.14 is `unavailable`. The dedicated
 `bounded-static-native-runtime-graph-unavailable` blocker follows the ordinary
 ten readiness blockers and precedes any C6.6/C6.10/C6.7/C6.11/C6.12/C6.13 unavailable
-blockers. A valid bounded graph still never changes
+blockers; `artifact-policy-coverage-unavailable` remains last. A valid bounded graph still never changes
 `native-runtime-transitive-closure-complete` from `blocked`.
 
 When the C6.6 inventory is absent, the first four mandatory observations and
@@ -2013,14 +2088,16 @@ the independent C6.8/C6.9 observations retain their own states,
 `source-transformation-inventory-bound`, the dependent
 `scoped-source-transformation-verified` (C6.10), and the further dependent
 `scoped-project-source-license-policy-verified` and
-`scoped-analysis-inputs-verified` are `unavailable`, and downstream readiness
+`scoped-analysis-inputs-verified` plus `artifact-policy-coverage-bound` are
+`unavailable`, and downstream readiness
 checks stay `blocked`. After the ordinary ten readiness blockers, any C6.8/C6.9
 unavailable blockers come first, followed by exactly
 `source-transformation-inventory-unavailable` and
 `scoped-source-transformation-verification-unavailable`, then any C6.7/C6.11
 blockers, followed by
 `scoped-project-source-license-policy-verification-unavailable` and finally
-`scoped-analysis-input-verification-unavailable`.
+`scoped-analysis-input-verification-unavailable`, followed by
+`artifact-policy-coverage-unavailable`.
 This dedicated shape is distinct from a malformed,
 noncanonical, or
 exact-reference-binding-breaking evidence model.
@@ -2029,17 +2106,18 @@ When C6.6 is present but C6.10 is absent, the other nine observations retain
 their own `satisfied | unavailable` states. The C6.10 observation,
 `scoped-source-transformation-verified`, and its dependent
 `scoped-project-source-license-policy-verified` and
-`scoped-analysis-inputs-verified` are `unavailable`.
+`scoped-analysis-inputs-verified` plus `artifact-policy-coverage-bound` are
+`unavailable`.
 `scoped-source-transformation-verification-unavailable` follows any C6.8/C6.9
 and C6.6 unavailable blockers but precedes any C6.7/C6.11 blocker; the C6.12
 and then C6.13 unavailable blockers follow those later optional blockers. A
-valid
+The C6.14 blocker is last. A valid
 scoped receipt still never changes
 `source-transformation-provenance-complete` from `blocked`.
 
 The C6.7 missing shape is independent of both C6.12 and C6.13: the preceding
 eight observations and those two later observations retain their own
-`satisfied | unavailable` states, while both
+`satisfied | unavailable` states, while C6.14 and both
 `component-license-inventory-bound` and its dependent
 `scoped-component-license-policy-verified` are `unavailable`, and the fixed
 `component-license-inventory-unavailable` plus
@@ -2051,31 +2129,38 @@ blockers. A valid C6.7 inventory never changes
 When C6.7 is present but C6.11 is absent, the preceding nine observations and
 the independent C6.12 and C6.13 observations retain their own
 `satisfied | unavailable` states and only
-`scoped-component-license-policy-verified` is `unavailable`. Its dedicated
+`scoped-component-license-policy-verified` plus dependent C6.14 are
+`unavailable`. Its dedicated
 `scoped-component-license-policy-verification-unavailable` blocker follows C6.7
 and earlier observation-unavailable blockers but precedes both the C6.12 and C6.13
-unavailable blockers when present. The ordinary ten readiness blockers,
+unavailable blockers when present; the C6.14 blocker is last. The ordinary ten readiness blockers,
 including `component-license-policy-incomplete`, remain unchanged.
 
 When C6.10 is present but C6.12 is absent, the other eleven observations
-retain their own `satisfied | unavailable` states and only
-`scoped-project-source-license-policy-verified` is `unavailable`; C6.13 retains
-its independent state. Its dedicated
+retain their own `satisfied | unavailable` states and
+`scoped-project-source-license-policy-verified` plus dependent C6.14 are
+`unavailable`; C6.13 retains its independent state. The C6.12 dedicated
 `scoped-project-source-license-policy-verification-unavailable` blocker follows
-every other observation-unavailable blocker. Existing readiness blockers and
+every earlier observation-unavailable blocker and precedes the C6.14 blocker. Existing readiness blockers and
 all build/C6.3 outcomes remain unchanged.
 
 When C6.13 is absent, the preceding eleven observations retain their own
-`satisfied | unavailable` states and only the twelfth observation,
-`scoped-analysis-inputs-verified`, is `unavailable`. Its dedicated
+`satisfied | unavailable` states and both the twelfth observation,
+`scoped-analysis-inputs-verified`, and dependent C6.14 are `unavailable`. Its dedicated
 `scoped-analysis-input-verification-unavailable` blocker is last among the
 optional observation-unavailable blockers, after
 `scoped-project-source-license-policy-verification-unavailable`; the canonical
 optional blocker order remains C6.8, C6.9, C6.6, C6.10, C6.7, C6.11, C6.12,
-then C6.13 wherever those observations are unavailable.
+then C6.13 and C6.14 wherever those observations are unavailable.
+
+When all C6.9-C6.13 prerequisites are present but C6.14 is absent, the first
+twelve observations retain their own `satisfied | unavailable` states and
+only `artifact-policy-coverage-bound` is `unavailable`. Its dedicated
+`artifact-policy-coverage-unavailable` blocker is always last among optional
+observation blockers.
 
 If an object still says `evidence_status: "preview-ready"` but fails the
-stricter structural readiness evaluation, C6.5-C6.13 preserves that evidence status,
+stricter structural readiness evaluation, C6.5-C6.14 preserves that evidence status,
 sets **every** check to `"not-evaluated"`, keeps `evidence_reason: null`, and
 sets `blockers` exactly to `["readiness-assessment-unavailable"]`. Evaluation
 is total and exception text never serializes. This fallback is report-only: a
@@ -2088,7 +2173,7 @@ selection/environment, transitive native dependency closure, system-library
 byte binding, runtime `dlopen` discovery, Windows PE, runtime-bearing plugins,
 host executables, Rust-importable crates,
 Nuitka/WASM evidence, signatures, and final distribution authorization remain
-outside C6.5-C6.13.
+outside C6.5-C6.14.
 
 ### Resolved `artifact_profiles`
 
@@ -2324,12 +2409,12 @@ class RextioPluginV2(Protocol):
 - No incremental-analysis API (deferred until latency measurements demand it;
   v1 tooling calls the batch analyzer).
 - No recursive third-party-package source promotion, device-provider discovery,
-  provider build/link hook, CUDA execution, or device support claim through 2.18.0.
+  provider build/link hook, CUDA execution, or device support claim through 2.19.0.
   C5.1 inventories one exact distribution but authorizes no lowering or build.
 - No actual loader selection, complete transitive dynamic-library closure,
   system-library byte binding, runtime `dlopen` observation, Windows PE linkage
   inventory, runtime-bearing plugin inventory, or artifact signatures through
-  2.18.0. C6.8 observes one-hop packaged candidates and C6.9 recursively
+  2.19.0. C6.8 observes one-hop packaged candidates and C6.9 recursively
   observes only a bounded static packaged graph from the generated macOS/Linux
   extension; neither is loader authority.
 - No name-based reservation of route strings beyond this document; new routes

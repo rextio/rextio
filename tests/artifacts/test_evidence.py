@@ -78,11 +78,12 @@ def test_c69_runtime_closure_symbols_and_bounds_are_explicitly_exported() -> Non
     } <= set(evidence_module.__all__)
 
 
-def test_c613_analysis_input_verification_is_additive_keyword_only() -> None:
+def test_c613_c614_evidence_fields_are_additive_keyword_only() -> None:
     parameters = list(inspect.signature(ArtifactEvidence).parameters.values())
     by_name = {parameter.name: parameter for parameter in parameters}
 
     assert by_name["analysis_input_verification"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert by_name["artifact_policy_coverage_inventory"].kind is inspect.Parameter.KEYWORD_ONLY
     assert [parameter.name for parameter in parameters[:19]] == [
         "kind",
         "status",
@@ -104,10 +105,7 @@ def test_c613_analysis_input_verification_is_additive_keyword_only() -> None:
         "source_transformation_inventory",
         "source_transformation_verification",
     ]
-    assert [
-        (parameter.name, parameter.kind)
-        for parameter in parameters[19:27]
-    ] == [
+    assert [(parameter.name, parameter.kind) for parameter in parameters[19:27]] == [
         ("component_license_inventory", inspect.Parameter.POSITIONAL_OR_KEYWORD),
         (
             "component_license_policy_verification",
@@ -129,8 +127,10 @@ def test_c613_analysis_input_verification_is_additive_keyword_only() -> None:
         "unavailable",
         reason="native-extension-not-built",
         analysis_input_verification=None,
+        artifact_policy_coverage_inventory=None,
     )
     assert evidence.analysis_input_verification is None
+    assert evidence.artifact_policy_coverage_inventory is None
 
 
 def _synthetic_native_inventory(
@@ -332,9 +332,7 @@ def test_dirfd_close_failure_after_replace_keeps_write_successful(
 
 
 def test_canonicalize_registry_source_rejects_credentials_and_query() -> None:
-    ok = canonicalize_registry_source(
-        "registry+https://github.com/rust-lang/crates.io-index"
-    )
+    ok = canonicalize_registry_source("registry+https://github.com/rust-lang/crates.io-index")
     assert ok == "registry+https://github.com/rust-lang/crates.io-index"
     with pytest.raises(ArtifactEvidenceError) as exc:
         canonicalize_registry_source(
@@ -612,8 +610,7 @@ def test_native_runtime_sbom_reuses_wheel_entry_and_provenance_observes_not_mate
     native_components = [
         component
         for component in cdx["components"]
-        if component.get("hashes")
-        == [{"alg": "SHA-256", "content": native_entry.sha256}]
+        if component.get("hashes") == [{"alg": "SHA-256", "content": native_entry.sha256}]
     ]
 
     assert len(native_components) == 1
@@ -729,10 +726,13 @@ def test_artifact_evidence_exactly_binds_runtime_path_resolution_truth_table() -
         "native_runtime_inventory": runtime,
     }
 
-    assert ArtifactEvidence(
-        **base,
-        native_runtime_path_resolution=resolution,
-    ).native_runtime_path_resolution == resolution
+    assert (
+        ArtifactEvidence(
+            **base,
+            native_runtime_path_resolution=resolution,
+        ).native_runtime_path_resolution
+        == resolution
+    )
     with pytest.raises(ValueError, match="subject"):
         ArtifactEvidence(
             **base,
@@ -900,7 +900,9 @@ def test_artifact_evidence_cross_binds_c69_graph_to_c68_and_wheel_bytes() -> Non
 
     with pytest.raises(ValueError, match="requires direct path-resolution"):
         ArtifactEvidence(
-            **{key: value for key, value in base.items() if key != "native_runtime_path_resolution"},
+            **{
+                key: value for key, value in base.items() if key != "native_runtime_path_resolution"
+            },
             native_runtime_transitive_closure=closure,
         )
     wrong_target = NativeRuntimeTransitiveClosureNode(
@@ -967,9 +969,7 @@ def test_artifact_evidence_cross_binds_c69_graph_to_c68_and_wheel_bytes() -> Non
         subject_sha256=root_entry.sha256,
         subject_size=root_entry.uncompressed_size,
         root_node_ref=root_node.node_ref,
-        nodes=tuple(
-            sorted((root_node, disallowed_node), key=lambda node: node.node_ref)
-        ),
+        nodes=tuple(sorted((root_node, disallowed_node), key=lambda node: node.node_ref)),
         edges=(
             NativeRuntimeTransitiveClosureEdge(
                 source_ref=root_node.node_ref,
@@ -1041,9 +1041,7 @@ def test_artifact_evidence_rejects_runtime_resolution_with_unrelated_basename() 
         compressed_size=1,
         uncompressed_size=1,
     )
-    dependency = NativeRuntimeDependency(
-        name="libwanted.so", origin="wheel-candidate"
-    )
+    dependency = NativeRuntimeDependency(name="libwanted.so", origin="wheel-candidate")
     runtime = NativeRuntimeInventory(
         format="elf",
         architecture="x86_64",
@@ -1109,9 +1107,7 @@ def test_artifact_evidence_rejects_runtime_resolution_subject_self_binding() -> 
         compressed_size=1,
         uncompressed_size=1,
     )
-    dependency = NativeRuntimeDependency(
-        name="_rextio_native.so", origin="wheel-candidate"
-    )
+    dependency = NativeRuntimeDependency(name="_rextio_native.so", origin="wheel-candidate")
     runtime = NativeRuntimeInventory(
         format="elf",
         architecture="x86_64",
@@ -1354,9 +1350,7 @@ def test_cyclonedx_named_license_and_input_bomref_identity() -> None:
         target_triple="x86_64-unknown-linux-gnu",
     )
     log = next(c for c in cdx["components"] if c["name"] == "log")
-    assert log["licenses"] == [
-        {"license": {"name": "custom internal license text"}}
-    ]
+    assert log["licenses"] == [{"license": {"name": "custom internal license text"}}]
     inp = next(c for c in cdx["components"] if c["name"] == "app.py")
     assert inp["bom-ref"] != f"urn:rextio:input:{'2' * 64}"
     assert inp["bom-ref"].startswith("urn:rextio:input:")
@@ -1371,9 +1365,7 @@ def test_cargo_dependency_edges_reject_self_and_dangling_endpoints() -> None:
         kind="path-root",
     )
     with pytest.raises(ValueError, match="self"):
-        CargoDepEdge(
-            dependent_ref=package.bom_ref(), dependency_ref=package.bom_ref()
-        )
+        CargoDepEdge(dependent_ref=package.bom_ref(), dependency_ref=package.bom_ref())
 
     dangling = CargoDepEdge(
         dependent_ref=package.bom_ref(),
@@ -1989,15 +1981,11 @@ def test_cleanup_created_sidecars_is_no_throw(
         raise OSError("cleanup failed")
 
     monkeypatch.setattr(evidence_mod, "_cleanup_created_sidecars_impl", fail_cleanup)
-    cleanup_created_sidecars(
-        [target.name], project_root=tmp_path, expected_parent=tmp_path
-    )
+    cleanup_created_sidecars([target.name], project_root=tmp_path, expected_parent=tmp_path)
     assert target.read_bytes() == b"preserve-on-cleanup-error"
 
 
-@pytest.mark.skipif(
-    __import__("os").name == "nt", reason="dirfd write path is POSIX-only"
-)
+@pytest.mark.skipif(__import__("os").name == "nt", reason="dirfd write path is POSIX-only")
 def test_dirfd_write_path_executes_when_path_fallback_forced_to_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2015,16 +2003,12 @@ def test_dirfd_write_path_executes_when_path_fallback_forced_to_fail(
         raise AssertionError("path fallback must not run when dirfd is available")
 
     monkeypatch.setattr(evidence_mod, "_write_atomic_bytes_path", boom_path)
-    written = write_atomic_bytes(
-        target, data, project_root=project, expected_parent=dist
-    )
+    written = write_atomic_bytes(target, data, project_root=project, expected_parent=dist)
     assert written.read_bytes() == data
     assert not list(dist.glob(".demo.whl.cdx.json.*.tmp"))
 
 
-@pytest.mark.skipif(
-    __import__("os").name == "nt", reason="symlink parent cleanup is POSIX-focused"
-)
+@pytest.mark.skipif(__import__("os").name == "nt", reason="symlink parent cleanup is POSIX-focused")
 def test_cleanup_created_sidecars_refuses_symlink_parent_outside_sentinel(
     tmp_path: Path,
 ) -> None:

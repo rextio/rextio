@@ -145,9 +145,7 @@ def _synthetic_runtime_inspector(monkeypatch: pytest.MonkeyPatch) -> None:
                 dependency_origin=dependency.origin,
                 resolution="system-logical",
                 mechanism=(
-                    "macho-system"
-                    if runtime_inventory.format == "mach-o"
-                    else "elf-system-name"
+                    "macho-system" if runtime_inventory.format == "mach-o" else "elf-system-name"
                 ),
             )
             for dependency in runtime_inventory.dependencies
@@ -381,9 +379,7 @@ def _write_project_source_license_policy_lock(
     project: Path,
     verification: SourceTransformationVerification,
 ) -> None:
-    verification_digest = hashlib.sha256(
-        canonical_json_bytes(verification.to_dict())
-    ).hexdigest()
+    verification_digest = hashlib.sha256(canonical_json_bytes(verification.to_dict())).hexdigest()
     document = {
         "schema_version": PROJECT_SOURCE_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
         "kind": PROJECT_SOURCE_LICENSE_POLICY_LOCK_KIND,
@@ -403,9 +399,7 @@ def _write_project_source_license_policy_lock(
             "attestor_relationship": "organization-owner",
             "decision": "allow",
             "action_scopes": list(PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES),
-            "acknowledgement": (
-                PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT
-            ),
+            "acknowledgement": (PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT),
         },
     }
     (project / PROJECT_SOURCE_LICENSE_POLICY_LOCK_FILENAME).write_bytes(
@@ -438,19 +432,13 @@ def _install_synthetic_c610_and_source_lock(
     return verification
 
 
-def _install_synthetic_c613_stub(
-    *, project: Path, plan: BuildPlan, present: bool
-) -> None:
+def _install_synthetic_c613_stub(*, project: Path, plan: BuildPlan, present: bool) -> None:
     stub = project / "app.pyi"
     if present:
-        stub.write_text(
-            "def add(a: int, b: int) -> int: ...\n", encoding="utf-8"
-        )
+        stub.write_text("def add(a: int, b: int) -> int: ...\n", encoding="utf-8")
     elif stub.exists():
         stub.unlink()
-    plan.analysis._stub_inputs = capture_sibling_stub_inputs(
-        project, (project / "app.py",)
-    )
+    plan.analysis._stub_inputs = capture_sibling_stub_inputs(project, (project / "app.py",))
 
 
 def _install_cargo_inventory_with_registry(
@@ -489,9 +477,7 @@ def _install_cargo_inventory_with_registry(
         ),
         lockfile_present=True,
     )
-    component_inventory = collect_component_license_inventory(
-        cargo_inventory.packages
-    )
+    component_inventory = collect_component_license_inventory(cargo_inventory.packages)
     assert component_inventory is not None
     inventory_digest = hashlib.sha256(
         canonical_json_bytes(component_inventory.to_dict())
@@ -503,9 +489,7 @@ def _install_cargo_inventory_with_registry(
         "policy": CARGO_LICENSE_POLICY,
         "component_license_inventory_sha256": inventory_digest,
         "registry_components": [
-            record.to_dict()
-            for record in component_inventory.records
-            if record.kind == "registry"
+            record.to_dict() for record in component_inventory.records if record.kind == "registry"
         ],
         "attestation": {
             "attestor": "Acme Engineering",
@@ -516,9 +500,7 @@ def _install_cargo_inventory_with_registry(
             "acknowledgement": CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT,
         },
     }
-    (project / CARGO_LICENSE_POLICY_LOCK_FILENAME).write_bytes(
-        canonical_json_bytes(document)
-    )
+    (project / CARGO_LICENSE_POLICY_LOCK_FILENAME).write_bytes(canonical_json_bytes(document))
     monkeypatch.setattr(
         supply_chain_module,
         "resolve_cargo_inventory",
@@ -687,8 +669,7 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     generated_ref = next(
         item
         for item in evidence.inputs
-        if item.role == "generated-rust-input"
-        and item.logical_path.endswith("/src/lib.rs")
+        if item.role == "generated-rust-input" and item.logical_path.endswith("/src/lib.rs")
     )
     assert transformation_record.source_path == source_ref.logical_path == "app.py"
     assert transformation_record.source_sha256 == source_ref.sha256
@@ -733,10 +714,7 @@ def test_preview_ready_writes_sidecars_when_cargo_available(tmp_path: Path) -> N
     assert runtime_closure["node_count"] == 2
     assert runtime_closure["edge_count"] == 1
     assert provenance_metadata["rextio:native_runtime_transitive_closure"] == runtime_closure
-    assert (
-        provenance_metadata["rextio:native_runtime_transitive_closure_observed"]
-        is True
-    )
+    assert provenance_metadata["rextio:native_runtime_transitive_closure_observed"] is True
     native_component = next(
         component
         for component in sbom["components"]
@@ -811,14 +789,8 @@ def test_preview_evidence_embeds_exact_c6_12_receipt_and_lock_material(
     receipt = evidence.project_source_license_policy_verification
     assert receipt is not None
     assert evidence.source_transformation_verification is not None
-    assert (
-        evidence.to_dict()["project_source_license_policy_verification"]
-        == receipt.to_dict()
-    )
-    assert all(
-        item.role != "project-source-license-policy-lock"
-        for item in evidence.inputs
-    )
+    assert evidence.to_dict()["project_source_license_policy_verification"] == receipt.to_dict()
+    assert all(item.role != "project-source-license-policy-lock" for item in evidence.inputs)
     provenance = json.loads(
         (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
     )
@@ -827,8 +799,7 @@ def test_preview_evidence_embeds_exact_c6_12_receipt_and_lock_material(
     assert [
         item
         for item in materials
-        if item.get("annotations", {}).get("rextio:role")
-        == "project-source-license-policy-lock"
+        if item.get("annotations", {}).get("rextio:role") == "project-source-license-policy-lock"
     ] == [
         {
             "uri": f"file:{PROJECT_SOURCE_LICENSE_POLICY_LOCK_FILENAME}",
@@ -843,22 +814,11 @@ def test_preview_evidence_embeds_exact_c6_12_receipt_and_lock_material(
     metadata = predicate["runDetails"]["metadata"]
     assert internal["scoped_project_source_license_policy_verified"] is True
     assert internal["project_source_license_policy_complete"] is False
-    assert (
-        metadata["rextio:project_source_license_policy_verification_observed"]
-        is True
-    )
-    assert (
-        metadata["rextio:project_source_license_policy_verification"]
-        == receipt.to_dict()
-    )
+    assert metadata["rextio:project_source_license_policy_verification_observed"] is True
+    assert metadata["rextio:project_source_license_policy_verification"] == receipt.to_dict()
     authorization = evaluate_artifact_distribution_authorization(evidence).to_dict()
-    authorization_statuses = {
-        item["id"]: item["status"] for item in authorization["checks"]
-    }
-    assert (
-        authorization_statuses["scoped-project-source-license-policy-verified"]
-        == "satisfied"
-    )
+    authorization_statuses = {item["id"]: item["status"] for item in authorization["checks"]}
+    assert authorization_statuses["scoped-project-source-license-policy-verified"] == "satisfied"
     assert (
         "scoped-project-source-license-policy-verification-unavailable"
         not in authorization["blockers"]
@@ -925,10 +885,7 @@ def test_c6_12_is_absent_without_present_c6_10(
         (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
     )
     metadata = provenance["predicate"]["runDetails"]["metadata"]
-    assert (
-        metadata["rextio:project_source_license_policy_verification_observed"]
-        is False
-    )
+    assert metadata["rextio:project_source_license_policy_verification_observed"] is False
     assert "rextio:project_source_license_policy_verification" not in metadata
 
 
@@ -940,9 +897,7 @@ def test_c6_13_initial_stub_observation_and_materials(
 ) -> None:
     project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
     profile = host_extension_profile(detect_host_target_triple())
-    plan, _function = _plan_with_accepted_function(
-        project, profile, project / "app.py"
-    )
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
     snapshot = _snapshot(project, layout, plan)
     _install_synthetic_c613_stub(project=project, plan=plan, present=present)
     _install_synthetic_c610_and_source_lock(
@@ -964,9 +919,7 @@ def test_c6_13_initial_stub_observation_and_materials(
     assert evidence is not None and evidence.status == "preview-ready"
     analysis = evidence.analysis_input_verification
     assert analysis is not None
-    assert [record.state for record in analysis.records] == [
-        "present" if present else "absent"
-    ]
+    assert [record.state for record in analysis.records] == ["present" if present else "absent"]
     provenance = json.loads(
         (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
     )
@@ -1131,9 +1084,7 @@ def test_c6_13_final_stub_mutation_drops_only_c6_13(
         target_triple=profile.target_triple,
         monkeypatch=monkeypatch,
     )
-    plan, _function = _plan_with_accepted_function(
-        project, profile, project / "app.py"
-    )
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
     snapshot = _snapshot(project, layout, plan)
     _install_synthetic_c613_stub(project=project, plan=plan, present=True)
     verification = _install_synthetic_c610_and_source_lock(
@@ -1172,6 +1123,117 @@ def test_c6_13_final_stub_mutation_drops_only_c6_13(
     assert evidence.analysis_input_verification is None
 
 
+def test_c6_14_final_inventory_matches_unsigned_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c613_stub(project=project, plan=plan, present=True)
+    _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    coverage = evidence.artifact_policy_coverage_inventory
+    assert coverage is not None
+    assert coverage.complete is False
+    assert coverage.signed is False
+    assert coverage.distribution_authorized is False
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
+    )
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert metadata["rextio:artifact_policy_coverage_observed"] is True
+    assert metadata["rextio:artifact_policy_coverage_inventory"] == (coverage.to_dict())
+    internal = provenance["predicate"]["buildDefinition"]["internalParameters"]
+    assert internal["artifact_policy_coverage_scope_complete"] is False
+    assert internal["component_license_policy_complete"] is False
+    assert internal["source_transformation_provenance_complete"] is False
+
+
+def test_c6_14_is_first_sidecar_ceiling_omission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import supply_chain as supply_chain_module
+
+    project, layout, wheel_path = _write_project_with_generated_tree(tmp_path)
+    profile = host_extension_profile(detect_host_target_triple())
+    _install_cargo_inventory_with_registry(
+        project=project,
+        target_triple=profile.target_triple,
+        monkeypatch=monkeypatch,
+    )
+    plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
+    snapshot = _snapshot(project, layout, plan)
+    _install_synthetic_c613_stub(project=project, plan=plan, present=True)
+    _install_synthetic_c610_and_source_lock(
+        project=project,
+        plan=plan,
+        snapshot=snapshot,
+        monkeypatch=monkeypatch,
+    )
+    real_builder = supply_chain_module.build_intoto_provenance_document
+    c614_presence: list[bool] = []
+
+    def inflate_only_c614(**kwargs):
+        present = kwargs.get("artifact_policy_coverage_inventory") is not None
+        c614_presence.append(present)
+        document = real_builder(**kwargs)
+        if present:
+            document["predicate"]["runDetails"]["metadata"]["test:padding"] = (
+                "x" * evidence_mod.MAX_SIDECAR_BYTES
+            )
+        return document
+
+    monkeypatch.setattr(
+        supply_chain_module,
+        "build_intoto_provenance_document",
+        inflate_only_c614,
+    )
+    evidence = emit_host_extension_wheel_evidence(
+        project_root=project,
+        layout=layout,
+        plan=plan,
+        wheel_build=WheelBuildResult(status="built", path=str(wheel_path), message="ok"),
+        native_build=_built_native(layout),
+        input_snapshot=snapshot,
+    )
+
+    assert evidence is not None and evidence.status == "preview-ready"
+    assert c614_presence[-2:] == [True, False], c614_presence
+    assert evidence.artifact_policy_coverage_inventory is None
+    assert evidence.analysis_input_verification is not None
+    assert evidence.project_source_license_policy_verification is not None
+    assert evidence.component_license_policy_verification is not None
+    provenance = json.loads(
+        (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
+    )
+    metadata = provenance["predicate"]["runDetails"]["metadata"]
+    assert metadata["rextio:artifact_policy_coverage_observed"] is False
+    assert "rextio:artifact_policy_coverage_inventory" not in metadata
+
+
 def test_provenance_ceiling_omits_c6_12_before_c6_11_and_c6_10(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1201,9 +1263,7 @@ def test_provenance_ceiling_omits_c6_12_before_c6_11_and_c6_10(
     presence: list[tuple[bool, bool, bool]] = []
 
     def inflate_only_c612(**kwargs):
-        c612_present = (
-            kwargs.get("project_source_license_policy_verification") is not None
-        )
+        c612_present = kwargs.get("project_source_license_policy_verification") is not None
         c611_present = kwargs.get("component_license_policy_verification") is not None
         c610_present = kwargs.get("source_transformation_verification") is not None
         presence.append((c612_present, c611_present, c610_present))
@@ -1271,11 +1331,7 @@ def test_final_c6_12_reverification_drops_only_changed_receipt(
         nonlocal replay_calls
         replay_calls += 1
         if replay_calls == 2 and mutated in {"source", "generated-rust"}:
-            path = (
-                project / "app.py"
-                if mutated == "source"
-                else layout.rust_dir / "src" / "lib.rs"
-            )
+            path = project / "app.py" if mutated == "source" else layout.rust_dir / "src" / "lib.rs"
             path.write_bytes(path.read_bytes() + b"\n# changed")
             return None
         return verification
@@ -1322,10 +1378,7 @@ def test_final_c6_12_reverification_drops_only_changed_receipt(
         (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
     )
     metadata = provenance["predicate"]["runDetails"]["metadata"]
-    assert (
-        metadata["rextio:project_source_license_policy_verification_observed"]
-        is False
-    )
+    assert metadata["rextio:project_source_license_policy_verification_observed"] is False
 
 
 def test_preview_evidence_embeds_exact_c6_11_receipt_and_lock_material(
@@ -1363,13 +1416,8 @@ def test_preview_evidence_embeds_exact_c6_11_receipt_and_lock_material(
     receipt = evidence.component_license_policy_verification
     assert receipt is not None
     assert evidence.component_license_inventory is not None
-    assert (
-        evidence.to_dict()["component_license_policy_verification"]
-        == receipt.to_dict()
-    )
-    assert all(
-        item.role != "cargo-license-policy-lock" for item in evidence.inputs
-    )
+    assert evidence.to_dict()["component_license_policy_verification"] == receipt.to_dict()
+    assert all(item.role != "cargo-license-policy-lock" for item in evidence.inputs)
     provenance = json.loads(
         (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
     )
@@ -1378,8 +1426,7 @@ def test_preview_evidence_embeds_exact_c6_11_receipt_and_lock_material(
     lock_materials = [
         item
         for item in materials
-        if item.get("annotations", {}).get("rextio:role")
-        == "cargo-license-policy-lock"
+        if item.get("annotations", {}).get("rextio:role") == "cargo-license-policy-lock"
     ]
     assert lock_materials == [
         {
@@ -1435,9 +1482,7 @@ def test_provenance_ceiling_omits_c6_11_before_c6_10(
     presence: list[tuple[bool, bool]] = []
 
     def inflate_only_policy(**kwargs):
-        policy_present = (
-            kwargs.get("component_license_policy_verification") is not None
-        )
+        policy_present = kwargs.get("component_license_policy_verification") is not None
         replay_present = kwargs.get("source_transformation_verification") is not None
         presence.append((policy_present, replay_present))
         document = real_builder(**kwargs)
@@ -1479,11 +1524,8 @@ def test_provenance_ceiling_omits_c6_11_before_c6_10(
     assert "rextio:component_license_policy_verification" not in metadata
     assert metadata["rextio:source_transformation_verification_observed"] is True
     assert not any(
-        material.get("annotations", {}).get("rextio:role")
-        == "cargo-license-policy-lock"
-        for material in provenance["predicate"]["buildDefinition"][
-            "resolvedDependencies"
-        ]
+        material.get("annotations", {}).get("rextio:role") == "cargo-license-policy-lock"
+        for material in provenance["predicate"]["buildDefinition"]["resolvedDependencies"]
     )
 
 
@@ -1533,11 +1575,8 @@ def test_c6_11_material_count_overflow_omits_only_scoped_receipt(
         (project / evidence.provenance.logical_path).read_text(encoding="utf-8")  # type: ignore[union-attr]
     )
     assert not any(
-        material.get("annotations", {}).get("rextio:role")
-        == "cargo-license-policy-lock"
-        for material in provenance["predicate"]["buildDefinition"][
-            "resolvedDependencies"
-        ]
+        material.get("annotations", {}).get("rextio:role") == "cargo-license-policy-lock"
+        for material in provenance["predicate"]["buildDefinition"]["resolvedDependencies"]
     )
 
 
@@ -1562,9 +1601,7 @@ def test_final_c6_11_recollection_drops_only_changed_receipt(
         project / "app.py",
     )
     snapshot = _snapshot(project, layout, plan)
-    real_collector = (
-        supply_chain_module.collect_component_license_policy_verification
-    )
+    real_collector = supply_chain_module.collect_component_license_policy_verification
     calls = 0
 
     def collect_twice(**kwargs):
@@ -1609,11 +1646,8 @@ def test_final_c6_11_recollection_drops_only_changed_receipt(
     assert metadata["rextio:component_license_policy_verification_observed"] is False
     assert "rextio:component_license_policy_verification" not in metadata
     assert not any(
-        material.get("annotations", {}).get("rextio:role")
-        == "cargo-license-policy-lock"
-        for material in provenance["predicate"]["buildDefinition"][
-            "resolvedDependencies"
-        ]
+        material.get("annotations", {}).get("rextio:role") == "cargo-license-policy-lock"
+        for material in provenance["predicate"]["buildDefinition"]["resolvedDependencies"]
     )
 
 
@@ -1712,9 +1746,7 @@ def test_provenance_ceiling_omits_c6_10_before_c6_9(
     presence: list[tuple[bool, bool]] = []
 
     def inflate_only_scoped_verification(**kwargs):
-        verification_present = (
-            kwargs.get("source_transformation_verification") is not None
-        )
+        verification_present = kwargs.get("source_transformation_verification") is not None
         closure_present = kwargs.get("native_runtime_transitive_closure") is not None
         presence.append((verification_present, closure_present))
         document = real_builder(**kwargs)
@@ -1838,9 +1870,7 @@ def test_c69_snapshot_receipt_refresh_preserves_c68_and_c69(
             dependency_name=dependency.name,
             dependency_origin=dependency.origin,
             resolution="wheel-member",
-            mechanism=(
-                "macho-loader-path" if format_name == "mach-o" else "elf-origin-rpath"
-            ),
+            mechanism=("macho-loader-path" if format_name == "mach-o" else "elf-origin-rpath"),
             wheel_member=child_entry.name,
             sha256=child_entry.sha256,
             size=child_entry.uncompressed_size,
@@ -2203,9 +2233,7 @@ def test_provenance_ceiling_omits_c6_8_first_and_retains_c6_7_c6_6(
     assert statuses["direct-native-path-resolution-bound"] == "unavailable"
     assert statuses["source-transformation-inventory-bound"] == "satisfied"
     assert statuses["component-license-inventory-bound"] == "satisfied"
-    assert ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE in assessment[
-        "blockers"
-    ]
+    assert ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE in assessment["blockers"]
 
 
 def test_provenance_ceiling_omits_c6_9_before_c6_8(
@@ -2275,9 +2303,7 @@ def test_c6_9_failure_retains_c6_8_direct_observation(
     profile = host_extension_profile(detect_host_target_triple())
     plan, _function = _plan_with_accepted_function(project, profile, project / "app.py")
     snapshot = _snapshot(project, layout, plan)
-    real_refresh = (
-        supply_chain_module.refresh_native_runtime_path_resolution_observation
-    )
+    real_refresh = supply_chain_module.refresh_native_runtime_path_resolution_observation
     refresh_calls = 0
 
     def track_refresh(observation, *, expected_python_root: Path):
@@ -2383,9 +2409,7 @@ def test_c6_8_failure_omits_path_resolution_and_dependent_c6_9(
     statuses = {item["id"]: item["status"] for item in assessment["checks"]}
     assert statuses["direct-native-linkage-observed"] == "satisfied"
     assert statuses["direct-native-path-resolution-bound"] == "unavailable"
-    assert ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE in assessment[
-        "blockers"
-    ]
+    assert ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE in assessment["blockers"]
 
 
 def test_runtime_inspector_failure_is_best_effort_and_preserves_wheel(

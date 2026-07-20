@@ -31,6 +31,10 @@ is omitted before C6.11 and every earlier additive observation.
 
 C6.13 binds the exact sibling-stub inputs used by C6.10. It remains optional,
 non-authorizing observation metadata and is omitted before C6.12.
+
+C6.14 compactly partitions the exact components already observed by C6.2-C6.13
+into orthogonal identity, license-policy, and transformation-provenance states.
+It adds no material and is omitted before C6.13.
 """
 
 from __future__ import annotations
@@ -76,6 +80,9 @@ from rextio.build.cargo_license_policy import (
     collect_component_license_policy_verification,
 )
 from rextio.build.license_inventory import collect_component_license_inventory
+from rextio.build.policy_coverage import (
+    collect_artifact_policy_coverage_inventory,
+)
 from rextio.build.runtime_inventory import (
     inspect_native_runtime_inventory,
     resolve_installed_native_binary,
@@ -121,9 +128,7 @@ class EvidenceInputSnapshot:
     @property
     def all_inputs(self) -> tuple[EvidenceFileRef, ...]:
         """Return every captured input in deterministic order."""
-        items = list(self.project_inputs) + list(self.generated_python) + list(
-            self.generated_rust
-        )
+        items = list(self.project_inputs) + list(self.generated_python) + list(self.generated_rust)
         if self.cargo_lock is not None:
             items.append(self.cargo_lock)
         return tuple(sorted(items, key=lambda item: (item.role, item.logical_path, item.sha256)))
@@ -205,9 +210,7 @@ def capture_project_source_snapshot(
         )
 
 
-def _bounded_py_walk(
-    root: Path, *, max_files: int, max_depth: int = 32
-) -> list[Path] | str:
+def _bounded_py_walk(root: Path, *, max_files: int, max_depth: int = 32) -> list[Path] | str:
     """Bounded iterative directory walk for generated Python inputs.
 
     Returns a list of regular ``.py`` files or a fixed reason string on failure.
@@ -373,18 +376,10 @@ def capture_generated_rust_inputs(
                 )
             except (ValueError, OSError, TypeError):
                 return replace(snapshot, unavailable_reason=REASON_SOURCE_UNREADABLE)
-            total = (
-                len(snapshot.project_inputs)
-                + len(snapshot.generated_python)
-                + len(refs)
-            )
+            total = len(snapshot.project_inputs) + len(snapshot.generated_python) + len(refs)
             if total > MAX_INPUT_FILES:
                 return replace(snapshot, unavailable_reason=REASON_INPUT_COUNT_EXCEEDED)
-        total = (
-            len(snapshot.project_inputs)
-            + len(snapshot.generated_python)
-            + len(refs)
-        )
+        total = len(snapshot.project_inputs) + len(snapshot.generated_python) + len(refs)
         if total > MAX_INPUT_FILES:
             return replace(snapshot, unavailable_reason=REASON_INPUT_COUNT_EXCEEDED)
         return replace(
@@ -418,9 +413,7 @@ def capture_cargo_lock_input(
                 role="generated-cargo-lock",
             )
         except ArtifactEvidenceError as error:
-            return replace(
-                snapshot, unavailable_reason=error.reason or REASON_CARGO_LOCK_MISSING
-            )
+            return replace(snapshot, unavailable_reason=error.reason or REASON_CARGO_LOCK_MISSING)
         except (ValueError, OSError, TypeError):
             return replace(snapshot, unavailable_reason=REASON_CARGO_LOCK_MISSING)
         total = (
@@ -471,10 +464,7 @@ def emit_host_extension_wheel_evidence(
     embedding_enabled: bool = False,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
-    output_claim: Callable[
-        [tuple[tuple[Path, _FileReceipt], ...]], None
-    ]
-    | None = None,
+    output_claim: Callable[[tuple[tuple[Path, _FileReceipt], ...]], None] | None = None,
 ) -> ArtifactEvidence | None:
     """Emit C6.2/C6.4 evidence or return None when the build is out of scope.
 
@@ -543,10 +533,7 @@ def _emit_preview_ready(
     native_build: NativeBuildResult,
     timeout: float,
     toolchain: ToolchainConfig | None,
-    output_claim: Callable[
-        [tuple[tuple[Path, _FileReceipt], ...]], None
-    ]
-    | None,
+    output_claim: Callable[[tuple[tuple[Path, _FileReceipt], ...]], None] | None,
 ) -> ArtifactEvidence:
     """Build preview-ready evidence with post-cargo/runtime and pre-return checks.
 
@@ -624,11 +611,9 @@ def _emit_preview_ready(
         # attempt that returned None after partial snapshot work. Refreshing
         # only reopens exact packaged candidates; it creates no snapshot and
         # performs no filesystem mutation.
-        runtime_resolution_observation = (
-            refresh_native_runtime_path_resolution_observation(
-                runtime_resolution_observation,
-                expected_python_root=layout.python_dir,
-            )
+        runtime_resolution_observation = refresh_native_runtime_path_resolution_observation(
+            runtime_resolution_observation,
+            expected_python_root=layout.python_dir,
         )
         if runtime_resolution_observation is None:
             runtime_path_resolution = None
@@ -636,9 +621,7 @@ def _emit_preview_ready(
         else:
             runtime_path_resolution = runtime_resolution_observation.inventory
     runtime_transitive_closure = (
-        runtime_closure_observation.inventory
-        if runtime_closure_observation is not None
-        else None
+        runtime_closure_observation.inventory if runtime_closure_observation is not None else None
     )
 
     # Re-verify inputs and re-hash the wheel after native inspection.
@@ -703,9 +686,7 @@ def _emit_preview_ready(
         if transformation_verification is not None
         else None
     )
-    component_license_inventory = collect_component_license_inventory(
-        inventory.packages
-    )
+    component_license_inventory = collect_component_license_inventory(inventory.packages)
     component_license_policy_verification = (
         collect_component_license_policy_verification(
             project_root=project_root,
@@ -749,6 +730,9 @@ def _emit_preview_ready(
         # unavailable evidence merely because it is the one extra material.
         component_license_policy_verification = None
 
+    # C6.14 is derived only after every late C6.9-C6.13 recollection below.
+    artifact_policy_coverage_inventory = None
+
     sbom_document = build_cyclonedx_document(
         subject=subject,
         inputs=inputs,
@@ -773,6 +757,7 @@ def _emit_preview_ready(
         subject=subject,
         sbom=sbom_ref,
         inputs=inputs,
+        wheel_entries=wheel_entries,
         cargo_packages=inventory.packages,
         target_triple=profile.target_triple,
         native_runtime_inventory=runtime_inventory,
@@ -782,18 +767,11 @@ def _emit_preview_ready(
         source_transformation_verification=transformation_verification,
         analysis_input_verification=analysis_input_verification,
         component_license_inventory=component_license_inventory,
-        component_license_policy_verification=(
-            component_license_policy_verification
-        ),
-        project_source_license_policy_verification=(
-            project_source_license_policy_verification
-        ),
+        component_license_policy_verification=(component_license_policy_verification),
+        project_source_license_policy_verification=(project_source_license_policy_verification),
     )
     provenance_bytes = pretty_json_bytes(provenance_document)
-    if (
-        analysis_input_verification is not None
-        and len(provenance_bytes) > MAX_SIDECAR_BYTES
-    ):
+    if analysis_input_verification is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
         # C6.13 is the newest additive observation and therefore the first
         # deterministic omission at the closed provenance sidecar ceiling.
         analysis_input_verification = None
@@ -810,12 +788,8 @@ def _emit_preview_ready(
             source_transformation_verification=transformation_verification,
             analysis_input_verification=analysis_input_verification,
             component_license_inventory=component_license_inventory,
-            component_license_policy_verification=(
-                component_license_policy_verification
-            ),
-            project_source_license_policy_verification=(
-                project_source_license_policy_verification
-            ),
+            component_license_policy_verification=(component_license_policy_verification),
+            project_source_license_policy_verification=(project_source_license_policy_verification),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     if (
@@ -839,9 +813,7 @@ def _emit_preview_ready(
             source_transformation_verification=transformation_verification,
             analysis_input_verification=analysis_input_verification,
             component_license_inventory=component_license_inventory,
-            component_license_policy_verification=(
-                component_license_policy_verification
-            ),
+            component_license_policy_verification=(component_license_policy_verification),
             project_source_license_policy_verification=None,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
@@ -886,9 +858,7 @@ def _emit_preview_ready(
             source_transformation_verification=None,
             analysis_input_verification=None,
             component_license_inventory=component_license_inventory,
-            component_license_policy_verification=(
-                component_license_policy_verification
-            ),
+            component_license_policy_verification=(component_license_policy_verification),
             project_source_license_policy_verification=None,
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
@@ -909,12 +879,8 @@ def _emit_preview_ready(
             source_transformation_verification=transformation_verification,
             analysis_input_verification=analysis_input_verification,
             component_license_inventory=component_license_inventory,
-            component_license_policy_verification=(
-                component_license_policy_verification
-            ),
-            project_source_license_policy_verification=(
-                project_source_license_policy_verification
-            ),
+            component_license_policy_verification=(component_license_policy_verification),
+            project_source_license_policy_verification=(project_source_license_policy_verification),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
     if runtime_path_resolution is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
@@ -934,18 +900,11 @@ def _emit_preview_ready(
             source_transformation_verification=transformation_verification,
             analysis_input_verification=analysis_input_verification,
             component_license_inventory=component_license_inventory,
-            component_license_policy_verification=(
-                component_license_policy_verification
-            ),
-            project_source_license_policy_verification=(
-                project_source_license_policy_verification
-            ),
+            component_license_policy_verification=(component_license_policy_verification),
+            project_source_license_policy_verification=(project_source_license_policy_verification),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
-    if (
-        component_license_inventory is not None
-        and len(provenance_bytes) > MAX_SIDECAR_BYTES
-    ):
+    if component_license_inventory is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
         # After C6.9 and C6.8 have been omitted, omit C6.7 next. This
         # preserves C6.6 and every earlier evidence/gate result whenever only
         # the license observation caused the remaining ceiling crossing.
@@ -965,15 +924,10 @@ def _emit_preview_ready(
             analysis_input_verification=analysis_input_verification,
             component_license_inventory=None,
             component_license_policy_verification=None,
-            project_source_license_policy_verification=(
-                project_source_license_policy_verification
-            ),
+            project_source_license_policy_verification=(project_source_license_policy_verification),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
-    if (
-        transformation_inventory is not None
-        and len(provenance_bytes) > MAX_SIDECAR_BYTES
-    ):
+    if transformation_inventory is not None and len(provenance_bytes) > MAX_SIDECAR_BYTES:
         # C6.6 is additive observation metadata, not part of the independent
         # C6.2/C6.3 evidence success contract. If it alone pushes provenance
         # beyond the closed sidecar ceiling, deterministically omit only that
@@ -1068,12 +1022,8 @@ def _emit_preview_ready(
             source_transformation_verification=transformation_verification,
             analysis_input_verification=analysis_input_verification,
             component_license_inventory=component_license_inventory,
-            component_license_policy_verification=(
-                component_license_policy_verification
-            ),
-            project_source_license_policy_verification=(
-                project_source_license_policy_verification
-            ),
+            component_license_policy_verification=(component_license_policy_verification),
+            project_source_license_policy_verification=(project_source_license_policy_verification),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
         provenance_digest = sha256_hex(provenance_bytes)
@@ -1105,12 +1055,8 @@ def _emit_preview_ready(
             source_transformation_verification=transformation_verification,
             analysis_input_verification=analysis_input_verification,
             component_license_inventory=component_license_inventory,
-            component_license_policy_verification=(
-                component_license_policy_verification
-            ),
-            project_source_license_policy_verification=(
-                project_source_license_policy_verification
-            ),
+            component_license_policy_verification=(component_license_policy_verification),
+            project_source_license_policy_verification=(project_source_license_policy_verification),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
         provenance_digest = sha256_hex(provenance_bytes)
@@ -1130,6 +1076,7 @@ def _emit_preview_ready(
             # C6.11 alone is omitted and provenance is rebuilt without either
             # its receipt or lock material; all earlier observations survive.
             component_license_policy_verification = None
+            artifact_policy_coverage_inventory = None
             provenance_document = build_intoto_provenance_document(
                 subject=subject,
                 sbom=sbom_ref,
@@ -1166,8 +1113,7 @@ def _emit_preview_ready(
                 transformation_inventory=transformation_inventory,
                 embedding_enabled=embedding_enabled,
             )
-            if transformation_inventory is not None
-            and transformation_verification is not None
+            if transformation_inventory is not None and transformation_verification is not None
             else None
         )
         if final_transformation_verification != transformation_verification:
@@ -1178,9 +1124,7 @@ def _emit_preview_ready(
                 final_project_source_license_policy_verification = (
                     collect_project_source_license_policy_verification(
                         project_root=project_root,
-                        source_transformation_verification=(
-                            final_transformation_verification
-                        ),
+                        source_transformation_verification=(final_transformation_verification),
                     )
                     if final_transformation_verification is not None
                     else None
@@ -1195,9 +1139,7 @@ def _emit_preview_ready(
                     collect_scoped_analysis_input_verification(
                         project_root=project_root,
                         plan=plan,
-                        source_transformation_verification=(
-                            final_transformation_verification
-                        ),
+                        source_transformation_verification=(final_transformation_verification),
                     )
                     if final_transformation_verification is not None
                     else None
@@ -1209,6 +1151,7 @@ def _emit_preview_ready(
             subject=subject,
             sbom=sbom_ref,
             inputs=inputs,
+            wheel_entries=wheel_entries,
             cargo_packages=inventory.packages,
             target_triple=profile.target_triple,
             native_runtime_inventory=runtime_inventory,
@@ -1218,14 +1161,76 @@ def _emit_preview_ready(
             source_transformation_verification=transformation_verification,
             analysis_input_verification=analysis_input_verification,
             component_license_inventory=component_license_inventory,
-            component_license_policy_verification=(
-                component_license_policy_verification
-            ),
-            project_source_license_policy_verification=(
-                project_source_license_policy_verification
-            ),
+            component_license_policy_verification=(component_license_policy_verification),
+            project_source_license_policy_verification=(project_source_license_policy_verification),
         )
         provenance_bytes = pretty_json_bytes(provenance_document)
+        provenance_digest = sha256_hex(provenance_bytes)
+        provenance_size = len(provenance_bytes)
+
+    # Derive C6.14 from the final surviving C6.9-C6.13 receipts only. Rebuild
+    # provenance once with that exact inventory so sidecar metadata and the
+    # returned ArtifactEvidence cannot drift apart.
+    artifact_policy_coverage_inventory = collect_artifact_policy_coverage_inventory(
+        target_triple=profile.target_triple,
+        subject=subject,
+        inputs=inputs,
+        wheel_entries=wheel_entries,
+        cargo_packages=inventory.packages,
+        native_runtime_inventory=runtime_inventory,
+        native_runtime_path_resolution=runtime_path_resolution,
+        native_runtime_transitive_closure=runtime_transitive_closure,
+        source_transformation_inventory=transformation_inventory,
+        source_transformation_verification=transformation_verification,
+        analysis_input_verification=analysis_input_verification,
+        component_license_inventory=component_license_inventory,
+        component_license_policy_verification=(component_license_policy_verification),
+        project_source_license_policy_verification=(project_source_license_policy_verification),
+    )
+    if artifact_policy_coverage_inventory is not None:
+        provenance_document = build_intoto_provenance_document(
+            subject=subject,
+            sbom=sbom_ref,
+            inputs=inputs,
+            wheel_entries=wheel_entries,
+            cargo_packages=inventory.packages,
+            target_triple=profile.target_triple,
+            native_runtime_inventory=runtime_inventory,
+            native_runtime_path_resolution=runtime_path_resolution,
+            native_runtime_transitive_closure=runtime_transitive_closure,
+            source_transformation_inventory=transformation_inventory,
+            source_transformation_verification=transformation_verification,
+            analysis_input_verification=analysis_input_verification,
+            component_license_inventory=component_license_inventory,
+            component_license_policy_verification=(component_license_policy_verification),
+            project_source_license_policy_verification=(project_source_license_policy_verification),
+            artifact_policy_coverage_inventory=(artifact_policy_coverage_inventory),
+        )
+        provenance_bytes = pretty_json_bytes(provenance_document)
+        if len(provenance_bytes) > MAX_SIDECAR_BYTES:
+            # C6.14 is the newest additive metadata and is always omitted before
+            # C6.13 or any earlier observation at the sidecar byte ceiling.
+            artifact_policy_coverage_inventory = None
+            provenance_document = build_intoto_provenance_document(
+                subject=subject,
+                sbom=sbom_ref,
+                inputs=inputs,
+                wheel_entries=wheel_entries,
+                cargo_packages=inventory.packages,
+                target_triple=profile.target_triple,
+                native_runtime_inventory=runtime_inventory,
+                native_runtime_path_resolution=runtime_path_resolution,
+                native_runtime_transitive_closure=runtime_transitive_closure,
+                source_transformation_inventory=transformation_inventory,
+                source_transformation_verification=transformation_verification,
+                analysis_input_verification=analysis_input_verification,
+                component_license_inventory=component_license_inventory,
+                component_license_policy_verification=(component_license_policy_verification),
+                project_source_license_policy_verification=(
+                    project_source_license_policy_verification
+                ),
+            )
+            provenance_bytes = pretty_json_bytes(provenance_document)
         provenance_digest = sha256_hex(provenance_bytes)
         provenance_size = len(provenance_bytes)
 
@@ -1266,13 +1271,10 @@ def _emit_preview_ready(
         source_transformation_inventory=transformation_inventory,
         source_transformation_verification=transformation_verification,
         analysis_input_verification=analysis_input_verification,
+        artifact_policy_coverage_inventory=artifact_policy_coverage_inventory,
         component_license_inventory=component_license_inventory,
-        component_license_policy_verification=(
-            component_license_policy_verification
-        ),
-        project_source_license_policy_verification=(
-            project_source_license_policy_verification
-        ),
+        component_license_policy_verification=(component_license_policy_verification),
+        project_source_license_policy_verification=(project_source_license_policy_verification),
         limitations=DEFAULT_LIMITATIONS,
     )
 
@@ -1333,10 +1335,7 @@ def maybe_emit_host_extension_wheel_evidence(
     input_snapshot: EvidenceInputSnapshot | None = None,
     timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
-    output_claim: Callable[
-        [tuple[tuple[Path, _FileReceipt], ...]], None
-    ]
-    | None = None,
+    output_claim: Callable[[tuple[tuple[Path, _FileReceipt], ...]], None] | None = None,
 ) -> ArtifactEvidence | None:
     """Compatibility wrapper around :func:`emit_host_extension_wheel_evidence`."""
     return emit_host_extension_wheel_evidence(

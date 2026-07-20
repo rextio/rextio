@@ -5,10 +5,38 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.18.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.19.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR.
+
+### C6.14 artifact-policy coverage inventory
+
+- Add optional `artifact_evidence.artifact_policy_coverage_inventory` schema 1
+  for the existing `host-extension-wheel-cpython-v1` evidence scope. Thirteen
+  fixed, disjoint classes summarize only already-observed inputs, Cargo
+  components, native-runtime nodes, and wheel outputs with an observed count
+  and domain-qualified canonical identity-set SHA-256; evidence sidecars and
+  the inventory itself are excluded.
+- Keep identity, license-policy, and transformation-provenance semantics
+  orthogonal. Exact file bytes, declared Cargo checksums, and logical-only
+  identities are distinguished; only the exact C6.11/C6.12 owner receipts and
+  C6.10 replay/C6.13 analysis-input receipts are referenced. No license,
+  transformation, ownership, legal approval, or distribution authority is
+  inferred for any other class.
+- Deeply reconstruct and cross-bind the complete C6.9-C6.13 prerequisite chain,
+  reject path aliases and overlapping wheel classes, and derive the inventory
+  only after final runtime/lock/replay recollection. Malformed or changed
+  prerequisites omit C6.14 without changing an ordinary build or the C6.3
+  required-evidence result.
+- Add the compact inventory to unsigned provenance metadata only, with no new
+  material. At the provenance ceiling C6.14 is omitted first, then the existing
+  C6.13 through C6.6 order applies. Advance readiness to policy version 10 with
+  `artifact-policy-coverage-bound` and the dedicated
+  `artifact-policy-coverage-unavailable` blocker. All ten global readiness
+  checks remain blocked and completeness, signing, and distribution authority
+  remain false. Advance only the unreleased tooling contract to **2.19.0**;
+  package **0.1.4** and plugin API **1.4** are unchanged.
 
 ### C6.12 scoped project-source license-policy verification
 
