@@ -1050,7 +1050,7 @@ def _format_support_lock_diagnostic(error: BaseException) -> str:
                 and len(candidate) <= 240
                 and candidate.isascii()
                 and all(
-                    character.isalnum() or character in " -_.,()"
+                    character.isalnum() or character in " -_.,()="
                     for character in candidate
                 )
             ):

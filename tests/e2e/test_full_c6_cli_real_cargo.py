@@ -237,6 +237,56 @@ def test_support_lock_diagnostic_exposes_only_bounded_static_causes() -> None:
     assert len(diagnostic.encode("utf-8")) <= 512
 
 
+def test_support_lock_diagnostic_preserves_bounded_hardlink_fields() -> None:
+    harness = _load_harness_module()
+    path_sha256 = "a" * 64
+    support_message = (
+        "toolchain support regular tree member is a shared hardlink "
+        "(logical_role=linux-gcc-support, "
+        f"relative_path_sha256={path_sha256}, "
+        "st_nlink=2, in_root_inode_observation_count=1)"
+    )
+
+    diagnostic = harness._format_support_lock_diagnostic(
+        ToolchainSupportLockError(support_message)
+    )
+
+    assert diagnostic == (
+        "[full-c6-e2e] support-lock diagnostic: "
+        f"ToolchainSupportLockError={support_message}; "
+        "OSError=<unavailable>; errno=<unavailable>"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw_path",
+    [
+        "/private/secret/toolchain/member",
+        r"C:\private\secret\toolchain\member",
+    ],
+)
+def test_support_lock_diagnostic_rejects_raw_path_fields(raw_path: str) -> None:
+    harness = _load_harness_module()
+    support_message = (
+        "toolchain support regular tree member is a shared hardlink "
+        "(logical_role=linux-gcc-support, "
+        f"relative_path={raw_path}, "
+        "st_nlink=2, in_root_inode_observation_count=1)"
+    )
+
+    diagnostic = harness._format_support_lock_diagnostic(
+        ToolchainSupportLockError(support_message)
+    )
+
+    assert diagnostic == (
+        "[full-c6-e2e] support-lock diagnostic: "
+        "ToolchainSupportLockError=<unavailable>; "
+        "OSError=<unavailable>; errno=<unavailable>"
+    )
+    assert raw_path not in diagnostic
+    assert "private" not in diagnostic
+
+
 def test_support_lock_diagnostic_rerun_is_generation_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
