@@ -193,6 +193,19 @@ def prepare_full_c6_preauthorization_evidence(
             raise FullC6GateError(
                 "Full C6 requires a freshly reverified native runtime receipt"
             )
+        trusted_supply_chain = verify_full_c6_supply_chain_receipt(supply_chain)
+        authority_aggregate = trusted_supply_chain.authority_aggregate
+        if (
+            authority_aggregate.analysis_ir_transaction_sha256
+            != analysis_ir_transaction.digest
+            or authority_aggregate.runtime_authorization_sha256
+            != runtime_authorization.digest
+            or authority_aggregate.executor_receipt_sha256
+            != trusted_executor.digest
+        ):
+            raise FullC6GateError(
+                "Full C6 authority aggregate does not bind the gate inputs"
+            )
         fresh_supply_chain = build_full_c6_supply_chain_receipt(
             target_triple=target_triple,
             subject=subject,
@@ -205,8 +218,8 @@ def prepare_full_c6_preauthorization_evidence(
             cargo_path_source=cargo_path_source,
             runtime_authorization=runtime_authorization,
             reproducibility=trusted_executor.reproducibility,
+            authority_aggregate=authority_aggregate,
         )
-        trusted_supply_chain = verify_full_c6_supply_chain_receipt(supply_chain)
         if fresh_supply_chain != trusted_supply_chain:
             raise FullC6GateError("Full C6 supply-chain receipt is stale or replayed")
         if (

@@ -118,6 +118,22 @@ def _sealed_cargo_workspace(
     return value
 
 
+def _authority_aggregate(
+    **changes: object,
+) -> supply_chain_module.FullC6AuthorityAggregateBinding:
+    values: dict[str, object] = {
+        field: f"{index:x}" * 64
+        for index, field in enumerate(
+            supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS,
+            start=1,
+        )
+    }
+    values.update(changes)
+    return supply_chain_module.FullC6AuthorityAggregateBinding(  # type: ignore[arg-type]
+        **values
+    )
+
+
 def _tool(
     name: str,
     digest: str,
@@ -375,6 +391,7 @@ def _arguments(policy: FullC6PolicyReceipt | None = None) -> dict[str, object]:
     subject_row = _row(selected, "wheel-output:subject")
     source_lock, source_admission = _source_lock(selected)
     root = _row(selected, "cargo-component:path-root-package")
+    runtime = _runtime(selected)
     return {
         "target_triple": TARGET,
         "subject": EvidenceFileRef(
@@ -394,8 +411,11 @@ def _arguments(policy: FullC6PolicyReceipt | None = None) -> dict[str, object]:
             version="0.1.4",
             source_tree_sha256=root.sha256 or "",
         ),
-        "runtime_authorization": _runtime(selected),
+        "runtime_authorization": runtime,
         "reproducibility": _reproducibility(selected),
+        "authority_aggregate": _authority_aggregate(
+            runtime_authorization_sha256=runtime.digest,
+        ),
     }
 
 
@@ -407,14 +427,61 @@ def _aggregate_arguments(
     assert isinstance(build_inputs, BuildInputClosure)
     workspace = _sealed_cargo_workspace(tmp_path)
     bound = bind_full_c6_cargo_workspace_aggregates(build_inputs, workspace)
+    authority_aggregate = arguments["authority_aggregate"]
+    assert isinstance(
+        authority_aggregate,
+        supply_chain_module.FullC6AuthorityAggregateBinding,
+    )
     return (
         {
             **arguments,
             "build_inputs": bound,
             "cargo_dependency_workspace": workspace,
+            "authority_aggregate": replace(
+                authority_aggregate,
+                cargo_workspace_sha256=workspace.digest,
+            ),
         },
         workspace,
     )
+
+
+def test_authority_aggregate_binding_is_closed_ordered_and_non_authorizing() -> None:
+    assert hasattr(supply_chain_module, "FullC6AuthorityAggregateBinding")
+    assert hasattr(
+        supply_chain_module,
+        "FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS",
+    )
+    binding = _authority_aggregate()
+    public = binding.to_dict()
+
+    assert tuple(public) == (
+        "domain",
+        "schema_version",
+        "bindings",
+        "complete_for_scope",
+        "distribution_authorized",
+        "digest",
+    )
+    bindings = public["bindings"]
+    assert isinstance(bindings, dict)
+    assert tuple(bindings) == (
+        supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS
+    )
+    assert all(
+        isinstance(value, str)
+        and len(value) == 64
+        and value == value.lower()
+        for value in bindings.values()
+    )
+    assert public["complete_for_scope"] is True
+    assert public["distribution_authorized"] is False
+    assert binding.distribution_authorized is False
+
+    with pytest.raises(FullC6SupplyChainError, match="lowercase SHA-256"):
+        _authority_aggregate(analysis_ir_transaction_sha256="A" * 64)
+    with pytest.raises(FullC6SupplyChainError, match="lowercase SHA-256"):
+        _authority_aggregate(analysis_ir_transaction_sha256="a" * 63)
 
 
 def test_complete_documents_are_canonical_deterministic_and_non_authorizing() -> None:
@@ -428,6 +495,7 @@ def test_complete_documents_are_canonical_deterministic_and_non_authorizing() ->
     assert first.complete_for_scope is True
     assert first.distribution_authorized is False
     assert first.to_dict()["signed"] is False
+    assert first.authority_aggregate == arguments["authority_aggregate"]
     assert len(first.sbom_sha256) == len(first.provenance_sha256) == 64
     assert canonical_json_bytes(json.loads(first.sbom_json)) == first.sbom_json
     assert canonical_json_bytes(json.loads(first.provenance_json)) == first.provenance_json
@@ -451,6 +519,10 @@ def test_complete_documents_are_canonical_deterministic_and_non_authorizing() ->
         item["name"]: item["value"]
         for item in sbom["metadata"]["properties"]  # type: ignore[index]
     }
+    authority = first.authority_aggregate
+    assert properties["rextio:authority_aggregate_sha256"] == authority.digest
+    for field in supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS:
+        assert properties[f"rextio:{field}"] == getattr(authority, field)
     assert properties["rextio:reproducible_sbom_input_sha256"] == (
         reproducibility.sbom_canonical_sha256
     )
@@ -478,12 +550,120 @@ def test_complete_documents_are_canonical_deterministic_and_non_authorizing() ->
             reproducibility.provenance_input_canonical_sha256
         ),
     }
+    receipt_bindings = provenance["predicate"]["buildDefinition"][  # type: ignore[index]
+        "internalParameters"
+    ]["receipt_bindings"]
+    assert receipt_bindings["full-c6-authority-aggregate"] == authority.digest
+    assert {
+        name: receipt_bindings[name]
+        for name in supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAMES
+    } == dict(
+        zip(
+            supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAMES,
+            (
+                getattr(authority, field)
+                for field in supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS
+            ),
+            strict=True,
+        )
+    )
+    metadata = provenance["predicate"]["runDetails"]["metadata"]  # type: ignore[index]
+    assert metadata["rextio:authority_aggregate"] == authority.to_dict()
     # These are explicit preauthorization/input projections, not hashes of the
     # final self-referential documents.  Equality is intentionally not claimed.
     assert first.reproducible_sbom_input_sha256 != first.sbom_sha256
     assert first.reproducible_provenance_input_sha256 != first.provenance_sha256
     assert provenance["subject"][1]["digest"] == {"sha256": first.sbom_sha256}  # type: ignore[index]
     assert verify_full_c6_supply_chain_receipt(first) == first
+
+
+def test_authority_aggregate_is_mandatory_and_workspace_runtime_drift_fails_closed(
+    tmp_path: Path,
+) -> None:
+    arguments = _arguments()
+    omitted = dict(arguments)
+    omitted.pop("authority_aggregate")
+    with pytest.raises(TypeError, match="authority_aggregate"):
+        build_full_c6_supply_chain_receipt(**omitted)  # type: ignore[arg-type]
+
+    binding = arguments["authority_aggregate"]
+    assert isinstance(
+        binding,
+        supply_chain_module.FullC6AuthorityAggregateBinding,
+    )
+    with pytest.raises(FullC6SupplyChainError, match="runtime authorization"):
+        build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]
+            **{
+                **arguments,
+                "authority_aggregate": replace(
+                    binding,
+                    runtime_authorization_sha256="f" * 64,
+                ),
+            }
+        )
+
+    aggregate_arguments, workspace = _aggregate_arguments(tmp_path)
+    aggregate_binding = aggregate_arguments["authority_aggregate"]
+    assert isinstance(
+        aggregate_binding,
+        supply_chain_module.FullC6AuthorityAggregateBinding,
+    )
+    with pytest.raises(FullC6SupplyChainError, match="Cargo workspace"):
+        build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]
+            **{
+                **aggregate_arguments,
+                "authority_aggregate": replace(
+                    aggregate_binding,
+                    cargo_workspace_sha256="f" * 64,
+                ),
+                "cargo_dependency_workspace": workspace,
+            }
+        )
+
+
+def test_authority_aggregate_document_omission_duplicate_drift_and_json_tamper_fail_closed() -> None:
+    receipt = build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]
+        **_arguments()
+    )
+    binding_names = set(
+        supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAMES
+    )
+
+    sbom = json.loads(receipt.sbom_json)
+    components = sbom["components"]
+    authority_component = next(
+        item for item in components if item["name"] in binding_names
+    )
+
+    omitted = dict(sbom)
+    omitted["components"] = [
+        item for item in components if item is not authority_component
+    ]
+    with pytest.raises(FullC6SupplyChainError, match="authority aggregate"):
+        replace(receipt, sbom_json=canonical_json_bytes(omitted))
+
+    duplicated = dict(sbom)
+    duplicated["components"] = [*components, authority_component]
+    with pytest.raises(FullC6SupplyChainError, match="authority aggregate"):
+        replace(receipt, sbom_json=canonical_json_bytes(duplicated))
+
+    drifted = json.loads(receipt.provenance_json)
+    parameters = drifted["predicate"]["buildDefinition"]["internalParameters"]
+    parameters["receipt_bindings"][
+        supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAMES[0]
+    ] = (
+        "f" * 64
+    )
+    with pytest.raises(FullC6SupplyChainError, match="provenance"):
+        replace(receipt, provenance_json=canonical_json_bytes(drifted))
+
+    duplicate_key = receipt.sbom_json.replace(
+        b'"bomFormat":"CycloneDX"',
+        b'"bomFormat":"CycloneDX","bomFormat":"CycloneDX"',
+        1,
+    )
+    with pytest.raises(FullC6SupplyChainError, match="duplicate object key"):
+        validate_full_c6_supply_chain_document(duplicate_key, document_kind="sbom")
 
 
 def test_cargo_aggregate_receipt_round_trip_binds_safe_document_materials(
@@ -750,14 +930,24 @@ def test_stale_subject_and_unbound_runtime_leaf_fail_closed() -> None:
         path="/usr/lib/libm.so.6",
         inode=3,
     )
+    changed_runtime = replace(
+        runtime,
+        declared_system_images=(changed,),
+        newly_loaded_images=(changed,),
+    )
+    authority_aggregate = arguments["authority_aggregate"]
+    assert isinstance(
+        authority_aggregate,
+        supply_chain_module.FullC6AuthorityAggregateBinding,
+    )
     with pytest.raises(FullC6SupplyChainError, match="runtime leaves"):
         build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]
             **{
                 **arguments,
-                "runtime_authorization": replace(
-                    runtime,
-                    declared_system_images=(changed,),
-                    newly_loaded_images=(changed,),
+                "runtime_authorization": changed_runtime,
+                "authority_aggregate": replace(
+                    authority_aggregate,
+                    runtime_authorization_sha256=changed_runtime.digest,
                 ),
             }
         )
@@ -791,18 +981,33 @@ def test_darwin_shared_cache_leaf_uses_bound_platform_identity() -> None:
             verification_mode=RUNTIME_VERIFICATION_NATIVE_FRESH,
         )
 
+    authority_aggregate = arguments["authority_aggregate"]
+    assert isinstance(
+        authority_aggregate,
+        supply_chain_module.FullC6AuthorityAggregateBinding,
+    )
+    first_runtime = runtime("a" * 64)
+    second_runtime = runtime("b" * 64)
     first = build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]
         **{
             **arguments,
             "target_triple": "aarch64-apple-darwin",
-            "runtime_authorization": runtime("a" * 64),
+            "runtime_authorization": first_runtime,
+            "authority_aggregate": replace(
+                authority_aggregate,
+                runtime_authorization_sha256=first_runtime.digest,
+            ),
         }
     )
     second = build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]
         **{
             **arguments,
             "target_triple": "aarch64-apple-darwin",
-            "runtime_authorization": runtime("b" * 64),
+            "runtime_authorization": second_runtime,
+            "authority_aggregate": replace(
+                authority_aggregate,
+                runtime_authorization_sha256=second_runtime.digest,
+            ),
         }
     )
     sbom = json.loads(first.sbom_json)

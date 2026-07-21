@@ -90,6 +90,34 @@ FULL_C6_PLATFORM_IDENTITY_DOMAIN = "rextio.full-c6-runtime-platform-identity.v1"
 FULL_C6_CARGO_INPUT_AGGREGATE_BINDING_DOMAIN = (
     "rextio.full-c6-cargo-input-aggregate-binding.v1"
 )
+FULL_C6_AUTHORITY_AGGREGATE_BINDING_DOMAIN = (
+    "rextio.full-c6-authority-aggregate-binding.v1"
+)
+FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAME = "full-c6-authority-aggregate"
+FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS = (
+    "analysis_ir_transaction_sha256",
+    "license_materials_transaction_sha256",
+    "output_license_contract_sha256",
+    "cargo_workspace_sha256",
+    "native_execution_authority_sha256",
+    "native_output_transaction_sha256",
+    "subject_wheel_transaction_sha256",
+    "native_runtime_authority_sha256",
+    "runtime_authorization_sha256",
+    "executor_receipt_sha256",
+)
+FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAMES = (
+    "full-c6-analysis-ir-transaction",
+    "full-c6-license-materials-transaction",
+    "full-c6-output-license-contract",
+    "full-c6-cargo-workspace",
+    "full-c6-native-execution-authority",
+    "full-c6-native-output-transaction",
+    "full-c6-subject-wheel-transaction",
+    "full-c6-native-runtime-authority",
+    "runtime-authorization",
+    "full-c6-executor-receipt",
+)
 
 MAX_FULL_C6_SUPPLY_CHAIN_COMPONENTS = 4096
 MAX_FULL_C6_SUPPLY_CHAIN_DOCUMENT_BYTES = 8 * 1024 * 1024
@@ -150,6 +178,100 @@ def _bounded_text(value: object, label: str) -> str:
 
 def _digest(value: object) -> str:
     return sha256_hex(canonical_json_bytes(value))
+
+
+@dataclass(frozen=True, slots=True)
+class FullC6AuthorityAggregateBinding:
+    """Closed digest identity for the typed Full C6 authority graph.
+
+    This record is deliberately constructible and non-authorizing.  A later
+    production collector must derive every value from the corresponding typed
+    transaction or authority; this layer only freezes the evidence schema that
+    supply-chain documents and the hard gate must bind without omission.
+    """
+
+    analysis_ir_transaction_sha256: str
+    license_materials_transaction_sha256: str
+    output_license_contract_sha256: str
+    cargo_workspace_sha256: str
+    native_execution_authority_sha256: str
+    native_output_transaction_sha256: str
+    subject_wheel_transaction_sha256: str
+    native_runtime_authority_sha256: str
+    runtime_authorization_sha256: str
+    executor_receipt_sha256: str
+    domain: str = field(
+        default=FULL_C6_AUTHORITY_AGGREGATE_BINDING_DOMAIN,
+        init=False,
+    )
+    schema_version: int = field(default=1, init=False)
+    complete_for_scope: bool = field(default=True, init=False)
+    distribution_authorized: bool = field(default=False, init=False)
+
+    def __post_init__(self) -> None:
+        if (
+            self.domain != FULL_C6_AUTHORITY_AGGREGATE_BINDING_DOMAIN
+            or self.schema_version != 1
+            or self.complete_for_scope is not True
+            or self.distribution_authorized is not False
+        ):
+            raise FullC6SupplyChainError(
+                "Full C6 authority aggregate posture is invalid"
+            )
+        for field_name in FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS:
+            _require_sha256(
+                getattr(self, field_name),
+                f"Full C6 authority aggregate {field_name}",
+            )
+
+    @property
+    def bindings(self) -> dict[str, str]:
+        """Return the exact fixed-order digest map."""
+        return {
+            field_name: getattr(self, field_name)
+            for field_name in FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS
+        }
+
+    @property
+    def digest(self) -> str:
+        """Return the canonical semantic identity of all ten bindings."""
+        return _digest(self._payload())
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "domain": self.domain,
+            "schema_version": self.schema_version,
+            "bindings": self.bindings,
+            "complete_for_scope": True,
+            "distribution_authorized": False,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the canonical non-authorizing evidence identity."""
+        return {**self._payload(), "digest": self.digest}
+
+
+def _rebuild_authority_aggregate(
+    value: FullC6AuthorityAggregateBinding,
+) -> FullC6AuthorityAggregateBinding:
+    if type(value) is not FullC6AuthorityAggregateBinding:
+        raise TypeError("Full C6 authority aggregate has an invalid type")
+    try:
+        rebuilt = FullC6AuthorityAggregateBinding(
+            **{
+                field_name: getattr(value, field_name)
+                for field_name in FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS
+            }
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise FullC6SupplyChainError(
+            "Full C6 authority aggregate is not in canonical model form"
+        ) from exc
+    if rebuilt != value:
+        raise FullC6SupplyChainError(
+            "Full C6 authority aggregate is not in canonical model form"
+        )
+    return rebuilt
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +373,7 @@ class FullC6SupplyChainReceipt:
     reproducibility_sha256: str
     reproducible_sbom_input_sha256: str
     reproducible_provenance_input_sha256: str
+    authority_aggregate: FullC6AuthorityAggregateBinding
     sbom_json: bytes = field(repr=False)
     provenance_json: bytes = field(repr=False)
     cargo_input_aggregates: tuple[BuildInputAggregateIdentity, ...] = ()
@@ -290,6 +413,16 @@ class FullC6SupplyChainReceipt:
             self.cargo_input_aggregates,
             allow_legacy_empty=True,
         )
+        authority_aggregate = _rebuild_authority_aggregate(
+            self.authority_aggregate
+        )
+        if (
+            authority_aggregate.runtime_authorization_sha256
+            != self.runtime_authorization_sha256
+        ):
+            raise FullC6SupplyChainError(
+                "Full C6 authority aggregate runtime authorization is stale"
+            )
         sbom = validate_full_c6_supply_chain_document(self.sbom_json, document_kind="sbom")
         provenance = validate_full_c6_supply_chain_document(
             self.provenance_json,
@@ -297,6 +430,7 @@ class FullC6SupplyChainReceipt:
         )
         object.__setattr__(self, "subject", subject)
         object.__setattr__(self, "partition", partition)
+        object.__setattr__(self, "authority_aggregate", authority_aggregate)
         object.__setattr__(self, "cargo_input_aggregates", cargo_input_aggregates)
         _validate_receipt_documents(self, sbom=sbom, provenance=provenance)
 
@@ -338,6 +472,7 @@ class FullC6SupplyChainReceipt:
             "subject": self.subject.to_dict(),
             "partition_sha256": self.partition_sha256,
             "partition": [item.to_dict() for item in self.partition],
+            "authority_aggregate": self.authority_aggregate.to_dict(),
             "bindings": _receipt_bindings(self),
             "sbom": {
                 "kind": FULL_C6_SBOM_KIND,
@@ -1138,6 +1273,7 @@ def _receipt_materials(
     cargo_root: FullC6CargoPathSource,
     runtime: RuntimeAuthorizationReceipt,
     reproducibility: ReproducibilityReceipt,
+    authority_aggregate: FullC6AuthorityAggregateBinding,
 ) -> tuple[tuple[str, str], ...]:
     signature = source_admission.signature_sha256
     if signature is None:  # guarded before document construction
@@ -1149,7 +1285,8 @@ def _receipt_materials(
         ("build-input-closure", build_inputs.digest),
         ("builder-toolchain", toolchain.digest),
         ("cargo-path-source", cargo_root.source_tree_sha256),
-        ("runtime-authorization", runtime.digest),
+        (FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAME, authority_aggregate.digest),
+        *_authority_aggregate_materials(authority_aggregate),
         ("two-build-reproducibility", reproducibility.digest),
         ("reproducible-sbom-input", reproducibility.sbom_canonical_sha256),
         (
@@ -1164,6 +1301,39 @@ def _receipt_materials(
         )
         for item in build_inputs.aggregates
     )
+
+
+def _authority_aggregate_materials(
+    value: FullC6AuthorityAggregateBinding,
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (material_name, getattr(value, field_name))
+        for material_name, field_name in zip(
+            FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAMES,
+            FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS,
+            strict=True,
+        )
+    )
+
+
+def _evidence_sbom_component(name: str, digest: str) -> dict[str, object]:
+    return {
+        "type": "data",
+        "bom-ref": f"urn:rextio:full-c6-evidence:{name}:{digest}",
+        "name": name,
+        "hashes": [{"alg": "SHA-256", "content": digest}],
+        "properties": [
+            {"name": "rextio:role", "value": "non-authorizing-evidence-receipt"}
+        ],
+    }
+
+
+def _evidence_provenance_dependency(name: str, digest: str) -> dict[str, object]:
+    return {
+        "uri": f"urn:rextio:full-c6-evidence:{name}",
+        "digest": {"sha256": digest},
+        "annotations": {"rextio:role": "non-authorizing-evidence-receipt"},
+    }
 
 
 def _cargo_aggregate_material_name(item: BuildInputAggregateIdentity) -> str:
@@ -1324,6 +1494,7 @@ def _build_sbom(
     cargo_root: FullC6CargoPathSource,
     runtime: RuntimeAuthorizationReceipt,
     reproducibility: ReproducibilityReceipt,
+    authority_aggregate: FullC6AuthorityAggregateBinding,
     partition: tuple[FullC6ClassPartition, ...],
     runtime_bindings: dict[str, _RuntimeBinding],
 ) -> dict[str, object]:
@@ -1350,6 +1521,7 @@ def _build_sbom(
         cargo_root=cargo_root,
         runtime=runtime,
         reproducibility=reproducibility,
+        authority_aggregate=authority_aggregate,
     )
     cargo_aggregates = {
         _cargo_aggregate_material_name(item): item
@@ -1360,17 +1532,7 @@ def _build_sbom(
         if cargo_aggregate is not None:
             components.append(_cargo_aggregate_sbom_component(cargo_aggregate))
             continue
-        components.append(
-            {
-                "type": "data",
-                "bom-ref": f"urn:rextio:full-c6-evidence:{name}:{digest}",
-                "name": name,
-                "hashes": [{"alg": "SHA-256", "content": digest}],
-                "properties": [
-                    {"name": "rextio:role", "value": "non-authorizing-evidence-receipt"}
-                ],
-            }
-        )
+        components.append(_evidence_sbom_component(name, digest))
     for tool in (
         toolchain.python,
         toolchain.cargo,
@@ -1422,6 +1584,17 @@ def _build_sbom(
                 {"name": "rextio:composition", "value": "complete"},
                 {"name": "rextio:partition_sha256", "value": partition_sha256},
                 {
+                    "name": "rextio:authority_aggregate_sha256",
+                    "value": authority_aggregate.digest,
+                },
+                *(
+                    {
+                        "name": f"rextio:{field_name}",
+                        "value": getattr(authority_aggregate, field_name),
+                    }
+                    for field_name in FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS
+                ),
+                {
                     "name": "rextio:reproducible_sbom_input_sha256",
                     "value": reproducibility.sbom_canonical_sha256,
                 },
@@ -1455,6 +1628,7 @@ def _build_provenance(
     cargo_root: FullC6CargoPathSource,
     runtime: RuntimeAuthorizationReceipt,
     reproducibility: ReproducibilityReceipt,
+    authority_aggregate: FullC6AuthorityAggregateBinding,
     partition: tuple[FullC6ClassPartition, ...],
     runtime_bindings: dict[str, _RuntimeBinding],
 ) -> dict[str, object]:
@@ -1470,6 +1644,7 @@ def _build_provenance(
             cargo_root=cargo_root,
             runtime=runtime,
             reproducibility=reproducibility,
+            authority_aggregate=authority_aggregate,
         )
     }
     resolved_dependencies = [
@@ -1489,13 +1664,7 @@ def _build_provenance(
             )
         else:
             resolved_dependencies.append(
-                {
-                    "uri": f"urn:rextio:full-c6-evidence:{name}",
-                    "digest": {"sha256": digest},
-                    "annotations": {
-                        "rextio:role": "non-authorizing-evidence-receipt"
-                    },
-                }
+                _evidence_provenance_dependency(name, digest)
             )
     for tool in (
         toolchain.python,
@@ -1582,6 +1751,7 @@ def _build_provenance(
                     "rextio:toolchain": toolchain.to_dict(),
                     "rextio:cargo_path_source": cargo_root.to_dict(),
                     "rextio:runtime_authorization": runtime.to_dict(),
+                    "rextio:authority_aggregate": authority_aggregate.to_dict(),
                     "rextio:two_build_reproducibility": reproducibility.to_dict(),
                     "rextio:class_partition": [item.to_dict() for item in partition],
                     "rextio:complete_for_scope": True,
@@ -1605,6 +1775,7 @@ def build_full_c6_supply_chain_receipt(
     cargo_path_source: FullC6CargoPathSource,
     runtime_authorization: RuntimeAuthorizationReceipt,
     reproducibility: ReproducibilityReceipt,
+    authority_aggregate: FullC6AuthorityAggregateBinding,
     cargo_dependency_workspace: FullC6CargoDependencyWorkspaceReceipt | None = None,
 ) -> FullC6SupplyChainReceipt:
     """Reconstruct and bind the complete frozen universe, then emit both documents."""
@@ -1653,8 +1824,26 @@ def build_full_c6_supply_chain_receipt(
         raise FullC6SupplyChainError("Cargo path source is not in canonical model form")
     trusted_runtime = _rebuild_runtime(runtime_authorization)
     trusted_reproducibility = _rebuild_reproducibility(reproducibility)
+    trusted_authority_aggregate = _rebuild_authority_aggregate(
+        authority_aggregate
+    )
     if trusted_runtime.target_triple != target_triple:
         raise FullC6SupplyChainError("runtime authorization target does not match the build")
+    if (
+        trusted_authority_aggregate.runtime_authorization_sha256
+        != trusted_runtime.digest
+    ):
+        raise FullC6SupplyChainError(
+            "Full C6 authority aggregate does not bind the runtime authorization"
+        )
+    if (
+        cargo_dependency_workspace is not None
+        and trusted_authority_aggregate.cargo_workspace_sha256
+        != cargo_dependency_workspace.digest
+    ):
+        raise FullC6SupplyChainError(
+            "Full C6 authority aggregate does not bind the Cargo workspace"
+        )
     runtime_bindings = _validate_bindings(
         subject=trusted_subject,
         policy=trusted_policy,
@@ -1680,6 +1869,7 @@ def build_full_c6_supply_chain_receipt(
         cargo_root=trusted_cargo_root,
         runtime=trusted_runtime,
         reproducibility=trusted_reproducibility,
+        authority_aggregate=trusted_authority_aggregate,
         partition=partition,
         runtime_bindings=runtime_bindings,
     )
@@ -1698,6 +1888,7 @@ def build_full_c6_supply_chain_receipt(
         cargo_root=trusted_cargo_root,
         runtime=trusted_runtime,
         reproducibility=trusted_reproducibility,
+        authority_aggregate=trusted_authority_aggregate,
         partition=partition,
         runtime_bindings=runtime_bindings,
     )
@@ -1725,6 +1916,7 @@ def build_full_c6_supply_chain_receipt(
         reproducible_provenance_input_sha256=(
             trusted_reproducibility.provenance_input_canonical_sha256
         ),
+        authority_aggregate=trusted_authority_aggregate,
         sbom_json=sbom_json,
         provenance_json=provenance_json,
         cargo_input_aggregates=trusted_inputs.aggregates,
@@ -1837,7 +2029,10 @@ def _receipt_bindings(value: FullC6SupplyChainReceipt) -> dict[str, str]:
         "build-input-closure": value.build_input_closure_sha256,
         "builder-toolchain": value.toolchain_sha256,
         "cargo-path-source": value.cargo_path_source_sha256,
-        "runtime-authorization": value.runtime_authorization_sha256,
+        FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAME: (
+            value.authority_aggregate.digest
+        ),
+        **dict(_authority_aggregate_materials(value.authority_aggregate)),
         "two-build-reproducibility": value.reproducibility_sha256,
         "reproducible-sbom-input": value.reproducible_sbom_input_sha256,
         "reproducible-provenance-input": (
@@ -1853,6 +2048,108 @@ def _receipt_bindings(value: FullC6SupplyChainReceipt) -> dict[str, str]:
         }
     )
     return bindings
+
+
+def _validate_authority_aggregate_document_materials(
+    value: FullC6SupplyChainReceipt,
+    *,
+    sbom: dict[str, object],
+    predicate: dict[str, object],
+    definition: dict[str, object],
+) -> None:
+    components = sbom.get("components")
+    resolved_dependencies = definition.get("resolvedDependencies")
+    if not isinstance(components, list) or not isinstance(
+        resolved_dependencies, list
+    ):
+        raise FullC6SupplyChainError(
+            "Full C6 authority aggregate document materials are missing"
+        )
+    authority_materials = (
+        (
+            FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAME,
+            value.authority_aggregate.digest,
+        ),
+        *_authority_aggregate_materials(value.authority_aggregate),
+    )
+    material_names = {name for name, _digest_value in authority_materials}
+    evidence_uri_prefix = "urn:rextio:full-c6-evidence:"
+    observed_components = [
+        item
+        for item in components
+        if isinstance(item, dict) and item.get("name") in material_names
+    ]
+    observed_dependencies = [
+        item
+        for item in resolved_dependencies
+        if isinstance(item, dict)
+        and isinstance(item.get("uri"), str)
+        and str(item["uri"]).removeprefix(evidence_uri_prefix) in material_names
+    ]
+    expected_components = [
+        _evidence_sbom_component(name, digest)
+        for name, digest in authority_materials
+    ]
+    expected_dependencies = [
+        _evidence_provenance_dependency(name, digest)
+        for name, digest in authority_materials
+    ]
+    if (
+        observed_components != expected_components
+        or observed_dependencies != expected_dependencies
+    ):
+        raise FullC6SupplyChainError(
+            "Full C6 authority aggregate document materials do not bind the receipt"
+        )
+
+    metadata = sbom.get("metadata")
+    if not isinstance(metadata, dict):
+        raise FullC6SupplyChainError("Full C6 SBOM metadata is invalid")
+    raw_properties = metadata.get("properties")
+    if not isinstance(raw_properties, list):
+        raise FullC6SupplyChainError("Full C6 SBOM properties are invalid")
+    authority_property_names = {
+        "rextio:authority_aggregate_sha256",
+        *(
+            f"rextio:{field_name}"
+            for field_name in FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS
+        ),
+    }
+    observed_properties = [
+        item
+        for item in raw_properties
+        if isinstance(item, dict) and item.get("name") in authority_property_names
+    ]
+    expected_properties = [
+        {
+            "name": "rextio:authority_aggregate_sha256",
+            "value": value.authority_aggregate.digest,
+        },
+        *(
+            {
+                "name": f"rextio:{field_name}",
+                "value": getattr(value.authority_aggregate, field_name),
+            }
+            for field_name in FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS
+        ),
+    ]
+    if observed_properties != expected_properties:
+        raise FullC6SupplyChainError(
+            "Full C6 authority aggregate SBOM properties do not bind the receipt"
+        )
+
+    run_details = predicate.get("runDetails")
+    if not isinstance(run_details, dict):
+        raise FullC6SupplyChainError("Full C6 provenance run details are invalid")
+    provenance_metadata = run_details.get("metadata")
+    if (
+        not isinstance(provenance_metadata, dict)
+        or provenance_metadata.get("rextio:authority_aggregate")
+        != value.authority_aggregate.to_dict()
+    ):
+        raise FullC6SupplyChainError(
+            "Full C6 provenance authority aggregate projection is stale"
+        )
 
 
 def _validate_cargo_aggregate_document_materials(
@@ -1979,6 +2276,12 @@ def _validate_receipt_documents(
             predicate=predicate,
             definition=definition,
         )
+        _validate_authority_aggregate_document_materials(
+            value,
+            sbom=sbom,
+            predicate=predicate,
+            definition=definition,
+        )
         if (
             subjects[0]
             != {"name": value.subject.logical_path, "digest": {"sha256": value.subject.sha256}}
@@ -2031,6 +2334,9 @@ def verify_full_c6_supply_chain_receipt(
         reproducible_provenance_input_sha256=(
             value.reproducible_provenance_input_sha256
         ),
+        authority_aggregate=_rebuild_authority_aggregate(
+            value.authority_aggregate
+        ),
         sbom_json=bytes(value.sbom_json),
         provenance_json=bytes(value.provenance_json),
         cargo_input_aggregates=_rebuild_cargo_input_aggregates(
@@ -2052,6 +2358,13 @@ def verify_full_c6_supply_chain_receipt(
             rebuilt.cargo_input_aggregates,
             cargo_dependency_workspace,
         )
+        if (
+            rebuilt.authority_aggregate.cargo_workspace_sha256
+            != cargo_dependency_workspace.digest
+        ):
+            raise FullC6SupplyChainError(
+                "Full C6 authority aggregate does not bind the Cargo workspace"
+            )
     elif cargo_dependency_workspace is not None:
         raise FullC6SupplyChainError(
             "legacy Full C6 receipt cannot consume Cargo aggregate authority"
@@ -2060,6 +2373,10 @@ def verify_full_c6_supply_chain_receipt(
 
 
 __all__ = [
+    "FULL_C6_AUTHORITY_AGGREGATE_BINDING_DOMAIN",
+    "FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS",
+    "FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAMES",
+    "FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAME",
     "FULL_C6_BUILDER_ID",
     "FULL_C6_BUILD_TYPE",
     "FULL_C6_CARGO_INPUT_AGGREGATE_BINDING_DOMAIN",
@@ -2067,6 +2384,7 @@ __all__ = [
     "FULL_C6_SBOM_KIND",
     "FULL_C6_SUPPLY_CHAIN_DOMAIN",
     "FullC6CargoPathSource",
+    "FullC6AuthorityAggregateBinding",
     "FullC6ClassPartition",
     "FullC6PartitionIdentity",
     "FullC6SupplyChainError",

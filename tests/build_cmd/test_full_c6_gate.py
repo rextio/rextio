@@ -9,6 +9,7 @@ import runpy
 
 import pytest
 
+import rextio.build.full_c6_supply_chain as supply_chain_module
 from rextio.artifacts.evidence import (
     EvidenceFileRef,
     SourceTransformationVerification,
@@ -459,6 +460,15 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         version="0.1.4",
         source_tree_sha256=root.sha256 or "",
     )
+    authority_aggregate = _SUPPLY["_authority_aggregate"](  # type: ignore[operator]
+        analysis_ir_transaction_sha256=transaction.digest,
+        runtime_authorization_sha256=runtime.digest,
+        executor_receipt_sha256=executor.digest,
+    )
+    assert isinstance(
+        authority_aggregate,
+        supply_chain_module.FullC6AuthorityAggregateBinding,
+    )
     supply_chain = build_full_c6_supply_chain_receipt(
         target_triple=TARGET,
         subject=subject,
@@ -471,6 +481,7 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         cargo_path_source=cargo_path_source,
         runtime_authorization=runtime,
         reproducibility=reproducibility,
+        authority_aggregate=authority_aggregate,
     )
     return {
         "target_triple": TARGET,
@@ -719,6 +730,44 @@ def test_gate_requires_same_transaction_analysis_and_ir_projection(tmp_path: Pat
     transaction = arguments["analysis_ir_transaction"]
     object.__setattr__(transaction, "analysis_sha256", "0" * 64)
     with pytest.raises(FullC6GateError, match="preauthorization evidence failed closed"):
+        _request(arguments)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("analysis_ir_transaction_sha256", "executor_receipt_sha256"),
+)
+def test_gate_rejects_authority_aggregate_source_drift(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    arguments = _fixture(tmp_path)
+    supply_chain = arguments["supply_chain"]
+    binding = supply_chain.authority_aggregate  # type: ignore[attr-defined]
+    assert isinstance(
+        binding,
+        supply_chain_module.FullC6AuthorityAggregateBinding,
+    )
+    changed = replace(binding, **{field: "f" * 64})
+    verification = arguments["source_verification"]
+    assert isinstance(verification, SourceLockV2Verification)
+    assert verification.context is not None
+    arguments["supply_chain"] = build_full_c6_supply_chain_receipt(
+        target_triple=arguments["target_triple"],  # type: ignore[arg-type]
+        subject=arguments["subject"],  # type: ignore[arg-type]
+        build_inputs=arguments["build_inputs"],  # type: ignore[arg-type]
+        wheel_entries=arguments["wheel_entries"],  # type: ignore[arg-type]
+        policy=arguments["policy"],  # type: ignore[arg-type]
+        source_lock=verification.context.manifest,
+        source_admission=verification.admission,
+        toolchain=arguments["toolchain"],  # type: ignore[arg-type]
+        cargo_path_source=arguments["cargo_path_source"],  # type: ignore[arg-type]
+        runtime_authorization=arguments["runtime_authorization"],  # type: ignore[arg-type]
+        reproducibility=arguments["reproducibility"],  # type: ignore[arg-type]
+        authority_aggregate=changed,
+    )
+
+    with pytest.raises(FullC6GateError, match="authority aggregate"):
         _request(arguments)
 
 
