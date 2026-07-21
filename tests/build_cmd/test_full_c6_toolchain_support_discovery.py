@@ -999,6 +999,25 @@ def test_xcode_ranlib_symlink_is_sealed_separately_from_implementation(
         )
 
 
+def test_linux_resolves_distribution_linker_and_inspector_symlinks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    linker = _file(tmp_path / "x86_64-linux-gnu-gcc", executable=True)
+    inspector = _file(tmp_path / "x86_64-linux-gnu-readelf", executable=True)
+    cc = tmp_path / "cc"
+    readelf = tmp_path / "readelf"
+    cc.symlink_to(linker.name)
+    readelf.symlink_to(inspector.name)
+    monkeypatch.setattr(support, "LINUX_CC", cc)
+    monkeypatch.setattr(support, "LINUX_READELF", readelf)
+
+    assert support.resolve_full_c6_linker_and_inspector(
+        target_triple=LINUX,
+        cwd=tmp_path,
+    ) == (linker, inspector)
+
+
 def test_linux_missing_exact_bwrap_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

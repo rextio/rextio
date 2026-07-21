@@ -477,7 +477,7 @@ def resolve_full_c6_linker_and_inspector(
             executable=True,
         ), _require_platform_anchored_macos_tool(MACOS_OTOOL)
     if target_triple == "x86_64-unknown-linux-gnu":
-        return _resolved_real_file(LINUX_CC, executable=True), _require_real_file(
+        return _resolved_real_file(LINUX_CC, executable=True), _resolved_real_file(
             LINUX_READELF, executable=True
         )
     raise FullC6ToolchainSupportError("Full C6 support target is unsupported")
