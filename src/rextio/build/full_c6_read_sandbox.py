@@ -5,7 +5,10 @@ kernel prevents Cargo, build scripts, rustc, and the linker from reading an
 unbound host file.  This module provides that enforcement boundary for the two
 frozen Alpha hosts:
 
-* Linux x86_64 uses Landlock in the child between ``fork`` and ``exec``.
+* Linux x86_64 uses a bubblewrap mount/user/PID/UTS/IPC/network namespace and
+  a caller-owned seccomp program that bubblewrap installs after setup.  A
+  support-locked isolated CPython helper then installs Landlock inside that
+  completed namespace immediately before replacing itself with Cargo.
 * macOS arm64 uses ``sandbox-exec`` only with a separately verified sealed
   platform-image provider.  Rextio deliberately has no permissive default
   provider: if an APFS/SSV anchor cannot be verified, the production build
@@ -18,8 +21,7 @@ public signing request.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-import ctypes
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import os
@@ -32,6 +34,14 @@ import struct
 import subprocess
 import sys
 from typing import Literal, Protocol
+
+from rextio.build.full_c6_linux_launcher import (
+    FULL_C6_LINUX_LAUNCHER,
+    FULL_C6_LINUX_PYTHON,
+    FullC6LinuxLauncherError,
+    canonical_linux_payload_environment,
+    linux_payload_environment_digest,
+)
 
 
 FULL_C6_READ_SANDBOX_DOMAIN = "rextio.full-c6-read-sandbox.v1"
@@ -49,26 +59,23 @@ _APPLE_UUID_RE = re.compile(
 )
 _APPLE_SYSTEM_SNAPSHOT_DEVICE_RE = re.compile(r"^disk[0-9]+s[0-9]+s[0-9]+$")
 
-# Linux x86_64 syscall numbers.  Full C6 does not support another Linux ABI.
-_SYS_LANDLOCK_CREATE_RULESET = 444
-_SYS_LANDLOCK_ADD_RULE = 445
-_SYS_LANDLOCK_RESTRICT_SELF = 446
-_LANDLOCK_CREATE_RULESET_VERSION = 1
-_LANDLOCK_RULE_PATH_BENEATH = 1
-_PR_SET_NO_NEW_PRIVS = 38
-_PR_SET_SECCOMP = 22
-_SECCOMP_MODE_FILTER = 2
 _SECCOMP_RET_ALLOW = 0x7FFF0000
 _SECCOMP_RET_KILL_PROCESS = 0x80000000
 _SECCOMP_RET_ERRNO = 0x00050000
 _EPERM = 1
 _AUDIT_ARCH_X86_64 = 0xC000003E
+_X32_SYSCALL_BIT = 0x40000000
 
-# x86_64 socket and async-I/O syscall numbers.  Denying socket creation and
-# connection plus io_uring (which otherwise bypasses ordinary syscall filters)
-# makes the child network boundary independent of Cargo's offline flag.
-_NETWORK_SYSCALLS_X86_64 = frozenset(
+# x86_64 socket, System V/POSIX IPC, and async-I/O syscall numbers.  This
+# filter is handed to bubblewrap rather than installed in Python's preexec
+# hook: bwrap must be able to create its namespace plumbing before the filter
+# becomes active.  The new network and IPC namespaces remain independently
+# mandatory defense-in-depth boundaries.
+_DENIED_PAYLOAD_SYSCALLS_X86_64 = frozenset(
     {
+        29,  # shmget
+        30,  # shmat
+        31,  # shmctl
         41,  # socket
         42,  # connect
         43,  # accept
@@ -76,9 +83,28 @@ _NETWORK_SYSCALLS_X86_64 = frozenset(
         45,  # recvfrom
         46,  # sendmsg
         47,  # recvmsg
+        48,  # shutdown
         49,  # bind
         50,  # listen
+        51,  # getsockname
+        52,  # getpeername
         53,  # socketpair
+        54,  # setsockopt
+        55,  # getsockopt
+        64,  # semget
+        65,  # semop
+        66,  # semctl
+        67,  # shmdt
+        68,  # msgget
+        69,  # msgsnd
+        70,  # msgrcv
+        71,  # msgctl
+        240,  # mq_open
+        241,  # mq_unlink
+        242,  # mq_timedsend
+        243,  # mq_timedreceive
+        244,  # mq_notify
+        245,  # mq_getsetattr
         288,  # accept4
         299,  # recvmmsg
         307,  # sendmmsg
@@ -88,28 +114,30 @@ _NETWORK_SYSCALLS_X86_64 = frozenset(
     }
 )
 
-_LL_EXECUTE = 1 << 0
-_LL_WRITE_FILE = 1 << 1
-_LL_READ_FILE = 1 << 2
-_LL_READ_DIR = 1 << 3
-_LL_REMOVE_DIR = 1 << 4
-_LL_REMOVE_FILE = 1 << 5
-_LL_MAKE_CHAR = 1 << 6
-_LL_MAKE_DIR = 1 << 7
-_LL_MAKE_REG = 1 << 8
-_LL_MAKE_SOCK = 1 << 9
-_LL_MAKE_FIFO = 1 << 10
-_LL_MAKE_BLOCK = 1 << 11
-_LL_MAKE_SYM = 1 << 12
-_LL_REFER = 1 << 13
-_LL_TRUNCATE = 1 << 14
-_LANDLOCK_HANDLED_FS_V3 = (1 << 15) - 1
-_LANDLOCK_READ = _LL_READ_FILE | _LL_READ_DIR
-_LANDLOCK_READ_EXECUTE = _LANDLOCK_READ | _LL_EXECUTE
-_LANDLOCK_READ_WRITE = _LANDLOCK_HANDLED_FS_V3
+_LINUX_BWRAP_FLAGS = (
+    "--unshare-all",
+    "--unshare-net",
+    "--unshare-ipc",
+    "--unshare-pid",
+    "--unshare-uts",
+    "--new-session",
+    "--die-with-parent",
+    "--clearenv",
+)
+_LINUX_PROJECT_DESTINATION = "/rextio/project"
+_LINUX_BUILD_DESTINATION = "/rextio/build"
+_LINUX_TOOLCHAIN_DESTINATION = "/rextio/toolchain"
+_LINUX_SUPPORT_DESTINATION = "/rextio/support"
+_LINUX_RUNTIME_LOADER_DESTINATION = "/lib64/ld-linux-x86-64.so.2"
+_LINUX_PYTHON_STDLIB_DESTINATION = "/rextio/toolchain/lib/python3.11"
+_LINUX_LAUNCHER_DESTINATION = FULL_C6_LINUX_LAUNCHER
+_LINUX_ROLE_LEAF_RE = re.compile(r"^[a-z][a-z0-9-]{0,95}$")
+_MAX_BUBBLEWRAP_BYTES = 64 * 1024 * 1024
 
 SandboxAccess = Literal["read", "read-execute", "read-write"]
-SandboxEngine = Literal["landlock-v3", "macos-sandbox-exec-v1"]
+SandboxEngine = Literal[
+    "linux-bwrap-landlock-v1", "macos-sandbox-exec-v1"
+]
 
 
 class FullC6ReadSandboxError(RuntimeError):
@@ -216,10 +244,10 @@ class FullC6ReadSandboxPlan:
     def __post_init__(self) -> None:
         if self.target_triple not in _SUPPORTED_TARGETS:
             raise ValueError("Full C6 sandbox target is unsupported")
-        expected_engine = (
+        expected_engine: SandboxEngine = (
             "macos-sandbox-exec-v1"
             if self.target_triple == "aarch64-apple-darwin"
-            else "landlock-v3"
+            else "linux-bwrap-landlock-v1"
         )
         if self.engine != expected_engine:
             raise ValueError("Full C6 sandbox engine does not match the target")
@@ -228,9 +256,11 @@ class FullC6ReadSandboxPlan:
             raise ValueError("Full C6 sandbox rule count is outside the bound")
         if not all(type(rule) is SandboxPathRule for rule in rules):
             raise TypeError("Full C6 sandbox rule has an invalid type")
-        keys = [(os.fsencode(rule.path), rule.access, rule.logical_role) for rule in rules]
-        if keys != sorted(keys) or len({item[0] for item in keys}) != len(keys):
+        keys = [(rule.logical_role, rule.access, os.fsencode(rule.path)) for rule in rules]
+        if keys != sorted(keys) or len({item[2] for item in keys}) != len(keys):
             raise ValueError("Full C6 sandbox rules are not canonical and unique")
+        if self.target_triple == "x86_64-unknown-linux-gnu":
+            _validate_linux_rules(rules)
         if _SHA256_RE.fullmatch(self.platform_anchor_sha256) is None:
             raise ValueError("Full C6 sandbox platform anchor digest is invalid")
         object.__setattr__(self, "rules", rules)
@@ -256,24 +286,22 @@ class FullC6ReadSandboxPlan:
 
 @dataclass(frozen=True, slots=True)
 class FullC6SandboxLaunch:
-    """Command wrapper or child hook consumed by the subprocess boundary."""
+    """Private command boundary consumed by the strict subprocess launcher.
+
+    ``pass_fds`` is an exact ownership contract, not a hint.  The executor
+    must pass precisely these descriptors to ``Popen``, keep them open until
+    spawn returns, close them afterwards, use ``stdin=DEVNULL`` and ``env={}``
+    for bwrap itself, and never serialize ``command`` because it contains
+    private host mount sources.  ``--clearenv`` plus closed ``--setenv`` rows
+    separately construct the post-namespace helper/Cargo environment.
+    Linux uses a caller-owned, offset-zero seccomp descriptor; this module
+    neither creates nor closes it.
+    """
 
     command: tuple[str, ...]
     preexec_fn: Callable[[], None] | None
     profile_sha256: str
-
-
-class _SockFilter(ctypes.Structure):
-    _fields_ = (
-        ("code", ctypes.c_ushort),
-        ("jt", ctypes.c_ubyte),
-        ("jf", ctypes.c_ubyte),
-        ("k", ctypes.c_uint32),
-    )
-
-
-class _SockFprog(ctypes.Structure):
-    _fields_ = (("len", ctypes.c_ushort), ("filter", ctypes.POINTER(_SockFilter)))
+    pass_fds: tuple[int, ...]
 
 
 def build_full_c6_sandbox_plan(
@@ -284,12 +312,12 @@ def build_full_c6_sandbox_plan(
 ) -> FullC6ReadSandboxPlan:
     """Canonicalize a private rule set for one frozen Alpha target."""
     canonical = tuple(
-        sorted(rules, key=lambda item: (os.fsencode(item.path), item.access, item.logical_role))
+        sorted(rules, key=lambda item: (item.logical_role, item.access, os.fsencode(item.path)))
     )
     engine: SandboxEngine = (
         "macos-sandbox-exec-v1"
         if target_triple == "aarch64-apple-darwin"
-        else "landlock-v3"
+        else "linux-bwrap-landlock-v1"
     )
     try:
         return FullC6ReadSandboxPlan(
@@ -309,9 +337,10 @@ def prepare_full_c6_sandbox_launch(
     macos_anchor: MacOSPlatformAnchor | None = None,
     macos_anchor_provider: MacOSPlatformAnchorProvider | None = None,
     sandbox_exec: Path = Path("/usr/bin/sandbox-exec"),
-    landlock_syscall: Callable[..., int] | None = None,
-    landlock_prctl: Callable[..., int] | None = None,
-    require_single_thread: bool = True,
+    bubblewrap: Path = Path("/usr/bin/bwrap"),
+    linux_seccomp_fd: int | None = None,
+    linux_payload_environment: Mapping[str, str] | None = None,
+    bubblewrap_verifier: Callable[[Path], str] | None = None,
     macos_profile_compiler: Callable[[Path, str], None] | None = None,
 ) -> FullC6SandboxLaunch:
     """Return a fail-closed launch boundary for one already-validated plan."""
@@ -325,23 +354,67 @@ def prepare_full_c6_sandbox_launch(
     ):
         raise FullC6ReadSandboxError("Full C6 sandbox command is invalid")
     _verify_rule_roots(plan.rules)
-    if plan.engine == "landlock-v3":
-        if sys.platform != "linux" and landlock_syscall is None:
-            raise FullC6ReadSandboxError("Full C6 Landlock is unavailable on this host")
-        syscall = landlock_syscall or _libc_syscall()
-        prctl = landlock_prctl or _libc_prctl()
-        abi = _query_landlock_abi(syscall)
-        if abi < 3:
-            raise FullC6ReadSandboxError("Full C6 requires Landlock ABI 3 or newer")
-        if require_single_thread:
-            _require_single_threaded_parent()
-        hook = _landlock_preexec(plan.rules, syscall=syscall, prctl=prctl)
+    if plan.engine == "linux-bwrap-landlock-v1":
+        if sys.platform != "linux" and bubblewrap_verifier is None:
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux namespace sandbox is unavailable on this host"
+            )
+        _verify_linux_rule_types(plan.rules)
+        bwrap_path = Path(bubblewrap)
+        verifier = bubblewrap_verifier or _verify_bubblewrap
+        bwrap_sha256 = verifier(bwrap_path)
+        if _SHA256_RE.fullmatch(bwrap_sha256) is None:
+            raise FullC6ReadSandboxError(
+                "Full C6 bubblewrap verifier returned an invalid digest"
+            )
+        seccomp_sha256 = _verify_linux_seccomp_fd(linux_seccomp_fd)
+        if linux_payload_environment is None:
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux payload environment is missing"
+            )
+        try:
+            environment_rows = canonical_linux_payload_environment(
+                linux_payload_environment
+            )
+            environment_sha256 = linux_payload_environment_digest(
+                linux_payload_environment
+            )
+        except FullC6LinuxLauncherError as exc:
+            raise FullC6ReadSandboxError(str(exc)) from exc
+        command_wrapper, virtual_rows = _linux_bubblewrap_command(
+            plan.rules,
+            values,
+            bubblewrap=bwrap_path,
+            seccomp_fd=linux_seccomp_fd,
+            environment_rows=environment_rows,
+            environment_sha256=environment_sha256,
+        )
+        profile_payload = (
+            "rextio.full-c6-linux-sandbox-profile.v1\0"
+            + plan.digest
+            + "\0"
+            + bwrap_sha256
+            + "\0"
+            + seccomp_sha256
+            + "\0"
+            + "\n".join(
+                (
+                    *_LINUX_BWRAP_FLAGS,
+                    "fresh-proc-v1\0/proc",
+                    "fresh-dev-v1\0/dev",
+                    "fresh-tmpfs-v1\0/tmp",
+                    "kernel-rng-getrandom-v1",
+                    *(f"environment\0{name}\0{value}" for name, value in environment_rows),
+                    *virtual_rows,
+                )
+            )
+        ).encode("utf-8")
+        assert linux_seccomp_fd is not None
         return FullC6SandboxLaunch(
-            command=values,
-            preexec_fn=hook,
-            profile_sha256=hashlib.sha256(
-                f"landlock-v3+seccomp-net-v1\0{plan.digest}".encode("utf-8")
-            ).hexdigest(),
+            command=command_wrapper,
+            preexec_fn=None,
+            profile_sha256=hashlib.sha256(profile_payload).hexdigest(),
+            pass_fds=(linux_seccomp_fd,),
         )
 
     if macos_anchor is None or type(macos_anchor) is not MacOSPlatformAnchor:
@@ -358,6 +431,7 @@ def prepare_full_c6_sandbox_launch(
         command=(os.fspath(sandbox_exec), "-p", profile, "--", *values),
         preexec_fn=None,
         profile_sha256=hashlib.sha256(profile.encode("utf-8")).hexdigest(),
+        pass_fds=(),
     )
 
 
@@ -379,158 +453,385 @@ def _verify_rule_roots(rules: Sequence[SandboxPathRule]) -> None:
             raise FullC6ReadSandboxError("Full C6 sandbox device cannot be executable")
 
 
-def _libc_syscall() -> Callable[..., int]:
-    libc = ctypes.CDLL(None, use_errno=True)
-    function = libc.syscall
-    function.restype = ctypes.c_long
-    return function
-
-
-def _libc_prctl() -> Callable[..., int]:
-    libc = ctypes.CDLL(None, use_errno=True)
-    function = libc.prctl
-    function.restype = ctypes.c_int
-    return function
-
-
-def _query_landlock_abi(syscall: Callable[..., int]) -> int:
-    ctypes.set_errno(0)
-    result = syscall(
-        _SYS_LANDLOCK_CREATE_RULESET,
-        ctypes.c_void_p(),
-        ctypes.c_size_t(0),
-        ctypes.c_uint32(_LANDLOCK_CREATE_RULESET_VERSION),
-    )
-    if type(result) is not int or result < 0:
-        raise FullC6ReadSandboxError("Full C6 Landlock ABI query failed")
-    return result
-
-
-def _landlock_preexec(
-    rules: Sequence[SandboxPathRule],
-    *,
-    syscall: Callable[..., int],
-    prctl: Callable[..., int],
-) -> Callable[[], None]:
-    """Create a child-only Landlock hook without importing after ``fork``."""
-    frozen: list[tuple[str, int]] = []
-    for rule in rules:
-        observed = os.lstat(rule.path)
-        frozen.append(
-            (
-                os.fspath(rule.path),
-                _landlock_access(
-                    rule.access,
-                    directory=stat.S_ISDIR(observed.st_mode),
-                    character_device=stat.S_ISCHR(observed.st_mode),
-                ),
+def _validate_linux_rules(rules: Sequence[SandboxPathRule]) -> None:
+    """Validate the closed Linux namespace vocabulary without reading paths."""
+    project = [rule for rule in rules if rule.logical_role == "project-root"]
+    build = [rule for rule in rules if rule.logical_role == "build-root"]
+    loaders = [
+        rule for rule in rules if rule.logical_role == "runtime-loader-mirror"
+    ]
+    toolchain = [
+        rule for rule in rules if rule.logical_role.startswith("toolchain-")
+    ]
+    support = [
+        rule for rule in rules if rule.logical_role.startswith("support-")
+    ]
+    launcher = [
+        rule for rule in rules if rule.logical_role.startswith("launcher-support-")
+    ]
+    recognized = {
+        id(rule)
+        for rule in (*project, *build, *loaders, *toolchain, *support, *launcher)
+    }
+    if len(recognized) != len(rules):
+        raise ValueError("Full C6 Linux sandbox contains an unknown semantic role")
+    if len(project) != 1 or project[0].access != "read":
+        raise ValueError("Full C6 Linux sandbox requires one read-only project-root")
+    if len(build) != 1 or build[0].access != "read-write":
+        raise ValueError("Full C6 Linux sandbox requires one writable build-root")
+    if len(loaders) != 1 or loaders[0].access != "read-execute":
+        raise ValueError(
+            "Full C6 Linux sandbox requires one executable runtime-loader-mirror"
+        )
+    if not toolchain or not support:
+        raise ValueError(
+            "Full C6 Linux sandbox requires toolchain and support leaves"
+        )
+    required_special = {
+        "toolchain-python311": "read-execute",
+        "toolchain-python311-stdlib": "read",
+        "support-landlock-launcher": "read",
+        "support-runtime-libs": "read",
+    }
+    by_role = {rule.logical_role: rule for rule in rules}
+    for role, access in required_special.items():
+        rule = by_role.get(role)
+        if rule is None or rule.access != access:
+            raise ValueError(
+                "Full C6 Linux sandbox is missing a fixed launcher input"
             )
-        )
-    fixed = tuple(frozen)
+    for rule, prefix in (
+        *((rule, "toolchain-") for rule in toolchain),
+        *((rule, "support-") for rule in support),
+        *((rule, "launcher-support-") for rule in launcher),
+    ):
+        leaf = rule.logical_role.removeprefix(prefix)
+        if _LINUX_ROLE_LEAF_RE.fullmatch(leaf) is None:
+            raise ValueError("Full C6 Linux sandbox leaf role is invalid")
+        if rule.access == "read-write":
+            raise ValueError(
+                "Full C6 Linux toolchain/support inputs must be read-only"
+            )
+    destinations = tuple(_linux_rule_destination(rule) for rule in rules)
+    exposed = tuple(destination for destination in destinations if destination is not None)
+    if len(set(exposed)) != len(exposed):
+        raise ValueError("Full C6 Linux sandbox virtual destinations collide")
 
-    def apply() -> None:
-        ruleset_data = struct.pack("=Q", _LANDLOCK_HANDLED_FS_V3)
-        ruleset_buffer = ctypes.create_string_buffer(ruleset_data)
-        ruleset_fd = syscall(
-            _SYS_LANDLOCK_CREATE_RULESET,
-            ctypes.byref(ruleset_buffer),
-            ctypes.c_size_t(len(ruleset_data)),
-            ctypes.c_uint32(0),
-        )
-        if type(ruleset_fd) is not int or ruleset_fd < 0:
-            raise OSError("Full C6 could not create a Landlock ruleset")
+
+def _verify_linux_rule_types(rules: Sequence[SandboxPathRule]) -> None:
+    for rule in rules:
         try:
-            for path, allowed in fixed:
-                flags = getattr(os, "O_PATH", os.O_RDONLY) | getattr(os, "O_CLOEXEC", 0)
-                flags |= getattr(os, "O_NOFOLLOW", 0)
-                parent_fd = os.open(path, flags)
-                try:
-                    attribute = struct.pack("=Qi", allowed, parent_fd)
-                    buffer = ctypes.create_string_buffer(attribute)
-                    result = syscall(
-                        _SYS_LANDLOCK_ADD_RULE,
-                        ruleset_fd,
-                        _LANDLOCK_RULE_PATH_BENEATH,
-                        ctypes.byref(buffer),
-                        ctypes.c_uint32(0),
-                    )
-                    if type(result) is not int or result != 0:
-                        raise OSError("Full C6 could not add a Landlock path rule")
-                finally:
-                    os.close(parent_fd)
-            if prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
-                raise OSError("Full C6 could not set no_new_privs")
-            if syscall(_SYS_LANDLOCK_RESTRICT_SELF, ruleset_fd, 0) != 0:
-                raise OSError("Full C6 could not enforce the Landlock ruleset")
-            _install_network_seccomp(prctl)
-        finally:
-            os.close(ruleset_fd)
+            observed = os.lstat(rule.path)
+        except OSError as exc:
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux sandbox path is unavailable"
+            ) from exc
+        if rule.logical_role in {"project-root", "build-root"} and not stat.S_ISDIR(
+            observed.st_mode
+        ):
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux project/build mapping must be a directory"
+            )
+        if rule.logical_role in {
+            "toolchain-python311-stdlib",
+            "support-runtime-libs",
+        } and not stat.S_ISDIR(observed.st_mode):
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux runtime tree mapping must be a directory"
+            )
+        if rule.logical_role in {
+            "toolchain-python311",
+            "support-landlock-launcher",
+        } and not stat.S_ISREG(observed.st_mode):
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux launcher mapping must be a regular file"
+            )
+        if rule.logical_role == "runtime-loader-mirror" and not stat.S_ISREG(
+            observed.st_mode
+        ):
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux runtime loader must be a regular file"
+            )
 
-    return apply
+
+def _linux_rule_destination(rule: SandboxPathRule) -> str | None:
+    if rule.logical_role == "project-root":
+        return _LINUX_PROJECT_DESTINATION
+    if rule.logical_role == "build-root":
+        return _LINUX_BUILD_DESTINATION
+    if rule.logical_role == "runtime-loader-mirror":
+        return _LINUX_RUNTIME_LOADER_DESTINATION
+    if rule.logical_role == "toolchain-python311":
+        return FULL_C6_LINUX_PYTHON
+    if rule.logical_role == "toolchain-python311-stdlib":
+        return _LINUX_PYTHON_STDLIB_DESTINATION
+    if rule.logical_role == "support-landlock-launcher":
+        return _LINUX_LAUNCHER_DESTINATION
+    if rule.logical_role == "support-runtime-libs":
+        return "/rextio/support/runtime-libs"
+    if rule.logical_role.startswith("toolchain-"):
+        leaf = rule.logical_role.removeprefix("toolchain-")
+        return f"{_LINUX_TOOLCHAIN_DESTINATION}/{leaf}"
+    if rule.logical_role.startswith("support-"):
+        leaf = rule.logical_role.removeprefix("support-")
+        return f"{_LINUX_SUPPORT_DESTINATION}/{leaf}"
+    if rule.logical_role.startswith("launcher-support-"):
+        return None
+    raise FullC6ReadSandboxError(
+        "Full C6 Linux sandbox contains an unknown semantic role"
+    )
 
 
-def _landlock_access(
-    access: SandboxAccess,
+def _linux_bubblewrap_command(
+    rules: Sequence[SandboxPathRule],
+    payload: tuple[str, ...],
     *,
-    directory: bool,
-    character_device: bool,
-) -> int:
-    if character_device:
-        if access == "read":
-            return _LL_READ_FILE
-        if access == "read-write":
-            return _LL_READ_FILE | _LL_WRITE_FILE
-        raise FullC6ReadSandboxError("Full C6 sandbox device cannot be executable")
-    if not directory:
-        if access == "read":
-            return _LL_READ_FILE
-        if access == "read-execute":
-            return _LL_READ_FILE | _LL_EXECUTE
-        return _LL_READ_FILE | _LL_WRITE_FILE | _LL_TRUNCATE
-    if access == "read":
-        return _LANDLOCK_READ
-    if access == "read-execute":
-        return _LANDLOCK_READ_EXECUTE
-    return _LANDLOCK_READ_WRITE
+    bubblewrap: Path,
+    seccomp_fd: int | None,
+    environment_rows: tuple[tuple[str, str], ...],
+    environment_sha256: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if seccomp_fd is None:
+        raise FullC6ReadSandboxError("Full C6 Linux seccomp descriptor is missing")
+    mappings = sorted(
+        (
+            (destination, rule)
+            for rule in rules
+            if (destination := _linux_rule_destination(rule)) is not None
+        ),
+        key=lambda item: (_linux_mapping_rank(item[1]), item[0]),
+    )
+    executable = _canonical_linux_payload_executable(payload[0])
+    executable_allowed = False
+    for destination, rule in mappings:
+        if rule.access != "read-execute" or not (
+            rule.logical_role.startswith("toolchain-")
+            or rule.logical_role.startswith("support-")
+        ):
+            continue
+        if executable == destination or executable.startswith(destination + "/"):
+            executable_allowed = True
+            break
+    if not executable_allowed:
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux payload executable is not a mapped executable input"
+        )
+
+    arguments: list[str] = [os.fspath(bubblewrap), *_LINUX_BWRAP_FLAGS]
+    for name, value in environment_rows:
+        arguments.extend(("--setenv", name, value))
+    arguments.extend(("--proc", "/proc"))
+    arguments.extend(("--dev", "/dev"))
+    arguments.extend(("--tmpfs", "/tmp"))
+    arguments.extend(("--dir", "/rextio"))
+    arguments.extend(("--dir", _LINUX_TOOLCHAIN_DESTINATION))
+    arguments.extend(("--dir", "/rextio/toolchain/bin"))
+    arguments.extend(("--dir", "/rextio/toolchain/lib"))
+    arguments.extend(("--dir", _LINUX_SUPPORT_DESTINATION))
+    arguments.extend(("--dir", "/rextio/support/rextio"))
+    if any(
+        destination == _LINUX_RUNTIME_LOADER_DESTINATION
+        for destination, _rule in mappings
+    ):
+        arguments.extend(("--dir", "/lib64"))
+
+    virtual_rows: list[str] = []
+    for destination, rule in mappings:
+        operation = "--bind" if rule.logical_role == "build-root" else "--ro-bind"
+        arguments.extend((operation, os.fspath(rule.path), destination))
+        virtual_rows.append(
+            f"{rule.logical_role}\0{rule.access}\0{operation}\0{destination}"
+        )
+    for rule in sorted(
+        (item for item in rules if _linux_rule_destination(item) is None),
+        key=lambda item: (item.logical_role, item.access),
+    ):
+        virtual_rows.append(
+            f"{rule.logical_role}\0{rule.access}\0pre-namespace-only"
+        )
+    arguments.extend(("--dir", "/rextio/build/home"))
+    arguments.extend(("--dir", "/rextio/build/target"))
+    arguments.extend(("--chdir", _LINUX_PROJECT_DESTINATION))
+    arguments.extend(("--seccomp", str(seccomp_fd)))
+    arguments.extend(
+        (
+            "--",
+            FULL_C6_LINUX_PYTHON,
+            "-I",
+            "-B",
+            "-S",
+            FULL_C6_LINUX_LAUNCHER,
+            "--environment-sha256",
+            environment_sha256,
+            "--",
+            *payload,
+        )
+    )
+    return tuple(arguments), tuple(virtual_rows)
 
 
-def _install_network_seccomp(prctl: Callable[..., int]) -> None:
-    """Deny all socket creation/traffic and io_uring in the Linux child.
+def _linux_mapping_rank(rule: SandboxPathRule) -> int:
+    if rule.logical_role == "project-root":
+        return 0
+    if rule.logical_role == "build-root":
+        return 1
+    if rule.logical_role.startswith("toolchain-"):
+        return 2
+    if rule.logical_role.startswith("support-"):
+        return 3
+    if rule.logical_role == "runtime-loader-mirror":
+        return 4
+    raise FullC6ReadSandboxError("Full C6 Linux mapping role is invalid")
 
-    The BPF program is deliberately small and architecture-pinned.  An
-    unexpected audit architecture kills the process rather than executing an
-    unfiltered syscall-number table.
-    """
+
+def _canonical_linux_payload_executable(value: str) -> str:
+    if (
+        not value.startswith("/")
+        or value != os.path.normpath(value)
+        or len(os.fsencode(value)) > _MAX_PATH_BYTES
+    ):
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux payload executable must be a canonical absolute path"
+        )
+    return value
+
+
+def linux_full_c6_seccomp_program() -> bytes:
+    """Return the exact x86_64 BPF rows that bwrap installs post-namespace."""
     # BPF_LD | BPF_W | BPF_ABS: seccomp_data.arch at offset 4.
     rows: list[tuple[int, int, int, int]] = [(0x20, 0, 0, 4)]
-    # BPF_JMP | BPF_JEQ | BPF_K: continue on x86_64, otherwise kill.
+    # Continue on x86_64; kill before interpreting another ABI's syscall table.
     rows.append((0x15, 1, 0, _AUDIT_ARCH_X86_64))
     rows.append((0x06, 0, 0, _SECCOMP_RET_KILL_PROCESS))
-    # Load seccomp_data.nr at offset 0.
+    # BPF_LD | BPF_W | BPF_ABS: seccomp_data.nr at offset 0.
     rows.append((0x20, 0, 0, 0))
-    for number in sorted(_NETWORK_SYSCALLS_X86_64):
+    # Reject the x32 ABI range before matching the ordinary x86_64 table.
+    rows.append((0x35, 0, 1, _X32_SYSCALL_BIT))
+    rows.append((0x06, 0, 0, _SECCOMP_RET_KILL_PROCESS))
+    for number in sorted(_DENIED_PAYLOAD_SYSCALLS_X86_64):
         rows.append((0x15, 0, 1, number))
         rows.append((0x06, 0, 0, _SECCOMP_RET_ERRNO | _EPERM))
     rows.append((0x06, 0, 0, _SECCOMP_RET_ALLOW))
-    filters = (_SockFilter * len(rows))(*(_SockFilter(*row) for row in rows))
-    program = _SockFprog(len=len(rows), filter=filters)
-    if prctl(_PR_SET_SECCOMP, _SECCOMP_MODE_FILTER, ctypes.byref(program), 0, 0) != 0:
-        raise OSError("Full C6 could not enforce the no-network seccomp filter")
+    return b"".join(struct.pack("=HBBI", *row) for row in rows)
 
 
-def _require_single_threaded_parent() -> None:
-    """Keep the child hook outside Python's documented threaded hazard."""
-    task_root = Path("/proc/self/task")
+def _verify_linux_seccomp_fd(fd: int | None) -> str:
+    expected = linux_full_c6_seccomp_program()
+    if type(fd) is not int or fd < 3:
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux requires a caller-owned seccomp descriptor"
+        )
     try:
-        tasks = tuple(task_root.iterdir())
+        observed = os.fstat(fd)
+        offset = os.lseek(fd, 0, os.SEEK_CUR)
+        payload = os.pread(fd, len(expected) + 1, 0)
     except OSError as exc:
         raise FullC6ReadSandboxError(
-            "Full C6 cannot verify a single-threaded Landlock launcher"
+            "Full C6 Linux seccomp descriptor is unavailable"
         ) from exc
-    if len(tasks) != 1:
+    if (
+        not stat.S_ISREG(observed.st_mode)
+        or observed.st_size != len(expected)
+        or offset != 0
+        or payload != expected
+    ):
         raise FullC6ReadSandboxError(
-            "Full C6 Landlock launch requires a single-threaded process"
+            "Full C6 Linux seccomp descriptor does not contain the exact filter"
         )
+    return hashlib.sha256(expected).hexdigest()
+
+
+def _verify_bubblewrap(path: Path) -> str:
+    """Hash one root-controlled, canonical bwrap executable without aliases."""
+    raw_path = os.fspath(path)
+    if (
+        not path.is_absolute()
+        or path.name != "bwrap"
+        or raw_path != os.path.normpath(raw_path)
+        or len(os.fsencode(path)) > _MAX_PATH_BYTES
+    ):
+        raise FullC6ReadSandboxError("Full C6 bubblewrap path is not canonical")
+    try:
+        observed = os.lstat(path)
+    except OSError as exc:
+        raise FullC6ReadSandboxError("Full C6 bubblewrap is unavailable") from exc
+    if (
+        stat.S_ISLNK(observed.st_mode)
+        or not stat.S_ISREG(observed.st_mode)
+        or observed.st_uid != 0
+        or observed.st_nlink != 1
+        or observed.st_mode & (stat.S_ISUID | stat.S_ISGID | 0o022)
+        or not observed.st_mode & 0o111
+        or not os.access(path, os.X_OK)
+    ):
+        raise FullC6ReadSandboxError("Full C6 bubblewrap executable is unsafe")
+    parent = path.parent
+    while True:
+        try:
+            parent_observed = os.lstat(parent)
+        except OSError as exc:
+            raise FullC6ReadSandboxError(
+                "Full C6 bubblewrap parent is unavailable"
+            ) from exc
+        if (
+            stat.S_ISLNK(parent_observed.st_mode)
+            or not stat.S_ISDIR(parent_observed.st_mode)
+            or parent_observed.st_uid != 0
+            or parent_observed.st_mode & 0o022
+        ):
+            raise FullC6ReadSandboxError("Full C6 bubblewrap parent is unsafe")
+        if parent.parent == parent:
+            break
+        parent = parent.parent
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise FullC6ReadSandboxError("Full C6 bubblewrap could not be opened") from exc
+    try:
+        before = os.fstat(descriptor)
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _MAX_BUBBLEWRAP_BYTES:
+                raise FullC6ReadSandboxError(
+                    "Full C6 bubblewrap executable exceeds the byte bound"
+                )
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+    except OSError as exc:
+        raise FullC6ReadSandboxError("Full C6 bubblewrap could not be hashed") from exc
+    finally:
+        os.close(descriptor)
+    identity_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_uid,
+        before.st_gid,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    identity_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_uid,
+        after.st_gid,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if identity_before != identity_after or before.st_ino != observed.st_ino:
+        raise FullC6ReadSandboxError("Full C6 bubblewrap changed while hashing")
+    return digest.hexdigest()
 
 
 def _verify_sandbox_exec(path: Path) -> None:
@@ -780,5 +1081,6 @@ __all__ = [
     "build_full_c6_sandbox_plan",
     "canonical_platform_context",
     "capture_active_macos_platform_anchor",
+    "linux_full_c6_seccomp_program",
     "prepare_full_c6_sandbox_launch",
 ]
