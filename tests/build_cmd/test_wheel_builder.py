@@ -241,7 +241,7 @@ def test_external_contract_rejects_non_python_package_and_metadata_material(
 
 
 @pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
-def test_wheel_builder_rejects_linked_staging_files(
+def test_ordinary_wheel_builder_preserves_linked_staging_files(
     tmp_path: Path,
     link_kind: str,
 ) -> None:
@@ -252,13 +252,100 @@ def test_wheel_builder_rejects_linked_staging_files(
     linked = python_dir / "linked.py"
     if link_kind == "symlink":
         linked.symlink_to(target)
+    else:
+        os.link(target, linked)
+
+    result = build_artifact_wheel(tmp_path, python_dir, tmp_path / "dist")
+
+    assert result.status == "built"
+    assert result.path is not None
+    with zipfile.ZipFile(result.path) as archive:
+        assert archive.read("linked.py") == b"VALUE = 1\n"
+
+
+@pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
+def test_strict_wheel_builder_rejects_linked_staging_files(
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    target = tmp_path / "target.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    linked = python_dir / "app" / "linked.py"
+    if link_kind == "symlink":
+        linked.symlink_to(target)
         reason = "symlink"
     else:
         os.link(target, linked)
         reason = "unalias"
 
     with pytest.raises(wheel_builder.WheelContractError, match=reason):
-        build_artifact_wheel(tmp_path, python_dir, tmp_path / "dist")
+        build_artifact_wheel(
+            tmp_path / "project",
+            python_dir,
+            tmp_path / "dist",
+            external_contract=_external_contract(),
+        )
+
+
+def test_ordinary_wheel_build_does_not_require_posix_open_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    python_dir = tmp_path / "python"
+    (python_dir / "pkg").mkdir(parents=True)
+    (python_dir / "pkg" / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (python_dir / "pkg" / "module.so").write_bytes(b"compiled module")
+    monkeypatch.delattr(wheel_builder.os, "O_NOFOLLOW", raising=False)
+    monkeypatch.delattr(wheel_builder.os, "O_DIRECTORY", raising=False)
+
+    result = build_artifact_wheel(tmp_path, python_dir, tmp_path / "dist")
+
+    assert result.status == "built"
+    assert result.path is not None
+    assert "py3-none-any" not in result.path
+    with zipfile.ZipFile(result.path) as archive:
+        names = set(archive.namelist())
+    assert "pkg/module.so" in names
+    assert "pkg/module.py" not in names
+
+
+def test_strict_wheel_build_requires_posix_open_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.delattr(wheel_builder.os, "O_NOFOLLOW", raising=False)
+    monkeypatch.delattr(wheel_builder.os, "O_DIRECTORY", raising=False)
+
+    with pytest.raises(wheel_builder.WheelContractError, match="no-follow traversal"):
+        build_artifact_wheel(
+            tmp_path / "project",
+            python_dir,
+            tmp_path / "dist",
+            external_contract=_external_contract(),
+        )
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO creation is POSIX-only")
+def test_ordinary_wheel_builder_omits_special_staging_entries(tmp_path: Path) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    (python_dir / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    os.mkfifo(python_dir / "runtime.pipe")
+
+    result = build_artifact_wheel(tmp_path, python_dir, tmp_path / "dist")
+
+    assert result.status == "built"
+    assert result.path is not None
+    with zipfile.ZipFile(result.path) as archive:
+        names = set(archive.namelist())
+    assert "module.py" in names
+    assert "runtime.pipe" not in names
 
 
 def _strict_external_wheel(tmp_path: Path):

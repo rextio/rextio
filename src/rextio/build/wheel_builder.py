@@ -188,7 +188,10 @@ def build_artifact_wheel(
     if external_contract is not None:
         if type(external_contract) is not ExternalWheelContract:
             raise WheelContractError("external wheel contract has an invalid type")
-    staging_files = _collect_staging_files(python_dir)
+    staging_files = _collect_staging_files(
+        python_dir,
+        strict=external_contract is not None,
+    )
     if external_contract is not None:
         _require_external_source_absent(staging_files, external_contract)
 
@@ -375,7 +378,90 @@ def _require_external_source_absent(
             raise WheelContractError("staging tree contains external package material")
 
 
-def _collect_staging_files(python_dir: Path) -> tuple[_PinnedStagingFile, ...]:
+def _collect_staging_files(
+    python_dir: Path,
+    *,
+    strict: bool = False,
+) -> tuple[_PinnedStagingFile, ...]:
+    """Collect a bounded ordinary tree, or the strict external-source tree."""
+    if strict:
+        return _collect_strict_staging_files(python_dir)
+    return _collect_portable_staging_files(python_dir)
+
+
+def _collect_portable_staging_files(
+    python_dir: Path,
+) -> tuple[_PinnedStagingFile, ...]:
+    """Collect ordinary wheel inputs without POSIX-only descriptor APIs.
+
+    Ordinary packaging retains the historical behavior of following symlinks
+    to regular files and accepting hardlinks.  Directories, FIFOs, sockets,
+    devices, and broken links are omitted just as the previous ``is_file``
+    filter omitted them.  The shared count and byte ceilings keep collection
+    bounded without imposing the Full C6 alias/no-follow authority contract.
+    """
+    root = Path(python_dir)
+    try:
+        candidates = sorted(
+            root.rglob("*"),
+            key=lambda path: path.relative_to(root).as_posix(),
+        )
+    except (OSError, ValueError) as exc:
+        raise WheelContractError("staging tree cannot be enumerated") from exc
+
+    files: list[_PinnedStagingFile] = []
+    total = 0
+    for path in candidates:
+        try:
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root).as_posix()
+            data = _read_portable_staging_file(path)
+        except WheelContractError:
+            raise
+        except (OSError, ValueError) as exc:
+            raise WheelContractError("staging file cannot be read") from exc
+        total += len(data)
+        if total > _MAX_STRICT_TOTAL_BYTES:
+            raise WheelContractError("staging tree size is outside the bound")
+        files.append(_PinnedStagingFile(relative=relative, data=data))
+        if len(files) > _MAX_STRICT_WHEEL_ENTRIES:
+            raise WheelContractError("staging entry count is outside the bound")
+    return tuple(files)
+
+
+def _read_portable_staging_file(path: Path) -> bytes:
+    """Read one ordinary regular file through portable bounded I/O."""
+    try:
+        with path.open("rb") as stream:
+            observed = os.fstat(stream.fileno())
+            if not stat.S_ISREG(observed.st_mode):
+                raise WheelContractError("staging entry is not a regular file")
+            if observed.st_size < 0 or observed.st_size > _MAX_STRICT_ENTRY_BYTES:
+                raise WheelContractError("staging file size is outside the bound")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                remaining = _MAX_STRICT_ENTRY_BYTES + 1 - total
+                chunk = stream.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > _MAX_STRICT_ENTRY_BYTES:
+                    raise WheelContractError("staging file size is outside the bound")
+            if total != observed.st_size:
+                raise WheelContractError("staging file changed during collection")
+            return b"".join(chunks)
+    except WheelContractError:
+        raise
+    except OSError as exc:
+        raise WheelContractError("staging file cannot be read") from exc
+
+
+def _collect_strict_staging_files(
+    python_dir: Path,
+) -> tuple[_PinnedStagingFile, ...]:
     """Collect one exact bounded tree through no-follow directory descriptors."""
     nofollow = getattr(os, "O_NOFOLLOW", None)
     directory_flag = getattr(os, "O_DIRECTORY", None)
