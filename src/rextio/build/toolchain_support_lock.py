@@ -36,8 +36,8 @@ import unicodedata
 
 
 TOOLCHAIN_SUPPORT_LOCK_KIND = "full-c6-toolchain-support-lock"
-TOOLCHAIN_SUPPORT_LOCK_DOMAIN = "rextio.full-c6-toolchain-support-lock.v3"
-TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION = 3
+TOOLCHAIN_SUPPORT_LOCK_DOMAIN = "rextio.full-c6-toolchain-support-lock.v4"
+TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION = 4
 TOOLCHAIN_SUPPORT_SCOPE = "cpython-3.11-pyo3-host-cdylib-v1"
 TOOLCHAIN_SUPPORT_TARGETS = (
     "aarch64-apple-darwin",
@@ -70,8 +70,24 @@ _XCODE_DEFAULT_TOOLCHAIN = Path(
     "/Applications/Xcode.app/Contents/Developer/Toolchains/"
     "XcodeDefault.xctoolchain"
 )
+_XCODE_APP_BOUNDARY = Path("/Applications/Xcode.app")
 _XCODE_HARDLINK_ROLE = "xcode-clang-resource"
 _XCODE_HARDLINK_RELATIVE_PATH = "include/__clang_cuda_builtin_vars.h"
+_XCODE_HARDLINK_ALIAS_COUNT = 3
+_XCODE_HARDLINK_MAX_ENTRIES = 1_000_000
+_XCODE_HARDLINK_ALIAS_PATH_SHA256S = (
+    "145a2c722388b5d05ca9b2377b8acc46aacb93ae9fa4ed5123f39dbe43da8261",
+    "d7afbe6fc68ce96ff376e626d9c7ff2310bdea46f9e290d3848913baab390256",
+    "e3250a62814059594ef562026280a2ba58bca13f7d31bf1e8102ef952fe48c1d",
+)
+_LINUX_CASEFOLD_ROLE = "linux-runtime-support"
+_LINUX_CASEFOLD_GROUP_COUNT = 10
+_LINUX_CASEFOLD_MEMBER_COUNT = 20
+_LINUX_CASEFOLD_TOPOLOGY_SHA256 = (
+    "54895f5f13d52076ce8637e71aa7daa1d980741478f6f0c108745907af465562"
+)
+_MAX_CASEFOLD_GROUPS = 16
+_MAX_CASEFOLD_GROUP_MEMBERS = 16
 _LOCK_FIELDS = {
     "kind",
     "schema_version",
@@ -123,8 +139,12 @@ _TREE_FIELDS = {
     "total_bytes",
     "xattr_count",
     "xattr_bytes",
-    "disposition_count",
+    "symlink_disposition_count",
     "symlink_dispositions",
+    "hardlink_disposition_count",
+    "hardlink_dispositions",
+    "casefold_disposition_count",
+    "casefold_dispositions",
     "merkle_sha256",
 }
 _SYMLINK_DISPOSITION_FIELDS = {
@@ -145,6 +165,23 @@ _SYMLINK_DISPOSITION_FIELDS = {
     "xattrs_sha256",
     "size",
     "raw_sha256",
+    "merkle_sha256",
+}
+_HARDLINK_DISPOSITION_FIELDS = {
+    "relative_path",
+    "disposition",
+    "link_count",
+    "alias_count",
+    "alias_path_sha256s",
+    "full_stamp_sha256",
+    "alias_parent_chain_merkle_sha256",
+    "merkle_sha256",
+}
+_CASEFOLD_DISPOSITION_FIELDS = {
+    "disposition",
+    "group_count",
+    "member_count",
+    "topology_sha256",
     "merkle_sha256",
 }
 class _RoleReceipt(Protocol):
@@ -543,6 +580,133 @@ class ToolchainSupportSymlinkDispositionReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolchainSupportHardlinkDispositionReceipt:
+    """One exact Xcode application-scoped hardlink disposition."""
+
+    relative_path: str
+    disposition: str
+    link_count: int
+    alias_count: int
+    alias_path_sha256s: tuple[str, ...]
+    full_stamp_sha256: str
+    alias_parent_chain_merkle_sha256: str
+    merkle_sha256: str
+
+    def __post_init__(self) -> None:
+        _validate_relative_path(self.relative_path)
+        if self.disposition != "bind-xcode-app-hardlink-aliases":
+            raise ToolchainSupportLockError(
+                "toolchain support hardlink disposition is invalid"
+            )
+        if (
+            type(self.link_count) is not int
+            or isinstance(self.link_count, bool)
+            or type(self.alias_count) is not int
+            or isinstance(self.alias_count, bool)
+            or self.link_count != self.alias_count
+            or not 2 <= self.alias_count <= _XCODE_HARDLINK_ALIAS_COUNT
+            or type(self.alias_path_sha256s) is not tuple
+            or len(self.alias_path_sha256s) != self.alias_count
+            or self.alias_path_sha256s != tuple(sorted(self.alias_path_sha256s))
+            or len(set(self.alias_path_sha256s)) != self.alias_count
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support hardlink disposition aliases are noncanonical"
+            )
+        for digest in self.alias_path_sha256s:
+            _require_sha256(digest, "support hardlink alias path SHA-256")
+        _require_sha256(
+            self.full_stamp_sha256,
+            "support hardlink full stamp SHA-256",
+        )
+        _require_sha256(
+            self.alias_parent_chain_merkle_sha256,
+            "support hardlink alias parent-chain Merkle SHA-256",
+        )
+        _require_sha256(
+            self.merkle_sha256,
+            "support hardlink disposition Merkle SHA-256",
+        )
+        if not hmac.compare_digest(
+            self.merkle_sha256,
+            _hardlink_disposition_merkle(self),
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support hardlink disposition receipt is stale"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the path-opaque hardlink alias receipt."""
+        return {
+            "relative_path": self.relative_path,
+            "disposition": self.disposition,
+            "link_count": self.link_count,
+            "alias_count": self.alias_count,
+            "alias_path_sha256s": list(self.alias_path_sha256s),
+            "full_stamp_sha256": self.full_stamp_sha256,
+            "alias_parent_chain_merkle_sha256": (
+                self.alias_parent_chain_merkle_sha256
+            ),
+            "merkle_sha256": self.merkle_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ToolchainSupportCasefoldDispositionReceipt:
+    """One exact Linux runtime casefold-collision topology receipt."""
+
+    disposition: str
+    group_count: int
+    member_count: int
+    topology_sha256: str
+    merkle_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.disposition != "bind-linux-runtime-casefold-topology":
+            raise ToolchainSupportLockError(
+                "toolchain support casefold disposition is invalid"
+            )
+        if (
+            type(self.group_count) is not int
+            or isinstance(self.group_count, bool)
+            or not 1 <= self.group_count <= _MAX_CASEFOLD_GROUPS
+            or type(self.member_count) is not int
+            or isinstance(self.member_count, bool)
+            or not 2 * self.group_count
+            <= self.member_count
+            <= self.group_count * _MAX_CASEFOLD_GROUP_MEMBERS
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support casefold disposition counts are noncanonical"
+            )
+        _require_sha256(
+            self.topology_sha256,
+            "support casefold topology SHA-256",
+        )
+        _require_sha256(
+            self.merkle_sha256,
+            "support casefold disposition Merkle SHA-256",
+        )
+        if not hmac.compare_digest(
+            self.merkle_sha256,
+            _casefold_disposition_merkle(self),
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support casefold disposition receipt is stale"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the path- and name-opaque collision topology receipt."""
+        return {
+            "disposition": self.disposition,
+            "group_count": self.group_count,
+            "member_count": self.member_count,
+            "topology_sha256": self.topology_sha256,
+            "merkle_sha256": self.merkle_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ToolchainSupportTreeReceipt:
     """Exact bounded Merkle receipt for one explicit support root."""
 
@@ -557,8 +721,12 @@ class ToolchainSupportTreeReceipt:
     total_bytes: int
     xattr_count: int
     xattr_bytes: int
-    disposition_count: int
+    symlink_disposition_count: int
     symlink_dispositions: tuple[ToolchainSupportSymlinkDispositionReceipt, ...]
+    hardlink_disposition_count: int
+    hardlink_dispositions: tuple[ToolchainSupportHardlinkDispositionReceipt, ...]
+    casefold_disposition_count: int
+    casefold_dispositions: tuple[ToolchainSupportCasefoldDispositionReceipt, ...]
     merkle_sha256: str
 
     def __post_init__(self) -> None:
@@ -583,12 +751,51 @@ class ToolchainSupportTreeReceipt:
                 {_alias(item.relative_path) for item in self.symlink_dispositions}
             )
             != len(self.symlink_dispositions)
-            or type(self.disposition_count) is not int
-            or isinstance(self.disposition_count, bool)
-            or self.disposition_count != len(self.symlink_dispositions)
+            or type(self.symlink_disposition_count) is not int
+            or isinstance(self.symlink_disposition_count, bool)
+            or self.symlink_disposition_count != len(self.symlink_dispositions)
         ):
             raise ToolchainSupportLockError(
                 "toolchain support symlink dispositions are noncanonical"
+            )
+        if (
+            type(self.hardlink_dispositions) is not tuple
+            or any(
+                type(item) is not ToolchainSupportHardlinkDispositionReceipt
+                for item in self.hardlink_dispositions
+            )
+            or self.hardlink_dispositions
+            != tuple(
+                sorted(
+                    self.hardlink_dispositions,
+                    key=lambda item: (_alias(item.relative_path), item.relative_path),
+                )
+            )
+            or len(
+                {_alias(item.relative_path) for item in self.hardlink_dispositions}
+            )
+            != len(self.hardlink_dispositions)
+            or len(self.hardlink_dispositions) > 1
+            or type(self.hardlink_disposition_count) is not int
+            or isinstance(self.hardlink_disposition_count, bool)
+            or self.hardlink_disposition_count != len(self.hardlink_dispositions)
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support hardlink dispositions are noncanonical"
+            )
+        if (
+            type(self.casefold_dispositions) is not tuple
+            or any(
+                type(item) is not ToolchainSupportCasefoldDispositionReceipt
+                for item in self.casefold_dispositions
+            )
+            or len(self.casefold_dispositions) > 1
+            or type(self.casefold_disposition_count) is not int
+            or isinstance(self.casefold_disposition_count, bool)
+            or self.casefold_disposition_count != len(self.casefold_dispositions)
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support casefold dispositions are noncanonical"
             )
         if (
             type(self.member_count) is not int
@@ -610,7 +817,12 @@ class ToolchainSupportTreeReceipt:
             or self.symlink_count < 0
             or self.file_count + self.directory_count + self.symlink_count
             != self.member_count
-            or self.symlink_count < self.disposition_count
+            or self.symlink_count < self.symlink_disposition_count
+            or self.file_count < self.hardlink_disposition_count
+            or any(
+                item.member_count > self.member_count
+                for item in self.casefold_dispositions
+            )
             or type(self.total_bytes) is not int
             or isinstance(self.total_bytes, bool)
             or self.total_bytes < 0
@@ -641,9 +853,17 @@ class ToolchainSupportTreeReceipt:
             "total_bytes": self.total_bytes,
             "xattr_count": self.xattr_count,
             "xattr_bytes": self.xattr_bytes,
-            "disposition_count": self.disposition_count,
+            "symlink_disposition_count": self.symlink_disposition_count,
             "symlink_dispositions": [
                 item.to_dict() for item in self.symlink_dispositions
+            ],
+            "hardlink_disposition_count": self.hardlink_disposition_count,
+            "hardlink_dispositions": [
+                item.to_dict() for item in self.hardlink_dispositions
+            ],
+            "casefold_disposition_count": self.casefold_disposition_count,
+            "casefold_dispositions": [
+                item.to_dict() for item in self.casefold_dispositions
             ],
             "merkle_sha256": self.merkle_sha256,
         }
@@ -706,6 +926,7 @@ class ToolchainSupportLock:
             manifests=self.manifests,
             roots=self.roots,
         )
+        _validate_lock_topology_dispositions(scope=self.scope, roots=self.roots)
         expected_members = sum(item.member_count for item in self.manifests) + sum(
             item.member_count for item in self.roots
         )
@@ -827,6 +1048,12 @@ class _RawSymlinkDisposition:
     xattrs_sha256: str
     size: int
     raw_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RawCasefoldGroup:
+    group_sha256: str
+    member_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -1644,6 +1871,54 @@ def _validate_lock_symlink_dispositions(
                 )
 
 
+def _validate_lock_topology_dispositions(
+    *,
+    scope: ToolchainSupportScope,
+    roots: tuple[ToolchainSupportTreeReceipt, ...],
+) -> None:
+    """Enforce the two singular target- and role-specific topology policies."""
+    for root in roots:
+        if root.hardlink_dispositions:
+            if (
+                scope.target_triple != "aarch64-apple-darwin"
+                or root.logical_role != _XCODE_HARDLINK_ROLE
+                or len(root.hardlink_dispositions) != 1
+            ):
+                raise ToolchainSupportLockError(
+                    "toolchain support hardlink disposition is outside policy"
+                )
+            hardlink_receipt = root.hardlink_dispositions[0]
+            if (
+                hardlink_receipt.relative_path != _XCODE_HARDLINK_RELATIVE_PATH
+                or hardlink_receipt.link_count != _XCODE_HARDLINK_ALIAS_COUNT
+                or hardlink_receipt.alias_count != _XCODE_HARDLINK_ALIAS_COUNT
+                or hardlink_receipt.alias_path_sha256s
+                != _XCODE_HARDLINK_ALIAS_PATH_SHA256S
+            ):
+                raise ToolchainSupportLockError(
+                    "toolchain support Xcode hardlink disposition policy changed"
+                )
+        if root.casefold_dispositions:
+            if (
+                scope.target_triple != "x86_64-unknown-linux-gnu"
+                or root.logical_role != _LINUX_CASEFOLD_ROLE
+                or len(root.casefold_dispositions) != 1
+            ):
+                raise ToolchainSupportLockError(
+                    "toolchain support casefold disposition is outside policy"
+                )
+            casefold_receipt = root.casefold_dispositions[0]
+            if (
+                casefold_receipt.group_count != _LINUX_CASEFOLD_GROUP_COUNT
+                or casefold_receipt.member_count != _LINUX_CASEFOLD_MEMBER_COUNT
+                or casefold_receipt.topology_sha256
+                != _LINUX_CASEFOLD_TOPOLOGY_SHA256
+            ):
+                raise ToolchainSupportLockError(
+                    "toolchain support Linux casefold topology differs from policy"
+                )
+
+
 def _select_fixed_symlink_disposition_variant(
     *,
     target_triple: str | None,
@@ -1863,6 +2138,76 @@ def _new_symlink_disposition_receipt(
     )
 
 
+def _linux_casefold_topology_sha256(
+    groups: tuple[_RawCasefoldGroup, ...],
+) -> str:
+    return _sha256(
+        {
+            "domain": "rextio.full-c6-linux-folded-name-topology.v1",
+            "groups": [
+                {
+                    "group_sha256": item.group_sha256,
+                    "member_count": item.member_count,
+                }
+                for item in groups
+            ],
+        }
+    )
+
+
+def _finalize_casefold_dispositions(
+    *,
+    target_triple: str | None,
+    logical_role: str,
+    groups: tuple[_RawCasefoldGroup, ...],
+) -> tuple[ToolchainSupportCasefoldDispositionReceipt, ...]:
+    if not groups:
+        return ()
+    if (
+        target_triple != "x86_64-unknown-linux-gnu"
+        or logical_role != _LINUX_CASEFOLD_ROLE
+    ):
+        raise ToolchainSupportLockError(
+            "toolchain support casefold collision is outside policy"
+        )
+    ordered = tuple(sorted(groups, key=lambda item: item.group_sha256))
+    if len({item.group_sha256 for item in ordered}) != len(ordered):
+        raise ToolchainSupportLockError(
+            "toolchain support casefold collision groups are noncanonical"
+        )
+    topology_sha256 = _linux_casefold_topology_sha256(ordered)
+    member_count = sum(item.member_count for item in ordered)
+    if (
+        len(ordered) != _LINUX_CASEFOLD_GROUP_COUNT
+        or member_count != _LINUX_CASEFOLD_MEMBER_COUNT
+        or topology_sha256 != _LINUX_CASEFOLD_TOPOLOGY_SHA256
+    ):
+        raise ToolchainSupportLockError(
+            "toolchain support Linux casefold topology differs from policy"
+        )
+    provisional = ToolchainSupportCasefoldDispositionReceipt.__new__(
+        ToolchainSupportCasefoldDispositionReceipt
+    )
+    object.__setattr__(
+        provisional,
+        "disposition",
+        "bind-linux-runtime-casefold-topology",
+    )
+    object.__setattr__(provisional, "group_count", len(ordered))
+    object.__setattr__(provisional, "member_count", member_count)
+    object.__setattr__(provisional, "topology_sha256", topology_sha256)
+    object.__setattr__(provisional, "merkle_sha256", "")
+    return (
+        ToolchainSupportCasefoldDispositionReceipt(
+            disposition="bind-linux-runtime-casefold-topology",
+            group_count=len(ordered),
+            member_count=member_count,
+            topology_sha256=topology_sha256,
+            merkle_sha256=_casefold_disposition_merkle(provisional),
+        ),
+    )
+
+
 def _extract_external_support_root_dispositions(
     *,
     root_path: Path,
@@ -2054,6 +2399,10 @@ def _capture_tree_once(
         _validate_mode(stat.S_IMODE(opened_root.mode))
         raw_entries: list[_RawTreeEntry] = []
         raw_dispositions: list[_RawSymlinkDisposition] = []
+        hardlink_dispositions: list[
+            ToolchainSupportHardlinkDispositionReceipt
+        ] = []
+        raw_casefold_groups: list[_RawCasefoldGroup] = []
         aliases: set[str] = set()
         inode_keys: set[tuple[int, int]] = set()
         total_bytes = [0]
@@ -2065,6 +2414,8 @@ def _capture_tree_once(
             relative=PurePosixPath(),
             entries=raw_entries,
             dispositions=raw_dispositions,
+            hardlink_dispositions=hardlink_dispositions,
+            casefold_groups=raw_casefold_groups,
             disposition_policies=_fixed_symlink_disposition_map(
                 target_triple,
                 locator.logical_role,
@@ -2127,6 +2478,17 @@ def _capture_tree_once(
             key=lambda item: (_alias(item.relative_path), item.relative_path),
         )
     )
+    hardlink_receipts = tuple(
+        sorted(
+            hardlink_dispositions,
+            key=lambda item: (_alias(item.relative_path), item.relative_path),
+        )
+    )
+    casefold_receipts = _finalize_casefold_dispositions(
+        target_triple=target_triple,
+        logical_role=locator.logical_role,
+        groups=tuple(raw_casefold_groups),
+    )
     entries, merkle = _build_tree_merkle(
         logical_role=locator.logical_role,
         locator_path_sha256=_locator_path_digest(locator._absolute_path),
@@ -2134,7 +2496,9 @@ def _capture_tree_once(
         root_metadata_sha256=_metadata_digest(root_stamp, kind="directory"),
         root_xattrs=root_xattrs,
         entries=entries_without_merkle,
-        dispositions=dispositions,
+        symlink_dispositions=dispositions,
+        hardlink_dispositions=hardlink_receipts,
+        casefold_dispositions=casefold_receipts,
     )
     xattr_count = (
         root_xattrs.count
@@ -2173,8 +2537,12 @@ def _capture_tree_once(
         total_bytes=sum(item.size for item in entries if item.kind == "file"),
         xattr_count=xattr_count,
         xattr_bytes=xattr_bytes,
-        disposition_count=len(dispositions),
+        symlink_disposition_count=len(dispositions),
         symlink_dispositions=dispositions,
+        hardlink_disposition_count=len(hardlink_receipts),
+        hardlink_dispositions=hardlink_receipts,
+        casefold_disposition_count=len(casefold_receipts),
+        casefold_dispositions=casefold_receipts,
         merkle_sha256=merkle,
     )
 
@@ -2188,6 +2556,8 @@ def _walk_tree(
     relative: PurePosixPath,
     entries: list[_RawTreeEntry],
     dispositions: list[_RawSymlinkDisposition],
+    hardlink_dispositions: list[ToolchainSupportHardlinkDispositionReceipt],
+    casefold_groups: list[_RawCasefoldGroup],
     disposition_policies: dict[str, _FixedSymlinkDisposition],
     aliases: set[str],
     inode_keys: set[tuple[int, int]],
@@ -2199,15 +2569,44 @@ def _walk_tree(
         raise ToolchainSupportLockError("toolchain support directory identity is invalid")
     directory_xattrs = _capture_fd_xattrs(directory_fd, budget=xattr_budget)
     names = _bounded_directory_names(directory_fd)
-    local_aliases: set[str] = set()
+    local_groups: dict[str, list[str]] = {}
     for name in names:
         _validate_segment(name)
-        alias = _alias(name)
-        if alias in local_aliases:
+        local_groups.setdefault(_alias(name), []).append(name)
+    collisions = {
+        alias: tuple(sorted(members))
+        for alias, members in local_groups.items()
+        if len(members) > 1
+    }
+    if collisions and not (
+        target_triple == "x86_64-unknown-linux-gnu"
+        and logical_role == _LINUX_CASEFOLD_ROLE
+    ):
+        raise ToolchainSupportLockError(
+            "toolchain support directory contains an NFC/casefold alias"
+        )
+    directory_relative = relative.as_posix() if relative.parts else ""
+    for folded_key, members in sorted(collisions.items()):
+        if (
+            len(members) > _MAX_CASEFOLD_GROUP_MEMBERS
+            or len(casefold_groups) >= _MAX_CASEFOLD_GROUPS
+        ):
             raise ToolchainSupportLockError(
-                "toolchain support directory contains an NFC/casefold alias"
+                "toolchain support casefold collision exceeds the bound"
             )
-        local_aliases.add(alias)
+        casefold_groups.append(
+            _RawCasefoldGroup(
+                group_sha256=_sha256(
+                    {
+                        "domain": "rextio.full-c6-linux-folded-name-group.v1",
+                        "directory_relative_path": directory_relative,
+                        "folded_key": folded_key,
+                        "member_names": list(members),
+                    }
+                ),
+                member_count=len(members),
+            )
+        )
     ordered = sorted(names, key=lambda item: (_alias(item), item))
     for name in ordered:
         child_relative = relative / name
@@ -2218,7 +2617,7 @@ def _walk_tree(
                 "toolchain support tree exceeds the depth bound"
             )
         logical_alias = _alias(logical)
-        if logical_alias in aliases:
+        if logical_alias in aliases and _alias(name) not in collisions:
             raise ToolchainSupportLockError(
                 "toolchain support tree contains an NFC/casefold path alias"
             )
@@ -2249,6 +2648,8 @@ def _walk_tree(
                     relative=child_relative,
                     entries=entries,
                     dispositions=dispositions,
+                    hardlink_dispositions=hardlink_dispositions,
+                    casefold_groups=casefold_groups,
                     disposition_policies=disposition_policies,
                     aliases=aliases,
                     inode_keys=inode_keys,
@@ -2285,7 +2686,7 @@ def _walk_tree(
                 os.close(child_fd)
             continue
         if stat.S_ISREG(observed.mode):
-            _require_unaliased_regular_tree_inode(
+            hardlink_receipt = _require_unaliased_regular_tree_inode(
                 observed,
                 inode_keys,
                 target_triple=target_triple,
@@ -2293,6 +2694,12 @@ def _walk_tree(
                 logical_role=logical_role,
                 relative_path=logical,
             )
+            if hardlink_receipt is not None:
+                if hardlink_dispositions:
+                    raise ToolchainSupportLockError(
+                        "toolchain support hardlink disposition is repeated"
+                    )
+                hardlink_dispositions.append(hardlink_receipt)
             if observed.size > MAX_TOOLCHAIN_SUPPORT_FILE_BYTES:
                 raise ToolchainSupportLockError(
                     "toolchain support file exceeds the byte bound"
@@ -2301,7 +2708,11 @@ def _walk_tree(
                 raise ToolchainSupportLockError(
                     "toolchain support tree byte count exceeds the bound"
                 )
-            file_fd = _open_regular_file(directory_fd, name)
+            file_fd = _open_regular_file(
+                directory_fd,
+                name,
+                expected_links=observed.links,
+            )
             try:
                 opened = _stamp(os.fstat(file_fd))
                 if opened != observed:
@@ -2313,6 +2724,7 @@ def _walk_tree(
                     file_fd,
                     expected=opened,
                     maximum=MAX_TOOLCHAIN_SUPPORT_FILE_BYTES,
+                    expected_links=observed.links,
                 )
                 linked = _stamp(
                     os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
@@ -2795,7 +3207,15 @@ def _build_tree_merkle(
     root_metadata_sha256: str,
     root_xattrs: _XattrReceipt,
     entries: tuple[_ToolchainSupportTreeEntry, ...],
-    dispositions: tuple[ToolchainSupportSymlinkDispositionReceipt, ...] = (),
+    symlink_dispositions: tuple[
+        ToolchainSupportSymlinkDispositionReceipt, ...
+    ] = (),
+    hardlink_dispositions: tuple[
+        ToolchainSupportHardlinkDispositionReceipt, ...
+    ] = (),
+    casefold_dispositions: tuple[
+        ToolchainSupportCasefoldDispositionReceipt, ...
+    ] = (),
 ) -> tuple[tuple[_ToolchainSupportTreeEntry, ...], str]:
     by_path = {item.relative_path: item for item in entries}
     children_by_parent: dict[str, list[str]] = {}
@@ -2855,7 +3275,7 @@ def _build_tree_merkle(
         )
     root_merkle = _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-tree.v2",
+            "domain": "rextio.full-c6-toolchain-support-tree.v3",
             "logical_role": logical_role,
             "locator_path_sha256": locator_path_sha256,
             "root_mode": root_mode,
@@ -2863,27 +3283,40 @@ def _build_tree_merkle(
             "root_xattr_count": root_xattrs.count,
             "root_xattr_bytes": root_xattrs.total_bytes,
             "root_xattrs_sha256": root_xattrs.merkle_sha256,
-            "member_count": len(entries) + len(dispositions),
+            "member_count": len(entries) + len(symlink_dispositions),
             "file_count": sum(item.kind == "file" for item in entries),
             "directory_count": sum(item.kind == "directory" for item in entries),
             "symlink_count": sum(item.kind == "symlink" for item in entries)
-            + len(dispositions),
-            "disposition_count": len(dispositions),
+            + len(symlink_dispositions),
+            "symlink_disposition_count": len(symlink_dispositions),
+            "hardlink_disposition_count": len(hardlink_dispositions),
+            "casefold_disposition_count": len(casefold_dispositions),
             "total_bytes": sum(
                 item.size for item in entries if item.kind == "file"
             ),
             "xattr_count": root_xattrs.count
             + sum(item.xattr_count for item in entries)
-            + sum(item.xattr_count for item in dispositions),
+            + sum(item.xattr_count for item in symlink_dispositions),
             "xattr_bytes": root_xattrs.total_bytes
             + sum(item.xattr_bytes for item in entries)
-            + sum(item.xattr_bytes for item in dispositions),
+            + sum(item.xattr_bytes for item in symlink_dispositions),
             "symlink_dispositions": [
                 {
                     "relative_path": item.relative_path,
                     "merkle_sha256": item.merkle_sha256,
                 }
-                for item in dispositions
+                for item in symlink_dispositions
+            ],
+            "hardlink_dispositions": [
+                {
+                    "relative_path": item.relative_path,
+                    "merkle_sha256": item.merkle_sha256,
+                }
+                for item in hardlink_dispositions
+            ],
+            "casefold_dispositions": [
+                {"merkle_sha256": item.merkle_sha256}
+                for item in casefold_dispositions
             ],
             "children": [
                 {
@@ -3079,10 +3512,43 @@ def _symlink_disposition_merkle(
     )
 
 
+def _hardlink_disposition_merkle(
+    receipt: ToolchainSupportHardlinkDispositionReceipt,
+) -> str:
+    return _sha256(
+        {
+            "domain": "rextio.full-c6-toolchain-support-hardlink-disposition.v1",
+            "relative_path": receipt.relative_path,
+            "disposition": receipt.disposition,
+            "link_count": receipt.link_count,
+            "alias_count": receipt.alias_count,
+            "alias_path_sha256s": list(receipt.alias_path_sha256s),
+            "full_stamp_sha256": receipt.full_stamp_sha256,
+            "alias_parent_chain_merkle_sha256": (
+                receipt.alias_parent_chain_merkle_sha256
+            ),
+        }
+    )
+
+
+def _casefold_disposition_merkle(
+    receipt: ToolchainSupportCasefoldDispositionReceipt,
+) -> str:
+    return _sha256(
+        {
+            "domain": "rextio.full-c6-toolchain-support-casefold-disposition.v1",
+            "disposition": receipt.disposition,
+            "group_count": receipt.group_count,
+            "member_count": receipt.member_count,
+            "topology_sha256": receipt.topology_sha256,
+        }
+    )
+
+
 def _lock_merkle(lock: ToolchainSupportLock) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-aggregate.v1",
+            "domain": "rextio.full-c6-toolchain-support-aggregate.v2",
             "scope": lock.scope.to_dict(),
             "manifest_count": lock.manifest_count,
             "root_count": lock.root_count,
@@ -3148,13 +3614,25 @@ def _parse_file(value: object) -> ToolchainSupportFileReceipt:
 
 def _parse_tree(value: object) -> ToolchainSupportTreeReceipt:
     document = _exact_dict(value, _TREE_FIELDS, "tree receipt")
-    disposition_documents = _list(
+    symlink_documents = _list(
         document["symlink_dispositions"],
         "symlink dispositions",
     )
-    if len(disposition_documents) > MAX_TOOLCHAIN_SUPPORT_TREE_MEMBERS:
+    hardlink_documents = _list(
+        document["hardlink_dispositions"],
+        "hardlink dispositions",
+    )
+    casefold_documents = _list(
+        document["casefold_dispositions"],
+        "casefold dispositions",
+    )
+    if (
+        len(symlink_documents) > MAX_TOOLCHAIN_SUPPORT_TREE_MEMBERS
+        or len(hardlink_documents) > MAX_TOOLCHAIN_SUPPORT_TREE_MEMBERS
+        or len(casefold_documents) > 1
+    ):
         raise ToolchainSupportLockError(
-            "toolchain support symlink disposition count exceeds the bound"
+            "toolchain support disposition count exceeds the bound"
         )
     return ToolchainSupportTreeReceipt(
         logical_role=_string(document["logical_role"], "tree role"),
@@ -3172,15 +3650,86 @@ def _parse_tree(value: object) -> ToolchainSupportTreeReceipt:
         total_bytes=_integer(document["total_bytes"], "tree total bytes"),
         xattr_count=_integer(document["xattr_count"], "tree xattr count"),
         xattr_bytes=_integer(document["xattr_bytes"], "tree xattr bytes"),
-        disposition_count=_integer(
-            document["disposition_count"],
-            "tree disposition count",
+        symlink_disposition_count=_integer(
+            document["symlink_disposition_count"],
+            "tree symlink disposition count",
         ),
         symlink_dispositions=tuple(
             _parse_symlink_disposition(item)
-            for item in disposition_documents
+            for item in symlink_documents
+        ),
+        hardlink_disposition_count=_integer(
+            document["hardlink_disposition_count"],
+            "tree hardlink disposition count",
+        ),
+        hardlink_dispositions=tuple(
+            _parse_hardlink_disposition(item)
+            for item in hardlink_documents
+        ),
+        casefold_disposition_count=_integer(
+            document["casefold_disposition_count"],
+            "tree casefold disposition count",
+        ),
+        casefold_dispositions=tuple(
+            _parse_casefold_disposition(item)
+            for item in casefold_documents
         ),
         merkle_sha256=_string(document["merkle_sha256"], "tree Merkle SHA-256"),
+    )
+
+
+def _parse_hardlink_disposition(
+    value: object,
+) -> ToolchainSupportHardlinkDispositionReceipt:
+    document = _exact_dict(
+        value,
+        _HARDLINK_DISPOSITION_FIELDS,
+        "hardlink disposition receipt",
+    )
+    aliases = _list(document["alias_path_sha256s"], "hardlink alias paths")
+    return ToolchainSupportHardlinkDispositionReceipt(
+        relative_path=_string(document["relative_path"], "hardlink path"),
+        disposition=_string(document["disposition"], "hardlink disposition"),
+        link_count=_integer(document["link_count"], "hardlink link count"),
+        alias_count=_integer(document["alias_count"], "hardlink alias count"),
+        alias_path_sha256s=tuple(
+            _string(item, "hardlink alias path SHA-256") for item in aliases
+        ),
+        full_stamp_sha256=_string(
+            document["full_stamp_sha256"],
+            "hardlink full stamp SHA-256",
+        ),
+        alias_parent_chain_merkle_sha256=_string(
+            document["alias_parent_chain_merkle_sha256"],
+            "hardlink alias parent-chain Merkle SHA-256",
+        ),
+        merkle_sha256=_string(
+            document["merkle_sha256"],
+            "hardlink disposition Merkle SHA-256",
+        ),
+    )
+
+
+def _parse_casefold_disposition(
+    value: object,
+) -> ToolchainSupportCasefoldDispositionReceipt:
+    document = _exact_dict(
+        value,
+        _CASEFOLD_DISPOSITION_FIELDS,
+        "casefold disposition receipt",
+    )
+    return ToolchainSupportCasefoldDispositionReceipt(
+        disposition=_string(document["disposition"], "casefold disposition"),
+        group_count=_integer(document["group_count"], "casefold group count"),
+        member_count=_integer(document["member_count"], "casefold member count"),
+        topology_sha256=_string(
+            document["topology_sha256"],
+            "casefold topology SHA-256",
+        ),
+        merkle_sha256=_string(
+            document["merkle_sha256"],
+            "casefold disposition Merkle SHA-256",
+        ),
     )
 
 
@@ -3373,7 +3922,12 @@ def _open_child_directory(parent_fd: int, name: str) -> int:
     )
 
 
-def _open_regular_file(parent_fd: int, name: str) -> int:
+def _open_regular_file(
+    parent_fd: int,
+    name: str,
+    *,
+    expected_links: int = 1,
+) -> int:
     flags = (
         os.O_RDONLY
         | _require_flag("O_NOFOLLOW")
@@ -3382,7 +3936,13 @@ def _open_regular_file(parent_fd: int, name: str) -> int:
     )
     descriptor = os.open(name, flags, dir_fd=parent_fd)
     opened = _stamp(os.fstat(descriptor))
-    if not stat.S_ISREG(opened.mode) or opened.links != 1:
+    if (
+        type(expected_links) is not int
+        or isinstance(expected_links, bool)
+        or expected_links < 1
+        or not stat.S_ISREG(opened.mode)
+        or opened.links != expected_links
+    ):
         os.close(descriptor)
         raise ToolchainSupportLockError(
             "toolchain support file must be a single-link regular file"
@@ -3396,10 +3956,14 @@ def _stream_file_digest(
     *,
     expected: _FilesystemStamp,
     maximum: int,
+    expected_links: int = 1,
 ) -> tuple[str, int, _FilesystemStamp]:
     if (
         not stat.S_ISREG(expected.mode)
-        or expected.links != 1
+        or type(expected_links) is not int
+        or isinstance(expected_links, bool)
+        or expected_links < 1
+        or expected.links != expected_links
         or expected.size < 0
         or expected.size > maximum
     ):
@@ -3678,6 +4242,40 @@ def _xcode_hardlink_full_stamp_sha256(value: _FilesystemStamp) -> str:
     )
 
 
+def _xcode_hardlink_alias_path_sha256(relative_path: str) -> str:
+    _validate_relative_path(relative_path)
+    return _sha256(
+        {
+            "domain": "rextio.full-c6-xcode-hardlink-path-diagnostic.v1",
+            "root_relative_path": relative_path,
+        }
+    )
+
+
+def _xcode_hardlink_scan_context(
+    *,
+    root_path: Path,
+    relative_path: str,
+) -> tuple[Path, PurePosixPath] | None:
+    if relative_path != _XCODE_HARDLINK_RELATIVE_PATH:
+        return None
+    try:
+        root_relative = root_path.relative_to(_XCODE_DEFAULT_TOOLCHAIN)
+        target_relative = (
+            root_path / PurePosixPath(relative_path)
+        ).relative_to(_XCODE_APP_BOUNDARY)
+    except ValueError:
+        return None
+    if (
+        len(root_relative.parts) != 4
+        or root_relative.parts[:3] != ("usr", "lib", "clang")
+        or re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}", root_relative.parts[3])
+        is None
+    ):
+        return None
+    return _XCODE_APP_BOUNDARY, PurePosixPath(*target_relative.parts)
+
+
 def _is_exact_xcode_hardlink_observation(
     *,
     target_triple: str | None,
@@ -3696,15 +4294,246 @@ def _is_exact_xcode_hardlink_observation(
         or not stat.S_ISREG(value.mode)
     ):
         return False
-    try:
-        root_relative = root_path.relative_to(_XCODE_DEFAULT_TOOLCHAIN)
-    except ValueError:
-        return False
     return (
-        len(root_relative.parts) == 4
-        and root_relative.parts[:3] == ("usr", "lib", "clang")
-        and re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}", root_relative.parts[3])
+        _xcode_hardlink_scan_context(
+            root_path=root_path,
+            relative_path=relative_path,
+        )
         is not None
+    )
+
+
+def _capture_xcode_hardlink_disposition(
+    *,
+    root_path: Path,
+    relative_path: str,
+    expected: _FilesystemStamp,
+) -> ToolchainSupportHardlinkDispositionReceipt:
+    context = _xcode_hardlink_scan_context(
+        root_path=root_path,
+        relative_path=relative_path,
+    )
+    if context is None:
+        raise ToolchainSupportLockError(
+            "toolchain support hardlink is outside Xcode disposition policy"
+        )
+    app_boundary, app_target_relative = context
+    expected_stamp_sha256 = _xcode_hardlink_full_stamp_sha256(expected)
+
+    def scan_once() -> tuple[tuple[str, ...], str]:
+        chain = _open_directory_chain(app_boundary)
+        aliases: list[tuple[str, str]] = []
+        entry_count = 0
+
+        def walk(
+            directory_fd: int,
+            *,
+            relative: PurePosixPath,
+            parent_chain: tuple[dict[str, str], ...],
+        ) -> _FilesystemStamp:
+            nonlocal entry_count
+            directory_before = _stamp(os.fstat(directory_fd))
+            if not stat.S_ISDIR(directory_before.mode):
+                raise ToolchainSupportLockError(
+                    "toolchain support Xcode hardlink directory is invalid"
+                )
+            current_relative = relative.as_posix() if relative.parts else ""
+            current_chain = (
+                *parent_chain,
+                {
+                    "relative_path_sha256": _sha256(
+                        {
+                            "domain": (
+                                "rextio.full-c6-xcode-hardlink-parent-path.v1"
+                            ),
+                            "relative_path": current_relative,
+                        }
+                    ),
+                    "full_stamp_sha256": _xcode_hardlink_full_stamp_sha256(
+                        directory_before
+                    ),
+                },
+            )
+            names = _bounded_directory_names(directory_fd)
+            ordered = sorted(names, key=lambda item: (_alias(item), item))
+            for name in ordered:
+                entry_count += 1
+                if entry_count > _XCODE_HARDLINK_MAX_ENTRIES:
+                    raise ToolchainSupportLockError(
+                        "toolchain support Xcode hardlink scan exceeds entry bound"
+                    )
+                child_relative = relative / name
+                logical = child_relative.as_posix()
+                if (
+                    len(child_relative.parts) > MAX_TOOLCHAIN_SUPPORT_TREE_DEPTH
+                    or len(logical.encode("utf-8")) > MAX_TOOLCHAIN_SUPPORT_PATH_BYTES
+                ):
+                    raise ToolchainSupportLockError(
+                        "toolchain support Xcode hardlink scan exceeds path bound"
+                    )
+                observed = _stamp(
+                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                )
+                if stat.S_ISDIR(observed.mode):
+                    child_fd = _open_child_directory(directory_fd, name)
+                    try:
+                        if _stamp(os.fstat(child_fd)) != observed:
+                            raise ToolchainSupportLockError(
+                                "toolchain support Xcode hardlink directory changed"
+                            )
+                        child_final = walk(
+                            child_fd,
+                            relative=child_relative,
+                            parent_chain=current_chain,
+                        )
+                        if (
+                            child_final != observed
+                            or _stamp(
+                                os.stat(
+                                    name,
+                                    dir_fd=directory_fd,
+                                    follow_symlinks=False,
+                                )
+                            )
+                            != child_final
+                        ):
+                            raise ToolchainSupportLockError(
+                                "toolchain support Xcode hardlink directory changed"
+                            )
+                    finally:
+                        os.close(child_fd)
+                    continue
+                if (
+                    stat.S_ISREG(observed.mode)
+                    and (observed.device, observed.inode)
+                    == (expected.device, expected.inode)
+                ):
+                    descriptor = os.open(
+                        name,
+                        os.O_RDONLY
+                        | _require_flag("O_NOFOLLOW")
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NONBLOCK", 0),
+                        dir_fd=directory_fd,
+                    )
+                    try:
+                        opened = _stamp(os.fstat(descriptor))
+                        linked = _stamp(
+                            os.stat(
+                                name,
+                                dir_fd=directory_fd,
+                                follow_symlinks=False,
+                            )
+                        )
+                        if opened != observed or linked != opened or opened != expected:
+                            raise ToolchainSupportLockError(
+                                "toolchain support Xcode hardlink alias changed"
+                            )
+                    finally:
+                        os.close(descriptor)
+                    alias_digest = _xcode_hardlink_alias_path_sha256(logical)
+                    aliases.append(
+                        (
+                            alias_digest,
+                            _sha256(
+                                {
+                                    "domain": (
+                                        "rextio.full-c6-xcode-hardlink-"
+                                        "alias-parent-chain.v1"
+                                    ),
+                                    "directories": list(current_chain),
+                                }
+                            ),
+                        )
+                    )
+                    if len(aliases) > _XCODE_HARDLINK_ALIAS_COUNT:
+                        raise ToolchainSupportLockError(
+                            "toolchain support Xcode hardlink alias count differs"
+                        )
+            after_names = _bounded_directory_names(directory_fd)
+            if sorted(after_names, key=lambda item: (_alias(item), item)) != ordered:
+                raise ToolchainSupportLockError(
+                    "toolchain support Xcode hardlink directory changed"
+                )
+            directory_after = _stamp(os.fstat(directory_fd))
+            if not _same_stable_stamp(directory_after, directory_before):
+                raise ToolchainSupportLockError(
+                    "toolchain support Xcode hardlink directory changed"
+                )
+            return directory_after
+
+        try:
+            walk(chain[-1][0], relative=PurePosixPath(), parent_chain=())
+            _verify_directory_chain(chain)
+        except ToolchainSupportLockError:
+            raise
+        except OSError as exc:
+            raise ToolchainSupportLockError(
+                "toolchain support Xcode hardlink scan failed closed"
+            ) from exc
+        finally:
+            _close_directory_chain(chain)
+        ordered_aliases = tuple(sorted(aliases))
+        alias_path_sha256s = tuple(item[0] for item in ordered_aliases)
+        if (
+            len(ordered_aliases) != _XCODE_HARDLINK_ALIAS_COUNT
+            or len(set(alias_path_sha256s)) != len(alias_path_sha256s)
+            or _xcode_hardlink_alias_path_sha256(app_target_relative.as_posix())
+            not in alias_path_sha256s
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support Xcode hardlink alias count differs"
+            )
+        parent_chain_merkle = _sha256(
+            {
+                "domain": (
+                    "rextio.full-c6-xcode-hardlink-alias-parent-chains.v1"
+                ),
+                "aliases": [
+                    {
+                        "alias_path_sha256": path_digest,
+                        "parent_chain_sha256": parent_digest,
+                    }
+                    for path_digest, parent_digest in ordered_aliases
+                ],
+            }
+        )
+        return alias_path_sha256s, parent_chain_merkle
+
+    first = scan_once()
+    second = scan_once()
+    if first != second:
+        raise ToolchainSupportLockError(
+            "toolchain support Xcode hardlink aliases changed across scans"
+        )
+    if first[0] != _XCODE_HARDLINK_ALIAS_PATH_SHA256S:
+        raise ToolchainSupportLockError(
+            "toolchain support Xcode hardlink alias policy differs"
+        )
+    provisional = ToolchainSupportHardlinkDispositionReceipt.__new__(
+        ToolchainSupportHardlinkDispositionReceipt
+    )
+    values: dict[str, object] = {
+        "relative_path": relative_path,
+        "disposition": "bind-xcode-app-hardlink-aliases",
+        "link_count": expected.links,
+        "alias_count": len(first[0]),
+        "alias_path_sha256s": first[0],
+        "full_stamp_sha256": expected_stamp_sha256,
+        "alias_parent_chain_merkle_sha256": first[1],
+    }
+    for name, value in values.items():
+        object.__setattr__(provisional, name, value)
+    object.__setattr__(provisional, "merkle_sha256", "")
+    return ToolchainSupportHardlinkDispositionReceipt(
+        relative_path=relative_path,
+        disposition="bind-xcode-app-hardlink-aliases",
+        link_count=expected.links,
+        alias_count=len(first[0]),
+        alias_path_sha256s=first[0],
+        full_stamp_sha256=expected_stamp_sha256,
+        alias_parent_chain_merkle_sha256=first[1],
+        merkle_sha256=_hardlink_disposition_merkle(provisional),
     )
 
 
@@ -3716,7 +4545,7 @@ def _require_unaliased_regular_tree_inode(
     root_path: Path,
     logical_role: str,
     relative_path: str,
-) -> None:
+) -> ToolchainSupportHardlinkDispositionReceipt | None:
     key = value.device, value.inode
     if value.links != 1:
         observation_count = 1 + int(key in inode_keys)
@@ -3737,12 +4566,13 @@ def _require_unaliased_regular_tree_inode(
             value=value,
             observation_count=observation_count,
         ):
-            stamp_sha256 = _xcode_hardlink_full_stamp_sha256(value)
-            raise ToolchainSupportLockError(
-                "toolchain support xcode hardlink observation "
-                f"(path={path_sha256},stamp={stamp_sha256},"
-                f"nlink={value.links},count={observation_count})"
+            receipt = _capture_xcode_hardlink_disposition(
+                root_path=root_path,
+                relative_path=relative_path,
+                expected=value,
             )
+            inode_keys.add(key)
+            return receipt
         raise ToolchainSupportLockError(
             "toolchain support regular tree member is a shared hardlink "
             f"(logical_role={_validate_role(logical_role)}, "
@@ -3755,6 +4585,7 @@ def _require_unaliased_regular_tree_inode(
             f"{observation_count})"
         )
     _require_unaliased_inode(value, inode_keys, label="regular file")
+    return None
 
 
 def _require_locator(locator: object, *, kind: str) -> ToolchainSupportLocator:
@@ -4015,10 +4846,12 @@ __all__ = [
     "TOOLCHAIN_SUPPORT_SCOPE",
     "TOOLCHAIN_SUPPORT_TARGETS",
     "ToolchainSupportFileReceipt",
+    "ToolchainSupportHardlinkDispositionReceipt",
     "ToolchainSupportLocator",
     "ToolchainSupportLock",
     "ToolchainSupportLockError",
     "ToolchainSupportScope",
+    "ToolchainSupportCasefoldDispositionReceipt",
     "ToolchainSupportSymlinkDispositionReceipt",
     "ToolchainSupportTreeReceipt",
     "capture_toolchain_support_file",

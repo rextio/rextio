@@ -1032,7 +1032,7 @@ def test_support_lock_diagnostic_rerun_is_generation_only(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_support_lock_diagnostic_exposes_exact_bounded_scan_error(
+def test_support_lock_diagnostic_does_not_repeat_production_topology_scans(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1040,9 +1040,6 @@ def test_support_lock_diagnostic_exposes_exact_bounded_scan_error(
     from rextio.build import full_c6_toolchain_support as support
 
     plan = object()
-    scan_error = ToolchainSupportLockError(
-        "toolchain support xcode hardlink diagnostic entry bound exceeded"
-    )
 
     def load_config(*_args: object, **_kwargs: object) -> tuple[object, None]:
         return object(), None
@@ -1054,8 +1051,7 @@ def test_support_lock_diagnostic_exposes_exact_bounded_scan_error(
         raise RuntimeError("original private failure")
 
     def diagnose(candidate: object, _error: BaseException) -> str | None:
-        assert candidate is plan
-        raise scan_error
+        raise AssertionError(f"duplicate diagnostic scan invoked for {candidate!r}")
 
     monkeypatch.setattr(support, "_load_full_c6_support_bootstrap_config", load_config)
     monkeypatch.setattr(support, "_discover_full_c6_bootstrap_plan", discover)
@@ -1069,7 +1065,7 @@ def test_support_lock_diagnostic_exposes_exact_bounded_scan_error(
 
     assert diagnostic == (
         "[full-c6-e2e] support-lock diagnostic: "
-        f"ToolchainSupportLockError={scan_error}; "
+        "ToolchainSupportLockError=<unavailable>; "
         "OSError=<unavailable>; errno=<unavailable>; "
         "OtherErrorType=RuntimeError; OtherErrorMessage=<unavailable>"
     )

@@ -1786,9 +1786,7 @@ def _diagnose_support_lock_generation(
     inherited_environment: dict[str, str],
 ) -> str:
     from rextio.build import full_c6_toolchain_support as support
-    from rextio.build.toolchain_support_lock import ToolchainSupportLockError
 
-    plan: object | None = None
     try:
         config, _configured_pin = support._load_full_c6_support_bootstrap_config(
             project,
@@ -1802,23 +1800,9 @@ def _diagnose_support_lock_generation(
         )
         support.generate_full_c6_toolchain_support_lock(plan)
     except Exception as exc:
-        if plan is not None:
-            for diagnose in (
-                _diagnose_exact_xcode_hardlink_aliases,
-                _diagnose_exact_linux_folded_name_topology,
-            ):
-                try:
-                    message = diagnose(plan, exc)
-                except ToolchainSupportLockError as diagnostic_error:
-                    if type(diagnostic_error) is ToolchainSupportLockError:
-                        return _format_support_lock_diagnostic(diagnostic_error)
-                    continue
-                except Exception:
-                    continue
-                if message is not None:
-                    return _format_support_lock_diagnostic(
-                        ToolchainSupportLockError(message)
-                    )
+        # Schema v4 handles the two fixed OS topologies in production.  Keep
+        # failure reporting bounded and path-free without rescanning Xcode or
+        # the Linux runtime from this test-only harness.
         return _format_support_lock_diagnostic(exc)
     return "[full-c6-e2e] support-lock diagnostic: generation-only rerun succeeded"
 

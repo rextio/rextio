@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import pickle
 import ctypes
 from dataclasses import fields, replace
@@ -259,8 +259,8 @@ def test_generation_is_canonical_path_free_aggregate_and_round_trips(
     )
     document = json.loads(lock.canonical_bytes)
 
-    assert TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION == 3
-    assert TOOLCHAIN_SUPPORT_LOCK_DOMAIN.endswith("support-lock.v3")
+    assert TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION == 4
+    assert TOOLCHAIN_SUPPORT_LOCK_DOMAIN.endswith("support-lock.v4")
     assert document["kind"] == TOOLCHAIN_SUPPORT_LOCK_KIND
     assert document["schema_version"] == TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION
     assert document["domain"] == TOOLCHAIN_SUPPORT_LOCK_DOMAIN
@@ -279,6 +279,12 @@ def test_generation_is_canonical_path_free_aggregate_and_round_trips(
     assert document["roots"][0]["file_count"] == 1
     assert document["roots"][0]["directory_count"] == 1
     assert document["roots"][0]["symlink_count"] == 1
+    assert document["roots"][0]["symlink_disposition_count"] == 0
+    assert document["roots"][0]["symlink_dispositions"] == []
+    assert document["roots"][0]["hardlink_disposition_count"] == 0
+    assert document["roots"][0]["hardlink_dispositions"] == []
+    assert document["roots"][0]["casefold_disposition_count"] == 0
+    assert document["roots"][0]["casefold_dispositions"] == []
     assert "entries" not in document["roots"][0]
     assert str(manifest).encode() not in lock.canonical_bytes
     assert str(root).encode() not in lock.canonical_bytes
@@ -586,7 +592,7 @@ def test_linux_gcc_cross_root_symlink_is_bound_and_input_order_invariant(
         "linux-runtime-support",
     ]
     gcc_receipt, runtime_receipt = first.roots
-    assert gcc_receipt.disposition_count == 1
+    assert gcc_receipt.symlink_disposition_count == 1
     disposition = gcc_receipt.symlink_dispositions[0]
     assert disposition.disposition == "bind-external-support-root"
     assert disposition.relative_path == "libasan.so"
@@ -613,6 +619,145 @@ def test_linux_gcc_cross_root_symlink_is_bound_and_input_order_invariant(
         manifests=manifests,
         roots=list(reversed(roots)),
     )
+
+
+def test_linux_runtime_exact_casefold_topology_is_bound_without_double_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, _gcc_root, runtime_root = _linux_cross_root_inputs(tmp_path)
+    left = "collision-left"
+    right = "collision-right"
+    directories: list[Path] = []
+    for index in range(10):
+        directory = runtime_root / f"collision-{index:02d}"
+        directory.mkdir()
+        (directory / left).write_bytes(f"left-{index}\n".encode())
+        (directory / right).write_bytes(f"right-{index}\n".encode())
+        directories.append(directory)
+    real_alias = support_lock._alias
+
+    def synthetic_alias(value: str) -> str:
+        for raw_name in (left, right):
+            if value == raw_name:
+                return "synthetic-collision"
+            suffix = f"/{raw_name}"
+            if value.endswith(suffix):
+                return real_alias(value[: -len(suffix)]) + "/synthetic-collision"
+        return real_alias(value)
+
+    monkeypatch.setattr(support_lock, "_alias", synthetic_alias)
+    expected_groups = tuple(
+        sorted(
+            (
+                support_lock._RawCasefoldGroup(
+                    group_sha256=support_lock._sha256(
+                        {
+                            "domain": (
+                                "rextio.full-c6-linux-folded-name-group.v1"
+                            ),
+                            "directory_relative_path": directory.name,
+                            "folded_key": "synthetic-collision",
+                            "member_names": [left, right],
+                        }
+                    ),
+                    member_count=2,
+                )
+                for directory in directories
+            ),
+            key=lambda item: item.group_sha256,
+        )
+    )
+    real_topology = support_lock._linux_casefold_topology_sha256
+    expected_synthetic_topology = real_topology(expected_groups)
+
+    def policy_topology(
+        groups: tuple[object, ...],
+    ) -> str:
+        observed = real_topology(groups)
+        if observed == expected_synthetic_topology:
+            return support_lock._LINUX_CASEFOLD_TOPOLOGY_SHA256
+        return observed
+
+    monkeypatch.setattr(
+        support_lock,
+        "_linux_casefold_topology_sha256",
+        policy_topology,
+    )
+
+    wrong_role = create_toolchain_support_locator(
+        logical_role="linux-runtime-other",
+        path=runtime_root,
+        kind="tree",
+    )
+    with pytest.raises(ToolchainSupportLockError, match="alias|outside"):
+        generate_toolchain_support_lock(
+            target_triple="x86_64-unknown-linux-gnu",
+            manifests=manifests,
+            roots=[wrong_role],
+        )
+    with pytest.raises(ToolchainSupportLockError, match="alias|outside"):
+        generate_toolchain_support_lock(
+            target_triple="aarch64-apple-darwin",
+            manifests=manifests,
+            roots=[roots[1]],
+        )
+
+    lock = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=manifests,
+        roots=roots,
+    )
+    runtime = next(
+        item for item in lock.roots if item.logical_role == "linux-runtime-support"
+    )
+    assert runtime.member_count == 31
+    assert runtime.file_count == 21
+    assert runtime.directory_count == 10
+    assert runtime.casefold_disposition_count == 1
+    receipt = runtime.casefold_dispositions[0]
+    assert receipt.group_count == 10
+    assert receipt.member_count == 20
+    assert (
+        receipt.topology_sha256
+        == support_lock._LINUX_CASEFOLD_TOPOLOGY_SHA256
+    )
+    assert left.encode() not in lock.canonical_bytes
+    assert right.encode() not in lock.canonical_bytes
+    parsed = parse_toolchain_support_lock(
+        lock.canonical_bytes,
+        expected_raw_sha256=lock.raw_sha256,
+    )
+    assert parsed == lock
+    assert verify_toolchain_support_lock(
+        parsed,
+        manifests=manifests,
+        roots=roots,
+    )
+
+    for mutation in ("missing", "extra", "stale"):
+        document = lock.to_dict()
+        casefold_document = document["roots"][1]["casefold_dispositions"][0]
+        if mutation == "missing":
+            del casefold_document["topology_sha256"]
+        elif mutation == "extra":
+            casefold_document["raw_member_names"] = [left, right]
+        else:
+            casefold_document["topology_sha256"] = "0" * 64
+        encoded = _canonical(document)
+        with pytest.raises(ToolchainSupportLockError):
+            parse_toolchain_support_lock(
+                encoded,
+                expected_raw_sha256=hashlib.sha256(encoded).hexdigest(),
+            )
+
+    (directories[-1] / right).unlink()
+    with pytest.raises(ToolchainSupportLockError, match="topology"):
+        verify_toolchain_support_lock(
+            parsed,
+            manifests=manifests,
+            roots=roots,
+        )
 
 
 def test_linux_cross_root_target_mutation_fails_verification(tmp_path: Path) -> None:
@@ -968,6 +1113,45 @@ def test_parser_rejects_open_schema_and_stale_aggregate(tmp_path: Path) -> None:
     stale["total_bytes"] = lock.total_bytes + 1
     stale_bytes = _canonical(stale)
     with pytest.raises(ToolchainSupportLockError, match="summary"):
+        parse_toolchain_support_lock(
+            stale_bytes,
+            expected_raw_sha256=hashlib.sha256(stale_bytes).hexdigest(),
+        )
+
+
+def test_v4_tree_disposition_schema_rejects_v3_missing_extra_and_stale_fields(
+    tmp_path: Path,
+) -> None:
+    lock, _manifest_locator, _root_locator = _lock(tmp_path)
+
+    v3 = lock.to_dict()
+    v3["schema_version"] = 3
+    v3["domain"] = "rextio.full-c6-toolchain-support-lock.v3"
+    v3_bytes = _canonical(v3)
+    with pytest.raises(ToolchainSupportLockError, match="identity"):
+        parse_toolchain_support_lock(
+            v3_bytes,
+            expected_raw_sha256=hashlib.sha256(v3_bytes).hexdigest(),
+        )
+
+    for mutation in ("missing", "extra"):
+        document = lock.to_dict()
+        tree = document["roots"][0]
+        if mutation == "missing":
+            del tree["hardlink_dispositions"]
+        else:
+            tree["ambient_dispositions"] = []
+        encoded = _canonical(document)
+        with pytest.raises(ToolchainSupportLockError, match="schema"):
+            parse_toolchain_support_lock(
+                encoded,
+                expected_raw_sha256=hashlib.sha256(encoded).hexdigest(),
+            )
+
+    stale = lock.to_dict()
+    stale["roots"][0]["casefold_disposition_count"] = 1
+    stale_bytes = _canonical(stale)
+    with pytest.raises(ToolchainSupportLockError, match="noncanonical"):
         parse_toolchain_support_lock(
             stale_bytes,
             expected_raw_sha256=hashlib.sha256(stale_bytes).hexdigest(),
@@ -1438,44 +1622,142 @@ def test_tree_hardlink_diagnostic_is_bounded_and_path_opaque(tmp_path: Path) -> 
     assert str(tmp_path) not in message
 
 
-def test_exact_xcode_hardlink_observation_binds_complete_stamp(
+def test_exact_xcode_hardlink_disposition_binds_aliases_and_complete_stamp(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original = tmp_path / "__clang_cuda_builtin_vars.h"
-    original.write_bytes(b"fixed xcode hardlink observation")
+    app = tmp_path / "Xcode.app"
+    toolchain = (
+        app
+        / "Contents"
+        / "Developer"
+        / "Toolchains"
+        / "XcodeDefault.xctoolchain"
+    )
+    root = toolchain / "usr" / "lib" / "clang" / "21"
+    include = root / "include"
+    include.mkdir(parents=True)
+    original = include / "__clang_cuda_builtin_vars.h"
+    original.write_bytes(b"fixed xcode hardlink disposition")
+    aliases = app / "Aliases"
+    aliases.mkdir(parents=True)
+    alias_one = aliases / "alias-one"
+    alias_two = aliases / "alias-two"
     try:
-        os.link(original, tmp_path / "alias-one")
-        os.link(original, tmp_path / "alias-two")
+        os.link(original, alias_one)
+        os.link(original, alias_two)
     except OSError as exc:
         pytest.skip(f"hardlink creation unavailable: {exc}")
+    app_relative_paths = tuple(
+        item.relative_to(app).as_posix()
+        for item in (original, alias_one, alias_two)
+    )
+    policy_digests = dict(
+        zip(
+            sorted(app_relative_paths),
+            support_lock._XCODE_HARDLINK_ALIAS_PATH_SHA256S,
+            strict=True,
+        )
+    )
+    real_path_digest = support_lock._xcode_hardlink_alias_path_sha256
+
+    def synthetic_path_digest(relative_path: str) -> str:
+        return policy_digests.get(relative_path, real_path_digest(relative_path))
+
+    def synthetic_context(
+        *, root_path: Path, relative_path: str
+    ) -> tuple[Path, PurePosixPath] | None:
+        if (
+            root_path == root
+            and relative_path == support_lock._XCODE_HARDLINK_RELATIVE_PATH
+        ):
+            return app, PurePosixPath(*original.relative_to(app).parts)
+        return None
+
+    monkeypatch.setattr(
+        support_lock,
+        "_xcode_hardlink_alias_path_sha256",
+        synthetic_path_digest,
+    )
+    monkeypatch.setattr(
+        support_lock,
+        "_xcode_hardlink_scan_context",
+        synthetic_context,
+    )
+    manifest = tmp_path / "manifest"
+    manifest.write_bytes(b"xcode=fixture\n")
+    manifests = [
+        create_toolchain_support_locator(
+            logical_role="xcode-manifest", path=manifest, kind="file"
+        )
+    ]
+    roots = [
+        create_toolchain_support_locator(
+            logical_role="xcode-clang-resource", path=root, kind="tree"
+        )
+    ]
     observed = support_lock._stamp(original.stat())
     expected_stamp_sha256 = support_lock._xcode_hardlink_full_stamp_sha256(
         observed
     )
 
-    with pytest.raises(ToolchainSupportLockError) as captured:
-        support_lock._require_unaliased_regular_tree_inode(
-            observed,
-            set(),
-            target_triple="aarch64-apple-darwin",
-            root_path=Path(
-                "/Applications/Xcode.app/Contents/Developer/Toolchains/"
-                "XcodeDefault.xctoolchain/usr/lib/clang/21"
-            ),
-            logical_role="xcode-clang-resource",
-            relative_path="include/__clang_cuda_builtin_vars.h",
-        )
-
-    message = str(captured.value)
-    assert message == (
-        "toolchain support xcode hardlink observation "
-        "(path=3bbf5e13c9400baf7c260dc5eb3590ee369377ad1f2ec92edba0d6802fe2160e,"
-        f"stamp={expected_stamp_sha256},nlink=3,count=1)"
+    lock = generate_toolchain_support_lock(
+        target_triple="aarch64-apple-darwin",
+        manifests=manifests,
+        roots=roots,
     )
-    assert message.isascii()
-    assert len(message) <= 278
-    assert str(tmp_path) not in message
-    assert original.name not in message
+    receipt = lock.roots[0]
+    assert receipt.member_count == 2
+    assert receipt.file_count == 1
+    assert receipt.directory_count == 1
+    assert receipt.total_bytes == len(original.read_bytes())
+    assert receipt.hardlink_disposition_count == 1
+    hardlink = receipt.hardlink_dispositions[0]
+    assert hardlink.relative_path == "include/__clang_cuda_builtin_vars.h"
+    assert hardlink.link_count == hardlink.alias_count == 3
+    assert (
+        hardlink.alias_path_sha256s
+        == support_lock._XCODE_HARDLINK_ALIAS_PATH_SHA256S
+    )
+    assert hardlink.full_stamp_sha256 == expected_stamp_sha256
+    assert len(hardlink.alias_parent_chain_merkle_sha256) == 64
+    assert str(app).encode() not in lock.canonical_bytes
+    assert alias_one.name.encode() not in lock.canonical_bytes
+    assert alias_two.name.encode() not in lock.canonical_bytes
+    parsed = parse_toolchain_support_lock(
+        lock.canonical_bytes,
+        expected_raw_sha256=lock.raw_sha256,
+    )
+    assert parsed == lock
+    assert verify_toolchain_support_lock(
+        parsed,
+        manifests=manifests,
+        roots=roots,
+    )
+
+    for mutation in ("missing", "extra", "stale"):
+        document = lock.to_dict()
+        hardlink_document = document["roots"][0]["hardlink_dispositions"][0]
+        if mutation == "missing":
+            del hardlink_document["full_stamp_sha256"]
+        elif mutation == "extra":
+            hardlink_document["absolute_alias_path"] = str(alias_one)
+        else:
+            hardlink_document["alias_parent_chain_merkle_sha256"] = "0" * 64
+        encoded = _canonical(document)
+        with pytest.raises(ToolchainSupportLockError):
+            parse_toolchain_support_lock(
+                encoded,
+                expected_raw_sha256=hashlib.sha256(encoded).hexdigest(),
+            )
+
+    aliases.chmod(0o700)
+    with pytest.raises(ToolchainSupportLockError, match="differ"):
+        verify_toolchain_support_lock(
+            parsed,
+            manifests=manifests,
+            roots=roots,
+        )
 
     for stamp_field in fields(observed):
         value = getattr(observed, stamp_field.name)
@@ -1485,6 +1767,33 @@ def test_exact_xcode_hardlink_observation_binds_complete_stamp(
             support_lock._xcode_hardlink_full_stamp_sha256(changed)
             != expected_stamp_sha256
         )
+
+
+def test_xcode_single_link_variant_needs_no_hardlink_disposition(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "manifest"
+    manifest.write_bytes(b"xcode=single-link\n")
+    root = tmp_path / "clang-resource"
+    include = root / "include"
+    include.mkdir(parents=True)
+    (include / "__clang_cuda_builtin_vars.h").write_bytes(b"single link")
+    lock = generate_toolchain_support_lock(
+        target_triple="aarch64-apple-darwin",
+        manifests=[
+            create_toolchain_support_locator(
+                logical_role="xcode-manifest", path=manifest, kind="file"
+            )
+        ],
+        roots=[
+            create_toolchain_support_locator(
+                logical_role="xcode-clang-resource", path=root, kind="tree"
+            )
+        ],
+    )
+
+    assert lock.roots[0].hardlink_disposition_count == 0
+    assert lock.roots[0].hardlink_dispositions == ()
 
 
 def test_manifest_rejects_symlink_and_hardlink(tmp_path: Path) -> None:
