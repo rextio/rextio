@@ -15,9 +15,10 @@ import base64
 import binascii
 import csv
 from dataclasses import dataclass
+from email.parser import BytesParser
+from email.policy import compat32
 import hashlib
 import hmac
-from importlib import metadata
 import io
 import json
 import os
@@ -90,6 +91,9 @@ _SUPPORTED_TARGETS = frozenset(
 )
 _RECORD_MAX_BYTES = 8 * 1024 * 1024
 _RECORD_MAX_ROWS = 4096
+_METADATA_MAX_BYTES = 1024 * 1024
+_DIRECT_URL_MAX_BYTES = 64 * 1024
+_DISTRIBUTION_ROOT_MAX_ENTRIES = 16384
 _VERSION_OUTPUT_MAX_BYTES = 64 * 1024
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
 _WHEEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,254}\.whl$")
@@ -1786,39 +1790,272 @@ def _capture_installed_rextio_identity() -> RextioIdentity:
             "installed Rextio inventory requires a cache-free Python process"
         )
     try:
-        distribution = metadata.distribution("rextio")
-        distribution_name = distribution.metadata["Name"]
-        if type(distribution_name) is not str or distribution_name.casefold() != "rextio":
-            raise FullC6HostInputsError("installed Rextio distribution name is invalid")
-        if distribution.version != __version__:
-            raise FullC6HostInputsError("running and installed Rextio versions differ")
-        direct_url = distribution.read_text("direct_url.json")
-        if direct_url is not None:
-            document = json.loads(direct_url)
-            if not isinstance(document, dict):
-                raise FullC6HostInputsError("Rextio direct_url metadata is malformed")
-            directory = document.get("dir_info")
-            if isinstance(directory, dict) and directory.get("editable") is True:
-                raise FullC6HostInputsError("editable Rextio installs are forbidden")
-        files = tuple(distribution.files or ())
-        record_rows = [item for item in files if PurePosixPath(str(item)).name == "RECORD"]
-        if len(record_rows) != 1 or ".dist-info" not in str(record_rows[0]):
-            raise FullC6HostInputsError("installed Rextio RECORD is missing or ambiguous")
-        record_path = Path(str(distribution.locate_file(record_rows[0])))
-        distribution_root = record_path.parent.parent
         import rextio
 
-        module_file = Path(rextio.__file__ or "")
+        if type(__version__) is not str or not _installed_version_is_canonical(
+            __version__
+        ):
+            raise FullC6HostInputsError("running Rextio version is invalid")
+        module_file = _lexical_absolute_path(
+            rextio.__file__ or "", label="running Rextio module"
+        )
+        if module_file.name != "__init__.py" or module_file.parent.name != "rextio":
+            raise FullC6HostInputsError(
+                "running Rextio module root is not canonical"
+            )
+        distribution_root = module_file.parent.parent
+        _require_secure_directory(distribution_root, label="distribution root")
+        dist_info = _discover_installed_rextio_dist_info(
+            distribution_root, version=__version__
+        )
+        metadata_data, _metadata_stat = _secure_read_regular(
+            dist_info / "METADATA",
+            label="installed Rextio METADATA",
+            max_bytes=_METADATA_MAX_BYTES,
+            reject_hardlinks=True,
+        )
+        _validate_installed_rextio_metadata(metadata_data, version=__version__)
+        direct_url_data = _secure_read_optional_regular(
+            dist_info / "direct_url.json",
+            label="installed Rextio direct_url metadata",
+            max_bytes=_DIRECT_URL_MAX_BYTES,
+        )
+        _validate_installed_rextio_direct_url(direct_url_data)
+        record_path = dist_info / "RECORD"
+        record_data, _record_stat = _secure_read_regular(
+            record_path,
+            label="installed Rextio RECORD",
+            max_bytes=_RECORD_MAX_BYTES,
+            reject_hardlinks=True,
+        )
+        _validate_installed_dist_info_record(
+            record_data,
+            dist_info_name=dist_info.name,
+            metadata_data=metadata_data,
+            direct_url_data=direct_url_data,
+        )
         return _capture_record_backed_rextio_identity(
             distribution_root=distribution_root,
             record_path=record_path,
             module_file=module_file,
-            version=distribution.version,
+            version=__version__,
+            expected_record_sha256=hashlib.sha256(record_data).hexdigest(),
         )
     except FullC6HostInputsError:
         raise
     except Exception as exc:
         raise FullC6HostInputsError("installed Rextio inventory failed closed") from exc
+
+
+def _installed_version_is_canonical(value: str) -> bool:
+    return (
+        value == unicodedata.normalize("NFC", value)
+        and len(value.encode("utf-8")) <= 256
+        and re.fullmatch(r"[A-Za-z0-9]+(?:[._+-][A-Za-z0-9]+)*", value)
+        is not None
+    )
+
+
+def _installed_dist_info_name(version: str) -> str:
+    normalized_version = re.sub(r"-+", "_", version).lower()
+    return f"rextio-{normalized_version}.dist-info"
+
+
+def _discover_installed_rextio_dist_info(
+    distribution_root: Path, *, version: str
+) -> Path:
+    expected_name = _installed_dist_info_name(version)
+    descriptor = _open_absolute_directory_no_follow(
+        distribution_root, label="distribution root"
+    )
+    candidates: list[str] = []
+    entries = 0
+    try:
+        with os.scandir(descriptor) as iterator:
+            for item in iterator:
+                entries += 1
+                if entries > _DISTRIBUTION_ROOT_MAX_ENTRIES:
+                    raise FullC6HostInputsError(
+                        "installed Rextio distribution root exceeds its entry bound"
+                    )
+                name = item.name
+                folded = name.casefold()
+                if not (folded.startswith("rextio-") and folded.endswith(".dist-info")):
+                    continue
+                observed = item.stat(follow_symlinks=False)
+                if (
+                    name != unicodedata.normalize("NFC", name)
+                    or not stat.S_ISDIR(observed.st_mode)
+                    or stat.S_ISLNK(observed.st_mode)
+                ):
+                    raise FullC6HostInputsError(
+                        "installed Rextio dist-info root is unsafe"
+                    )
+                candidates.append(name)
+                if len(candidates) > 1:
+                    raise FullC6HostInputsError(
+                        "installed Rextio dist-info root is ambiguous"
+                    )
+    except FullC6HostInputsError:
+        raise
+    except OSError as exc:
+        raise FullC6HostInputsError(
+            "installed Rextio dist-info root discovery failed"
+        ) from exc
+    finally:
+        os.close(descriptor)
+    if candidates != [expected_name]:
+        raise FullC6HostInputsError(
+            "running and installed Rextio versions or roots differ"
+        )
+    result = distribution_root / expected_name
+    _require_secure_directory(result, label="installed Rextio dist-info root")
+    return result
+
+
+def _validate_installed_rextio_metadata(data: bytes, *, version: str) -> None:
+    try:
+        message = BytesParser(policy=compat32).parsebytes(data)
+        names = message.get_all("Name", [])
+        versions = message.get_all("Version", [])
+    except Exception as exc:
+        raise FullC6HostInputsError(
+            "installed Rextio METADATA is malformed"
+        ) from exc
+    if message.defects or message.is_multipart():
+        raise FullC6HostInputsError("installed Rextio METADATA is malformed")
+    if names != ["rextio"] or versions != [version]:
+        raise FullC6HostInputsError(
+            "installed Rextio METADATA name or version is missing or ambiguous"
+        )
+
+
+def _secure_read_optional_regular(
+    path: Path, *, label: str, max_bytes: int
+) -> bytes | None:
+    parent_fd = _open_absolute_directory_no_follow(path.parent, label=f"{label} parent")
+    try:
+        try:
+            observed = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(observed.st_mode) or stat.S_ISLNK(observed.st_mode):
+            raise FullC6HostInputsError(f"Full C6 {label} is not a regular file")
+    except FullC6HostInputsError:
+        raise
+    except OSError as exc:
+        raise FullC6HostInputsError(f"Full C6 {label} could not be inspected") from exc
+    finally:
+        os.close(parent_fd)
+    data, _opened = _secure_read_regular(
+        path,
+        label=label,
+        max_bytes=max_bytes,
+        reject_hardlinks=True,
+    )
+    return data
+
+
+def _validate_installed_rextio_direct_url(data: bytes | None) -> None:
+    if data is None:
+        return
+    try:
+        document = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise FullC6HostInputsError("Rextio direct_url metadata is malformed") from exc
+    if not isinstance(document, dict):
+        raise FullC6HostInputsError("Rextio direct_url metadata is malformed")
+    directory = document.get("dir_info")
+    if directory is not None and not isinstance(directory, dict):
+        raise FullC6HostInputsError("Rextio direct_url metadata is malformed")
+    if isinstance(directory, dict) and directory.get("editable") is True:
+        raise FullC6HostInputsError("editable Rextio installs are forbidden")
+
+
+def _validate_installed_dist_info_record(
+    data: bytes,
+    *,
+    dist_info_name: str,
+    metadata_data: bytes,
+    direct_url_data: bytes | None,
+) -> None:
+    expected_payloads = {f"{dist_info_name}/METADATA": metadata_data}
+    direct_url_name = f"{dist_info_name}/direct_url.json"
+    if direct_url_data is not None:
+        expected_payloads[direct_url_name] = direct_url_data
+    record_name = f"{dist_info_name}/RECORD"
+    observed_payloads: set[str] = set()
+    record_rows = 0
+    direct_url_rows = 0
+    for row in _iter_installed_record_rows(data):
+        if len(row) != 3:
+            raise FullC6HostInputsError("installed Rextio RECORD row is malformed")
+        raw_name, raw_hash, raw_size = row
+        if raw_name == record_name:
+            record_rows += 1
+            if raw_hash or raw_size:
+                raise FullC6HostInputsError(
+                    "installed Rextio RECORD self-row is malformed"
+                )
+            continue
+        if raw_name == direct_url_name:
+            direct_url_rows += 1
+        payload = expected_payloads.get(raw_name)
+        if payload is None:
+            continue
+        if raw_name in observed_payloads:
+            raise FullC6HostInputsError(
+                "installed Rextio dist-info RECORD membership is ambiguous"
+            )
+        digest = _record_sha256(raw_hash)
+        try:
+            size = int(raw_size)
+        except ValueError as exc:
+            raise FullC6HostInputsError(
+                "installed Rextio dist-info RECORD size is invalid"
+            ) from exc
+        if size != len(payload) or not _digest_equal(
+            hashlib.sha256(payload).hexdigest(), digest
+        ):
+            raise FullC6HostInputsError(
+                "installed Rextio dist-info differs from RECORD"
+            )
+        observed_payloads.add(raw_name)
+    if record_rows != 1 or set(expected_payloads) != observed_payloads:
+        raise FullC6HostInputsError(
+            "installed Rextio dist-info RECORD membership is missing or ambiguous"
+        )
+    if direct_url_data is None and direct_url_rows:
+        raise FullC6HostInputsError(
+            "installed Rextio direct_url RECORD membership has no file"
+        )
+
+
+def _iter_installed_record_rows(data: bytes) -> Iterator[list[str]]:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FullC6HostInputsError(
+            "installed Rextio RECORD is not valid UTF-8 CSV"
+        ) from exc
+    reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+    rows = 0
+    try:
+        for row in reader:
+            rows += 1
+            if rows > _RECORD_MAX_ROWS:
+                raise FullC6HostInputsError(
+                    "installed Rextio RECORD row count is outside bound"
+                )
+            yield row
+    except csv.Error as exc:
+        raise FullC6HostInputsError(
+            "installed Rextio RECORD is not valid UTF-8 CSV"
+        ) from exc
+    if rows == 0:
+        raise FullC6HostInputsError(
+            "installed Rextio RECORD row count is outside bound"
+        )
 
 
 def _capture_record_backed_rextio_identity(
@@ -1827,6 +2064,7 @@ def _capture_record_backed_rextio_identity(
     record_path: Path,
     module_file: Path,
     version: str,
+    expected_record_sha256: str | None = None,
 ) -> RextioIdentity:
     root = _lexical_absolute_path(distribution_root, label="distribution root")
     _require_secure_directory(root, label="distribution root")
@@ -1841,17 +2079,15 @@ def _capture_record_backed_rextio_identity(
         max_bytes=_RECORD_MAX_BYTES,
         reject_hardlinks=True,
     )
-    try:
-        rows = tuple(csv.reader(io.StringIO(record_data.decode("utf-8"), newline="")))
-    except (UnicodeDecodeError, csv.Error) as exc:
-        raise FullC6HostInputsError("installed Rextio RECORD is not valid UTF-8 CSV") from exc
-    if not rows or len(rows) > _RECORD_MAX_ROWS:
-        raise FullC6HostInputsError("installed Rextio RECORD row count is outside bound")
+    if expected_record_sha256 is not None and not _digest_equal(
+        hashlib.sha256(record_data).hexdigest(), expected_record_sha256
+    ):
+        raise FullC6HostInputsError("installed Rextio RECORD changed during capture")
 
     expected: dict[str, tuple[str, int]] = {}
     aliases: set[str] = set()
     declared_bytes = 0
-    for row in rows:
+    for row in _iter_installed_record_rows(record_data):
         if len(row) != 3:
             raise FullC6HostInputsError("installed Rextio RECORD row is malformed")
         raw_name, raw_hash, raw_size = row

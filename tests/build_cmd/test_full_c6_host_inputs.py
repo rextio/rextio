@@ -54,6 +54,7 @@ def _write_record_install(
     tmp_path: Path,
     *,
     rows: list[tuple[str, bytes]] | None = None,
+    metadata_data: bytes | None = None,
 ) -> tuple[Path, Path, Path]:
     root = (tmp_path / "site-packages").resolve()
     package = root / "rextio"
@@ -71,6 +72,21 @@ def _write_record_install(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         record_rows.append([logical, _record_hash(data), str(len(data))])
+    metadata = metadata_data or (
+        "Metadata-Version: 2.4\n"
+        "Name: rextio\n"
+        f"Version: {__version__}\n"
+        "\n"
+    ).encode()
+    metadata_path = dist_info / "METADATA"
+    metadata_path.write_bytes(metadata)
+    record_rows.append(
+        [
+            f"{dist_info.name}/METADATA",
+            _record_hash(metadata),
+            str(len(metadata)),
+        ]
+    )
     record = dist_info / "RECORD"
     stream = io.StringIO(newline="")
     writer = csv.writer(stream, lineterminator="\n")
@@ -97,6 +113,25 @@ def _extend_record(record: Path, rows: list[list[str]]) -> None:
     stream = io.StringIO(newline="")
     csv.writer(stream, lineterminator="\n").writerows(existing)
     record.write_text(stream.getvalue(), encoding="utf-8")
+
+
+def _add_dist_info_file(record: Path, name: str, data: bytes) -> Path:
+    path = record.parent / name
+    path.write_bytes(data)
+    _extend_record(
+        record,
+        [[f"{record.parent.name}/{name}", _record_hash(data), str(len(data))]],
+    )
+    return path
+
+
+def _select_installed_fixture(
+    monkeypatch: pytest.MonkeyPatch, *, module_file: Path
+) -> None:
+    import rextio
+
+    monkeypatch.setattr(rextio, "__file__", os.fspath(module_file))
+    monkeypatch.setattr(host_inputs.sys, "dont_write_bytecode", True)
 
 
 def test_record_backed_inventory_captures_every_installed_member(tmp_path: Path) -> None:
@@ -465,26 +500,182 @@ def test_installed_inventory_rejects_editable_distribution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root, record, _module = _write_record_install(tmp_path)
-
-    class EditableDistribution:
-        version = __version__
-        metadata = {"Name": "rextio"}
-        files = (Path(record.relative_to(root)),)
-
-        @staticmethod
-        def read_text(name: str) -> str | None:
-            assert name == "direct_url.json"
-            return json.dumps({"dir_info": {"editable": True}})
-
-        @staticmethod
-        def locate_file(path: object) -> Path:
-            return root / str(path)
-
-    monkeypatch.setattr(host_inputs.metadata, "distribution", lambda _name: EditableDistribution())
-    monkeypatch.setattr(host_inputs.sys, "dont_write_bytecode", True)
+    _root, record, module = _write_record_install(tmp_path)
+    _add_dist_info_file(
+        record,
+        "direct_url.json",
+        json.dumps({"dir_info": {"editable": True}}).encode(),
+    )
+    _select_installed_fixture(monkeypatch, module_file=module)
 
     with pytest.raises(FullC6HostInputsError, match="editable"):
+        host_inputs._capture_installed_rextio_identity()
+
+
+def test_installed_inventory_uses_bounded_filesystem_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _root, _record, module = _write_record_install(tmp_path)
+    _select_installed_fixture(monkeypatch, module_file=module)
+
+    identity = host_inputs._capture_installed_rextio_identity()
+
+    assert identity.version == __version__
+    assert "metadata" not in vars(host_inputs)
+
+
+@pytest.mark.parametrize(
+    "metadata_data",
+    (
+        (
+            "Metadata-Version: 2.4\n"
+            "Name: rextio\n"
+            "Name: rextio\n"
+            f"Version: {__version__}\n\n"
+        ).encode(),
+        (
+            "Metadata-Version: 2.4\n"
+            "Name: rextio\n"
+            f"Version: {__version__}\n"
+            f"Version: {__version__}\n\n"
+        ).encode(),
+        (
+            "Metadata-Version: 2.4\n"
+            "Name: Rextio\n"
+            f"Version: {__version__}\n\n"
+        ).encode(),
+        (
+            "Metadata-Version: 2.4\n"
+            "Name: rextio\n"
+            f"Version: {__version__}.1\n\n"
+        ).encode(),
+    ),
+    ids=(
+        "duplicate-name",
+        "duplicate-version",
+        "noncanonical-name",
+        "version-mismatch",
+    ),
+)
+def test_installed_inventory_rejects_ambiguous_metadata_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    metadata_data: bytes,
+) -> None:
+    _root, _record, module = _write_record_install(
+        tmp_path, metadata_data=metadata_data
+    )
+    _select_installed_fixture(monkeypatch, module_file=module)
+
+    with pytest.raises(FullC6HostInputsError, match="METADATA.*ambiguous"):
+        host_inputs._capture_installed_rextio_identity()
+
+
+def test_installed_inventory_bounds_metadata_before_parsing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata_data = (
+        "Metadata-Version: 2.4\n"
+        "Name: rextio\n"
+        f"Version: {__version__}\n\n"
+    ).encode()
+    _root, _record, module = _write_record_install(
+        tmp_path, metadata_data=metadata_data
+    )
+    _select_installed_fixture(monkeypatch, module_file=module)
+    monkeypatch.setattr(host_inputs, "_METADATA_MAX_BYTES", len(metadata_data) - 1)
+
+    with pytest.raises(FullC6HostInputsError, match="METADATA.*regular file"):
+        host_inputs._capture_installed_rextio_identity()
+
+
+def test_installed_inventory_bounds_direct_url_before_parsing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _root, record, module = _write_record_install(tmp_path)
+    direct_url_data = json.dumps({"url": "https://example.invalid/rextio"}).encode()
+    _add_dist_info_file(record, "direct_url.json", direct_url_data)
+    _select_installed_fixture(monkeypatch, module_file=module)
+    monkeypatch.setattr(
+        host_inputs, "_DIRECT_URL_MAX_BYTES", len(direct_url_data) - 1
+    )
+
+    with pytest.raises(FullC6HostInputsError, match="direct_url.*regular file"):
+        host_inputs._capture_installed_rextio_identity()
+
+
+def test_installed_inventory_rejects_ambiguous_dist_info_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _record, module = _write_record_install(tmp_path)
+    (root / "rextio-999.dist-info").mkdir()
+    _select_installed_fixture(monkeypatch, module_file=module)
+
+    with pytest.raises(FullC6HostInputsError, match="dist-info root is ambiguous"):
+        host_inputs._capture_installed_rextio_identity()
+
+
+def test_installed_inventory_rejects_import_root_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _record, _module = _write_record_install(tmp_path)
+    wrong_package = root / "other"
+    wrong_package.mkdir()
+    wrong_module = wrong_package / "__init__.py"
+    wrong_module.write_bytes(b"")
+    _select_installed_fixture(monkeypatch, module_file=wrong_module)
+
+    with pytest.raises(FullC6HostInputsError, match="module root is not canonical"):
+        host_inputs._capture_installed_rextio_identity()
+
+
+def test_record_row_bound_stops_before_trailing_invalid_csv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(host_inputs, "_RECORD_MAX_ROWS", 2)
+    data = b"a,b,c\nd,e,f\ng,h,i\n\"unterminated"
+
+    with pytest.raises(FullC6HostInputsError, match="row count is outside bound"):
+        tuple(host_inputs._iter_installed_record_rows(data))
+
+
+def test_installed_inventory_rejects_record_over_row_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _root, _record, module = _write_record_install(tmp_path)
+    _select_installed_fixture(monkeypatch, module_file=module)
+    monkeypatch.setattr(host_inputs, "_RECORD_MAX_ROWS", 4)
+
+    with pytest.raises(FullC6HostInputsError, match="row count is outside bound"):
+        host_inputs._capture_installed_rextio_identity()
+
+
+@pytest.mark.parametrize("member", ("METADATA", "direct_url.json"))
+def test_installed_inventory_requires_dist_info_record_membership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    member: str,
+) -> None:
+    _root, record, module = _write_record_install(tmp_path)
+    if member == "direct_url.json":
+        (record.parent / member).write_text(
+            json.dumps({"url": "https://example.invalid/rextio"}),
+            encoding="utf-8",
+        )
+    rows = list(csv.reader(io.StringIO(record.read_text(encoding="utf-8"))))
+    rows = [row for row in rows if not row[0].endswith(f"/{member}")]
+    stream = io.StringIO(newline="")
+    csv.writer(stream, lineterminator="\n").writerows(rows)
+    record.write_text(stream.getvalue(), encoding="utf-8")
+    _select_installed_fixture(monkeypatch, module_file=module)
+
+    with pytest.raises(FullC6HostInputsError, match="RECORD membership"):
         host_inputs._capture_installed_rextio_identity()
 
 
