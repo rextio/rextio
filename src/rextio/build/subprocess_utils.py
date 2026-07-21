@@ -6,6 +6,9 @@ Rextio shells out to `cargo`, `maturin`, `nuitka`, etc. All invocations:
   shell interpolation/injection of user-derived paths or names;
 * capture stdout/stderr as text so failures become diagnostics rather than noise
   on the user's terminal;
+* attach stdin to the null device and close every non-standard inherited file
+  descriptor/handle, so a build cannot consume caller input or retain ambient
+  capabilities accidentally;
 * run under a bounded **timeout**, so a hung or wedged toolchain fails the build
   with a clear message instead of blocking indefinitely.
 
@@ -531,18 +534,22 @@ def _start_process_bytes(
         return subprocess.Popen(
             command,
             cwd=cwd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=False,
+            close_fds=True,
             creationflags=new_group,
             env=merged_env,
         )
     return subprocess.Popen(
         command,
         cwd=cwd,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=False,
+        close_fds=True,
         start_new_session=True,
         env=merged_env,
     )
@@ -567,9 +574,11 @@ def _start_process(
         return subprocess.Popen(
             command,
             cwd=cwd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            close_fds=True,
             creationflags=new_group,
             env=merged_env,
         )
@@ -578,9 +587,11 @@ def _start_process(
     return subprocess.Popen(
         command,
         cwd=cwd,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        close_fds=True,
         start_new_session=True,
         env=merged_env,
     )

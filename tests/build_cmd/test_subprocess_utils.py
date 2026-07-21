@@ -34,6 +34,82 @@ def test_run_build_tool_captures_output(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("max_output_bytes", [None, 4096])
+def test_run_build_tool_gives_child_immediate_stdin_eof(
+    tmp_path: Path,
+    max_output_bytes: int | None,
+) -> None:
+    """An open parent input pipe must never become interactive build-tool input."""
+    read_fd, write_fd = os.pipe()
+    saved_stdin = os.dup(0)
+    try:
+        # Keep the write end open: inheriting this read end would make read(1)
+        # block until the build timeout instead of observing EOF.
+        os.dup2(read_fd, 0)
+        result = run_build_tool(
+            [
+                sys.executable,
+                "-c",
+                "import sys; print(sys.stdin.buffer.read(1) == b'')",
+            ],
+            cwd=tmp_path,
+            timeout=2.0,
+            max_output_bytes=max_output_bytes,
+        )
+    finally:
+        os.dup2(saved_stdin, 0)
+        os.close(saved_stdin)
+        os.close(read_fd)
+        os.close(write_fd)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "True"
+
+
+@pytest.mark.parametrize("max_output_bytes", [None, 4096])
+@pytest.mark.skipif(os.name != "posix", reason="inheritable-FD regression is POSIX-specific")
+def test_run_build_tool_closes_intentionally_inheritable_parent_fd(
+    tmp_path: Path,
+    max_output_bytes: int | None,
+) -> None:
+    """Even an explicitly inheritable ambient descriptor is absent after exec."""
+    sentinel_path = tmp_path / "ambient-sentinel"
+    sentinel_path.write_bytes(b"sentinel")
+    with sentinel_path.open("rb") as sentinel:
+        fd = sentinel.fileno()
+        stat = os.fstat(fd)
+        was_inheritable = os.get_inheritable(fd)
+        os.set_inheritable(fd, True)
+        try:
+            result = run_build_tool(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import os, sys\n"
+                        "fd, dev, ino = map(int, sys.argv[1:])\n"
+                        "try:\n"
+                        "    actual = os.fstat(fd)\n"
+                        "except OSError:\n"
+                        "    visible = False\n"
+                        "else:\n"
+                        "    visible = (actual.st_dev, actual.st_ino) == (dev, ino)\n"
+                        "print('visible' if visible else 'closed')\n"
+                    ),
+                    str(fd),
+                    str(stat.st_dev),
+                    str(stat.st_ino),
+                ],
+                cwd=tmp_path,
+                max_output_bytes=max_output_bytes,
+            )
+        finally:
+            os.set_inheritable(fd, was_inheritable)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "closed"
+
+
+@pytest.mark.parametrize("max_output_bytes", [None, 4096])
 def test_run_build_tool_can_replace_parent_environment_exactly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
