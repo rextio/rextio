@@ -178,6 +178,73 @@ def test_external_wheel_contract_pins_requirement_and_excludes_source(
     assert "demo_pkg/__init__.py" not in names
 
 
+def test_external_wheel_capture_binds_native_member_to_exact_expected_bytes(
+    tmp_path: Path,
+) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    native_name = "_rextio_native.cpython-311-test.so"
+    native_bytes = b"cargo-native-extension"
+    (python_dir / native_name).write_bytes(native_bytes)
+    contract = _external_contract()
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        external_contract=contract,
+    )
+    assert result.path is not None
+
+    capture = wheel_builder.capture_external_wheel_contract(
+        Path(result.path),
+        contract,
+        native_member_path=native_name,
+        native_member_bytes=native_bytes,
+    )
+
+    assert hashlib.sha256(capture.wheel_bytes).hexdigest() == (
+        capture.verification.wheel_sha256
+    )
+    assert capture.native_member.path == native_name
+    assert capture.native_member.sha256 == hashlib.sha256(native_bytes).hexdigest()
+    with pytest.raises(wheel_builder.WheelContractError, match="differs from Cargo"):
+        wheel_builder.capture_external_wheel_contract(
+            Path(result.path),
+            contract,
+            native_member_path=native_name,
+            native_member_bytes=b"different-cargo-artifact",
+        )
+
+
+@pytest.mark.parametrize("extra_native", (False, True))
+def test_external_wheel_capture_requires_exact_native_member_coverage(
+    tmp_path: Path,
+    extra_native: bool,
+) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    native_name = "_rextio_native.cpython-311-test.so"
+    if extra_native:
+        (python_dir / native_name).write_bytes(b"expected")
+        (python_dir / "_rextio_native.other.so").write_bytes(b"extra")
+    contract = _external_contract()
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        external_contract=contract,
+    )
+    assert result.path is not None
+
+    with pytest.raises(wheel_builder.WheelContractError, match="coverage"):
+        wheel_builder.capture_external_wheel_contract(
+            Path(result.path),
+            contract,
+            native_member_path=native_name,
+            native_member_bytes=b"expected",
+        )
+
+
 @pytest.mark.parametrize(
     "relative",
     ("demo_pkg/__init__.py", "DEMO_PKG/hidden.PY"),

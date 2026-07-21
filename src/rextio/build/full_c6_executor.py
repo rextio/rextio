@@ -44,14 +44,16 @@ from rextio.build.toolchain_identity import (
     STRICT_BUILD_ENV_ALLOWLIST,
     BuildToolchainIdentity,
     ToolchainIdentityError,
+    capture_environment_identity,
     verify_tool_identity,
 )
 from rextio.build.wheel_builder import (
+    ExternalWheelCapture,
     ExternalWheelContract,
     ExternalWheelMemberIdentity,
     WheelContractError,
     build_artifact_wheel,
-    verify_external_wheel_contract,
+    capture_external_wheel_contract,
 )
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
 
@@ -80,6 +82,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RESERVED_ENV = frozenset(
     {
         "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_BUILD_TARGET",
         "CARGO_HOME",
         "CARGO_NET_OFFLINE",
         "CARGO_TARGET_DIR",
@@ -87,6 +90,8 @@ _RESERVED_ENV = frozenset(
         "LANG",
         "LC_ALL",
         "PYTHONHASHSEED",
+        "PYO3_PYTHON",
+        "RUSTC",
         "RUSTFLAGS",
         "SOURCE_DATE_EPOCH",
         "TZ",
@@ -116,6 +121,27 @@ _CANONICAL_EXECUTABLE_MODE = 0o755
 
 class FullC6ExecutorError(ReproducibilityError):
     """The strict Full C6 executor could not establish its bounded receipt."""
+
+
+@dataclass(frozen=True, slots=True)
+class FullC6NativeToolPaths:
+    """Ephemeral exact tool paths used by the native executor.
+
+    Toolchain receipts deliberately omit machine-local paths.  Production
+    execution must therefore supply those paths separately and prove their
+    current bytes against the receipt immediately before and after Cargo.
+    """
+
+    python: Path
+    cargo: Path
+    rustc: Path
+    linker: Path
+
+    def __post_init__(self) -> None:
+        for name in ("python", "cargo", "rustc", "linker"):
+            value = getattr(self, name)
+            if not isinstance(value, Path) or not value.is_absolute():
+                raise ValueError(f"Full C6 native {name} path must be an absolute Path")
 
 
 @dataclass(frozen=True, slots=True)
@@ -702,6 +728,53 @@ class _FrozenTree:
     filesystem_keys: tuple[tuple[str, int, int], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _NativePostprocessResult:
+    outputs: ReproducibilityBuildOutputs
+    capture: ExternalWheelCapture
+    native_artifact_bytes: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _ReceiptBoundCargoConfig:
+    """Future hook for one executor-generated, receipt-bound Cargo config."""
+
+    location: str
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if self.location not in {
+            "project:.cargo/config",
+            "project:.cargo/config.toml",
+            "build-root:.cargo/config",
+            "build-root:.cargo/config.toml",
+            "cargo-home:config",
+            "cargo-home:config.toml",
+        }:
+            raise ValueError("Full C6 receipt-bound Cargo config location is invalid")
+        if _SHA256_RE.fullmatch(self.sha256) is None:
+            raise ValueError("Full C6 receipt-bound Cargo config digest is invalid")
+
+
+def _reject_frozen_cargo_config(tree: _FrozenTree) -> None:
+    """Reject source-controlled Cargo selectors in the production native path.
+
+    A later vendoring slice may materialize one executor-generated canonical
+    config from a receipt-bound manifest.  Until that separate input exists,
+    neither of Cargo's project config spellings is permitted in frozen input.
+    """
+    forbidden = {".cargo/config", ".cargo/config.toml"}
+    observed = forbidden.intersection(
+        item.public.logical_name
+        for item in tree.entries
+        if item.public.kind == "file"
+    )
+    if observed:
+        raise FullC6ExecutorError(
+            "Full C6 native frozen Cargo config is not executor-generated and receipt-bound"
+        )
+
+
 def execute_full_c6_two_build(
     source_root: Path | str,
     first_quarantine_root: Path | str,
@@ -717,6 +790,7 @@ def execute_full_c6_two_build(
     timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     max_output_bytes: int = MAX_FULL_C6_OUTPUT_BYTES,
     toolchain: BuildToolchainIdentity | None = None,
+    native_tools: FullC6NativeToolPaths | None = None,
     native_orchestrator: bool = False,
 ) -> FullC6ExecutorReceipt:
     """Freeze one project and execute exactly two strict isolated builds.
@@ -740,6 +814,7 @@ def execute_full_c6_two_build(
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
         toolchain=toolchain,
+        native_tools=native_tools,
         native_orchestrator=native_orchestrator,
     )
     source, _source_stat = _validate_source_root(source_root)
@@ -747,10 +822,9 @@ def execute_full_c6_two_build(
     second = _validate_quarantine_root(second_quarantine_root)
     _require_disjoint_roots((source, first[0], second[0]))
     environment_seed = _validate_base_environment(base_environment)
-    if native_orchestrator and "CARGO_BUILD_TARGET" in environment_seed:
-        raise FullC6ExecutorError(
-            "Full C6 native driver owns host target selection"
-        )
+    if native_orchestrator:
+        assert toolchain is not None
+        _verify_native_base_environment(environment_seed, toolchain)
 
     without_generated_lock = _capture_stable_tree(source, cargo_lock_generated=False)
     has_lock = any(
@@ -793,8 +867,10 @@ def execute_full_c6_two_build(
     native_manifest: FullC6NativeDriverManifest | None = None
     if native_orchestrator:
         assert toolchain is not None
+        assert native_tools is not None
         if frozen.manifest is None:
             raise FullC6ExecutorError("Full C6 native driver requires a frozen Cargo.lock")
+        _reject_frozen_cargo_config(frozen)
         try:
             manifest_data = _entry_data(frozen, FULL_C6_NATIVE_DRIVER_MANIFEST)
         except FullC6ExecutorError as exc:
@@ -816,12 +892,21 @@ def execute_full_c6_two_build(
                 "Full C6 native driver target differs from the current host"
             )
         _reject_private_argv(fixed_argv, source=source, roots=(first[0], second[0]))
+        _verify_native_toolchain_invocation(
+            fixed_argv,
+            environment=environment_seed,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            target_triple=native_manifest.target_triple,
+            require_owned_environment=False,
+        )
 
     invocation_receipts: list[FullC6InvocationReceipt] = []
     copied_inodes: list[frozenset[tuple[int, int]]] = []
     project_copies: list[Path] = []
     project_identities: list[os.stat_result] = []
     command_values: list[tuple[str, ...]] = []
+    native_results: list[_NativePostprocessResult] = []
 
     def isolated_build(build_root: Path) -> ReproducibilityBuildOutputs:
         ordinal = len(invocation_receipts) + 1
@@ -840,6 +925,14 @@ def execute_full_c6_two_build(
             environment_seed,
             source_date_epoch=source_date_epoch,
         )
+        if native_orchestrator:
+            assert native_manifest is not None
+            assert native_tools is not None
+            _bind_native_environment(
+                environment,
+                native_tools=native_tools,
+                target_triple=native_manifest.target_triple,
+            )
         context = FullC6BuildContext(
             ordinal=ordinal,
             build_root=build_root,
@@ -862,20 +955,40 @@ def execute_full_c6_two_build(
             assert fixed_argv is not None
             assert native_manifest is not None
             assert toolchain is not None
+            assert native_tools is not None
             argv = fixed_argv
+            _verify_native_cargo_config_boundaries(
+                project_root=project_root,
+                build_root=build_root,
+                quarantine_root=expected_root[0],
+                environment=environment,
+                require_empty_cargo_home=True,
+            )
             _verify_native_toolchain_invocation(
                 argv,
                 environment=environment,
                 toolchain=toolchain,
+                native_tools=native_tools,
+                target_triple=native_manifest.target_triple,
+                require_owned_environment=True,
             )
-            completed = run_build_tool(
-                list(argv),
-                cwd=project_root,
-                timeout=float(timeout_seconds),
-                env=environment,
-                inherit_env=False,
-                max_output_bytes=max_output_bytes,
-            )
+            try:
+                completed = run_build_tool(
+                    list(argv),
+                    cwd=project_root,
+                    timeout=float(timeout_seconds),
+                    env=environment,
+                    inherit_env=False,
+                    max_output_bytes=max_output_bytes,
+                )
+            finally:
+                _verify_native_cargo_config_boundaries(
+                    project_root=project_root,
+                    build_root=build_root,
+                    quarantine_root=expected_root[0],
+                    environment=environment,
+                    require_empty_cargo_home=False,
+                )
             if completed.returncode != 0:
                 raise FullC6ExecutorError(
                     f"strict Cargo build failed with exit status {completed.returncode}"
@@ -884,13 +997,18 @@ def execute_full_c6_two_build(
                 argv,
                 environment=environment,
                 toolchain=toolchain,
+                native_tools=native_tools,
+                target_triple=native_manifest.target_triple,
+                require_owned_environment=True,
             )
-            outputs = _postprocess_native_build(
+            native_result = _postprocess_native_build(
                 context=context,
                 frozen=frozen,
                 manifest=native_manifest,
                 toolchain=toolchain,
             )
+            native_results.append(native_result)
+            outputs = native_result.outputs
         else:
             assert command_factory is not None
             try:
@@ -971,6 +1089,8 @@ def execute_full_c6_two_build(
         or len(project_identities) != 2
     ):
         raise FullC6ExecutorError("Full C6 executor did not perform exactly two builds")
+    if native_orchestrator and len(native_results) != 2:
+        raise FullC6ExecutorError("Full C6 native executor did not capture exactly two wheels")
     if command_values[0] != command_values[1]:
         raise FullC6ExecutorError("strict Cargo commands differ between isolated builds")
     if copied_inodes[0].intersection(copied_inodes[1]):
@@ -982,6 +1102,18 @@ def execute_full_c6_two_build(
         _verify_private_root(root, root_identity)
         _verify_project_root(project, project_identity)
         _verify_materialized_tree(project, frozen)
+    if native_orchestrator:
+        assert native_manifest is not None
+        for result in native_results:
+            refreshed = _recapture_native_output(result, native_manifest)
+            if refreshed != result.capture:
+                raise FullC6ExecutorError(
+                    "Full C6 verified native wheel changed before receipt capture"
+                )
+            if refreshed.verification.wheel_sha256 != reproducibility.wheel_sha256:
+                raise FullC6ExecutorError(
+                    "Full C6 verified wheel differs from reproducibility evidence"
+                )
     _assert_source_unchanged(source, without_generated_lock)
     if frozen.manifest is None:
         raise FullC6ExecutorError("Full C6 frozen tree is missing its complete manifest")
@@ -1030,6 +1162,7 @@ def execute_full_c6_native_two_build(
     base_environment: Mapping[str, str] | None = None,
     source_date_epoch: int,
     toolchain: BuildToolchainIdentity,
+    native_tools: FullC6NativeToolPaths,
     timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     max_output_bytes: int = MAX_FULL_C6_OUTPUT_BYTES,
 ) -> FullC6ExecutorReceipt:
@@ -1048,6 +1181,7 @@ def execute_full_c6_native_two_build(
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
         toolchain=toolchain,
+        native_tools=native_tools,
         native_orchestrator=True,
     )
 
@@ -1058,7 +1192,7 @@ def _postprocess_native_build(
     frozen: _FrozenTree,
     manifest: FullC6NativeDriverManifest,
     toolchain: BuildToolchainIdentity,
-) -> ReproducibilityBuildOutputs:
+) -> _NativePostprocessResult:
     """Create one wheel and two preliminary non-authorizing documents."""
     if frozen.manifest is None:
         raise FullC6ExecutorError("Full C6 native postprocessor lacks a frozen tree")
@@ -1066,26 +1200,35 @@ def _postprocess_native_build(
     artifact = (
         context.build_root
         / "target"
+        / manifest.target_triple
         / "release"
         / _native_cargo_artifact_name(manifest.target_triple)
     )
     try:
-        before = os.lstat(artifact)
-        artifact_data, artifact_stat = _secure_read_regular(artifact, before)
+        artifact_data, _artifact_stat = _secure_read_build_artifact(
+            context.build_root,
+            (
+                "target",
+                manifest.target_triple,
+                "release",
+                artifact.name,
+            ),
+        )
     except FullC6ExecutorError:
         raise
     except OSError as exc:
         raise FullC6ExecutorError("Full C6 native Cargo artifact is missing") from exc
-    if (before.st_dev, before.st_ino) != (artifact_stat.st_dev, artifact_stat.st_ino):
-        raise FullC6ExecutorError("Full C6 native Cargo artifact changed")
 
     staging = context.build_root / "wheel-staging"
     output = context.build_root / "output"
+    verified_output = context.build_root / "verified-output"
     try:
         staging.mkdir(mode=_CANONICAL_DIRECTORY_MODE)
         output.mkdir(mode=_CANONICAL_DIRECTORY_MODE)
+        verified_output.mkdir(mode=_CANONICAL_DIRECTORY_MODE)
         os.chmod(staging, _CANONICAL_DIRECTORY_MODE)
         os.chmod(output, _CANONICAL_DIRECTORY_MODE)
+        os.chmod(verified_output, _CANONICAL_DIRECTORY_MODE)
     except OSError as exc:
         raise FullC6ExecutorError("Full C6 native output staging could not be created") from exc
     _materialize_frozen_python_staging(frozen, staging)
@@ -1102,9 +1245,11 @@ def _postprocess_native_build(
         if wheel_result.status != "built" or type(wheel_result.path) is not str:
             raise FullC6ExecutorError("Full C6 native wheel postprocessor failed")
         wheel = Path(wheel_result.path)
-        verification = verify_external_wheel_contract(
+        capture = capture_external_wheel_contract(
             wheel,
             manifest.external_contract,
+            native_member_path=f"_rextio_native{extension_suffix}",
+            native_member_bytes=artifact_data,
         )
     except FullC6ExecutorError:
         raise
@@ -1112,17 +1257,28 @@ def _postprocess_native_build(
         raise FullC6ExecutorError(
             "Full C6 native wheel contract verification failed"
         ) from exc
+    verified_wheel = verified_output / wheel.name
+    _write_exclusive_bytes(
+        verified_wheel,
+        capture.wheel_bytes,
+        mode=_CANONICAL_FILE_MODE,
+    )
     try:
-        wheel_stat = os.lstat(wheel)
-    except OSError as exc:
-        raise FullC6ExecutorError("Full C6 native wheel disappeared") from exc
-    if not stat.S_ISREG(wheel_stat.st_mode) or wheel_stat.st_nlink != 1:
-        raise FullC6ExecutorError("Full C6 native wheel is not an independent file")
+        capture = capture_external_wheel_contract(
+            verified_wheel,
+            manifest.external_contract,
+            native_member_path=f"_rextio_native{extension_suffix}",
+            native_member_bytes=artifact_data,
+        )
+    except (OSError, TypeError, ValueError, WheelContractError) as exc:
+        raise FullC6ExecutorError(
+            "Full C6 verified wheel materialization failed"
+        ) from exc
 
     common = {
         "authority": "non-authorizing",
         "cargo_argv_sha256": toolchain.argv.digest,
-        "cargo_artifact_sha256": hashlib.sha256(artifact_data).hexdigest(),
+        "cargo_artifact_sha256": capture.native_member.sha256,
         "distribution_authorized": False,
         "driver_manifest_sha256": manifest.digest,
         "execution_driver": FULL_C6_NATIVE_EXECUTION_DRIVER,
@@ -1130,15 +1286,15 @@ def _postprocess_native_build(
         "postprocessor": FULL_C6_NATIVE_POSTPROCESSOR,
         "target_triple": manifest.target_triple,
         "toolchain_sha256": toolchain.digest,
-        "wheel_sha256": verification.wheel_sha256,
-        "wheel_size": wheel_stat.st_size,
+        "wheel_sha256": capture.verification.wheel_sha256,
+        "wheel_size": len(capture.wheel_bytes),
     }
     sbom_document = {
         "bomFormat": "CycloneDX",
         "components": [],
         "metadata": {"properties": _preliminary_properties(common)},
         "rextio": common,
-        "serialNumber": f"urn:uuid:{verification.wheel_sha256[:32]}",
+        "serialNumber": f"urn:uuid:{capture.verification.wheel_sha256[:32]}",
         "specVersion": "1.5",
         "version": 1,
     }
@@ -1164,24 +1320,45 @@ def _postprocess_native_build(
         "predicateType": "https://slsa.dev/provenance/v1",
         "subject": [
             {
-                "digest": {"sha256": verification.wheel_sha256},
-                "name": wheel.name,
+                "digest": {"sha256": capture.verification.wheel_sha256},
+                "name": verified_wheel.name,
             }
         ],
     }
-    sbom = output / "rextio.preliminary-sbom.json"
-    provenance = output / "rextio.preliminary-provenance-input.json"
+    sbom = verified_output / "rextio.preliminary-sbom.json"
+    provenance = verified_output / "rextio.preliminary-provenance-input.json"
     _write_exclusive_bytes(sbom, _canonical_json(sbom_document), mode=_CANONICAL_FILE_MODE)
     _write_exclusive_bytes(
         provenance,
         _canonical_json(provenance_document),
         mode=_CANONICAL_FILE_MODE,
     )
-    return ReproducibilityBuildOutputs(
-        unsigned_wheel=wheel,
-        sbom_json=sbom,
-        provenance_input_json=provenance,
+    return _NativePostprocessResult(
+        outputs=ReproducibilityBuildOutputs(
+            unsigned_wheel=verified_wheel,
+            sbom_json=sbom,
+            provenance_input_json=provenance,
+        ),
+        capture=capture,
+        native_artifact_bytes=artifact_data,
     )
+
+
+def _recapture_native_output(
+    result: _NativePostprocessResult,
+    manifest: FullC6NativeDriverManifest,
+) -> ExternalWheelCapture:
+    try:
+        return capture_external_wheel_contract(
+            result.outputs.unsigned_wheel,
+            manifest.external_contract,
+            native_member_path=f"_rextio_native{_full_c6_extension_suffix()}",
+            native_member_bytes=result.native_artifact_bytes,
+        )
+    except (OSError, TypeError, ValueError, WheelContractError) as exc:
+        raise FullC6ExecutorError(
+            "Full C6 verified native wheel could not be recaptured"
+        ) from exc
 
 
 def _full_c6_extension_suffix() -> str:
@@ -1305,6 +1482,7 @@ def _validate_executor_arguments(
     timeout_seconds: float,
     max_output_bytes: int,
     toolchain: BuildToolchainIdentity | None,
+    native_tools: FullC6NativeToolPaths | None,
     native_orchestrator: bool,
 ) -> None:
     if type(native_orchestrator) is not bool:
@@ -1320,12 +1498,20 @@ def _validate_executor_arguments(
         raise FullC6ExecutorError("command-factory mode must supply its own Cargo command")
     if toolchain is not None and type(toolchain) is not BuildToolchainIdentity:
         raise FullC6ExecutorError("Full C6 executor toolchain identity is invalid")
+    if native_tools is not None and type(native_tools) is not FullC6NativeToolPaths:
+        raise FullC6ExecutorError("Full C6 native tool paths are invalid")
     if build is not None and toolchain is not None:
         raise FullC6ExecutorError("callback executor cannot claim a production toolchain")
+    if not native_orchestrator and native_tools is not None:
+        raise FullC6ExecutorError("native tool paths require the native orchestrator")
     if native_orchestrator:
         if type(toolchain) is not BuildToolchainIdentity:
             raise FullC6ExecutorError(
                 "Full C6 native orchestrator requires an exact toolchain identity"
+            )
+        if type(native_tools) is not FullC6NativeToolPaths:
+            raise FullC6ExecutorError(
+                "Full C6 native orchestrator requires exact native tool paths"
             )
         if lock_generator is not None or lock_command_factory is not None:
             raise FullC6ExecutorError(
@@ -1628,6 +1814,172 @@ def _secure_read_regular(path: Path, before: os.stat_result) -> tuple[bytes, os.
         raise FullC6ExecutorError("Full C6 source file changed during capture") from exc
     _require_same_regular(opened, final)
     return data, opened
+
+
+def _secure_read_build_artifact(
+    build_root: Path,
+    components: tuple[str, ...],
+) -> tuple[bytes, os.stat_result]:
+    """Read an artifact through one descriptor-pinned no-follow path chain."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory_flag is None or len(components) < 2:
+        raise FullC6ExecutorError("Full C6 artifact openat traversal is unavailable")
+    if any(
+        not component
+        or component in {".", ".."}
+        or "/" in component
+        or "\\" in component
+        or "\0" in component
+        for component in components
+    ):
+        raise FullC6ExecutorError("Full C6 artifact path components are invalid")
+    root = Path(os.path.abspath(build_root))
+    directory_flags = (
+        os.O_RDONLY
+        | nofollow
+        | directory_flag
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | nofollow
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        linked_root = os.lstat(root)
+        root_fd = os.open(root, directory_flags)
+    except OSError as exc:
+        raise FullC6ExecutorError(
+            "Full C6 artifact build root could not be opened safely"
+        ) from exc
+    directory_records: list[tuple[int, int, str, os.stat_result]] = []
+    file_fd: int | None = None
+    try:
+        opened_root = os.fstat(root_fd)
+        _require_same_directory(linked_root, opened_root)
+        current_fd = root_fd
+        for component in components[:-1]:
+            try:
+                linked = os.stat(component, dir_fd=current_fd, follow_symlinks=False)
+                child_fd = os.open(component, directory_flags, dir_fd=current_fd)
+            except OSError as exc:
+                raise FullC6ExecutorError(
+                    "Full C6 artifact directory is a symlink or could not be opened safely"
+                ) from exc
+            try:
+                opened = os.fstat(child_fd)
+                _require_same_directory(linked, opened)
+            except Exception:
+                os.close(child_fd)
+                raise
+            directory_records.append((current_fd, child_fd, component, opened))
+            current_fd = child_fd
+
+        filename = components[-1]
+        try:
+            linked_file = os.stat(filename, dir_fd=current_fd, follow_symlinks=False)
+            file_fd = os.open(filename, file_flags, dir_fd=current_fd)
+        except OSError as exc:
+            raise FullC6ExecutorError(
+                "Full C6 artifact file could not be opened safely"
+            ) from exc
+        opened_file = os.fstat(file_fd)
+        _require_same_regular(linked_file, opened_file)
+        if opened_file.st_size < 0 or opened_file.st_size > MAX_FULL_C6_FILE_BYTES:
+            raise FullC6ExecutorError("Full C6 artifact exceeds the byte bound")
+        chunks: list[bytes] = []
+        remaining = MAX_FULL_C6_FILE_BYTES + 1
+        while remaining > 0:
+            try:
+                chunk = os.read(file_fd, min(65536, remaining))
+            except BlockingIOError as exc:
+                raise FullC6ExecutorError(
+                    "Full C6 artifact file could not be read safely"
+                ) from exc
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        after_file = os.fstat(file_fd)
+        current_file = os.stat(filename, dir_fd=current_fd, follow_symlinks=False)
+        _require_same_regular(opened_file, after_file)
+        _require_same_regular(after_file, current_file)
+        if len(data) != after_file.st_size or len(data) > MAX_FULL_C6_FILE_BYTES:
+            raise FullC6ExecutorError("Full C6 artifact changed during capture")
+
+        for parent_fd, child_fd, component, opened in reversed(directory_records):
+            after = os.fstat(child_fd)
+            current = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+            _require_same_directory(opened, after)
+            _require_same_directory(after, current)
+        after_root = os.fstat(root_fd)
+        current_root = os.lstat(root)
+        _require_same_directory(opened_root, after_root)
+        _require_same_directory(after_root, current_root)
+        return data, opened_file
+    except FullC6ExecutorError:
+        raise
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 artifact path changed during capture") from exc
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        for _parent_fd, child_fd, _component, _opened in reversed(directory_records):
+            os.close(child_fd)
+        os.close(root_fd)
+
+
+def _secure_read_regular_at(
+    directory_fd: int,
+    name: str,
+    linked: os.stat_result,
+    *,
+    label: str,
+) -> tuple[bytes, os.stat_result]:
+    """Read one bounded file relative to a pinned directory descriptor."""
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(name, flags, dir_fd=directory_fd)
+    except OSError as exc:
+        raise FullC6ExecutorError(f"Full C6 {label} could not be opened safely") from exc
+    try:
+        opened = os.fstat(descriptor)
+        _require_same_regular(linked, opened)
+        if opened.st_size < 0 or opened.st_size > MAX_FULL_C6_FILE_BYTES:
+            raise FullC6ExecutorError(f"Full C6 {label} exceeds the byte bound")
+        chunks: list[bytes] = []
+        remaining = MAX_FULL_C6_FILE_BYTES + 1
+        while remaining > 0:
+            try:
+                chunk = os.read(descriptor, min(65536, remaining))
+            except BlockingIOError as exc:
+                raise FullC6ExecutorError(
+                    f"Full C6 {label} could not be read safely"
+                ) from exc
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        after = os.fstat(descriptor)
+        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        _require_same_regular(opened, after)
+        _require_same_regular(after, current)
+        if len(data) != after.st_size or len(data) > MAX_FULL_C6_FILE_BYTES:
+            raise FullC6ExecutorError(f"Full C6 {label} changed during capture")
+        return data, opened
+    except OSError as exc:
+        raise FullC6ExecutorError(f"Full C6 {label} changed during capture") from exc
+    finally:
+        os.close(descriptor)
 
 
 def _require_same_regular(earlier: os.stat_result, later: os.stat_result) -> None:
@@ -2036,18 +2388,14 @@ def _verify_native_toolchain_invocation(
     *,
     environment: Mapping[str, str],
     toolchain: BuildToolchainIdentity,
+    native_tools: FullC6NativeToolPaths | None = None,
+    target_triple: str | None = None,
+    require_owned_environment: bool = False,
 ) -> None:
-    """Bind the internally launched argv to the captured Cargo executable."""
+    """Bind an invocation to every concrete native tool selected at runtime."""
     if argv != toolchain.argv.values:
         raise FullC6ExecutorError("Full C6 executor argv differs from toolchain identity")
-    executable_text = argv[0]
-    if "/" in executable_text or (os.altsep is not None and os.altsep in executable_text):
-        executable = Path(executable_text)
-    else:
-        resolved = shutil.which(executable_text, path=environment.get("PATH"))
-        if resolved is None:
-            raise FullC6ExecutorError("Full C6 Cargo executable cannot be resolved")
-        executable = Path(resolved)
+    executable = _resolve_invoked_tool(argv[0], environment)
     try:
         executable = executable.resolve(strict=True)
         verify_tool_identity(executable, toolchain.cargo)
@@ -2055,6 +2403,313 @@ def _verify_native_toolchain_invocation(
         raise FullC6ExecutorError(
             "Full C6 Cargo executable differs from toolchain identity"
         ) from exc
+    if native_tools is None:
+        return
+    if target_triple not in {"aarch64-apple-darwin", "x86_64-unknown-linux-gnu"}:
+        raise FullC6ExecutorError("Full C6 native target binding is invalid")
+    bindings = (
+        ("python", native_tools.python, toolchain.python),
+        ("cargo", native_tools.cargo, toolchain.cargo),
+        ("rustc", native_tools.rustc, toolchain.rustc),
+        ("linker", native_tools.linker, toolchain.linker),
+    )
+    resolved_tools: dict[str, Path] = {}
+    for name, path, expected in bindings:
+        try:
+            resolved = path.resolve(strict=True)
+            verify_tool_identity(resolved, expected)
+        except (OSError, ToolchainIdentityError) as exc:
+            raise FullC6ExecutorError(
+                f"Full C6 {name} executable differs from toolchain identity"
+            ) from exc
+        resolved_tools[name] = resolved
+    try:
+        current_python = Path(sys.executable).resolve(strict=True)
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 current Python executable is unavailable") from exc
+    if current_python != resolved_tools["python"]:
+        raise FullC6ExecutorError(
+            "Full C6 current Python executable differs from toolchain identity"
+        )
+    if executable != resolved_tools["cargo"]:
+        raise FullC6ExecutorError(
+            "Full C6 invoked Cargo path differs from native tool path"
+        )
+    if not require_owned_environment:
+        return
+    expected_values = {
+        "CARGO_BUILD_TARGET": target_triple,
+        "PYO3_PYTHON": str(resolved_tools["python"]),
+        "RUSTC": str(resolved_tools["rustc"]),
+    }
+    if any(environment.get(name) != value for name, value in expected_values.items()):
+        raise FullC6ExecutorError("Full C6 native owned environment binding changed")
+    encoded = environment.get("CARGO_ENCODED_RUSTFLAGS", "").split("\x1f")
+    expected_flags = _native_linker_rustflags(
+        resolved_tools["linker"],
+        target_triple,
+    )
+    if (
+        len(encoded) != len(expected_flags) + 2
+        or not all(item.startswith("--remap-path-prefix=") for item in encoded[:2])
+        or tuple(encoded[2:]) != expected_flags
+    ):
+        raise FullC6ExecutorError("Full C6 native linker selection changed")
+
+
+def _resolve_invoked_tool(value: str, environment: Mapping[str, str]) -> Path:
+    if "/" in value or (os.altsep is not None and os.altsep in value):
+        return Path(value)
+    search_path = environment.get("PATH")
+    if type(search_path) is not str or not search_path:
+        raise FullC6ExecutorError("Full C6 Cargo executable requires a bound PATH")
+    resolved = shutil.which(value, path=search_path)
+    if resolved is None:
+        raise FullC6ExecutorError("Full C6 Cargo executable cannot be resolved")
+    return Path(resolved)
+
+
+def _verify_native_base_environment(
+    environment: Mapping[str, str],
+    toolchain: BuildToolchainIdentity,
+) -> None:
+    try:
+        observed = capture_environment_identity(environment)
+    except ToolchainIdentityError as exc:
+        raise FullC6ExecutorError("Full C6 native base environment is invalid") from exc
+    if observed != toolchain.environment:
+        raise FullC6ExecutorError(
+            "Full C6 native base environment differs from toolchain identity"
+        )
+
+
+def _bind_native_environment(
+    environment: dict[str, str],
+    *,
+    native_tools: FullC6NativeToolPaths,
+    target_triple: str,
+) -> None:
+    try:
+        python = native_tools.python.resolve(strict=True)
+        rustc = native_tools.rustc.resolve(strict=True)
+        linker = native_tools.linker.resolve(strict=True)
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 native tool path is unavailable") from exc
+    remaps = environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+    environment.update(
+        {
+            "CARGO_BUILD_TARGET": target_triple,
+            "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(
+                (*remaps, *_native_linker_rustflags(linker, target_triple))
+            ),
+            "PYO3_PYTHON": str(python),
+            "RUSTC": str(rustc),
+        }
+    )
+
+
+def _verify_native_cargo_config_boundaries(
+    *,
+    project_root: Path,
+    build_root: Path,
+    quarantine_root: Path,
+    environment: Mapping[str, str],
+    require_empty_cargo_home: bool,
+    receipt_bound_config: _ReceiptBoundCargoConfig | None = None,
+) -> None:
+    """Fail closed over every controlled Cargo config discovery location."""
+    cargo_home_text = environment.get("CARGO_HOME")
+    if type(cargo_home_text) is not str or not cargo_home_text:
+        raise FullC6ExecutorError("Full C6 native CARGO_HOME binding is missing")
+    cargo_home = Path(cargo_home_text)
+    expected_cargo_home = build_root / "cargo-home"
+    try:
+        if cargo_home.resolve(strict=True) != expected_cargo_home.resolve(strict=True):
+            raise FullC6ExecutorError(
+                "Full C6 native CARGO_HOME escaped the controlled build root"
+            )
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 native CARGO_HOME is unavailable") from exc
+
+    try:
+        project = project_root.resolve(strict=True)
+        build = build_root.resolve(strict=True)
+        quarantine = quarantine_root.resolve(strict=True)
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 Cargo discovery root is unavailable") from exc
+    discovery_roots = (project, *project.parents)
+    if build not in discovery_roots or quarantine not in discovery_roots:
+        raise FullC6ExecutorError(
+            "Full C6 controlled Cargo discovery roots are not cwd ancestors"
+        )
+
+    observed: list[tuple[str, str]] = []
+    for root in discovery_roots:
+        if root == project:
+            label = "project"
+        elif root == build:
+            label = "build-root"
+        elif root == quarantine:
+            label = "quarantine"
+        else:
+            label = f"ancestor:{root.as_posix()}"
+        observed.extend(_capture_cargo_configs_from_ancestor(root, label=label))
+    observed.extend(
+        _capture_cargo_home_configs(
+            cargo_home,
+            require_empty=require_empty_cargo_home,
+        )
+    )
+
+    if receipt_bound_config is None:
+        if observed:
+            raise FullC6ExecutorError(
+                "Full C6 discovered a non-receipt-bound Cargo config"
+            )
+    elif observed != [(receipt_bound_config.location, receipt_bound_config.sha256)]:
+        raise FullC6ExecutorError(
+            "Full C6 Cargo config differs from its receipt-bound generated config"
+        )
+
+
+
+def _capture_cargo_configs_from_ancestor(
+    root: Path,
+    *,
+    label: str,
+) -> tuple[tuple[str, str], ...]:
+    """Capture Cargo cwd-ancestor configs through a pinned two-directory chain."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory_flag is None:
+        raise FullC6ExecutorError("Full C6 Cargo config openat traversal is unavailable")
+    flags = os.O_RDONLY | nofollow | directory_flag | getattr(os, "O_CLOEXEC", 0)
+    cargo_fd: int | None = None
+    try:
+        linked_root = os.lstat(root)
+        root_fd = os.open(root, flags)
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 Cargo discovery ancestor could not be opened") from exc
+    try:
+        opened_root = os.fstat(root_fd)
+        _require_same_directory(linked_root, opened_root)
+        try:
+            linked_cargo = os.stat(".cargo", dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            linked_cargo = None
+        if linked_cargo is None:
+            current_root = os.lstat(root)
+            _require_same_directory(opened_root, current_root)
+            return ()
+        if stat.S_ISLNK(linked_cargo.st_mode) or not stat.S_ISDIR(linked_cargo.st_mode):
+            raise FullC6ExecutorError(
+                "Full C6 Cargo config directory is not a real directory"
+            )
+        cargo_fd = os.open(".cargo", flags, dir_fd=root_fd)
+        opened_cargo = os.fstat(cargo_fd)
+        _require_same_directory(linked_cargo, opened_cargo)
+        observed: list[tuple[str, str]] = []
+        for filename in ("config", "config.toml"):
+            try:
+                linked = os.stat(filename, dir_fd=cargo_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(linked.st_mode) or not stat.S_ISREG(linked.st_mode):
+                raise FullC6ExecutorError("Full C6 Cargo config is not a regular file")
+            data, _opened = _secure_read_regular_at(
+                cargo_fd,
+                filename,
+                linked,
+                label="Cargo config",
+            )
+            observed.append(
+                (f"{label}:.cargo/{filename}", hashlib.sha256(data).hexdigest())
+            )
+        after_cargo = os.fstat(cargo_fd)
+        current_cargo = os.stat(".cargo", dir_fd=root_fd, follow_symlinks=False)
+        _require_same_directory(opened_cargo, after_cargo)
+        _require_same_directory(after_cargo, current_cargo)
+        after_root = os.fstat(root_fd)
+        current_root = os.lstat(root)
+        _require_same_directory(opened_root, after_root)
+        _require_same_directory(after_root, current_root)
+        return tuple(observed)
+    except FullC6ExecutorError:
+        raise
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 Cargo config path changed during capture") from exc
+    finally:
+        if cargo_fd is not None:
+            os.close(cargo_fd)
+        os.close(root_fd)
+
+
+def _capture_cargo_home_configs(
+    cargo_home: Path,
+    *,
+    require_empty: bool,
+) -> tuple[tuple[str, str], ...]:
+    """Capture direct CARGO_HOME configs through one pinned descriptor."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory_flag is None:
+        raise FullC6ExecutorError("Full C6 CARGO_HOME openat traversal is unavailable")
+    flags = os.O_RDONLY | nofollow | directory_flag | getattr(os, "O_CLOEXEC", 0)
+    try:
+        linked_home = os.lstat(cargo_home)
+        home_fd = os.open(cargo_home, flags)
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 native CARGO_HOME could not be opened") from exc
+    try:
+        opened_home = os.fstat(home_fd)
+        _require_same_directory(linked_home, opened_home)
+        names = tuple(sorted(os.listdir(home_fd)))
+        if require_empty and names:
+            raise FullC6ExecutorError(
+                "Full C6 native CARGO_HOME must be empty before Cargo execution"
+            )
+        observed: list[tuple[str, str]] = []
+        for filename in ("config", "config.toml"):
+            if filename not in names:
+                continue
+            linked = os.stat(filename, dir_fd=home_fd, follow_symlinks=False)
+            if stat.S_ISLNK(linked.st_mode) or not stat.S_ISREG(linked.st_mode):
+                raise FullC6ExecutorError("Full C6 Cargo config is not a regular file")
+            data, _opened = _secure_read_regular_at(
+                home_fd,
+                filename,
+                linked,
+                label="Cargo config",
+            )
+            observed.append(
+                (f"cargo-home:{filename}", hashlib.sha256(data).hexdigest())
+            )
+        after_home = os.fstat(home_fd)
+        current_home = os.lstat(cargo_home)
+        _require_same_directory(opened_home, after_home)
+        _require_same_directory(after_home, current_home)
+        return tuple(observed)
+    except FullC6ExecutorError:
+        raise
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 CARGO_HOME changed during capture") from exc
+    finally:
+        os.close(home_fd)
+
+
+def _native_linker_rustflags(linker: Path, target_triple: str) -> tuple[str, ...]:
+    flags = ("-C", f"linker={linker}")
+    if target_triple == "aarch64-apple-darwin":
+        return (
+            *flags,
+            "-C",
+            "link-arg=-undefined",
+            "-C",
+            "link-arg=dynamic_lookup",
+        )
+    if target_triple == "x86_64-unknown-linux-gnu":
+        return flags
+    raise FullC6ExecutorError("Full C6 native target binding is invalid")
 
 
 def _require_sha256(value: object, label: str) -> str:
@@ -2130,6 +2785,7 @@ __all__ = [
     "FullC6LockGenerationRequest",
     "FullC6TreeEntry",
     "FullC6NativeDriverManifest",
+    "FullC6NativeToolPaths",
     "MAX_FULL_C6_FILE_BYTES",
     "MAX_FULL_C6_OUTPUT_BYTES",
     "MAX_FULL_C6_PATH_DEPTH",

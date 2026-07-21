@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import hmac
 import io
 import os
 import re
@@ -130,6 +131,59 @@ class ExternalWheelVerification:
     metadata_member: str
     record_member: str
     wheel_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalWheelNativeMemberIdentity:
+    """Exact native member proven to match the Cargo artifact bytes."""
+
+    path: str
+    sha256: str
+    size: int
+
+    def __post_init__(self) -> None:
+        if (
+            not _is_safe_member_path(self.path)
+            or PurePosixPath(self.path).name != self.path
+            or not self.path.startswith("_rextio_native.")
+            or not self.path.endswith((".so", ".pyd"))
+        ):
+            raise ValueError("external wheel native member path is invalid")
+        if type(self.sha256) is not str or _SHA256.fullmatch(self.sha256) is None:
+            raise ValueError("external wheel native member digest is invalid")
+        if (
+            type(self.size) is not int
+            or isinstance(self.size, bool)
+            or self.size <= 0
+            or self.size > _MAX_STRICT_ENTRY_BYTES
+        ):
+            raise ValueError("external wheel native member size is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalWheelCapture:
+    """Pinned bytes and typed native-member proof from one wheel transaction."""
+
+    verification: ExternalWheelVerification
+    wheel_bytes: bytes
+    native_member: ExternalWheelNativeMemberIdentity
+
+    def __post_init__(self) -> None:
+        if type(self.verification) is not ExternalWheelVerification:
+            raise TypeError("external wheel capture verification is invalid")
+        if type(self.wheel_bytes) is not bytes or not self.wheel_bytes:
+            raise TypeError("external wheel capture bytes are invalid")
+        if type(self.native_member) is not ExternalWheelNativeMemberIdentity:
+            raise TypeError("external wheel capture native member is invalid")
+        if hashlib.sha256(self.wheel_bytes).hexdigest() != self.verification.wheel_sha256:
+            raise ValueError("external wheel capture digest is inconsistent")
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedExternalWheel:
+    verification: ExternalWheelVerification
+    wheel_bytes: bytes
+    payloads: dict[str, bytes]
 
 
 _DIST_REQUIREMENT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
@@ -274,6 +328,58 @@ def verify_external_wheel_contract(
     contract: ExternalWheelContract,
 ) -> ExternalWheelVerification:
     """Reopen the final wheel and verify exact pin, exclusion, and RECORD."""
+    return _verify_external_wheel_contract_pinned(wheel_path, contract).verification
+
+
+def capture_external_wheel_contract(
+    wheel_path: Path,
+    contract: ExternalWheelContract,
+    *,
+    native_member_path: str,
+    native_member_bytes: bytes,
+) -> ExternalWheelCapture:
+    """Verify and capture one wheel while binding its native member byte-for-byte.
+
+    The wheel is opened and pinned once.  Contract checks, native-member checks,
+    and the returned wheel bytes therefore all describe the same filesystem
+    object and the same byte sequence.
+    """
+    if type(native_member_bytes) is not bytes or not native_member_bytes:
+        raise WheelContractError("expected native extension bytes are invalid")
+    try:
+        expected = ExternalWheelNativeMemberIdentity(
+            path=native_member_path,
+            sha256=hashlib.sha256(native_member_bytes).hexdigest(),
+            size=len(native_member_bytes),
+        )
+    except (TypeError, ValueError) as error:
+        raise WheelContractError(str(error)) from error
+    verified = _verify_external_wheel_contract_pinned(wheel_path, contract)
+    native_candidates = tuple(
+        name
+        for name in verified.payloads
+        if PurePosixPath(name).name.startswith("_rextio_native.")
+        and name.endswith((".so", ".pyd"))
+    )
+    if native_candidates != (expected.path,):
+        raise WheelContractError("output wheel native extension coverage is invalid")
+    observed = verified.payloads[expected.path]
+    if len(observed) != expected.size or not hmac.compare_digest(
+        observed,
+        native_member_bytes,
+    ):
+        raise WheelContractError("output wheel native extension differs from Cargo artifact")
+    return ExternalWheelCapture(
+        verification=verified.verification,
+        wheel_bytes=verified.wheel_bytes,
+        native_member=expected,
+    )
+
+
+def _verify_external_wheel_contract_pinned(
+    wheel_path: Path,
+    contract: ExternalWheelContract,
+) -> _VerifiedExternalWheel:
     if type(contract) is not ExternalWheelContract:
         raise WheelContractError("external wheel contract has an invalid type")
     path = Path(wheel_path)
@@ -351,11 +457,15 @@ def verify_external_wheel_contract(
             raise WheelContractError("output wheel contains external package material")
     _verify_record(payloads, records[0])
     _require_pinned_wheel_unchanged(path, pinned_identity)
-    return ExternalWheelVerification(
-        requirement=contract.requirement,
-        metadata_member=metadata[0],
-        record_member=records[0],
-        wheel_sha256=hashlib.sha256(wheel_bytes).hexdigest(),
+    return _VerifiedExternalWheel(
+        verification=ExternalWheelVerification(
+            requirement=contract.requirement,
+            metadata_member=metadata[0],
+            record_member=records[0],
+            wheel_sha256=hashlib.sha256(wheel_bytes).hexdigest(),
+        ),
+        wheel_bytes=wheel_bytes,
+        payloads=payloads,
     )
 
 
