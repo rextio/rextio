@@ -44,6 +44,10 @@ from rextio.build.full_c6_cargo_workspace import (
     FullC6CargoDependencyWorkspaceReceipt,
     validate_full_c6_cargo_dependency_workspace_receipt,
 )
+from rextio.build.full_c6_config_identity import (
+    FullC6ConfigIdentityError,
+    capture_effective_full_c6_config_identity,
+)
 from rextio.build.full_c6_executor import (
     FullC6ExecutorReceipt,
     FullC6NativeExecutionAuthority,
@@ -130,6 +134,7 @@ from rextio.build.full_c6_supply_chain import (
 from rextio.build.input_closure import (
     BuildInputClosure,
     ExactFileIdentity,
+    bind_build_input_aggregate,
     bind_full_c6_cargo_workspace_aggregates,
 )
 from rextio.build.license_inventory import collect_component_license_inventory
@@ -503,6 +508,7 @@ def _collect_full_c6_production_material(
         raise FullC6ProductionError("artifact policy coverage is incomplete")
     external_authority = _derive_external_authority(preflight)
     build_inputs = _build_input_closure(
+        config=config,
         input_snapshot=input_snapshot,
         analysis_inputs=analysis_inputs,
         component_license_policy=component_license_policy,
@@ -661,7 +667,12 @@ def _validate_material(material: _FullC6ProductionMaterial) -> bool:
             )
             or type(material.build_inputs) is not BuildInputClosure
             or bind_full_c6_cargo_workspace_aggregates(
-                BuildInputClosure(files=material.build_inputs.files),
+                bind_build_input_aggregate(
+                    BuildInputClosure(files=material.build_inputs.files),
+                    capture_effective_full_c6_config_identity(
+                        material.config
+                    ).to_build_input_aggregate(),
+                ),
                 material.cargo_workspace,
             )
             != material.build_inputs
@@ -859,6 +870,12 @@ def _require_production_inputs(
         raise FullC6ProductionError("Full C6 production prerequisites are invalid")
     if toolchain.cargo_sources is not cargo_workspace.cargo_sources:
         raise FullC6ProductionError("toolchain and Cargo workspace differ")
+    try:
+        capture_effective_full_c6_config_identity(config)
+    except FullC6ConfigIdentityError as exc:
+        raise FullC6ProductionError(
+            "Full C6 effective config is not canonical"
+        ) from exc
     root = _require_project_root(preflight, project_root)
     validate_full_c6_external_context(preflight.context, preflight.analysis)
     lifecycle = resolve_full_c6_policy_lifecycle(config)
@@ -1043,6 +1060,7 @@ def _cargo_package_refs(
 
 def _build_input_closure(
     *,
+    config: RextioConfig,
     input_snapshot: EvidenceInputSnapshot,
     analysis_inputs: object,
     component_license_policy: object,
@@ -1088,6 +1106,12 @@ def _build_input_closure(
     ]
     closure = BuildInputClosure(
         files=tuple(sorted(files, key=lambda item: (item.role, item.logical_name)))
+    )
+    closure = bind_build_input_aggregate(
+        closure,
+        capture_effective_full_c6_config_identity(
+            config
+        ).to_build_input_aggregate(),
     )
     return bind_full_c6_cargo_workspace_aggregates(closure, cargo_workspace)
 

@@ -31,6 +31,9 @@ from rextio.build.full_c6_gate import (
     authorize_full_c6_distribution,
     prepare_full_c6_preauthorization_evidence,
 )
+from rextio.build.full_c6_config_identity import (
+    capture_effective_full_c6_config_identity,
+)
 from rextio.build.full_c6_analysis_transaction import (
     FullC6AnalysisIRTransaction,
     FullC6AnalysisTransactionError,
@@ -64,7 +67,10 @@ from rextio.build.full_c6_supply_chain import (
     FullC6CargoPathSource,
     build_full_c6_supply_chain_receipt,
 )
-from rextio.build.input_closure import bind_full_c6_cargo_workspace_aggregates
+from rextio.build.input_closure import (
+    bind_build_input_aggregate,
+    bind_full_c6_cargo_workspace_aggregates,
+)
 from rextio.build.signing import (
     SIGNED_MESSAGE_PREFIX,
     DetachedSignatureEnvelope,
@@ -72,6 +78,7 @@ from rextio.build.signing import (
 )
 from rextio.build.runtime_authorization import RUNTIME_VERIFICATION_NATIVE_FRESH
 from rextio.source.source_lock_v2 import SourceLockV2Verification
+from rextio.config.schema import RextioConfig
 
 
 TARGET = "x86_64-unknown-linux-gnu"
@@ -454,7 +461,12 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         cargo_workspace=cargo_workspace,
     )
     build_inputs = bind_full_c6_cargo_workspace_aggregates(
-        _SUPPLY["_build_inputs"](policy),  # type: ignore[operator]
+        bind_build_input_aggregate(
+            _SUPPLY["_build_inputs"](policy),  # type: ignore[operator]
+            capture_effective_full_c6_config_identity(
+                RextioConfig()
+            ).to_build_input_aggregate(),
+        ),
         cargo_workspace,
     )
     transaction = create_full_c6_analysis_ir_transaction(

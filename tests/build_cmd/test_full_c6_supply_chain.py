@@ -12,6 +12,10 @@ import pytest
 
 import rextio.build.full_c6_supply_chain as supply_chain_module
 from rextio.artifacts.evidence import EvidenceFileRef, WheelEntryRef, canonical_json_bytes
+from rextio.build.full_c6_config_identity import (
+    FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID,
+    capture_effective_full_c6_config_identity,
+)
 from rextio.build.full_c6_policy import FULL_C6_POLICY_CLASS_IDS, FullC6PolicyReceipt
 from rextio.build.full_c6_supply_chain import (
     FULL_C6_BUILD_TYPE,
@@ -30,6 +34,7 @@ from rextio.build.input_closure import (
     BuildInputAggregateIdentity,
     BuildInputClosure,
     ExactFileIdentity,
+    bind_build_input_aggregate,
     bind_full_c6_cargo_workspace_aggregates,
 )
 from rextio.build.reproducibility import (
@@ -59,6 +64,7 @@ from rextio.source.wheel_authority import (
     SourceWheelArchiveIdentity,
     SourceWheelEntryIdentity,
 )
+from rextio.config.schema import RextioConfig
 TARGET = "x86_64-unknown-linux-gnu"
 _POLICY_FIXTURES = runpy.run_path(
     str(Path(__file__).with_name("test_full_c6_policy.py"))
@@ -426,7 +432,13 @@ def _aggregate_arguments(
     build_inputs = arguments["build_inputs"]
     assert isinstance(build_inputs, BuildInputClosure)
     workspace = _sealed_cargo_workspace(tmp_path)
-    bound = bind_full_c6_cargo_workspace_aggregates(build_inputs, workspace)
+    config_bound = bind_build_input_aggregate(
+        build_inputs,
+        capture_effective_full_c6_config_identity(
+            RextioConfig()
+        ).to_build_input_aggregate(),
+    )
+    bound = bind_full_c6_cargo_workspace_aggregates(config_bound, workspace)
     authority_aggregate = arguments["authority_aggregate"]
     assert isinstance(
         authority_aggregate,
@@ -685,7 +697,11 @@ def test_cargo_aggregate_receipt_round_trip_binds_safe_document_materials(
     )
 
     assert trusted == build_inputs
-    assert receipt.cargo_input_aggregates == build_inputs.aggregates
+    assert receipt.cargo_input_aggregates == tuple(
+        item
+        for item in build_inputs.aggregates
+        if item.aggregate_id in FULL_C6_CARGO_INPUT_AGGREGATE_IDS
+    )
     assert tuple(item.aggregate_id for item in receipt.cargo_input_aggregates) == (
         tuple(sorted(FULL_C6_CARGO_INPUT_AGGREGATE_IDS))
     )
@@ -709,6 +725,9 @@ def test_cargo_aggregate_receipt_round_trip_binds_safe_document_materials(
     assert all(len(digest) == 64 for digest in aggregate_bindings.values())
     assert str(tmp_path) not in repr(public)
     assert "MIT aggregate fixture" not in repr(public)
+    assert public["effective_config"] == (
+        capture_effective_full_c6_config_identity(RextioConfig()).to_dict()
+    )
 
     sbom = json.loads(receipt.sbom_json)
     components = [
@@ -787,8 +806,56 @@ def test_cargo_aggregate_missing_extra_alias_and_reorder_fail_closed(
     for candidate in (missing, extra, aliased, reordered):
         with pytest.raises(
             FullC6SupplyChainError,
-            match="missing, extra, aliased, or reordered",
+            match="missing|extra|aliased|reordered|canonical order",
         ):
+            validate_full_c6_cargo_input_aggregates(candidate, workspace)
+
+
+def test_effective_config_aggregate_missing_extra_and_alias_fail_closed(
+    tmp_path: Path,
+) -> None:
+    arguments, workspace = _aggregate_arguments(tmp_path)
+    bound = arguments["build_inputs"]
+    assert isinstance(bound, BuildInputClosure)
+    config_row = next(
+        item
+        for item in bound.aggregates
+        if item.aggregate_id == FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID
+    )
+    cargo_rows = tuple(item for item in bound.aggregates if item is not config_row)
+    aliased = BuildInputClosure(
+        files=bound.files,
+        aggregates=tuple(
+            sorted(
+                (
+                    *cargo_rows,
+                    replace(config_row, aggregate_id=config_row.aggregate_id.upper()),
+                ),
+                key=lambda item: (item.kind, item.aggregate_id),
+            )
+        ),
+    )
+    extra = BuildInputClosure(
+        files=bound.files,
+        aggregates=tuple(
+            sorted(
+                (
+                    *bound.aggregates,
+                    BuildInputAggregateIdentity(
+                        aggregate_id="full-c6-effective-config-extra",
+                        kind="effective-config-extra",
+                        digest="d" * 64,
+                        member_count=1,
+                    ),
+                ),
+                key=lambda item: (item.kind, item.aggregate_id),
+            )
+        ),
+    )
+    missing = BuildInputClosure(files=bound.files, aggregates=cargo_rows)
+
+    for candidate in (missing, extra, aliased):
+        with pytest.raises(FullC6SupplyChainError, match="effective-config"):
             validate_full_c6_cargo_input_aggregates(candidate, workspace)
 
 

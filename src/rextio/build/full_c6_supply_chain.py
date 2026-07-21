@@ -45,6 +45,12 @@ from rextio.build.full_c6_cargo_workspace import (
     FullC6CargoDependencyWorkspaceReceipt,
     validate_full_c6_cargo_dependency_workspace_receipt,
 )
+from rextio.build.full_c6_config_identity import (
+    EffectiveFullC6ConfigIdentity,
+    FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID,
+    FullC6ConfigIdentityError,
+    effective_full_c6_config_identity_from_aggregate,
+)
 from rextio.build.input_closure import (
     FULL_C6_CARGO_INPUT_AGGREGATE_IDS,
     BuildInputAggregateIdentity,
@@ -89,6 +95,9 @@ FULL_C6_BUILDER_ID = "https://rextio.dev/builder/full-c6-host-extension-wheel/v1
 FULL_C6_PLATFORM_IDENTITY_DOMAIN = "rextio.full-c6-runtime-platform-identity.v1"
 FULL_C6_CARGO_INPUT_AGGREGATE_BINDING_DOMAIN = (
     "rextio.full-c6-cargo-input-aggregate-binding.v1"
+)
+FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_BINDING_DOMAIN = (
+    "rextio.full-c6-effective-config-aggregate-binding.v1"
 )
 FULL_C6_AUTHORITY_AGGREGATE_BINDING_DOMAIN = (
     "rextio.full-c6-authority-aggregate-binding.v1"
@@ -148,6 +157,7 @@ _EXTERNAL_ENTRY_CLASSES = frozenset(
 _FULL_C6_CARGO_INPUT_AGGREGATE_ORDER = tuple(
     sorted(FULL_C6_CARGO_INPUT_AGGREGATE_IDS)
 )
+_FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME = "full-c6-effective-config"
 
 
 class FullC6SupplyChainError(ValueError):
@@ -377,6 +387,7 @@ class FullC6SupplyChainReceipt:
     sbom_json: bytes = field(repr=False)
     provenance_json: bytes = field(repr=False)
     cargo_input_aggregates: tuple[BuildInputAggregateIdentity, ...] = ()
+    effective_config: EffectiveFullC6ConfigIdentity | None = None
     domain: str = FULL_C6_SUPPLY_CHAIN_DOMAIN
     scope: str = FULL_C6_SCOPE
 
@@ -413,6 +424,14 @@ class FullC6SupplyChainReceipt:
             self.cargo_input_aggregates,
             allow_legacy_empty=True,
         )
+        effective_config = _rebuild_effective_config_identity(
+            self.effective_config,
+            allow_legacy_none=True,
+        )
+        if bool(cargo_input_aggregates) != (effective_config is not None):
+            raise FullC6SupplyChainError(
+                "Full C6 Cargo and effective-config aggregate identities are incomplete"
+            )
         authority_aggregate = _rebuild_authority_aggregate(
             self.authority_aggregate
         )
@@ -432,6 +451,7 @@ class FullC6SupplyChainReceipt:
         object.__setattr__(self, "partition", partition)
         object.__setattr__(self, "authority_aggregate", authority_aggregate)
         object.__setattr__(self, "cargo_input_aggregates", cargo_input_aggregates)
+        object.__setattr__(self, "effective_config", effective_config)
         _validate_receipt_documents(self, sbom=sbom, provenance=provenance)
 
     @property
@@ -492,6 +512,8 @@ class FullC6SupplyChainReceipt:
             payload["cargo_input_aggregates"] = [
                 item.to_dict() for item in self.cargo_input_aggregates
             ]
+        if self.effective_config is not None:
+            payload["effective_config"] = self.effective_config.to_dict()
         return payload
 
     def to_dict(self) -> dict[str, object]:
@@ -530,6 +552,36 @@ def _rebuild_build_input_aggregate(
         ) from exc
 
 
+def _rebuild_effective_config_identity(
+    value: EffectiveFullC6ConfigIdentity | None,
+    *,
+    allow_legacy_none: bool,
+) -> EffectiveFullC6ConfigIdentity | None:
+    if value is None:
+        if allow_legacy_none:
+            return None
+        raise FullC6SupplyChainError(
+            "Full C6 requires one effective-config aggregate identity"
+        )
+    if type(value) is not EffectiveFullC6ConfigIdentity:
+        raise TypeError("Full C6 effective-config identity has an invalid type")
+    try:
+        rebuilt = EffectiveFullC6ConfigIdentity(
+            digest=value.digest,
+            member_count=value.member_count,
+            domain=value.domain,
+        )
+    except (TypeError, ValueError) as exc:
+        raise FullC6SupplyChainError(
+            "Full C6 effective-config identity is not canonical"
+        ) from exc
+    if rebuilt != value:
+        raise FullC6SupplyChainError(
+            "Full C6 effective-config identity is not canonical"
+        )
+    return rebuilt
+
+
 def _rebuild_cargo_input_aggregates(
     value: tuple[BuildInputAggregateIdentity, ...],
     *,
@@ -562,6 +614,61 @@ def _rebuild_cargo_input_aggregates(
     return rebuilt
 
 
+def _rebuild_build_input_aggregates(
+    value: tuple[BuildInputAggregateIdentity, ...],
+) -> tuple[BuildInputAggregateIdentity, ...]:
+    if type(value) is not tuple:
+        raise TypeError("build-input aggregates must be an exact tuple")
+    rebuilt = tuple(_rebuild_build_input_aggregate(item) for item in value)
+    if rebuilt != tuple(
+        sorted(rebuilt, key=lambda item: (item.kind, item.aggregate_id))
+    ):
+        raise FullC6SupplyChainError(
+            "build-input aggregates are not in canonical order"
+        )
+    aliases = tuple(_identity_alias(item.aggregate_id) for item in rebuilt)
+    if len(aliases) != len(set(aliases)) or rebuilt != value:
+        raise FullC6SupplyChainError(
+            "build-input aggregates are aliased or noncanonical"
+        )
+    return rebuilt
+
+
+def _cargo_aggregate_subset(
+    value: tuple[BuildInputAggregateIdentity, ...],
+) -> tuple[BuildInputAggregateIdentity, ...]:
+    return tuple(
+        item
+        for item in value
+        if item.aggregate_id in FULL_C6_CARGO_INPUT_AGGREGATE_IDS
+    )
+
+
+def _effective_config_from_aggregates(
+    value: tuple[BuildInputAggregateIdentity, ...],
+) -> EffectiveFullC6ConfigIdentity:
+    matches = tuple(
+        item
+        for item in value
+        if item.aggregate_id == FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID
+    )
+    expected_ids = {
+        *FULL_C6_CARGO_INPUT_AGGREGATE_IDS,
+        FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID,
+    }
+    if len(matches) != 1 or {item.aggregate_id for item in value} != expected_ids:
+        raise FullC6SupplyChainError(
+            "Full C6 build-input aggregates have a missing, extra, or aliased "
+            "effective-config row"
+        )
+    try:
+        return effective_full_c6_config_identity_from_aggregate(matches[0])
+    except FullC6ConfigIdentityError as exc:
+        raise FullC6SupplyChainError(
+            "Full C6 effective-config aggregate is noncanonical"
+        ) from exc
+
+
 def _rebuild_evidence_file(value: EvidenceFileRef) -> EvidenceFileRef:
     if type(value) is not EvidenceFileRef:
         raise TypeError("evidence file identity has an invalid type")
@@ -587,10 +694,7 @@ def _rebuild_wheel_entry(value: WheelEntryRef) -> WheelEntryRef:
 def _rebuild_build_inputs(value: BuildInputClosure) -> BuildInputClosure:
     if type(value) is not BuildInputClosure:
         raise TypeError("build-input closure has an invalid type")
-    aggregates = _rebuild_cargo_input_aggregates(
-        value.aggregates,
-        allow_legacy_empty=True,
-    )
+    aggregates = _rebuild_build_input_aggregates(value.aggregates)
     try:
         rebuilt = BuildInputClosure(
             files=tuple(_rebuild_exact_file(item) for item in value.files),
@@ -673,8 +777,9 @@ def validate_full_c6_cargo_input_aggregates(
     bytes or filesystem paths.
     """
     trusted = _rebuild_build_inputs(build_inputs)
+    _effective_config_from_aggregates(trusted.aggregates)
     _require_authoritative_cargo_input_aggregates(
-        trusted.aggregates,
+        _cargo_aggregate_subset(trusted.aggregates),
         cargo_dependency_workspace,
     )
     return trusted
@@ -1338,13 +1443,20 @@ def _evidence_provenance_dependency(name: str, digest: str) -> dict[str, object]
 
 
 def _cargo_aggregate_material_name(item: BuildInputAggregateIdentity) -> str:
+    if item.aggregate_id == FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID:
+        return _FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME
     return f"full-c6-cargo-input-aggregate:{item.aggregate_id}"
 
 
 def _cargo_aggregate_identity_digest(item: BuildInputAggregateIdentity) -> str:
+    domain = (
+        FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_BINDING_DOMAIN
+        if item.aggregate_id == FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID
+        else FULL_C6_CARGO_INPUT_AGGREGATE_BINDING_DOMAIN
+    )
     return _digest(
         {
-            "domain": FULL_C6_CARGO_INPUT_AGGREGATE_BINDING_DOMAIN,
+            "domain": domain,
             "aggregate": item.to_dict(),
         }
     )
@@ -1354,7 +1466,11 @@ def _cargo_aggregate_annotations(
     item: BuildInputAggregateIdentity,
 ) -> dict[str, str]:
     annotations = {
-        "rextio:role": "process-sealed-cargo-input-aggregate",
+        "rextio:role": (
+            "resolved-full-c6-effective-config"
+            if item.aggregate_id == FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID
+            else "process-sealed-cargo-input-aggregate"
+        ),
         "rextio:aggregate_id": item.aggregate_id,
         "rextio:aggregate_kind": item.kind,
         "rextio:aggregate_digest": item.digest,
@@ -1363,6 +1479,18 @@ def _cargo_aggregate_annotations(
     if item.metadata_digest is not None:
         annotations["rextio:metadata_digest"] = item.metadata_digest
     return annotations
+
+
+def _effective_config_aggregate_from_identity(
+    value: EffectiveFullC6ConfigIdentity,
+) -> BuildInputAggregateIdentity:
+    rebuilt = _rebuild_effective_config_identity(
+        value,
+        allow_legacy_none=False,
+    )
+    if rebuilt is None:  # pragma: no cover - excluded by allow_legacy_none=False
+        raise FullC6SupplyChainError("Full C6 effective-config identity is missing")
+    return rebuilt.to_build_input_aggregate()
 
 
 def _cargo_aggregate_sbom_component(
@@ -1784,6 +1912,7 @@ def build_full_c6_supply_chain_receipt(
         raise FullC6SupplyChainError("Full C6 supply-chain target is unsupported")
     trusted_subject = _rebuild_evidence_file(subject)
     trusted_inputs = _rebuild_build_inputs(build_inputs)
+    trusted_effective_config: EffectiveFullC6ConfigIdentity | None = None
     if trusted_inputs.aggregates:
         if cargo_dependency_workspace is None:
             raise FullC6SupplyChainError(
@@ -1793,6 +1922,9 @@ def build_full_c6_supply_chain_receipt(
         trusted_inputs = validate_full_c6_cargo_input_aggregates(
             trusted_inputs,
             cargo_dependency_workspace,
+        )
+        trusted_effective_config = _effective_config_from_aggregates(
+            trusted_inputs.aggregates
         )
     elif cargo_dependency_workspace is not None:
         raise FullC6SupplyChainError(
@@ -1920,7 +2052,8 @@ def build_full_c6_supply_chain_receipt(
         authority_aggregate=trusted_authority_aggregate,
         sbom_json=sbom_json,
         provenance_json=provenance_json,
-        cargo_input_aggregates=trusted_inputs.aggregates,
+        cargo_input_aggregates=_cargo_aggregate_subset(trusted_inputs.aggregates),
+        effective_config=trusted_effective_config,
     )
 
 
@@ -2048,6 +2181,13 @@ def _receipt_bindings(value: FullC6SupplyChainReceipt) -> dict[str, str]:
             for item in value.cargo_input_aggregates
         }
     )
+    if value.effective_config is not None:
+        effective = _effective_config_aggregate_from_identity(
+            value.effective_config
+        )
+        bindings[_FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME] = (
+            _cargo_aggregate_identity_digest(effective)
+        )
     return bindings
 
 
@@ -2212,15 +2352,76 @@ def _validate_cargo_aggregate_document_materials(
             "Full C6 provenance build-input projection is invalid"
         )
     observed_aggregates = build_input_projection.get("aggregates")
-    expected_aggregates = [
-        item.to_dict() for item in value.cargo_input_aggregates
-    ]
+    aggregate_rows: tuple[BuildInputAggregateIdentity, ...] = (
+        value.cargo_input_aggregates
+    )
+    if value.effective_config is not None:
+        aggregate_rows = tuple(
+            sorted(
+                (
+                    *aggregate_rows,
+                    _effective_config_aggregate_from_identity(
+                        value.effective_config
+                    ),
+                ),
+                key=lambda item: (item.kind, item.aggregate_id),
+            )
+        )
+    expected_aggregates = [item.to_dict() for item in aggregate_rows]
     if (
         (expected_aggregates and observed_aggregates != expected_aggregates)
         or (not expected_aggregates and "aggregates" in build_input_projection)
     ):
         raise FullC6SupplyChainError(
             "Full C6 provenance Cargo aggregate projection is stale"
+        )
+
+
+def _validate_effective_config_document_material(
+    value: FullC6SupplyChainReceipt,
+    *,
+    sbom: dict[str, object],
+    definition: dict[str, object],
+) -> None:
+    components = sbom.get("components")
+    resolved_dependencies = definition.get("resolvedDependencies")
+    if not isinstance(components, list) or not isinstance(
+        resolved_dependencies, list
+    ):
+        raise FullC6SupplyChainError(
+            "Full C6 effective-config document material is missing"
+        )
+    observed_components = [
+        item
+        for item in components
+        if isinstance(item, dict)
+        and item.get("name") == _FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME
+    ]
+    expected_uri = (
+        "urn:rextio:full-c6-evidence:"
+        f"{_FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME}"
+    )
+    observed_dependencies = [
+        item
+        for item in resolved_dependencies
+        if isinstance(item, dict) and item.get("uri") == expected_uri
+    ]
+    expected_components: list[dict[str, object]] = []
+    expected_dependencies: list[dict[str, object]] = []
+    if value.effective_config is not None:
+        aggregate = _effective_config_aggregate_from_identity(
+            value.effective_config
+        )
+        expected_components.append(_cargo_aggregate_sbom_component(aggregate))
+        expected_dependencies.append(
+            _cargo_aggregate_provenance_dependency(aggregate)
+        )
+    if (
+        observed_components != expected_components
+        or observed_dependencies != expected_dependencies
+    ):
+        raise FullC6SupplyChainError(
+            "Full C6 effective-config document material does not bind the receipt"
         )
 
 
@@ -2275,6 +2476,11 @@ def _validate_receipt_documents(
             value,
             sbom=sbom,
             predicate=predicate,
+            definition=definition,
+        )
+        _validate_effective_config_document_material(
+            value,
+            sbom=sbom,
             definition=definition,
         )
         _validate_authority_aggregate_document_materials(
@@ -2344,6 +2550,10 @@ def verify_full_c6_supply_chain_receipt(
             value.cargo_input_aggregates,
             allow_legacy_empty=True,
         ),
+        effective_config=_rebuild_effective_config_identity(
+            value.effective_config,
+            allow_legacy_none=True,
+        ),
         domain=value.domain,
         scope=value.scope,
     )
@@ -2359,6 +2569,10 @@ def verify_full_c6_supply_chain_receipt(
             rebuilt.cargo_input_aggregates,
             cargo_dependency_workspace,
         )
+        if rebuilt.effective_config is None:
+            raise FullC6SupplyChainError(
+                "Full C6 effective-config aggregate identity is missing"
+            )
         if (
             rebuilt.authority_aggregate.cargo_workspace_sha256
             != cargo_dependency_workspace.digest
@@ -2381,6 +2595,7 @@ __all__ = [
     "FULL_C6_BUILDER_ID",
     "FULL_C6_BUILD_TYPE",
     "FULL_C6_CARGO_INPUT_AGGREGATE_BINDING_DOMAIN",
+    "FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_BINDING_DOMAIN",
     "FULL_C6_PROVENANCE_KIND",
     "FULL_C6_SBOM_KIND",
     "FULL_C6_SUPPLY_CHAIN_DOMAIN",

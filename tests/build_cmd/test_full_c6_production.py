@@ -21,6 +21,7 @@ from rextio.build.full_c6_policy import (
 )
 from rextio.build.full_c6_policy_completion import finalize_full_c6_policy_manifest
 from rextio.build.full_c6_policy_manifest import parse_full_c6_policy_manifest
+from rextio.config.schema import RextioConfig
 
 
 _EXTERNAL = runpy.run_path(
@@ -456,6 +457,26 @@ def test_real_c52_execution_mints_bootstrap_required_production_authority(
     assert production._validated_full_c6_production_material(authority) is authority._material
 
 
+@pytest.mark.parametrize("nested", ("target-build-options", "import-packages"))
+def test_nested_effective_config_mutation_stales_production_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    nested: str,
+) -> None:
+    production, authority = _collect_bounded_production_authority(
+        tmp_path,
+        monkeypatch,
+    )
+    config = authority._material.config
+    if nested == "target-build-options":
+        config.target.build_options["profile"] = "debug"
+    else:
+        package = config.imports.packages["demo_pkg"]
+        config.imports.packages["demo_pkg"] = replace(package, version="1.0.1")
+
+    assert not production.validate_full_c6_production_authority(authority)
+
+
 def test_pinned_policy_authority_exposes_only_private_validated_material(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -758,6 +779,7 @@ def test_generated_build_input_mapping_rejects_casefold_and_nfc_aliases(
 
     with pytest.raises(production.FullC6ProductionError, match="overlap"):
         production._build_input_closure(
+            config=RextioConfig(),
             input_snapshot=SimpleNamespace(all_inputs=(generated, project)),
             analysis_inputs=SimpleNamespace(records=()),
             component_license_policy=SimpleNamespace(lock_file=cargo_lock),

@@ -608,9 +608,7 @@ def test_config_or_target_drift_fails_before_executor(
 @pytest.mark.parametrize(
     "field,value",
     (
-        ("artifact_policy_manifest_sha256", "8" * 64),
         ("artifact_cargo_lock_sha256", "9" * 64),
-        ("artifact_final_signature", "state/final-signature.json"),
     ),
 )
 def test_full_config_snapshot_rejects_non_analysis_field_drift(

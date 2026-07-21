@@ -434,8 +434,18 @@ def bind_full_c6_cargo_workspace_aggregates(
 
     if type(closure) is not BuildInputClosure:
         raise BuildInputIdentityError("build-input closure has an invalid type")
-    if closure.aggregates:
-        raise BuildInputIdentityError("build-input closure already contains aggregates")
+    existing_aliases = {
+        unicodedata.normalize("NFC", item.aggregate_id).casefold()
+        for item in closure.aggregates
+    }
+    cargo_aliases = {
+        unicodedata.normalize("NFC", item).casefold()
+        for item in FULL_C6_CARGO_INPUT_AGGREGATE_IDS
+    }
+    if existing_aliases.intersection(cargo_aliases):
+        raise BuildInputIdentityError(
+            "build-input closure already contains a Cargo aggregate"
+        )
     if (
         type(workspace) is not FullC6CargoDependencyWorkspaceReceipt
         or not validate_full_c6_cargo_dependency_workspace_receipt(workspace)
@@ -466,7 +476,7 @@ def bind_full_c6_cargo_workspace_aggregates(
         metadata_members,
     )
     package_count = len(workspace.packages)
-    aggregates = tuple(
+    cargo_aggregates = tuple(
         sorted(
             (
                 BuildInputAggregateIdentity(
@@ -517,8 +527,16 @@ def bind_full_c6_cargo_workspace_aggregates(
             key=lambda item: (item.kind, item.aggregate_id),
         )
     )
-    if {item.aggregate_id for item in aggregates} != FULL_C6_CARGO_INPUT_AGGREGATE_IDS:
+    if {
+        item.aggregate_id for item in cargo_aggregates
+    } != FULL_C6_CARGO_INPUT_AGGREGATE_IDS:
         raise BuildInputIdentityError("Cargo aggregate identity set is incomplete")
+    aggregates = tuple(
+        sorted(
+            (*closure.aggregates, *cargo_aggregates),
+            key=lambda item: (item.kind, item.aggregate_id),
+        )
+    )
     return BuildInputClosure(
         files=closure.files,
         domain=closure.domain,
@@ -526,6 +544,40 @@ def bind_full_c6_cargo_workspace_aggregates(
         complete_for_scope=closure.complete_for_scope,
         aggregates=aggregates,
     )
+
+
+def bind_build_input_aggregate(
+    closure: BuildInputClosure,
+    aggregate: BuildInputAggregateIdentity,
+) -> BuildInputClosure:
+    """Add one canonical generic aggregate without replacing existing rows."""
+    if type(closure) is not BuildInputClosure:
+        raise BuildInputIdentityError("build-input closure has an invalid type")
+    if type(aggregate) is not BuildInputAggregateIdentity:
+        raise BuildInputIdentityError("build-input aggregate has an invalid type")
+    alias = unicodedata.normalize("NFC", aggregate.aggregate_id).casefold()
+    if any(
+        unicodedata.normalize("NFC", item.aggregate_id).casefold() == alias
+        for item in closure.aggregates
+    ):
+        raise BuildInputIdentityError(
+            "build-input aggregate id is duplicated or aliased"
+        )
+    try:
+        return BuildInputClosure(
+            files=closure.files,
+            domain=closure.domain,
+            scope=closure.scope,
+            complete_for_scope=closure.complete_for_scope,
+            aggregates=tuple(
+                sorted(
+                    (*closure.aggregates, aggregate),
+                    key=lambda item: (item.kind, item.aggregate_id),
+                )
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise BuildInputIdentityError(str(exc)) from exc
 
 
 def _require_same_regular_file(
@@ -595,6 +647,7 @@ __all__ = [
     "FULL_C6_CARGO_PACKAGE_SET_DOMAIN",
     "InputFileSpec",
     "MAX_BUILD_INPUT_BYTES",
+    "bind_build_input_aggregate",
     "bind_full_c6_cargo_workspace_aggregates",
     "capture_build_input_closure",
     "capture_exact_file",

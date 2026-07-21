@@ -10,10 +10,9 @@ result to the production two-build executor.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 import hashlib
 import hmac
-import json
 import math
 import os
 from pathlib import Path, PurePosixPath
@@ -29,6 +28,10 @@ from rextio.build.full_c6_cargo_workspace import (
     FullC6CargoWorkspaceError,
     _validated_full_c6_cargo_lock_payload,
     validate_full_c6_cargo_dependency_workspace_receipt,
+)
+from rextio.build.full_c6_config_identity import (
+    FullC6ConfigIdentityError,
+    capture_effective_full_c6_config_identity,
 )
 from rextio.build.full_c6_executor import (
     FULL_C6_NATIVE_DRIVER_MANIFEST,
@@ -379,21 +382,12 @@ def _require_strict_external_config(
             "RXT060 config is outside the frozen external execution profile"
         )
     try:
-        snapshot = json.dumps(
-            {
-                "domain": "rextio.full-c6-external-config-snapshot.v1",
-                "config": asdict(config),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError, RuntimeError) as exc:
+        identity = capture_effective_full_c6_config_identity(config)
+    except FullC6ConfigIdentityError as exc:
         raise FullC6ExternalExecutionError(
             "RXT060 external execution config cannot be snapshotted exactly"
         ) from exc
-    return hashlib.sha256(snapshot).hexdigest()
+    return identity.digest
 
 
 def _require_reachable_direct_external_ir(
