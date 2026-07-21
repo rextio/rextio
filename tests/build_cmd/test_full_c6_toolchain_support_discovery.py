@@ -1018,6 +1018,28 @@ def test_linux_resolves_distribution_linker_and_inspector_symlinks(
     ) == (linker, inspector)
 
 
+def test_linux_normalizes_cyclic_distribution_inspector_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    linker = _file(tmp_path / "x86_64-linux-gnu-gcc", executable=True)
+    readelf = tmp_path / "readelf"
+    inspector = tmp_path / "x86_64-linux-gnu-readelf"
+    readelf.symlink_to(inspector.name)
+    inspector.symlink_to(readelf.name)
+    monkeypatch.setattr(support, "LINUX_CC", linker)
+    monkeypatch.setattr(support, "LINUX_READELF", readelf)
+
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="support executable could not be resolved",
+    ):
+        support.resolve_full_c6_linker_and_inspector(
+            target_triple=LINUX,
+            cwd=tmp_path,
+        )
+
+
 def test_linux_missing_exact_bwrap_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

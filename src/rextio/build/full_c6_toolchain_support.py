@@ -2151,9 +2151,10 @@ def _require_platform_anchored_macos_tool(path: Path) -> Path:
 
 
 def _resolved_real_file(path: Path, *, executable: bool = False) -> Path:
+    canonical = _canonical_absolute(path)
     try:
-        resolved = _canonical_absolute(path).resolve(strict=True)
-    except OSError as exc:
+        resolved = canonical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
         raise FullC6ToolchainSupportError(
             "Full C6 support executable could not be resolved"
         ) from exc
