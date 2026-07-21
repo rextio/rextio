@@ -230,7 +230,8 @@ def test_support_lock_diagnostic_exposes_only_bounded_static_causes() -> None:
     assert diagnostic == (
         "[full-c6-e2e] support-lock diagnostic: "
         "ToolchainSupportLockError=toolchain support locator requires a "
-        "symlink-free directory walk; OSError=NotADirectoryError; errno=20"
+        "symlink-free directory walk; OSError=NotADirectoryError; errno=20; "
+        "OtherErrorType=RuntimeError"
     )
     assert "/private/secret" not in diagnostic
     assert "private detail" not in diagnostic
@@ -244,8 +245,12 @@ def test_support_lock_diagnostic_preserves_bounded_hardlink_fields() -> None:
         "toolchain support regular tree member is a shared hardlink "
         "(logical_role=linux-gcc-support, "
         f"relative_path_sha256={path_sha256}, "
+        "st_uid=1001, "
+        "st_gid=127, "
+        "st_mode=33188, "
         "st_nlink=2, in_root_inode_observation_count=1)"
     )
+    assert 240 < len(support_message) <= 280
 
     diagnostic = harness._format_support_lock_diagnostic(
         ToolchainSupportLockError(support_message)
@@ -254,8 +259,53 @@ def test_support_lock_diagnostic_preserves_bounded_hardlink_fields() -> None:
     assert diagnostic == (
         "[full-c6-e2e] support-lock diagnostic: "
         f"ToolchainSupportLockError={support_message}; "
-        "OSError=<unavailable>; errno=<unavailable>"
+        "OSError=<unavailable>; errno=<unavailable>; "
+        "OtherErrorType=<unavailable>"
     )
+    assert len(diagnostic.encode("utf-8")) <= 512
+
+
+def test_support_lock_diagnostic_worst_case_stays_within_wire_bound() -> None:
+    harness = _load_harness_module()
+    operating_system_error_type = type(
+        "O" * 64,
+        (OSError,),
+        {"__module__": "builtins"},
+    )
+    other_error_type = type(
+        "E" * 32,
+        (Exception,),
+        {"__module__": "builtins"},
+    )
+    operating_system_error = operating_system_error_type(-4096, "private detail")
+    support_message = "toolchain support " + "a" * (280 - len("toolchain support "))
+    support_error = ToolchainSupportLockError(support_message)
+    support_error.__cause__ = operating_system_error
+    outer_error = other_error_type("outer private detail")
+    outer_error.__cause__ = support_error
+
+    diagnostic = harness._format_support_lock_diagnostic(outer_error)
+
+    assert len(support_message) == 280
+    assert diagnostic.endswith(f"OtherErrorType={'E' * 32}")
+    assert len(diagnostic.encode("utf-8")) == 481
+    assert len(diagnostic.encode("utf-8")) <= 512
+
+
+def test_support_lock_diagnostic_classifies_non_support_error_without_message() -> None:
+    harness = _load_harness_module()
+
+    diagnostic = harness._format_support_lock_diagnostic(
+        ValueError("private non-support detail")
+    )
+
+    assert diagnostic == (
+        "[full-c6-e2e] support-lock diagnostic: "
+        "ToolchainSupportLockError=<unavailable>; "
+        "OSError=<unavailable>; errno=<unavailable>; "
+        "OtherErrorType=ValueError"
+    )
+    assert "private non-support detail" not in diagnostic
 
 
 @pytest.mark.parametrize(
@@ -281,7 +331,8 @@ def test_support_lock_diagnostic_rejects_raw_path_fields(raw_path: str) -> None:
     assert diagnostic == (
         "[full-c6-e2e] support-lock diagnostic: "
         "ToolchainSupportLockError=<unavailable>; "
-        "OSError=<unavailable>; errno=<unavailable>"
+        "OSError=<unavailable>; errno=<unavailable>; "
+        "OtherErrorType=<unavailable>"
     )
     assert raw_path not in diagnostic
     assert "private" not in diagnostic
@@ -350,7 +401,8 @@ def test_support_lock_diagnostic_rerun_is_generation_only(
 
     assert diagnostic.endswith(
         "ToolchainSupportLockError=toolchain support locator requires a "
-        "symlink-free directory walk; OSError=NotADirectoryError; errno=20"
+        "symlink-free directory walk; OSError=NotADirectoryError; errno=20; "
+        "OtherErrorType=<unavailable>"
     )
     assert observed == {
         "load": (tmp_path, harness._SUPPORT_LOCK_OUTPUT, inherited_environment),

@@ -1037,6 +1037,7 @@ def _format_support_lock_diagnostic(error: BaseException) -> str:
     support_message = "<unavailable>"
     os_error_name = "<unavailable>"
     os_error_errno = "<unavailable>"
+    other_error_type = "<unavailable>"
     current: BaseException | None = error
     seen: set[int] = set()
     for _ in range(16):
@@ -1047,7 +1048,7 @@ def _format_support_lock_diagnostic(error: BaseException) -> str:
             candidate = str(current)
             if (
                 candidate.startswith("toolchain support ")
-                and len(candidate) <= 240
+                and len(candidate) <= 280
                 and candidate.isascii()
                 and all(
                     character.isalnum() or character in " -_.,()="
@@ -1072,12 +1073,34 @@ def _format_support_lock_diagnostic(error: BaseException) -> str:
                 and -4096 <= candidate_errno <= 4096
             ):
                 os_error_errno = str(candidate_errno)
+        elif other_error_type == "<unavailable>":
+            candidate_type = type(current)
+            candidate_module = candidate_type.__module__
+            candidate_name = candidate_type.__name__
+            if (
+                type(candidate_module) is str
+                and (
+                    candidate_module == "builtins"
+                    or candidate_module == "rextio"
+                    or candidate_module.startswith("rextio.")
+                )
+                and candidate_name.isascii()
+                and candidate_name.isidentifier()
+                and len(candidate_name) <= 32
+            ):
+                other_error_type = candidate_name
         current = current.__cause__ or current.__context__
-    return (
+    diagnostic = (
         "[full-c6-e2e] support-lock diagnostic: "
         f"ToolchainSupportLockError={support_message}; "
-        f"OSError={os_error_name}; errno={os_error_errno}"
+        f"OSError={os_error_name}; errno={os_error_errno}; "
+        f"OtherErrorType={other_error_type}"
     )
+    # Worst case: 100 fixed ASCII bytes + 280 support-message bytes +
+    # 64 OSError-name bytes + 5 errno bytes + 32 other-type bytes = 481.
+    assert diagnostic.isascii()
+    assert len(diagnostic.encode("ascii")) <= 512
+    return diagnostic
 
 
 def _diagnose_support_lock_generation(
