@@ -1559,7 +1559,12 @@ def _resolved_project_capability(
 
 def _path_is_dynamic_namespace_access(path: str) -> bool:
     """Classify one resolved path by namespace capability, not source spelling."""
-    if path.rpartition(".")[2] in _DYNAMIC_NAMESPACE_TERMINALS:
+    terminal = path.rpartition(".")[2]
+    if (
+        terminal in _DYNAMIC_NAMESPACE_TERMINALS
+        or terminal in _DYNAMIC_NAMESPACE_NAMES
+        or terminal in _REFLECTIVE_ATTRIBUTE_NAMES
+    ):
         return True
     if any(
         path == prefix or path.startswith(f"{prefix}.")

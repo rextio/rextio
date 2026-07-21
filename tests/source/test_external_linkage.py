@@ -1739,6 +1739,26 @@ def mutate() -> None:
 """,
             id="importlib-find-spec",
         ),
+        pytest.param(
+            "def anchor() -> int:\n    return 0\n",
+            """\
+from bridge import __builtins__ as namespace
+
+def mutate() -> None:
+    namespace["__import__"]("demo_pkg").affine = abs
+""",
+            id="implicit-module-builtins",
+        ),
+        pytest.param(
+            "def anchor() -> int:\n    return 0\n",
+            """\
+from bridge import __dict__ as namespace
+
+def mutate() -> None:
+    namespace["__builtins__"]["__import__"]("demo_pkg").affine = abs
+""",
+            id="implicit-module-dict",
+        ),
     ),
 )
 def test_registry_rejects_cross_project_dynamic_capability_reexports(
@@ -1758,6 +1778,70 @@ def calculate(x: int) -> int:
         encoding="utf-8",
     )
     (project / "bridge.py").write_text(bridge_source, encoding="utf-8")
+    (project / "mutator.py").write_text(mutator_source, encoding="utf-8")
+    analysis = analyze_project(project, imports_config=_imports())
+    linkage = importlib.import_module("rextio.source.external_linkage")
+
+    with pytest.raises(
+        linkage.ExternalLinkageError,
+        match="external-linkage-(?:target-mutated|dynamic-namespace)",
+    ):
+        linkage.build_external_native_registry(
+            analysis,
+            (_external_plan(),),
+            package=PACKAGE,
+            distribution=DIST,
+            version=VERSION,
+        )
+
+
+@pytest.mark.parametrize(
+    ("package_source", "mutator_source"),
+    (
+        pytest.param(
+            "from .bridge import __builtins__ as namespace\n",
+            """\
+from pkg import namespace
+
+def mutate() -> None:
+    namespace["__import__"]("demo_pkg").affine = abs
+""",
+            id="builtins",
+        ),
+        pytest.param(
+            "from .bridge import __dict__ as namespace\n",
+            """\
+from pkg import namespace
+
+def mutate() -> None:
+    namespace["__builtins__"]["__import__"]("demo_pkg").affine = abs
+""",
+            id="dict-nested-builtins",
+        ),
+    ),
+)
+def test_registry_rejects_package_init_multihop_implicit_namespace_reexports(
+    tmp_path: Path,
+    package_source: str,
+    mutator_source: str,
+) -> None:
+    project = tmp_path / "project"
+    package = project / "pkg"
+    package.mkdir(parents=True)
+    (project / "app.py").write_text(
+        """\
+import demo_pkg as p
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+        encoding="utf-8",
+    )
+    (package / "bridge.py").write_text(
+        "def anchor() -> int:\n    return 0\n",
+        encoding="utf-8",
+    )
+    (package / "__init__.py").write_text(package_source, encoding="utf-8")
     (project / "mutator.py").write_text(mutator_source, encoding="utf-8")
     analysis = analyze_project(project, imports_config=_imports())
     linkage = importlib.import_module("rextio.source.external_linkage")
@@ -2616,6 +2700,81 @@ def mutate() -> None:
 """,
         encoding="utf-8",
     )
+    changed = analyze_project(
+        project,
+        imports_config=_imports(),
+        external_native_registry=registry,
+    )
+
+    with pytest.raises(
+        linkage.ExternalLinkageError,
+        match="external-linkage-project-analysis-stale",
+    ):
+        registry.require_fresh_analysis(changed)
+
+
+@pytest.mark.parametrize(
+    ("package_source", "mutator_source"),
+    (
+        pytest.param(
+            "from .bridge import __builtins__ as namespace\n",
+            """\
+from pkg import namespace
+
+def mutate() -> None:
+    namespace["__import__"]("demo_pkg").affine = abs
+""",
+            id="builtins",
+        ),
+        pytest.param(
+            "from .bridge import __dict__ as namespace\n",
+            """\
+from pkg import namespace
+
+def mutate() -> None:
+    namespace["__builtins__"]["__import__"]("demo_pkg").affine = abs
+""",
+            id="dict-nested-builtins",
+        ),
+    ),
+)
+def test_registry_fresh_analysis_rechecks_implicit_namespace_reexports(
+    tmp_path: Path,
+    package_source: str,
+    mutator_source: str,
+) -> None:
+    project = tmp_path / "project"
+    package = project / "pkg"
+    package.mkdir(parents=True)
+    (project / "app.py").write_text(
+        """\
+import demo_pkg as p
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+        encoding="utf-8",
+    )
+    package_init = package / "__init__.py"
+    package_init.write_text("", encoding="utf-8")
+    (package / "bridge.py").write_text(
+        "def anchor() -> int:\n    return 0\n",
+        encoding="utf-8",
+    )
+    mutator = project / "mutator.py"
+    mutator.write_text("def untouched() -> int:\n    return 0\n", encoding="utf-8")
+    linkage = importlib.import_module("rextio.source.external_linkage")
+    initial = analyze_project(project, imports_config=_imports())
+    registry = linkage.build_external_native_registry(
+        initial,
+        (_external_plan(),),
+        package=PACKAGE,
+        distribution=DIST,
+        version=VERSION,
+    )
+
+    package_init.write_text(package_source, encoding="utf-8")
+    mutator.write_text(mutator_source, encoding="utf-8")
     changed = analyze_project(
         project,
         imports_config=_imports(),
