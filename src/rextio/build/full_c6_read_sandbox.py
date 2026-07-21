@@ -44,6 +44,10 @@ _MAX_PATH_BYTES = 4096
 _PLATFORM_PROBE_MAX_BYTES = 1024 * 1024
 _APPLE_SNAPSHOT_RE = re.compile(r"^com\.apple\.os\.update-([0-9A-F]{64})$")
 _APPLE_OS_BUILD_RE = re.compile(r"^[0-9]{2}[A-Z][0-9A-Za-z]{1,31}$")
+_APPLE_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_APPLE_SYSTEM_SNAPSHOT_DEVICE_RE = re.compile(r"^disk[0-9]+s[0-9]+s[0-9]+$")
 
 # Linux x86_64 syscall numbers.  Full C6 does not support another Linux ABI.
 _SYS_LANDLOCK_CREATE_RULESET = 444
@@ -139,12 +143,15 @@ class MacOSPlatformAnchor:
     """Digest-only receipt for an externally verified Apple sealed snapshot."""
 
     authenticated_snapshot_id: str
+    snapshot_uuid: str
     os_build: str
     provider: str
 
     def __post_init__(self) -> None:
         if _SHA256_RE.fullmatch(self.authenticated_snapshot_id) is None:
             raise ValueError("macOS authenticated snapshot id is invalid")
+        if _APPLE_UUID_RE.fullmatch(self.snapshot_uuid) is None:
+            raise ValueError("macOS authenticated snapshot UUID is invalid")
         for value, label in ((self.os_build, "OS build"), (self.provider, "provider")):
             if (
                 type(value) is not str
@@ -160,7 +167,7 @@ class MacOSPlatformAnchor:
         """Return the path-free authenticated snapshot receipt digest."""
         payload = (
             f"rextio.macos-platform-anchor.v1\0{self.provider}\0"
-            f"{self.os_build}\0{self.authenticated_snapshot_id}"
+            f"{self.os_build}\0{self.authenticated_snapshot_id}\0{self.snapshot_uuid}"
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
@@ -551,10 +558,14 @@ def _macos_profile(rules: Sequence[SandboxPathRule]) -> str:
         # Remove mutable/data-volume allowances inherited from system.sb.
         '(deny file-read* file-test-existence (subpath "/private/var") '
         '(subpath "/private/etc") (subpath "/Library/Preferences"))',
+        '(deny file-read* file-write* file-test-existence (subpath "/Library") '
+        '(subpath "/dev") (subpath "/cores") '
+        '(subpath "/System/Volumes/Preboot"))',
         "(deny mach-lookup)",
         "(deny ipc-posix-shm-read*)",
         "(deny user-preference-read)",
         "(deny sysctl-read)",
+        "(deny sysctl-write)",
         "(allow process-fork)",
         "(allow signal (target self))",
     ]
@@ -603,7 +614,7 @@ def _compile_macos_profile(sandbox_exec: Path, profile: str) -> None:
         raise FullC6ReadSandboxError("Full C6 sandbox profile could not be compiled") from exc
     if completed.returncode != 0:
         raise FullC6ReadSandboxError("Full C6 sandbox profile failed its enforcement probe")
-    # Prove that system.sb's mutable account database allowance was removed.
+    # Prove that system.sb's mutable data-volume allowances were removed.
     stat_tool = Path("/usr/bin/stat")
     try:
         stat_observed = os.lstat(stat_tool)
@@ -615,26 +626,33 @@ def _compile_macos_profile(sandbox_exec: Path, profile: str) -> None:
         f"(allow file-read* (literal {_sandbox_literal(str(stat_tool))}))\n"
         f"(allow process-exec (literal {_sandbox_literal(str(stat_tool))}))\n"
     )
-    try:
-        denied = subprocess.run(
-            [
-                os.fspath(sandbox_exec),
-                "-p",
-                denial_profile,
-                "--",
-                os.fspath(stat_tool),
-                "/private/etc/passwd",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10.0,
-            env={},
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise FullC6ReadSandboxError("Full C6 sandbox denial probe failed") from exc
-    if denied.returncode == 0:
-        raise FullC6ReadSandboxError("Full C6 sandbox mutable-host read denial is ineffective")
+    for denied_path in (
+        "/private/etc/passwd",
+        "/Library/Apple",
+        "/System/Volumes/Preboot",
+    ):
+        try:
+            denied = subprocess.run(
+                [
+                    os.fspath(sandbox_exec),
+                    "-p",
+                    denial_profile,
+                    "--",
+                    os.fspath(stat_tool),
+                    denied_path,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10.0,
+                env={},
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise FullC6ReadSandboxError("Full C6 sandbox denial probe failed") from exc
+        if denied.returncode == 0:
+            raise FullC6ReadSandboxError(
+                "Full C6 sandbox mutable-host read denial is ineffective"
+            )
 
 
 def capture_active_macos_platform_anchor() -> MacOSPlatformAnchor:
@@ -692,8 +710,15 @@ def capture_active_macos_platform_anchor() -> MacOSPlatformAnchor:
         raise FullC6ReadSandboxError("Full C6 macOS platform anchor output is malformed")
     snapshot_name = document.get("APFSSnapshotName")
     match = _APPLE_SNAPSHOT_RE.fullmatch(snapshot_name) if type(snapshot_name) is str else None
+    snapshot_uuid = document.get("APFSSnapshotUUID")
+    volume_uuid = document.get("VolumeUUID")
+    device_identifier = document.get("DeviceIdentifier")
+    canonical_uuid = snapshot_uuid.lower() if type(snapshot_uuid) is str else ""
     if (
         match is None
+        or _APPLE_UUID_RE.fullmatch(canonical_uuid) is None
+        or type(volume_uuid) is not str
+        or volume_uuid.lower() != canonical_uuid
         or document.get("APFSSnapshot") is not True
         or document.get("Sealed") != "Yes"
         or document.get("Writable") is not False
@@ -701,13 +726,16 @@ def capture_active_macos_platform_anchor() -> MacOSPlatformAnchor:
         or document.get("Internal") is not True
         or document.get("MountPoint") != "/"
         or document.get("FilesystemType") != "apfs"
-        or document.get("APFSSnapshotUUID") != document.get("VolumeUUID")
+        or document.get("IORegistryEntryName") != snapshot_name
+        or type(device_identifier) is not str
+        or _APPLE_SYSTEM_SNAPSHOT_DEVICE_RE.fullmatch(device_identifier) is None
     ):
         raise FullC6ReadSandboxError(
             "Full C6 active macOS root is not one internal read-only sealed APFS snapshot"
         )
     return MacOSPlatformAnchor(
         authenticated_snapshot_id=match.group(1).lower(),
+        snapshot_uuid=canonical_uuid,
         os_build=os_build,
         provider="apple-apfs-ssv-diskutil-v1",
     )

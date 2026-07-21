@@ -195,6 +195,7 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
     rules = _rules(tmp_path)
     anchor = MacOSPlatformAnchor(
         authenticated_snapshot_id="b" * 64,
+        snapshot_uuid="12345678-1234-1234-1234-123456789abc",
         os_build="25A123",
         provider="fixture-provider-v1",
     )
@@ -233,6 +234,10 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
     assert '(import "system.sb")' in launch.command[2]
     assert "(deny mach-lookup)" in launch.command[2]
     assert '(subpath "/private/var")' in launch.command[2]
+    assert '(subpath "/Library")' in launch.command[2]
+    assert '(subpath "/dev")' in launch.command[2]
+    assert '(subpath "/System/Volumes/Preboot")' in launch.command[2]
+    assert "(deny sysctl-write)" in launch.command[2]
     assert str(tmp_path / "inputs") in launch.command[2]
 
 
@@ -241,6 +246,7 @@ def test_macos_default_anchor_provider_fails_closed(
 ) -> None:
     anchor = MacOSPlatformAnchor(
         authenticated_snapshot_id="b" * 64,
+        snapshot_uuid="12345678-1234-1234-1234-123456789abc",
         os_build="25A123",
         provider="fixture-provider-v1",
     )
@@ -262,11 +268,13 @@ def test_macos_default_anchor_provider_fails_closed(
 def test_macos_anchor_change_is_rejected_before_launch(tmp_path: Path) -> None:
     anchor = MacOSPlatformAnchor(
         authenticated_snapshot_id="b" * 64,
+        snapshot_uuid="12345678-1234-1234-1234-123456789abc",
         os_build="25A123",
         provider="fixture-provider-v1",
     )
     changed = MacOSPlatformAnchor(
         authenticated_snapshot_id="c" * 64,
+        snapshot_uuid="12345678-1234-1234-1234-123456789abc",
         os_build="25A123",
         provider="fixture-provider-v1",
     )
