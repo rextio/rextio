@@ -6,11 +6,16 @@ import stat
 import sys
 import sysconfig
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 import rextio.build.wheel_builder as wheel_builder
+from rextio.build.full_c6_output_license import (
+    OutputWheelLicenseContract,
+    OutputWheelLicenseFile,
+)
 from rextio.build.wheel_builder import build_artifact_wheel
 
 
@@ -37,6 +42,50 @@ def _external_contract() -> wheel_builder.ExternalWheelContract:
         source_members=("demo_pkg/__init__.py",),
         external_members=identities,
     )
+
+
+def _output_license_contract() -> OutputWheelLicenseContract:
+    return OutputWheelLicenseContract(
+        expression="MIT",
+        files=(
+            OutputWheelLicenseFile(
+                path="LICENSE",
+                data=b"Permission is hereby granted.\n",
+            ),
+        ),
+    )
+
+
+def _rewrite_wheel_with_exact_record(
+    wheel: Path,
+    mutate: Callable[[dict[str, bytes]], None],
+) -> None:
+    with zipfile.ZipFile(wheel) as archive:
+        payloads = {
+            info.filename: archive.read(info)
+            for info in archive.infolist()
+            if not info.filename.endswith(".dist-info/RECORD")
+        }
+        record_name = next(
+            info.filename
+            for info in archive.infolist()
+            if info.filename.endswith(".dist-info/RECORD")
+        )
+    mutate(payloads)
+    rows = [
+        f"{name},{wheel_builder._hash_record(data)},{len(data)}"
+        for name, data in payloads.items()
+    ]
+    rows.append(f"{record_name},,")
+    payloads[record_name] = ("\n".join(rows) + "\n").encode("utf-8")
+    rewritten = wheel.with_suffix(".rewritten")
+    with zipfile.ZipFile(rewritten, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in payloads.items():
+            info = zipfile.ZipInfo(name)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            archive.writestr(info, data)
+    rewritten.replace(wheel)
 
 
 def test_build_artifact_wheel_is_deterministic_and_records_files(tmp_path: Path) -> None:
@@ -176,6 +225,165 @@ def test_external_wheel_contract_pins_requirement_and_excludes_source(
         metadata = archive.read(metadata_name).decode("utf-8")
     assert metadata.count("Requires-Dist: demo-pkg==1.0.0\n") == 1
     assert "demo_pkg/__init__.py" not in names
+
+
+def test_optional_output_license_contract_builds_exact_pep639_wheel(
+    tmp_path: Path,
+) -> None:
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    contract = _output_license_contract()
+
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        external_contract=_external_contract(),
+        output_license_contract=contract,
+    )
+
+    assert result.status == "built"
+    assert result.path is not None
+    wheel = Path(result.path)
+    verified = wheel_builder.verify_output_wheel_license_contract(wheel, contract)
+    assert verified.expression == "MIT"
+    assert tuple(item.path for item in verified.license_members) == (
+        "project-0.1.0.dist-info/licenses/LICENSE",
+    )
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_payload = archive.read(verified.metadata_member)
+        metadata = metadata_payload.decode("utf-8")
+        record = archive.read(verified.record_member).decode("utf-8")
+    assert verified.metadata_sha256 == hashlib.sha256(metadata_payload).hexdigest()
+    assert metadata.count("Metadata-Version: 2.4\n") == 1
+    assert metadata.count("License-Expression: MIT\n") == 1
+    assert metadata.count("License-File: LICENSE\n") == 1
+    assert "project-0.1.0.dist-info/licenses/LICENSE,sha256=" in record
+
+
+@pytest.mark.parametrize(
+    ("expression", "files", "reason"),
+    (
+        ("Unknown-1.0", (OutputWheelLicenseFile("LICENSE", b"text"),), "allowlist"),
+        ("MIT", (), "set"),
+        (
+            "MIT",
+            (
+                OutputWheelLicenseFile("LICENSE", b"one"),
+                OutputWheelLicenseFile("license", b"two"),
+            ),
+            "aliases",
+        ),
+    ),
+)
+def test_output_license_contract_rejects_noncanonical_material(
+    expression: str,
+    files: tuple[OutputWheelLicenseFile, ...],
+    reason: str,
+) -> None:
+    with pytest.raises(ValueError, match=reason):
+        OutputWheelLicenseContract(expression=expression, files=files)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        "missing",
+        "tamper",
+        "license-file-duplicate",
+        "license-expression-duplicate",
+        "metadata-version",
+    ),
+)
+def test_output_license_verifier_rejects_material_or_metadata_mismatch(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    contract = _output_license_contract()
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        output_license_contract=contract,
+    )
+    assert result.path is not None
+    wheel = Path(result.path)
+    license_member = "project-0.1.0.dist-info/licenses/LICENSE"
+    metadata_member = "project-0.1.0.dist-info/METADATA"
+
+    def mutate(payloads: dict[str, bytes]) -> None:
+        if failure == "missing":
+            del payloads[license_member]
+        elif failure == "tamper":
+            payloads[license_member] = b"changed license bytes\n"
+        elif failure == "license-file-duplicate":
+            payloads[metadata_member] += b"License-File: LICENSE\n"
+        elif failure == "license-expression-duplicate":
+            payloads[metadata_member] += b"License-Expression: MIT\n"
+        else:
+            payloads[metadata_member] = payloads[metadata_member].replace(
+                b"Metadata-Version: 2.4\n",
+                b"Metadata-Version: 2.3\n",
+            )
+
+    _rewrite_wheel_with_exact_record(wheel, mutate)
+
+    with pytest.raises(wheel_builder.WheelContractError, match="license|License|PEP 639"):
+        wheel_builder.verify_output_wheel_license_contract(wheel, contract)
+
+
+@pytest.mark.filterwarnings("ignore:Duplicate name.*:UserWarning")
+@pytest.mark.parametrize("failure", ("duplicate", "alias"))
+def test_output_license_verifier_rejects_duplicate_and_aliased_members(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    contract = _output_license_contract()
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        output_license_contract=contract,
+    )
+    assert result.path is not None
+    wheel = Path(result.path)
+    expected = "project-0.1.0.dist-info/licenses/LICENSE"
+    appended = expected if failure == "duplicate" else expected.lower()
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr(appended, b"alias")
+
+    with pytest.raises(wheel_builder.WheelContractError, match="duplicate|aliased"):
+        wheel_builder.verify_output_wheel_license_contract(wheel, contract)
+
+
+def test_output_license_verifier_rejects_record_tamper(tmp_path: Path) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    contract = _output_license_contract()
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        output_license_contract=contract,
+    )
+    assert result.path is not None
+    wheel = Path(result.path)
+    rewritten = wheel.with_suffix(".rewritten")
+    with zipfile.ZipFile(wheel) as source, zipfile.ZipFile(rewritten, "w") as target:
+        for info in source.infolist():
+            data = source.read(info)
+            if info.filename.endswith(".dist-info/RECORD"):
+                data = data.replace(b"sha256=", b"sha256=bad", 1)
+            target.writestr(info, data)
+    rewritten.replace(wheel)
+
+    with pytest.raises(wheel_builder.WheelContractError, match="RECORD digest"):
+        wheel_builder.verify_output_wheel_license_contract(wheel, contract)
 
 
 def test_external_wheel_capture_binds_native_member_to_exact_expected_bytes(

@@ -22,6 +22,10 @@ from rextio.build.full_c6_subject_wheel import (
     capture_full_c6_subject_wheel,
     validate_full_c6_subject_wheel_transaction,
 )
+from rextio.build.full_c6_output_license import (
+    OutputWheelLicenseContract,
+    OutputWheelLicenseFile,
+)
 from rextio.build.wheel_builder import (
     ExternalWheelContract,
     ExternalWheelMemberIdentity,
@@ -76,6 +80,28 @@ def _payloads(native: bytes = b"native-extension") -> dict[str, bytes]:
     }
 
 
+def _output_license_contract() -> OutputWheelLicenseContract:
+    return OutputWheelLicenseContract(
+        expression="MIT",
+        files=(OutputWheelLicenseFile(path="LICENSE", data=b"license payload\n"),),
+    )
+
+
+def _licensed_payloads(
+    *,
+    native: bytes = b"native-extension",
+    license_payload: bytes = b"license payload\n",
+) -> dict[str, bytes]:
+    payloads = _payloads(native)
+    payloads[f"{DIST_INFO}/METADATA"] = (
+        b"Metadata-Version: 2.4\nName: subject\nVersion: 0.1.0\n"
+        b"Requires-Dist: demo-pkg==1.0.0\n"
+        b"License-Expression: MIT\nLicense-File: LICENSE\n"
+    )
+    payloads[f"{DIST_INFO}/licenses/LICENSE"] = license_payload
+    return payloads
+
+
 def _write_wheel(
     path: Path,
     payloads: dict[str, bytes],
@@ -121,7 +147,12 @@ def _expected(path: Path) -> tuple[EvidenceFileRef, tuple[WheelEntryRef, ...]]:
     return _subject(path), inventory_wheel_zip_bytes(data)
 
 
-def _capture(path: Path, *, native: bytes = b"native-extension") -> FullC6SubjectWheelTransaction:
+def _capture(
+    path: Path,
+    *,
+    native: bytes = b"native-extension",
+    output_license_contract: OutputWheelLicenseContract | None = None,
+) -> FullC6SubjectWheelTransaction:
     subject, entries = _expected(path)
     return capture_full_c6_subject_wheel(
         path,
@@ -131,6 +162,7 @@ def _capture(path: Path, *, native: bytes = b"native-extension") -> FullC6Subjec
         native_member_path=NATIVE_NAME,
         expected_native_member_sha256=hashlib.sha256(native).hexdigest(),
         expected_native_member_size=len(native),
+        output_license_contract=output_license_contract,
     )
 
 
@@ -188,6 +220,76 @@ def test_capture_seals_actual_zip_and_is_path_free_nonserializable(tmp_path: Pat
         pickle.dumps(transaction)
     with pytest.raises(TypeError):
         FullC6SubjectWheelTransaction()
+
+
+def test_capture_privately_seals_and_revalidates_output_license_bytes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "subject-0.1.0-cp311-cp311-test.whl"
+    contract = _output_license_contract()
+    _write_wheel(path, _licensed_payloads())
+
+    transaction = _capture(path, output_license_contract=contract)
+
+    assert validate_full_c6_subject_wheel_transaction(transaction)
+    payload = transaction.to_dict()
+    assert {
+        "output_license_expression_sha256",
+        "output_license_contract_sha256",
+        "output_metadata_sha256",
+        "output_license_member_set_sha256",
+        "output_license_payload_set_sha256",
+        "output_license_verification_sha256",
+    }.issubset(payload)
+    serialized = json.dumps(payload, sort_keys=True)
+    assert "MIT" not in serialized
+    assert "LICENSE" not in serialized
+    assert "license payload" not in serialized
+    assert str(tmp_path) not in serialized
+
+    _write_wheel(path, _licensed_payloads(license_payload=b"tampered license\n"))
+
+    assert not validate_full_c6_subject_wheel_transaction(transaction)
+
+
+def test_capture_seal_detects_private_metadata_payload_replacement(tmp_path: Path) -> None:
+    path = tmp_path / "subject-0.1.0-cp311-cp311-test.whl"
+    _write_wheel(path, _licensed_payloads())
+    transaction = _capture(path, output_license_contract=_output_license_contract())
+
+    object.__setattr__(transaction, "_output_metadata_payload", b"forged metadata")
+
+    assert not validate_full_c6_subject_wheel_transaction(transaction)
+
+
+@pytest.mark.parametrize("failure", ("metadata", "missing-license"))
+def test_capture_rejects_incomplete_output_license_material(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    path = tmp_path / "subject-0.1.0-cp311-cp311-test.whl"
+    payloads = _licensed_payloads()
+    if failure == "metadata":
+        payloads[f"{DIST_INFO}/METADATA"] = payloads[f"{DIST_INFO}/METADATA"].replace(
+            b"License-Expression: MIT\n",
+            b"",
+        )
+    else:
+        del payloads[f"{DIST_INFO}/licenses/LICENSE"]
+    _write_wheel(path, payloads)
+    subject, entries = _expected(path)
+
+    with pytest.raises(FullC6SubjectWheelError, match="captured exactly"):
+        capture_full_c6_subject_wheel(
+            path,
+            expected_subject=subject,
+            expected_wheel_entries=entries,
+            external_contract=_contract(),
+            native_member_path=NATIVE_NAME,
+            expected_native_member_sha256=hashlib.sha256(b"native-extension").hexdigest(),
+            expected_native_member_size=len(b"native-extension"),
+            output_license_contract=_output_license_contract(),
+        )
 
 
 def test_capture_rejects_caller_inventory_mismatch(tmp_path: Path) -> None:

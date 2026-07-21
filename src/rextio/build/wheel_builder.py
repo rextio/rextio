@@ -16,12 +16,20 @@ import unicodedata
 import zipfile
 from dataclasses import dataclass
 from email import policy as email_policy
+from email.message import Message
 from email.parser import BytesParser
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from rextio.build.full_c6_output_license import (
+    OutputWheelLicenseContract,
+    OutputWheelLicenseMemberIdentity,
+    OutputWheelLicenseVerification,
+    rebuild_output_wheel_license_contract,
+)
+
 
 class WheelContractError(ValueError):
-    """A strict external-source output wheel contract was not satisfied."""
+    """A strict output-wheel contract was not satisfied."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +194,24 @@ class _VerifiedExternalWheel:
     payloads: dict[str, bytes]
 
 
+@dataclass(frozen=True, slots=True)
+class _VerifiedOutputWheelLicense:
+    verification: OutputWheelLicenseVerification
+    wheel_bytes: bytes
+    metadata_payload: bytes
+    license_payloads: tuple[bytes, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _StrictWheelSnapshot:
+    path: Path
+    pinned_identity: tuple[int, ...]
+    wheel_bytes: bytes
+    payloads: dict[str, bytes]
+    metadata_member: str
+    record_member: str
+
+
 _DIST_REQUIREMENT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 _VERSION_REQUIREMENT = re.compile(r"^[A-Za-z0-9]+(?:[._+-][A-Za-z0-9]+)*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -231,6 +257,7 @@ def build_artifact_wheel(
     dist_dir: Path,
     *,
     external_contract: ExternalWheelContract | None = None,
+    output_license_contract: OutputWheelLicenseContract | None = None,
 ) -> WheelBuildResult:
     """Build a wheel from the generated Python package and return the result."""
     if not python_dir.exists():
@@ -242,9 +269,16 @@ def build_artifact_wheel(
     if external_contract is not None:
         if type(external_contract) is not ExternalWheelContract:
             raise WheelContractError("external wheel contract has an invalid type")
+    if output_license_contract is not None:
+        try:
+            output_license_contract = rebuild_output_wheel_license_contract(
+                output_license_contract
+            )
+        except (TypeError, ValueError) as error:
+            raise WheelContractError(str(error)) from error
     staging_files = _collect_staging_files(
         python_dir,
-        strict=external_contract is not None,
+        strict=external_contract is not None or output_license_contract is not None,
     )
     if external_contract is not None:
         _require_external_source_absent(staging_files, external_contract)
@@ -282,15 +316,40 @@ def build_artifact_wheel(
             _write_bytes(archive, relative, data)
             records.append((relative, _hash_record(data), len(data)))
 
+        if output_license_contract is not None:
+            for license_file in output_license_contract.files:
+                relative = f"{dist_info}/licenses/{license_file.path}"
+                _write_bytes(archive, relative, license_file.data)
+                records.append(
+                    (
+                        relative,
+                        _hash_record(license_file.data),
+                        len(license_file.data),
+                    )
+                )
+
         metadata_entries = {
             f"{dist_info}/METADATA": (
-                "Metadata-Version: 2.1\n"
-                f"Name: {name}\n"
+                (
+                    "Metadata-Version: 2.4\n"
+                    if output_license_contract is not None
+                    else "Metadata-Version: 2.1\n"
+                )
+                + f"Name: {name}\n"
                 f"Version: {version}\n"
                 "Summary: Rextio generated hybrid artifact.\n"
                 + (
                     f"Requires-Dist: {external_contract.requirement}\n"
                     if external_contract is not None
+                    else ""
+                )
+                + (
+                    f"License-Expression: {output_license_contract.expression}\n"
+                    + "".join(
+                        f"License-File: {item.path}\n"
+                        for item in output_license_contract.files
+                    )
+                    if output_license_contract is not None
                     else ""
                 )
             ).encode("utf-8"),
@@ -310,9 +369,15 @@ def build_artifact_wheel(
         record_lines.append(f"{record_path},,")
         _write_bytes(archive, record_path, ("\n".join(record_lines) + "\n").encode("utf-8"))
 
-    if external_contract is not None:
+    if external_contract is not None or output_license_contract is not None:
         try:
-            verify_external_wheel_contract(wheel_path, external_contract)
+            if external_contract is not None:
+                verify_external_wheel_contract(wheel_path, external_contract)
+            if output_license_contract is not None:
+                verify_output_wheel_license_contract(
+                    wheel_path,
+                    output_license_contract,
+                )
         except WheelContractError:
             wheel_path.unlink(missing_ok=True)
             raise
@@ -329,6 +394,17 @@ def verify_external_wheel_contract(
 ) -> ExternalWheelVerification:
     """Reopen the final wheel and verify exact pin, exclusion, and RECORD."""
     return _verify_external_wheel_contract_pinned(wheel_path, contract).verification
+
+
+def verify_output_wheel_license_contract(
+    wheel_path: Path,
+    contract: OutputWheelLicenseContract,
+) -> OutputWheelLicenseVerification:
+    """Reopen a wheel and rederive its exact PEP 639 license material."""
+    return _verify_output_wheel_license_contract_pinned(
+        wheel_path,
+        contract,
+    ).verification
 
 
 def capture_external_wheel_contract(
@@ -382,6 +458,127 @@ def _verify_external_wheel_contract_pinned(
 ) -> _VerifiedExternalWheel:
     if type(contract) is not ExternalWheelContract:
         raise WheelContractError("external wheel contract has an invalid type")
+    snapshot = _capture_strict_wheel_snapshot(wheel_path)
+    metadata_message = _parse_metadata(snapshot.payloads[snapshot.metadata_member])
+    requirements = list(metadata_message.get_all("Requires-Dist", []))
+    if requirements != [contract.requirement]:
+        raise WheelContractError("output wheel Requires-Dist is not the exact pin")
+
+    forbidden_aliases = {
+        unicodedata.normalize("NFC", member).casefold()
+        for member in contract.external_member_paths
+    }
+    package_root = "/".join(contract.package.split(".")).casefold()
+    for name in snapshot.payloads:
+        alias = unicodedata.normalize("NFC", name).casefold()
+        if alias in forbidden_aliases or (
+            alias == package_root
+            or alias.startswith(f"{package_root}/")
+            or alias.startswith(f"{package_root}.")
+        ):
+            raise WheelContractError("output wheel contains external package material")
+    _verify_record(snapshot.payloads, snapshot.record_member)
+    _require_pinned_wheel_unchanged(snapshot.path, snapshot.pinned_identity)
+    return _VerifiedExternalWheel(
+        verification=ExternalWheelVerification(
+            requirement=contract.requirement,
+            metadata_member=snapshot.metadata_member,
+            record_member=snapshot.record_member,
+            wheel_sha256=hashlib.sha256(snapshot.wheel_bytes).hexdigest(),
+        ),
+        wheel_bytes=snapshot.wheel_bytes,
+        payloads=snapshot.payloads,
+    )
+
+
+def _verify_output_wheel_license_contract_pinned(
+    wheel_path: Path,
+    contract: OutputWheelLicenseContract,
+) -> _VerifiedOutputWheelLicense:
+    try:
+        rebuilt = rebuild_output_wheel_license_contract(contract)
+    except (TypeError, ValueError) as error:
+        raise WheelContractError(str(error)) from error
+    snapshot = _capture_strict_wheel_snapshot(wheel_path)
+    verified = _verify_output_wheel_license_payloads(
+        wheel_bytes=snapshot.wheel_bytes,
+        payloads=snapshot.payloads,
+        contract=rebuilt,
+    )
+    _verify_record(snapshot.payloads, snapshot.record_member)
+    _require_pinned_wheel_unchanged(snapshot.path, snapshot.pinned_identity)
+    return verified
+
+
+def _verify_output_wheel_license_payloads(
+    *,
+    wheel_bytes: bytes,
+    payloads: dict[str, bytes],
+    contract: OutputWheelLicenseContract,
+) -> _VerifiedOutputWheelLicense:
+    """Verify PEP 639 material from one already-pinned strict wheel snapshot."""
+    try:
+        rebuilt = rebuild_output_wheel_license_contract(contract)
+    except (TypeError, ValueError) as error:
+        raise WheelContractError(str(error)) from error
+    metadata_members = tuple(
+        name for name in payloads if name.endswith(".dist-info/METADATA")
+    )
+    record_members = tuple(name for name in payloads if name.endswith(".dist-info/RECORD"))
+    if len(metadata_members) != 1 or len(record_members) != 1:
+        raise WheelContractError("output wheel metadata coverage is invalid")
+    metadata_member = metadata_members[0]
+    metadata_root = metadata_member.rsplit("/", 1)[0]
+    if record_members[0].rsplit("/", 1)[0] != metadata_root:
+        raise WheelContractError("output wheel dist-info identity is inconsistent")
+    metadata_payload = payloads[metadata_member]
+    metadata_message = _parse_metadata(metadata_payload)
+    if list(metadata_message.get_all("Metadata-Version", [])) != ["2.4"]:
+        raise WheelContractError("output wheel PEP 639 metadata version is invalid")
+    if metadata_message.get_all("License"):
+        raise WheelContractError("output wheel contains legacy License metadata")
+    if list(metadata_message.get_all("License-Expression", [])) != [rebuilt.expression]:
+        raise WheelContractError("output wheel License-Expression is not exact")
+    if list(metadata_message.get_all("License-File", [])) != list(rebuilt.paths):
+        raise WheelContractError("output wheel License-File coverage is not exact")
+
+    expected = {
+        f"{metadata_root}/licenses/{item.path}": item.data for item in rebuilt.files
+    }
+    license_prefix = f"{metadata_root}/licenses/"
+    actual_names = {name for name in payloads if name.startswith(license_prefix)}
+    if actual_names != set(expected):
+        raise WheelContractError("output wheel license member coverage is not exact")
+    identities: list[OutputWheelLicenseMemberIdentity] = []
+    license_payloads: list[bytes] = []
+    for name, expected_data in expected.items():
+        actual_data = payloads[name]
+        if not hmac.compare_digest(actual_data, expected_data):
+            raise WheelContractError("output wheel license member bytes are stale")
+        identities.append(
+            OutputWheelLicenseMemberIdentity(
+                path=name,
+                sha256=hashlib.sha256(actual_data).hexdigest(),
+                size=len(actual_data),
+            )
+        )
+        license_payloads.append(actual_data)
+    return _VerifiedOutputWheelLicense(
+        verification=OutputWheelLicenseVerification(
+            expression=rebuilt.expression,
+            metadata_member=metadata_member,
+            metadata_sha256=hashlib.sha256(metadata_payload).hexdigest(),
+            license_members=tuple(identities),
+            record_member=record_members[0],
+            wheel_sha256=hashlib.sha256(wheel_bytes).hexdigest(),
+        ),
+        wheel_bytes=wheel_bytes,
+        metadata_payload=metadata_payload,
+        license_payloads=tuple(license_payloads),
+    )
+
+
+def _capture_strict_wheel_snapshot(wheel_path: Path) -> _StrictWheelSnapshot:
     path = Path(wheel_path)
     try:
         wheel_bytes, pinned_identity = _read_pinned_wheel(path)
@@ -429,44 +626,26 @@ def _verify_external_wheel_contract_pinned(
         or path.name[:-4].rsplit("-", 3)[0] != metadata_root.removesuffix(".dist-info")
     ):
         raise WheelContractError("output wheel dist-info identity is inconsistent")
-    try:
-        payloads[metadata[0]].decode("utf-8")
-        metadata_message = BytesParser(policy=email_policy.default).parsebytes(
-            payloads[metadata[0]]
-        )
-    except (UnicodeDecodeError, ValueError) as error:
-        raise WheelContractError("output wheel METADATA is not UTF-8") from error
-    if metadata_message.defects:
-        raise WheelContractError("output wheel METADATA is malformed")
-    requirements = list(metadata_message.get_all("Requires-Dist", []))
-    if requirements != [contract.requirement]:
-        raise WheelContractError("output wheel Requires-Dist is not the exact pin")
-
-    forbidden_aliases = {
-        unicodedata.normalize("NFC", member).casefold()
-        for member in contract.external_member_paths
-    }
-    package_root = "/".join(contract.package.split(".")).casefold()
-    for name in names:
-        alias = unicodedata.normalize("NFC", name).casefold()
-        if alias in forbidden_aliases or (
-            alias == package_root
-            or alias.startswith(f"{package_root}/")
-            or alias.startswith(f"{package_root}.")
-        ):
-            raise WheelContractError("output wheel contains external package material")
-    _verify_record(payloads, records[0])
-    _require_pinned_wheel_unchanged(path, pinned_identity)
-    return _VerifiedExternalWheel(
-        verification=ExternalWheelVerification(
-            requirement=contract.requirement,
-            metadata_member=metadata[0],
-            record_member=records[0],
-            wheel_sha256=hashlib.sha256(wheel_bytes).hexdigest(),
-        ),
+    _parse_metadata(payloads[metadata[0]])
+    return _StrictWheelSnapshot(
+        path=path,
+        pinned_identity=pinned_identity,
         wheel_bytes=wheel_bytes,
         payloads=payloads,
+        metadata_member=metadata[0],
+        record_member=records[0],
     )
+
+
+def _parse_metadata(payload: bytes) -> Message:
+    try:
+        payload.decode("utf-8")
+        message = BytesParser(policy=email_policy.default).parsebytes(payload)
+    except (UnicodeDecodeError, ValueError) as error:
+        raise WheelContractError("output wheel METADATA is not UTF-8") from error
+    if message.defects:
+        raise WheelContractError("output wheel METADATA is malformed")
+    return message
 
 
 def _require_external_source_absent(

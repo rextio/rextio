@@ -22,6 +22,11 @@ from rextio.artifacts.evidence import (
     inventory_wheel_zip_bytes,
 )
 from rextio.build import wheel_builder
+from rextio.build.full_c6_output_license import (
+    OutputWheelLicenseContract,
+    OutputWheelLicenseVerification,
+    rebuild_output_wheel_license_contract,
+)
 from rextio.build.wheel_builder import (
     ExternalWheelContract,
     ExternalWheelMemberIdentity,
@@ -50,6 +55,10 @@ class FullC6SubjectWheelTransaction:
         "record_member",
         "_wheel_path",
         "_external_contract",
+        "_output_license_contract",
+        "_output_license_verification",
+        "_output_metadata_payload",
+        "_output_license_payloads",
         "_transaction_seal",
     )
 
@@ -60,6 +69,10 @@ class FullC6SubjectWheelTransaction:
     record_member: WheelEntryRef
     _wheel_path: Path
     _external_contract: ExternalWheelContract
+    _output_license_contract: OutputWheelLicenseContract | None
+    _output_license_verification: OutputWheelLicenseVerification | None
+    _output_metadata_payload: bytes | None
+    _output_license_payloads: tuple[bytes, ...]
     _transaction_seal: bytes
 
     def __init__(self) -> None:
@@ -111,12 +124,14 @@ def capture_full_c6_subject_wheel(
     native_member_path: str,
     expected_native_member_sha256: str,
     expected_native_member_size: int,
+    output_license_contract: OutputWheelLicenseContract | None = None,
 ) -> FullC6SubjectWheelTransaction:
     """Capture and seal one real ZIP wheel after deriving every identity again."""
     path = _lexical_absolute_path(wheel_path)
     subject = _rebuild_subject(expected_subject)
     entries = _rebuild_entries(expected_wheel_entries)
     contract = _rebuild_contract(external_contract)
+    license_contract = _rebuild_license_contract(output_license_contract)
     native = _rebuild_native_member(
         path=native_member_path,
         sha256=expected_native_member_sha256,
@@ -128,6 +143,7 @@ def capture_full_c6_subject_wheel(
         expected_entries=entries,
         contract=contract,
         expected_native=native,
+        output_license_contract=license_contract,
     )
     transaction = object.__new__(FullC6SubjectWheelTransaction)
     object.__setattr__(transaction, "subject", snapshot.subject)
@@ -137,6 +153,22 @@ def capture_full_c6_subject_wheel(
     object.__setattr__(transaction, "record_member", snapshot.record_member)
     object.__setattr__(transaction, "_wheel_path", path)
     object.__setattr__(transaction, "_external_contract", contract)
+    object.__setattr__(transaction, "_output_license_contract", license_contract)
+    object.__setattr__(
+        transaction,
+        "_output_license_verification",
+        snapshot.output_license_verification,
+    )
+    object.__setattr__(
+        transaction,
+        "_output_metadata_payload",
+        snapshot.output_metadata_payload,
+    )
+    object.__setattr__(
+        transaction,
+        "_output_license_payloads",
+        snapshot.output_license_payloads,
+    )
     object.__setattr__(transaction, "_transaction_seal", _seal(transaction))
     if not validate_full_c6_subject_wheel_transaction(transaction):
         raise FullC6SubjectWheelError("subject wheel changed before capture completed")
@@ -158,6 +190,7 @@ def validate_full_c6_subject_wheel_transaction(
             expected_entries=transaction.wheel_entries,
             contract=transaction._external_contract,
             expected_native=transaction.native_member,
+            output_license_contract=transaction._output_license_contract,
         )
     except (FullC6SubjectWheelError, TypeError, ValueError, AttributeError):
         return False
@@ -167,12 +200,25 @@ def validate_full_c6_subject_wheel_transaction(
         and snapshot.verification == transaction.external_verification
         and snapshot.native_member == transaction.native_member
         and snapshot.record_member == transaction.record_member
+        and snapshot.output_license_verification
+        == transaction._output_license_verification
+        and snapshot.output_metadata_payload == transaction._output_metadata_payload
+        and snapshot.output_license_payloads == transaction._output_license_payloads
         and hmac.compare_digest(transaction._transaction_seal, _seal(transaction))
     )
 
 
 class _Snapshot:
-    __slots__ = ("subject", "entries", "verification", "native_member", "record_member")
+    __slots__ = (
+        "subject",
+        "entries",
+        "verification",
+        "native_member",
+        "record_member",
+        "output_license_verification",
+        "output_metadata_payload",
+        "output_license_payloads",
+    )
 
     def __init__(
         self,
@@ -182,12 +228,18 @@ class _Snapshot:
         verification: ExternalWheelVerification,
         native_member: ExternalWheelNativeMemberIdentity,
         record_member: WheelEntryRef,
+        output_license_verification: OutputWheelLicenseVerification | None,
+        output_metadata_payload: bytes | None,
+        output_license_payloads: tuple[bytes, ...],
     ) -> None:
         self.subject = subject
         self.entries = entries
         self.verification = verification
         self.native_member = native_member
         self.record_member = record_member
+        self.output_license_verification = output_license_verification
+        self.output_metadata_payload = output_metadata_payload
+        self.output_license_payloads = output_license_payloads
 
 
 def _capture_snapshot(
@@ -197,6 +249,7 @@ def _capture_snapshot(
     expected_entries: tuple[WheelEntryRef, ...],
     contract: ExternalWheelContract,
     expected_native: ExternalWheelNativeMemberIdentity,
+    output_license_contract: OutputWheelLicenseContract | None,
 ) -> _Snapshot:
     if expected_subject.role != "host-extension-wheel":
         raise FullC6SubjectWheelError("subject wheel role is invalid")
@@ -205,6 +258,15 @@ def _capture_snapshot(
     try:
         verified = wheel_builder._verify_external_wheel_contract_pinned(path, contract)
         actual_entries = inventory_wheel_zip_bytes(verified.wheel_bytes)
+        output_license = (
+            wheel_builder._verify_output_wheel_license_payloads(
+                wheel_bytes=verified.wheel_bytes,
+                payloads=verified.payloads,
+                contract=output_license_contract,
+            )
+            if output_license_contract is not None
+            else None
+        )
     except (WheelContractError, ArtifactEvidenceError, OSError) as error:
         raise FullC6SubjectWheelError("subject wheel could not be captured exactly") from error
     actual_subject = EvidenceFileRef(
@@ -246,6 +308,15 @@ def _capture_snapshot(
         verification=verification,
         native_member=expected_native,
         record_member=record_matches[0],
+        output_license_verification=(
+            None if output_license is None else output_license.verification
+        ),
+        output_metadata_payload=(
+            None if output_license is None else output_license.metadata_payload
+        ),
+        output_license_payloads=(
+            () if output_license is None else output_license.license_payloads
+        ),
     )
 
 
@@ -315,6 +386,17 @@ def _rebuild_contract(value: ExternalWheelContract) -> ExternalWheelContract:
         raise FullC6SubjectWheelError("external wheel contract is invalid") from error
 
 
+def _rebuild_license_contract(
+    value: OutputWheelLicenseContract | None,
+) -> OutputWheelLicenseContract | None:
+    if value is None:
+        return None
+    try:
+        return rebuild_output_wheel_license_contract(value)
+    except (TypeError, ValueError) as error:
+        raise FullC6SubjectWheelError("output wheel license contract is invalid") from error
+
+
 def _rebuild_native_member(
     *, path: str, sha256: str, size: int
 ) -> ExternalWheelNativeMemberIdentity:
@@ -336,7 +418,7 @@ def _rebuild_verification(value: ExternalWheelVerification) -> ExternalWheelVeri
 
 
 def _semantic_payload(transaction: FullC6SubjectWheelTransaction) -> dict[str, str]:
-    return {
+    payload = {
         "domain": FULL_C6_SUBJECT_WHEEL_TRANSACTION_DOMAIN,
         "subject_sha256": transaction.subject.sha256,
         "subject_identity_sha256": _digest(transaction.subject.to_dict()),
@@ -363,6 +445,45 @@ def _semantic_payload(transaction: FullC6SubjectWheelTransaction) -> dict[str, s
         "record_member_sha256": transaction.record_member.sha256,
         "record_member_identity_sha256": _digest(transaction.record_member.to_dict()),
     }
+    if transaction._output_license_contract is not None:
+        verification = transaction._output_license_verification
+        metadata_payload = transaction._output_metadata_payload
+        if verification is None or metadata_payload is None:
+            raise FullC6SubjectWheelError("sealed output wheel license material is incomplete")
+        payload.update(
+            {
+                "output_license_expression_sha256": hashlib.sha256(
+                    transaction._output_license_contract.expression.encode("utf-8")
+                ).hexdigest(),
+                "output_license_contract_sha256": _digest(
+                    _license_contract_projection(transaction._output_license_contract)
+                ),
+                "output_metadata_sha256": hashlib.sha256(metadata_payload).hexdigest(),
+                "output_license_member_set_sha256": _digest(
+                    [
+                        {
+                            "path": item.path,
+                            "sha256": item.sha256,
+                            "size": item.size,
+                        }
+                        for item in verification.license_members
+                    ]
+                ),
+                "output_license_payload_set_sha256": _digest(
+                    [
+                        {
+                            "sha256": hashlib.sha256(item).hexdigest(),
+                            "size": len(item),
+                        }
+                        for item in transaction._output_license_payloads
+                    ]
+                ),
+                "output_license_verification_sha256": _digest(
+                    _license_verification_projection(verification)
+                ),
+            }
+        )
+    return payload
 
 
 def _contract_projection(value: ExternalWheelContract) -> dict[str, object]:
@@ -375,6 +496,38 @@ def _contract_projection(value: ExternalWheelContract) -> dict[str, object]:
             {"path": item.path, "sha256": item.sha256, "size": item.size}
             for item in value.external_members
         ],
+    }
+
+
+def _license_contract_projection(
+    value: OutputWheelLicenseContract,
+) -> dict[str, object]:
+    return {
+        "expression": value.expression,
+        "files": [
+            {
+                "path": item.path,
+                "sha256": hashlib.sha256(item.data).hexdigest(),
+                "size": len(item.data),
+            }
+            for item in value.files
+        ],
+    }
+
+
+def _license_verification_projection(
+    value: OutputWheelLicenseVerification,
+) -> dict[str, object]:
+    return {
+        "expression": value.expression,
+        "metadata_member": value.metadata_member,
+        "metadata_sha256": value.metadata_sha256,
+        "license_members": [
+            {"path": item.path, "sha256": item.sha256, "size": item.size}
+            for item in value.license_members
+        ],
+        "record_member": value.record_member,
+        "wheel_sha256": value.wheel_sha256,
     }
 
 
