@@ -21,6 +21,10 @@ from rextio.artifacts.evidence import (
 )
 from rextio.build.full_c6_policy import FullC6PolicyReceipt
 from rextio.build.input_closure import BuildInputClosure, ExactFileIdentity
+from rextio.build.transformation_verification import (
+    SourceTransformationReplayAuthority,
+    validate_source_transformation_replay_authority,
+)
 from rextio.source.source_lock_v2 import (
     SourceLockV2Verification,
     SourceLockV2VerifiedContext,
@@ -44,30 +48,42 @@ class FullC6AnalysisIRTransaction:
 
     __slots__ = (
         "project_transformation",
+        "project_replay_authority_sha256",
+        "generated_python_tree_sha256",
+        "generated_cargo_toml_sha256",
         "build_input_closure_sha256",
         "project_transformation_sha256",
         "external_analysis_sha256",
         "external_lowered_ir_sha256",
         "analysis_sha256",
         "generator_sha256",
+        "_project_replay_authority",
         "_transaction_seal",
         "_frozen",
     )
 
     project_transformation: SourceTransformationVerification
+    project_replay_authority_sha256: str
+    generated_python_tree_sha256: str
+    generated_cargo_toml_sha256: str
     build_input_closure_sha256: str
     project_transformation_sha256: str
     external_analysis_sha256: str
     external_lowered_ir_sha256: str
     analysis_sha256: str
     generator_sha256: str
+    _project_replay_authority: SourceTransformationReplayAuthority
     _transaction_seal: bytes
     _frozen: bool
 
     def __init__(
         self,
         *,
+        project_replay_authority: SourceTransformationReplayAuthority,
         project_transformation: SourceTransformationVerification,
+        project_replay_authority_sha256: str,
+        generated_python_tree_sha256: str,
+        generated_cargo_toml_sha256: str,
         build_input_closure_sha256: str,
         project_transformation_sha256: str,
         external_analysis_sha256: str,
@@ -79,6 +95,9 @@ class FullC6AnalysisIRTransaction:
         if type(_transaction_seal) is not bytes:
             raise TypeError("Full C6 analysis/IR transaction requires a sealed factory")
         values = (
+            project_replay_authority_sha256,
+            generated_python_tree_sha256,
+            generated_cargo_toml_sha256,
             build_input_closure_sha256,
             project_transformation_sha256,
             external_analysis_sha256,
@@ -86,11 +105,46 @@ class FullC6AnalysisIRTransaction:
             analysis_sha256,
             generator_sha256,
         )
-        if type(project_transformation) is not SourceTransformationVerification or any(
-            not _is_sha256(value) for value in values
+        if (
+            type(project_replay_authority) is not SourceTransformationReplayAuthority
+            or type(project_transformation) is not SourceTransformationVerification
+            or any(not _is_sha256(value) for value in values)
         ):
             raise FullC6AnalysisTransactionError("Full C6 analysis/IR transaction is invalid")
+        try:
+            validate_source_transformation_replay_authority(project_replay_authority)
+        except (TypeError, ValueError) as exc:
+            raise FullC6AnalysisTransactionError(
+                "Full C6 source-transformation replay authority is invalid"
+            ) from exc
+        if (
+            project_transformation != project_replay_authority.verification
+            or project_replay_authority_sha256 != project_replay_authority.digest
+            or generated_python_tree_sha256
+            != project_replay_authority.generated_python_tree_sha256
+            or generated_cargo_toml_sha256
+            != project_replay_authority.generated_cargo_toml.sha256
+        ):
+            raise FullC6AnalysisTransactionError(
+                "Full C6 source-transformation replay authority binding is stale"
+            )
+        object.__setattr__(self, "_project_replay_authority", project_replay_authority)
         object.__setattr__(self, "project_transformation", project_transformation)
+        object.__setattr__(
+            self,
+            "project_replay_authority_sha256",
+            project_replay_authority_sha256,
+        )
+        object.__setattr__(
+            self,
+            "generated_python_tree_sha256",
+            generated_python_tree_sha256,
+        )
+        object.__setattr__(
+            self,
+            "generated_cargo_toml_sha256",
+            generated_cargo_toml_sha256,
+        )
         object.__setattr__(self, "build_input_closure_sha256", build_input_closure_sha256)
         object.__setattr__(
             self,
@@ -170,6 +224,9 @@ class FullC6AnalysisIRTransaction:
     def _payload(self) -> dict[str, object]:
         return {
             "domain": FULL_C6_ANALYSIS_IR_TRANSACTION_DOMAIN,
+            "project_replay_authority_sha256": self.project_replay_authority_sha256,
+            "generated_python_tree_sha256": self.generated_python_tree_sha256,
+            "generated_cargo_toml_sha256": self.generated_cargo_toml_sha256,
             "build_input_closure_sha256": self.build_input_closure_sha256,
             "project_transformation_sha256": self.project_transformation_sha256,
             "external_analysis_sha256": self.external_analysis_sha256,
@@ -185,14 +242,22 @@ class FullC6AnalysisIRTransaction:
 
 def create_full_c6_analysis_ir_transaction(
     *,
-    project_transformation: SourceTransformationVerification,
+    project_replay_authority: SourceTransformationReplayAuthority,
     source_verification: SourceLockV2Verification,
     build_inputs: BuildInputClosure,
 ) -> FullC6AnalysisIRTransaction:
     """Seal actual project replay plus same-transaction external analysis/IR."""
+    try:
+        replay_authority = validate_source_transformation_replay_authority(
+            project_replay_authority
+        )
+    except (TypeError, ValueError) as exc:
+        raise FullC6AnalysisTransactionError(
+            "Full C6 requires a collector-issued source-transformation replay authority"
+        ) from exc
     context = _verified_context(source_verification)
-    project = _rebuild_project_transformation(project_transformation)
-    _require_project_closure_binding(project, build_inputs)
+    project = _rebuild_project_transformation(replay_authority.verification)
+    _require_project_closure_binding(replay_authority, build_inputs)
     project_sha256 = _digest(project.to_dict())
     external_analysis_sha256 = _digest(
         [item.to_dict() for item in context.analyses]
@@ -211,6 +276,7 @@ def create_full_c6_analysis_ir_transaction(
         {
             "domain": FULL_C6_ANALYSIS_PROJECTION_DOMAIN,
             "build_input_closure_sha256": build_inputs.digest,
+            "project_replay_authority_sha256": replay_authority.digest,
             "project_transformation_sha256": project_sha256,
             "external_analysis_sha256": external_analysis_sha256,
         }
@@ -220,11 +286,20 @@ def create_full_c6_analysis_ir_transaction(
             "domain": FULL_C6_GENERATOR_PROJECTION_DOMAIN,
             "project_generator_backend": project.generator_backend,
             "project_module_ir_sha256": project.module_ir_sha256,
+            "generated_python_tree_sha256": (
+                replay_authority.generated_python_tree_sha256
+            ),
+            "generated_cargo_toml_sha256": (
+                replay_authority.generated_cargo_toml.sha256
+            ),
             "external_lowered_ir_sha256": external_lowered_ir_sha256,
         }
     )
     payload = {
         "domain": FULL_C6_ANALYSIS_IR_TRANSACTION_DOMAIN,
+        "project_replay_authority_sha256": replay_authority.digest,
+        "generated_python_tree_sha256": replay_authority.generated_python_tree_sha256,
+        "generated_cargo_toml_sha256": replay_authority.generated_cargo_toml.sha256,
         "build_input_closure_sha256": build_inputs.digest,
         "project_transformation_sha256": project_sha256,
         "external_analysis_sha256": external_analysis_sha256,
@@ -233,7 +308,11 @@ def create_full_c6_analysis_ir_transaction(
         "generator_sha256": generator_sha256,
     }
     return FullC6AnalysisIRTransaction(
+        project_replay_authority=replay_authority,
         project_transformation=project,
+        project_replay_authority_sha256=replay_authority.digest,
+        generated_python_tree_sha256=replay_authority.generated_python_tree_sha256,
+        generated_cargo_toml_sha256=replay_authority.generated_cargo_toml.sha256,
         build_input_closure_sha256=build_inputs.digest,
         project_transformation_sha256=project_sha256,
         external_analysis_sha256=external_analysis_sha256,
@@ -255,7 +334,7 @@ def validate_full_c6_analysis_ir_transaction(
     if type(value) is not FullC6AnalysisIRTransaction:
         raise FullC6AnalysisTransactionError("Full C6 analysis/IR transaction is missing")
     rebuilt = create_full_c6_analysis_ir_transaction(
-        project_transformation=value.project_transformation,
+        project_replay_authority=value._project_replay_authority,
         source_verification=source_verification,
         build_inputs=build_inputs,
     )
@@ -341,7 +420,7 @@ def _rebuild_project_transformation(
 
 
 def _require_project_closure_binding(
-    value: SourceTransformationVerification,
+    value: SourceTransformationReplayAuthority,
     build_inputs: BuildInputClosure,
 ) -> None:
     if type(build_inputs) is not BuildInputClosure:
@@ -349,7 +428,13 @@ def _require_project_closure_binding(
     closure: dict[str, ExactFileIdentity] = {
         item.logical_name: item for item in build_inputs.files
     }
-    references = (*value.source_inputs, value.generated_rust)
+    verification = value.verification
+    references = (
+        *verification.source_inputs,
+        verification.generated_rust,
+        *value.generated_python,
+        value.generated_cargo_toml,
+    )
     for reference in references:
         exact = closure.get(reference.logical_path)
         if (

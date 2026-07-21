@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import copy
+import pickle
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from rextio.artifacts.evidence import (
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.build.supply_chain import (
     EvidenceInputSnapshot,
+    capture_generated_python_inputs,
     capture_generated_rust_inputs,
     capture_project_source_snapshot,
 )
@@ -23,9 +26,17 @@ from rextio.build.transformation_inventory import (
     collect_source_transformation_inventory,
 )
 from rextio.build.transformation_verification import (
+    SourceTransformationReplayAuthority,
+    collect_scoped_source_transformation_replay_authority,
     collect_scoped_source_transformation_verification,
+    validate_source_transformation_replay_authority,
 )
 import rextio.build.transformation_verification as transformation_verification_module
+from rextio.build.orchestrator import (
+    _write_python_fallback_tree,
+    _write_runtime_support,
+)
+from rextio.codegen.rust.cargo import render_cargo_toml
 from rextio.codegen.rust.generator import generate_rust_module
 from rextio.ir.lowering import lower_project
 from rextio.partition.build_plan import BuildPlan, create_build_plan
@@ -75,22 +86,6 @@ def _real_plugin_free_native_closure(
         plugin_types_by_key={},
     )
 
-    layout = ArtifactLayout(project_root)
-    layout.rust_src_dir.mkdir(parents=True)
-    (layout.rust_src_dir / "lib.rs").write_text(
-        generated,
-        encoding="utf-8",
-        newline="\n",
-    )
-    (layout.rust_dir / "Cargo.toml").write_text(
-        "[package]\n"
-        'name = "rextio_generated_native"\n'
-        'version = "0.1.0"\n'
-        'edition = "2021"\n',
-        encoding="utf-8",
-        newline="\n",
-    )
-
     plan = create_build_plan(
         analysis,
         "cpython",
@@ -98,9 +93,30 @@ def _real_plugin_free_native_closure(
             host_extension_profile("x86_64-unknown-linux-gnu"),
         ),
     )
+    layout = ArtifactLayout(project_root)
+    layout.python_dir.mkdir(parents=True)
+    _write_python_fallback_tree(plan.fallback, layout.python_dir, 1000)
+    _write_runtime_support(layout.python_dir)
+    layout.rust_src_dir.mkdir(parents=True)
+    (layout.rust_src_dir / "lib.rs").write_text(
+        generated,
+        encoding="utf-8",
+        newline="\n",
+    )
+    (layout.rust_dir / "Cargo.toml").write_text(
+        render_cargo_toml(extra_dependencies=()),
+        encoding="utf-8",
+        newline="\n",
+    )
+
     snapshot = capture_project_source_snapshot(
         project_root=project_root,
         plan=plan,
+    )
+    snapshot = capture_generated_python_inputs(
+        snapshot,
+        project_root=project_root,
+        layout=layout,
     )
     snapshot = capture_generated_rust_inputs(
         snapshot,
@@ -155,6 +171,36 @@ def test_scoped_replay_verifies_full_plugin_free_native_closure(
     assert verification.authority == "observation-only"
 
 
+def test_scoped_replay_mints_only_process_local_nonserializable_authority(
+    tmp_path: Path,
+) -> None:
+    plan, snapshot, inventory = _real_plugin_free_native_closure(tmp_path)
+
+    authority = collect_scoped_source_transformation_replay_authority(
+        project_root=tmp_path,
+        plan=plan,
+        input_snapshot=snapshot,
+        transformation_inventory=inventory,
+        embedding_enabled=False,
+    )
+
+    assert isinstance(authority, SourceTransformationReplayAuthority)
+    assert validate_source_transformation_replay_authority(authority) is authority
+    assert authority.generated_python == snapshot.generated_python
+    assert authority.generated_cargo_toml == next(
+        item
+        for item in snapshot.generated_rust
+        if item.logical_path.endswith("/Cargo.toml")
+    )
+    assert len(authority.generated_python_tree_sha256) == 64
+    with pytest.raises(TypeError, match="cannot be copied"):
+        copy.copy(authority)
+    with pytest.raises(TypeError, match="cannot be copied"):
+        copy.deepcopy(authority)
+    with pytest.raises(TypeError, match="cannot be serialized"):
+        pickle.dumps(authority)
+
+
 @pytest.mark.parametrize("tamper", ["qualname", "range", "semantic"])
 def test_scoped_replay_rejects_rederived_identity_tampering(
     tmp_path: Path,
@@ -207,6 +253,67 @@ def test_scoped_replay_rejects_changed_captured_bytes(
         )
         path = tmp_path / generated.logical_path
     path.write_bytes(path.read_bytes() + b"\n// changed\n")
+
+    assert (
+        collect_scoped_source_transformation_verification(
+            project_root=tmp_path,
+            plan=plan,
+            input_snapshot=snapshot,
+            transformation_inventory=inventory,
+            embedding_enabled=False,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("target", ["wrapper", "cargo-toml"])
+def test_scoped_replay_rejects_changed_regenerated_output(
+    tmp_path: Path,
+    target: str,
+) -> None:
+    plan, snapshot, inventory = _real_plugin_free_native_closure(tmp_path)
+    if target == "wrapper":
+        path = tmp_path / next(
+            item.logical_path
+            for item in snapshot.generated_python
+            if item.logical_path.endswith("/worker.py")
+        )
+    else:
+        path = tmp_path / next(
+            item.logical_path
+            for item in snapshot.generated_rust
+            if item.logical_path.endswith("/Cargo.toml")
+        )
+    path.write_bytes(path.read_bytes() + b"\n# changed\n")
+
+    assert (
+        collect_scoped_source_transformation_verification(
+            project_root=tmp_path,
+            plan=plan,
+            input_snapshot=snapshot,
+            transformation_inventory=inventory,
+            embedding_enabled=False,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["additional", "unexpected-non-python", "missing"],
+)
+def test_scoped_replay_rejects_generated_python_tree_shape_change(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    plan, snapshot, inventory = _real_plugin_free_native_closure(tmp_path)
+    python_root = ArtifactLayout(tmp_path).python_dir
+    if mutation == "additional":
+        (python_root / "unexpected.py").write_text("value = 1\n", encoding="utf-8")
+    elif mutation == "unexpected-non-python":
+        (python_root / "unexpected.txt").write_text("untracked data\n", encoding="utf-8")
+    else:
+        (python_root / "worker.py").unlink()
 
     assert (
         collect_scoped_source_transformation_verification(

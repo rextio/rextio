@@ -28,7 +28,13 @@ from rextio.build.full_c6_gate import (
 )
 from rextio.build.full_c6_analysis_transaction import (
     FullC6AnalysisIRTransaction,
+    FullC6AnalysisTransactionError,
     create_full_c6_analysis_ir_transaction,
+)
+from rextio.build.transformation_verification import (
+    SourceTransformationReplayAuthority,
+    _replay_authority_payload,
+    _replay_authority_seal,
 )
 from rextio.build.full_c6_executor import (
     FULL_C6_NATIVE_DRIVER_MANIFEST,
@@ -276,6 +282,39 @@ def _project_transformation(
     )
 
 
+def _project_replay_authority(
+    policy: FullC6PolicyReceipt,
+) -> SourceTransformationReplayAuthority:
+    verification = _project_transformation(policy)
+    generated_python_row = _row(policy, "file-input:generated-python-input")
+    cargo_row = _row(policy, "file-input:generated-rust-build-input")
+    generated_python = (
+        EvidenceFileRef(
+            logical_path=generated_python_row.canonical_identity,
+            sha256=generated_python_row.sha256 or "",
+            size=generated_python_row.size or 0,
+            role="generated-python-input",
+        ),
+    )
+    generated_cargo_toml = EvidenceFileRef(
+        logical_path=cargo_row.canonical_identity,
+        sha256=cargo_row.sha256 or "",
+        size=cargo_row.size or 0,
+        role="generated-rust-input",
+    )
+    payload = _replay_authority_payload(
+        verification=verification,
+        generated_python=generated_python,
+        generated_cargo_toml=generated_cargo_toml,
+    )
+    return SourceTransformationReplayAuthority(
+        verification=verification,
+        generated_python=generated_python,
+        generated_cargo_toml=generated_cargo_toml,
+        _authority_seal=_replay_authority_seal(payload),
+    )
+
+
 def _bind_policy_to_transaction(
     policy: FullC6PolicyReceipt,
     transaction: FullC6AnalysisIRTransaction,
@@ -323,7 +362,7 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
     )
     build_inputs = _SUPPLY["_build_inputs"](policy)  # type: ignore[operator]
     transaction = create_full_c6_analysis_ir_transaction(
-        project_transformation=_project_transformation(policy),
+        project_replay_authority=_project_replay_authority(policy),
         source_verification=verification,
         build_inputs=build_inputs,
     )
@@ -681,6 +720,19 @@ def test_gate_requires_same_transaction_analysis_and_ir_projection(tmp_path: Pat
     object.__setattr__(transaction, "analysis_sha256", "0" * 64)
     with pytest.raises(FullC6GateError, match="preauthorization evidence failed closed"):
         _request(arguments)
+
+
+def test_analysis_transaction_rejects_raw_forged_replay_receipt(tmp_path: Path) -> None:
+    arguments = _fixture(tmp_path)
+    with pytest.raises(
+        FullC6AnalysisTransactionError,
+        match="collector-issued",
+    ):
+        create_full_c6_analysis_ir_transaction(
+            project_replay_authority=_project_transformation(arguments["policy"]),  # type: ignore[arg-type]
+            source_verification=arguments["source_verification"],  # type: ignore[arg-type]
+            build_inputs=arguments["build_inputs"],  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.parametrize(
