@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import ast
+import base64
 import hashlib
 import importlib
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -24,6 +26,12 @@ from rextio.source.external_analysis import (
     analyze_external_source_snapshot,
 )
 from rextio.source.models import SourceModule, SourceOrigin
+from rextio.source.wheel_authority import (
+    SourceWheelArchiveIdentity,
+    SourceWheelEntryIdentity,
+    VerifiedSourceWheel,
+    detect_source_wheel_license_payloads,
+)
 
 
 PACKAGE = "demo_pkg"
@@ -36,6 +44,93 @@ def affine(x: int) -> int:
 def unused(x: int) -> int:
     return x * 2
 """
+EXTERNAL_METADATA = b"Metadata-Version: 2.4\nName: demo-pkg\nVersion: 1.0.0\n"
+EXTERNAL_WHEEL = b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+EXTERNAL_LICENSE = b"test license payload"
+DIST_INFO = "demo_pkg-1.0.0.dist-info"
+
+
+def _record_digest(payload: bytes) -> str:
+    return (
+        "sha256="
+        + base64.urlsafe_b64encode(hashlib.sha256(payload).digest())
+        .decode("ascii")
+        .rstrip("=")
+    )
+
+
+def _external_record() -> bytes:
+    rows = (
+        (f"{PACKAGE}/__init__.py", _record_digest(EXTERNAL_SOURCE), len(EXTERNAL_SOURCE)),
+        (f"{DIST_INFO}/METADATA", _record_digest(EXTERNAL_METADATA), len(EXTERNAL_METADATA)),
+        (f"{DIST_INFO}/WHEEL", _record_digest(EXTERNAL_WHEEL), len(EXTERNAL_WHEEL)),
+        (f"{DIST_INFO}/licenses/LICENSE", _record_digest(EXTERNAL_LICENSE), len(EXTERNAL_LICENSE)),
+        (f"{DIST_INFO}/RECORD", "", ""),
+    )
+    return "".join(f"{name},{digest},{size}\n" for name, digest, size in rows).encode()
+
+
+def _runtime_record() -> bytes:
+    rows = (
+        (f"{PACKAGE}/__init__.py", _record_digest(EXTERNAL_SOURCE), len(EXTERNAL_SOURCE)),
+        (f"{DIST_INFO}/METADATA", _record_digest(EXTERNAL_METADATA), len(EXTERNAL_METADATA)),
+        (f"{DIST_INFO}/RECORD", "", ""),
+    )
+    return "".join(f"{name},{digest},{size}\n" for name, digest, size in rows).encode()
+
+
+def _wheel_entry(path: str, payload: bytes) -> SourceWheelEntryIdentity:
+    return SourceWheelEntryIdentity(
+        path=path,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+        compressed_size=len(payload),
+        crc32="00000000",
+        unix_mode=stat.S_IFREG | 0o644,
+    )
+
+
+def _verified_wheel() -> VerifiedSourceWheel:
+    record = _external_record()
+    payloads = {
+        f"{PACKAGE}/__init__.py": EXTERNAL_SOURCE,
+        f"{DIST_INFO}/METADATA": EXTERNAL_METADATA,
+        f"{DIST_INFO}/RECORD": record,
+        f"{DIST_INFO}/WHEEL": EXTERNAL_WHEEL,
+        f"{DIST_INFO}/licenses/LICENSE": EXTERNAL_LICENSE,
+    }
+    license_paths = (f"{DIST_INFO}/licenses/LICENSE",)
+    license_payloads = (EXTERNAL_LICENSE,)
+    return VerifiedSourceWheel(
+        package=PACKAGE,
+        distribution=DIST,
+        version=VERSION,
+        license_observed="MIT",
+        archive=SourceWheelArchiveIdentity(
+            "demo_pkg-1.0.0-py3-none-any.whl",
+            "0" * 64,
+            1,
+        ),
+        entries=tuple(_wheel_entry(path, payloads[path]) for path in sorted(payloads)),
+        source_entry_paths=(f"{PACKAGE}/__init__.py",),
+        metadata_entry_paths=tuple(
+            sorted(
+                (
+                    f"{DIST_INFO}/METADATA",
+                    f"{DIST_INFO}/RECORD",
+                    f"{DIST_INFO}/WHEEL",
+                    *license_paths,
+                )
+            )
+        ),
+        license_entry_paths=license_paths,
+        snapshots=(_external_plan().snapshot,),
+        license_payloads=license_payloads,
+        license_detection=detect_source_wheel_license_payloads(
+            license_paths,
+            license_payloads,
+        ),
+    )
 
 
 def _external_plan() -> ExternalSourceNativePlan:
@@ -275,7 +370,13 @@ def calculate(x: int) -> int:
         external_native_registry=registry,
     )
     module_ir = lower_project(strict, external_native_registry=registry)
-    guard = linkage.build_external_runtime_guard(registry, plans)
+    guard = linkage.build_external_runtime_guard(registry, plans, _verified_wheel())
+
+    assert guard.dist_info_root == DIST_INFO
+    assert guard.metadata_member == f"{DIST_INFO}/METADATA"
+    assert guard.metadata_sha256 == hashlib.sha256(EXTERNAL_METADATA).hexdigest()
+    assert guard.metadata_size == len(EXTERNAL_METADATA)
+    assert guard.record_member == f"{DIST_INFO}/RECORD"
 
     ordinary = generate_rust_module(module_ir)
     guarded = generate_rust_module(module_ir, external_runtime_guard=guard)
@@ -301,8 +402,18 @@ def calculate(x: int) -> int:
     assert "before.nlink() != 1" in guarded
     assert "before.dev() != after.dev()" in guarded
     assert "before.ino() != after.ino()" in guarded
-    assert ".take(expected_size + 1)" in guarded
+    assert ".take(maximum_size + 1)" in guarded
     assert "if !root_path.is_absolute()" in guarded
+    assert 'distribution.getattr("files")' not in guarded
+    assert 'distribution.getattr("metadata")' not in guarded
+    assert 'distribution.getattr("version")' not in guarded
+    assert 'call_method1("read_text"' not in guarded
+    assert "installed_members" not in guarded
+    assert "__REXTIO_EXTERNAL_RECORD_MAX_BYTES" in guarded
+    assert "__REXTIO_EXTERNAL_RECORD_MAX_ROWS" in guarded
+    assert "__rextio_parse_external_record" in guarded
+    assert f'"{DIST_INFO}/METADATA"' in guarded
+    assert f'"{DIST_INFO}/RECORD"' in guarded
     assert 'PyModule::import(py, "demo_pkg")' not in guarded
     assert "is_instance_of::<pyo3::types::PyFunction>" not in guarded
     assert 'getattr("__code__")' not in guarded
@@ -334,6 +445,7 @@ def calculate(x: int) -> int:
             version=VERSION,
         ),
         (_external_plan(),),
+        _verified_wheel(),
     )
 
     rendered = importlib.import_module(
@@ -373,7 +485,7 @@ def calculate(x: int) -> int:
         external_native_registry=registry,
     )
     module_ir = lower_project(strict, external_native_registry=registry)
-    guard = linkage.build_external_runtime_guard(registry, plans)
+    guard = linkage.build_external_runtime_guard(registry, plans, _verified_wheel())
 
     crate = tmp_path / "guard-crate"
     (crate / "src").mkdir(parents=True)
@@ -425,7 +537,7 @@ def calculate(x: int) -> int:
         external_native_registry=registry,
     )
     module_ir = lower_project(strict, external_native_registry=registry)
-    guard = linkage.build_external_runtime_guard(registry, plans)
+    guard = linkage.build_external_runtime_guard(registry, plans, _verified_wheel())
     crate = root / "crate"
     (crate / "src").mkdir(parents=True)
     (crate / ".cargo").mkdir()
@@ -473,6 +585,12 @@ def calculate(x: int) -> int:
             ),
         ),
         ("changed", "canonical", False),
+        ("record-missing", "canonical", False),
+        ("record-duplicate", "canonical", False),
+        ("record-alias", "canonical", False),
+        ("record-malformed", "canonical", False),
+        ("record-too-many", "canonical", False),
+        ("record-oversized", "canonical", False),
         ("regular", "root-symlink", False),
         ("regular", "ancestor-symlink", False),
     ),
@@ -482,6 +600,12 @@ def calculate(x: int) -> int:
         "source-hardlink",
         "source-fifo",
         "source-changed",
+        "record-missing",
+        "record-duplicate",
+        "record-alias",
+        "record-malformed",
+        "record-too-many",
+        "record-oversized",
         "root-symlink",
         "ancestor-symlink",
     ),
@@ -513,16 +637,24 @@ def test_compiled_runtime_guard_rejects_unsafe_source_without_external_execution
         source.write_bytes(EXTERNAL_SOURCE.replace(b"x + 1", b"x - 1"))
     else:
         source.write_bytes(EXTERNAL_SOURCE)
-    (dist_info / "METADATA").write_text(
-        "Metadata-Version: 2.4\nName: demo-pkg\nVersion: 1.0.0\n",
-        encoding="utf-8",
-    )
-    (dist_info / "RECORD").write_text(
-        "demo_pkg/__init__.py,,\n"
-        "demo_pkg-1.0.0.dist-info/METADATA,,\n"
-        "demo_pkg-1.0.0.dist-info/RECORD,,\n",
-        encoding="utf-8",
-    )
+    (dist_info / "METADATA").write_bytes(EXTERNAL_METADATA)
+    record = _runtime_record()
+    source_row = record.splitlines(keepends=True)[0]
+    if source_kind == "record-missing":
+        record = b"".join(record.splitlines(keepends=True)[1:])
+    elif source_kind == "record-duplicate":
+        record = source_row + record
+    elif source_kind == "record-alias":
+        record = record.replace(b"demo_pkg/__init__.py", b"DEMO_PKG/__INIT__.PY")
+    elif source_kind == "record-malformed":
+        record = b"demo_pkg/__init__.py,only-two-fields\n"
+    elif source_kind == "record-too-many":
+        record += b"".join(
+            f"extra/{index}.py,,\n".encode("ascii") for index in range(4094)
+        )
+    elif source_kind == "record-oversized":
+        record = b"x" * (8 * 1024 * 1024 + 1)
+    (dist_info / "RECORD").write_bytes(record)
     runtime_site = site
     if root_kind == "root-symlink":
         runtime_site = tmp_path / "site-packages-alias"

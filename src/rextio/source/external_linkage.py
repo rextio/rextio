@@ -32,7 +32,11 @@ from rextio.analyzer.unsupported_patterns import validate_native_function
 from rextio.ir.lowering import LoweringError, lower_function
 from rextio.ir.nodes import FunctionIR
 from rextio.ir.types import normalize_type_name
-from rextio.source.external import MAX_FILE_BYTES
+from rextio.source.external import (
+    MAX_AUTHORITY_PATH_LEN,
+    MAX_FILE_BYTES,
+    _dist_info_root,
+)
 from rextio.source.external_analysis import (
     EXTERNAL_FUNCTION_IR_DOMAIN,
     ExternalFunctionBinding,
@@ -40,6 +44,7 @@ from rextio.source.external_analysis import (
     analyze_external_source_snapshot,
 )
 from rextio.source.graph import resolve_import_from_base
+from rextio.source.wheel_authority import VerifiedSourceWheel
 
 
 class ExternalLinkageError(ValueError):
@@ -51,6 +56,8 @@ _SAFE_DISTRIBUTION = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 _SAFE_VERSION = re.compile(r"[A-Za-z0-9]+(?:[._+-][A-Za-z0-9]+)*")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _SCALAR_TYPES = frozenset({"bool", "float", "int", "str"})
+_MAX_RUNTIME_METADATA_BYTES = 1024 * 1024
+_MAX_RUNTIME_RECORD_BYTES = 8 * 1024 * 1024
 _DYNAMIC_NAMESPACE_NAMES = frozenset(
     {
         "__builtins__",
@@ -544,19 +551,49 @@ class ExternalRuntimeGuard:
 
     distribution: str
     version: str
+    dist_info_root: str
+    metadata_member: str
+    metadata_sha256: str
+    metadata_size: int
+    record_member: str
     modules: tuple[ExternalRuntimeModule, ...]
 
     def __post_init__(self) -> None:
+        expected_root = (
+            _dist_info_root(self.distribution, self.version).as_posix()
+            if type(self.distribution) is str and type(self.version) is str
+            else ""
+        )
+        root = (
+            PurePosixPath(self.dist_info_root)
+            if type(self.dist_info_root) is str
+            else PurePosixPath(".")
+        )
         if (
             type(self.distribution) is not str
             or _SAFE_DISTRIBUTION.fullmatch(self.distribution) is None
             or type(self.version) is not str
             or _SAFE_VERSION.fullmatch(self.version) is None
+            or type(self.dist_info_root) is not str
+            or self.dist_info_root != expected_root
+            or root.is_absolute()
+            or root.as_posix() != self.dist_info_root
+            or len(root.parts) != 1
+            or len(self.dist_info_root) > MAX_AUTHORITY_PATH_LEN
+            or self.metadata_member != f"{self.dist_info_root}/METADATA"
+            or self.record_member != f"{self.dist_info_root}/RECORD"
+            or type(self.metadata_sha256) is not str
+            or _SHA256.fullmatch(self.metadata_sha256) is None
+            or type(self.metadata_size) is not int
+            or not 1 <= self.metadata_size <= _MAX_RUNTIME_METADATA_BYTES
             or type(self.modules) is not tuple
             or not self.modules
             or not all(type(item) is ExternalRuntimeModule for item in self.modules)
             or self.modules != tuple(sorted(self.modules, key=lambda item: item.module_name))
             or len({item.module_name for item in self.modules}) != len(self.modules)
+            or len({item.source_member for item in self.modules}) != len(self.modules)
+            or len({item.source_member.casefold() for item in self.modules})
+            != len(self.modules)
         ):
             raise ValueError("external runtime guard modules are invalid")
 
@@ -709,6 +746,7 @@ def build_external_native_registry(
 def build_external_runtime_guard(
     registry: ExternalNativeRegistry,
     plans: tuple[ExternalSourceNativePlan, ...],
+    wheel: VerifiedSourceWheel,
 ) -> ExternalRuntimeGuard:
     """Bind signed helper identities to runtime-verifiable source material.
 
@@ -716,8 +754,34 @@ def build_external_runtime_guard(
     Runtime does not import or introspect the external module or callable; it
     verifies the installed distribution/version, RECORD, and exact source bytes.
     """
-    if type(registry) is not ExternalNativeRegistry or type(plans) is not tuple:
+    if (
+        type(registry) is not ExternalNativeRegistry
+        or type(plans) is not tuple
+        or type(wheel) is not VerifiedSourceWheel
+    ):
         raise ExternalLinkageError("external-runtime-guard-input-invalid")
+    expected_dist_info = _dist_info_root(
+        registry.distribution,
+        registry.version,
+    ).as_posix()
+    metadata_member = f"{expected_dist_info}/METADATA"
+    record_member = f"{expected_dist_info}/RECORD"
+    entries = {entry.path: entry for entry in wheel.entries}
+    metadata_entry = entries.get(metadata_member)
+    record_entry = entries.get(record_member)
+    if (
+        wheel.package != registry.package
+        or wheel.distribution != registry.distribution
+        or wheel.version != registry.version
+        or metadata_member not in wheel.metadata_entry_paths
+        or record_member not in wheel.metadata_entry_paths
+        or metadata_entry is None
+        or record_entry is None
+        or not 1 <= metadata_entry.size <= _MAX_RUNTIME_METADATA_BYTES
+        or not 1 <= record_entry.size <= _MAX_RUNTIME_RECORD_BYTES
+        or len(entries) != len(wheel.entries)
+    ):
+        raise ExternalLinkageError("external-runtime-guard-wheel-identity-invalid")
     reachable = {function.qualname for function in registry.private_functions}
     modules: list[ExternalRuntimeModule] = []
     observed: set[str] = set()
@@ -744,6 +808,14 @@ def build_external_runtime_guard(
         if not module.path.startswith(prefix):
             raise ExternalLinkageError("external-runtime-guard-source-path-invalid")
         source_member = module.path.removeprefix(prefix)
+        source_entry = entries.get(source_member)
+        if (
+            source_member not in wheel.source_entry_paths
+            or source_entry is None
+            or source_entry.sha256 != module.sha256
+            or source_entry.size != len(plan.snapshot.source_bytes)
+        ):
+            raise ExternalLinkageError("external-runtime-guard-wheel-source-mismatch")
         modules.append(
             ExternalRuntimeModule(
                 module_name=module.module_name,
@@ -760,6 +832,11 @@ def build_external_runtime_guard(
         return ExternalRuntimeGuard(
             distribution=registry.distribution,
             version=registry.version,
+            dist_info_root=expected_dist_info,
+            metadata_member=metadata_member,
+            metadata_sha256=metadata_entry.sha256,
+            metadata_size=metadata_entry.size,
+            record_member=record_member,
             modules=tuple(sorted(modules, key=lambda item: item.module_name)),
         )
     except ValueError as error:

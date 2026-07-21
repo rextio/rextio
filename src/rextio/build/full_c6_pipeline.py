@@ -293,7 +293,11 @@ def prepare_full_c6_external_build(
         )
         if registry != provisional_registry:
             raise ValueError("external linkage changed during reanalysis")
-        runtime_guard = build_external_runtime_guard(registry, trusted.analyses)
+        runtime_guard = build_external_runtime_guard(
+            registry,
+            trusted.analyses,
+            trusted.wheel,
+        )
         wheel_contract = ExternalWheelContract(
             package=trusted.plan.package,
             distribution=trusted.plan.distribution,
@@ -353,7 +357,11 @@ def validate_full_c6_external_context(
             distribution=source.plan.distribution,
             version=source.plan.requested_version,
         )
-        rebuilt_guard = build_external_runtime_guard(rebuilt_registry, source.analyses)
+        rebuilt_guard = build_external_runtime_guard(
+            rebuilt_registry,
+            source.analyses,
+            source.wheel,
+        )
         rebuilt_contract = ExternalWheelContract(
             package=source.plan.package,
             distribution=source.plan.distribution,
