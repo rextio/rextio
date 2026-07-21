@@ -6,13 +6,14 @@ import copy
 import hashlib
 import json
 import pickle
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import runpy
 from typing import cast
 import zipfile
 
 import pytest
 
+import rextio.build.full_c6_license_materials as license_materials_module
 import rextio.build.full_c6_output_license as output_license_module
 from rextio.build.full_c6_cargo_workspace import (
     FullC6CargoDependencyWorkspaceReceipt,
@@ -221,6 +222,61 @@ def test_project_or_cargo_retained_byte_tamper_makes_transaction_stale(
     payloads[-1] = b"forged Cargo material"
     object.__setattr__(workspace_two, "_file_payloads", tuple(payloads))
     assert not validate_full_c6_license_materials_transaction(transaction_two)
+
+
+def test_revalidation_tolerates_unrelated_direct_ancestor_sibling_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ancestor = tmp_path / "workspace"
+    project = ancestor / "project"
+    _write_project(project)
+    transaction = collect_full_c6_license_materials(
+        project_root=project,
+        cargo_workspace=_cargo_workspace(tmp_path / "cargo"),
+    )
+    before = ancestor.stat()
+    original_read = license_materials_module._read_relative_file
+    sibling_created = False
+
+    def read_and_create_unrelated_sibling(
+        root_fd: int,
+        relative: PurePosixPath,
+        *,
+        max_bytes: int,
+    ) -> bytes:
+        nonlocal sibling_created
+        payload = original_read(root_fd, relative, max_bytes=max_bytes)
+        if not sibling_created:
+            (ancestor / "unrelated-sibling.txt").write_bytes(b"ambient churn\n")
+            sibling_created = True
+        return payload
+
+    monkeypatch.setattr(
+        license_materials_module,
+        "_read_relative_file",
+        read_and_create_unrelated_sibling,
+    )
+
+    assert validate_full_c6_license_materials_transaction(transaction)
+    assert sibling_created
+    after = ancestor.stat()
+    assert (after.st_dev, after.st_ino, after.st_mode) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+    )
+    assert (
+        after.st_size,
+        after.st_ctime_ns,
+        after.st_mtime_ns,
+        after.st_nlink,
+    ) != (
+        before.st_size,
+        before.st_ctime_ns,
+        before.st_mtime_ns,
+        before.st_nlink,
+    )
 
 
 def test_project_license_file_alias_is_rejected_before_path_lookup(tmp_path: Path) -> None:

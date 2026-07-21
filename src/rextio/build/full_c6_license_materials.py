@@ -831,7 +831,8 @@ def _open_absolute_directory_chain(
         handles.append((current_fd, None, None, anchor_stamp))
         if not stat.S_ISDIR(anchor_stamp.mode):
             raise FullC6LicenseMaterialsError("project-root anchor is unsafe")
-        for segment in absolute.parts[1:]:
+        segments = absolute.parts[1:]
+        for index, segment in enumerate(segments):
             if (
                 not segment
                 or segment in {".", ".."}
@@ -844,7 +845,11 @@ def _open_absolute_directory_chain(
             expected = _stamp(os.fstat(child_fd))
             linked = _stamp(os.stat(segment, dir_fd=current_fd, follow_symlinks=False))
             handles.append((child_fd, current_fd, segment, expected))
-            if expected != linked or not stat.S_ISDIR(expected.mode):
+            if not _directory_stamp_matches(
+                expected,
+                linked,
+                require_full_stability=index == len(segments) - 1,
+            ) or not stat.S_ISDIR(expected.mode):
                 raise FullC6LicenseMaterialsError("project-root component changed")
             current_fd = child_fd
         return handles
@@ -867,13 +872,48 @@ def _open_absolute_directory_chain(
 def _verify_directory_chain(
     handles: list[tuple[int, int | None, str | None, _FilesystemStamp]],
 ) -> None:
-    for handle, parent, segment, expected in handles:
-        if _stamp(os.fstat(handle)) != expected:
+    project_root_index = len(handles) - 1
+    for index, (handle, parent, segment, expected) in enumerate(handles):
+        require_full_stability = index == project_root_index
+        if not _directory_stamp_matches(
+            _stamp(os.fstat(handle)),
+            expected,
+            require_full_stability=require_full_stability,
+        ):
             raise FullC6LicenseMaterialsError("project-root directory changed")
-        if parent is not None and segment is not None and _stamp(
-            os.stat(segment, dir_fd=parent, follow_symlinks=False)
-        ) != expected:
+        if (
+            parent is not None
+            and segment is not None
+            and not _directory_stamp_matches(
+                _stamp(os.stat(segment, dir_fd=parent, follow_symlinks=False)),
+                expected,
+                require_full_stability=require_full_stability,
+            )
+        ):
             raise FullC6LicenseMaterialsError("project-root path changed")
+
+
+def _directory_stamp_matches(
+    observed: _FilesystemStamp,
+    expected: _FilesystemStamp,
+    *,
+    require_full_stability: bool,
+) -> bool:
+    if require_full_stability:
+        return observed == expected
+    # An open descriptor prevents inode reuse while device/inode bind the
+    # component identity and mode binds its type and permissions.  Size,
+    # ctime, and mtime change when unrelated children churn; link count also
+    # changes when an unrelated child directory is added or removed.
+    return (
+        observed.device,
+        observed.inode,
+        observed.mode,
+    ) == (
+        expected.device,
+        expected.inode,
+        expected.mode,
+    )
 
 
 def _stamp(value: os.stat_result) -> _FilesystemStamp:
