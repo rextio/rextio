@@ -350,6 +350,13 @@ def prepare_full_c6_preauthorization_evidence(
             build_inputs=build_inputs,
             policy=policy,
         )
+        if not hmac.compare_digest(
+            trusted_executor.digest,
+            inputs.authority_aggregate.executor_receipt_sha256,
+        ):
+            raise FullC6GateError(
+                "Full C6 authority aggregate does not bind the executor receipt"
+            )
         if (
             type(runtime_authorization) is not RuntimeAuthorizationReceipt
             or runtime_authorization.verification_mode
@@ -728,6 +735,9 @@ def _validate_executor_bindings(
             postprocessor=value.postprocessor,
             postprocessor_manifest_sha256=value.postprocessor_manifest_sha256,
             target_triple=value.target_triple,
+            pyo3_config_sha256=value.pyo3_config_sha256,
+            pyo3_config_size=value.pyo3_config_size,
+            pyo3_config_profile_sha256=value.pyo3_config_profile_sha256,
             domain=value.domain,
             scope=value.scope,
             complete_for_scope=value.complete_for_scope,

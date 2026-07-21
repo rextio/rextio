@@ -82,6 +82,9 @@ from rextio.config.schema import RextioConfig
 
 
 TARGET = "x86_64-unknown-linux-gnu"
+PYO3_CONFIG_SHA256 = "7" * 64
+PYO3_CONFIG_SIZE = 128
+PYO3_CONFIG_PROFILE_SHA256 = "8" * 64
 _THIS_DIR = Path(__file__).parent
 _POLICY = runpy.run_path(str(_THIS_DIR / "test_full_c6_policy.py"))
 _SUPPLY = runpy.run_path(str(_THIS_DIR / "test_full_c6_supply_chain.py"))
@@ -563,6 +566,9 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         postprocessor=FULL_C6_NATIVE_POSTPROCESSOR,
         postprocessor_manifest_sha256=driver_manifest_sha256,
         target_triple=TARGET,
+        pyo3_config_sha256=PYO3_CONFIG_SHA256,
+        pyo3_config_size=PYO3_CONFIG_SIZE,
+        pyo3_config_profile_sha256=PYO3_CONFIG_PROFILE_SHA256,
     )
     root = _row(policy, "cargo-component:path-root-package")
     cargo_path_source = FullC6CargoPathSource(
@@ -855,6 +861,75 @@ def test_hard_gate_signs_only_unsigned_evidence_then_mints_final_authority(
     )
     assert repeat_receipt.sha256 == executor.digest  # type: ignore[attr-defined]
 
+    original_preauthorization_sha256 = full_c6_preauthorization_evidence_digest(
+        preauthorization
+    )
+    for field, forged in (
+        ("pyo3_config_sha256", "9" * 64),
+        ("pyo3_config_size", PYO3_CONFIG_SIZE + 1),
+        ("pyo3_config_profile_sha256", "a" * 64),
+    ):
+        changed_executor = replace(executor, **{field: forged})  # type: ignore[arg-type]
+        assert changed_executor.digest != executor.digest  # type: ignore[attr-defined]
+        changed_receipts = tuple(
+            replace(item, sha256=changed_executor.digest)
+            if item.id == "repeat-builds-byte-identical"
+            else item
+            for item in preauthorization.receipts
+        )
+        changed_preauthorization = replace(
+            preauthorization,
+            receipts=changed_receipts,
+        )
+        assert (
+            full_c6_preauthorization_evidence_digest(changed_preauthorization)
+            != original_preauthorization_sha256
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "pyo3_config_sha256",
+        "pyo3_config_size",
+        "pyo3_config_profile_sha256",
+    ),
+)
+def test_gate_rejects_omitted_pyo3_executor_binding(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    arguments = _fixture(tmp_path)
+    executor = arguments["executor"]
+    object.__setattr__(executor, field, None)
+
+    with pytest.raises(FullC6GateError, match="executor receipt is not canonical"):
+        _request(arguments)
+
+
+@pytest.mark.parametrize(
+    ("field", "forged"),
+    (
+        ("pyo3_config_sha256", "9" * 64),
+        ("pyo3_config_size", PYO3_CONFIG_SIZE + 1),
+        ("pyo3_config_profile_sha256", "a" * 64),
+    ),
+)
+def test_gate_rejects_forged_pyo3_executor_binding(
+    tmp_path: Path,
+    field: str,
+    forged: object,
+) -> None:
+    arguments = _fixture(tmp_path)
+    executor = arguments["executor"]
+    arguments["executor"] = replace(executor, **{field: forged})  # type: ignore[arg-type]
+
+    with pytest.raises(
+        FullC6GateError,
+        match="authority aggregate does not bind the executor receipt",
+    ):
+        _request(arguments)
+
 
 def test_gate_rejects_callback_or_unbound_executor_authority(tmp_path: Path) -> None:
     arguments = _fixture(tmp_path)
@@ -867,6 +942,9 @@ def test_gate_rejects_callback_or_unbound_executor_authority(tmp_path: Path) -> 
         postprocessor=None,
         postprocessor_manifest_sha256=None,
         target_triple=None,
+        pyo3_config_sha256=None,
+        pyo3_config_size=None,
+        pyo3_config_profile_sha256=None,
     )
     with pytest.raises(FullC6GateError, match="callback and test-only"):
         _request(arguments)
