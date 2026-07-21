@@ -8,20 +8,31 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
 import rextio.cli.build_cmd as build_cmd
-from rextio.analyzer.models import ProjectAnalysis
+from rextio.analyzer.diagnostics import Diagnostic
+from rextio.analyzer.models import (
+    FunctionAnalysis,
+    ModuleAnalysis,
+    ProjectAnalysis,
+    TopLevelAnalysis,
+)
 from rextio.build.full_c6_gate import FullC6GateError
 from rextio.build.full_c6_host_inputs import FullC6HostInputsError
-from rextio.build.full_c6_pipeline import FullC6ExternalPreflightResult
+from rextio.build.full_c6_pipeline import (
+    FullC6ExternalPreflightResult,
+    FullC6PipelineError,
+)
 from rextio.build.full_c6_publication import FullC6PublicationError
 from rextio.cli.main import main
 from rextio.cli.reporter import Reporter
 from rextio.config.schema import BuildConfig, RextioConfig
+from rextio.source.planning import HostSourcePlan
 
 
 class _Receipt:
@@ -49,6 +60,67 @@ def _analysis(project: Path) -> ProjectAnalysis:
     return ProjectAnalysis(project_root=project.resolve())
 
 
+def _nested_analysis(project: Path) -> ProjectAnalysis:
+    source = project / "pkg" / "app.py"
+    source.parent.mkdir()
+    source.write_text("seed = 1\n", encoding="utf-8")
+    diagnostic = Diagnostic(
+        code="RXT999",
+        severity="warning",
+        message="test diagnostic",
+        file_path=os.fspath(source),
+        line=1,
+        column=0,
+    )
+    function = FunctionAnalysis(
+        name="calculate",
+        qualname="pkg.app.calculate",
+        module_name="pkg.app",
+        file_path=os.fspath(source),
+        line=1,
+        column=0,
+        diagnostics=[diagnostic],
+    )
+    top_level = TopLevelAnalysis(
+        name="<module>",
+        qualname="pkg.app.<module>",
+        module_name="pkg.app",
+        file_path=os.fspath(source),
+        diagnostics=[diagnostic],
+    )
+    analysis = ProjectAnalysis(
+        project_root=project,
+        modules=[
+            ModuleAnalysis(
+                module_name="pkg.app",
+                file_path=os.fspath(source),
+                functions=[function],
+                diagnostics=[diagnostic],
+                top_level=top_level,
+            )
+        ],
+    )
+    analysis.host_source_plan = HostSourcePlan(
+        graph=None,
+        module_initializers=(),
+        unavailable_reason="focused report projection fixture",
+    )
+    return analysis
+
+
+def _file_path_values(value: object) -> list[object]:
+    values: list[object] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "file_path":
+                values.append(item)
+            values.extend(_file_path_values(item))
+    elif isinstance(value, list):
+        for item in value:
+            values.extend(_file_path_values(item))
+    return values
+
+
 def _report(project: Path) -> dict[str, object]:
     return json.loads(
         (project / ".rextio" / "reports" / "build.json").read_text(
@@ -65,6 +137,37 @@ def _reporter(*, output_format: str = "text") -> tuple[Reporter, io.StringIO, io
         stdout,
         stderr,
     )
+
+
+def _seed_stale_full_c6_reports(project: Path) -> Path:
+    reports = project / ".rextio" / "reports"
+    reports.mkdir(parents=True)
+    for name in ("build.json", "generate.json", "check.json"):
+        (reports / name).write_text(
+            f"stale private material under {project}\n",
+            encoding="utf-8",
+        )
+    return reports
+
+
+def _assert_fixed_projection_failure(
+    project: Path,
+    reports: Path,
+    *,
+    stdout: io.StringIO,
+    stderr: io.StringIO,
+) -> None:
+    assert stdout.getvalue() == ""
+    message = stderr.getvalue()
+    assert message == (
+        "RXT060 strict Full C6 analysis report projection failed closed.\n"
+        "Suggestion: keep analyzer report paths canonical and project-contained, "
+        "then rerun.\n"
+    )
+    assert os.fspath(project) not in message
+    assert "Traceback" not in message
+    assert "private material" not in message
+    assert not any((reports / name).exists() for name in ("build.json", "generate.json", "check.json"))
 
 
 def _prerequisites(
@@ -239,6 +342,258 @@ def test_bootstrap_lifecycle_preserves_context_and_writes_non_authorizing_result
     assert not stale_generate.exists()
     assert not (project / "dist").exists()
     assert os.fspath(project) not in json.dumps(report)
+
+
+def test_strict_lifecycle_projects_every_nested_file_path_once_for_both_reports(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path.resolve()
+    analysis = _nested_analysis(project)
+    reporter, _stdout, _stderr = _reporter()
+
+    assert (
+        build_cmd._report_full_c6_pipeline_success(
+            project,
+            analysis,
+            "cpython",
+            reporter,
+            lifecycle="bootstrap-required",
+            status="full-c6-bootstrap-required",
+            distribution_authorized=False,
+            details={},
+            next_action="complete the owner policy",
+        )
+        == 0
+    )
+
+    reports = project / ".rextio" / "reports"
+    build_report = json.loads((reports / "build.json").read_text(encoding="utf-8"))
+    check_report = json.loads((reports / "check.json").read_text(encoding="utf-8"))
+    projected = build_report["analysis"]
+    assert projected == check_report
+    assert projected["project_root"] == "."
+    assert set(_file_path_values(projected)) == {"pkg/app.py"}
+    assert len(_file_path_values(projected)) >= 7
+    assert os.fspath(project) not in json.dumps(build_report)
+    assert set(_file_path_values(analysis.to_dict())) == {
+        os.fspath(project / "pkg" / "app.py")
+    }
+
+
+def test_strict_success_projection_failure_uses_fixed_stderr_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path.resolve()
+    reports = _seed_stale_full_c6_reports(project)
+    analysis = _analysis(project)
+    monkeypatch.setattr(
+        analysis,
+        "to_dict",
+        lambda: {
+            "project_root": os.fspath(project),
+            "diagnostics": [{"message": f"private material at {project}/app.py"}],
+        },
+    )
+    reporter, stdout, stderr = _reporter()
+
+    assert (
+        build_cmd._report_full_c6_pipeline_success(
+            project,
+            analysis,
+            "cpython",
+            reporter,
+            lifecycle="bootstrap-required",
+            status="full-c6-bootstrap-required",
+            distribution_authorized=False,
+            details={},
+            next_action="must not be serialized",
+        )
+        == 1
+    )
+    _assert_fixed_projection_failure(
+        project,
+        reports,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def test_existing_pipeline_failure_projection_failure_uses_fixed_stderr_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path.resolve()
+    reports = _seed_stale_full_c6_reports(project)
+    analysis = _analysis(project)
+    monkeypatch.setattr(
+        analysis,
+        "to_dict",
+        lambda: {
+            "project_root": os.fspath(project),
+            "nested": {"file_path": os.fspath(project.parent / "outside.py")},
+        },
+    )
+    reporter, stdout, stderr = _reporter()
+
+    assert (
+        build_cmd._report_full_c6_pipeline_failure(
+            project,
+            analysis,
+            "cpython",
+            FullC6PipelineError(f"private cause under {project}"),
+            reporter,
+            stage="private-stage",
+        )
+        == 1
+    )
+    _assert_fixed_projection_failure(
+        project,
+        reports,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+@pytest.mark.parametrize(
+    "file_path",
+    [
+        "",
+        7,
+        "bad\0.py",
+        "../outside.py",
+    ],
+)
+def test_strict_report_rejects_invalid_or_parent_file_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    file_path: object,
+) -> None:
+    project = tmp_path.resolve()
+    analysis = _analysis(project)
+    monkeypatch.setattr(
+        analysis,
+        "to_dict",
+        lambda: {
+            "project_root": os.fspath(project),
+            "nested": {"file_path": file_path},
+        },
+    )
+
+    with pytest.raises(FullC6PipelineError, match="report projection rejected"):
+        build_cmd._project_full_c6_analysis_report(project, analysis)
+
+
+def test_strict_report_rejects_absolute_outside_root_file_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path.resolve()
+    analysis = _analysis(project)
+    monkeypatch.setattr(
+        analysis,
+        "to_dict",
+        lambda: {
+            "project_root": os.fspath(project),
+            "nested": {"file_path": os.fspath(project.parent / "outside.py")},
+        },
+    )
+
+    with pytest.raises(FullC6PipelineError, match="outside-root file_path"):
+        build_cmd._project_full_c6_analysis_report(project, analysis)
+
+
+def test_strict_report_rejects_symlink_file_path_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path.resolve()
+    source = project / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    alias = project / "alias.py"
+    try:
+        alias.symlink_to(source)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable: {error}")
+    analysis = _analysis(project)
+    monkeypatch.setattr(
+        analysis,
+        "to_dict",
+        lambda: {
+            "project_root": os.fspath(project),
+            "nested": {"file_path": os.fspath(alias)},
+        },
+    )
+
+    with pytest.raises(FullC6PipelineError, match="ambiguous file_path"):
+        build_cmd._project_full_c6_analysis_report(project, analysis)
+
+
+def test_strict_report_rejects_unexpected_nested_container(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path.resolve()
+    analysis = _analysis(project)
+    monkeypatch.setattr(
+        analysis,
+        "to_dict",
+        lambda: {
+            "project_root": os.fspath(project),
+            "modules": ({"file_path": "app.py"},),
+        },
+    )
+
+    with pytest.raises(FullC6PipelineError, match="unexpected value type"):
+        build_cmd._project_full_c6_analysis_report(project, analysis)
+
+
+def test_strict_report_rejects_project_root_text_outside_file_path_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path.resolve()
+    analysis = _analysis(project)
+    monkeypatch.setattr(
+        analysis,
+        "to_dict",
+        lambda: {
+            "project_root": os.fspath(project),
+            "diagnostics": [
+                {
+                    "message": f"analysis failed under {project}/pkg/app.py",
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(FullC6PipelineError, match="residual project-root text"):
+        build_cmd._project_full_c6_analysis_report(project, analysis)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS /private alias contract")
+def test_strict_report_rejects_verified_macos_project_root_alias_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path.resolve()
+    if project.parts[:2] != ("/", "private"):
+        pytest.skip("temporary project does not use the canonical /private spelling")
+    alias = Path("/").joinpath(*project.parts[2:])
+    if alias.resolve(strict=True) != project:
+        pytest.skip("the shorter macOS spelling is not an alias of this project")
+    analysis = _analysis(project)
+    monkeypatch.setattr(
+        analysis,
+        "to_dict",
+        lambda: {
+            "project_root": os.fspath(project),
+            "diagnostics": [{"message": f"analysis failed under {alias}/app.py"}],
+        },
+    )
+
+    with pytest.raises(FullC6PipelineError, match="residual project-root text"):
+        build_cmd._project_full_c6_analysis_report(project, analysis)
 
 
 def test_signing_lifecycle_is_idempotent_and_emits_json_primary_result(

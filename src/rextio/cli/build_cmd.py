@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from argparse import Namespace
@@ -240,7 +241,14 @@ def _report_full_c6_pipeline_failure(
     reports_dir.mkdir(parents=True, exist_ok=True)
     for stale in ("build.json", "generate.json", "check.json"):
         (reports_dir / stale).unlink(missing_ok=True)
-    analysis_data = _write_full_c6_check_report(reports_dir, analysis)
+    try:
+        analysis_data = _write_full_c6_check_report(
+            reports_dir,
+            project_root,
+            analysis,
+        )
+    except FullC6PipelineError:
+        return _report_full_c6_projection_failure(reports_dir, reporter)
     public_message = f"RXT060 strict Full C6 {stage} failed closed."
     (reports_dir / "build.json").write_text(
         json.dumps(
@@ -292,14 +300,190 @@ def _report_full_c6_preanalysis_failure(
     return 1
 
 
-def _write_full_c6_check_report(
+def _full_c6_report_projection_error(reason: str) -> FullC6PipelineError:
+    return FullC6PipelineError(
+        f"RXT060 strict Full C6 analysis report projection rejected {reason}"
+    )
+
+
+def _clear_full_c6_reports(reports_dir: Path) -> None:
+    try:
+        reports_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    for stale in ("build.json", "generate.json", "check.json"):
+        try:
+            (reports_dir / stale).unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+def _report_full_c6_projection_failure(
     reports_dir: Path,
+    reporter: Reporter,
+) -> int:
+    """Emit one fixed path-free boundary when strict report projection fails."""
+    _clear_full_c6_reports(reports_dir)
+    reporter.error("RXT060 strict Full C6 analysis report projection failed closed.")
+    reporter.error(
+        "Suggestion: keep analyzer report paths canonical and project-contained, "
+        "then rerun."
+    )
+    return 1
+
+
+def _project_full_c6_file_path(project_root: Path, value: object) -> str:
+    if type(value) is not str or not value:
+        raise _full_c6_report_projection_error("an invalid file_path")
+    try:
+        parsed = Path(value)
+    except (OSError, UnicodeError, ValueError) as error:
+        raise _full_c6_report_projection_error("an invalid file_path") from error
+    if os.fspath(parsed) != value:
+        raise _full_c6_report_projection_error("a non-canonical file_path")
+    if parsed.is_absolute():
+        candidate = parsed
+    else:
+        candidate = project_root / parsed
+    try:
+        relative = candidate.relative_to(project_root)
+    except ValueError as error:
+        raise _full_c6_report_projection_error("an outside-root file_path") from error
+    if (
+        not relative.parts
+        or any(part in {"", os.curdir, os.pardir} for part in relative.parts)
+        or relative.is_absolute()
+    ):
+        raise _full_c6_report_projection_error("a non-canonical file_path")
+    try:
+        resolved = candidate.resolve(strict=False)
+    except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+        raise _full_c6_report_projection_error("an ambiguous file_path") from error
+    if resolved != candidate:
+        raise _full_c6_report_projection_error("an ambiguous file_path")
+    return relative.as_posix()
+
+
+def _project_full_c6_report_value(
+    project_root: Path,
+    value: object,
+    *,
+    active_containers: set[int],
+) -> object:
+    if isinstance(value, dict):
+        if type(value) is not dict:
+            raise _full_c6_report_projection_error("an unexpected mapping type")
+        identity = id(value)
+        if identity in active_containers:
+            raise _full_c6_report_projection_error("a cyclic mapping")
+        active_containers.add(identity)
+        try:
+            projected: dict[str, object] = {}
+            for key, item in value.items():
+                if type(key) is not str:
+                    raise _full_c6_report_projection_error("a non-string mapping key")
+                if key == "file_path":
+                    projected[key] = _project_full_c6_file_path(project_root, item)
+                else:
+                    projected[key] = _project_full_c6_report_value(
+                        project_root,
+                        item,
+                        active_containers=active_containers,
+                    )
+            return projected
+        finally:
+            active_containers.remove(identity)
+    if isinstance(value, list):
+        if type(value) is not list:
+            raise _full_c6_report_projection_error("an unexpected sequence type")
+        identity = id(value)
+        if identity in active_containers:
+            raise _full_c6_report_projection_error("a cyclic sequence")
+        active_containers.add(identity)
+        try:
+            return [
+                _project_full_c6_report_value(
+                    project_root,
+                    item,
+                    active_containers=active_containers,
+                )
+                for item in value
+            ]
+        finally:
+            active_containers.remove(identity)
+    if value is None or type(value) in {bool, int, str}:
+        return value
+    if type(value) is float and math.isfinite(value):
+        return value
+    raise _full_c6_report_projection_error("an unexpected value type")
+
+
+def _project_full_c6_analysis_report(
+    project_root: Path,
     analysis: ProjectAnalysis,
 ) -> dict[str, object]:
-    """Write a strict report without serializing a machine-local absolute root."""
+    try:
+        canonical_root = project_root.resolve(strict=True)
+    except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+        raise _full_c6_report_projection_error("an invalid project root") from error
+    if (
+        not project_root.is_absolute()
+        or canonical_root != project_root
+        or not canonical_root.is_dir()
+    ):
+        raise _full_c6_report_projection_error("an ambiguous project root")
+    raw = analysis.to_dict()
+    if type(raw) is not dict or raw.get("project_root") != os.fspath(project_root):
+        raise _full_c6_report_projection_error("a mismatched analysis root")
+    raw["project_root"] = "."
+    projected = _project_full_c6_report_value(
+        project_root,
+        raw,
+        active_containers=set(),
+    )
+    if type(projected) is not dict:
+        raise _full_c6_report_projection_error("an invalid top-level mapping")
+    try:
+        canonical_bytes = json.dumps(
+            projected,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise _full_c6_report_projection_error("a non-canonical JSON value") from error
+    root_spellings = {os.fspath(project_root)}
+    if sys.platform == "darwin" and project_root.parts[:2] == ("/", "private"):
+        alias = Path("/").joinpath(*project_root.parts[2:])
+        try:
+            if alias.resolve(strict=True) == project_root:
+                root_spellings.add(os.fspath(alias))
+        except (OSError, RuntimeError, UnicodeError, ValueError):
+            pass
+    for spelling in root_spellings:
+        try:
+            raw_bytes = spelling.encode("utf-8")
+            escaped_bytes = json.dumps(spelling, ensure_ascii=True)[1:-1].encode(
+                "utf-8"
+            )
+        except UnicodeError as error:
+            raise _full_c6_report_projection_error(
+                "an invalid project-root spelling"
+            ) from error
+        if raw_bytes in canonical_bytes or escaped_bytes in canonical_bytes:
+            raise _full_c6_report_projection_error("residual project-root text")
+    return projected
+
+
+def _write_full_c6_check_report(
+    reports_dir: Path,
+    project_root: Path,
+    analysis: ProjectAnalysis,
+) -> dict[str, object]:
+    """Write one strict report with only canonical project-relative source paths."""
     ensure_host_source_plan(analysis)
-    data = analysis.to_dict()
-    data["project_root"] = "."
+    data = _project_full_c6_analysis_report(project_root, analysis)
     (reports_dir / "check.json").write_text(
         json.dumps(data, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -343,7 +527,14 @@ def _report_full_c6_pipeline_success(
     reports_dir.mkdir(parents=True, exist_ok=True)
     for stale in ("build.json", "generate.json", "check.json"):
         (reports_dir / stale).unlink(missing_ok=True)
-    analysis_data = _write_full_c6_check_report(reports_dir, analysis)
+    try:
+        analysis_data = _write_full_c6_check_report(
+            reports_dir,
+            project_root,
+            analysis,
+        )
+    except FullC6PipelineError:
+        return _report_full_c6_projection_failure(reports_dir, reporter)
     report = {
         "analysis": analysis_data,
         "contract_version": TOOLING_CONTRACT_VERSION,
