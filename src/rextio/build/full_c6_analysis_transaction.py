@@ -20,6 +20,9 @@ from rextio.artifacts.evidence import (
     canonical_json_bytes,
 )
 from rextio.build.full_c6_policy import FullC6PolicyReceipt
+from rextio.build.full_c6_input_identity import (
+    canonical_full_c6_build_input_name,
+)
 from rextio.build.input_closure import BuildInputClosure, ExactFileIdentity
 from rextio.build.transformation_verification import (
     SourceTransformationReplayAuthority,
@@ -436,7 +439,11 @@ def _require_project_closure_binding(
         value.generated_cargo_toml,
     )
     for reference in references:
-        exact = closure.get(reference.logical_path)
+        logical_name = canonical_full_c6_build_input_name(
+            reference.logical_path,
+            reference.role,
+        )
+        exact = closure.get(logical_name)
         if (
             exact is None
             or exact.sha256 != reference.sha256
