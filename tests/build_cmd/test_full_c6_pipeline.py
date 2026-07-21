@@ -211,12 +211,17 @@ checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         fresh.external_source_plan = signed.plan
         return fresh
 
-    return prepare_full_c6_external_build(
+    preflight = prepare_full_c6_external_build(
         project_root=project,
         initial_analysis=initial,
         config=config,
         analysis_scope=analysis_scope,
         reanalyze=reanalyze,
+    )
+    return SimpleNamespace(
+        analysis=preflight.analysis,
+        context=preflight.context,
+        config=config,
     )
 
 
@@ -297,6 +302,8 @@ def test_source_only_generation_replays_exact_external_c5_2_ir(tmp_path: Path) -
         embedding_enabled=False,
         external_native_registry=preflight.context.registry,
         external_runtime_guard=preflight.context.runtime_guard,
+        full_c6_analysis_scope=preflight.context.analysis_scope,
+        full_c6_config=preflight.config,
     )
 
     assert verification is not None
