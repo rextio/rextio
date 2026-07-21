@@ -103,10 +103,17 @@ from rextio.build.rust_crate_builder import (
     skipped_rust_crate_build,
 )
 from rextio.build.wheel_builder import (
+    ExternalWheelContract,
     WheelBuildResult,
     artifact_wheel_path,
     build_artifact_wheel,
     skipped_wheel,
+)
+from rextio.build.full_c6_pipeline import (
+    FULL_C6_DISTRIBUTION_POLICY,
+    FullC6ExternalBuildContext,
+    FullC6PipelineError,
+    validate_full_c6_external_context,
 )
 from rextio.codegen.rust.generator import (
     crate_emitted_qualnames,
@@ -1167,6 +1174,8 @@ def build_hybrid_artifact(
     executable_fallback: FallbackStrategy | str | None = None,
     toolchain: ToolchainConfig | None = None,
     artifact_evidence_policy: str = ARTIFACT_EVIDENCE_POLICY_BEST_EFFORT,
+    artifact_distribution_policy: str = "disabled",
+    full_c6_external_context: FullC6ExternalBuildContext | None = None,
     *,
     executable_standalone: StandalonePluginContext | None = None,
     standalone_contexts: dict[ArtifactKind, StandalonePluginContext] | None = None,
@@ -1185,7 +1194,38 @@ def build_hybrid_artifact(
     if executable_analysis is None:
         executable_analysis = analysis
     blocked_plan = analysis.external_source_plan or executable_analysis.external_source_plan
-    if blocked_plan is not None:
+    strict_distribution = artifact_distribution_policy == FULL_C6_DISTRIBUTION_POLICY
+    if artifact_distribution_policy not in {"disabled", FULL_C6_DISTRIBUTION_POLICY}:
+        raise ValueError("artifact_distribution_policy must be disabled or full-c6-required")
+    if strict_distribution:
+        if full_c6_external_context is None:
+            raise FullC6PipelineError(
+                "RXT060 full-c6-required build lacks a same-transaction strict C5.2 context"
+            )
+        if blocked_plan is None:
+            raise FullC6PipelineError(
+                "RXT060 full-c6-required build lacks an exact external source plan"
+            )
+        validate_full_c6_external_context(full_c6_external_context, analysis)
+        strict_scope_failures = (
+            fallback != "cpython"
+            or build_tool != "cargo"
+            or artifact_evidence_policy != ARTIFACT_EVIDENCE_POLICY_REQUIRED
+            or executable_entrypoint is not None
+            or rust_importable
+            or embedding_enabled
+        )
+        if strict_scope_failures:
+            raise FullC6PipelineError(
+                "RXT060 full-c6-required is frozen to Cargo/PyO3 host-extension + "
+                "CPython fallback, required evidence, no executable/importable crate, "
+                "and no helper embedding"
+            )
+    elif full_c6_external_context is not None:
+        raise FullC6PipelineError(
+            "RXT060 strict C5.2 context cannot enter an ordinary or preview build"
+        )
+    if blocked_plan is not None and not strict_distribution:
         # External-source work must stop before target discovery, generated-
         # source cleanup, Cargo, Python fallback, wheel, executable, or
         # rust-crate work.  C6.1 verifies a project SourceLock; a verified lock
@@ -1198,7 +1238,11 @@ def build_hybrid_artifact(
         ARTIFACT_EVIDENCE_POLICY_REQUIRED,
     }:
         raise ValueError("artifact_evidence_policy must be best-effort or required")
-    if artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED and not (
+    ordinary_required_evidence = (
+        artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED
+        and not strict_distribution
+    )
+    if ordinary_required_evidence and not (
         required_artifact_evidence_scope_is_valid(
             native_extension=analysis.requires_native_build(),
             fallback=fallback,
@@ -1210,6 +1254,12 @@ def build_hybrid_artifact(
     fallback_strategy = resolve_executable_fallback(executable_fallback, executable_hybrid_runtime)
     toolchain = toolchain or ToolchainConfig()
     target_plan = target_plan or default_target_plan()
+    if strict_distribution and (
+        target_plan.spec.language != "rust" or target_plan.plugins.active
+    ):
+        raise FullC6PipelineError(
+            "RXT060 full-c6-required is frozen to Rust with no active plugins"
+        )
     layout = ArtifactLayout(project_root)
     artifact_profiles = _build_artifact_profiles(
         fallback,
@@ -1220,7 +1270,7 @@ def build_hybrid_artifact(
         rust_importable=rust_importable and analysis.requires_native_build(),
     )
     plan = create_build_plan(analysis, fallback, artifact_profiles=artifact_profiles)
-    if artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED and not (
+    if ordinary_required_evidence and not (
         len(plan.artifact_profiles) == 1 and is_in_scope_host_extension_cpython(plan)
     ):
         raise ArtifactEvidenceRequiredError(ArtifactEvidenceGate.out_of_scope())
@@ -1285,6 +1335,7 @@ def build_hybrid_artifact(
         toolchain=toolchain,
         evidence_snapshot=evidence_snapshot,
         project_root=project_root,
+        full_c6_external_context=full_c6_external_context,
     )
     if updated_snapshot is not None:
         evidence_snapshot = updated_snapshot
@@ -1308,7 +1359,14 @@ def build_hybrid_artifact(
     )
     required_outputs: _RequiredEvidenceOutputs | None = None
     expected_wheel: Path | None = None
-    if artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED:
+    strict_candidate_dir: Path | None = None
+    if strict_distribution:
+        # A C5.2 candidate is build input for the separate two-build Full C6
+        # executor, not a distributable artifact.  Keep it under the private
+        # build tree; only the sealed publication adapter may create dist output.
+        strict_candidate_dir = layout.build_dir / "full-c6-candidate"
+        strict_candidate_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+    if ordinary_required_evidence:
         expected_wheel = artifact_wheel_path(project_root, layout.build_python_dir, layout.dist_dir)
         try:
             required_outputs = _RequiredEvidenceOutputs.prepare(layout, expected_wheel)
@@ -1325,7 +1383,16 @@ def build_hybrid_artifact(
             layout,
             native_build,
             fallback_build,
-            output_dir=(required_outputs.backup_dir if required_outputs is not None else None),
+            output_dir=(
+                required_outputs.backup_dir
+                if required_outputs is not None
+                else strict_candidate_dir
+            ),
+            external_contract=(
+                full_c6_external_context.wheel_contract
+                if full_c6_external_context is not None
+                else None
+            ),
         )
         publication_failure_reason: str | None = None
         if required_outputs is not None:
@@ -1346,7 +1413,11 @@ def build_hybrid_artifact(
         # preview-ready or unavailable evidence. Out-of-scope builds omit the field.
         # Unavailability never raises into the ordinary build success path.
         artifact_evidence: ArtifactEvidence | None
-        if publication_failure_reason is not None:
+        if strict_distribution:
+            # C6.2-C6.15 preview records are intentionally not promoted or
+            # interpreted inside the complete Full C6 path.
+            artifact_evidence = None
+        elif publication_failure_reason is not None:
             artifact_evidence = ArtifactEvidence.unavailable(
                 reason=publication_failure_reason,
                 target_triple=plan.artifact_profiles[0].target_triple,
@@ -1367,7 +1438,7 @@ def build_hybrid_artifact(
                 ),
             )
         artifact_evidence_gate: ArtifactEvidenceGate | None = None
-        if artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED:
+        if ordinary_required_evidence:
             assert required_outputs is not None
             assert expected_wheel is not None
             if artifact_evidence is None:
@@ -1745,6 +1816,7 @@ def _generate_and_build_native(
     toolchain: ToolchainConfig | None = None,
     evidence_snapshot: EvidenceInputSnapshot | None = None,
     project_root: Path | None = None,
+    full_c6_external_context: FullC6ExternalBuildContext | None = None,
 ) -> tuple[NativeBuildResult, tuple[dict[str, object], ...], EvidenceInputSnapshot | None]:
     if not plan.native.has_native_artifacts:
         return (
@@ -1757,6 +1829,7 @@ def _generate_and_build_native(
         layout,
         target_plan,
         embedding_enabled=embedding_enabled,
+        full_c6_external_context=full_c6_external_context,
     )
     if native_source.status == "failed":
         return (
@@ -1862,6 +1935,7 @@ def _generate_native_source(
     target_plan: TargetPlan,
     *,
     embedding_enabled: bool = False,
+    full_c6_external_context: FullC6ExternalBuildContext | None = None,
 ) -> tuple[NativeSourceResult, tuple[dict[str, object], ...]]:
     """Generate the PyO3 extension source; return (result, plugin crate deps).
 
@@ -1885,13 +1959,25 @@ def _generate_native_source(
     plugin_types, plugin_providers, plugin_types_by_key = _plugin_lowering_inputs(target_plan)
     try:
         module_ir = lower_project(
-            plan.analysis, include_embedding=embedding_enabled, plugin_types=plugin_types
+            plan.analysis,
+            include_embedding=embedding_enabled,
+            plugin_types=plugin_types,
+            external_native_registry=(
+                full_c6_external_context.registry
+                if full_c6_external_context is not None
+                else None
+            ),
         )
         rust_source = generate_rust_module(
             module_ir,
             boundary_call_return_types=_boundary_call_return_types(plan.analysis),
             plugin_providers=plugin_providers,
             plugin_types_by_key=plugin_types_by_key,
+            external_runtime_guard=(
+                full_c6_external_context.runtime_guard
+                if full_c6_external_context is not None
+                else None
+            ),
         )
     except (LoweringError, RustCodegenError) as exc:
         return NativeSourceResult(
@@ -2142,6 +2228,7 @@ def _build_wheel_artifact(
     fallback_build: FallbackBuildResult,
     *,
     output_dir: Path | None = None,
+    external_contract: ExternalWheelContract | None = None,
 ) -> WheelBuildResult:
     if fallback_build.status != "built":
         return skipped_wheel("Fallback packaging failed, so no wheel was generated.")
@@ -2153,6 +2240,7 @@ def _build_wheel_artifact(
         project_root,
         layout.build_python_dir,
         output_dir if output_dir is not None else layout.dist_dir,
+        external_contract=external_contract,
     )
 
 

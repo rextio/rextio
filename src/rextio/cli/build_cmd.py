@@ -36,6 +36,12 @@ from rextio.build.orchestrator import (
     build_hybrid_artifact,
     required_artifact_evidence_scope_is_valid,
 )
+from rextio.build.full_c6_pipeline import (
+    FULL_C6_DISTRIBUTION_POLICY,
+    FullC6PipelineError,
+    FullC6TypedPolicyRequiredError,
+    prepare_full_c6_external_build,
+)
 from rextio.plugins.capabilities import (
     StandalonePluginContext,
     build_standalone_plugin_context,
@@ -200,6 +206,49 @@ def _report_external_source_build_blocked(
         )
     reporter.error(str(error))
     reporter.error(suggestion)
+    return 1
+
+
+def _report_full_c6_pipeline_failure(
+    project_root: Path,
+    analysis: ProjectAnalysis,
+    fallback: str,
+    error: FullC6PipelineError,
+    reporter: Reporter,
+) -> int:
+    """Report one actionable strict Full C6 fail-closed result."""
+    reports_dir = project_root / ".rextio" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    for stale in ("build.json", "generate.json", "check.json"):
+        (reports_dir / stale).unlink(missing_ok=True)
+    write_check_report(project_root, analysis)
+    (reports_dir / "build.json").write_text(
+        json.dumps(
+            {
+                "analysis": analysis.to_dict(),
+                "contract_version": TOOLING_CONTRACT_VERSION,
+                "error": {"code": "RXT060", "message": str(error)},
+                "fallback": fallback,
+                "status": "full-c6-required-failed",
+                "distribution_authorized": False,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    reporter.error(str(error))
+    if isinstance(error, FullC6TypedPolicyRequiredError):
+        reporter.error(
+            "Suggestion: invoke the complete programmatic Full C6 pipeline with an "
+            "explicit verified FullC6PolicyReceipt; preview evidence is not policy authority."
+        )
+    else:
+        reporter.error(
+            "Suggestion: verify the exact SourceLock v2 manifest/signature, source wheel, "
+            "trusted public key pin, and unchanged project imports, then rerun."
+        )
     return 1
 
 
@@ -471,14 +520,52 @@ def run(args: Namespace) -> int:
         # RXT060 diagnostic instead of a raw traceback (council round 8).
         reporter.error(f"RXT060 Plugin error: {exc}")
         return 1
-    if analysis.external_source_plan is not None:
+    strict_distribution = (
+        config.build.artifact_distribution_policy == FULL_C6_DISTRIBUTION_POLICY
+    )
+    has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
+    if strict_distribution and not has_parse_error:
+        try:
+            preflight = prepare_full_c6_external_build(
+                project_root=project_root,
+                initial_analysis=analysis,
+                config=config,
+                reanalyze=lambda registry: analyze_project(
+                    project_root,
+                    boundary_warnings=config.policy.boundary_warnings,
+                    native_marker=config.policy.native_marker,
+                    target_language=target_plan.spec.language,
+                    native_top_level=config.policy.native_top_level,
+                    imports_config=config.imports,
+                    active_plugins=target_plan.plugins.active,
+                    plugin_registry=target_plan.plugins,
+                    plugin_config=config,
+                    embedding_enabled=config.embedding.enabled,
+                    external_native_registry=registry,
+                ),
+            )
+            analysis = preflight.analysis
+        except FullC6PipelineError as error:
+            return _report_full_c6_pipeline_failure(
+                project_root, analysis, fallback, error, reporter
+            )
+        return _report_full_c6_pipeline_failure(
+            project_root,
+            analysis,
+            fallback,
+            FullC6TypedPolicyRequiredError(
+                "RXT060 Full C6 CLI distribution requires an explicit typed "
+                "FullC6PolicyReceipt; automatic derivation from preview evidence is unsafe"
+            ),
+            reporter,
+        )
+    if analysis.external_source_plan is not None and not has_parse_error:
         return _report_external_source_build_blocked(
             project_root,
             analysis,
             fallback,
             reporter,
         )
-    has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:
         reports_dir = project_root / ".rextio" / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
@@ -645,6 +732,7 @@ def run(args: Namespace) -> int:
             executable_fallback=config.executable.fallback,
             toolchain=config.toolchain,
             artifact_evidence_policy=config.build.artifact_evidence_policy,
+            artifact_distribution_policy=config.build.artifact_distribution_policy,
             executable_standalone=executable_standalone,
             standalone_contexts=(
                 {ArtifactKind.HOST_EXECUTABLE: executable_standalone}
