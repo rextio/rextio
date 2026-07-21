@@ -942,6 +942,49 @@ def test_native_pyo3_support_root_rejects_identical_inode_replacement(
         )
 
 
+def test_native_pyo3_support_root_rejects_same_inode_metadata_drift(
+    tmp_path: Path,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    support_root = tmp_path / "pyo3-support"
+    support_root.mkdir(mode=0o700)
+    identity = _pyo3_identity()
+    config_path = executor.materialize_full_c6_pyo3_config(
+        support_root,
+        identity,
+    )
+    executor._seal_native_pyo3_config(config_path, identity)
+    root_identity = os.lstat(support_root)
+    config_identity = os.lstat(config_path)
+
+    os.utime(
+        config_path,
+        ns=(config_identity.st_atime_ns, config_identity.st_mtime_ns - 1_000_000_000),
+        follow_symlinks=False,
+    )
+    changed = os.lstat(config_path)
+    assert (changed.st_dev, changed.st_ino, changed.st_size) == (
+        config_identity.st_dev,
+        config_identity.st_ino,
+        config_identity.st_size,
+    )
+    assert config_path.read_bytes() == identity.content
+    assert (changed.st_mtime_ns, changed.st_ctime_ns) != (
+        config_identity.st_mtime_ns,
+        config_identity.st_ctime_ns,
+    )
+
+    with pytest.raises(executor.FullC6ExecutorError, match="support config changed"):
+        executor._verify_native_pyo3_support_root(
+            support_root,
+            root_identity,
+            config_path=config_path,
+            config_identity=config_identity,
+            expected=identity,
+        )
+
+
 def test_native_linux_seccomp_boundary_hashes_live_descriptor_bytes(
     tmp_path: Path,
 ) -> None:

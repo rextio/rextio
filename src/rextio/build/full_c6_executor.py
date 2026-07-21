@@ -4627,18 +4627,11 @@ def _verify_native_pyo3_support_root(
         raise FullC6ExecutorError("Full C6 PyO3 support root changed")
     try:
         linked = children[0].stat(follow_symlinks=False)
-    except OSError as exc:
+        _require_same_regular(config_identity, linked)
+    except (FullC6ExecutorError, OSError) as exc:
         raise FullC6ExecutorError("Full C6 PyO3 support config changed") from exc
     if (
-        not stat.S_ISREG(linked.st_mode)
-        or linked.st_nlink != 1
-        or stat.S_IMODE(linked.st_mode) != 0o400
-        or (linked.st_dev, linked.st_ino, linked.st_size)
-        != (
-            config_identity.st_dev,
-            config_identity.st_ino,
-            config_identity.st_size,
-        )
+        stat.S_IMODE(linked.st_mode) != 0o400
         or (
             hasattr(os, "geteuid")
             and linked.st_uid != os.geteuid()
