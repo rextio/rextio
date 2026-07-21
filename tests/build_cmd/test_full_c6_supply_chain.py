@@ -10,6 +10,7 @@ import stat
 
 import pytest
 
+import rextio.build.full_c6_supply_chain as supply_chain_module
 from rextio.artifacts.evidence import EvidenceFileRef, WheelEntryRef, canonical_json_bytes
 from rextio.build.full_c6_policy import FULL_C6_POLICY_CLASS_IDS, FullC6PolicyReceipt
 from rextio.build.full_c6_supply_chain import (
@@ -425,6 +426,35 @@ def test_exact_partition_supports_an_explicit_zero_class() -> None:
     assert stub.identities == ()
     assert stub.to_dict()["count"] == 0
     assert stub.to_dict()["explicit_zero"] is True
+
+
+def test_partition_projection_sorts_multiple_members_by_canonical_identity() -> None:
+    """Policy authority order must not leak into the public class partition."""
+    original = _row(_policy_receipt(), "external-source:distribution-metadata")
+    wheel = replace(
+        original,
+        canonical_identity="distributions/demo-math/demo_math-1.2.3.dist-info/WHEEL",
+    )
+    metadata = replace(
+        original,
+        canonical_identity="distributions/demo-math/demo_math-1.2.3.dist-info/METADATA",
+    )
+    # A real policy sorts rows by its authority identities, whose hashes are
+    # independent of canonical path order. Exercise that projection directly
+    # with the opposite order to prevent valid multi-metadata wheels failing.
+    projected = supply_chain_module._partition_from_policy(  # type: ignore[attr-defined]
+        type("PolicyRows", (), {"rows": (wheel, metadata)})()
+    )
+    bucket = next(
+        item
+        for item in projected
+        if item.class_id == "external-source:distribution-metadata"
+    )
+
+    assert tuple(item.canonical_identity for item in bucket.identities) == (
+        metadata.canonical_identity,
+        wheel.canonical_identity,
+    )
 
 
 def test_omission_and_duplicate_or_alias_fail_closed() -> None:

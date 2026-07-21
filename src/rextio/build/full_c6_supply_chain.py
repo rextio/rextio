@@ -726,7 +726,10 @@ def _partition_from_policy(
                     canonical_identity=row.canonical_identity,
                     canonical_identity_sha256=row.canonical_identity_sha256,
                 )
-                for row in rows_by_class[class_id]
+                for row in sorted(
+                    rows_by_class[class_id],
+                    key=lambda item: _identity_alias(item.canonical_identity),
+                )
             ),
         )
         for class_id in FULL_C6_POLICY_CLASS_IDS
