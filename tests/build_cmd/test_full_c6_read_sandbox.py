@@ -4,6 +4,8 @@ import hashlib
 import os
 from pathlib import Path
 import stat
+import subprocess
+import sys
 
 import pytest
 
@@ -13,8 +15,10 @@ from rextio.build.full_c6_read_sandbox import (
     SandboxPathRule,
     UnavailableMacOSPlatformAnchorProvider,
     build_full_c6_sandbox_plan,
+    capture_active_macos_platform_anchor,
     prepare_full_c6_sandbox_launch,
 )
+from rextio.build import full_c6_read_sandbox as sandbox_module
 
 
 _SHA = "a" * 64
@@ -144,6 +148,19 @@ def test_landlock_launch_enforces_rules_before_exec(
     assert calls[-1][:2] == (446, 60)
 
 
+def test_landlock_required_device_never_receives_truncate() -> None:
+    read_write = sandbox_module._landlock_access(
+        "read-write", directory=False, character_device=True
+    )
+    regular_write = sandbox_module._landlock_access(
+        "read-write", directory=False, character_device=False
+    )
+
+    assert read_write == (1 << 1) | (1 << 2)
+    assert not read_write & (1 << 14)
+    assert regular_write & (1 << 14)
+
+
 def test_rule_root_symlink_and_unexpected_device_fail_closed(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.mkdir()
@@ -177,7 +194,7 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
 ) -> None:
     rules = _rules(tmp_path)
     anchor = MacOSPlatformAnchor(
-        seal_sha256="b" * 64,
+        authenticated_snapshot_id="b" * 64,
         os_build="25A123",
         provider="fixture-provider-v1",
     )
@@ -213,6 +230,9 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
     assert hashlib.sha256(launch.command[2].encode()).hexdigest() == launch.profile_sha256
     assert "(deny default)" in launch.command[2]
     assert "(deny network*)" in launch.command[2]
+    assert '(import "system.sb")' in launch.command[2]
+    assert "(deny mach-lookup)" in launch.command[2]
+    assert '(subpath "/private/var")' in launch.command[2]
     assert str(tmp_path / "inputs") in launch.command[2]
 
 
@@ -220,7 +240,7 @@ def test_macos_default_anchor_provider_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     anchor = MacOSPlatformAnchor(
-        seal_sha256="b" * 64,
+        authenticated_snapshot_id="b" * 64,
         os_build="25A123",
         provider="fixture-provider-v1",
     )
@@ -241,12 +261,12 @@ def test_macos_default_anchor_provider_fails_closed(
 
 def test_macos_anchor_change_is_rejected_before_launch(tmp_path: Path) -> None:
     anchor = MacOSPlatformAnchor(
-        seal_sha256="b" * 64,
+        authenticated_snapshot_id="b" * 64,
         os_build="25A123",
         provider="fixture-provider-v1",
     )
     changed = MacOSPlatformAnchor(
-        seal_sha256="c" * 64,
+        authenticated_snapshot_id="c" * 64,
         os_build="25A123",
         provider="fixture-provider-v1",
     )
@@ -262,3 +282,33 @@ def test_macos_anchor_change_is_rejected_before_launch(tmp_path: Path) -> None:
             macos_anchor=changed,
             macos_anchor_provider=_AnchorProvider(),
         )
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or os.uname().machine.lower() not in {"arm64", "aarch64"},
+    reason="real sandbox-exec/SSV gate is macOS arm64 only",
+)
+def test_real_macos_anchor_and_sandbox_exec_enforce_profile() -> None:
+    anchor = capture_active_macos_platform_anchor()
+    rule = SandboxPathRule(Path("/usr/bin/true"), "read-execute", "bound-tool")
+    plan = build_full_c6_sandbox_plan(
+        target_triple="aarch64-apple-darwin",
+        rules=(rule,),
+        platform_anchor_sha256=anchor.digest,
+    )
+
+    launch = prepare_full_c6_sandbox_launch(
+        plan,
+        ("/usr/bin/true",),
+        macos_anchor=anchor,
+    )
+    completed = subprocess.run(
+        launch.command,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+        env={},
+    )
+
+    assert completed.returncode == 0, completed.stderr

@@ -25,6 +25,7 @@ import hashlib
 import os
 from pathlib import Path
 import platform
+import plistlib
 import re
 import stat
 import struct
@@ -40,6 +41,9 @@ _SUPPORTED_TARGETS = frozenset(
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_RULES = 256
 _MAX_PATH_BYTES = 4096
+_PLATFORM_PROBE_MAX_BYTES = 1024 * 1024
+_APPLE_SNAPSHOT_RE = re.compile(r"^com\.apple\.os\.update-([0-9A-F]{64})$")
+_APPLE_OS_BUILD_RE = re.compile(r"^[0-9]{2}[A-Z][0-9A-Za-z]{1,31}$")
 
 # Linux x86_64 syscall numbers.  Full C6 does not support another Linux ABI.
 _SYS_LANDLOCK_CREATE_RULESET = 444
@@ -132,15 +136,15 @@ class SandboxPathRule:
 
 @dataclass(frozen=True, slots=True)
 class MacOSPlatformAnchor:
-    """Digest-only receipt for an externally verified Apple sealed image."""
+    """Digest-only receipt for an externally verified Apple sealed snapshot."""
 
-    seal_sha256: str
+    authenticated_snapshot_id: str
     os_build: str
     provider: str
 
     def __post_init__(self) -> None:
-        if _SHA256_RE.fullmatch(self.seal_sha256) is None:
-            raise ValueError("macOS platform seal SHA-256 is invalid")
+        if _SHA256_RE.fullmatch(self.authenticated_snapshot_id) is None:
+            raise ValueError("macOS authenticated snapshot id is invalid")
         for value, label in ((self.os_build, "OS build"), (self.provider, "provider")):
             if (
                 type(value) is not str
@@ -153,9 +157,10 @@ class MacOSPlatformAnchor:
 
     @property
     def digest(self) -> str:
+        """Return the path-free authenticated snapshot receipt digest."""
         payload = (
             f"rextio.macos-platform-anchor.v1\0{self.provider}\0"
-            f"{self.os_build}\0{self.seal_sha256}"
+            f"{self.os_build}\0{self.authenticated_snapshot_id}"
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
@@ -168,13 +173,28 @@ class MacOSPlatformAnchorProvider(Protocol):
 
 
 class UnavailableMacOSPlatformAnchorProvider:
-    """Fail-closed default until a portable APFS/SSV verifier is installed."""
+    """Explicit fail-closed provider used by negative tests and policy gates."""
 
     def verify_active_anchor(self, expected: MacOSPlatformAnchor) -> None:
+        """Reject because no authenticated snapshot provider exists."""
         del expected
         raise FullC6ReadSandboxError(
             "Full C6 cannot verify the active macOS APFS/SSV platform seal"
         )
+
+
+class AppleAPFSPlatformAnchorProvider:
+    """Verify the active read-only sealed APFS system snapshot via diskutil."""
+
+    def verify_active_anchor(self, expected: MacOSPlatformAnchor) -> None:
+        """Recollect and compare the active authenticated APFS snapshot."""
+        if type(expected) is not MacOSPlatformAnchor:
+            raise FullC6ReadSandboxError("Full C6 macOS platform anchor is invalid")
+        observed = capture_active_macos_platform_anchor()
+        if observed != expected:
+            raise FullC6ReadSandboxError(
+                "Full C6 active macOS APFS/SSV platform seal changed"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,7 +341,7 @@ def prepare_full_c6_sandbox_launch(
         raise FullC6ReadSandboxError("Full C6 macOS platform anchor is missing")
     if macos_anchor.digest != plan.platform_anchor_sha256:
         raise FullC6ReadSandboxError("Full C6 macOS platform anchor differs from the plan")
-    provider = macos_anchor_provider or UnavailableMacOSPlatformAnchorProvider()
+    provider = macos_anchor_provider or AppleAPFSPlatformAnchorProvider()
     provider.verify_active_anchor(macos_anchor)
     _verify_sandbox_exec(sandbox_exec)
     profile = _macos_profile(plan.rules)
@@ -348,6 +368,8 @@ def _verify_rule_roots(rules: Sequence[SandboxPathRule]) -> None:
             raise FullC6ReadSandboxError("Full C6 sandbox path type is unsafe")
         if stat.S_ISCHR(observed.st_mode) and rule.logical_role != "required-device":
             raise FullC6ReadSandboxError("Full C6 sandbox device role is invalid")
+        if stat.S_ISCHR(observed.st_mode) and rule.access == "read-execute":
+            raise FullC6ReadSandboxError("Full C6 sandbox device cannot be executable")
 
 
 def _libc_syscall() -> Callable[..., int]:
@@ -390,7 +412,11 @@ def _landlock_preexec(
         frozen.append(
             (
                 os.fspath(rule.path),
-                _landlock_access(rule.access, directory=stat.S_ISDIR(observed.st_mode)),
+                _landlock_access(
+                    rule.access,
+                    directory=stat.S_ISDIR(observed.st_mode),
+                    character_device=stat.S_ISCHR(observed.st_mode),
+                ),
             )
         )
     fixed = tuple(frozen)
@@ -436,7 +462,18 @@ def _landlock_preexec(
     return apply
 
 
-def _landlock_access(access: SandboxAccess, *, directory: bool) -> int:
+def _landlock_access(
+    access: SandboxAccess,
+    *,
+    directory: bool,
+    character_device: bool,
+) -> int:
+    if character_device:
+        if access == "read":
+            return _LL_READ_FILE
+        if access == "read-write":
+            return _LL_READ_FILE | _LL_WRITE_FILE
+        raise FullC6ReadSandboxError("Full C6 sandbox device cannot be executable")
     if not directory:
         if access == "read":
             return _LL_READ_FILE
@@ -505,20 +542,38 @@ def _verify_sandbox_exec(path: Path) -> None:
 def _macos_profile(rules: Sequence[SandboxPathRule]) -> str:
     lines = [
         "(version 1)",
+        # system.sb supplies Apple's process/dyld bootstrap baseline.  The
+        # support lock binds system.sb and its imports, while the APFS provider
+        # binds the read-only authenticated SSV that hosts their system roots.
+        '(import "system.sb")',
         "(deny default)",
         "(deny network*)",
+        # Remove mutable/data-volume allowances inherited from system.sb.
+        '(deny file-read* file-test-existence (subpath "/private/var") '
+        '(subpath "/private/etc") (subpath "/Library/Preferences"))',
+        "(deny mach-lookup)",
+        "(deny ipc-posix-shm-read*)",
+        "(deny user-preference-read)",
+        "(deny sysctl-read)",
         "(allow process-fork)",
         "(allow signal (target self))",
-        "(allow sysctl-read)",
     ]
     for rule in rules:
         path = _sandbox_literal(os.fspath(rule.path))
+        try:
+            observed = os.lstat(rule.path)
+        except OSError as exc:
+            raise FullC6ReadSandboxError("Full C6 sandbox path is unavailable") from exc
+        selector = "subpath" if stat.S_ISDIR(observed.st_mode) else "literal"
         if rule.access == "read":
-            lines.append(f"(allow file-read* (subpath {path}))")
+            lines.append(f"(allow file-read* ({selector} {path}))")
         elif rule.access == "read-execute":
-            lines.append(f"(allow file-read* process-exec (subpath {path}))")
+            lines.append(f"(allow file-read* ({selector} {path}))")
+            lines.append(f"(allow process-exec ({selector} {path}))")
         else:
-            lines.append(f"(allow file-read* file-write* (subpath {path}))")
+            lines.append(f"(allow file-read* file-write* ({selector} {path}))")
+            if stat.S_ISDIR(observed.st_mode):
+                lines.append(f"(allow process-exec ({selector} {path}))")
     return "\n".join(lines) + "\n"
 
 
@@ -531,7 +586,10 @@ def _compile_macos_profile(sandbox_exec: Path, profile: str) -> None:
         raise FullC6ReadSandboxError("Full C6 sandbox profile probe is unavailable") from exc
     if stat.S_ISLNK(observed.st_mode) or not stat.S_ISREG(observed.st_mode):
         raise FullC6ReadSandboxError("Full C6 sandbox profile probe is unsafe")
-    probe_profile = profile + f"(allow file-read* process-exec (literal {_sandbox_literal(str(probe))}))\n"
+    probe_profile = profile + (
+        f"(allow file-read* (literal {_sandbox_literal(str(probe))}))\n"
+        f"(allow process-exec (literal {_sandbox_literal(str(probe))}))\n"
+    )
     try:
         completed = subprocess.run(
             [os.fspath(sandbox_exec), "-p", probe_profile, "--", os.fspath(probe)],
@@ -545,6 +603,114 @@ def _compile_macos_profile(sandbox_exec: Path, profile: str) -> None:
         raise FullC6ReadSandboxError("Full C6 sandbox profile could not be compiled") from exc
     if completed.returncode != 0:
         raise FullC6ReadSandboxError("Full C6 sandbox profile failed its enforcement probe")
+    # Prove that system.sb's mutable account database allowance was removed.
+    stat_tool = Path("/usr/bin/stat")
+    try:
+        stat_observed = os.lstat(stat_tool)
+    except OSError as exc:
+        raise FullC6ReadSandboxError("Full C6 sandbox denial probe is unavailable") from exc
+    if stat.S_ISLNK(stat_observed.st_mode) or not stat.S_ISREG(stat_observed.st_mode):
+        raise FullC6ReadSandboxError("Full C6 sandbox denial probe is unsafe")
+    denial_profile = profile + (
+        f"(allow file-read* (literal {_sandbox_literal(str(stat_tool))}))\n"
+        f"(allow process-exec (literal {_sandbox_literal(str(stat_tool))}))\n"
+    )
+    try:
+        denied = subprocess.run(
+            [
+                os.fspath(sandbox_exec),
+                "-p",
+                denial_profile,
+                "--",
+                os.fspath(stat_tool),
+                "/private/etc/passwd",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            env={},
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise FullC6ReadSandboxError("Full C6 sandbox denial probe failed") from exc
+    if denied.returncode == 0:
+        raise FullC6ReadSandboxError("Full C6 sandbox mutable-host read denial is ineffective")
+
+
+def capture_active_macos_platform_anchor() -> MacOSPlatformAnchor:
+    """Capture the kernel-verified read-only APFS system snapshot seal.
+
+    ``diskutil`` reports both the authenticated ``Sealed`` state and the booted
+    update snapshot.  Apple's snapshot name embeds the 256-bit seal identifier;
+    the receipt also binds the exact OS build.  The tool executables and SSV
+    sandbox profile bytes are separate mandatory support-lock members.
+    """
+    if sys.platform != "darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
+        raise FullC6ReadSandboxError("Full C6 macOS platform anchor host is unsupported")
+    diskutil = Path("/usr/sbin/diskutil")
+    sw_vers = Path("/usr/bin/sw_vers")
+    for tool in (diskutil, sw_vers):
+        try:
+            observed = os.lstat(tool)
+        except OSError as exc:
+            raise FullC6ReadSandboxError("Full C6 macOS anchor tool is unavailable") from exc
+        if stat.S_ISLNK(observed.st_mode) or not stat.S_ISREG(observed.st_mode):
+            raise FullC6ReadSandboxError("Full C6 macOS anchor tool is unsafe")
+    environment = {"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/usr/sbin"}
+    try:
+        disk = subprocess.run(
+            [os.fspath(diskutil), "info", "-plist", "/"],
+            check=False,
+            capture_output=True,
+            timeout=30.0,
+            env=environment,
+        )
+        build = subprocess.run(
+            [os.fspath(sw_vers), "-buildVersion"],
+            check=False,
+            capture_output=True,
+            timeout=30.0,
+            env=environment,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise FullC6ReadSandboxError("Full C6 macOS platform anchor probe failed") from exc
+    if (
+        disk.returncode != 0
+        or build.returncode != 0
+        or not disk.stdout
+        or len(disk.stdout) > _PLATFORM_PROBE_MAX_BYTES
+        or not build.stdout
+        or len(build.stdout) > 1024
+    ):
+        raise FullC6ReadSandboxError("Full C6 macOS platform anchor probe failed")
+    try:
+        document = plistlib.loads(disk.stdout)
+        os_build = build.stdout.decode("ascii").strip()
+    except (ValueError, UnicodeDecodeError, plistlib.InvalidFileException) as exc:
+        raise FullC6ReadSandboxError("Full C6 macOS platform anchor output is malformed") from exc
+    if not isinstance(document, dict) or _APPLE_OS_BUILD_RE.fullmatch(os_build) is None:
+        raise FullC6ReadSandboxError("Full C6 macOS platform anchor output is malformed")
+    snapshot_name = document.get("APFSSnapshotName")
+    match = _APPLE_SNAPSHOT_RE.fullmatch(snapshot_name) if type(snapshot_name) is str else None
+    if (
+        match is None
+        or document.get("APFSSnapshot") is not True
+        or document.get("Sealed") != "Yes"
+        or document.get("Writable") is not False
+        or document.get("WritableVolume") is not False
+        or document.get("Internal") is not True
+        or document.get("MountPoint") != "/"
+        or document.get("FilesystemType") != "apfs"
+        or document.get("APFSSnapshotUUID") != document.get("VolumeUUID")
+    ):
+        raise FullC6ReadSandboxError(
+            "Full C6 active macOS root is not one internal read-only sealed APFS snapshot"
+        )
+    return MacOSPlatformAnchor(
+        authenticated_snapshot_id=match.group(1).lower(),
+        os_build=os_build,
+        provider="apple-apfs-ssv-diskutil-v1",
+    )
 
 
 def _sandbox_literal(value: str) -> str:
@@ -575,6 +741,7 @@ def canonical_platform_context(target_triple: str) -> tuple[str, ...]:
 
 __all__ = [
     "FULL_C6_READ_SANDBOX_DOMAIN",
+    "AppleAPFSPlatformAnchorProvider",
     "FullC6ReadSandboxError",
     "FullC6ReadSandboxPlan",
     "FullC6SandboxLaunch",
@@ -584,5 +751,6 @@ __all__ = [
     "UnavailableMacOSPlatformAnchorProvider",
     "build_full_c6_sandbox_plan",
     "canonical_platform_context",
+    "capture_active_macos_platform_anchor",
     "prepare_full_c6_sandbox_launch",
 ]
