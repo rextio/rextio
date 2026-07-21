@@ -503,6 +503,8 @@ def _license_contract_projection(
     value: OutputWheelLicenseContract,
 ) -> dict[str, object]:
     return {
+        "external_source_distribution": value.external_source_distribution,
+        "external_source_version": value.external_source_version,
         "expression": value.expression,
         "files": [
             {
@@ -512,6 +514,7 @@ def _license_contract_projection(
             }
             for item in value.files
         ],
+        "source_lock_verification_sha256": value.source_lock_verification_sha256,
     }
 
 

@@ -7,6 +7,9 @@ import hashlib
 import json
 import pickle
 from pathlib import Path
+import runpy
+from typing import cast
+import zipfile
 
 import pytest
 
@@ -36,11 +39,23 @@ from rextio.build.full_c6_policy import (
     canonicalize_full_c6_spdx_expression,
 )
 from rextio.build.toolchain_identity import capture_cargo_sources
+from rextio.build.wheel_builder import build_artifact_wheel
+from rextio.source.source_lock_v2 import SourceLockV2VerifiedContext
 
 
 PACKAGE = "demo-dep"
 VERSION = "1.2.3"
 PACKAGE_CHECKSUM = "a" * 64
+_SOURCE_TESTS = runpy.run_path(
+    str(Path(__file__).parent.parent / "source" / "test_source_lock_v2.py")
+)
+
+
+def _source_context(tmp_path: Path) -> SourceLockV2VerifiedContext:
+    signed = _SOURCE_TESTS["_write_signed"](tmp_path / "external-authority")
+    verification = _SOURCE_TESTS["_verify_context"](signed)
+    assert verification.context is not None
+    return cast(SourceLockV2VerifiedContext, verification.context)
 
 
 def _write_project(
@@ -155,9 +170,7 @@ def test_collects_project_and_every_cargo_package_without_exposing_bytes_or_path
     assert validate_full_c6_license_materials_transaction(transaction)
     assert transaction.project.declared_spdx == "MIT"
     assert transaction.project.metadata_file.logical_name == "project/pyproject.toml"
-    assert [item.logical_name for item in transaction.project.license_files] == [
-        "project/LICENSE"
-    ]
+    assert [item.logical_name for item in transaction.project.license_files] == ["project/LICENSE"]
     assert len(transaction.cargo_packages) == len(workspace.packages) == 1
     cargo = transaction.cargo_packages[0]
     assert cargo.name == PACKAGE
@@ -372,9 +385,7 @@ def test_cargo_manifest_name_and_version_are_rechecked_against_workspace(
 
 
 def test_spdx_helper_uses_the_single_bounded_full_c6_allowlist() -> None:
-    assert canonicalize_full_c6_spdx_expression("MIT OR Apache-2.0") == (
-        "MIT OR Apache-2.0"
-    )
+    assert canonicalize_full_c6_spdx_expression("MIT OR Apache-2.0") == ("MIT OR Apache-2.0")
     with pytest.raises(FullC6PolicyError, match="canonical SPDX"):
         canonicalize_full_c6_spdx_expression("MIT or Apache-2.0")
     with pytest.raises(FullC6PolicyError, match="outside the initial allowlist"):
@@ -477,29 +488,45 @@ def test_derives_exact_project_and_cargo_pep639_material_deterministically(
         project_root=project,
         cargo_workspace=workspace,
     )
+    source_context = _source_context(tmp_path)
 
-    first = derive_full_c6_output_license_contract(transaction)
-    second = derive_full_c6_output_license_contract(transaction)
+    first = derive_full_c6_output_license_contract(
+        transaction,
+        source_context=source_context,
+    )
+    second = derive_full_c6_output_license_contract(
+        transaction,
+        source_context=source_context,
+    )
 
     assert first == second
     assert first.expression == "MIT"
     assert first.paths == (
         "cargo/demo-dep-1.2.3/LICENSE",
         "cargo/demo-dep-1.2.3/NOTICE.md",
+        "external/demo-pkg/1.0.0/LICENSE",
         "project/LICENSE",
         "project/legal/NOTICE",
     )
     assert {item.path: item.data for item in first.files} == {
         "cargo/demo-dep-1.2.3/LICENSE": b"Cargo MIT or Apache license evidence\n",
         "cargo/demo-dep-1.2.3/NOTICE.md": b"Cargo notice bytes\n",
+        "external/demo-pkg/1.0.0/LICENSE": _SOURCE_TESTS["LICENSE"],
         "project/LICENSE": b"project MIT license evidence\n",
         "project/legal/NOTICE": b"project notice bytes\n",
     }
     assert transaction.cargo_packages[0].declared_spdx == "MIT OR Apache-2.0"
 
-    observation = validate_full_c6_output_license_contract(transaction, first)
+    observation = validate_full_c6_output_license_contract(
+        transaction,
+        first,
+        source_context=source_context,
+    )
     rendered = json.dumps(observation.to_dict(), sort_keys=True)
     assert observation.license_transaction_sha256 == transaction.digest
+    assert observation.source_lock_verification_sha256 == (first.source_lock_verification_sha256)
+    assert observation.external_source_distribution == "demo-pkg"
+    assert observation.external_source_version == "1.0.0"
     assert len(observation.output_contract_sha256) == 64
     assert len(observation.expression_sha256) == 64
     assert tuple(item.output_path for item in observation.mappings) == first.paths
@@ -521,7 +548,10 @@ def test_derivation_rejects_stale_project_or_cargo_transaction(tmp_path: Path) -
     )
     (project / "LICENSE").write_bytes(b"stale project bytes\n")
     with pytest.raises(FullC6OutputLicenseDerivationError, match="invalid or stale"):
-        derive_full_c6_output_license_contract(transaction)
+        derive_full_c6_output_license_contract(
+            transaction,
+            source_context=_source_context(tmp_path / "stale-project"),
+        )
 
     project_two = tmp_path / "project-two"
     _write_project(project_two)
@@ -534,7 +564,10 @@ def test_derivation_rejects_stale_project_or_cargo_transaction(tmp_path: Path) -
     payloads[-1] = b"stale Cargo bytes\n"
     object.__setattr__(workspace_two, "_file_payloads", tuple(payloads))
     with pytest.raises(FullC6OutputLicenseDerivationError, match="invalid or stale"):
-        derive_full_c6_output_license_contract(transaction_two)
+        derive_full_c6_output_license_contract(
+            transaction_two,
+            source_context=_source_context(tmp_path / "stale-cargo"),
+        )
 
 
 @pytest.mark.parametrize(
@@ -551,11 +584,18 @@ def test_validator_rejects_nonexact_or_noncanonical_contract(
         project_root=project,
         cargo_workspace=_cargo_workspace(tmp_path),
     )
-    expected = derive_full_c6_output_license_contract(transaction)
+    source_context = _source_context(tmp_path)
+    expected = derive_full_c6_output_license_contract(
+        transaction,
+        source_context=source_context,
+    )
     if mutation == "omitted":
         candidate = OutputWheelLicenseContract(
             expression=expected.expression,
             files=expected.files[:-1],
+            external_source_distribution=expected.external_source_distribution,
+            external_source_version=expected.external_source_version,
+            source_lock_verification_sha256=(expected.source_lock_verification_sha256),
         )
     elif mutation == "extra":
         candidate = OutputWheelLicenseContract(
@@ -566,6 +606,9 @@ def test_validator_rejects_nonexact_or_noncanonical_contract(
                     key=lambda item: item.path,
                 )
             ),
+            external_source_distribution=expected.external_source_distribution,
+            external_source_version=expected.external_source_version,
+            source_lock_verification_sha256=(expected.source_lock_verification_sha256),
         )
     elif mutation == "substituted":
         replacement = OutputWheelLicenseFile(
@@ -575,11 +618,17 @@ def test_validator_rejects_nonexact_or_noncanonical_contract(
         candidate = OutputWheelLicenseContract(
             expression=expected.expression,
             files=(replacement, *expected.files[1:]),
+            external_source_distribution=expected.external_source_distribution,
+            external_source_version=expected.external_source_version,
+            source_lock_verification_sha256=(expected.source_lock_verification_sha256),
         )
     else:
         candidate = OutputWheelLicenseContract(
             expression=expected.expression,
             files=expected.files,
+            external_source_distribution=expected.external_source_distribution,
+            external_source_version=expected.external_source_version,
+            source_lock_verification_sha256=(expected.source_lock_verification_sha256),
         )
         if mutation == "reordered":
             object.__setattr__(candidate, "files", tuple(reversed(candidate.files)))
@@ -592,7 +641,11 @@ def test_validator_rejects_nonexact_or_noncanonical_contract(
             )
 
     with pytest.raises(FullC6OutputLicenseDerivationError):
-        validate_full_c6_output_license_contract(transaction, candidate)
+        validate_full_c6_output_license_contract(
+            transaction,
+            candidate,
+            source_context=source_context,
+        )
 
 
 def test_validator_rejects_wrong_distribution_expression(tmp_path: Path) -> None:
@@ -602,14 +655,25 @@ def test_validator_rejects_wrong_distribution_expression(tmp_path: Path) -> None
         project_root=project,
         cargo_workspace=_cargo_workspace(tmp_path),
     )
-    expected = derive_full_c6_output_license_contract(transaction)
+    source_context = _source_context(tmp_path)
+    expected = derive_full_c6_output_license_contract(
+        transaction,
+        source_context=source_context,
+    )
     wrong = OutputWheelLicenseContract(
         expression="Apache-2.0",
         files=expected.files,
+        external_source_distribution=expected.external_source_distribution,
+        external_source_version=expected.external_source_version,
+        source_lock_verification_sha256=expected.source_lock_verification_sha256,
     )
 
     with pytest.raises(FullC6OutputLicenseDerivationError, match="differs"):
-        validate_full_c6_output_license_contract(transaction, wrong)
+        validate_full_c6_output_license_contract(
+            transaction,
+            wrong,
+            source_context=source_context,
+        )
 
 
 def test_validator_binds_exact_completed_wheel_license_verification(
@@ -621,7 +685,11 @@ def test_validator_binds_exact_completed_wheel_license_verification(
         project_root=project,
         cargo_workspace=_cargo_workspace(tmp_path),
     )
-    contract = derive_full_c6_output_license_contract(transaction)
+    source_context = _source_context(tmp_path)
+    contract = derive_full_c6_output_license_contract(
+        transaction,
+        source_context=source_context,
+    )
     dist_info = "demo_project-0.1.0.dist-info"
     members = tuple(
         OutputWheelLicenseMemberIdentity(
@@ -643,6 +711,7 @@ def test_validator_binds_exact_completed_wheel_license_verification(
         transaction,
         contract,
         verification,
+        source_context=source_context,
     )
     assert observed.output_verification_sha256 is not None
 
@@ -663,4 +732,150 @@ def test_validator_binds_exact_completed_wheel_license_verification(
         wheel_sha256=verification.wheel_sha256,
     )
     with pytest.raises(FullC6OutputLicenseDerivationError, match="verification differs"):
-        validate_full_c6_output_license_contract(transaction, contract, wrong)
+        validate_full_c6_output_license_contract(
+            transaction,
+            contract,
+            wrong,
+            source_context=source_context,
+        )
+
+
+@pytest.mark.parametrize("mutation", ("missing", "tampered", "duplicate-alias"))
+def test_external_license_derivation_rejects_stale_sourcelock_payloads(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    project = tmp_path / "project"
+    _write_project(project)
+    transaction = collect_full_c6_license_materials(
+        project_root=project,
+        cargo_workspace=_cargo_workspace(tmp_path),
+    )
+    source_context = _source_context(tmp_path)
+    wheel = source_context.wheel
+    if mutation == "missing":
+        object.__setattr__(wheel, "license_payloads", ())
+    elif mutation == "tampered":
+        object.__setattr__(wheel, "license_payloads", (b"forged external license",))
+    else:
+        object.__setattr__(
+            wheel,
+            "license_entry_paths",
+            (wheel.license_entry_paths[0], wheel.license_entry_paths[0]),
+        )
+        object.__setattr__(
+            wheel,
+            "license_payloads",
+            (wheel.license_payloads[0], wheel.license_payloads[0]),
+        )
+
+    with pytest.raises(FullC6OutputLicenseDerivationError, match="SourceLock"):
+        derive_full_c6_output_license_contract(
+            transaction,
+            source_context=source_context,
+        )
+
+
+def test_validator_rejects_rebound_sourcelock_digest(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    _write_project(project)
+    transaction = collect_full_c6_license_materials(
+        project_root=project,
+        cargo_workspace=_cargo_workspace(tmp_path),
+    )
+    source_context = _source_context(tmp_path)
+    contract = derive_full_c6_output_license_contract(
+        transaction,
+        source_context=source_context,
+    )
+    rebound = OutputWheelLicenseContract(
+        expression=contract.expression,
+        files=contract.files,
+        external_source_distribution=contract.external_source_distribution,
+        external_source_version=contract.external_source_version,
+        source_lock_verification_sha256="f" * 64,
+    )
+
+    with pytest.raises(FullC6OutputLicenseDerivationError, match="differs"):
+        validate_full_c6_output_license_contract(
+            transaction,
+            rebound,
+            source_context=source_context,
+        )
+
+
+def test_contract_rejects_external_path_outside_bound_distribution(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    _write_project(project)
+    transaction = collect_full_c6_license_materials(
+        project_root=project,
+        cargo_workspace=_cargo_workspace(tmp_path),
+    )
+    source_context = _source_context(tmp_path)
+    contract = derive_full_c6_output_license_contract(
+        transaction,
+        source_context=source_context,
+    )
+
+    with pytest.raises(ValueError, match="escapes its source binding"):
+        OutputWheelLicenseContract(
+            expression=contract.expression,
+            files=tuple(
+                sorted(
+                    (
+                        *contract.files,
+                        OutputWheelLicenseFile(
+                            path="external/other-dist/9.9/LICENSE",
+                            data=b"unbound external license bytes",
+                        ),
+                    ),
+                    key=lambda item: item.path,
+                )
+            ),
+            external_source_distribution=contract.external_source_distribution,
+            external_source_version=contract.external_source_version,
+            source_lock_verification_sha256=(contract.source_lock_verification_sha256),
+        )
+
+
+def test_external_license_bytes_are_exact_pep639_wheel_members(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    _write_project(project)
+    transaction = collect_full_c6_license_materials(
+        project_root=project,
+        cargo_workspace=_cargo_workspace(tmp_path),
+    )
+    source_context = _source_context(tmp_path)
+    contract = derive_full_c6_output_license_contract(
+        transaction,
+        source_context=source_context,
+    )
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    (python_dir / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    result = build_artifact_wheel(
+        project,
+        python_dir,
+        tmp_path / "dist",
+        output_license_contract=contract,
+    )
+
+    assert result.status == "built"
+    assert result.path is not None
+    with zipfile.ZipFile(result.path) as archive:
+        names = archive.namelist()
+        metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
+        record_name = next(name for name in names if name.endswith(".dist-info/RECORD"))
+        dist_info = metadata_name.rsplit("/", 1)[0]
+        external_member = f"{dist_info}/licenses/external/demo-pkg/1.0.0/LICENSE"
+        metadata = archive.read(metadata_name).decode("utf-8")
+        record = archive.read(record_name).decode("utf-8")
+        assert archive.read(external_member) == _SOURCE_TESTS["LICENSE"]
+    assert "License-File: external/demo-pkg/1.0.0/LICENSE\n" in metadata
+    assert f"{external_member},sha256=" in record
+    assert names.count(external_member) == 1

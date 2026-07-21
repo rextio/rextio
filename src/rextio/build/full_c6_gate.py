@@ -222,7 +222,10 @@ def _validated_production_gate_inputs(
         ):
             raise FullC6GateError("Full C6 retained Cargo authority is split")
         source_verification = material.preflight.context.source_verification
-        if type(source_verification) is not SourceLockV2Verification:
+        if (
+            type(source_verification) is not SourceLockV2Verification
+            or source_verification.context is None
+        ):
             raise FullC6GateError("Full C6 retained SourceLock authority is invalid")
         subject = full_c6_native_output_subject(
             material.native_output_transaction
@@ -236,6 +239,7 @@ def _validated_production_gate_inputs(
         output_license = validate_full_c6_output_license_contract(
             material.license_materials_transaction,
             material.output_license_contract,
+            source_context=source_verification.context,
         )
         aggregate = FullC6AuthorityAggregateBinding(
             analysis_ir_transaction_sha256=(

@@ -432,6 +432,14 @@ def test_real_c52_execution_mints_bootstrap_required_production_authority(
     assert request is not None
     assert request.inputs is authority._material.bootstrap_inputs
     assert authority.to_dict()["bootstrap_request_sha256"] == request.request_sha256
+    output_license = authority._material.output_license_contract
+    assert output_license.external_source_distribution == "demo-pkg"
+    assert output_license.external_source_version == "1.0.0"
+    assert output_license.source_lock_verification_sha256 is not None
+    assert any(
+        item.path == "external/demo-pkg/1.0.0/LICENSE"
+        for item in output_license.files
+    )
     bindings = authority.authority_aggregate.to_dict()["bindings"]
     assert tuple(bindings) == (
         "analysis_ir_transaction_sha256",

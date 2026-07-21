@@ -714,7 +714,11 @@ def _read_pinned_regular(path: Path, limit: int) -> bytes:
         raise SourceWheelAuthorityError("archive-no-follow-unavailable")
     try:
         linked = path.lstat()
-        if stat.S_ISLNK(linked.st_mode) or not stat.S_ISREG(linked.st_mode):
+        if (
+            stat.S_ISLNK(linked.st_mode)
+            or not stat.S_ISREG(linked.st_mode)
+            or linked.st_nlink != 1
+        ):
             raise SourceWheelAuthorityError("archive-not-regular")
         fd = os.open(path, flags | nofollow)
     except SourceWheelAuthorityError:
@@ -726,6 +730,7 @@ def _read_pinned_regular(path: Path, limit: int) -> bytes:
         if (
             not stat.S_ISREG(before.st_mode)
             or (before.st_dev, before.st_ino) != (linked.st_dev, linked.st_ino)
+            or before.st_nlink != 1
             or before.st_size <= 0
             or before.st_size > limit
         ):
@@ -741,7 +746,15 @@ def _read_pinned_regular(path: Path, limit: int) -> bytes:
             if total > limit:
                 raise SourceWheelAuthorityError("archive-size-out-of-bounds")
         after = os.fstat(fd)
-        fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+        fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
         if (
             any(getattr(before, item) != getattr(after, item) for item in fields)
             or total != before.st_size

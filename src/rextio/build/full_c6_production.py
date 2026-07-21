@@ -390,10 +390,17 @@ def _collect_full_c6_production_material(
         project_root=root,
         cargo_workspace=cargo_workspace,
     )
-    output_license = derive_full_c6_output_license_contract(license_materials)
+    source_context = preflight.context.source_verification.context
+    if source_context is None:
+        raise FullC6ProductionError("output license SourceLock context is unavailable")
+    output_license = derive_full_c6_output_license_contract(
+        license_materials,
+        source_context=source_context,
+    )
     output_license_observation = validate_full_c6_output_license_contract(
         license_materials,
         output_license,
+        source_context=source_context,
     )
     if execution_material.output_license_contract != output_license:
         raise FullC6ProductionError(
@@ -665,9 +672,13 @@ def _validate_material(material: _FullC6ProductionMaterial) -> bool:
             or type(material.cargo_path_source) is not FullC6CargoPathSource
         ):
             return False
+        source_context = material.preflight.context.source_verification.context
+        if source_context is None:
+            return False
         output_observation = validate_full_c6_output_license_contract(
             material.license_materials_transaction,
             material.output_license_contract,
+            source_context=source_context,
         )
         if not validate_full_c6_native_execution_authority(
             material.native_execution_authority

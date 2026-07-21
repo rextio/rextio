@@ -227,7 +227,15 @@ def execute_full_c6_external_build(
             project_root=analysis.project_root,
             cargo_workspace=cargo_workspace,
         )
-        output_license = derive_full_c6_output_license_contract(license_materials)
+        source_context = context.source_verification.context
+        if source_context is None:
+            raise FullC6ExternalExecutionError(
+                "RXT060 execution SourceLock context is unavailable"
+            )
+        output_license = derive_full_c6_output_license_contract(
+            license_materials,
+            source_context=source_context,
+        )
         target_triple = _executor.detect_host_target_triple()
         driver_payload = full_c6_native_driver_manifest_bytes(
             target_triple=target_triple,

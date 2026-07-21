@@ -83,7 +83,7 @@ FULL_C6_CALLBACK_EXECUTION_DRIVER = "callback-test-seam"
 FULL_C6_UNBOUND_EXECUTION_DRIVER = "native-subprocess-unbound"
 FULL_C6_NATIVE_DRIVER_MANIFEST = "rextio.full-c6-native-driver.json"
 FULL_C6_NATIVE_POSTPROCESSOR = "rextio-external-wheel-postprocessor-v1"
-FULL_C6_NATIVE_DRIVER_DOMAIN = "rextio.full-c6-native-driver.v1"
+FULL_C6_NATIVE_DRIVER_DOMAIN = "rextio.full-c6-native-driver.v2"
 FULL_C6_PREEXISTING_LOCK_DRIVER = "preexisting-lock"
 FULL_C6_NATIVE_LOCK_DRIVER = "native-subprocess"
 FULL_C6_CALLBACK_LOCK_DRIVER = "callback-test-seam"
@@ -191,6 +191,17 @@ def _output_license_manifest_document(
     contract: OutputWheelLicenseContract,
 ) -> dict[str, object]:
     return {
+        "external_source": (
+            None
+            if contract.external_source_distribution is None
+            else {
+                "distribution": contract.external_source_distribution,
+                "source_lock_verification_sha256": (
+                    contract.source_lock_verification_sha256
+                ),
+                "version": contract.external_source_version,
+            }
+        ),
         "expression": contract.expression,
         "files": [
             {
@@ -420,6 +431,7 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
         raise FullC6ExecutorError("Full C6 native external wheel contract is invalid")
     raw_license_contract = document["output_wheel_license_contract"]
     if type(raw_license_contract) is not dict or set(raw_license_contract) != {
+        "external_source",
         "expression",
         "files",
     }:
@@ -465,9 +477,26 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
             external_members=tuple(members),
         )
         raw_license_files = raw_license_contract["files"]
+        raw_external_source = raw_license_contract["external_source"]
         if (
             type(raw_license_contract["expression"]) is not str
             or type(raw_license_files) is not list
+            or (
+                raw_external_source is not None
+                and (
+                    type(raw_external_source) is not dict
+                    or set(raw_external_source)
+                    != {
+                        "distribution",
+                        "source_lock_verification_sha256",
+                        "version",
+                    }
+                    or any(
+                        type(raw_external_source[name]) is not str
+                        for name in raw_external_source
+                    )
+                )
+            )
         ):
             raise TypeError("output license contract values are invalid")
         license_files: list[OutputWheelLicenseFile] = []
@@ -501,6 +530,19 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
         output_license_contract = OutputWheelLicenseContract(
             expression=raw_license_contract["expression"],
             files=tuple(license_files),
+            external_source_distribution=(
+                None
+                if raw_external_source is None
+                else raw_external_source["distribution"]
+            ),
+            external_source_version=(
+                None if raw_external_source is None else raw_external_source["version"]
+            ),
+            source_lock_verification_sha256=(
+                None
+                if raw_external_source is None
+                else raw_external_source["source_lock_verification_sha256"]
+            ),
         )
         for name in (
             "target_triple",

@@ -785,7 +785,7 @@ def test_gate_extracts_exact_retained_graph_and_rejects_split_cargo_authority(
     monkeypatch.setattr(
         gate_module,
         "validate_full_c6_output_license_contract",
-        lambda _materials, _contract: SimpleNamespace(
+        lambda _materials, _contract, **_kwargs: SimpleNamespace(
             output_contract_sha256=aggregate.output_license_contract_sha256
         ),
     )

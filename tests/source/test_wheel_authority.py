@@ -474,6 +474,11 @@ def test_archive_hash_and_symlink_are_fail_closed(tmp_path: Path) -> None:
     with pytest.raises(SourceWheelAuthorityError, match="regular"):
         verify_source_wheel(linked, expected_sha256=digest, plan=_plan(entries))
 
+    linked.unlink()
+    linked.hardlink_to(path)
+    with pytest.raises(SourceWheelAuthorityError, match="regular"):
+        verify_source_wheel(path, expected_sha256=digest, plan=_plan(entries))
+
 
 @pytest.mark.parametrize(
     "unsafe_name",
