@@ -51,7 +51,7 @@ from rextio.build.toolchain_support_lock import (
     generate_toolchain_support_lock,
     verify_toolchain_support_lock,
 )
-from rextio.config.schema import RextioConfig
+from rextio.config.schema import ImportPackagePolicy, ImportsConfig, RextioConfig
 
 
 FULL_C6_TOOLCHAIN_SUPPORT_PLAN_DOMAIN = (
@@ -743,6 +743,24 @@ def _configured_full_c6_artifact_paths(
         raise FullC6ToolchainSupportError(
             "Full C6 support-lock bootstrap configuration is invalid"
         )
+    imports = config.imports
+    if type(imports) is not ImportsConfig or type(imports.packages) is not dict:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock bootstrap configuration is invalid"
+        )
+    packages = imports.packages
+    if any(
+        type(package) is not str or type(package_policy) is not ImportPackagePolicy
+        for package, package_policy in packages.items()
+    ):
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock bootstrap configuration is invalid"
+        )
+    source_archives = tuple(
+        package_policy.source_archive
+        for package, package_policy in sorted(packages.items())
+        if package_policy.source_archive is not None
+    )
     build = config.build
     values = (
         "rextio.toml",
@@ -754,6 +772,7 @@ def _configured_full_c6_artifact_paths(
         build.artifact_trusted_public_key,
         build.artifact_final_signature,
         build.artifact_signing_request_output,
+        *source_archives,
     )
     if any(value is not None and type(value) is not str for value in values):
         raise FullC6ToolchainSupportError(

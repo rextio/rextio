@@ -19,6 +19,11 @@ from rextio.build.toolchain_support_lock import (
     create_toolchain_support_locator,
     generate_toolchain_support_lock,
 )
+from rextio.config.schema import (
+    ImportPackagePolicy,
+    ImportsConfig,
+    RextioConfig,
+)
 
 
 LINUX = "x86_64-unknown-linux-gnu"
@@ -43,6 +48,7 @@ def _write_strict_bootstrap_config(
     *,
     support_path: str | None = None,
     support_sha256: str | None = None,
+    source_archive: str = "authority/demo_pkg-1.0.0-py3-none-any.whl",
 ) -> None:
     digest = "a" * 64
     support_rows: tuple[str, ...] = ()
@@ -92,7 +98,7 @@ def _write_strict_bootstrap_config(
                 "max_depth = 1",
                 'distribution = "demo-pkg"',
                 'version = "1.0.0"',
-                'source_archive = "authority/demo_pkg-1.0.0-py3-none-any.whl"',
+                f'source_archive = "{source_archive}"',
                 f'source_archive_sha256 = "{digest}"',
                 "",
                 "[embedding]",
@@ -308,6 +314,121 @@ def test_bootstrap_accepts_disjoint_non_json_artifact_paths(
     )
 
     assert result.result == "created"
+
+
+@pytest.mark.parametrize(
+    ("output", "source_archive"),
+    (
+        (
+            "authority/demo-pkg.whl",
+            "authority/demo-pkg.whl",
+        ),
+        (
+            "authority/support.json",
+            "authority/support.json/demo-pkg.whl",
+        ),
+        (
+            "authority/demo-pkg.whl/support.json",
+            "authority/demo-pkg.whl",
+        ),
+    ),
+    ids=("exact", "output-ancestor", "output-descendant"),
+)
+def test_support_output_rejects_configured_source_archive_overlap_lexically(
+    output: str,
+    source_archive: str,
+) -> None:
+    config = RextioConfig(
+        imports=ImportsConfig(
+            packages={
+                "demo_pkg": ImportPackagePolicy(
+                    policy="try-native",
+                    max_depth=1,
+                    distribution="demo-pkg",
+                    version="1.0.0",
+                    source_archive=source_archive,
+                    source_archive_sha256="a" * 64,
+                )
+            }
+        )
+    )
+    configured = support._configured_full_c6_artifact_paths(config)
+
+    assert source_archive in configured
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="aliases another configured artifact",
+    ):
+        support._require_nonaliased_support_output(
+            output,
+            configured_artifact_paths=configured,
+        )
+
+
+def test_support_output_accepts_unrelated_configured_source_archive() -> None:
+    source_archive = "authority/demo-pkg.whl"
+    config = RextioConfig(
+        imports=ImportsConfig(
+            packages={
+                "demo_pkg": ImportPackagePolicy(
+                    source_archive=source_archive,
+                    source_archive_sha256="a" * 64,
+                )
+            }
+        )
+    )
+
+    configured = support._configured_full_c6_artifact_paths(config)
+    support._require_nonaliased_support_output(
+        "authority/rextio.toolchain-support.lock.json",
+        configured_artifact_paths=configured,
+    )
+
+    assert source_archive in configured
+
+
+@pytest.mark.parametrize(
+    ("output", "source_archive"),
+    (
+        (
+            "authority/support.json",
+            "authority/support.json/demo-pkg.whl",
+        ),
+        (
+            "authority/demo-pkg.whl/support.json",
+            "authority/demo-pkg.whl",
+        ),
+    ),
+    ids=("output-ancestor", "output-descendant"),
+)
+def test_bootstrap_rejects_missing_source_archive_path_overlap_before_output_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output: str,
+    source_archive: str,
+) -> None:
+    _write_strict_bootstrap_config(
+        tmp_path,
+        source_archive=source_archive,
+    )
+    plan = _fixed_plan(tmp_path / "plan")
+    monkeypatch.setattr(
+        support,
+        "_discover_full_c6_bootstrap_plan",
+        lambda **_kwargs: plan,
+    )
+
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="aliases another configured artifact",
+    ):
+        support.bootstrap_full_c6_toolchain_support_lock(
+            project_root=tmp_path,
+            output=output,
+            inherited_environment={},
+        )
+
+    assert not (tmp_path / output).exists()
 
 
 @pytest.mark.parametrize(
