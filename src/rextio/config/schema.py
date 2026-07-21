@@ -23,8 +23,15 @@ class BuildConfig:
     # Final Full-C6 distribution is an independent, opt-in hard gate.  It does
     # not promote the preview artifact-evidence policy by implication.
     artifact_distribution_policy: str = "disabled"
+    # Full-C6 signing is deliberately split into an owner-signed SourceLock v2
+    # admission and a final artifact-authorization signature. Every path is
+    # project-relative; private signing keys are never accepted by Rextio.
+    artifact_source_lock_manifest: str | None = None
+    artifact_source_lock_signature: str | None = None
     artifact_trusted_public_key: str | None = None
     artifact_trusted_public_key_sha256: str | None = None
+    artifact_final_signature: str | None = None
+    artifact_signing_request_output: str | None = None
     artifact_repeat_builds: int = 2
 
 

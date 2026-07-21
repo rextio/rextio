@@ -21,8 +21,11 @@ def _full_c6_toml(
 [build]
 artifact_evidence_policy = "required"
 artifact_distribution_policy = "full-c6-required"
+artifact_source_lock_manifest = "locks/source-lock.v2.json"
+artifact_source_lock_signature = "locks/source-lock.v2.sig.json"
 artifact_trusted_public_key = "keys/release.pub"
 artifact_trusted_public_key_sha256 = "{_SHA_A}"
+artifact_signing_request_output = "build/rextio.full-c6-final-authorization-request.json"
 artifact_repeat_builds = 2
 {build_extra}
 
@@ -45,8 +48,12 @@ def test_full_c6_distribution_config_defaults_are_inactive(tmp_path: Path) -> No
     config = load_config(tmp_path)
 
     assert config.build.artifact_distribution_policy == "disabled"
+    assert config.build.artifact_source_lock_manifest is None
+    assert config.build.artifact_source_lock_signature is None
     assert config.build.artifact_trusted_public_key is None
     assert config.build.artifact_trusted_public_key_sha256 is None
+    assert config.build.artifact_final_signature is None
+    assert config.build.artifact_signing_request_output is None
     assert config.build.artifact_repeat_builds == 2
 
 
@@ -57,22 +64,83 @@ def test_full_c6_distribution_config_accepts_exact_frozen_profile(tmp_path: Path
     package = config.imports.packages["demo_math"]
 
     assert config.build.artifact_distribution_policy == "full-c6-required"
+    assert config.build.artifact_source_lock_manifest == "locks/source-lock.v2.json"
+    assert config.build.artifact_source_lock_signature == "locks/source-lock.v2.sig.json"
     assert config.build.artifact_trusted_public_key == "keys/release.pub"
     assert config.build.artifact_trusted_public_key_sha256 == _SHA_A
+    assert config.build.artifact_final_signature is None
+    assert (
+        config.build.artifact_signing_request_output
+        == "build/rextio.full-c6-final-authorization-request.json"
+    )
     assert config.build.artifact_repeat_builds == 2
     assert package.source_archive == "vendor/demo_math-1.2.3-py3-none-any.whl"
     assert package.source_archive_sha256 == _SHA_B
 
 
+def test_full_c6_distribution_config_accepts_final_signature(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        _full_c6_toml(
+            build_extra=(
+                'artifact_final_signature = "signatures/final-authorization.sig.json"'
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(tmp_path)
+
+    assert (
+        config.build.artifact_final_signature
+        == "signatures/final-authorization.sig.json"
+    )
+
+
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        ('artifact_evidence_policy = "required"', 'artifact_evidence_policy = "best-effort"', "evidence_policy"),
+        (
+            'artifact_evidence_policy = "required"',
+            'artifact_evidence_policy = "best-effort"',
+            "evidence_policy",
+        ),
         ("artifact_repeat_builds = 2", "artifact_repeat_builds = 1", "repeat_builds"),
-        ('artifact_trusted_public_key = "keys/release.pub"', 'artifact_trusted_public_key = "/tmp/key"', "project-relative"),
-        (f'artifact_trusted_public_key_sha256 = "{_SHA_A}"', 'artifact_trusted_public_key_sha256 = "ABC"', "lowercase hexadecimal"),
-        ('source_archive = "vendor/demo_math-1.2.3-py3-none-any.whl"', 'source_archive = "../source.whl"', "project-relative"),
-        (f'source_archive_sha256 = "{_SHA_B}"', 'source_archive_sha256 = "bad"', "lowercase hexadecimal"),
+        (
+            'artifact_source_lock_manifest = "locks/source-lock.v2.json"',
+            'artifact_source_lock_manifest = "../source-lock.json"',
+            "project-relative",
+        ),
+        (
+            'artifact_source_lock_signature = "locks/source-lock.v2.sig.json"',
+            'artifact_source_lock_signature = "/tmp/source-lock.sig"',
+            "project-relative",
+        ),
+        (
+            'artifact_trusted_public_key = "keys/release.pub"',
+            'artifact_trusted_public_key = "/tmp/key"',
+            "project-relative",
+        ),
+        (
+            f'artifact_trusted_public_key_sha256 = "{_SHA_A}"',
+            'artifact_trusted_public_key_sha256 = "ABC"',
+            "lowercase hexadecimal",
+        ),
+        (
+            "artifact_signing_request_output = "
+            '"build/rextio.full-c6-final-authorization-request.json"',
+            'artifact_signing_request_output = "build/../request.json"',
+            "project-relative",
+        ),
+        (
+            'source_archive = "vendor/demo_math-1.2.3-py3-none-any.whl"',
+            'source_archive = "../source.whl"',
+            "project-relative",
+        ),
+        (
+            f'source_archive_sha256 = "{_SHA_B}"',
+            'source_archive_sha256 = "bad"',
+            "lowercase hexadecimal",
+        ),
     ],
 )
 def test_full_c6_distribution_config_rejects_missing_or_unsafe_identity(
@@ -83,6 +151,191 @@ def test_full_c6_distribution_config_rejects_missing_or_unsafe_identity(
     )
 
     with pytest.raises(ConfigError, match=message):
+        load_config(tmp_path)
+
+
+def test_full_c6_signing_request_requires_canonical_json_basename(
+    tmp_path: Path,
+) -> None:
+    configured = _full_c6_toml().replace(
+        "build/rextio.full-c6-final-authorization-request.json",
+        "build/another-request.json",
+    )
+    (tmp_path / "rextio.toml").write_text(configured, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="exact basename"):
+        load_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["/tmp/final.sig.json", "../final.sig.json", "signatures/../final.sig.json"],
+)
+def test_full_c6_final_signature_requires_project_relative_path(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        _full_c6_toml(build_extra=f'artifact_final_signature = "{value}"'),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="project-relative"):
+        load_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "artifact_source_lock_manifest",
+        "artifact_source_lock_signature",
+        "artifact_final_signature",
+        "artifact_signing_request_output",
+    ],
+)
+def test_full_c6_path_fields_reject_non_string_values(
+    tmp_path: Path,
+    key: str,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        f"[build]\n{key} = []\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=key):
+        load_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("removed", "message"),
+    [
+        (
+            'artifact_source_lock_manifest = "locks/source-lock.v2.json"\n'
+            'artifact_source_lock_signature = "locks/source-lock.v2.sig.json"\n',
+            "full-c6-required",
+        ),
+        (
+            'artifact_trusted_public_key = "keys/release.pub"\n'
+            f'artifact_trusted_public_key_sha256 = "{_SHA_A}"\n',
+            "signed Full C6 inputs require",
+        ),
+        (
+            "artifact_signing_request_output = "
+            '"build/rextio.full-c6-final-authorization-request.json"\n',
+            "full-c6-required",
+        ),
+    ],
+)
+def test_full_c6_distribution_config_requires_authority_paths(
+    tmp_path: Path,
+    removed: str,
+    message: str,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        _full_c6_toml().replace(removed, ""),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(tmp_path)
+
+
+def test_non_strict_config_allows_complete_full_c6_path_set(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        f"""
+[build]
+artifact_source_lock_manifest = "locks/source-lock.v2.json"
+artifact_source_lock_signature = "locks/source-lock.v2.sig.json"
+artifact_trusted_public_key = "keys/release.pub"
+artifact_trusted_public_key_sha256 = "{_SHA_A}"
+artifact_final_signature = "signatures/final.sig.json"
+artifact_signing_request_output = "state/rextio.full-c6-final-authorization-request.json"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.build.artifact_distribution_policy == "disabled"
+    assert config.build.artifact_final_signature == "signatures/final.sig.json"
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            'artifact_source_lock_manifest = "locks/source-lock.v2.json"',
+            "configured together",
+        ),
+        (
+            '\n'.join(
+                (
+                    'artifact_source_lock_manifest = "locks/source-lock.v2.json"',
+                    'artifact_source_lock_signature = "locks/source-lock.v2.sig.json"',
+                )
+            ),
+            "signed Full C6 inputs require",
+        ),
+        (
+            'artifact_trusted_public_key = "keys/release.pub"',
+            "configured together",
+        ),
+        (
+            '\n'.join(
+                (
+                    'artifact_final_signature = "signatures/final.sig.json"',
+                    "artifact_signing_request_output = "
+                    '"state/rextio.full-c6-final-authorization-request.json"',
+                )
+            ),
+            "signed Full C6 inputs require",
+        ),
+        (
+            '\n'.join(
+                (
+                    'artifact_final_signature = "signatures/final.sig.json"',
+                    'artifact_trusted_public_key = "keys/release.pub"',
+                    f'artifact_trusted_public_key_sha256 = "{_SHA_A}"',
+                )
+            ),
+            "requires artifact_signing_request_output",
+        ),
+        (
+                '\n'.join(
+                    (
+                    "artifact_trusted_public_key = "
+                    '"state/rextio.full-c6-final-authorization-request.json"',
+                    f'artifact_trusted_public_key_sha256 = "{_SHA_A}"',
+                    "artifact_signing_request_output = "
+                    '"state/rextio.full-c6-final-authorization-request.json"',
+                )
+            ),
+            "paths must be distinct",
+        ),
+    ],
+)
+def test_non_strict_full_c6_paths_preserve_pairing_and_trust(
+    tmp_path: Path,
+    body: str,
+    message: str,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        f"[build]\n{body}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(tmp_path)
+
+
+def test_config_rejects_private_signing_key_field(tmp_path: Path) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        '[build]\nartifact_private_key = "keys/release.key"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="unsupported config key"):
         load_config(tmp_path)
 
 
@@ -122,7 +375,12 @@ def test_full_c6_config_survives_override_serialization(tmp_path: Path) -> None:
     rebuilt = override_config(config, {("build", "fallback_threshold"): 7})
 
     assert rebuilt.build.artifact_distribution_policy == "full-c6-required"
+    assert rebuilt.build.artifact_source_lock_manifest == "locks/source-lock.v2.json"
     assert rebuilt.build.artifact_trusted_public_key == "keys/release.pub"
+    assert (
+        rebuilt.build.artifact_signing_request_output
+        == "build/rextio.full-c6-final-authorization-request.json"
+    )
     assert rebuilt.imports.packages["demo_math"].source_archive_sha256 == _SHA_B
 
 

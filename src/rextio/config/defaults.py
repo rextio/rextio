@@ -14,8 +14,12 @@ DEFAULT_CONFIG: dict[str, dict[str, object]] = {
         "build_timeout_seconds": DEFAULT_BUILD_TIMEOUT_SECONDS,
         "artifact_evidence_policy": "best-effort",
         "artifact_distribution_policy": "disabled",
+        "artifact_source_lock_manifest": None,
+        "artifact_source_lock_signature": None,
         "artifact_trusted_public_key": None,
         "artifact_trusted_public_key_sha256": None,
+        "artifact_final_signature": None,
+        "artifact_signing_request_output": None,
         "artifact_repeat_builds": 2,
     },
     "rust": {

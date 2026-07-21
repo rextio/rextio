@@ -45,8 +45,12 @@ CONFIG_KEYS = {
         "build_timeout_seconds",
         "artifact_evidence_policy",
         "artifact_distribution_policy",
+        "artifact_source_lock_manifest",
+        "artifact_source_lock_signature",
         "artifact_trusted_public_key",
         "artifact_trusted_public_key_sha256",
+        "artifact_final_signature",
+        "artifact_signing_request_output",
         "artifact_repeat_builds",
     },
     "rust": {"binding", "build_tool", "importable", "crate_name"},
@@ -306,6 +310,32 @@ def _validate_config_values(
     _require_string(
         "build", "artifact_distribution_policy", build["artifact_distribution_policy"]
     )
+    for artifact_path in (
+        "artifact_source_lock_manifest",
+        "artifact_source_lock_signature",
+        "artifact_final_signature",
+    ):
+        _require_optional_project_relative_path(
+            "build",
+            artifact_path,
+            build[artifact_path],
+        )
+    _require_optional_project_relative_path(
+        "build",
+        "artifact_signing_request_output",
+        build["artifact_signing_request_output"],
+        suffix=".json",
+    )
+    signing_request_output = build["artifact_signing_request_output"]
+    if (
+        signing_request_output is not None
+        and PurePosixPath(signing_request_output).name
+        != "rextio.full-c6-final-authorization-request.json"
+    ):
+        raise ConfigError(
+            "[build].artifact_signing_request_output must use the exact basename "
+            "'rextio.full-c6-final-authorization-request.json'"
+        )
     _require_optional_project_relative_path(
         "build",
         "artifact_trusted_public_key",
@@ -407,13 +437,50 @@ def _validate_full_c6_config(
     policy: dict[str, Any],
 ) -> None:
     """Validate the deliberately frozen first strict Full-C6 build profile."""
+    source_lock_manifest = build["artifact_source_lock_manifest"]
+    source_lock_signature = build["artifact_source_lock_signature"]
     trusted_key = build["artifact_trusted_public_key"]
     trusted_key_sha256 = build["artifact_trusted_public_key_sha256"]
+    final_signature = build["artifact_final_signature"]
+    signing_request_output = build["artifact_signing_request_output"]
+
+    if (source_lock_manifest is None) != (source_lock_signature is None):
+        raise ConfigError(
+            "[build] artifact_source_lock_manifest and "
+            "artifact_source_lock_signature must be configured together"
+        )
     if (trusted_key is None) != (trusted_key_sha256 is None):
         raise ConfigError(
             "[build] artifact_trusted_public_key and "
             "artifact_trusted_public_key_sha256 must be configured together"
         )
+    if (source_lock_signature is not None or final_signature is not None) and (
+        trusted_key is None or trusted_key_sha256 is None
+    ):
+        raise ConfigError(
+            "[build] signed Full C6 inputs require artifact_trusted_public_key "
+            "and artifact_trusted_public_key_sha256"
+        )
+    if final_signature is not None and signing_request_output is None:
+        raise ConfigError(
+            "[build] artifact_final_signature requires "
+            "artifact_signing_request_output"
+        )
+
+    configured_paths = {
+        key: build[key]
+        for key in (
+            "artifact_source_lock_manifest",
+            "artifact_source_lock_signature",
+            "artifact_trusted_public_key",
+            "artifact_final_signature",
+            "artifact_signing_request_output",
+        )
+        if build[key] is not None
+    }
+    if len(set(configured_paths.values())) != len(configured_paths):
+        raise ConfigError("[build] Full C6 artifact paths must be distinct")
+
     if build["artifact_distribution_policy"] != "full-c6-required":
         return
 
@@ -422,8 +489,12 @@ def _validate_full_c6_config(
         failures.append('[build] artifact_evidence_policy = "required"')
     if build["fallback_backend"] != "cpython":
         failures.append('[build] fallback_backend = "cpython"')
+    if source_lock_manifest is None or source_lock_signature is None:
+        failures.append("SourceLock v2 manifest and detached signature paths")
     if trusted_key is None or trusted_key_sha256 is None:
         failures.append("one trusted public key path and SHA-256")
+    if signing_request_output is None:
+        failures.append("one signing-request output path")
     if build["artifact_repeat_builds"] != 2:
         failures.append("[build] artifact_repeat_builds = 2")
     if (
