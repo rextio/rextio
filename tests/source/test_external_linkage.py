@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import os
 import shutil
 import subprocess
+import sys
+import sysconfig
 from pathlib import Path
 
 import pytest
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.codegen.rust.generator import generate_rust_module
-from rextio.codegen.rust.cargo import render_cargo_toml
+from rextio.codegen.rust.cargo import render_cargo_config_toml, render_cargo_toml
 from rextio.config.schema import ImportPackagePolicy, ImportsConfig
 from rextio.ir.lowering import lower_project
+from rextio.source.external import MAX_FILE_BYTES
 from rextio.source.external_analysis import (
     ExternalSourceNativePlan,
     ExternalSourceSnapshot,
@@ -283,14 +287,54 @@ def calculate(x: int) -> int:
     assert '"demo_pkg"' in guarded
     assert '"demo_pkg.affine"' in guarded
     assert "importlib.metadata" in guarded
-    assert "std::fs::read" in guarded
-    assert "is_instance_of::<pyo3::types::PyFunction>" in guarded
-    source_read = guarded.index("std::fs::read(&expected_path_0)")
-    external_import = guarded.index('PyModule::import(py, "demo_pkg")')
-    assert source_read < external_import
+    assert 'link_name = "openat"' in guarded
+    assert "__rextio_open_external_at(&directory, part" in guarded
+    assert "__REXTIO_O_NOFOLLOW" in guarded
+    assert "before.nlink() != 1" in guarded
+    assert "before.dev() != after.dev()" in guarded
+    assert "before.ino() != after.ino()" in guarded
+    assert ".take(expected_size + 1)" in guarded
+    assert "if !root_path.is_absolute()" in guarded
+    assert 'PyModule::import(py, "demo_pkg")' not in guarded
+    assert "is_instance_of::<pyo3::types::PyFunction>" not in guarded
+    assert 'getattr("__code__")' not in guarded
+    assert 'getattr("__file__")' not in guarded
     guard_call = guarded.index("__rextio_verify_external_source(m.py())?")
     first_export = guarded.index("m.add_function(")
     assert guard_call < first_export
+
+
+def test_external_runtime_guard_never_executes_preloaded_external_module(
+    tmp_path: Path,
+) -> None:
+    """A poisoned sys.modules entry is irrelevant because no external import exists."""
+    linkage = importlib.import_module("rextio.source.external_linkage")
+    guard = linkage.build_external_runtime_guard(
+        linkage.build_external_native_registry(
+            _analysis(
+                tmp_path,
+                """\
+from demo_pkg import affine as f
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+            ),
+            (_external_plan(),),
+            package=PACKAGE,
+            distribution=DIST,
+            version=VERSION,
+        ),
+        (_external_plan(),),
+    )
+
+    rendered = importlib.import_module(
+        "rextio.codegen.rust.external_runtime_guard"
+    ).render_external_runtime_guard(guard)
+
+    assert 'PyModule::import(py, "demo_pkg")' not in rendered
+    assert 'getattr("affine")' not in rendered
+    assert "_signed_callable_0_0" in rendered
 
 
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is required")
@@ -341,6 +385,151 @@ def calculate(x: int) -> int:
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
+@pytest.fixture(scope="module")
+def compiled_external_runtime_guard(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path:
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required")
+    root = tmp_path_factory.mktemp("external-runtime-guard")
+    first = _analysis(
+        root,
+        """\
+from demo_pkg import affine as f
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+    )
+    linkage = importlib.import_module("rextio.source.external_linkage")
+    plans = (_external_plan(),)
+    registry = linkage.build_external_native_registry(
+        first,
+        plans,
+        package=PACKAGE,
+        distribution=DIST,
+        version=VERSION,
+    )
+    strict = analyze_project(
+        first.project_root,
+        imports_config=_imports(),
+        external_native_registry=registry,
+    )
+    module_ir = lower_project(strict, external_native_registry=registry)
+    guard = linkage.build_external_runtime_guard(registry, plans)
+    crate = root / "crate"
+    (crate / "src").mkdir(parents=True)
+    (crate / ".cargo").mkdir()
+    (crate / "Cargo.toml").write_text(render_cargo_toml(), encoding="utf-8")
+    (crate / ".cargo" / "config.toml").write_text(
+        render_cargo_config_toml(),
+        encoding="utf-8",
+    )
+    (crate / "src" / "lib.rs").write_text(
+        generate_rust_module(module_ir, external_runtime_guard=guard),
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["cargo", "build", "--quiet"],
+        cwd=crate,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    native_suffix = ".dylib" if sys.platform == "darwin" else ".so"
+    artifact = crate / "target" / "debug" / f"lib_rextio_native{native_suffix}"
+    assert artifact.is_file()
+    extension_suffix = sysconfig.get_config_var("EXT_SUFFIX")
+    assert isinstance(extension_suffix, str) and extension_suffix
+    extension = root / f"_rextio_native{extension_suffix}"
+    shutil.copyfile(artifact, extension)
+    return extension
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "expect_success"),
+    (
+        ("regular", True),
+        ("symlink", False),
+        ("hardlink", False),
+        ("changed", False),
+    ),
+)
+def test_compiled_runtime_guard_rejects_unsafe_source_without_external_execution(
+    tmp_path: Path,
+    compiled_external_runtime_guard: Path,
+    source_kind: str,
+    expect_success: bool,
+) -> None:
+    site = tmp_path / "site-packages"
+    package = site / PACKAGE
+    dist_info = site / "demo_pkg-1.0.0.dist-info"
+    package.mkdir(parents=True)
+    dist_info.mkdir()
+    source = package / "__init__.py"
+    if source_kind in {"symlink", "hardlink"}:
+        payload = tmp_path / "exact-source.py"
+        payload.write_bytes(EXTERNAL_SOURCE)
+        if source_kind == "symlink":
+            source.symlink_to(payload)
+        else:
+            os.link(payload, source)
+    elif source_kind == "changed":
+        source.write_bytes(EXTERNAL_SOURCE.replace(b"x + 1", b"x - 1"))
+    else:
+        source.write_bytes(EXTERNAL_SOURCE)
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.4\nName: demo-pkg\nVersion: 1.0.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "RECORD").write_text(
+        "demo_pkg/__init__.py,,\n"
+        "demo_pkg-1.0.0.dist-info/METADATA,,\n"
+        "demo_pkg-1.0.0.dist-info/RECORD,,\n",
+        encoding="utf-8",
+    )
+    marker = tmp_path / "external-python-was-touched"
+    script = f"""
+import importlib.util
+from pathlib import Path
+import sys
+import types
+
+marker = Path({str(marker)!r})
+class Poison(types.ModuleType):
+    def __getattribute__(self, name):
+        if name in {{"__file__", "__dict__", "affine"}}:
+            marker.write_text(name, encoding="utf-8")
+        return super().__getattribute__(name)
+
+sys.modules["demo_pkg"] = Poison("demo_pkg")
+sys.path.insert(0, {str(site)!r})
+spec = importlib.util.spec_from_file_location(
+    "_rextio_native", {str(compiled_external_runtime_guard)!r}
+)
+loaded = False
+failure = None
+try:
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    loaded = True
+except BaseException as error:
+    failure = repr(error)
+if loaded != {expect_success!r}:
+    raise SystemExit(f"unexpected load result: loaded={{loaded}} failure={{failure}}")
+if marker.exists():
+    raise SystemExit(f"external module was touched: {{marker.read_text()}}")
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_external_runtime_guard_models_reject_codegen_injection() -> None:
     linkage = importlib.import_module("rextio.source.external_linkage")
 
@@ -360,8 +549,19 @@ def test_external_runtime_guard_models_reject_codegen_injection() -> None:
             module_name="demo_pkg",
             source_member="../escape.py",
             source_sha256="0" * 64,
+            source_size=1,
             callables=(callable_identity,),
         )
+
+    for invalid_size in (0, MAX_FILE_BYTES + 1):
+        with pytest.raises(ValueError, match="module identity"):
+            linkage.ExternalRuntimeModule(
+                module_name="demo_pkg",
+                source_member="demo_pkg/__init__.py",
+                source_sha256="0" * 64,
+                source_size=invalid_size,
+                callables=(callable_identity,),
+            )
 
 
 @pytest.mark.parametrize(

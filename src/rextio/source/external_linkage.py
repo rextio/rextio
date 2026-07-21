@@ -32,6 +32,7 @@ from rextio.analyzer.unsupported_patterns import validate_native_function
 from rextio.ir.lowering import LoweringError, lower_function
 from rextio.ir.nodes import FunctionIR
 from rextio.ir.types import normalize_type_name
+from rextio.source.external import MAX_FILE_BYTES
 from rextio.source.external_analysis import (
     EXTERNAL_FUNCTION_IR_DOMAIN,
     ExternalFunctionBinding,
@@ -267,6 +268,7 @@ class ExternalRuntimeModule:
     module_name: str
     source_member: str
     source_sha256: str
+    source_size: int
     callables: tuple[ExternalRuntimeCallable, ...]
 
     def __post_init__(self) -> None:
@@ -285,6 +287,8 @@ class ExternalRuntimeModule:
             or any(part in {"", ".", ".."} for part in path.parts)
             or type(self.source_sha256) is not str
             or _SHA256.fullmatch(self.source_sha256) is None
+            or type(self.source_size) is not int
+            or not 1 <= self.source_size <= MAX_FILE_BYTES
             or type(self.callables) is not tuple
             or not self.callables
             or not all(type(item) is ExternalRuntimeCallable for item in self.callables)
@@ -498,6 +502,7 @@ def build_external_runtime_guard(
                 module_name=module.module_name,
                 source_member=source_member,
                 source_sha256=module.sha256,
+                source_size=len(plan.snapshot.source_bytes),
                 callables=callables,
             )
         )
