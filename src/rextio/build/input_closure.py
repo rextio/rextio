@@ -18,12 +18,21 @@ import sys
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import TYPE_CHECKING, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from rextio.build.full_c6_cargo_workspace import (
+        FullC6CargoDependencyWorkspaceReceipt,
+    )
 
 
 MAX_BUILD_INPUT_BYTES = 64 * 1024 * 1024
 MAX_BUILD_INPUT_NAME_CHARS = 512
 MAX_BUILD_INPUT_FILES = 1024
 MAX_BUILD_INPUT_TOTAL_BYTES = 256 * 1024 * 1024
+MAX_BUILD_INPUT_AGGREGATES = 64
+MAX_BUILD_INPUT_AGGREGATE_MEMBERS = 1_000_000
+MAX_BUILD_INPUT_AGGREGATE_ID_CHARS = 256
 BUILD_INPUT_CLOSURE_DOMAIN = "rextio.build-input-closure.v1"
 BUILD_INPUT_CLOSURE_SCOPE = (
     "host-extension-wheel-cpython-external-source-depth1-plugin-free-v1"
@@ -31,10 +40,81 @@ BUILD_INPUT_CLOSURE_SCOPE = (
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _LOGICAL_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+@=-]*$")
 _ROLE_RE = re.compile(r"^[a-z][a-z0-9-]{0,127}$")
+_AGGREGATE_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+@=-]*$")
+
+FULL_C6_CARGO_PACKAGE_SET_DOMAIN = "rextio.full-c6-cargo-package-set.v1"
+FULL_C6_CARGO_PACKAGE_RECEIPTS_DOMAIN = (
+    "rextio.full-c6-cargo-package-receipts.v1"
+)
+FULL_C6_CARGO_METADATA_SET_DOMAIN = "rextio.full-c6-cargo-metadata-set.v1"
+FULL_C6_CARGO_INPUT_AGGREGATE_IDS = frozenset(
+    {
+        "full-c6-cargo-workspace",
+        "full-c6-cargo-sources",
+        "full-c6-cargo-vendor-tree",
+        "full-c6-cargo-executor-config",
+        "full-c6-cargo-package-set",
+        "full-c6-cargo-package-receipts",
+        "full-c6-cargo-metadata-set",
+    }
+)
 
 
 class BuildInputIdentityError(RuntimeError):
     """A build input could not be captured or no longer matches its receipt."""
+
+
+@dataclass(frozen=True, slots=True)
+class BuildInputAggregateIdentity:
+    """One exact digest-only identity for a bounded non-file input aggregate.
+
+    The row is intentionally not represented as a synthetic file.  ``digest``
+    binds the aggregate's documented producer-domain preimage, while the
+    optional ``metadata_digest`` can bind a related canonical metadata set.
+    """
+
+    aggregate_id: str
+    kind: str
+    digest: str
+    member_count: int
+    metadata_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.aggregate_id) is not str
+            or not self.aggregate_id
+            or self.aggregate_id != self.aggregate_id.strip()
+            or len(self.aggregate_id) > MAX_BUILD_INPUT_AGGREGATE_ID_CHARS
+            or _AGGREGATE_ID_RE.fullmatch(self.aggregate_id) is None
+        ):
+            raise ValueError("build-input aggregate id is invalid")
+        if type(self.kind) is not str or _ROLE_RE.fullmatch(self.kind) is None:
+            raise ValueError("build-input aggregate kind is invalid")
+        if type(self.digest) is not str or _SHA256_RE.fullmatch(self.digest) is None:
+            raise ValueError("build-input aggregate digest is invalid")
+        if (
+            type(self.member_count) is not int
+            or isinstance(self.member_count, bool)
+            or not 0 <= self.member_count <= MAX_BUILD_INPUT_AGGREGATE_MEMBERS
+        ):
+            raise ValueError("build-input aggregate member count is outside the bound")
+        if self.metadata_digest is not None and (
+            type(self.metadata_digest) is not str
+            or _SHA256_RE.fullmatch(self.metadata_digest) is None
+        ):
+            raise ValueError("build-input aggregate metadata digest is invalid")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic digest-only aggregate identity."""
+        payload: dict[str, object] = {
+            "aggregate_id": self.aggregate_id,
+            "kind": self.kind,
+            "digest": self.digest,
+            "member_count": self.member_count,
+        }
+        if self.metadata_digest is not None:
+            payload["metadata_digest"] = self.metadata_digest
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +181,7 @@ class BuildInputClosure:
     domain: str = BUILD_INPUT_CLOSURE_DOMAIN
     scope: str = BUILD_INPUT_CLOSURE_SCOPE
     complete_for_scope: bool = True
+    aggregates: tuple[BuildInputAggregateIdentity, ...] = ()
 
     def __post_init__(self) -> None:
         if self.domain != BUILD_INPUT_CLOSURE_DOMAIN:
@@ -122,7 +203,24 @@ class BuildInputClosure:
             raise ValueError("build-input closure contains a logical path alias")
         if sum(item.size for item in files) > MAX_BUILD_INPUT_TOTAL_BYTES:
             raise ValueError("build-input closure exceeds the aggregate byte bound")
+        aggregates = tuple(self.aggregates)
+        if len(aggregates) > MAX_BUILD_INPUT_AGGREGATES:
+            raise ValueError("build-input aggregate count exceeds the bound")
+        if not all(type(item) is BuildInputAggregateIdentity for item in aggregates):
+            raise TypeError("build-input closure aggregates have an invalid type")
+        canonical_aggregates = tuple(
+            sorted(aggregates, key=lambda item: (item.kind, item.aggregate_id))
+        )
+        if aggregates != canonical_aggregates:
+            raise ValueError("build-input closure aggregates are not in canonical order")
+        aggregate_aliases = [
+            unicodedata.normalize("NFC", item.aggregate_id).casefold()
+            for item in aggregates
+        ]
+        if len(aggregate_aliases) != len(set(aggregate_aliases)):
+            raise ValueError("build-input closure contains an aggregate id alias")
         object.__setattr__(self, "files", files)
+        object.__setattr__(self, "aggregates", aggregates)
 
     @property
     def digest(self) -> str:
@@ -130,12 +228,17 @@ class BuildInputClosure:
         return hashlib.sha256(_canonical_json(self._payload())).hexdigest()
 
     def _payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "domain": self.domain,
             "scope": self.scope,
             "complete_for_scope": True,
             "files": [item.to_dict() for item in self.files],
         }
+        # Preserve the byte-for-byte v1 receipt and digest for legacy closures.
+        # Aggregate-aware closures bind their non-file identities explicitly.
+        if self.aggregates:
+            payload["aggregates"] = [item.to_dict() for item in self.aggregates]
+        return payload
 
     def to_dict(self) -> dict[str, object]:
         """Return the canonical receipt plus its semantic digest."""
@@ -299,9 +402,130 @@ def verify_build_input_closure(
     """Fail unless a complete fresh capture equals the immutable receipt."""
     if type(expected) is not BuildInputClosure:
         raise BuildInputIdentityError("expected build-input closure has an invalid type")
-    observed = capture_build_input_closure(specs)
+    observed_files = capture_build_input_closure(specs)
+    observed = BuildInputClosure(
+        files=observed_files.files,
+        aggregates=expected.aggregates,
+    )
     if observed != expected or observed.digest != expected.digest:
         raise BuildInputIdentityError("build-input closure changed after capture")
+
+
+def bind_full_c6_cargo_workspace_aggregates(
+    closure: BuildInputClosure,
+    workspace: FullC6CargoDependencyWorkspaceReceipt,
+) -> BuildInputClosure:
+    """Bind the seven exact sealed-Cargo identities to an existing closure.
+
+    External receipt digests keep their producer domains.  The three derived
+    rows use the domain-separated preimages below:
+
+    * package set: the ordered ``CargoSourceIdentity.to_dict()`` list;
+    * package receipts: the ordered ``FullC6CargoPackageReceipt.to_dict()`` list;
+    * metadata set: exact ordered workspace-entry identities for every declared
+      package metadata path.
+
+    No vendor, manifest, or license bytes are retained by the closure.
+    """
+    from rextio.build.full_c6_cargo_workspace import (
+        FullC6CargoDependencyWorkspaceReceipt,
+        validate_full_c6_cargo_dependency_workspace_receipt,
+    )
+
+    if type(closure) is not BuildInputClosure:
+        raise BuildInputIdentityError("build-input closure has an invalid type")
+    if closure.aggregates:
+        raise BuildInputIdentityError("build-input closure already contains aggregates")
+    if (
+        type(workspace) is not FullC6CargoDependencyWorkspaceReceipt
+        or not validate_full_c6_cargo_dependency_workspace_receipt(workspace)
+    ):
+        raise BuildInputIdentityError("Full C6 Cargo workspace receipt is not sealed")
+
+    package_members = [item.package.to_dict() for item in workspace.packages]
+    package_receipt_members = [item.to_dict() for item in workspace.packages]
+    metadata_names = set(workspace.metadata_files)
+    metadata_members = [
+        item.to_dict()
+        for item in workspace.vendor_entries
+        if item.kind == "file" and item.logical_name in metadata_names
+    ]
+    if {str(item["logical_name"]) for item in metadata_members} != metadata_names:
+        raise BuildInputIdentityError("Cargo workspace metadata set is incomplete")
+
+    package_set_digest = _aggregate_members_digest(
+        FULL_C6_CARGO_PACKAGE_SET_DOMAIN,
+        package_members,
+    )
+    package_receipts_digest = _aggregate_members_digest(
+        FULL_C6_CARGO_PACKAGE_RECEIPTS_DOMAIN,
+        package_receipt_members,
+    )
+    metadata_set_digest = _aggregate_members_digest(
+        FULL_C6_CARGO_METADATA_SET_DOMAIN,
+        metadata_members,
+    )
+    package_count = len(workspace.packages)
+    aggregates = tuple(
+        sorted(
+            (
+                BuildInputAggregateIdentity(
+                    aggregate_id="full-c6-cargo-workspace",
+                    kind="cargo-workspace",
+                    digest=workspace.digest,
+                    member_count=package_count,
+                    metadata_digest=metadata_set_digest,
+                ),
+                BuildInputAggregateIdentity(
+                    aggregate_id="full-c6-cargo-sources",
+                    kind="cargo-sources",
+                    digest=workspace.cargo_sources.digest,
+                    member_count=len(workspace.cargo_sources.packages),
+                ),
+                BuildInputAggregateIdentity(
+                    aggregate_id="full-c6-cargo-vendor-tree",
+                    kind="cargo-vendor-tree",
+                    digest=workspace.vendor_tree_sha256,
+                    member_count=len(workspace.vendor_entries),
+                ),
+                BuildInputAggregateIdentity(
+                    aggregate_id="full-c6-cargo-executor-config",
+                    kind="cargo-executor-config",
+                    digest=workspace.executor_config.sha256 or "",
+                    member_count=1,
+                ),
+                BuildInputAggregateIdentity(
+                    aggregate_id="full-c6-cargo-package-set",
+                    kind="cargo-package-set",
+                    digest=package_set_digest,
+                    member_count=package_count,
+                ),
+                BuildInputAggregateIdentity(
+                    aggregate_id="full-c6-cargo-package-receipts",
+                    kind="cargo-package-receipts",
+                    digest=package_receipts_digest,
+                    member_count=package_count,
+                    metadata_digest=metadata_set_digest,
+                ),
+                BuildInputAggregateIdentity(
+                    aggregate_id="full-c6-cargo-metadata-set",
+                    kind="cargo-metadata-set",
+                    digest=metadata_set_digest,
+                    member_count=len(metadata_members),
+                ),
+            ),
+            key=lambda item: (item.kind, item.aggregate_id),
+        )
+    )
+    if {item.aggregate_id for item in aggregates} != FULL_C6_CARGO_INPUT_AGGREGATE_IDS:
+        raise BuildInputIdentityError("Cargo aggregate identity set is incomplete")
+    return BuildInputClosure(
+        files=closure.files,
+        domain=closure.domain,
+        scope=closure.scope,
+        complete_for_scope=closure.complete_for_scope,
+        aggregates=aggregates,
+    )
 
 
 def _require_same_regular_file(
@@ -339,6 +563,15 @@ def _logical_alias(value: str) -> str:
     return unicodedata.normalize("NFC", value).casefold()
 
 
+def _aggregate_members_digest(
+    domain: str,
+    members: Sequence[Mapping[str, object]],
+) -> str:
+    return hashlib.sha256(
+        _canonical_json({"domain": domain, "members": members})
+    ).hexdigest()
+
+
 def _canonical_json(value: object) -> bytes:
     return json.dumps(
         value,
@@ -351,12 +584,18 @@ def _canonical_json(value: object) -> bytes:
 
 __all__ = [
     "BuildInputIdentityError",
+    "BuildInputAggregateIdentity",
     "BuildInputClosure",
     "BUILD_INPUT_CLOSURE_DOMAIN",
     "BUILD_INPUT_CLOSURE_SCOPE",
     "ExactFileIdentity",
+    "FULL_C6_CARGO_INPUT_AGGREGATE_IDS",
+    "FULL_C6_CARGO_METADATA_SET_DOMAIN",
+    "FULL_C6_CARGO_PACKAGE_RECEIPTS_DOMAIN",
+    "FULL_C6_CARGO_PACKAGE_SET_DOMAIN",
     "InputFileSpec",
     "MAX_BUILD_INPUT_BYTES",
+    "bind_full_c6_cargo_workspace_aggregates",
     "capture_build_input_closure",
     "capture_exact_file",
     "capture_exact_file_bytes",
