@@ -289,6 +289,11 @@ def calculate(x: int) -> int:
     assert '"demo_pkg.affine"' in guarded
     assert "importlib.metadata" in guarded
     assert 'link_name = "openat"' in guarded
+    assert '.open(std::path::Path::new("/"))' in guarded
+    assert ".open(path)" not in guarded
+    assert "for component in raw[1..].split('/')" in guarded
+    assert "__rextio_open_external_at(&directory, component, true)?" in guarded
+    assert "__rextio_open_external_root(root)?" in guarded
     assert "__rextio_open_external_at(&directory, part" in guarded
     assert "__REXTIO_O_NOFOLLOW" in guarded
     assert "before.nlink() != 1" in guarded
@@ -451,21 +456,33 @@ def calculate(x: int) -> int:
 
 
 @pytest.mark.parametrize(
-    ("source_kind", "expect_success"),
+    ("source_kind", "root_kind", "expect_success"),
     (
-        ("regular", True),
-        ("symlink", False),
-        ("hardlink", False),
-        ("changed", False),
+        ("regular", "canonical", True),
+        ("symlink", "canonical", False),
+        ("hardlink", "canonical", False),
+        ("changed", "canonical", False),
+        ("regular", "root-symlink", False),
+        ("regular", "ancestor-symlink", False),
+    ),
+    ids=(
+        "canonical",
+        "source-symlink",
+        "source-hardlink",
+        "source-changed",
+        "root-symlink",
+        "ancestor-symlink",
     ),
 )
 def test_compiled_runtime_guard_rejects_unsafe_source_without_external_execution(
     tmp_path: Path,
     compiled_external_runtime_guard: Path,
     source_kind: str,
+    root_kind: str,
     expect_success: bool,
 ) -> None:
-    site = tmp_path / "site-packages"
+    physical_parent = tmp_path / "physical-parent"
+    site = physical_parent / "site-packages"
     package = site / PACKAGE
     dist_info = site / "demo_pkg-1.0.0.dist-info"
     package.mkdir(parents=True)
@@ -492,6 +509,14 @@ def test_compiled_runtime_guard_rejects_unsafe_source_without_external_execution
         "demo_pkg-1.0.0.dist-info/RECORD,,\n",
         encoding="utf-8",
     )
+    runtime_site = site
+    if root_kind == "root-symlink":
+        runtime_site = tmp_path / "site-packages-alias"
+        runtime_site.symlink_to(site, target_is_directory=True)
+    elif root_kind == "ancestor-symlink":
+        alias = tmp_path / "parent-alias"
+        alias.symlink_to(physical_parent, target_is_directory=True)
+        runtime_site = alias / site.name
     marker = tmp_path / "external-python-was-touched"
     script = f"""
 import importlib.util
@@ -507,7 +532,7 @@ class Poison(types.ModuleType):
         return super().__getattribute__(name)
 
 sys.modules["demo_pkg"] = Poison("demo_pkg")
-sys.path.insert(0, {str(site)!r})
+sys.path.insert(0, {str(runtime_site)!r})
 spec = importlib.util.spec_from_file_location(
     "_rextio_native", {str(compiled_external_runtime_guard)!r}
 )
