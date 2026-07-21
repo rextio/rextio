@@ -976,6 +976,11 @@ def test_native_executor_normalizes_sandbox_launch_construction_failure(
 ) -> None:
     import rextio.build.full_c6_executor as executor
 
+    monkeypatch.setattr(
+        executor,
+        "detect_host_target_triple",
+        lambda: "aarch64-apple-darwin",
+    )
     source = _native_project(tmp_path)
     native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path,
@@ -1007,6 +1012,11 @@ def test_native_executor_rejects_residual_or_additive_pyo3_environment(
 ) -> None:
     import rextio.build.full_c6_executor as executor
 
+    monkeypatch.setattr(
+        executor,
+        "detect_host_target_triple",
+        lambda: "aarch64-apple-darwin",
+    )
     source = _native_project(tmp_path)
     native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path,
