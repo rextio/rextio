@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import struct
 import subprocess
 import sys
 from collections.abc import Iterator
+from typing import cast
 
 import pytest
 
@@ -15,11 +17,13 @@ from rextio.build.full_c6_read_sandbox import (
     FullC6ReadSandboxError,
     FullC6ReadSandboxPlan,
     FullC6SandboxLaunch,
+    LinuxSeccompLease,
     MacOSPlatformAnchor,
     SandboxPathRule,
     UnavailableMacOSPlatformAnchorProvider,
     build_full_c6_sandbox_plan,
     capture_active_macos_platform_anchor,
+    create_linux_full_c6_seccomp_lease,
     linux_full_c6_seccomp_program,
     prepare_full_c6_sandbox_launch,
 )
@@ -122,15 +126,61 @@ def _environment() -> dict[str, str]:
     }
 
 
+class _MockSealedMemfdKernel:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.seals: dict[int, int] = {}
+        self.create_calls: list[tuple[str, int]] = []
+
+    def memfd_create(self, name: str, flags: int) -> int:
+        self.create_calls.append((name, flags))
+        descriptor = os.open(
+            self.path,
+            os.O_CREAT | os.O_EXCL | os.O_RDWR,
+            0o600,
+        )
+        self.seals[descriptor] = 0
+        return descriptor
+
+    def fcntl(self, descriptor: int, command: int, argument: int = 0) -> int:
+        if command == sandbox_module._F_ADD_SEALS:
+            if self.seals[descriptor] & sandbox_module._F_SEAL_SEAL:
+                raise OSError(errno.EPERM, "memfd seals are immutable")
+            self.seals[descriptor] |= argument
+            return 0
+        if command == sandbox_module._F_GET_SEALS:
+            return self.seals[descriptor]
+        raise OSError(errno.EINVAL, "unexpected fcntl command")
+
+    def write(self, descriptor: int, payload: bytes) -> int:
+        if self.seals[descriptor] & sandbox_module._F_SEAL_WRITE:
+            raise OSError(errno.EPERM, "sealed memfd is immutable")
+        return os.write(descriptor, payload)
+
+
 @pytest.fixture
-def seccomp_fd(tmp_path: Path) -> Iterator[int]:
-    path = tmp_path / "seccomp.bpf"
-    path.write_bytes(linux_full_c6_seccomp_program())
-    descriptor = os.open(path, os.O_RDONLY)
+def seccomp_kernel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> _MockSealedMemfdKernel:
+    kernel = _MockSealedMemfdKernel(tmp_path / "seccomp.memfd")
+    monkeypatch.setattr(sandbox_module, "_is_linux_platform", lambda: True)
+    monkeypatch.setattr(sandbox_module, "_memfd_create", kernel.memfd_create)
+    monkeypatch.setattr(sandbox_module, "_fcntl_descriptor", kernel.fcntl)
+    monkeypatch.setattr(sandbox_module, "_write_descriptor", kernel.write)
+    return kernel
+
+
+@pytest.fixture
+def seccomp_lease(
+    seccomp_kernel: _MockSealedMemfdKernel,
+) -> Iterator[LinuxSeccompLease]:
+    lease = create_linux_full_c6_seccomp_lease()
+    assert seccomp_kernel.create_calls == [("rextio-full-c6-seccomp", 0x0003)]
     try:
-        yield descriptor
+        yield lease
     finally:
-        os.close(descriptor)
+        lease.close()
 
 
 def _bwrap(tmp_path: Path) -> Path:
@@ -186,7 +236,7 @@ def _prepare_linux(
     plan: FullC6ReadSandboxPlan,
     *,
     bwrap: Path,
-    seccomp_fd: int,
+    seccomp_lease: LinuxSeccompLease,
     environment: dict[str, str] | None = None,
     bwrap_digest: str = "b" * 64,
 ) -> FullC6SandboxLaunch:
@@ -195,7 +245,7 @@ def _prepare_linux(
         ("/rextio/toolchain/cargo", "build"),
         bubblewrap=bwrap,
         bubblewrap_verifier=lambda _path: bwrap_digest,
-        linux_seccomp_fd=seccomp_fd,
+        linux_seccomp_lease=seccomp_lease,
         linux_payload_environment=(
             _environment() if environment is None else environment
         ),
@@ -203,7 +253,7 @@ def _prepare_linux(
 
 
 def test_linux_launch_uses_bwrap_then_isolated_post_namespace_launcher(
-    tmp_path: Path, seccomp_fd: int
+    tmp_path: Path, seccomp_lease: LinuxSeccompLease
 ) -> None:
     plan = build_full_c6_sandbox_plan(
         target_triple="x86_64-unknown-linux-gnu",
@@ -214,8 +264,9 @@ def test_linux_launch_uses_bwrap_then_isolated_post_namespace_launcher(
     launch = _prepare_linux(
         plan,
         bwrap=bwrap,
-        seccomp_fd=seccomp_fd,
+        seccomp_lease=seccomp_lease,
     )
+    seccomp_fd = seccomp_lease.fileno()
     assert launch.command[0] == str(bwrap)
     assert launch.command[1:9] == (
         "--unshare-all",
@@ -242,11 +293,15 @@ def test_linux_launch_uses_bwrap_then_isolated_post_namespace_launcher(
     assert launch.command[-13:-11] == ("--seccomp", str(seccomp_fd))
     assert launch.command[-11] == "--"
     assert launch.pass_fds == (seccomp_fd,)
+    assert launch.seccomp_sha256 == hashlib.sha256(
+        linux_full_c6_seccomp_program()
+    ).hexdigest()
+    assert launch.seccomp_lease is seccomp_lease
     assert launch.preexec_fn is None
 
 
 def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
-    tmp_path: Path, seccomp_fd: int
+    tmp_path: Path, seccomp_lease: LinuxSeccompLease
 ) -> None:
     rules = (*_rules(tmp_path),)
     launcher = tmp_path / "launcher-libs"
@@ -267,9 +322,10 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         ("/rextio/toolchain/cargo", "build"),
         bubblewrap=bwrap,
         bubblewrap_verifier=lambda _path: "b" * 64,
-        linux_seccomp_fd=seccomp_fd,
+        linux_seccomp_lease=seccomp_lease,
         linux_payload_environment=_environment(),
     )
+    seccomp_fd = seccomp_lease.fileno()
 
     command = launch.command
     setenv_rows = [
@@ -368,7 +424,7 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
     ),
 )
 def test_linux_production_environment_field_is_required_and_exact_before_launch(
-    name: str, tmp_path: Path, seccomp_fd: int
+    name: str, tmp_path: Path, seccomp_lease: LinuxSeccompLease
 ) -> None:
     plan = build_full_c6_sandbox_plan(
         target_triple="x86_64-unknown-linux-gnu",
@@ -382,7 +438,7 @@ def test_linux_production_environment_field_is_required_and_exact_before_launch(
         _prepare_linux(
             plan,
             bwrap=bwrap,
-            seccomp_fd=seccomp_fd,
+            seccomp_lease=seccomp_lease,
             environment=missing,
         )
 
@@ -392,12 +448,12 @@ def test_linux_production_environment_field_is_required_and_exact_before_launch(
         _prepare_linux(
             plan,
             bwrap=bwrap,
-            seccomp_fd=seccomp_fd,
+            seccomp_lease=seccomp_lease,
             environment=changed,
         )
 
 
-def test_linux_requires_exact_caller_owned_seccomp_filter(
+def test_linux_rejects_missing_or_caller_owned_seccomp_descriptor(
     tmp_path: Path,
 ) -> None:
     plan = build_full_c6_sandbox_plan(
@@ -406,7 +462,7 @@ def test_linux_requires_exact_caller_owned_seccomp_filter(
         platform_anchor_sha256=_SHA,
     )
     bwrap = _bwrap(tmp_path)
-    with pytest.raises(FullC6ReadSandboxError, match="caller-owned"):
+    with pytest.raises(FullC6ReadSandboxError, match="typed sealed"):
         prepare_full_c6_sandbox_launch(
             plan,
             ("/rextio/toolchain/cargo",),
@@ -415,21 +471,263 @@ def test_linux_requires_exact_caller_owned_seccomp_filter(
             linux_payload_environment=_environment(),
         )
 
-    wrong = tmp_path / "wrong.bpf"
-    wrong.write_bytes(linux_full_c6_seccomp_program() + b"x")
-    descriptor = os.open(wrong, os.O_RDONLY)
+    mutable = tmp_path / "mutable.bpf"
+    mutable.write_bytes(linux_full_c6_seccomp_program())
+    descriptor = os.open(mutable, os.O_RDWR)
     try:
-        with pytest.raises(FullC6ReadSandboxError, match="exact filter"):
+        with pytest.raises(FullC6ReadSandboxError, match="typed sealed"):
             prepare_full_c6_sandbox_launch(
                 plan,
                 ("/rextio/toolchain/cargo",),
                 bubblewrap=bwrap,
                 bubblewrap_verifier=lambda _path: "b" * 64,
-                linux_seccomp_fd=descriptor,
+                linux_seccomp_lease=cast(LinuxSeccompLease, descriptor),
                 linux_payload_environment=_environment(),
             )
     finally:
         os.close(descriptor)
+
+
+def test_mock_linux_factory_seals_exact_filter_and_rejects_mutation(
+    seccomp_lease: LinuxSeccompLease,
+    seccomp_kernel: _MockSealedMemfdKernel,
+) -> None:
+    descriptor = seccomp_lease.fileno()
+
+    assert seccomp_lease.closed is False
+    assert os.lseek(descriptor, 0, os.SEEK_CUR) == 0
+    assert os.pread(
+        descriptor,
+        len(linux_full_c6_seccomp_program()) + 1,
+        0,
+    ) == linux_full_c6_seccomp_program()
+    assert seccomp_kernel.seals[descriptor] == 0x000F
+    with pytest.raises(OSError) as raised:
+        sandbox_module._write_descriptor(descriptor, b"mutation")
+    assert raised.value.errno == errno.EPERM
+
+
+@pytest.mark.skipif(sys.platform == "linux", reason="non-Linux platform gate")
+def test_linux_seccomp_factory_is_unavailable_off_linux() -> None:
+    with pytest.raises(FullC6ReadSandboxError, match="unavailable on this host"):
+        create_linux_full_c6_seccomp_lease()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="real Linux memfd seals")
+def test_real_linux_seccomp_memfd_is_exact_and_immutable() -> None:
+    with create_linux_full_c6_seccomp_lease() as lease:
+        descriptor = lease.fileno()
+        assert os.lseek(descriptor, 0, os.SEEK_CUR) == 0
+        assert os.pread(
+            descriptor,
+            len(linux_full_c6_seccomp_program()) + 1,
+            0,
+        ) == linux_full_c6_seccomp_program()
+        with pytest.raises(OSError) as raised:
+            os.write(descriptor, b"mutation")
+        assert raised.value.errno == errno.EPERM
+
+
+def test_linux_seccomp_factory_failure_closes_created_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[int] = []
+
+    def create_memfd(_name: str, _flags: int) -> int:
+        descriptor = os.open(
+            tmp_path / "failed.memfd",
+            os.O_CREAT | os.O_EXCL | os.O_RDWR,
+            0o600,
+        )
+        created.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(sandbox_module, "_is_linux_platform", lambda: True)
+    monkeypatch.setattr(sandbox_module, "_memfd_create", create_memfd)
+    monkeypatch.setattr(
+        sandbox_module,
+        "_fcntl_descriptor",
+        lambda _fd, _command, _argument=0: (_ for _ in ()).throw(
+            OSError(errno.EINVAL, "sealing unavailable")
+        ),
+    )
+
+    with pytest.raises(FullC6ReadSandboxError, match="cannot be created and sealed"):
+        create_linux_full_c6_seccomp_lease()
+    assert len(created) == 1
+    with pytest.raises(OSError) as raised:
+        os.fstat(created[0])
+    assert raised.value.errno == errno.EBADF
+
+
+def test_linux_seccomp_lease_rejects_forged_closed_and_wrong_owner(
+    tmp_path: Path,
+    seccomp_lease: LinuxSeccompLease,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = build_full_c6_sandbox_plan(
+        target_triple="x86_64-unknown-linux-gnu",
+        rules=_rules(tmp_path),
+        platform_anchor_sha256=_SHA,
+    )
+    bwrap = _bwrap(tmp_path)
+    forged = object.__new__(LinuxSeccompLease)
+    with pytest.raises(FullC6ReadSandboxError, match="forged or incomplete"):
+        _prepare_linux(plan, bwrap=bwrap, seccomp_lease=forged)
+
+    owner_pid = os.getpid()
+    monkeypatch.setattr(sandbox_module, "_process_id", lambda: owner_pid + 1)
+    with pytest.raises(FullC6ReadSandboxError, match="forged, stale, or closed"):
+        _prepare_linux(plan, bwrap=bwrap, seccomp_lease=seccomp_lease)
+    monkeypatch.setattr(sandbox_module, "_process_id", lambda: owner_pid)
+
+    seccomp_lease.close()
+    with pytest.raises(FullC6ReadSandboxError, match="forged, stale, or closed"):
+        _prepare_linux(plan, bwrap=bwrap, seccomp_lease=seccomp_lease)
+
+
+@pytest.mark.parametrize("observed_seals", (0x000E, 0x001F))
+def test_linux_seccomp_lease_rejects_missing_or_extra_seals(
+    observed_seals: int,
+    tmp_path: Path,
+    seccomp_lease: LinuxSeccompLease,
+    seccomp_kernel: _MockSealedMemfdKernel,
+) -> None:
+    plan = build_full_c6_sandbox_plan(
+        target_triple="x86_64-unknown-linux-gnu",
+        rules=_rules(tmp_path),
+        platform_anchor_sha256=_SHA,
+    )
+    seccomp_kernel.seals[seccomp_lease.fileno()] = observed_seals
+
+    with pytest.raises(FullC6ReadSandboxError, match="exact required seals"):
+        _prepare_linux(
+            plan,
+            bwrap=_bwrap(tmp_path),
+            seccomp_lease=seccomp_lease,
+        )
+
+
+def test_linux_seccomp_lease_rejects_unavailable_seal_query(
+    tmp_path: Path,
+    seccomp_lease: LinuxSeccompLease,
+    seccomp_kernel: _MockSealedMemfdKernel,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = build_full_c6_sandbox_plan(
+        target_triple="x86_64-unknown-linux-gnu",
+        rules=_rules(tmp_path),
+        platform_anchor_sha256=_SHA,
+    )
+
+    def unavailable_seals(
+        descriptor: int,
+        command: int,
+        argument: int = 0,
+    ) -> int:
+        if command == sandbox_module._F_GET_SEALS:
+            raise OSError(errno.EINVAL, "seal query unavailable")
+        return seccomp_kernel.fcntl(descriptor, command, argument)
+
+    monkeypatch.setattr(sandbox_module, "_fcntl_descriptor", unavailable_seals)
+    with pytest.raises(FullC6ReadSandboxError, match="seals are unavailable"):
+        _prepare_linux(
+            plan,
+            bwrap=_bwrap(tmp_path),
+            seccomp_lease=seccomp_lease,
+        )
+
+
+def test_linux_seccomp_lease_rejects_reused_descriptor_identity(
+    tmp_path: Path,
+    seccomp_lease: LinuxSeccompLease,
+) -> None:
+    plan = build_full_c6_sandbox_plan(
+        target_triple="x86_64-unknown-linux-gnu",
+        rules=_rules(tmp_path),
+        platform_anchor_sha256=_SHA,
+    )
+    descriptor = seccomp_lease.fileno()
+    replacement_path = tmp_path / "replacement"
+    replacement_path.write_bytes(linux_full_c6_seccomp_program())
+    replacement = os.open(replacement_path, os.O_RDONLY)
+    try:
+        os.dup2(replacement, descriptor)
+    finally:
+        os.close(replacement)
+    try:
+        with pytest.raises(FullC6ReadSandboxError, match="identity changed"):
+            _prepare_linux(
+                plan,
+                bwrap=_bwrap(tmp_path),
+                seccomp_lease=seccomp_lease,
+            )
+    finally:
+        os.close(descriptor)
+        seccomp_lease.close()
+
+
+def test_linux_launch_cleanup_closes_the_exact_lease_descriptor(
+    tmp_path: Path,
+    seccomp_lease: LinuxSeccompLease,
+) -> None:
+    plan = build_full_c6_sandbox_plan(
+        target_triple="x86_64-unknown-linux-gnu",
+        rules=_rules(tmp_path),
+        platform_anchor_sha256=_SHA,
+    )
+    launch = _prepare_linux(
+        plan,
+        bwrap=_bwrap(tmp_path),
+        seccomp_lease=seccomp_lease,
+    )
+    descriptor = seccomp_lease.fileno()
+
+    assert launch.pass_fds == (descriptor,)
+    assert launch.seccomp_lease is seccomp_lease
+    launch.close()
+    launch.close()
+
+    assert seccomp_lease.closed is True
+    with pytest.raises(OSError) as raised:
+        os.fstat(descriptor)
+    assert raised.value.errno == errno.EBADF
+
+
+def test_launch_dataclass_rejects_mismatched_seccomp_receipt_or_descriptor(
+    seccomp_lease: LinuxSeccompLease,
+) -> None:
+    descriptor = seccomp_lease.fileno()
+    digest = hashlib.sha256(linux_full_c6_seccomp_program()).hexdigest()
+
+    with pytest.raises(ValueError, match="receipt or descriptor"):
+        FullC6SandboxLaunch(
+            command=("bwrap",),
+            preexec_fn=None,
+            profile_sha256="a" * 64,
+            pass_fds=(descriptor,),
+            seccomp_sha256="b" * 64,
+            seccomp_lease=seccomp_lease,
+        )
+    with pytest.raises(ValueError, match="receipt or descriptor"):
+        FullC6SandboxLaunch(
+            command=("bwrap",),
+            preexec_fn=None,
+            profile_sha256="a" * 64,
+            pass_fds=(descriptor + 1,),
+            seccomp_sha256=digest,
+            seccomp_lease=seccomp_lease,
+        )
+    with pytest.raises(ValueError, match="capability contract"):
+        FullC6SandboxLaunch(
+            command=("sandbox-exec",),
+            preexec_fn=None,
+            profile_sha256="a" * 64,
+            pass_fds=(),
+            seccomp_sha256=digest,
+            seccomp_lease=None,
+        )
 
 
 def test_linux_seccomp_filter_rejects_x32_network_and_ipc_syscalls() -> None:
@@ -446,15 +744,14 @@ def test_linux_seccomp_filter_rejects_x32_network_and_ipc_syscalls() -> None:
 
 def test_linux_rejects_nonzero_seccomp_offset(
     tmp_path: Path,
+    seccomp_lease: LinuxSeccompLease,
 ) -> None:
     plan = build_full_c6_sandbox_plan(
         target_triple="x86_64-unknown-linux-gnu",
         rules=_rules(tmp_path),
         platform_anchor_sha256=_SHA,
     )
-    path = tmp_path / "seccomp.bpf"
-    path.write_bytes(linux_full_c6_seccomp_program())
-    descriptor = os.open(path, os.O_RDONLY)
+    descriptor = seccomp_lease.fileno()
     os.lseek(descriptor, 8, os.SEEK_SET)
     try:
         with pytest.raises(FullC6ReadSandboxError, match="exact filter"):
@@ -463,15 +760,15 @@ def test_linux_rejects_nonzero_seccomp_offset(
                 ("/rextio/toolchain/cargo",),
                 bubblewrap=_bwrap(tmp_path),
                 bubblewrap_verifier=lambda _path: "b" * 64,
-                linux_seccomp_fd=descriptor,
+                linux_seccomp_lease=seccomp_lease,
                 linux_payload_environment=_environment(),
             )
     finally:
-        os.close(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
 
 
 def test_linux_profile_binds_bwrap_and_virtual_semantics_not_host_paths(
-    tmp_path: Path, seccomp_fd: int
+    tmp_path: Path, seccomp_lease: LinuxSeccompLease
 ) -> None:
     first = build_full_c6_sandbox_plan(
         target_triple="x86_64-unknown-linux-gnu",
@@ -490,7 +787,7 @@ def test_linux_profile_binds_bwrap_and_virtual_semantics_not_host_paths(
         return _prepare_linux(
             plan,
             bwrap=_bwrap(root),
-            seccomp_fd=seccomp_fd,
+            seccomp_lease=seccomp_lease,
             bwrap_digest=digest,
         )
 
@@ -607,6 +904,9 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
 
     assert provider.seen == anchor
     assert compiled == [(sandbox_exec, launch.command[2])]
+    assert launch.pass_fds == ()
+    assert launch.seccomp_sha256 is None
+    assert launch.seccomp_lease is None
     assert launch.command[:3] == ("/usr/bin/sandbox-exec", "-p", launch.command[2])
     assert launch.command[-3:] == ("--", "cargo", "build")
     assert hashlib.sha256(launch.command[2].encode()).hexdigest() == launch.profile_sha256

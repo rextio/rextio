@@ -6,7 +6,7 @@ unbound host file.  This module provides that enforcement boundary for the two
 frozen Alpha hosts:
 
 * Linux x86_64 uses a bubblewrap mount/user/PID/UTS/IPC/network namespace and
-  a caller-owned seccomp program that bubblewrap installs after setup.  A
+  a module-owned sealed seccomp memfd that bubblewrap installs after setup.  A
   support-locked isolated CPython helper then installs Landlock inside that
   completed namespace immediately before replacing itself with Cargo.
 * macOS arm64 uses ``sandbox-exec`` only with a separately verified sealed
@@ -65,6 +65,18 @@ _SECCOMP_RET_ERRNO = 0x00050000
 _EPERM = 1
 _AUDIT_ARCH_X86_64 = 0xC000003E
 _X32_SYSCALL_BIT = 0x40000000
+_MFD_CLOEXEC = 0x0001
+_MFD_ALLOW_SEALING = 0x0002
+_F_ADD_SEALS = 1033
+_F_GET_SEALS = 1034
+_F_SEAL_SEAL = 0x0001
+_F_SEAL_SHRINK = 0x0002
+_F_SEAL_GROW = 0x0004
+_F_SEAL_WRITE = 0x0008
+_FULL_C6_SECCOMP_REQUIRED_SEALS = (
+    _F_SEAL_WRITE | _F_SEAL_GROW | _F_SEAL_SHRINK | _F_SEAL_SEAL
+)
+_LINUX_SECCOMP_LEASE_TOKEN = object()
 
 # x86_64 socket, System V/POSIX IPC, and async-I/O syscall numbers.  This
 # filter is handed to bubblewrap rather than installed in Python's preexec
@@ -142,6 +154,110 @@ SandboxEngine = Literal[
 
 class FullC6ReadSandboxError(RuntimeError):
     """The strict read sandbox is unavailable, malformed, or not enforceable."""
+
+
+class LinuxSeccompLease:
+    """Process-local ownership lease for one exact sealed seccomp memfd.
+
+    Instances can only be initialized by this module's Linux-gated factory.
+    The descriptor remains live until the launch boundary closes the lease
+    after spawning bubblewrap.  It is never serialized or reconstructed.
+    """
+
+    __slots__ = ("_closed", "_fd", "_identity", "_owner_pid", "_token")
+
+    def __init__(
+        self,
+        token: object,
+        /,
+        *,
+        fd: int,
+        owner_pid: int,
+        identity: tuple[int, int, int],
+    ) -> None:
+        if token is not _LINUX_SECCOMP_LEASE_TOKEN:
+            raise TypeError(
+                "Linux seccomp leases must be created by the Full C6 factory"
+            )
+        self._token = token
+        self._fd = fd
+        self._owner_pid = owner_pid
+        self._identity = identity
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        """Return whether this process-local descriptor lease was closed."""
+        return bool(getattr(self, "_closed", True))
+
+    def fileno(self) -> int:
+        """Return the live descriptor or fail closed for an invalid lease."""
+        if (
+            getattr(self, "_token", None) is not _LINUX_SECCOMP_LEASE_TOKEN
+            or self.closed
+        ):
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux seccomp lease is invalid or closed"
+            )
+        descriptor = getattr(self, "_fd", -1)
+        if type(descriptor) is not int or descriptor < 3:
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux seccomp lease descriptor is invalid"
+            )
+        return descriptor
+
+    def close(self) -> None:
+        """Close the owned descriptor exactly once without closing a reused FD."""
+        token = getattr(self, "_token", None)
+        descriptor = getattr(self, "_fd", -1)
+        identity = getattr(self, "_identity", None)
+        if token is not _LINUX_SECCOMP_LEASE_TOKEN or self.closed:
+            return
+        self._closed = True
+        self._fd = -1
+        if (
+            type(descriptor) is not int
+            or descriptor < 3
+            or type(identity) is not tuple
+            or len(identity) != 3
+        ):
+            return
+        try:
+            observed = _fstat_descriptor(descriptor)
+        except OSError:
+            return
+        observed_identity = (
+            observed.st_dev,
+            observed.st_ino,
+            observed.st_size,
+        )
+        if observed_identity != identity:
+            return
+        try:
+            _close_descriptor(descriptor)
+        except OSError:
+            return
+
+    def __enter__(self) -> LinuxSeccompLease:
+        self.fileno()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: object | None,
+        exc_value: object | None,
+        traceback: object | None,
+    ) -> None:
+        del exc_type, exc_value, traceback
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            # Interpreter shutdown and deliberately forged test objects may
+            # have only a subset of slots.  Destruction remains best effort.
+            return
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,14 +410,56 @@ class FullC6SandboxLaunch:
     for bwrap itself, and never serialize ``command`` because it contains
     private host mount sources.  ``--clearenv`` plus closed ``--setenv`` rows
     separately construct the post-namespace helper/Cargo environment.
-    Linux uses a caller-owned, offset-zero seccomp descriptor; this module
-    neither creates nor closes it.
+    Linux holds a module-created, sealed, offset-zero seccomp lease strongly
+    until the executor calls :meth:`close` after ``Popen`` returns.
     """
 
     command: tuple[str, ...]
     preexec_fn: Callable[[], None] | None
     profile_sha256: str
     pass_fds: tuple[int, ...]
+    seccomp_sha256: str | None = None
+    seccomp_lease: LinuxSeccompLease | None = None
+
+    def __post_init__(self) -> None:
+        if self.seccomp_lease is None:
+            if self.pass_fds or self.seccomp_sha256 is not None:
+                raise ValueError(
+                    "Full C6 launch has an invalid seccomp capability contract"
+                )
+            return
+        try:
+            descriptor, observed_sha256 = _verify_linux_seccomp_lease(
+                self.seccomp_lease
+            )
+        except FullC6ReadSandboxError as exc:
+            raise ValueError("Full C6 launch seccomp lease is invalid") from exc
+        if (
+            self.pass_fds != (descriptor,)
+            or type(self.seccomp_sha256) is not str
+            or _SHA256_RE.fullmatch(self.seccomp_sha256) is None
+            or self.seccomp_sha256 != observed_sha256
+        ):
+            raise ValueError(
+                "Full C6 launch seccomp receipt or descriptor contract differs"
+            )
+
+    def close(self) -> None:
+        """Release private launch capabilities after the subprocess spawns."""
+        if self.seccomp_lease is not None:
+            self.seccomp_lease.close()
+
+    def __enter__(self) -> FullC6SandboxLaunch:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: object | None,
+        exc_value: object | None,
+        traceback: object | None,
+    ) -> None:
+        del exc_type, exc_value, traceback
+        self.close()
 
 
 def build_full_c6_sandbox_plan(
@@ -338,7 +496,7 @@ def prepare_full_c6_sandbox_launch(
     macos_anchor_provider: MacOSPlatformAnchorProvider | None = None,
     sandbox_exec: Path = Path("/usr/bin/sandbox-exec"),
     bubblewrap: Path = Path("/usr/bin/bwrap"),
-    linux_seccomp_fd: int | None = None,
+    linux_seccomp_lease: LinuxSeccompLease | None = None,
     linux_payload_environment: Mapping[str, str] | None = None,
     bubblewrap_verifier: Callable[[Path], str] | None = None,
     macos_profile_compiler: Callable[[Path, str], None] | None = None,
@@ -367,7 +525,9 @@ def prepare_full_c6_sandbox_launch(
             raise FullC6ReadSandboxError(
                 "Full C6 bubblewrap verifier returned an invalid digest"
             )
-        seccomp_sha256 = _verify_linux_seccomp_fd(linux_seccomp_fd)
+        seccomp_fd, seccomp_sha256 = _verify_linux_seccomp_lease(
+            linux_seccomp_lease
+        )
         if linux_payload_environment is None:
             raise FullC6ReadSandboxError(
                 "Full C6 Linux payload environment is missing"
@@ -385,7 +545,7 @@ def prepare_full_c6_sandbox_launch(
             plan.rules,
             values,
             bubblewrap=bwrap_path,
-            seccomp_fd=linux_seccomp_fd,
+            seccomp_fd=seccomp_fd,
             environment_rows=environment_rows,
             environment_sha256=environment_sha256,
         )
@@ -409,14 +569,20 @@ def prepare_full_c6_sandbox_launch(
                 )
             )
         ).encode("utf-8")
-        assert linux_seccomp_fd is not None
+        assert linux_seccomp_lease is not None
         return FullC6SandboxLaunch(
             command=command_wrapper,
             preexec_fn=None,
             profile_sha256=hashlib.sha256(profile_payload).hexdigest(),
-            pass_fds=(linux_seccomp_fd,),
+            pass_fds=(seccomp_fd,),
+            seccomp_sha256=seccomp_sha256,
+            seccomp_lease=linux_seccomp_lease,
         )
 
+    if linux_seccomp_lease is not None:
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux seccomp lease is invalid for the macOS sandbox"
+        )
     if macos_anchor is None or type(macos_anchor) is not MacOSPlatformAnchor:
         raise FullC6ReadSandboxError("Full C6 macOS platform anchor is missing")
     if macos_anchor.digest != plan.platform_anchor_sha256:
@@ -432,6 +598,8 @@ def prepare_full_c6_sandbox_launch(
         preexec_fn=None,
         profile_sha256=hashlib.sha256(profile.encode("utf-8")).hexdigest(),
         pass_fds=(),
+        seccomp_sha256=None,
+        seccomp_lease=None,
     )
 
 
@@ -724,19 +892,137 @@ def linux_full_c6_seccomp_program() -> bytes:
     return b"".join(struct.pack("=HBBI", *row) for row in rows)
 
 
-def _verify_linux_seccomp_fd(fd: int | None) -> str:
-    expected = linux_full_c6_seccomp_program()
-    if type(fd) is not int or fd < 3:
+def create_linux_full_c6_seccomp_lease() -> LinuxSeccompLease:
+    """Create and seal the exact Linux Full C6 seccomp filter memfd."""
+    if not _is_linux_platform():
         raise FullC6ReadSandboxError(
-            "Full C6 Linux requires a caller-owned seccomp descriptor"
+            "Full C6 Linux seccomp memfd is unavailable on this host"
+        )
+    descriptor: int | None = None
+    try:
+        descriptor = _memfd_create(
+            "rextio-full-c6-seccomp",
+            _MFD_CLOEXEC | _MFD_ALLOW_SEALING,
+        )
+        if type(descriptor) is not int or descriptor < 3:
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux seccomp memfd descriptor is invalid"
+            )
+        _write_exact_descriptor(
+            descriptor,
+            linux_full_c6_seccomp_program(),
+        )
+        if _seek_descriptor(descriptor, 0, os.SEEK_SET) != 0:
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux seccomp memfd offset cannot be reset"
+            )
+        seal_result = _fcntl_descriptor(
+            descriptor,
+            _F_ADD_SEALS,
+            _FULL_C6_SECCOMP_REQUIRED_SEALS,
+        )
+        if type(seal_result) is not int or seal_result != 0:
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux seccomp memfd sealing failed"
+            )
+        identity, _digest = _inspect_linux_seccomp_descriptor(descriptor)
+        owner_pid = _process_id()
+        if type(owner_pid) is not int or owner_pid <= 0:
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux seccomp lease owner is invalid"
+            )
+        lease = LinuxSeccompLease(
+            _LINUX_SECCOMP_LEASE_TOKEN,
+            fd=descriptor,
+            owner_pid=owner_pid,
+            identity=identity,
+        )
+        descriptor = None
+        return lease
+    except FullC6ReadSandboxError:
+        if descriptor is not None:
+            _close_descriptor_quietly(descriptor)
+        raise
+    except (OSError, ValueError) as exc:
+        if descriptor is not None:
+            _close_descriptor_quietly(descriptor)
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux seccomp memfd cannot be created and sealed"
+        ) from exc
+
+
+def _verify_linux_seccomp_lease(
+    lease: LinuxSeccompLease | None,
+) -> tuple[int, str]:
+    if type(lease) is not LinuxSeccompLease:
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux requires a typed sealed seccomp lease"
         )
     try:
-        observed = os.fstat(fd)
-        offset = os.lseek(fd, 0, os.SEEK_CUR)
-        payload = os.pread(fd, len(expected) + 1, 0)
+        token = lease._token
+        closed = lease._closed
+        descriptor = lease._fd
+        owner_pid = lease._owner_pid
+        identity = lease._identity
+    except AttributeError as exc:
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux seccomp lease is forged or incomplete"
+        ) from exc
+    if (
+        token is not _LINUX_SECCOMP_LEASE_TOKEN
+        or type(closed) is not bool
+        or closed
+        or type(descriptor) is not int
+        or descriptor < 3
+        or type(owner_pid) is not int
+        or owner_pid != _process_id()
+        or type(identity) is not tuple
+        or len(identity) != 3
+        or not all(type(value) is int for value in identity)
+    ):
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux seccomp lease is forged, stale, or closed"
+        )
+    _observed_identity, digest = _inspect_linux_seccomp_descriptor(
+        descriptor,
+        expected_identity=identity,
+    )
+    return descriptor, digest
+
+
+def _inspect_linux_seccomp_descriptor(
+    descriptor: int,
+    *,
+    expected_identity: tuple[int, int, int] | None = None,
+) -> tuple[tuple[int, int, int], str]:
+    expected = linux_full_c6_seccomp_program()
+    try:
+        observed = _fstat_descriptor(descriptor)
     except OSError as exc:
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp descriptor is unavailable"
+            "Full C6 Linux seccomp lease descriptor is unavailable"
+        ) from exc
+    identity = (observed.st_dev, observed.st_ino, observed.st_size)
+    if expected_identity is not None and identity != expected_identity:
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux seccomp lease descriptor identity changed"
+        )
+    try:
+        seals = _fcntl_descriptor(descriptor, _F_GET_SEALS)
+    except OSError as exc:
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux seccomp lease seals are unavailable"
+        ) from exc
+    if type(seals) is not int or seals != _FULL_C6_SECCOMP_REQUIRED_SEALS:
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux seccomp lease does not have the exact required seals"
+        )
+    try:
+        offset = _seek_descriptor(descriptor, 0, os.SEEK_CUR)
+        payload = _pread_descriptor(descriptor, len(expected) + 1, 0)
+    except OSError as exc:
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux seccomp lease cannot be inspected"
         ) from exc
     if (
         not stat.S_ISREG(observed.st_mode)
@@ -745,9 +1031,71 @@ def _verify_linux_seccomp_fd(fd: int | None) -> str:
         or payload != expected
     ):
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp descriptor does not contain the exact filter"
+            "Full C6 Linux seccomp lease does not contain the exact filter"
         )
-    return hashlib.sha256(expected).hexdigest()
+    return identity, hashlib.sha256(expected).hexdigest()
+
+
+def _is_linux_platform() -> bool:
+    return sys.platform == "linux"
+
+
+def _memfd_create(name: str, flags: int) -> int:
+    creator = getattr(os, "memfd_create", None)
+    if creator is None:
+        raise OSError("memfd_create is unavailable")
+    descriptor = creator(name, flags)
+    if type(descriptor) is not int:
+        raise OSError("memfd_create returned an invalid descriptor")
+    return descriptor
+
+
+def _fcntl_descriptor(descriptor: int, command: int, argument: int = 0) -> int:
+    import fcntl
+
+    return int(fcntl.fcntl(descriptor, command, argument))
+
+
+def _write_descriptor(descriptor: int, payload: bytes) -> int:
+    return os.write(descriptor, payload)
+
+
+def _write_exact_descriptor(descriptor: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = _write_descriptor(descriptor, payload[offset:])
+        if type(written) is not int or written <= 0 or written > len(payload) - offset:
+            raise FullC6ReadSandboxError(
+                "Full C6 Linux seccomp memfd write was incomplete"
+            )
+        offset += written
+
+
+def _seek_descriptor(descriptor: int, offset: int, whence: int) -> int:
+    return os.lseek(descriptor, offset, whence)
+
+
+def _pread_descriptor(descriptor: int, size: int, offset: int) -> bytes:
+    return os.pread(descriptor, size, offset)
+
+
+def _fstat_descriptor(descriptor: int) -> os.stat_result:
+    return os.fstat(descriptor)
+
+
+def _close_descriptor(descriptor: int) -> None:
+    os.close(descriptor)
+
+
+def _close_descriptor_quietly(descriptor: int) -> None:
+    try:
+        _close_descriptor(descriptor)
+    except OSError:
+        return
+
+
+def _process_id() -> int:
+    return os.getpid()
 
 
 def _verify_bubblewrap(path: Path) -> str:
@@ -1083,6 +1431,7 @@ __all__ = [
     "FullC6ReadSandboxError",
     "FullC6ReadSandboxPlan",
     "FullC6SandboxLaunch",
+    "LinuxSeccompLease",
     "MacOSPlatformAnchor",
     "MacOSPlatformAnchorProvider",
     "SandboxPathRule",
@@ -1090,6 +1439,7 @@ __all__ = [
     "build_full_c6_sandbox_plan",
     "canonical_platform_context",
     "capture_active_macos_platform_anchor",
+    "create_linux_full_c6_seccomp_lease",
     "linux_full_c6_seccomp_program",
     "prepare_full_c6_sandbox_launch",
 ]
