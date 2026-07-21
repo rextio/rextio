@@ -93,6 +93,9 @@ _RECORD_MAX_ROWS = 4096
 _VERSION_OUTPUT_MAX_BYTES = 64 * 1024
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
 _WHEEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,254}\.whl$")
+_CPYTHON_311_BYTECODE_NAME_RE = re.compile(
+    r"^(?P<stem>[A-Za-z_][A-Za-z0-9_]*)\.cpython-311(?:\.opt-[12])?\.pyc$"
+)
 _SEAL_KEY = secrets.token_bytes(32)
 
 
@@ -1846,6 +1849,7 @@ def _capture_record_backed_rextio_identity(
 
     expected: dict[str, tuple[str, int]] = {}
     aliases: set[str] = set()
+    installer_bytecode_sources: list[str] = []
     for row in rows:
         if len(row) != 3:
             raise FullC6HostInputsError("installed Rextio RECORD row is malformed")
@@ -1854,9 +1858,13 @@ def _capture_record_backed_rextio_identity(
             continue
         logical = _validated_record_member(raw_name)
         alias = unicodedata.normalize("NFC", logical).casefold()
-        if alias in aliases or logical in expected:
+        if alias in aliases:
             raise FullC6HostInputsError("installed Rextio RECORD contains a path alias")
         aliases.add(alias)
+        bytecode_source = _installer_bytecode_source(logical, raw_hash, raw_size)
+        if bytecode_source is not None:
+            installer_bytecode_sources.append(bytecode_source)
+            continue
         digest = _record_sha256(raw_hash)
         try:
             size = int(raw_size)
@@ -1867,6 +1875,10 @@ def _capture_record_backed_rextio_identity(
         expected[logical] = (digest, size)
     if not expected:
         raise FullC6HostInputsError("installed Rextio RECORD has no package inventory")
+    if any(source not in expected for source in installer_bytecode_sources):
+        raise FullC6HostInputsError(
+            "installed Rextio RECORD bytecode lacks its hashed source"
+        )
 
     package_root = root / "rextio"
     observed = _walk_installed_package(package_root, distribution_root=root)
@@ -2017,6 +2029,26 @@ def _record_sha256(value: str) -> str:
     if len(data) != 32:
         raise FullC6HostInputsError("installed Rextio RECORD SHA-256 is invalid")
     return data.hex()
+
+
+def _installer_bytecode_source(
+    logical_name: str,
+    raw_hash: str,
+    raw_size: str,
+) -> str | None:
+    """Map one exact pip CPython 3.11 bytecode row to its hashed source."""
+    parts = PurePosixPath(logical_name).parts
+    if (
+        len(parts) < 3
+        or parts[-2] != "__pycache__"
+        or raw_hash != ""
+        or raw_size != ""
+    ):
+        return None
+    match = _CPYTHON_311_BYTECODE_NAME_RE.fullmatch(parts[-1])
+    if match is None:
+        return None
+    return PurePosixPath(*parts[:-2], f"{match.group('stem')}.py").as_posix()
 
 
 def _ensure_state_directory(root: Path, config: RextioConfig) -> Path:
