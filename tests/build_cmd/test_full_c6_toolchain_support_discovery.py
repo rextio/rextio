@@ -1040,6 +1040,39 @@ def test_linux_normalizes_cyclic_distribution_inspector_symlink(
         )
 
 
+def test_stable_resolved_file_output_accepts_gcc_dot_segments_only_when_absolute(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gcc_root = tmp_path / "usr" / "lib" / "gcc" / "x86_64-linux-gnu" / "13"
+    gcc_root.mkdir(parents=True)
+    crt1 = _file(tmp_path / "usr" / "lib" / "x86_64-linux-gnu" / "crt1.o")
+    selected = gcc_root / ".." / ".." / ".." / "x86_64-linux-gnu" / "crt1.o"
+    monkeypatch.setattr(
+        support,
+        "_stable_one_line",
+        lambda *_args, **_kwargs: os.fspath(selected),
+    )
+
+    assert support._stable_resolved_file_output(
+        ["cc", "--print-file-name=crt1.o"],
+        cwd=tmp_path,
+        environment={},
+    ) == crt1
+
+    monkeypatch.setattr(
+        support,
+        "_stable_one_line",
+        lambda *_args, **_kwargs: "crt1.o",
+    )
+    with pytest.raises(support.FullC6ToolchainSupportError, match="absolute"):
+        support._stable_resolved_file_output(
+            ["cc", "--print-file-name=crt1.o"],
+            cwd=tmp_path,
+            environment={},
+        )
+
+
 def test_linux_missing_exact_bwrap_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

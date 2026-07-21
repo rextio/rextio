@@ -1407,12 +1407,12 @@ def _discover_linux_support(
                 "Full C6 GCC private CRT support escaped its exact root"
             )
     for name in ("crt1.o", "crti.o", "crtn.o"):
-        member = _stable_absolute_output(
+        member = _stable_resolved_file_output(
             [os.fspath(linker), f"--print-file-name={name}"],
             cwd=cwd,
             environment=environment,
         )
-        _require_within(_resolved_real_file(member), runtime_root)
+        _require_within(member, runtime_root)
     raw_ld = _stable_one_line(
         [os.fspath(linker), "-print-prog-name=ld"],
         cwd=cwd,
@@ -1899,6 +1899,33 @@ def _stable_absolute_output(
             "Full C6 support discovery returned a noncanonical absolute path"
         )
     return path
+
+
+def _stable_resolved_file_output(
+    command: list[str],
+    *,
+    cwd: Path,
+    environment: Mapping[str, str],
+) -> Path:
+    """Resolve one stable absolute file selection before exact leaf admission."""
+    value = _stable_one_line(command, cwd=cwd, environment=environment)
+    if (
+        type(value) is not str
+        or not Path(value).is_absolute()
+        or value != unicodedata.normalize("NFC", value)
+        or len(os.fsencode(value)) > MAX_FULL_C6_SUPPORT_PATH_BYTES
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise FullC6ToolchainSupportError(
+            "Full C6 support discovery returned an invalid absolute file path"
+        )
+    try:
+        resolved = Path(value).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support discovery file could not be resolved"
+        ) from exc
+    return _require_real_file(resolved)
 
 
 def _stable_one_line(
