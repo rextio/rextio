@@ -296,6 +296,8 @@ def calculate(x: int) -> int:
     assert "__rextio_open_external_root(root)?" in guarded
     assert "__rextio_open_external_at(&directory, part" in guarded
     assert "__REXTIO_O_NOFOLLOW" in guarded
+    assert "__REXTIO_O_NONBLOCK" in guarded
+    assert "flags |= __REXTIO_O_NONBLOCK" in guarded
     assert "before.nlink() != 1" in guarded
     assert "before.dev() != after.dev()" in guarded
     assert "before.ino() != after.ino()" in guarded
@@ -461,6 +463,15 @@ def calculate(x: int) -> int:
         ("regular", "canonical", True),
         ("symlink", "canonical", False),
         ("hardlink", "canonical", False),
+        pytest.param(
+            "fifo",
+            "canonical",
+            False,
+            marks=pytest.mark.skipif(
+                not hasattr(os, "mkfifo"),
+                reason="FIFO creation is POSIX-only",
+            ),
+        ),
         ("changed", "canonical", False),
         ("regular", "root-symlink", False),
         ("regular", "ancestor-symlink", False),
@@ -469,6 +480,7 @@ def calculate(x: int) -> int:
         "canonical",
         "source-symlink",
         "source-hardlink",
+        "source-fifo",
         "source-changed",
         "root-symlink",
         "ancestor-symlink",
@@ -495,6 +507,8 @@ def test_compiled_runtime_guard_rejects_unsafe_source_without_external_execution
             source.symlink_to(payload)
         else:
             os.link(payload, source)
+    elif source_kind == "fifo":
+        os.mkfifo(source)
     elif source_kind == "changed":
         source.write_bytes(EXTERNAL_SOURCE.replace(b"x + 1", b"x - 1"))
     else:
@@ -546,6 +560,8 @@ except BaseException as error:
     failure = repr(error)
 if loaded != {expect_success!r}:
     raise SystemExit(f"unexpected load result: loaded={{loaded}} failure={{failure}}")
+if not loaded and "RXT060 external source runtime identity verification failed" not in (failure or ""):
+    raise SystemExit(f"unexpected guard failure: {{failure}}")
 if marker.exists():
     raise SystemExit(f"external module was touched: {{marker.read_text()}}")
 """
@@ -553,7 +569,7 @@ if marker.exists():
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=5 if source_kind == "fifo" else 30,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
