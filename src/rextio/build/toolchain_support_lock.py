@@ -2396,7 +2396,12 @@ def _capture_tree_once(
             raise ToolchainSupportLockError(
                 "toolchain support root is not a directory"
             )
-        _validate_mode(stat.S_IMODE(opened_root.mode))
+        _validate_tree_root_mode(
+            target_triple=target_triple,
+            logical_role=locator.logical_role,
+            locator_path=locator._absolute_path,
+            full_mode=opened_root.mode,
+        )
         raw_entries: list[_RawTreeEntry] = []
         raw_dispositions: list[_RawSymlinkDisposition] = []
         hardlink_dispositions: list[
@@ -4242,6 +4247,32 @@ def _validate_tree_member_mode(
             f"logical_role={_validate_role(logical_role)}, "
             f"kind={kind}, "
             f"relative_path_sha256={path_sha256}, "
+            f"mode={mode:04o})"
+        ) from None
+
+
+def _validate_tree_root_mode(
+    *,
+    target_triple: str | None,
+    logical_role: str,
+    locator_path: Path,
+    full_mode: int,
+) -> int:
+    mode = stat.S_IMODE(full_mode)
+    try:
+        return _validate_mode(mode)
+    except ToolchainSupportLockError:
+        validated_target = (
+            "unscoped"
+            if target_triple is None
+            else ToolchainSupportScope(target_triple=target_triple).target_triple
+        )
+        raise ToolchainSupportLockError(
+            "toolchain support permission mode is invalid "
+            f"(target_triple={validated_target}, "
+            f"logical_role={_validate_role(logical_role)}, "
+            "kind=root, "
+            f"locator_path_sha256={_locator_path_digest(locator_path)}, "
             f"mode={mode:04o})"
         ) from None
 

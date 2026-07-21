@@ -1640,6 +1640,35 @@ def test_tree_member_mode_diagnostic_leaves_ordinary_mode_validation_unchanged()
         support_lock._validate_mode(0o4755)
 
 
+def test_tree_root_mode_diagnostic_is_exact_bounded_and_path_opaque(
+    tmp_path: Path,
+) -> None:
+    manifest, root, manifest_locator, root_locator = _inputs(tmp_path)
+    root.chmod(0o2755)
+    if stat.S_IMODE(root.lstat().st_mode) != 0o2755:
+        pytest.skip("test filesystem did not preserve the set-group-ID mode bit")
+
+    with pytest.raises(ToolchainSupportLockError) as captured:
+        generate_toolchain_support_lock(
+            target_triple="x86_64-unknown-linux-gnu",
+            manifests=[manifest_locator],
+            roots=[root_locator],
+        )
+
+    expected_path_sha256 = support_lock._locator_path_digest(root)
+    message = str(captured.value)
+    assert message == (
+        "toolchain support permission mode is invalid "
+        "(target_triple=x86_64-unknown-linux-gnu, "
+        "logical_role=python-support-root, kind=root, "
+        f"locator_path_sha256={expected_path_sha256}, mode=2755)"
+    )
+    assert len(message.encode("utf-8")) <= 512
+    assert str(root) not in message
+    assert str(manifest) not in message
+    assert str(tmp_path) not in message
+
+
 def test_tree_hardlink_diagnostic_is_bounded_and_path_opaque(tmp_path: Path) -> None:
     secret_root = tmp_path / "absolute-secret-support-root"
     secret_root.mkdir()
