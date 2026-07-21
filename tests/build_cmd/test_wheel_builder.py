@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-import zipfile
+import stat
 import sys
 import sysconfig
+import zipfile
 from pathlib import Path
 
+import pytest
+
+import rextio.build.wheel_builder as wheel_builder
 from rextio.build.wheel_builder import build_artifact_wheel
 
 
@@ -114,3 +118,163 @@ def test_ctypes_payload_does_not_shadow_its_python_wrapper(tmp_path: Path) -> No
         names = set(archive.namelist())
     assert "pkg/libfoo.py" in names  # wrapper survives
     assert "pkg/libfoo.native.dylib" in names
+
+
+def test_external_wheel_contract_pins_requirement_and_excludes_source(
+    tmp_path: Path,
+) -> None:
+    contract_type = getattr(wheel_builder, "ExternalWheelContract", None)
+    verifier = getattr(wheel_builder, "verify_external_wheel_contract", None)
+    assert contract_type is not None, "external wheel contract is not implemented"
+    assert verifier is not None, "external wheel verifier is not implemented"
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    contract = contract_type(
+        package="demo_pkg",
+        distribution="demo-pkg",
+        version="1.0.0",
+        source_members=("demo_pkg/__init__.py",),
+    )
+
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        external_contract=contract,
+    )
+
+    assert result.status == "built"
+    assert result.path is not None
+    verified = verifier(Path(result.path), contract)
+    assert verified.requirement == "demo-pkg==1.0.0"
+    with zipfile.ZipFile(result.path) as archive:
+        names = archive.namelist()
+        metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
+        metadata = archive.read(metadata_name).decode("utf-8")
+    assert metadata.count("Requires-Dist: demo-pkg==1.0.0\n") == 1
+    assert "demo_pkg/__init__.py" not in names
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ("demo_pkg/__init__.py", "DEMO_PKG/hidden.PY"),
+)
+def test_external_wheel_contract_rejects_staged_external_python_source(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    contract_type = getattr(wheel_builder, "ExternalWheelContract", None)
+    error_type = getattr(wheel_builder, "WheelContractError", None)
+    assert contract_type is not None, "external wheel contract is not implemented"
+    assert error_type is not None, "external wheel contract error is not implemented"
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    source_path = python_dir / relative
+    source_path.parent.mkdir()
+    source_path.write_text(
+        "def affine(x): return x + 1\n",
+        encoding="utf-8",
+    )
+    contract = contract_type(
+        package="demo_pkg",
+        distribution="demo-pkg",
+        version="1.0.0",
+        source_members=("demo_pkg/__init__.py",),
+    )
+
+    with pytest.raises(error_type, match="external Python source"):
+        build_artifact_wheel(
+            tmp_path / "project",
+            python_dir,
+            tmp_path / "dist",
+            external_contract=contract,
+        )
+
+    assert not list((tmp_path / "dist").glob("*.whl"))
+
+
+def _strict_external_wheel(tmp_path: Path):
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    contract = wheel_builder.ExternalWheelContract(
+        package="demo_pkg",
+        distribution="demo-pkg",
+        version="1.0.0",
+        source_members=("demo_pkg/__init__.py",),
+    )
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        external_contract=contract,
+    )
+    assert result.path is not None
+    return Path(result.path), contract
+
+
+@pytest.mark.parametrize(
+    ("member", "mode", "reason"),
+    (
+        ("../escape.py", stat.S_IFREG | 0o644, "unsafe"),
+        ("DEMO_PKG/hidden.PY", stat.S_IFREG | 0o644, "external Python source"),
+        ("APP/__init__.py", stat.S_IFREG | 0o644, "aliased"),
+        ("payload-link", stat.S_IFLNK | 0o777, "regular file"),
+    ),
+)
+def test_external_wheel_verifier_rejects_unsafe_alias_and_nonregular_members(
+    tmp_path: Path,
+    member: str,
+    mode: int,
+    reason: str,
+) -> None:
+    wheel, contract = _strict_external_wheel(tmp_path)
+    info = zipfile.ZipInfo(member)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = mode << 16
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr(info, b"payload")
+
+    with pytest.raises(wheel_builder.WheelContractError, match=reason):
+        wheel_builder.verify_external_wheel_contract(wheel, contract)
+
+
+def test_external_wheel_verifier_rejects_compression_bomb(tmp_path: Path) -> None:
+    wheel, contract = _strict_external_wheel(tmp_path)
+    info = zipfile.ZipInfo("payload.bin")
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = (stat.S_IFREG | 0o644) << 16
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr(info, b"0" * 1_000_000)
+
+    with pytest.raises(wheel_builder.WheelContractError, match="compression ratio"):
+        wheel_builder.verify_external_wheel_contract(wheel, contract)
+
+
+def test_external_wheel_verifier_treats_dependency_headers_case_insensitively(
+    tmp_path: Path,
+) -> None:
+    wheel, contract = _strict_external_wheel(tmp_path)
+    rewritten = wheel.with_suffix(".rewritten")
+    with zipfile.ZipFile(wheel) as source, zipfile.ZipFile(rewritten, "w") as target:
+        for original in source.infolist():
+            payload = source.read(original)
+            if original.filename.endswith(".dist-info/METADATA"):
+                payload += b"requires-dist: unexpected==9\n"
+            target.writestr(original, payload)
+    rewritten.replace(wheel)
+
+    with pytest.raises(wheel_builder.WheelContractError, match="exact pin"):
+        wheel_builder.verify_external_wheel_contract(wheel, contract)
+
+
+def test_external_wheel_verifier_rejects_symlinked_wheel_path(tmp_path: Path) -> None:
+    wheel, contract = _strict_external_wheel(tmp_path)
+    target = wheel.with_suffix(".real")
+    wheel.replace(target)
+    wheel.symlink_to(target)
+
+    with pytest.raises(wheel_builder.WheelContractError, match="regular file"):
+        wheel_builder.verify_external_wheel_contract(wheel, contract)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from rextio.analyzer.common_calls import COMMON_DIRECT_RUST_CALLS
 from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.diagnostics import Diagnostic
@@ -9,6 +11,9 @@ from rextio.analyzer.final_bindings import BindingKind, definition_is_final
 from rextio.analyzer.import_policy import decision_for_target
 from rextio.analyzer.models import CallSite, FunctionAnalysis, ModuleAnalysis, ProjectAnalysis
 from rextio.ir.types import normalize_type_name
+
+if TYPE_CHECKING:
+    from rextio.source.external_linkage import ExternalNativeRegistry
 
 SUPPORTED_INTERNAL_CALLS = {
     "abs",
@@ -41,6 +46,7 @@ def apply_boundary_checks(
     boundary_warnings: bool = True,
     embedding_enabled: bool = False,
     delegate_fallback: bool = False,
+    external_native_registry: ExternalNativeRegistry | None = None,
 ) -> None:
     """Apply the native/fallback boundary policy, attaching RXT07x diagnostics."""
     resolver = FunctionResolver(analysis)
@@ -226,6 +232,7 @@ def apply_boundary_checks(
                     resolver,
                     embedding_enabled=embedding_enabled,
                     delegate_fallback=delegate_fallback,
+                    external_native_registry=external_native_registry,
                 )
                 if boundary_errors:
                     for diagnostic in boundary_errors:
@@ -298,6 +305,7 @@ def _boundary_errors(
     resolver: FunctionResolver,
     embedding_enabled: bool = False,
     delegate_fallback: bool = False,
+    external_native_registry: ExternalNativeRegistry | None = None,
 ) -> list[Diagnostic]:
     if function.native_runtime_semantics:
         return []
@@ -327,6 +335,11 @@ def _boundary_errors(
             continue
         resolved = resolver.resolve(module, target)
         if target in SUPPORTED_INTERNAL_CALLS or target.endswith(".append"):
+            continue
+        if (
+            external_native_registry is not None
+            and external_native_registry.resolve_for(module, function, call) is not None
+        ):
             continue
         dependency = resolved.function
         if embedding_enabled and dependency is not None and dependency.is_embedding_candidate:

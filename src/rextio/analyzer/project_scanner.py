@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rextio.analyzer.boundary import apply_boundary_checks
 from rextio.analyzer.callable_metadata import index_project_symbols
@@ -40,6 +41,9 @@ from rextio.plugins.models import PluginRegistry, RextioPlugin
 from rextio.source.authorization import verify_external_source_authorization
 from rextio.source.external import resolve_external_source_plan
 from rextio.targets.models import normalize_target_language
+
+if TYPE_CHECKING:
+    from rextio.source.external_linkage import ExternalNativeRegistry
 
 IGNORED_PARTS = {
     ".git",
@@ -117,6 +121,7 @@ def analyze_project(
     delegate_fallback: bool = False,
     plugin_registry: PluginRegistry | None = None,
     plugin_config: RextioConfig | None = None,
+    external_native_registry: ExternalNativeRegistry | None = None,
 ) -> ProjectAnalysis:
     """Analyze a project directory and return its ProjectAnalysis.
 
@@ -202,6 +207,7 @@ def analyze_project(
         boundary_warnings=boundary_warnings,
         embedding_enabled=embedding_enabled,
         delegate_fallback=delegate_fallback,
+        external_native_registry=external_native_registry,
     )
     _strip_divergence_notes_from_non_native(analysis)
     _note_plugin_lowerable_accelerated(analysis, tuple(active_plugins))

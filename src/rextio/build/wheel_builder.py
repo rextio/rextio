@@ -3,13 +3,88 @@
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
+import io
+import os
 import re
+import stat
 import sys
 import sysconfig
+import unicodedata
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from email import policy as email_policy
+from email.parser import BytesParser
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+
+class WheelContractError(ValueError):
+    """A strict external-source output wheel contract was not satisfied."""
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalWheelContract:
+    """Exact dependency and source-exclusion contract for one C5.2 wheel."""
+
+    package: str
+    distribution: str
+    version: str
+    source_members: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        package_parts = self.package.split(".")
+        members = tuple(self.source_members)
+        package_root = "/".join(package_parts)
+        if (
+            not package_parts
+            or any(not part.isascii() or not part.isidentifier() for part in package_parts)
+            or _DIST_REQUIREMENT.fullmatch(self.distribution) is None
+            or _VERSION_REQUIREMENT.fullmatch(self.version) is None
+            or not members
+            or members != tuple(sorted(members))
+            or len(set(members)) != len(members)
+        ):
+            raise ValueError("external wheel contract identity is invalid")
+        aliases: set[str] = set()
+        for member in members:
+            path = PurePosixPath(member)
+            alias = unicodedata.normalize("NFC", member).casefold()
+            if (
+                not member.endswith(".py")
+                or path.is_absolute()
+                or path.as_posix() != member
+                or any(part in {"", ".", ".."} for part in path.parts)
+                or not (member == f"{package_root}.py" or member.startswith(f"{package_root}/"))
+                or alias in aliases
+            ):
+                raise ValueError("external wheel source member is invalid")
+            aliases.add(alias)
+
+    @property
+    def requirement(self) -> str:
+        """Return the sole exact dependency spelling accepted in METADATA."""
+        return f"{self.distribution}=={self.version}"
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalWheelVerification:
+    """Successful final output-wheel verification result."""
+
+    requirement: str
+    metadata_member: str
+    record_member: str
+    wheel_sha256: str
+
+
+_DIST_REQUIREMENT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+_VERSION_REQUIREMENT = re.compile(r"^[A-Za-z0-9]+(?:[._+-][A-Za-z0-9]+)*$")
+_MAX_STRICT_WHEEL_BYTES = 512_000_000
+_MAX_STRICT_WHEEL_ENTRIES = 4096
+_MAX_STRICT_ENTRY_BYTES = 256_000_000
+_MAX_STRICT_TOTAL_BYTES = 1_000_000_000
+_MAX_STRICT_COMPRESSION_RATIO = 200
+_MAX_STRICT_MEMBER_NAME = 512
 
 
 @dataclass(frozen=True)
@@ -38,6 +113,8 @@ def build_artifact_wheel(
     project_root: Path,
     python_dir: Path,
     dist_dir: Path,
+    *,
+    external_contract: ExternalWheelContract | None = None,
 ) -> WheelBuildResult:
     """Build a wheel from the generated Python package and return the result."""
     if not python_dir.exists():
@@ -46,6 +123,10 @@ def build_artifact_wheel(
             path=None,
             message="RXT060 Wheel build failed because the Python build artifact was missing.",
         )
+    if external_contract is not None:
+        if type(external_contract) is not ExternalWheelContract:
+            raise WheelContractError("external wheel contract has an invalid type")
+        _require_external_source_absent(python_dir, external_contract)
 
     wheel_path = artifact_wheel_path(project_root, python_dir, dist_dir)
     name = _normalize_distribution_name(project_root.name or "rextio_hybrid_artifact")
@@ -78,6 +159,11 @@ def build_artifact_wheel(
                 f"Name: {name}\n"
                 f"Version: {version}\n"
                 "Summary: Rextio generated hybrid artifact.\n"
+                + (
+                    f"Requires-Dist: {external_contract.requirement}\n"
+                    if external_contract is not None
+                    else ""
+                )
             ).encode("utf-8"),
             f"{dist_info}/WHEEL": (
                 "Wheel-Version: 1.0\n"
@@ -95,11 +181,257 @@ def build_artifact_wheel(
         record_lines.append(f"{record_path},,")
         _write_bytes(archive, record_path, ("\n".join(record_lines) + "\n").encode("utf-8"))
 
+    if external_contract is not None:
+        try:
+            verify_external_wheel_contract(wheel_path, external_contract)
+        except WheelContractError:
+            wheel_path.unlink(missing_ok=True)
+            raise
     return WheelBuildResult(
         status="built",
         path=str(wheel_path),
         message="Generated hybrid artifact wheel.",
     )
+
+
+def verify_external_wheel_contract(
+    wheel_path: Path,
+    contract: ExternalWheelContract,
+) -> ExternalWheelVerification:
+    """Reopen the final wheel and verify exact pin, exclusion, and RECORD."""
+    if type(contract) is not ExternalWheelContract:
+        raise WheelContractError("external wheel contract has an invalid type")
+    path = Path(wheel_path)
+    try:
+        wheel_bytes, pinned_identity = _read_pinned_wheel(path)
+        with zipfile.ZipFile(io.BytesIO(wheel_bytes), "r") as archive:
+            infos = archive.infolist()
+            if not infos or len(infos) > _MAX_STRICT_WHEEL_ENTRIES:
+                raise WheelContractError("output wheel entry count is outside the bound")
+            names = [info.filename for info in infos]
+            if len(names) != len(set(names)):
+                raise WheelContractError("output wheel contains duplicate members")
+            aliases: set[str] = set()
+            total = 0
+            payloads: dict[str, bytes] = {}
+            for info in infos:
+                _validate_strict_wheel_member(info)
+                alias = unicodedata.normalize("NFC", info.filename).casefold()
+                if alias in aliases:
+                    raise WheelContractError("output wheel contains aliased members")
+                aliases.add(alias)
+                total += info.file_size
+                if total > _MAX_STRICT_TOTAL_BYTES:
+                    raise WheelContractError("output wheel expanded size is outside the bound")
+                data = archive.read(info)
+                if len(data) != info.file_size:
+                    raise WheelContractError("output wheel member size is inconsistent")
+                payloads[info.filename] = data
+    except WheelContractError:
+        raise
+    except (OSError, KeyError, RuntimeError, zipfile.BadZipFile) as error:
+        raise WheelContractError("output wheel could not be verified") from error
+
+    metadata = tuple(name for name in names if name.endswith(".dist-info/METADATA"))
+    records = tuple(name for name in names if name.endswith(".dist-info/RECORD"))
+    if len(metadata) != 1 or len(records) != 1:
+        raise WheelContractError("output wheel metadata coverage is invalid")
+    metadata_root = metadata[0].rsplit("/", 1)[0]
+    if records[0].rsplit("/", 1)[0] != metadata_root:
+        raise WheelContractError("output wheel dist-info identity is inconsistent")
+    wheel_metadata = f"{metadata_root}/WHEEL"
+    dist_info_roots = {name.split("/", 1)[0] for name in names if ".dist-info/" in name}
+    if (
+        wheel_metadata not in payloads
+        or dist_info_roots != {metadata_root}
+        or not path.name.endswith(".whl")
+        or path.name[:-4].rsplit("-", 3)[0] != metadata_root.removesuffix(".dist-info")
+    ):
+        raise WheelContractError("output wheel dist-info identity is inconsistent")
+    try:
+        payloads[metadata[0]].decode("utf-8")
+        metadata_message = BytesParser(policy=email_policy.default).parsebytes(
+            payloads[metadata[0]]
+        )
+    except (UnicodeDecodeError, ValueError) as error:
+        raise WheelContractError("output wheel METADATA is not UTF-8") from error
+    if metadata_message.defects:
+        raise WheelContractError("output wheel METADATA is malformed")
+    requirements = list(metadata_message.get_all("Requires-Dist", []))
+    if requirements != [contract.requirement]:
+        raise WheelContractError("output wheel Requires-Dist is not the exact pin")
+
+    forbidden_aliases = {
+        unicodedata.normalize("NFC", member).casefold() for member in contract.source_members
+    }
+    package_root = "/".join(contract.package.split(".")).casefold()
+    for name in names:
+        alias = unicodedata.normalize("NFC", name).casefold()
+        if alias in forbidden_aliases or (
+            alias.endswith(".py")
+            and (alias == f"{package_root}.py" or alias.startswith(f"{package_root}/"))
+        ):
+            raise WheelContractError("output wheel contains external Python source")
+    _verify_record(payloads, records[0])
+    _require_pinned_wheel_unchanged(path, pinned_identity)
+    return ExternalWheelVerification(
+        requirement=contract.requirement,
+        metadata_member=metadata[0],
+        record_member=records[0],
+        wheel_sha256=hashlib.sha256(wheel_bytes).hexdigest(),
+    )
+
+
+def _require_external_source_absent(
+    python_dir: Path,
+    contract: ExternalWheelContract,
+) -> None:
+    package_root = "/".join(contract.package.split(".")).casefold()
+    forbidden = {
+        unicodedata.normalize("NFC", member).casefold() for member in contract.source_members
+    }
+    for path in python_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(python_dir).as_posix()
+        alias = unicodedata.normalize("NFC", relative).casefold()
+        if alias in forbidden or (
+            alias.endswith(".py")
+            and (alias == f"{package_root}.py" or alias.startswith(f"{package_root}/"))
+        ):
+            raise WheelContractError("staging tree contains external Python source")
+
+
+def _read_pinned_wheel(path: Path) -> tuple[bytes, tuple[int, ...]]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise WheelContractError("output wheel no-follow open is unavailable")
+    try:
+        linked = path.lstat()
+        if stat.S_ISLNK(linked.st_mode) or not stat.S_ISREG(linked.st_mode):
+            raise WheelContractError("output wheel is not a regular file")
+        fd = os.open(path, flags | nofollow)
+    except WheelContractError:
+        raise
+    except OSError as error:
+        raise WheelContractError("output wheel could not be opened safely") from error
+    try:
+        before = os.fstat(fd)
+        identity = _stat_identity(before)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or (before.st_dev, before.st_ino) != (linked.st_dev, linked.st_ino)
+            or before.st_size <= 0
+            or before.st_size > _MAX_STRICT_WHEEL_BYTES
+        ):
+            raise WheelContractError("output wheel identity is invalid")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            remaining = _MAX_STRICT_WHEEL_BYTES + 1 - total
+            chunk = os.read(fd, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > _MAX_STRICT_WHEEL_BYTES:
+                raise WheelContractError("output wheel size is outside the bound")
+        after = os.fstat(fd)
+        if identity != _stat_identity(after) or total != before.st_size:
+            raise WheelContractError("output wheel changed during verification")
+        return b"".join(chunks), identity
+    finally:
+        os.close(fd)
+
+
+def _require_pinned_wheel_unchanged(path: Path, identity: tuple[int, ...]) -> None:
+    try:
+        current = path.lstat()
+    except OSError as error:
+        raise WheelContractError("output wheel changed during verification") from error
+    if stat.S_ISLNK(current.st_mode) or _stat_identity(current) != identity:
+        raise WheelContractError("output wheel changed during verification")
+
+
+def _stat_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _validate_strict_wheel_member(info: zipfile.ZipInfo) -> None:
+    name = info.filename
+    if (
+        type(name) is not str
+        or not name
+        or len(name) > _MAX_STRICT_MEMBER_NAME
+        or name != unicodedata.normalize("NFC", name)
+        or "\\" in name
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
+        or name.endswith("/")
+    ):
+        raise WheelContractError("output wheel member name is unsafe")
+    posix = PurePosixPath(name)
+    windows = PureWindowsPath(name)
+    if (
+        posix.is_absolute()
+        or windows.is_absolute()
+        or bool(windows.drive)
+        or "//" in name
+        or any(part in {"", ".", ".."} for part in name.split("/"))
+        or posix.as_posix() != name
+    ):
+        raise WheelContractError("output wheel member name is unsafe")
+    if info.flag_bits & 0x1:
+        raise WheelContractError("output wheel contains an encrypted member")
+    if info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+        raise WheelContractError("output wheel compression is unsupported")
+    if info.file_size < 0 or info.file_size > _MAX_STRICT_ENTRY_BYTES:
+        raise WheelContractError("output wheel member size is outside the bound")
+    if info.compress_size < 0 or (
+        info.file_size
+        and (
+            info.compress_size == 0
+            or info.file_size > info.compress_size * _MAX_STRICT_COMPRESSION_RATIO
+        )
+    ):
+        raise WheelContractError("output wheel compression ratio is outside the bound")
+    mode = info.external_attr >> 16
+    file_type = stat.S_IFMT(mode)
+    if file_type not in {0, stat.S_IFREG}:
+        raise WheelContractError("output wheel member is not a regular file")
+
+
+def _verify_record(payloads: dict[str, bytes], record_name: str) -> None:
+    try:
+        rows = list(csv.reader(io.StringIO(payloads[record_name].decode("utf-8"))))
+    except (UnicodeDecodeError, csv.Error) as error:
+        raise WheelContractError("output wheel RECORD is invalid") from error
+    if len(rows) != len(payloads):
+        raise WheelContractError("output wheel RECORD coverage is incomplete")
+    seen: set[str] = set()
+    for row in rows:
+        if len(row) != 3:
+            raise WheelContractError("output wheel RECORD row is invalid")
+        name, digest, size = row
+        if name in seen or name not in payloads:
+            raise WheelContractError("output wheel RECORD identity is invalid")
+        seen.add(name)
+        if name == record_name:
+            if digest or size:
+                raise WheelContractError("output wheel RECORD self row is invalid")
+            continue
+        data = payloads[name]
+        if digest != _hash_record(data) or size != str(len(data)):
+            raise WheelContractError("output wheel RECORD digest is invalid")
+    if seen != set(payloads):
+        raise WheelContractError("output wheel RECORD coverage is incomplete")
 
 
 def artifact_wheel_path(project_root: Path, python_dir: Path, dist_dir: Path) -> Path:

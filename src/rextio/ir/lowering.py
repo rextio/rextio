@@ -13,6 +13,7 @@ import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.executable_identity import (
@@ -95,6 +96,9 @@ from rextio.ir.nodes import (
 from rextio.ir.types import type_from_annotation, type_from_string
 from rextio.ir.types import RxtDict, RxtNone, RxtPluginType, RxtPyObject, RxtStr, RxtType
 
+if TYPE_CHECKING:
+    from rextio.source.external_linkage import ExternalNativeRegistry
+
 
 class LoweringError(RuntimeError):
     """Raised when an accepted analysis result cannot be lowered to IR."""
@@ -120,6 +124,8 @@ class _PluginLoweringState:
     # The function's resolved import map (visible name -> dotted target),
     # used to resolve plugin annotation spellings like the claim engine does.
     imports: dict[str, str] = field(default_factory=dict)
+    external_native_registry: ExternalNativeRegistry | None = None
+    caller_qualname: str | None = None
 
 
 # Module-level plugin state, set/cleared (try/finally) around each
@@ -137,6 +143,7 @@ def lower_project(
     plugin_types: PluginTypeMaps | None = None,
     *,
     executable_module_initializers: Mapping[str, ModuleInitIR] | None = None,
+    external_native_registry: ExternalNativeRegistry | None = None,
 ) -> ModuleIR:
     """Lower accepted native functions and the explicitly selected top levels.
 
@@ -144,6 +151,8 @@ def lower_project(
     standalone executable path: only listed, snapshot-authorized initializers
     are lowered, and they return unit rather than publishing Python globals.
     """
+    if external_native_registry is not None:
+        external_native_registry.require_fresh_analysis(analysis)
     functions: list[FunctionIR] = []
     nodes_by_file: dict[str, _FunctionSource] = {}
     module_trees_by_file: dict[str, ast.Module] = {}
@@ -151,7 +160,12 @@ def lower_project(
     for function in analysis.accepted_native_functions:
         functions.append(
             _lower_analysis_function(
-                function, analysis, nodes_by_file, resolver, plugin_types=plugin_types
+                function,
+                analysis,
+                nodes_by_file,
+                resolver,
+                plugin_types=plugin_types,
+                external_native_registry=external_native_registry,
             )
         )
     if include_embedding:
@@ -164,6 +178,7 @@ def lower_project(
                     resolver,
                     embedded=True,
                     plugin_types=plugin_types,
+                    external_native_registry=external_native_registry,
                 )
             )
     for top_level in analysis.accepted_native_top_levels:
@@ -190,6 +205,8 @@ def lower_project(
                 f"module was not found for accepted top level: {top_level.qualname}"
             )
         functions.append(lower_top_level(top_level, tree, module, resolver))
+    if external_native_registry is not None:
+        functions.extend(external_native_registry.private_functions)
     return module_from_functions(functions)
 
 
@@ -201,6 +218,7 @@ def _lower_analysis_function(
     *,
     embedded: bool = False,
     plugin_types: PluginTypeMaps | None = None,
+    external_native_registry: ExternalNativeRegistry | None = None,
 ) -> FunctionIR:
     source = nodes_by_file.setdefault(
         function.file_path,
@@ -220,7 +238,13 @@ def _lower_analysis_function(
     if module is None:
         raise LoweringError(f"module was not found for function: {function.qualname}")
     return lower_function(
-        function, node, module, resolver, embedded=embedded, plugin_types=plugin_types
+        function,
+        node,
+        module,
+        resolver,
+        embedded=embedded,
+        plugin_types=plugin_types,
+        external_native_registry=external_native_registry,
     )
 
 
@@ -232,6 +256,7 @@ def lower_function(
     *,
     embedded: bool = False,
     plugin_types: PluginTypeMaps | None = None,
+    external_native_registry: ExternalNativeRegistry | None = None,
 ) -> FunctionIR:
     """Lower a single analyzed native function (signature + body) to a ``FunctionIR``."""
     global _PLUGIN_STATE
@@ -285,6 +310,8 @@ def lower_function(
         },
         type_maps=plugin_types,
         imports=function.imports,
+        external_native_registry=external_native_registry,
+        caller_qualname=function.qualname,
     )
     try:
         args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
@@ -784,8 +811,23 @@ def lower_expr(
                 f"statically lowered call target was mutated during module execution: {target}"
             )
         args = _lower_call_args(node, target, module, resolver)
+        external_target: str | None = None
+        if (
+            _PLUGIN_STATE is not None
+            and _PLUGIN_STATE.external_native_registry is not None
+            and _PLUGIN_STATE.caller_qualname is not None
+        ):
+            external_target = _PLUGIN_STATE.external_native_registry.resolve(
+                _PLUGIN_STATE.caller_qualname,
+                node.lineno,
+                node.col_offset,
+            )
         return CallIR(
-            function=_lower_call_target(target, module, resolver),
+            function=(
+                external_target
+                if external_target is not None
+                else _lower_call_target(target, module, resolver)
+            ),
             args=args,
         )
     if isinstance(node, ast.Subscript):
