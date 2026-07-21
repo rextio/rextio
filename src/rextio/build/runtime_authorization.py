@@ -25,6 +25,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import struct
 import subprocess
 import sys
 
@@ -95,8 +96,28 @@ _FORBIDDEN_ELF_TAGS = frozenset(
 _FORBIDDEN_DYNAMIC_SYMBOL_PARTS = ("dlopen", "dlmopen", "dlsym", "dlvsym")
 _SAFE_DEPENDENCY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,254}$")
 _SAFE_ELF_IMPORTED_SYMBOL = re.compile(
-    r"^[^@()\s]{1,512}(?:@@?[A-Za-z0-9_][A-Za-z0-9_.+-]{0,254})?$"
+    r"^[^@()\s]{1,512}(?:@[A-Za-z0-9_][A-Za-z0-9_.+-]{0,254})?$"
 )
+_SAFE_MACHO_IMPORTED_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,511}$")
+_MACHO_MAGIC_64_LE = 0xFEEDFACF
+_MACHO_CPU_TYPE_ARM64 = 0x0100000C
+_MACHO_FILETYPE_DYLIB = 0x6
+_MACHO_FILETYPE_BUNDLE = 0x8
+_MACHO_LC_SYMTAB = 0x2
+_MACHO_LC_DYSYMTAB = 0xB
+_MACHO_LC_LOAD_DYLIB = 0xC
+_MACHO_LC_LOAD_WEAK_DYLIB = 0x80000018
+_MACHO_LC_REEXPORT_DYLIB = 0x8000001F
+_MACHO_LC_LOAD_UPWARD_DYLIB = 0x80000023
+_MACHO_DYNAMIC_LOOKUP_ORDINAL = 0xFE
+_MACHO_EXECUTABLE_ORDINAL = 0xFF
+_MACHO_N_EXT = 0x01
+_MACHO_N_PEXT = 0x10
+_MACHO_N_STAB = 0xE0
+_MACHO_N_TYPE = 0x0E
+_MACHO_N_UNDF = 0x00
+_MACHO_N_WEAK_REF = 0x0040
+_MACHO_MAX_BINARY_BYTES = 512 * 1024 * 1024
 _LINUX_LOADER_ENVIRONMENT = frozenset(
     {
         "GLIBC_TUNABLES",
@@ -140,33 +161,78 @@ class RuntimeAuthorizationError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class _ElfImportedSymbol:
-    """One GNU readelf undefined-symbol record with its version index."""
+    """One exact GNU ``readelf --dyn-syms`` undefined-symbol record."""
 
     symbol: str
     version_index: int | None
+    symbol_type: str
+    binding: str
+    visibility: str
 
     def __post_init__(self) -> None:
         if (
             type(self.symbol) is not str
             or _SAFE_ELF_IMPORTED_SYMBOL.fullmatch(self.symbol) is None
+            or self.symbol_type not in {"FUNC", "OBJECT", "NOTYPE"}
+            or self.binding not in {"GLOBAL", "WEAK"}
+            or self.visibility != "DEFAULT"
             or (
                 self.version_index is not None
                 and (
                     type(self.version_index) is not int
                     or isinstance(self.version_index, bool)
                     or not 1 <= self.version_index <= 0xFFFF
-                    or "@" not in self.symbol
                 )
             )
+            or (("@" in self.symbol) != (self.version_index is not None))
         ):
             raise ValueError("ELF imported-symbol record is invalid")
 
     @property
     def canonical_token(self) -> str:
         """Preserve the symbol version and GNU version-table index."""
-        if self.version_index is None:
-            return self.symbol
-        return f"{self.symbol} ({self.version_index})"
+        name = (
+            self.symbol
+            if self.version_index is None
+            else f"{self.symbol} ({self.version_index})"
+        )
+        return (
+            f"{name} [type={self.symbol_type};binding={self.binding};"
+            f"visibility={self.visibility}]"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _MachoImportedSymbol:
+    """One exact undefined nlist_64 record from a thin arm64 dylib."""
+
+    symbol: str
+    library_ordinal: int
+    library_name: str | None
+    weak_reference: bool
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.symbol) is not str
+            or _SAFE_MACHO_IMPORTED_SYMBOL.fullmatch(self.symbol) is None
+            or type(self.library_ordinal) is not int
+            or isinstance(self.library_ordinal, bool)
+            or not 1 <= self.library_ordinal <= 0xFF
+            or (
+                self.library_ordinal == _MACHO_DYNAMIC_LOOKUP_ORDINAL
+                and self.library_name is not None
+            )
+            or (
+                self.library_ordinal != _MACHO_DYNAMIC_LOOKUP_ORDINAL
+                and (
+                    type(self.library_name) is not str
+                    or not self.library_name
+                    or len(self.library_name) > 4096
+                )
+            )
+            or self.weak_reference is not False
+        ):
+            raise ValueError("Mach-O imported-symbol record is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1165,18 +1231,33 @@ def _inspect_load_commands(
 
 def _inspect_imported_symbols(path: Path, target_triple: str) -> tuple[str, ...]:
     if target_triple == "aarch64-apple-darwin":
-        output = _run_inspector(("/usr/bin/nm", "-u", str(path)))
-        return tuple(line.split()[-1] for line in output.splitlines() if line.split())
-    output = _run_inspector(("/usr/bin/readelf", "-Ws", str(path)))
+        return tuple(
+            record.symbol for record in _inspect_macho_imported_symbol_records(path)
+        )
+    output = _run_inspector(("/usr/bin/readelf", "-W", "--dyn-syms", str(path)))
     return tuple(
         record.canonical_token for record in _parse_elf_imported_symbols(output)
     )
 
 
 def _parse_elf_imported_symbols(output: str) -> tuple[_ElfImportedSymbol, ...]:
-    """Parse only GNU readelf ``UND`` rows without losing version indexes."""
+    """Parse one GNU ``.dynsym`` table without losing binding metadata."""
     if type(output) is not str:
         raise RuntimeAuthorizationError("ELF imported-symbol output is invalid")
+    table_names = tuple(
+        match.group(1)
+        for line in output.splitlines()
+        if (
+            match := re.fullmatch(
+                r"\s*Symbol table '([^']+)' contains [0-9]+ entr(?:y|ies):\s*",
+                line,
+            )
+        )
+    )
+    if table_names and table_names != (".dynsym",):
+        raise RuntimeAuthorizationError(
+            "ELF imported-symbol output is not one dynamic symbol table"
+        )
     symbols: list[_ElfImportedSymbol] = []
     for line in output.splitlines():
         stripped = line.strip()
@@ -1199,7 +1280,15 @@ def _parse_elf_imported_symbols(output: str) -> tuple[_ElfImportedSymbol, ...]:
             raise RuntimeAuthorizationError("ELF imported-symbol row is invalid")
         if fields[6] != "UND":
             continue
-        raw_name = fields[7]
+        ordinal, value, size, symbol_type, binding, visibility, _index, raw_name = (
+            fields
+        )
+        if (
+            re.fullmatch(r"[1-9][0-9]*:", ordinal) is None
+            or re.fullmatch(r"0+", value) is None
+            or size != "0"
+        ):
+            raise RuntimeAuthorizationError("ELF imported-symbol row is invalid")
         match = re.fullmatch(
             r"(?P<symbol>\S+?)(?:\s+\((?P<version_index>[1-9][0-9]{0,4})\))?",
             raw_name,
@@ -1216,6 +1305,9 @@ def _parse_elf_imported_symbols(output: str) -> tuple[_ElfImportedSymbol, ...]:
                         if version_index_text is None
                         else int(version_index_text, 10)
                     ),
+                    symbol_type=symbol_type,
+                    binding=binding,
+                    visibility=visibility,
                 )
             )
         except ValueError as exc:
@@ -1223,6 +1315,220 @@ def _parse_elf_imported_symbols(output: str) -> tuple[_ElfImportedSymbol, ...]:
                 "ELF imported-symbol name is invalid"
             ) from exc
     return tuple(symbols)
+
+
+def _inspect_macho_imported_symbol_records(
+    path: Path,
+) -> tuple[_MachoImportedSymbol, ...]:
+    return _parse_macho_imported_symbols(_read_exact_macho_bytes(path))
+
+
+def _read_exact_macho_bytes(path: Path) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_size <= 0
+            or before.st_size > _MACHO_MAX_BINARY_BYTES
+            or before.st_nlink != 1
+        ):
+            raise RuntimeAuthorizationError("Mach-O subject is not an exact file")
+        chunks: list[bytes] = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+            if not chunk:
+                raise RuntimeAuthorizationError("Mach-O subject was truncated")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise RuntimeAuthorizationError("Mach-O subject grew during capture")
+        after = os.fstat(descriptor)
+        if (
+            (before.st_dev, before.st_ino, before.st_mode, before.st_size)
+            != (after.st_dev, after.st_ino, after.st_mode, after.st_size)
+        ):
+            raise RuntimeAuthorizationError("Mach-O subject changed during capture")
+        return b"".join(chunks)
+    except RuntimeAuthorizationError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise RuntimeAuthorizationError("Mach-O subject could not be captured") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _parse_macho_imported_symbols(data: bytes) -> tuple[_MachoImportedSymbol, ...]:
+    if type(data) is not bytes or len(data) < 32:
+        raise RuntimeAuthorizationError("Mach-O header is unavailable")
+    try:
+        magic, cpu_type, _cpu_subtype, file_type, command_count, command_size, _flags, _reserved = struct.unpack_from(
+            "<IiiIIIII", data, 0
+        )
+    except struct.error as exc:
+        raise RuntimeAuthorizationError("Mach-O header is malformed") from exc
+    if (
+        magic != _MACHO_MAGIC_64_LE
+        or cpu_type != _MACHO_CPU_TYPE_ARM64
+        or file_type != _MACHO_FILETYPE_DYLIB
+        or not 1 <= command_count <= 4096
+        or command_size < command_count * 8
+        or 32 + command_size > len(data)
+    ):
+        raise RuntimeAuthorizationError(
+            "Mach-O subject is not a thin arm64 64-bit dylib"
+        )
+
+    symtab: tuple[int, int, int, int] | None = None
+    dysymtab: tuple[int, int] | None = None
+    dylibraries: list[tuple[int, str]] = []
+    offset = 32
+    commands_end = 32 + command_size
+    dylib_commands = {
+        _MACHO_LC_LOAD_DYLIB,
+        _MACHO_LC_LOAD_WEAK_DYLIB,
+        _MACHO_LC_REEXPORT_DYLIB,
+        _MACHO_LC_LOAD_UPWARD_DYLIB,
+    }
+    for _index in range(command_count):
+        if offset + 8 > commands_end:
+            raise RuntimeAuthorizationError("Mach-O load-command table is truncated")
+        command, size = struct.unpack_from("<II", data, offset)
+        if size < 8 or size % 8 or offset + size > commands_end:
+            raise RuntimeAuthorizationError("Mach-O load command is malformed")
+        if command == _MACHO_LC_SYMTAB:
+            if symtab is not None or size != 24:
+                raise RuntimeAuthorizationError("Mach-O symbol table is ambiguous")
+            _cmd, _size, symbol_offset, symbol_count, string_offset, string_size = (
+                struct.unpack_from("<IIIIII", data, offset)
+            )
+            symtab = (symbol_offset, symbol_count, string_offset, string_size)
+        elif command == _MACHO_LC_DYSYMTAB:
+            if dysymtab is not None or size != 80:
+                raise RuntimeAuthorizationError(
+                    "Mach-O dynamic symbol table is ambiguous"
+                )
+            fields = struct.unpack_from("<20I", data, offset)
+            dysymtab = (fields[6], fields[7])
+        elif command in dylib_commands:
+            if size < 24:
+                raise RuntimeAuthorizationError("Mach-O dylib command is malformed")
+            name_offset = struct.unpack_from("<I", data, offset + 8)[0]
+            if name_offset < 24 or name_offset >= size:
+                raise RuntimeAuthorizationError("Mach-O dylib name offset is invalid")
+            name = _macho_c_string(data, offset + name_offset, offset + size)
+            dylibraries.append((command, name))
+        offset += size
+    if offset != commands_end or symtab is None or dysymtab is None:
+        raise RuntimeAuthorizationError("Mach-O symbol metadata is incomplete")
+
+    symbol_offset, symbol_count, string_offset, string_size = symtab
+    undefined_index, undefined_count = dysymtab
+    if (
+        not 1 <= symbol_count <= 1_000_000
+        or not 1 <= undefined_count <= MAX_INSPECTOR_TOKENS
+        or undefined_index > symbol_count
+        or undefined_count > symbol_count - undefined_index
+        or symbol_offset < commands_end
+        or symbol_offset + symbol_count * 16 > len(data)
+        or string_offset < commands_end
+        or not 1 <= string_size <= len(data)
+        or string_offset + string_size > len(data)
+        or not (
+            symbol_offset + symbol_count * 16 <= string_offset
+            or string_offset + string_size <= symbol_offset
+        )
+    ):
+        raise RuntimeAuthorizationError("Mach-O symbol-table bounds are invalid")
+
+    imports: list[_MachoImportedSymbol] = []
+    for symbol_index in range(undefined_index, undefined_index + undefined_count):
+        entry_offset = symbol_offset + symbol_index * 16
+        string_index, symbol_type, section, description, value = struct.unpack_from(
+            "<IBBHQ", data, entry_offset
+        )
+        if (
+            symbol_type & _MACHO_N_EXT == 0
+            or symbol_type & _MACHO_N_PEXT
+            or symbol_type & _MACHO_N_STAB
+            or symbol_type & _MACHO_N_TYPE != _MACHO_N_UNDF
+            or section != 0
+            or value != 0
+            or description & 0x7 not in {0, 1}
+            or description & _MACHO_N_WEAK_REF
+            or string_index == 0
+            or string_index >= string_size
+        ):
+            raise RuntimeAuthorizationError("Mach-O undefined symbol is malformed")
+        symbol = _macho_c_string(
+            data,
+            string_offset + string_index,
+            string_offset + string_size,
+        )
+        ordinal = (description >> 8) & 0xFF
+        if ordinal == _MACHO_DYNAMIC_LOOKUP_ORDINAL:
+            library_name = None
+        elif ordinal in {0, 0xFD, _MACHO_EXECUTABLE_ORDINAL}:
+            raise RuntimeAuthorizationError(
+                "Mach-O undefined symbol has an unsupported library ordinal"
+            )
+        elif ordinal <= len(dylibraries):
+            command, library_name = dylibraries[ordinal - 1]
+            if command != _MACHO_LC_LOAD_DYLIB:
+                raise RuntimeAuthorizationError(
+                    "Mach-O undefined symbol uses a non-strong dependency"
+                )
+        else:
+            raise RuntimeAuthorizationError(
+                "Mach-O undefined symbol library ordinal is out of bounds"
+            )
+        try:
+            imports.append(
+                _MachoImportedSymbol(
+                    symbol=symbol,
+                    library_ordinal=ordinal,
+                    library_name=library_name,
+                    weak_reference=bool(description & _MACHO_N_WEAK_REF),
+                )
+            )
+        except ValueError as exc:
+            raise RuntimeAuthorizationError(
+                "Mach-O undefined symbol identity is invalid"
+            ) from exc
+    canonical = tuple(
+        sorted(
+            imports,
+            key=lambda item: (
+                item.symbol,
+                item.library_ordinal,
+                item.library_name or "",
+            ),
+        )
+    )
+    if len(canonical) != len(
+        {(item.symbol, item.library_ordinal, item.library_name) for item in canonical}
+    ):
+        raise RuntimeAuthorizationError("Mach-O undefined symbols are ambiguous")
+    return canonical
+
+
+def _macho_c_string(data: bytes, start: int, limit: int) -> str:
+    if start < 0 or start >= limit or limit > len(data):
+        raise RuntimeAuthorizationError("Mach-O string offset is invalid")
+    end = data.find(b"\0", start, limit)
+    if end < 0 or end == start:
+        raise RuntimeAuthorizationError("Mach-O string is unterminated")
+    try:
+        value = data[start:end].decode("ascii")
+    except UnicodeError as exc:
+        raise RuntimeAuthorizationError("Mach-O string is not ASCII") from exc
+    if len(value) > 4096 or any(ord(character) < 32 for character in value):
+        raise RuntimeAuthorizationError("Mach-O string is invalid")
+    return value
 
 
 def _native_system_image_name(

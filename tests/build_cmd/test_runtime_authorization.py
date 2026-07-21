@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import hashlib
 from pathlib import Path
+import struct
 import sys
 from typing import Any, cast
 
@@ -65,6 +66,71 @@ class _RuntimeCase:
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _macho_dylib(
+    symbols: tuple[tuple[str, int, int], ...],
+    *,
+    library: str = "/usr/lib/libSystem.B.dylib",
+) -> bytes:
+    encoded_library = library.encode("ascii") + b"\0"
+    dylib_size = (24 + len(encoded_library) + 7) & ~7
+    dylib = struct.pack(
+        "<IIIIII",
+        runtime_authorization_module._MACHO_LC_LOAD_DYLIB,
+        dylib_size,
+        24,
+        0,
+        0,
+        0,
+    ) + encoded_library.ljust(dylib_size - 24, b"\0")
+    command_size = dylib_size + 24 + 80
+    symbol_offset = 32 + command_size
+    strings = bytearray(b"\0")
+    entries: list[bytes] = []
+    for name, ordinal, flags in symbols:
+        string_index = len(strings)
+        strings.extend(name.encode("ascii") + b"\0")
+        description = (ordinal << 8) | flags
+        entries.append(
+            struct.pack(
+                "<IBBHQ",
+                string_index,
+                runtime_authorization_module._MACHO_N_EXT,
+                0,
+                description,
+                0,
+            )
+        )
+    string_offset = symbol_offset + len(entries) * 16
+    symtab = struct.pack(
+        "<IIIIII",
+        runtime_authorization_module._MACHO_LC_SYMTAB,
+        24,
+        symbol_offset,
+        len(entries),
+        string_offset,
+        len(strings),
+    )
+    dysymtab_fields = [0] * 20
+    dysymtab_fields[0:2] = [
+        runtime_authorization_module._MACHO_LC_DYSYMTAB,
+        80,
+    ]
+    dysymtab_fields[6:8] = [0, len(entries)]
+    dysymtab = struct.pack("<20I", *dysymtab_fields)
+    header = struct.pack(
+        "<IiiIIIII",
+        runtime_authorization_module._MACHO_MAGIC_64_LE,
+        runtime_authorization_module._MACHO_CPU_TYPE_ARM64,
+        0,
+        runtime_authorization_module._MACHO_FILETYPE_DYLIB,
+        3,
+        command_size,
+        0,
+        0,
+    )
+    return header + dylib + symtab + dysymtab + b"".join(entries) + bytes(strings)
 
 
 def _case(
@@ -491,9 +557,43 @@ Symbol table '.dynsym' contains 4 entries:
     )
     assert tuple(record.version_index for record in records) == (None, 2)
     assert tuple(record.canonical_token for record in records) == (
-        "PyLong_FromLong",
-        "memcpy@GLIBC_2.14 (2)",
+        "PyLong_FromLong [type=FUNC;binding=GLOBAL;visibility=DEFAULT]",
+        "memcpy@GLIBC_2.14 (2) "
+        "[type=FUNC;binding=GLOBAL;visibility=DEFAULT]",
     )
+    assert tuple(record.binding for record in records) == ("GLOBAL", "GLOBAL")
+
+
+def test_elf_import_parser_preserves_normal_weak_dynamic_imports() -> None:
+    output = """
+Symbol table '.dynsym' contains 4 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND
+     1: 0000000000000000     0 NOTYPE  WEAK   DEFAULT  UND __cxa_finalize
+     2: 0000000000000000     0 NOTYPE  WEAK   DEFAULT  UND _ITM_deregisterTMCloneTable
+     3: 0000000000000000     0 NOTYPE  WEAK   DEFAULT  UND __gmon_start__
+"""
+
+    records = runtime_authorization_module._parse_elf_imported_symbols(output)
+
+    assert tuple(record.symbol for record in records) == (
+        "__cxa_finalize",
+        "_ITM_deregisterTMCloneTable",
+        "__gmon_start__",
+    )
+    assert all(record.binding == "WEAK" for record in records)
+
+
+def test_elf_import_parser_rejects_symtab_mixed_with_dynsym() -> None:
+    output = """
+Symbol table '.dynsym' contains 1 entry:
+  0: 0000000000000000 0 NOTYPE LOCAL DEFAULT UND
+Symbol table '.symtab' contains 1 entry:
+  1: 0000000000000000 0 FUNC GLOBAL DEFAULT UND hidden_from_dynsym
+"""
+
+    with pytest.raises(RuntimeAuthorizationError):
+        runtime_authorization_module._parse_elf_imported_symbols(output)
 
 
 @pytest.mark.parametrize(
@@ -527,13 +627,17 @@ def test_linux_symbol_inspection_keeps_gnu_version_index(
         runtime_authorization_module,
         "_run_inspector",
         lambda command: output
-        if command == ("/usr/bin/readelf", "-Ws", str(extension))
+        if command
+        == ("/usr/bin/readelf", "-W", "--dyn-syms", str(extension))
         else "",
     )
 
     assert runtime_authorization_module._inspect_imported_symbols(
         extension, "x86_64-unknown-linux-gnu"
-    ) == ("memcpy@GLIBC_2.14 (2)",)
+    ) == (
+        "memcpy@GLIBC_2.14 (2) "
+        "[type=FUNC;binding=GLOBAL;visibility=DEFAULT]",
+    )
 
 
 @pytest.mark.parametrize(
@@ -546,6 +650,7 @@ def test_linux_symbol_inspection_keeps_gnu_version_index(
         "memcpy@GLIBC_2.14 (two)",
         "memcpy@GLIBC_2.14 (2) trailing",
         "memcpy@GLIBC_2.14@OTHER (2)",
+        "memcpy@@GLIBC_2.14 (2)",
     ],
 )
 def test_elf_import_parser_rejects_noncanonical_version_records(
@@ -558,6 +663,108 @@ def test_elf_import_parser_rejects_noncanonical_version_records(
 
     with pytest.raises(RuntimeAuthorizationError):
         runtime_authorization_module._parse_elf_imported_symbols(output)
+
+
+def test_macho_import_parser_reads_thin_arm64_nlist_records() -> None:
+    data = _macho_dylib(
+        (
+            (
+                "_PyLong_FromLong",
+                runtime_authorization_module._MACHO_DYNAMIC_LOOKUP_ORDINAL,
+                0,
+            ),
+            ("_memcpy", 1, 1),
+            ("dyld_stub_binder", 1, 1),
+        )
+    )
+
+    records = runtime_authorization_module._parse_macho_imported_symbols(data)
+
+    assert tuple(
+        (item.symbol, item.library_ordinal, item.library_name)
+        for item in records
+    ) == (
+        (
+            "_PyLong_FromLong",
+            runtime_authorization_module._MACHO_DYNAMIC_LOOKUP_ORDINAL,
+            None,
+        ),
+        ("_memcpy", 1, "/usr/lib/libSystem.B.dylib"),
+        ("dyld_stub_binder", 1, "/usr/lib/libSystem.B.dylib"),
+    )
+
+
+def test_macho_symbol_inspection_uses_exact_binary_bytes(
+    tmp_path: Path,
+) -> None:
+    extension = tmp_path / "native.so"
+    extension.write_bytes(
+        _macho_dylib(
+            (
+                (
+                    "_PyLong_FromLong",
+                    runtime_authorization_module._MACHO_DYNAMIC_LOOKUP_ORDINAL,
+                    0,
+                ),
+            )
+        )
+    )
+
+    assert runtime_authorization_module._inspect_imported_symbols(
+        extension, "aarch64-apple-darwin"
+    ) == ("_PyLong_FromLong",)
+
+
+def test_macho_import_parser_rejects_mh_bundle_even_with_valid_tables() -> None:
+    data = bytearray(_macho_dylib((('_memcpy', 1, 0),)))
+    struct.pack_into(
+        "<I",
+        data,
+        12,
+        runtime_authorization_module._MACHO_FILETYPE_BUNDLE,
+    )
+
+    with pytest.raises(RuntimeAuthorizationError):
+        runtime_authorization_module._parse_macho_imported_symbols(bytes(data))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda data: struct.pack(">I", 0xCAFEBABE) + data[4:],
+        lambda data: data[:12] + struct.pack("<I", 7) + data[16:],
+        lambda data: data[:16] + struct.pack("<I", 99) + data[20:],
+        lambda data: data[:20] + struct.pack("<I", len(data) + 1) + data[24:],
+        lambda data: data[:-1],
+    ],
+)
+def test_macho_import_parser_rejects_fat_or_malformed_bounds(
+    mutate: Any,
+) -> None:
+    data = _macho_dylib((('_memcpy', 1, 0),))
+
+    with pytest.raises(RuntimeAuthorizationError):
+        runtime_authorization_module._parse_macho_imported_symbols(mutate(data))
+
+
+@pytest.mark.parametrize(
+    ("ordinal", "flags"),
+    [
+        (0, 0),
+        (0xFD, 0),
+        (runtime_authorization_module._MACHO_EXECUTABLE_ORDINAL, 0),
+        (1, runtime_authorization_module._MACHO_N_WEAK_REF),
+        (2, 0),
+    ],
+)
+def test_macho_import_parser_rejects_weak_or_ambiguous_modes(
+    ordinal: int,
+    flags: int,
+) -> None:
+    data = _macho_dylib((('_memcpy', ordinal, flags),))
+
+    with pytest.raises(RuntimeAuthorizationError):
+        runtime_authorization_module._parse_macho_imported_symbols(data)
 
 
 def test_rejects_platform_base_mismatch(tmp_path: Path) -> None:
