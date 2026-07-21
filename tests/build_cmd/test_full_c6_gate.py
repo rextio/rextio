@@ -559,7 +559,7 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
             max_output_bytes=4096,
             sandbox_engine="linux-bwrap-landlock-v1",
             sandbox_plan_sha256="a" * 64,
-            sandbox_profile_sha256=(f"{ordinal:x}" * 64)[:64],
+            sandbox_profile_sha256="c" * 64,
             sandbox_seccomp_sha256="b" * 64,
         )
         for ordinal in (1, 2)

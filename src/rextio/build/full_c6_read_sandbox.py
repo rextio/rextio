@@ -420,6 +420,9 @@ class FullC6SandboxLaunch:
 
     command: tuple[str, ...]
     preexec_fn: Callable[[], None] | None
+    # This is the path-free semantic profile-contract digest carried into
+    # receipts.  On macOS it deliberately is not the hash of the rendered
+    # SBPL text, whose private quarantine paths change between lifecycles.
     profile_sha256: str
     pass_fds: tuple[int, ...]
     seccomp_sha256: str | None = None
@@ -594,13 +597,14 @@ def prepare_full_c6_sandbox_launch(
     provider = macos_anchor_provider or AppleAPFSPlatformAnchorProvider()
     provider.verify_active_anchor(macos_anchor)
     _verify_sandbox_exec(sandbox_exec)
-    profile = _macos_profile(plan.rules)
+    profile_bindings = _macos_profile_bindings(plan.rules)
+    profile = _macos_profile(profile_bindings)
     compiler = macos_profile_compiler or _compile_macos_profile
     compiler(sandbox_exec, profile)
     return FullC6SandboxLaunch(
         command=(os.fspath(sandbox_exec), "-p", profile, "--", *values),
         preexec_fn=None,
-        profile_sha256=hashlib.sha256(profile.encode("utf-8")).hexdigest(),
+        profile_sha256=_macos_profile_contract_sha256(plan, profile_bindings),
         pass_fds=(),
         seccomp_sha256=None,
         seccomp_lease=None,
@@ -1268,46 +1272,118 @@ def _verify_sandbox_exec(path: Path) -> None:
         raise FullC6ReadSandboxError("Full C6 sandbox-exec is not executable")
 
 
-def _macos_profile(rules: Sequence[SandboxPathRule]) -> str:
-    lines = [
-        "(version 1)",
-        # system.sb supplies Apple's process/dyld bootstrap baseline.  The
-        # support lock binds system.sb and its imports, while the APFS provider
-        # binds the read-only authenticated SSV that hosts their system roots.
-        '(import "system.sb")',
-        "(deny default)",
-        "(deny network*)",
-        # Remove mutable/data-volume allowances inherited from system.sb.
-        '(deny file-read* file-test-existence (subpath "/private/var") '
-        '(subpath "/private/etc") (subpath "/Library/Preferences"))',
-        '(deny file-read* file-write* file-test-existence (subpath "/Library") '
-        '(subpath "/dev") (subpath "/cores") '
-        '(subpath "/System/Volumes/Preboot"))',
-        "(deny mach-lookup)",
-        "(deny ipc-posix-shm-read*)",
-        "(deny user-preference-read)",
-        "(deny sysctl-read)",
-        "(deny sysctl-write)",
-        "(allow process-fork)",
-        "(allow signal (target self))",
-    ]
+_MACOS_PROFILE_CONTRACT_DOMAIN = "rextio.full-c6-macos-sandbox-profile.v1"
+_MACOS_PROFILE_BASE_LINES = (
+    "(version 1)",
+    # system.sb supplies Apple's process/dyld bootstrap baseline.  The support
+    # lock binds system.sb and its imports, while the APFS provider binds the
+    # read-only authenticated SSV that hosts their system roots.
+    '(import "system.sb")',
+    "(deny default)",
+    "(deny network*)",
+    # Remove mutable/data-volume allowances inherited from system.sb.
+    '(deny file-read* file-test-existence (subpath "/private/var") '
+    '(subpath "/private/etc") (subpath "/Library/Preferences"))',
+    '(deny file-read* file-write* file-test-existence (subpath "/Library") '
+    '(subpath "/dev") (subpath "/cores") '
+    '(subpath "/System/Volumes/Preboot"))',
+    "(deny mach-lookup)",
+    "(deny ipc-posix-shm-read*)",
+    "(deny user-preference-read)",
+    "(deny sysctl-read)",
+    "(deny sysctl-write)",
+    "(allow process-fork)",
+    "(allow signal (target self))",
+)
+
+
+def _macos_profile_bindings(
+    rules: Sequence[SandboxPathRule],
+) -> tuple[tuple[SandboxPathRule, str], ...]:
+    """Capture each rendered selector once for raw and semantic profiles."""
+    bindings: list[tuple[SandboxPathRule, str]] = []
     for rule in rules:
-        path = _sandbox_literal(os.fspath(rule.path))
         try:
             observed = os.lstat(rule.path)
         except OSError as exc:
             raise FullC6ReadSandboxError("Full C6 sandbox path is unavailable") from exc
         selector = "subpath" if stat.S_ISDIR(observed.st_mode) else "literal"
-        if rule.access == "read":
-            lines.append(f"(allow file-read* ({selector} {path}))")
-        elif rule.access == "read-execute":
-            lines.append(f"(allow file-read* ({selector} {path}))")
-            lines.append(f"(allow process-exec ({selector} {path}))")
-        else:
-            lines.append(f"(allow file-read* file-write* ({selector} {path}))")
-            if stat.S_ISDIR(observed.st_mode):
-                lines.append(f"(allow process-exec ({selector} {path}))")
+        bindings.append((rule, selector))
+    return tuple(bindings)
+
+
+def _macos_profile_rule_lines(
+    *, access: SandboxAccess, selector: str, path: str
+) -> tuple[str, ...]:
+    if access == "read":
+        return (f"(allow file-read* ({selector} {path}))",)
+    if access == "read-execute":
+        return (
+            f"(allow file-read* ({selector} {path}))",
+            f"(allow process-exec ({selector} {path}))",
+        )
+    lines = [f"(allow file-read* file-write* ({selector} {path}))"]
+    if selector == "subpath":
+        lines.append(f"(allow process-exec ({selector} {path}))")
+    return tuple(lines)
+
+
+def _macos_profile(
+    bindings: Sequence[tuple[SandboxPathRule, str]],
+) -> str:
+    """Render the process-local SBPL profile with exact private paths."""
+    lines = list(_MACOS_PROFILE_BASE_LINES)
+    for rule, selector in bindings:
+        lines.extend(
+            _macos_profile_rule_lines(
+                access=rule.access,
+                selector=selector,
+                path=_sandbox_literal(os.fspath(rule.path)),
+            )
+        )
     return "\n".join(lines) + "\n"
+
+
+def _macos_profile_contract_sha256(
+    plan: FullC6ReadSandboxPlan,
+    bindings: Sequence[tuple[SandboxPathRule, str]],
+) -> str:
+    """Hash one path-free SBPL contract stable across fresh build roots.
+
+    The raw rendered profile is compiled immediately before execution, but it
+    embeds private quarantine and PyO3 paths.  Receipts instead bind the same
+    fixed template plus canonical logical-role/access/selector tokens and the
+    already authenticated plan/platform anchor.
+    """
+    semantic_rows = sorted(
+        (rule.logical_role, rule.access, selector)
+        for rule, selector in bindings
+    )
+    lines = list(_MACOS_PROFILE_BASE_LINES)
+    occurrences: dict[tuple[str, SandboxAccess, str], int] = {}
+    for logical_role, access, selector in semantic_rows:
+        key = (logical_role, access, selector)
+        occurrence = occurrences.get(key, 0) + 1
+        occurrences[key] = occurrence
+        token = _sandbox_literal(
+            f"/__rextio_semantic__/{logical_role}/{access}/{selector}/{occurrence}"
+        )
+        lines.extend(
+            _macos_profile_rule_lines(
+                access=access,
+                selector=selector,
+                path=token,
+            )
+        )
+    payload = (
+        _MACOS_PROFILE_CONTRACT_DOMAIN
+        + "\0"
+        + plan.digest
+        + "\0"
+        + "\n".join(lines)
+        + "\n"
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _compile_macos_profile(sandbox_exec: Path, profile: str) -> None:

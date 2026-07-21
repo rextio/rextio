@@ -706,15 +706,18 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
         assert invocation.sandbox_profile_sha256 == "8" * 64
         assert invocation.sandbox_seccomp_sha256 is None
     executor_receipt = receipt.executor_receipt
-    different_rendering = replace(
+    mismatched_profile_contract = replace(
         executor_receipt.invocations[1],
         sandbox_profile_sha256="9" * 64,
     )
-    rebuilt_with_fresh_profile = replace(
-        executor_receipt,
-        invocations=(executor_receipt.invocations[0], different_rendering),
-    )
-    assert rebuilt_with_fresh_profile.digest != executor_receipt.digest
+    with pytest.raises(ValueError, match="profile contracts differ"):
+        replace(
+            executor_receipt,
+            invocations=(
+                executor_receipt.invocations[0],
+                mismatched_profile_contract,
+            ),
+        )
     mismatched_plan = replace(
         executor_receipt.invocations[1],
         sandbox_plan_sha256="6" * 64,

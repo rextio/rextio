@@ -1293,11 +1293,6 @@ def _assert_executor_invocations(
         normalized.append(dict(item))
     normalized[0].pop("ordinal")
     normalized[1].pop("ordinal")
-    # Each launch renders a quarantine-root-specific sandbox profile.  Its
-    # digest must be valid, but only the semantic plan and (on Linux) seccomp
-    # contract are stable across the two isolated builds.
-    normalized[0].pop("sandbox_profile_sha256")
-    normalized[1].pop("sandbox_profile_sha256")
     if normalized[0] != normalized[1]:
         raise AssertionError("Full C6 two-build sandbox contracts differ")
 
@@ -2185,7 +2180,15 @@ def _run_lifecycle(
         item.get("executor_toolchain_sha256")
         for item in production_authorities
     }
-    if len(support_plan_sha256s) != 1 or len(executor_toolchain_sha256s) != 1:
+    executor_receipt_sha256s = {
+        item.get("executor_receipt_sha256")
+        for item in production_authorities
+    }
+    if (
+        len(support_plan_sha256s) != 1
+        or len(executor_toolchain_sha256s) != 1
+        or len(executor_receipt_sha256s) != 1
+    ):
         raise AssertionError(
             "fresh Full C6 lifecycle recollection changed toolchain authority"
         )

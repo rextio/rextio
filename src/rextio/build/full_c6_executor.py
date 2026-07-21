@@ -926,6 +926,13 @@ class FullC6ExecutorReceipt:
                 invocations[1].sandbox_plan_sha256 or "",
             ):
                 raise ValueError("Full C6 executor sandbox plans differ between builds")
+            if not hmac.compare_digest(
+                invocations[0].sandbox_profile_sha256 or "",
+                invocations[1].sandbox_profile_sha256 or "",
+            ):
+                raise ValueError(
+                    "Full C6 executor sandbox profile contracts differ between builds"
+                )
             if invocations[0].sandbox_seccomp_sha256 != (
                 invocations[1].sandbox_seccomp_sha256
             ):

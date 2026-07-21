@@ -1029,6 +1029,9 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rules = _macos_rules(tmp_path)
+    fresh_root = tmp_path / "fresh-lifecycle"
+    fresh_root.mkdir()
+    fresh_rules = _macos_rules(fresh_root)
     anchor = MacOSPlatformAnchor(
         authenticated_snapshot_id="b" * 64,
         snapshot_uuid="12345678-1234-1234-1234-123456789abc",
@@ -1040,13 +1043,20 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
         rules=rules,
         platform_anchor_sha256=anchor.digest,
     )
-    sandbox_exec = Path("/usr/bin/sandbox-exec")
-    monkeypatch.setattr(Path, "is_absolute", lambda self: True)
-    monkeypatch.setattr(
-        os,
-        "lstat",
-        lambda path: os.stat_result((stat.S_IFREG | 0o755,) + (0,) * 9),
+    fresh_plan = build_full_c6_sandbox_plan(
+        target_triple="aarch64-apple-darwin",
+        rules=fresh_rules,
+        platform_anchor_sha256=anchor.digest,
     )
+    sandbox_exec = Path("/usr/bin/sandbox-exec")
+    real_lstat = os.lstat
+
+    def fake_lstat(path: os.PathLike[str] | str) -> os.stat_result:
+        if Path(path) == sandbox_exec:
+            return os.stat_result((stat.S_IFREG | 0o755,) + (0,) * 9)
+        return real_lstat(path)
+
+    monkeypatch.setattr(os, "lstat", fake_lstat)
     monkeypatch.setattr(os, "access", lambda path, mode: True)
     provider = _AnchorProvider()
     compiled: list[tuple[Path, str]] = []
@@ -1059,15 +1069,33 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
         sandbox_exec=sandbox_exec,
         macos_profile_compiler=lambda path, profile: compiled.append((path, profile)),
     )
+    fresh_launch = prepare_full_c6_sandbox_launch(
+        fresh_plan,
+        ("cargo", "build"),
+        macos_anchor=anchor,
+        macos_anchor_provider=provider,
+        sandbox_exec=sandbox_exec,
+        macos_profile_compiler=lambda path, profile: compiled.append((path, profile)),
+    )
 
     assert provider.seen == anchor
-    assert compiled == [(sandbox_exec, launch.command[2])]
+    assert compiled == [
+        (sandbox_exec, launch.command[2]),
+        (sandbox_exec, fresh_launch.command[2]),
+    ]
+    assert plan.digest == fresh_plan.digest
     assert launch.pass_fds == ()
     assert launch.seccomp_sha256 is None
     assert launch.seccomp_lease is None
     assert launch.command[:3] == ("/usr/bin/sandbox-exec", "-p", launch.command[2])
     assert launch.command[-3:] == ("--", "cargo", "build")
-    assert hashlib.sha256(launch.command[2].encode()).hexdigest() == launch.profile_sha256
+    rendered_sha256 = hashlib.sha256(launch.command[2].encode()).hexdigest()
+    fresh_rendered_sha256 = hashlib.sha256(
+        fresh_launch.command[2].encode()
+    ).hexdigest()
+    assert rendered_sha256 != fresh_rendered_sha256
+    assert launch.profile_sha256 == fresh_launch.profile_sha256
+    assert launch.profile_sha256 not in {rendered_sha256, fresh_rendered_sha256}
     assert "(deny default)" in launch.command[2]
     assert "(deny network*)" in launch.command[2]
     assert '(import "system.sb")' in launch.command[2]
@@ -1078,6 +1106,7 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
     assert '(subpath "/System/Volumes/Preboot")' in launch.command[2]
     assert "(deny sysctl-write)" in launch.command[2]
     assert str(tmp_path / "inputs") in launch.command[2]
+    assert str(fresh_root / "inputs") in fresh_launch.command[2]
 
 
 def test_macos_default_anchor_provider_fails_closed(

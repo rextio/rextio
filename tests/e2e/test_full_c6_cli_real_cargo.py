@@ -235,7 +235,7 @@ def _sandbox_invocation(
     }
 
 
-def test_executor_projection_allows_per_quarantine_sandbox_profiles(
+def test_executor_projection_accepts_stable_semantic_sandbox_profile(
     tmp_path: Path,
 ) -> None:
     harness = _load_harness_module()
@@ -244,9 +244,24 @@ def test_executor_projection_allows_per_quarantine_sandbox_profiles(
         target="aarch64-apple-darwin",
         value=[
             _sandbox_invocation(1, profile_sha256="d" * 64),
-            _sandbox_invocation(2, profile_sha256="e" * 64),
+            _sandbox_invocation(2, profile_sha256="d" * 64),
         ],
     )
+
+
+def test_executor_projection_rejects_different_semantic_sandbox_profiles(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness_module()
+    with pytest.raises(AssertionError, match="sandbox contracts differ"):
+        harness._assert_executor_invocations(
+            tmp_path,
+            target="aarch64-apple-darwin",
+            value=[
+                _sandbox_invocation(1, profile_sha256="d" * 64),
+                _sandbox_invocation(2, profile_sha256="e" * 64),
+            ],
+        )
 
 
 def test_executor_projection_rejects_different_semantic_sandbox_plans(
@@ -262,7 +277,7 @@ def test_executor_projection_rejects_different_semantic_sandbox_plans(
                 _sandbox_invocation(
                     2,
                     plan_sha256="f" * 64,
-                    profile_sha256="e" * 64,
+                    profile_sha256="d" * 64,
                 ),
             ],
         )
