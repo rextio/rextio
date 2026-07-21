@@ -33,6 +33,7 @@ FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY = (
 )
 FULL_C6_LINUX_PYTHON_STDLIB = "/rextio/toolchain/lib/python3.11"
 FULL_C6_LINUX_PYO3_CONFIG = "/rextio/support/pyo3-config"
+FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT = "/x86_64-linux-gnu"
 FULL_C6_LINUX_LAUNCHER = (
     "/rextio/support/rextio/full_c6_linux_launcher.py"
 )
@@ -120,10 +121,10 @@ _FIXED_ENVIRONMENT = {
     "LD": "/rextio/toolchain/bin/ld",
     "LD_LIBRARY_PATH": (
         "/rextio/toolchain/lib:/rextio/support/python-library-root:"
-        "/rextio/support/runtime-libs"
+        + FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT
     ),
     "LIBRARY_PATH": (
-        "/rextio/support/gcc-toolchain:/rextio/support/runtime-libs"
+        f"/rextio/support/gcc-toolchain:{FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT}"
     ),
     "PATH": "/rextio/toolchain/bin:/rextio/toolchain",
     "PYO3_CONFIG_FILE": _PYO3_CONFIG_PATH,
@@ -150,6 +151,7 @@ _LANDLOCK_RULES = (
     ("/rextio/support", "read-execute"),
     ("/rextio/toolchain", "read-execute"),
     ("/tmp", "read-write"),
+    (FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT, "read"),
 )
 
 

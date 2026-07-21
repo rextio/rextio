@@ -41,6 +41,7 @@ from rextio.build.full_c6_linux_launcher import (
     FULL_C6_LINUX_PYTHON,
     FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY,
     FULL_C6_LINUX_PYO3_CONFIG,
+    FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT,
     FULL_C6_LINUX_TOOLCHAIN_ROOT,
     FullC6LinuxLauncherError,
     canonical_linux_payload_environment,
@@ -816,7 +817,7 @@ def _linux_rule_destination(rule: SandboxPathRule) -> str | None:
     if rule.logical_role == "support-landlock-launcher":
         return _LINUX_LAUNCHER_DESTINATION
     if rule.logical_role == "support-runtime-libs":
-        return "/rextio/support/runtime-libs"
+        return FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT
     if rule.logical_role == "support-pyo3-config":
         return FULL_C6_LINUX_PYO3_CONFIG
     if rule.logical_role.startswith("toolchain-"):
@@ -874,6 +875,7 @@ def _linux_bubblewrap_command(
     arguments.extend(("--dir", "/rextio/toolchain/lib"))
     arguments.extend(("--dir", _LINUX_SUPPORT_DESTINATION))
     arguments.extend(("--dir", "/rextio/support/rextio"))
+    arguments.extend(("--dir", FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT))
     if any(
         destination == _LINUX_RUNTIME_LOADER_DESTINATION
         for destination, _rule in mappings

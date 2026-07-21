@@ -40,10 +40,10 @@ def _environment() -> dict[str, str]:
         "LD": "/rextio/toolchain/bin/ld",
         "LD_LIBRARY_PATH": (
             "/rextio/toolchain/lib:/rextio/support/python-library-root:"
-            "/rextio/support/runtime-libs"
+            "/x86_64-linux-gnu"
         ),
         "LIBRARY_PATH": (
-            "/rextio/support/gcc-toolchain:/rextio/support/runtime-libs"
+            "/rextio/support/gcc-toolchain:/x86_64-linux-gnu"
         ),
         "PATH": "/rextio/toolchain/bin:/rextio/toolchain",
         "PYO3_CONFIG_FILE": "/rextio/support/pyo3-config",
@@ -92,12 +92,12 @@ def test_payload_environment_is_closed_canonical_and_digest_bound() -> None:
     ]
     assert environment["LIBRARY_PATH"].split(":") == [
         "/rextio/support/gcc-toolchain",
-        "/rextio/support/runtime-libs",
+        "/x86_64-linux-gnu",
     ]
     assert environment["LD_LIBRARY_PATH"].split(":") == [
         "/rextio/toolchain/lib",
         "/rextio/support/python-library-root",
-        "/rextio/support/runtime-libs",
+        "/x86_64-linux-gnu",
     ]
 
     extra = dict(environment, HTTP_PROXY="http://host.invalid")
@@ -330,6 +330,12 @@ def test_landlock_is_applied_after_namespace_to_all_fixed_roots(
     )
 
     assert opened == [path for path, _access in launcher._LANDLOCK_RULES]
+    assert ("/x86_64-linux-gnu", "read") in launcher._LANDLOCK_RULES
+    assert all(
+        access != "read-execute"
+        for path, access in launcher._LANDLOCK_RULES
+        if path == "/x86_64-linux-gnu"
+    )
     assert prctl_calls == [(38, 1, 0, 0, 0)]
     assert sum(call[0] == 445 for call in calls) == len(launcher._LANDLOCK_RULES)
     assert calls[-1][:2] == (446, 60)

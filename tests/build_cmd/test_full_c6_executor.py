@@ -13,7 +13,7 @@ import subprocess
 import sys
 import zipfile
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -1207,6 +1207,71 @@ def test_native_linker_environment_binds_only_the_active_captured_linker(
         native_tools=native_tools,
         target_triple=target_triple,
         require_owned_environment=True,
+    )
+
+
+def test_linux_payload_environment_projects_receipted_runtime_topology(
+    tmp_path: Path,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+    from rextio.build import full_c6_linux_launcher as launcher
+    from rextio.build.full_c6_toolchain_support import (
+        FullC6SupportNamespaceMapping,
+    )
+
+    host = tmp_path.resolve()
+    rows = {
+        "toolchain-ar": ("/rextio/toolchain/bin/ar", "file"),
+        "toolchain-ld": ("/rextio/toolchain/bin/ld", "file"),
+        "toolchain-linker": ("/rextio/toolchain/bin/linker", "file"),
+        "toolchain-ranlib": ("/rextio/toolchain/bin/ranlib", "file"),
+        "toolchain-rustc": ("/rextio/toolchain/bin/rustc", "file"),
+        "support-gcc-toolchain": ("/rextio/support/gcc-toolchain", "tree"),
+        "support-python-library-root": (
+            "/rextio/support/python-library-root",
+            "tree",
+        ),
+        "support-runtime-libs": ("/x86_64-linux-gnu", "tree"),
+    }
+    mappings = tuple(
+        FullC6SupportNamespaceMapping(
+            logical_role=role,
+            host_path=host / role,
+            virtual_path=PurePosixPath(virtual_path),
+            kind=kind,
+        )
+        for role, (virtual_path, kind) in rows.items()
+    )
+    by_role = {mapping.logical_role: mapping for mapping in mappings}
+    environment = {**launcher._FIXED_ENVIRONMENT, "SOURCE_DATE_EPOCH": "0"}
+    for name, role in executor._LINUX_NATIVE_PAYLOAD_ROLES.items():
+        environment[name] = str(by_role[role].host_path)
+    environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(
+        (
+            "--remap-path-prefix=/host/project=/rextio/project",
+            "--remap-path-prefix=/host/build=/rextio/build",
+            "-C",
+            f"linker={by_role['toolchain-linker'].host_path}",
+        )
+    )
+
+    projected = executor._linux_native_payload_environment(
+        environment,
+        support_plan=SimpleNamespace(namespace_mappings=mappings),
+    )
+
+    assert projected["LD_LIBRARY_PATH"].split(":") == [
+        "/rextio/toolchain/lib",
+        "/rextio/support/python-library-root",
+        "/x86_64-linux-gnu",
+    ]
+    assert projected["LIBRARY_PATH"].split(":") == [
+        "/rextio/support/gcc-toolchain",
+        "/x86_64-linux-gnu",
+    ]
+    assert all(
+        "/rextio/support/runtime-libs" not in value
+        for value in projected.values()
     )
 
 

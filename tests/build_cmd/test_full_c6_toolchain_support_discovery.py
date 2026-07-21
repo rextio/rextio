@@ -226,7 +226,7 @@ def test_fixed_roles_generation_verification_and_namespace_round_trip(
         "/rextio/support/rextio/full_c6_linux_launcher.py"
     )
     assert mappings["support-runtime-libs"].virtual_path.as_posix() == (
-        "/rextio/support/runtime-libs"
+        "/x86_64-linux-gnu"
     )
     assert mappings["support-gcc-toolchain"].virtual_path.as_posix() == (
         "/rextio/support/gcc-toolchain"

@@ -29,6 +29,9 @@ import tomllib
 from typing import SupportsIndex
 import unicodedata
 
+from rextio.build.full_c6_linux_launcher import (
+    FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT,
+)
 from rextio.build.full_c6_read_sandbox import (
     AppleAPFSPlatformAnchorProvider,
     FullC6ReadSandboxError,
@@ -2280,7 +2283,9 @@ def _support_virtual_path(
         "support-landlock-launcher": PurePosixPath(
             "/rextio/support/rextio/full_c6_linux_launcher.py"
         ),
-        "support-runtime-libs": PurePosixPath("/rextio/support/runtime-libs"),
+        "support-runtime-libs": PurePosixPath(
+            FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT
+        ),
         "toolchain-python311": PurePosixPath(
             "/rextio/toolchain/bin/python3.11"
         ),

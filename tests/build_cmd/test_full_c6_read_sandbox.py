@@ -4,6 +4,7 @@ import errno
 import hashlib
 import os
 from pathlib import Path
+import posixpath
 import stat
 import struct
 import subprocess
@@ -168,10 +169,10 @@ def _environment() -> dict[str, str]:
         "LD": "/rextio/toolchain/bin/ld",
         "LD_LIBRARY_PATH": (
             "/rextio/toolchain/lib:/rextio/support/python-library-root:"
-            "/rextio/support/runtime-libs"
+            "/x86_64-linux-gnu"
         ),
         "LIBRARY_PATH": (
-            "/rextio/support/gcc-toolchain:/rextio/support/runtime-libs"
+            "/rextio/support/gcc-toolchain:/x86_64-linux-gnu"
         ),
         "PATH": "/rextio/toolchain/bin:/rextio/toolchain",
         "PYO3_CONFIG_FILE": FULL_C6_LINUX_PYO3_CONFIG,
@@ -403,7 +404,7 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         "/tmp",
     )
     dir_index = proc_index + 6
-    assert command[dir_index : dir_index + 14] == (
+    assert command[dir_index : dir_index + 16] == (
         "--dir",
         "/rextio",
         "--dir",
@@ -416,6 +417,8 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         "/rextio/support",
         "--dir",
         "/rextio/support/rextio",
+        "--dir",
+        "/x86_64-linux-gnu",
         "--dir",
         "/lib64",
     )
@@ -470,12 +473,12 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         "/rextio/support/rextio/full_c6_linux_launcher.py",
         "--ro-bind",
         str(tmp_path / "runtime-libs"),
-        "/rextio/support/runtime-libs",
+        "/x86_64-linux-gnu",
         "--ro-bind",
         str(tmp_path / "ld-linux-x86-64.so.2"),
         "/lib64/ld-linux-x86-64.so.2",
     )
-    mappings_index = dir_index + 14
+    mappings_index = dir_index + 16
     assert command[mappings_index : mappings_index + len(expected_mappings)] == expected_mappings
     tail_index = mappings_index + len(expected_mappings)
     assert command[tail_index : tail_index + 12] == (
@@ -493,6 +496,36 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         FULL_C6_LINUX_PYTHON,
     )
     assert str(launcher) not in command
+
+
+def test_linux_namespace_preserves_ubuntu_gcc_runtime_symlink_topology(
+    tmp_path: Path, seccomp_lease: LinuxSeccompLease
+) -> None:
+    plan = build_full_c6_sandbox_plan(
+        target_triple="x86_64-unknown-linux-gnu",
+        rules=_rules(tmp_path),
+        platform_anchor_sha256=_SHA,
+    )
+    launch = _prepare_linux(
+        plan,
+        bwrap=_bwrap(tmp_path),
+        seccomp_lease=seccomp_lease,
+    )
+
+    command = launch.command
+    bind_destinations = [
+        command[index + 2]
+        for index, value in enumerate(command)
+        if value in {"--bind", "--ro-bind"}
+    ]
+    gcc_root = "/rextio/support/gcc-toolchain"
+    runtime_root = "/x86_64-linux-gnu"
+    raw_target = "../../../x86_64-linux-gnu/libstdc++.so.6"
+    resolved_target = posixpath.normpath(posixpath.join(gcc_root, raw_target))
+
+    assert resolved_target == f"{runtime_root}/libstdc++.so.6"
+    assert bind_destinations.count(runtime_root) == 1
+    assert "/rextio/support/runtime-libs" not in command
 
 
 def test_linux_payload_is_exactly_fixed_cargo_not_another_mapped_tool(
