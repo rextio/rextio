@@ -96,7 +96,11 @@ from __future__ import annotations
 # it remains unsigned and non-authorizing until the existing signing and
 # detached-signature publication stages succeed. Rextio neither
 # invents owner policy nor accepts, creates, or retains private signing keys.
+# Contract 2.24.0 adds the public Full-C6 support-lock bootstrap plus the
+# path-free production sandbox and toolchain-support receipt surfaces. These
+# additive records bind the supported toolchain authority and executed sandbox
+# evidence without weakening the existing fail-closed authorization chain.
 # The strict surface deliberately excludes the general external-source, plugin,
 # executable, rust-crate, top-level, embedding, and Windows cases.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.23.0"
+TOOLING_CONTRACT_VERSION = "2.24.0"
