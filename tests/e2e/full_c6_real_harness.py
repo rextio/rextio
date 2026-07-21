@@ -1031,6 +1031,79 @@ def _read_bounded_process_log(
     return payload.decode("utf-8", errors="replace")
 
 
+def _format_support_lock_diagnostic(error: BaseException) -> str:
+    from rextio.build.toolchain_support_lock import ToolchainSupportLockError
+
+    support_message = "<unavailable>"
+    os_error_name = "<unavailable>"
+    os_error_errno = "<unavailable>"
+    current: BaseException | None = error
+    seen: set[int] = set()
+    for _ in range(16):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if type(current) is ToolchainSupportLockError:
+            candidate = str(current)
+            if (
+                candidate.startswith("toolchain support ")
+                and len(candidate) <= 240
+                and candidate.isascii()
+                and all(
+                    character.isalnum() or character in " -_.,()"
+                    for character in candidate
+                )
+            ):
+                support_message = candidate
+        elif (
+            isinstance(current, OSError)
+            and type(current).__module__ == "builtins"
+        ):
+            candidate_name = type(current).__name__
+            if (
+                candidate_name.isascii()
+                and candidate_name.isidentifier()
+                and len(candidate_name) <= 64
+            ):
+                os_error_name = candidate_name
+            candidate_errno = current.errno
+            if (
+                type(candidate_errno) is int
+                and -4096 <= candidate_errno <= 4096
+            ):
+                os_error_errno = str(candidate_errno)
+        current = current.__cause__ or current.__context__
+    return (
+        "[full-c6-e2e] support-lock diagnostic: "
+        f"ToolchainSupportLockError={support_message}; "
+        f"OSError={os_error_name}; errno={os_error_errno}"
+    )
+
+
+def _diagnose_support_lock_generation(
+    project: Path,
+    *,
+    inherited_environment: dict[str, str],
+) -> str:
+    from rextio.build import full_c6_toolchain_support as support
+
+    try:
+        config, _configured_pin = support._load_full_c6_support_bootstrap_config(
+            project,
+            output=_SUPPORT_LOCK_OUTPUT,
+            inherited_environment=inherited_environment,
+        )
+        plan = support._discover_full_c6_bootstrap_plan(
+            project_root=project,
+            config=config,
+            inherited_environment=inherited_environment,
+        )
+        support.generate_full_c6_toolchain_support_lock(plan)
+    except Exception as exc:
+        return _format_support_lock_diagnostic(exc)
+    return "[full-c6-e2e] support-lock diagnostic: generation-only rerun succeeded"
+
+
 def _assert_exact_two_cargo_pids(stage: str, cargo_pids: set[int]) -> None:
     if len(cargo_pids) != 2:
         raise AssertionError(
@@ -1046,8 +1119,10 @@ def _run_fresh_rextio(
     stage: str,
     timeout: int,
     expect_two_cargo_builds: bool,
+    support_lock_diagnostic_project: Path | None = None,
 ) -> tuple[str, str, tuple[int, ...]]:
     before_quarantines = _active_quarantine_names()
+    child_environment = _child_environment()
     print(f"[full-c6-e2e] START {stage}: {command[0]}", flush=True)
     started = time.monotonic()
     cargo_pids: set[int] = set()
@@ -1059,7 +1134,7 @@ def _run_fresh_rextio(
         process = subprocess.Popen(
             command,
             cwd=cwd,
-            env=_child_environment(),
+            env=child_environment,
             stdout=stdout_log,
             stderr=stderr_log,
             start_new_session=True,
@@ -1110,6 +1185,25 @@ def _run_fresh_rextio(
             f"stdout:\n{stdout}\nstderr:\n{stderr}"
         ) from (cleanup_failure or failure)
     if process.returncode != 0:
+        if support_lock_diagnostic_project is not None:
+            try:
+                diagnostic = _diagnose_support_lock_generation(
+                    support_lock_diagnostic_project,
+                    inherited_environment=child_environment,
+                )
+                if (
+                    type(diagnostic) is not str
+                    or not diagnostic.isascii()
+                    or "\n" in diagnostic
+                    or "\r" in diagnostic
+                    or len(diagnostic.encode("utf-8")) > 512
+                ):
+                    raise ValueError("unsafe harness diagnostic")
+            except BaseException:
+                diagnostic = (
+                    "[full-c6-e2e] support-lock diagnostic: unavailable"
+                )
+            print(diagnostic, file=sys.stderr, flush=True)
         raise AssertionError(
             f"{stage} failed with {process.returncode}\n"
             f"stdout:\n{stdout}\nstderr:\n{stderr}"
@@ -1151,6 +1245,7 @@ def _bootstrap_toolchain_support_lock(
         stage="policy/bootstrap-support-lock",
         timeout=900,
         expect_two_cargo_builds=False,
+        support_lock_diagnostic_project=project,
     )
     try:
         receipt = json.loads(stdout)

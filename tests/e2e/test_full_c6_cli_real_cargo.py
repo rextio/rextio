@@ -8,6 +8,7 @@ Rextio distribution and defeating the Full C6 RECORD/editable-install gate.
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import os
 from pathlib import Path
@@ -18,6 +19,8 @@ import time
 from types import ModuleType
 
 import pytest
+
+from rextio.build.toolchain_support_lock import ToolchainSupportLockError
 
 
 full_c6_e2e_only = pytest.mark.skipif(
@@ -206,6 +209,202 @@ def test_exact_two_cargo_pid_policy_rejects_other_counts(
 def test_exact_two_cargo_pid_policy_accepts_two_distinct_pids() -> None:
     harness = _load_harness_module()
     harness._assert_exact_two_cargo_pids("build/test", {101, 102})
+
+
+def test_support_lock_diagnostic_exposes_only_bounded_static_causes() -> None:
+    harness = _load_harness_module()
+    operating_system_error = NotADirectoryError(
+        errno.ENOTDIR,
+        "private detail",
+        "/private/secret/toolchain/member",
+    )
+    support_error = ToolchainSupportLockError(
+        "toolchain support locator requires a symlink-free directory walk"
+    )
+    support_error.__cause__ = operating_system_error
+    outer_error = RuntimeError("outer private detail")
+    outer_error.__cause__ = support_error
+
+    diagnostic = harness._format_support_lock_diagnostic(outer_error)
+
+    assert diagnostic == (
+        "[full-c6-e2e] support-lock diagnostic: "
+        "ToolchainSupportLockError=toolchain support locator requires a "
+        "symlink-free directory walk; OSError=NotADirectoryError; errno=20"
+    )
+    assert "/private/secret" not in diagnostic
+    assert "private detail" not in diagnostic
+    assert len(diagnostic.encode("utf-8")) <= 512
+
+
+def test_support_lock_diagnostic_rerun_is_generation_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+    from rextio.build import full_c6_toolchain_support as support
+
+    inherited_environment = {"PATH": "/fixed/toolchain/bin"}
+    config = object()
+    plan = object()
+    observed: dict[str, object] = {}
+
+    def load_config(
+        project_root: Path,
+        *,
+        output: str,
+        inherited_environment: dict[str, str],
+    ) -> tuple[object, None]:
+        observed["load"] = (project_root, output, inherited_environment)
+        return config, None
+
+    def discover_plan(
+        *,
+        project_root: Path,
+        config: object,
+        inherited_environment: dict[str, str],
+    ) -> object:
+        observed["discover"] = (
+            project_root,
+            config,
+            inherited_environment,
+        )
+        return plan
+
+    def generate_lock(candidate: object) -> None:
+        observed["generate"] = candidate
+        os_error = NotADirectoryError(
+            errno.ENOTDIR,
+            "private detail",
+            "/private/secret/toolchain/member",
+        )
+        support_error = ToolchainSupportLockError(
+            "toolchain support locator requires a symlink-free directory walk"
+        )
+        support_error.__cause__ = os_error
+        raise support_error
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("diagnostic attempted output materialization")
+
+    monkeypatch.setattr(support, "_load_full_c6_support_bootstrap_config", load_config)
+    monkeypatch.setattr(support, "_discover_full_c6_bootstrap_plan", discover_plan)
+    monkeypatch.setattr(support, "generate_full_c6_toolchain_support_lock", generate_lock)
+    monkeypatch.setattr(support, "materialize_full_c6_toolchain_support_lock", forbidden)
+    monkeypatch.setattr(support, "bootstrap_full_c6_toolchain_support_lock", forbidden)
+
+    diagnostic = harness._diagnose_support_lock_generation(
+        tmp_path,
+        inherited_environment=inherited_environment,
+    )
+
+    assert diagnostic.endswith(
+        "ToolchainSupportLockError=toolchain support locator requires a "
+        "symlink-free directory walk; OSError=NotADirectoryError; errno=20"
+    )
+    assert observed == {
+        "load": (tmp_path, harness._SUPPORT_LOCK_OUTPUT, inherited_environment),
+        "discover": (tmp_path, config, inherited_environment),
+        "generate": plan,
+    }
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fresh_rextio_failure_runs_requested_support_lock_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = _load_harness_module()
+    observed: list[tuple[Path, dict[str, str]]] = []
+
+    def diagnose(
+        project: Path,
+        *,
+        inherited_environment: dict[str, str],
+    ) -> str:
+        observed.append((project, inherited_environment))
+        return "[full-c6-e2e] support-lock diagnostic: bounded-test-cause"
+
+    monkeypatch.setattr(harness, "_diagnose_support_lock_generation", diagnose)
+
+    with pytest.raises(AssertionError, match="bootstrap-support-lock failed with 7"):
+        harness._run_fresh_rextio(
+            [sys.executable, "-c", "raise SystemExit(7)"],
+            cwd=tmp_path,
+            stage="policy/bootstrap-support-lock",
+            timeout=10,
+            expect_two_cargo_builds=False,
+            support_lock_diagnostic_project=tmp_path,
+        )
+
+    assert len(observed) == 1
+    assert observed[0][0] == tmp_path
+    assert observed[0][1]["PYTHONNOUSERSITE"] == "1"
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "[full-c6-e2e] support-lock diagnostic: bounded-test-cause\n"
+    )
+
+
+def test_fresh_rextio_success_does_not_run_support_lock_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+
+    def forbidden(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("success path ran failure-only diagnostic")
+
+    monkeypatch.setattr(
+        harness,
+        "_diagnose_support_lock_generation",
+        forbidden,
+    )
+
+    stdout, stderr, cargo_pids = harness._run_fresh_rextio(
+        [sys.executable, "-c", "raise SystemExit(0)"],
+        cwd=tmp_path,
+        stage="policy/bootstrap-support-lock",
+        timeout=10,
+        expect_two_cargo_builds=False,
+        support_lock_diagnostic_project=tmp_path,
+    )
+
+    assert (stdout, stderr, cargo_pids) == ("", "", ())
+
+
+def test_support_lock_diagnostic_failure_preserves_original_child_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = _load_harness_module()
+
+    def fail_diagnostic(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("private diagnostic failure")
+
+    monkeypatch.setattr(
+        harness,
+        "_diagnose_support_lock_generation",
+        fail_diagnostic,
+    )
+
+    with pytest.raises(AssertionError, match="bootstrap-support-lock failed with 9"):
+        harness._run_fresh_rextio(
+            [sys.executable, "-c", "raise SystemExit(9)"],
+            cwd=tmp_path,
+            stage="policy/bootstrap-support-lock",
+            timeout=10,
+            expect_two_cargo_builds=False,
+            support_lock_diagnostic_project=tmp_path,
+        )
+
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "[full-c6-e2e] support-lock diagnostic: unavailable\n"
+    )
+    assert "private diagnostic failure" not in captured.out + captured.err
 
 
 def _sandbox_invocation(
