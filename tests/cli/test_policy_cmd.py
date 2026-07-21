@@ -6,6 +6,13 @@ import json
 from pathlib import Path
 import runpy
 
+import pytest
+
+from rextio.build.full_c6_toolchain_support import (
+    FullC6ToolchainSupportBootstrapResult,
+    FullC6ToolchainSupportError,
+)
+from rextio.cli import policy_cmd
 from rextio.cli.main import build_parser, main
 
 
@@ -55,6 +62,26 @@ def test_policy_finalize_parser_contract() -> None:
     assert args.bootstrap == "bootstrap.json"
     assert args.completion == "completion.json"
     assert args.output == "manifest.json"
+    assert args.format == "json"
+
+
+def test_policy_bootstrap_support_lock_parser_contract() -> None:
+    args = build_parser().parse_args(
+        [
+            "policy",
+            "bootstrap-support-lock",
+            "--project-root",
+            "project",
+            "--output",
+            "authority/rextio.toolchain-support.lock.json",
+            "--format",
+            "json",
+        ]
+    )
+
+    assert args.policy_command == "bootstrap-support-lock"
+    assert args.project_root == "project"
+    assert args.output == "authority/rextio.toolchain-support.lock.json"
     assert args.format == "json"
 
 
@@ -141,3 +168,153 @@ def test_policy_finalize_failure_uses_stderr_and_no_result_stdout(
     assert captured.out == ""
     assert "RXT060 Full C6 owner-policy finalization failed" in captured.err
     assert not output.exists()
+
+
+def test_policy_bootstrap_support_lock_json_is_path_private_and_non_authorizing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    result = FullC6ToolchainSupportBootstrapResult(
+        result="created",
+        target="x86_64-unknown-linux-gnu",
+        manifest_roles=(
+            "landlock-launcher",
+            "linux-ar",
+            "linux-binutils-ld",
+            "linux-bwrap",
+            "linux-dynamic-loader",
+            "linux-ranlib",
+            "python-runtime-library",
+            "rustup-components",
+        ),
+        root_roles=(
+            "linux-gcc-support",
+            "linux-python-library-support",
+            "linux-runtime-support",
+            "python-runtime",
+            "rust-sysroot",
+        ),
+        raw_sha256="a" * 64,
+        merkle_sha256="b" * 64,
+        output="authority/support.json",
+    )
+    observed: dict[str, object] = {}
+
+    def bootstrap(**kwargs: object) -> FullC6ToolchainSupportBootstrapResult:
+        observed.update(kwargs)
+        return result
+
+    monkeypatch.setattr(
+        policy_cmd,
+        "bootstrap_full_c6_toolchain_support_lock",
+        bootstrap,
+        raising=False,
+    )
+
+    assert main(
+        [
+            "policy",
+            "bootstrap-support-lock",
+            "--project-root",
+            str(tmp_path),
+            "--output",
+            "authority/support.json",
+            "--format",
+            "json",
+        ]
+    ) == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data == result.to_dict()
+    assert captured.err == ""
+    assert observed["project_root"] == tmp_path
+    assert observed["output"] == "authority/support.json"
+    assert isinstance(observed["inherited_environment"], dict)
+    assert str(tmp_path) not in captured.out
+
+
+def test_policy_bootstrap_support_lock_text_is_explicitly_non_authorizing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    result = FullC6ToolchainSupportBootstrapResult(
+        result="reused",
+        target="aarch64-apple-darwin",
+        manifest_roles=(
+            "macos-sandbox-dyld-profile",
+            "macos-sandbox-system-profile",
+            "python-runtime-library",
+            "rustup-components",
+            "xcode-ar",
+            "xcode-clang",
+            "xcode-ld",
+            "xcode-ranlib",
+            "xcode-sdk-settings",
+            "xcode-version-plist",
+        ),
+        root_roles=(
+            "python-runtime",
+            "rust-sysroot",
+            "xcode-clang-resource",
+            "xcode-sdk",
+        ),
+        raw_sha256="c" * 64,
+        merkle_sha256="d" * 64,
+        output="authority/support.json",
+    )
+    monkeypatch.setattr(
+        policy_cmd,
+        "bootstrap_full_c6_toolchain_support_lock",
+        lambda **_kwargs: result,
+    )
+
+    assert main(
+        [
+            "policy",
+            "bootstrap-support-lock",
+            "--project-root",
+            str(tmp_path),
+            "--output",
+            "authority/support.json",
+        ]
+    ) == 0
+    captured = capsys.readouterr()
+    assert "result: reused" in captured.out
+    assert "build authorized: false" in captured.out
+    assert "distribution authorized: false" in captured.out
+    assert str(tmp_path) not in captured.out
+    assert captured.err == ""
+
+
+def test_policy_bootstrap_support_lock_failure_is_stderr_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    def reject(**_kwargs: object) -> object:
+        raise FullC6ToolchainSupportError("unsupported Full C6 host")
+
+    monkeypatch.setattr(
+        policy_cmd,
+        "bootstrap_full_c6_toolchain_support_lock",
+        reject,
+    )
+
+    assert main(
+        [
+            "policy",
+            "bootstrap-support-lock",
+            "--project-root",
+            str(tmp_path),
+            "--output",
+            "authority/support.json",
+            "--format",
+            "json",
+        ]
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "RXT060 Full C6 support-lock bootstrap failed" in captured.err
+    assert "unsupported Full C6 host" in captured.err

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,75 @@ def _tree(path: Path, *, member: str = "member") -> Path:
     path.mkdir(parents=True, exist_ok=True)
     _file(path / member, path.name.encode("utf-8"))
     return path.resolve()
+
+
+def _write_strict_bootstrap_config(
+    project: Path,
+    *,
+    support_path: str | None = None,
+    support_sha256: str | None = None,
+) -> None:
+    digest = "a" * 64
+    support_rows: tuple[str, ...] = ()
+    if support_path is not None:
+        support_rows += (f'artifact_toolchain_support_lock = "{support_path}"',)
+    if support_sha256 is not None:
+        support_rows += (
+            f'artifact_toolchain_support_lock_sha256 = "{support_sha256}"',
+        )
+    (project / "rextio.toml").write_text(
+        "\n".join(
+            (
+                "[build]",
+                'fallback_backend = "cpython"',
+                'artifact_evidence_policy = "required"',
+                'artifact_distribution_policy = "full-c6-required"',
+                'artifact_source_lock_manifest = "authority/source-lock.json"',
+                'artifact_source_lock_signature = "authority/source-lock.sig.json"',
+                'artifact_policy_manifest = "authority/policy.json"',
+                'artifact_cargo_vendor = "cargo-vendor"',
+                f'artifact_cargo_vendor_sha256 = "{digest}"',
+                'artifact_cargo_lock = "authority/Cargo.lock"',
+                f'artifact_cargo_lock_sha256 = "{digest}"',
+                *support_rows,
+                'artifact_trusted_public_key = "authority/owner.ed25519.pub"',
+                f'artifact_trusted_public_key_sha256 = "{digest}"',
+                (
+                    'artifact_signing_request_output = '
+                    '".rextio/full-c6-state/'
+                    'rextio.full-c6-final-authorization-request.json"'
+                ),
+                "artifact_repeat_builds = 2",
+                "",
+                "[rust]",
+                'binding = "pyo3"',
+                'build_tool = "cargo"',
+                "importable = false",
+                "",
+                "[plugins]",
+                "enabled = []",
+                "",
+                "[imports]",
+                'default_external_policy = "fallback"',
+                "",
+                "[imports.packages.demo_pkg]",
+                'policy = "try-native"',
+                "max_depth = 1",
+                'distribution = "demo-pkg"',
+                'version = "1.0.0"',
+                'source_archive = "authority/demo_pkg-1.0.0-py3-none-any.whl"',
+                f'source_archive_sha256 = "{digest}"',
+                "",
+                "[embedding]",
+                "enabled = false",
+                "",
+                "[policy]",
+                "native_top_level = false",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _fixed_plan(
@@ -178,6 +248,390 @@ def test_fixed_roles_generation_verification_and_namespace_round_trip(
         "toolchain-cargo"
     )
     assert plan.macos_platform_anchor is None
+
+
+def test_bootstrap_materializes_canonical_lock_and_exactly_reuses(
+    tmp_path: Path,
+) -> None:
+    plan = _fixed_plan(tmp_path)
+    authority = tmp_path / "authority"
+    authority.mkdir(mode=0o700)
+
+    created = support.materialize_full_c6_toolchain_support_lock(
+        project_root=tmp_path,
+        output="authority/rextio.toolchain-support.lock.json",
+        plan=plan,
+        configured_artifact_paths=(),
+    )
+
+    output = authority / "rextio.toolchain-support.lock.json"
+    assert created.result == "created"
+    assert created.target == LINUX
+    assert created.manifest_roles == support.LINUX_MANIFEST_ROLES
+    assert created.root_roles == support.LINUX_ROOT_ROLES
+    assert created.raw_sha256 == hashlib.sha256(output.read_bytes()).hexdigest()
+    assert created.config == {
+        "artifact_toolchain_support_lock": (
+            "authority/rextio.toolchain-support.lock.json"
+        ),
+        "artifact_toolchain_support_lock_sha256": created.raw_sha256,
+    }
+    projection = created.to_dict()
+    assert projection["authorizes_build"] is False
+    assert projection["authorizes_distribution"] is False
+    assert str(tmp_path) not in json.dumps(projection, sort_keys=True)
+
+    reused = support.materialize_full_c6_toolchain_support_lock(
+        project_root=tmp_path,
+        output="authority/rextio.toolchain-support.lock.json",
+        plan=plan,
+        configured_artifact_paths=(),
+    )
+    assert reused.result == "reused"
+    assert reused.to_dict() == {**projection, "result": "reused"}
+
+
+def test_bootstrap_accepts_disjoint_non_json_artifact_paths(
+    tmp_path: Path,
+) -> None:
+    plan = _fixed_plan(tmp_path)
+    (tmp_path / "authority").mkdir(mode=0o700)
+
+    result = support.materialize_full_c6_toolchain_support_lock(
+        project_root=tmp_path,
+        output="authority/rextio.toolchain-support.lock.json",
+        plan=plan,
+        configured_artifact_paths=(
+            "authority/owner.ed25519.pub",
+            "cargo-vendor",
+        ),
+    )
+
+    assert result.result == "created"
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        "../escape.json",
+        "/tmp/escape.json",
+        "authority/../escape.json",
+        "authority//escape.json",
+        "authority\\escape.json",
+        "authority/not-a-json-lock",
+    ),
+)
+def test_bootstrap_rejects_noncanonical_or_outside_output(
+    tmp_path: Path,
+    output: str,
+) -> None:
+    plan = _fixed_plan(tmp_path)
+
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="project-relative",
+    ):
+        support.materialize_full_c6_toolchain_support_lock(
+            project_root=tmp_path,
+            output=output,
+            plan=plan,
+            configured_artifact_paths=(),
+        )
+
+
+def test_bootstrap_rejects_linked_parent_and_stale_existing_bytes(
+    tmp_path: Path,
+) -> None:
+    plan = _fixed_plan(tmp_path)
+    real = tmp_path / "real-authority"
+    real.mkdir(mode=0o700)
+    (tmp_path / "linked-authority").symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="unavailable or linked",
+    ):
+        support.materialize_full_c6_toolchain_support_lock(
+            project_root=tmp_path,
+            output="linked-authority/support.json",
+            plan=plan,
+            configured_artifact_paths=(),
+        )
+
+    stale = real / "support.json"
+    stale.write_bytes(b"{}")
+    stale.chmod(0o600)
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="existing .* bytes differ",
+    ):
+        support.materialize_full_c6_toolchain_support_lock(
+            project_root=tmp_path,
+            output="real-authority/support.json",
+            plan=plan,
+            configured_artifact_paths=(),
+        )
+    assert stale.read_bytes() == b"{}"
+
+
+def test_bootstrap_requires_private_owner_output_parent(tmp_path: Path) -> None:
+    plan = _fixed_plan(tmp_path)
+    authority = tmp_path / "authority"
+    authority.mkdir(mode=0o755)
+
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="output parent must be owner-private mode 0700",
+    ):
+        support.materialize_full_c6_toolchain_support_lock(
+            project_root=tmp_path,
+            output="authority/support.json",
+            plan=plan,
+            configured_artifact_paths=(),
+        )
+
+
+def test_bootstrap_normalizes_project_root_open_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_open = os.open
+
+    def deny_project_anchor(
+        path: str | bytes | int,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == tmp_path.anchor and dir_fd is None:
+            raise PermissionError("denied fixture anchor")
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(support.os, "open", deny_project_anchor)
+
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="project root is unavailable",
+    ):
+        support._open_support_output_parent(
+            tmp_path,
+            "authority/support.json",
+        )
+
+
+def test_bootstrap_rejects_casefold_artifact_alias_and_hardlink_alias(
+    tmp_path: Path,
+) -> None:
+    plan = _fixed_plan(tmp_path)
+    authority = tmp_path / "authority"
+    authority.mkdir(mode=0o700)
+
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="aliases another configured artifact",
+    ):
+        support.materialize_full_c6_toolchain_support_lock(
+            project_root=tmp_path,
+            output="authority/support.json",
+            plan=plan,
+            configured_artifact_paths=("AUTHORITY/SUPPORT.JSON",),
+        )
+
+    original = authority / "original.json"
+    original.write_bytes(b"{}")
+    original.chmod(0o600)
+    os.link(original, authority / "support.json")
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="not one private regular file",
+    ):
+        support.materialize_full_c6_toolchain_support_lock(
+            project_root=tmp_path,
+            output="authority/support.json",
+            plan=plan,
+            configured_artifact_paths=(),
+        )
+
+
+def test_bootstrap_loads_strict_config_before_support_lock_is_pinned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_strict_bootstrap_config(tmp_path)
+    authority = tmp_path / "authority"
+    authority.mkdir(mode=0o700)
+    plan = _fixed_plan(tmp_path / "plan")
+    seen: dict[str, object] = {}
+
+    def discover(*, project_root: Path, config: object, inherited_environment: object) -> object:
+        seen["project_root"] = project_root
+        seen["config"] = config
+        seen["inherited_environment"] = inherited_environment
+        return plan
+
+    monkeypatch.setattr(
+        support,
+        "_discover_full_c6_bootstrap_plan",
+        discover,
+        raising=False,
+    )
+
+    result = support.bootstrap_full_c6_toolchain_support_lock(
+        project_root=tmp_path,
+        output="authority/toolchain-support.json",
+        inherited_environment={},
+    )
+
+    assert result.result == "created"
+    assert seen["project_root"] == tmp_path
+    config = seen["config"]
+    assert getattr(config, "build").artifact_toolchain_support_lock == (
+        "authority/toolchain-support.json"
+    )
+    assert getattr(config, "build").artifact_toolchain_support_lock_sha256 == (
+        "0" * 64
+    )
+    assert "artifact_toolchain_support_lock" not in (
+        tmp_path / "rextio.toml"
+    ).read_text(encoding="utf-8")
+
+
+def test_bootstrap_exactly_reuses_matching_configured_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = tmp_path / "authority"
+    authority.mkdir(mode=0o700)
+    _write_strict_bootstrap_config(
+        tmp_path,
+        support_path="authority/toolchain-support.json",
+        support_sha256="0" * 64,
+    )
+    plan = _fixed_plan(tmp_path / "plan")
+    initial = support.materialize_full_c6_toolchain_support_lock(
+        project_root=tmp_path,
+        output="authority/toolchain-support.json",
+        plan=plan,
+        configured_artifact_paths=(),
+    )
+    _write_strict_bootstrap_config(
+        tmp_path,
+        support_path="authority/toolchain-support.json",
+        support_sha256=initial.raw_sha256,
+    )
+    monkeypatch.setattr(
+        support,
+        "_discover_full_c6_bootstrap_plan",
+        lambda **_kwargs: plan,
+    )
+
+    reused = support.bootstrap_full_c6_toolchain_support_lock(
+        project_root=tmp_path,
+        output="authority/toolchain-support.json",
+        inherited_environment={},
+    )
+
+    assert reused.result == "reused"
+    assert reused.raw_sha256 == initial.raw_sha256
+
+
+def test_bootstrap_rejects_partial_or_stale_configured_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = tmp_path / "authority"
+    authority.mkdir(mode=0o700)
+    _write_strict_bootstrap_config(
+        tmp_path,
+        support_path="authority/toolchain-support.json",
+        support_sha256="0" * 64,
+    )
+    plan = _fixed_plan(tmp_path / "plan")
+    initial = support.materialize_full_c6_toolchain_support_lock(
+        project_root=tmp_path,
+        output="authority/toolchain-support.json",
+        plan=plan,
+        configured_artifact_paths=(),
+    )
+    output = authority / "toolchain-support.json"
+    original = output.read_bytes()
+    monkeypatch.setattr(
+        support,
+        "_discover_full_c6_bootstrap_plan",
+        lambda **_kwargs: plan,
+    )
+
+    _write_strict_bootstrap_config(
+        tmp_path,
+        support_path="authority/toolchain-support.json",
+    )
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="path and SHA-256 must be configured together",
+    ):
+        support.bootstrap_full_c6_toolchain_support_lock(
+            project_root=tmp_path,
+            output="authority/toolchain-support.json",
+            inherited_environment={},
+        )
+
+    _write_strict_bootstrap_config(
+        tmp_path,
+        support_sha256="e" * 64,
+    )
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="path and SHA-256 must be configured together",
+    ):
+        support.bootstrap_full_c6_toolchain_support_lock(
+            project_root=tmp_path,
+            output="authority/toolchain-support.json",
+            inherited_environment={},
+        )
+
+    _write_strict_bootstrap_config(
+        tmp_path,
+        support_path="authority/toolchain-support.json",
+        support_sha256="f" * 64,
+    )
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="differs from the configured SHA-256",
+    ):
+        support.bootstrap_full_c6_toolchain_support_lock(
+            project_root=tmp_path,
+            output="authority/toolchain-support.json",
+            inherited_environment={},
+        )
+    assert output.read_bytes() == original
+    assert initial.raw_sha256 != "f" * 64
+
+
+def test_bootstrap_rejects_unsupported_host_before_tool_discovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import full_c6_host_inputs as host
+
+    authority = tmp_path / "authority"
+    authority.mkdir(mode=0o700)
+
+    def unsupported() -> str:
+        raise host.FullC6HostInputsError("unsupported Full C6 host")
+
+    monkeypatch.setattr(host, "_require_supported_host", unsupported)
+
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="bootstrap discovery failed closed",
+    ):
+        support.bootstrap_full_c6_toolchain_support_lock(
+            project_root=tmp_path,
+            output="authority/toolchain-support.json",
+            inherited_environment={},
+        )
+    assert not (authority / "toolchain-support.json").exists()
 
 
 def test_macos_plan_exposes_exact_sealed_platform_anchor(tmp_path: Path) -> None:

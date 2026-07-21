@@ -20,10 +20,12 @@ import hashlib
 import hmac
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import secrets
 import stat
+import sys
+import tomllib
 from typing import SupportsIndex
 import unicodedata
 
@@ -37,9 +39,11 @@ from rextio.build.subprocess_utils import run_build_tool
 from rextio.build.toolchain_identity import (
     ToolIdentity,
     ToolchainIdentityError,
+    capture_tool_identity,
     verify_tool_identity,
 )
 from rextio.build.toolchain_support_lock import (
+    MAX_TOOLCHAIN_SUPPORT_LOCK_BYTES,
     ToolchainSupportLocator,
     ToolchainSupportLock,
     ToolchainSupportLockError,
@@ -47,6 +51,7 @@ from rextio.build.toolchain_support_lock import (
     generate_toolchain_support_lock,
     verify_toolchain_support_lock,
 )
+from rextio.config.schema import RextioConfig
 
 
 FULL_C6_TOOLCHAIN_SUPPORT_PLAN_DOMAIN = (
@@ -127,6 +132,7 @@ _ELF_INTERP_RE = re.compile(
 )
 _ELF_NEEDED_RE = re.compile(r"Shared library: \[(?P<name>[^\]\n]+)\]")
 _ROLE_RE = re.compile(r"^[a-z][a-z0-9-]{0,127}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PYTHON_RUNTIME_PROBE = (
     "import json,sys,sysconfig;"
     "print(json.dumps({"
@@ -148,6 +154,58 @@ _PYTHON_RUNTIME_PROBE = (
 
 class FullC6ToolchainSupportError(RuntimeError):
     """The fixed support profile is missing, ambiguous, or stale."""
+
+
+@dataclass(frozen=True, slots=True)
+class FullC6ToolchainSupportBootstrapResult:
+    """Path-private projection of one canonical support-lock transaction."""
+
+    result: str
+    target: str
+    manifest_roles: tuple[str, ...]
+    root_roles: tuple[str, ...]
+    raw_sha256: str
+    merkle_sha256: str
+    output: str
+
+    def __post_init__(self) -> None:
+        expected_manifests, expected_roots = expected_full_c6_toolchain_support_roles(
+            self.target
+        )
+        if (
+            self.result not in {"created", "reused"}
+            or self.manifest_roles != expected_manifests
+            or self.root_roles != expected_roots
+            or _SHA256_RE.fullmatch(self.raw_sha256) is None
+            or _SHA256_RE.fullmatch(self.merkle_sha256) is None
+            or _canonical_project_relative_output(self.output) != self.output
+        ):
+            raise FullC6ToolchainSupportError(
+                "Full C6 support-lock bootstrap result is invalid"
+            )
+
+    @property
+    def config(self) -> dict[str, str]:
+        """Return only the two configuration fields the owner must pin."""
+        return {
+            "artifact_toolchain_support_lock": self.output,
+            "artifact_toolchain_support_lock_sha256": self.raw_sha256,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the host-path-free public bootstrap projection."""
+        return {
+            "status": "full-c6-toolchain-support-lock-bootstrapped",
+            "result": self.result,
+            "target": self.target,
+            "manifest_roles": list(self.manifest_roles),
+            "root_roles": list(self.root_roles),
+            "raw_sha256": self.raw_sha256,
+            "merkle_sha256": self.merkle_sha256,
+            "config": self.config,
+            "authorizes_build": False,
+            "authorizes_distribution": False,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -497,6 +555,373 @@ def generate_full_c6_toolchain_support_lock(
     except ToolchainSupportLockError as exc:
         raise FullC6ToolchainSupportError(
             "Full C6 support lock generation failed closed"
+        ) from exc
+
+
+def materialize_full_c6_toolchain_support_lock(
+    *,
+    project_root: Path | str,
+    output: str,
+    plan: FullC6ToolchainSupportPlan,
+    configured_artifact_paths: Sequence[str],
+    expected_raw_sha256: str | None = None,
+) -> FullC6ToolchainSupportBootstrapResult:
+    """Create or exactly reuse one project-contained canonical support lock."""
+    trusted_plan = revalidate_full_c6_toolchain_support_plan(plan)
+    relative = _canonical_project_relative_output(output)
+    root = _canonical_absolute_project_root(project_root)
+    _require_nonaliased_support_output(
+        relative,
+        configured_artifact_paths=configured_artifact_paths,
+    )
+    lock = generate_full_c6_toolchain_support_lock(trusted_plan)
+    if expected_raw_sha256 is not None and (
+        _SHA256_RE.fullmatch(expected_raw_sha256) is None
+        or not hmac.compare_digest(lock.raw_sha256, expected_raw_sha256)
+    ):
+        raise FullC6ToolchainSupportError(
+            "Full C6 generated support lock differs from the configured SHA-256"
+        )
+    if not verify_full_c6_toolchain_support_lock(trusted_plan, lock):
+        raise FullC6ToolchainSupportError(
+            "Full C6 generated support lock failed verification"
+        )
+    created = _atomic_create_or_exact_reuse_support_lock(
+        project_root=root,
+        relative_output=relative,
+        payload=lock.canonical_bytes,
+    )
+    manifests, roots = expected_full_c6_toolchain_support_roles(
+        trusted_plan.target_triple
+    )
+    return FullC6ToolchainSupportBootstrapResult(
+        result="created" if created else "reused",
+        target=trusted_plan.target_triple,
+        manifest_roles=manifests,
+        root_roles=roots,
+        raw_sha256=lock.raw_sha256,
+        merkle_sha256=lock.merkle_sha256,
+        output=relative,
+    )
+
+
+def bootstrap_full_c6_toolchain_support_lock(
+    *,
+    project_root: Path | str,
+    output: str,
+    inherited_environment: Mapping[str, str] | None = None,
+) -> FullC6ToolchainSupportBootstrapResult:
+    """Discover and materialize one fixed host support lock without authority."""
+    root = _canonical_absolute_project_root(project_root)
+    relative = _canonical_project_relative_output(output)
+    environment = (
+        os.environ if inherited_environment is None else inherited_environment
+    )
+    config, configured_pin = _load_full_c6_support_bootstrap_config(
+        root,
+        output=relative,
+        inherited_environment=environment,
+    )
+    plan = _discover_full_c6_bootstrap_plan(
+        project_root=root,
+        config=config,
+        inherited_environment=environment,
+    )
+    return materialize_full_c6_toolchain_support_lock(
+        project_root=root,
+        output=relative,
+        plan=plan,
+        configured_artifact_paths=_configured_full_c6_artifact_paths(config),
+        expected_raw_sha256=configured_pin,
+    )
+
+
+def _load_full_c6_support_bootstrap_config(
+    project_root: Path,
+    *,
+    output: str,
+    inherited_environment: Mapping[str, str] | None,
+) -> tuple[RextioConfig, str | None]:
+    """Load ordinary config, injecting only the missing bootstrap lock pair."""
+    from rextio.config import loader
+
+    path = project_root / "rextio.toml"
+    raw: dict[str, object] = dict(loader.DEFAULT_CONFIG)
+    if path.exists():
+        try:
+            parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+            raise FullC6ToolchainSupportError(
+                "Full C6 support-lock bootstrap could not load rextio.toml"
+            ) from exc
+        unknown_sections = set(parsed) - set(loader.CONFIG_KEYS)
+        if unknown_sections:
+            section = sorted(unknown_sections)[0]
+            raise FullC6ToolchainSupportError(
+                f"unsupported config section: [{section}]"
+            )
+        raw = {**raw, **parsed}
+    build = {**loader.DEFAULT_CONFIG["build"], **loader._section(raw, "build")}
+    rust = {**loader.DEFAULT_CONFIG["rust"], **loader._section(raw, "rust")}
+    fallback = {
+        **loader.DEFAULT_CONFIG["fallback"],
+        **loader._section(raw, "fallback"),
+    }
+    target = {**loader.DEFAULT_CONFIG["target"], **loader._section(raw, "target")}
+    plugins = {
+        **loader.DEFAULT_CONFIG["plugins"],
+        **loader._section(raw, "plugins"),
+    }
+    imports = {
+        **loader.DEFAULT_CONFIG["imports"],
+        **loader._section(raw, "imports"),
+    }
+    embedding = {
+        **loader.DEFAULT_CONFIG["embedding"],
+        **loader._section(raw, "embedding"),
+    }
+    executable = {
+        **loader.DEFAULT_CONFIG["executable"],
+        **loader._section(raw, "executable"),
+    }
+    toolchain = {
+        **loader.DEFAULT_CONFIG["toolchain"],
+        **loader._section(raw, "toolchain"),
+    }
+    policy = {**loader.DEFAULT_CONFIG["policy"], **loader._section(raw, "policy")}
+    if inherited_environment is not None:
+        loader._apply_environment_overrides(
+            build,
+            rust,
+            fallback,
+            target,
+            plugins,
+            imports,
+            embedding,
+            executable,
+            toolchain,
+            policy,
+            inherited_environment,
+        )
+    configured_path = build["artifact_toolchain_support_lock"]
+    configured_pin = build["artifact_toolchain_support_lock_sha256"]
+    if (configured_path is None) != (configured_pin is None):
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock path and SHA-256 must be configured together"
+        )
+    if configured_path is None:
+        build["artifact_toolchain_support_lock"] = output
+        build["artifact_toolchain_support_lock_sha256"] = "0" * 64
+    elif configured_path != output:
+        raise FullC6ToolchainSupportError(
+            "Full C6 configured support-lock path differs from --output"
+        )
+    try:
+        config = loader._build_config(
+            build,
+            rust,
+            fallback,
+            target,
+            plugins,
+            imports,
+            embedding,
+            executable,
+            toolchain,
+            policy,
+        )
+    except loader.ConfigError as exc:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock bootstrap configuration is invalid"
+        ) from exc
+    return config, configured_pin if isinstance(configured_pin, str) else None
+
+
+def _configured_full_c6_artifact_paths(
+    config: RextioConfig,
+) -> tuple[str, ...]:
+    if type(config) is not RextioConfig:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock bootstrap configuration is invalid"
+        )
+    build = config.build
+    values = (
+        "rextio.toml",
+        build.artifact_source_lock_manifest,
+        build.artifact_source_lock_signature,
+        build.artifact_policy_manifest,
+        build.artifact_cargo_vendor,
+        build.artifact_cargo_lock,
+        build.artifact_trusted_public_key,
+        build.artifact_final_signature,
+        build.artifact_signing_request_output,
+    )
+    if any(value is not None and type(value) is not str for value in values):
+        raise FullC6ToolchainSupportError(
+            "Full C6 configured artifact path is invalid"
+        )
+    return tuple(value for value in values if type(value) is str)
+
+
+def _discover_full_c6_bootstrap_plan(
+    *,
+    project_root: Path,
+    config: RextioConfig,
+    inherited_environment: Mapping[str, str] | None,
+) -> FullC6ToolchainSupportPlan:
+    """Reuse production tool selection without requiring the lock it creates."""
+    from rextio.build import full_c6_host_inputs as host
+
+    try:
+        root, binding = host._open_raw_project_root(project_root)
+        host._verify_directory_binding(root, binding, label="project")
+        target_triple = host._require_supported_host()
+        inherited = host._validate_inherited_environment(inherited_environment)
+        selected_python = host._resolve_python(config)
+        selected_cargo = host._resolve_required_tool(
+            "cargo",
+            config.toolchain.cargo,
+        )
+        python_path = host._resolve_executable(selected_python)
+        cargo_path, rustc_path = host._resolve_actual_rust_tools(
+            selected_cargo,
+            root=root,
+            config=config,
+            inherited=inherited,
+        )
+        linker_path, inspector_path = resolve_full_c6_linker_and_inspector(
+            target_triple=target_triple,
+            cwd=root,
+        )
+        if Path(sys.executable).resolve(strict=True) != python_path:
+            raise FullC6ToolchainSupportError(
+                "Full C6 bootstrap Python differs from the running interpreter"
+            )
+        preliminary_environment = host._minimal_build_environment(cargo_path)
+        probe_environment = {
+            **preliminary_environment,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PYTHONHASHSEED": "0",
+            "SOURCE_DATE_EPOCH": "0",
+            "TZ": "UTC",
+        }
+        paths = (
+            python_path,
+            cargo_path,
+            rustc_path,
+            linker_path,
+            inspector_path,
+        )
+        versions = tuple(
+            host._probe_version(path, root=root, environment=probe_environment)
+            for path in paths
+        )
+        if host._probe_rustc_host(
+            rustc_path,
+            root=root,
+            environment=probe_environment,
+        ) != target_triple:
+            raise FullC6ToolchainSupportError(
+                "Full C6 bootstrap rustc host differs from target triple"
+            )
+        host._require_version_pin(
+            "CPython",
+            versions[0],
+            config.toolchain.python_version,
+        )
+        host._require_version_pin(
+            "cargo",
+            versions[1],
+            config.toolchain.cargo_version,
+        )
+        inspector_name = (
+            "otool" if target_triple.endswith("apple-darwin") else "readelf"
+        )
+        identities = (
+            capture_tool_identity(
+                "python",
+                python_path,
+                reported_version=versions[0],
+            ),
+            capture_tool_identity(
+                "cargo",
+                cargo_path,
+                reported_version=versions[1],
+            ),
+            capture_tool_identity(
+                "rustc",
+                rustc_path,
+                reported_version=versions[2],
+            ),
+            capture_tool_identity(
+                "linker",
+                linker_path,
+                reported_version=versions[3],
+            ),
+            capture_tool_identity(
+                inspector_name,
+                inspector_path,
+                reported_version=versions[4],
+            ),
+        )
+        repeated_versions = tuple(
+            host._probe_version(path, root=root, environment=probe_environment)
+            for path in paths
+        )
+        if repeated_versions != versions or host._probe_rustc_host(
+            rustc_path,
+            root=root,
+            environment=probe_environment,
+        ) != target_triple:
+            raise FullC6ToolchainSupportError(
+                "Full C6 bootstrap tool version changed during identity capture"
+            )
+        for path, identity in zip(paths, identities, strict=True):
+            verify_tool_identity(path, identity)
+        plan = discover_full_c6_toolchain_support(
+            target_triple=target_triple,
+            cwd=root,
+            python=python_path,
+            cargo=cargo_path,
+            rustc=rustc_path,
+            linker=linker_path,
+            inspector=inspector_path,
+            platform_inspector_identity=(
+                identities[-1]
+                if target_triple.endswith("apple-darwin")
+                else None
+            ),
+        )
+        final_probe_environment = {
+            **plan.base_environment,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PYTHONHASHSEED": "0",
+            "SOURCE_DATE_EPOCH": "0",
+            "TZ": "UTC",
+        }
+        final_versions = tuple(
+            host._probe_version(
+                path,
+                root=root,
+                environment=final_probe_environment,
+            )
+            for path in paths
+        )
+        if final_versions != versions or host._probe_rustc_host(
+            rustc_path,
+            root=root,
+            environment=final_probe_environment,
+        ) != target_triple:
+            raise FullC6ToolchainSupportError(
+                "Full C6 bootstrap tool identity changed under the support environment"
+            )
+        return revalidate_full_c6_toolchain_support_plan(plan)
+    except FullC6ToolchainSupportError:
+        raise
+    except (host.FullC6HostInputsError, ToolchainIdentityError, OSError, TypeError, ValueError) as exc:
+        raise FullC6ToolchainSupportError(
+            "Full C6 toolchain support bootstrap discovery failed closed"
         ) from exc
 
 
@@ -1937,6 +2362,349 @@ def _canonical_json(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def _canonical_project_relative_output(value: object) -> str:
+    path = _canonical_project_relative_path(
+        value,
+        label="support-lock output",
+    )
+    if not path.endswith(".json"):
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock output is not a canonical project-relative JSON path"
+        )
+    return path
+
+
+def _canonical_project_relative_path(value: object, *, label: str) -> str:
+    if type(value) is not str:
+        raise FullC6ToolchainSupportError(
+            f"Full C6 {label} must be project-relative text"
+        )
+    posix = PurePosixPath(value)
+    windows = PureWindowsPath(value)
+    if (
+        not value
+        or value != value.strip()
+        or value != unicodedata.normalize("NFC", value)
+        or len(value.encode("utf-8")) > 4096
+        or "\\" in value
+        or "\0" in value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or posix.is_absolute()
+        or windows.is_absolute()
+        or bool(windows.drive)
+        or posix.as_posix() != value
+        or any(part in {"", ".", ".."} for part in value.split("/"))
+    ):
+        raise FullC6ToolchainSupportError(
+            f"Full C6 {label} is not a canonical project-relative path"
+        )
+    return value
+
+
+def _canonical_absolute_project_root(value: Path | str) -> Path:
+    try:
+        text = os.fspath(value)
+    except TypeError as exc:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock project root is invalid"
+        ) from exc
+    if (
+        type(text) is not str
+        or not text
+        or "\0" in text
+        or text != unicodedata.normalize("NFC", text)
+    ):
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock project root is invalid"
+        )
+    root = Path(os.path.abspath(text))
+    if len(os.fsencode(root)) > MAX_FULL_C6_SUPPORT_PATH_BYTES:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock project root exceeds its path bound"
+        )
+    return root
+
+
+def _require_nonaliased_support_output(
+    output: str,
+    *,
+    configured_artifact_paths: Sequence[str],
+) -> None:
+    if isinstance(configured_artifact_paths, (str, bytes)):
+        raise FullC6ToolchainSupportError(
+            "Full C6 configured artifact paths are invalid"
+        )
+    candidate = _alias_path_parts(output)
+    for configured in configured_artifact_paths:
+        other = _canonical_project_relative_path(
+            configured,
+            label="configured artifact path",
+        )
+        other_parts = _alias_path_parts(other)
+        if (
+            candidate == other_parts
+            or candidate[: len(other_parts)] == other_parts
+            or other_parts[: len(candidate)] == candidate
+        ):
+            raise FullC6ToolchainSupportError(
+                "Full C6 support-lock output aliases another configured artifact path"
+            )
+
+
+def _alias_path_parts(value: str) -> tuple[str, ...]:
+    return tuple(
+        unicodedata.normalize("NFC", part).casefold()
+        for part in PurePosixPath(value).parts
+    )
+
+
+def _atomic_create_or_exact_reuse_support_lock(
+    *,
+    project_root: Path,
+    relative_output: str,
+    payload: bytes,
+) -> bool:
+    if (
+        type(payload) is not bytes
+        or not payload
+        or len(payload) > MAX_TOOLCHAIN_SUPPORT_LOCK_BYTES
+    ):
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock output bytes are invalid"
+        )
+    parent_fd, name = _open_support_output_parent(
+        project_root,
+        relative_output,
+    )
+    temporary = (
+        f".{name}.rextio-{os.getpid()}-{secrets.token_hex(8)}.tmp"
+    )
+    descriptor = -1
+    created_temporary = False
+    try:
+        existing = _read_support_output(parent_fd, name)
+        if existing is not None:
+            if not hmac.compare_digest(existing, payload):
+                raise FullC6ToolchainSupportError(
+                    "existing Full C6 support-lock output bytes differ"
+                )
+            return False
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | _require_nofollow()
+        )
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
+        created_temporary = True
+        os.fchmod(descriptor, 0o600)
+        _write_all(descriptor, payload)
+        os.fsync(descriptor)
+        observed = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed.st_nlink != 1
+            or observed.st_size != len(payload)
+            or stat.S_IMODE(observed.st_mode) != 0o600
+        ):
+            raise FullC6ToolchainSupportError(
+                "Full C6 support-lock temporary output is unsafe"
+            )
+        os.close(descriptor)
+        descriptor = -1
+        try:
+            os.link(
+                temporary,
+                name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            concurrent = _read_support_output(parent_fd, name)
+            if concurrent is None or not hmac.compare_digest(concurrent, payload):
+                raise FullC6ToolchainSupportError(
+                    "concurrent Full C6 support-lock output bytes differ"
+                ) from None
+            return False
+        os.unlink(temporary, dir_fd=parent_fd)
+        created_temporary = False
+        os.fsync(parent_fd)
+        final = _read_support_output(parent_fd, name)
+        if final is None or not hmac.compare_digest(final, payload):
+            raise FullC6ToolchainSupportError(
+                "Full C6 support-lock final bytes changed"
+            )
+        return True
+    except FullC6ToolchainSupportError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock output transaction failed"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if created_temporary:
+            try:
+                os.unlink(temporary, dir_fd=parent_fd)
+            except OSError:
+                pass
+        os.close(parent_fd)
+
+
+def _open_support_output_parent(
+    project_root: Path,
+    relative_output: str,
+) -> tuple[int, str]:
+    nofollow = _require_nofollow()
+    flags = (
+        os.O_RDONLY
+        | nofollow
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        descriptor = os.open(project_root.anchor, flags)
+    except OSError as exc:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock project root is unavailable"
+        ) from exc
+    try:
+        for part in project_root.parts[1:]:
+            descriptor = _open_child_directory(descriptor, part, flags)
+        output = PurePosixPath(relative_output)
+        for part in output.parts[:-1]:
+            descriptor = _open_child_directory(descriptor, part, flags)
+        parent = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != os.getuid()
+            or stat.S_IMODE(parent.st_mode) != 0o700
+        ):
+            raise FullC6ToolchainSupportError(
+                "Full C6 support-lock output parent must be owner-private mode 0700"
+            )
+        return descriptor, output.name
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _open_child_directory(parent_fd: int, name: str, flags: int) -> int:
+    if name in {"", ".", ".."} or "/" in name or "\\" in name:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock output parent is unsafe"
+        )
+    child = -1
+    try:
+        child = os.open(name, flags, dir_fd=parent_fd)
+        opened = os.fstat(child)
+        linked = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        if child >= 0:
+            os.close(child)
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock output parent is unavailable or linked"
+        ) from exc
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or opened.st_dev != linked.st_dev
+        or opened.st_ino != linked.st_ino
+    ):
+        os.close(child)
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock output parent changed"
+        )
+    os.close(parent_fd)
+    return child
+
+
+def _read_support_output(parent_fd: int, name: str) -> bytes | None:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | _require_nofollow()
+    )
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock output is unsafe"
+        ) from exc
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_uid != os.getuid()
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size <= 0
+            or before.st_size > MAX_TOOLCHAIN_SUPPORT_LOCK_BYTES
+        ):
+            raise FullC6ToolchainSupportError(
+                "Full C6 support-lock output is not one private regular file"
+            )
+        data = bytearray()
+        while len(data) <= MAX_TOOLCHAIN_SUPPORT_LOCK_BYTES:
+            chunk = os.read(
+                descriptor,
+                min(1024 * 1024, MAX_TOOLCHAIN_SUPPORT_LOCK_BYTES + 1 - len(data)),
+            )
+            if not chunk:
+                break
+            data.extend(chunk)
+        after = os.fstat(descriptor)
+        if (
+            len(data) != before.st_size
+            or len(data) > MAX_TOOLCHAIN_SUPPORT_LOCK_BYTES
+            or _support_stat_key(before) != _support_stat_key(after)
+        ):
+            raise FullC6ToolchainSupportError(
+                "Full C6 support-lock output changed while reading"
+            )
+        return bytes(data)
+    finally:
+        os.close(descriptor)
+
+
+def _support_stat_key(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_uid,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = os.write(descriptor, payload[offset:])
+        if written <= 0:
+            raise FullC6ToolchainSupportError(
+                "Full C6 support-lock output write stalled"
+            )
+        offset += written
+
+
+def _require_nofollow() -> int:
+    value = getattr(os, "O_NOFOLLOW", None)
+    if type(value) is not int or value == 0:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support-lock bootstrap requires O_NOFOLLOW"
+        )
+    return value
+
+
 __all__ = [
     "FULL_C6_TOOLCHAIN_SUPPORT_PLAN_DOMAIN",
     "FULL_C6_TOOLCHAIN_SUPPORT_TARGETS",
@@ -1947,11 +2715,14 @@ __all__ = [
     "MACOS_MANIFEST_ROLES",
     "MACOS_ROOT_ROLES",
     "FullC6SupportNamespaceMapping",
+    "FullC6ToolchainSupportBootstrapResult",
     "FullC6ToolchainSupportError",
     "FullC6ToolchainSupportPlan",
+    "bootstrap_full_c6_toolchain_support_lock",
     "discover_full_c6_toolchain_support",
     "expected_full_c6_toolchain_support_roles",
     "generate_full_c6_toolchain_support_lock",
+    "materialize_full_c6_toolchain_support_lock",
     "require_full_c6_toolchain_support_plan",
     "revalidate_full_c6_toolchain_support_plan",
     "resolve_full_c6_linker_and_inspector",
