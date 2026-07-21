@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import hashlib
 import os
+import pickle
 import stat
 import subprocess
 import sys
@@ -70,20 +72,24 @@ def _external_contract():
     )
 
 
-def _native_inputs(tmp_path: Path, lock_data: bytes):
+def _native_inputs(tmp_path: Path, project: Path):
     from rextio.build.input_closure import ExactFileIdentity
+    from rextio.build.full_c6_cargo_workspace import (
+        collect_full_c6_cargo_dependency_workspace,
+        compute_full_c6_cargo_vendor_tree_sha256,
+    )
     from rextio.build.full_c6_executor import FullC6NativeToolPaths
     from rextio.build.toolchain_identity import (
         ArgvIdentity,
         BuildToolchainIdentity,
-        CargoSourcesIdentity,
         RextioIdentity,
+        capture_cargo_sources,
         capture_environment_identity,
         capture_tool_identity,
     )
 
     tool_dir = tmp_path / "native-tools"
-    tool_dir.mkdir(parents=True)
+    tool_dir.mkdir(parents=True, exist_ok=True)
     for name in ("cargo", "rustc", "linker", "otool"):
         path = tool_dir / name
         path.write_bytes(f"#!/bin/sh\n# {name}\n".encode())
@@ -100,6 +106,43 @@ def _native_inputs(tmp_path: Path, lock_data: bytes):
         return ExactFileIdentity(name, role, digest, 1, executable)
 
     rextio_file = exact("rextio/__init__.py", "rextio-python-source", "2" * 64)
+    cargo_sources = capture_cargo_sources(project / "Cargo.lock", root_package="demo")
+    vendor = tmp_path / "native-vendor"
+    package = vendor / "demo-dep-1.2.3"
+    (package / "src").mkdir(parents=True)
+    files = {
+        "Cargo.toml": (
+            b'[package]\nname = "demo-dep"\nversion = "1.2.3"\n'
+            b'license = "MIT"\nlicense-file = "LICENSE"\n'
+        ),
+        "LICENSE": b"MIT license evidence\n",
+        "src/lib.rs": b"pub fn answer() -> u32 { 42 }\n",
+    }
+    for relative, payload in files.items():
+        path = package.joinpath(*relative.split("/"))
+        path.write_bytes(payload)
+        path.chmod(0o644)
+    (package / ".cargo-checksum.json").write_text(
+        json.dumps(
+            {
+                "files": {
+                    name: hashlib.sha256(payload).hexdigest()
+                    for name, payload in sorted(files.items())
+                },
+                "package": "a" * 64,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    pin = compute_full_c6_cargo_vendor_tree_sha256(vendor)
+    cargo_workspace = collect_full_c6_cargo_dependency_workspace(
+        vendor_root=vendor,
+        cargo_lock=project / "Cargo.lock",
+        cargo_sources=cargo_sources,
+        expected_vendor_tree_sha256=pin,
+    )
     toolchain = BuildToolchainIdentity(
         python=capture_tool_identity(
             "python",
@@ -135,25 +178,29 @@ def _native_inputs(tmp_path: Path, lock_data: bytes):
         ),
         argv=ArgvIdentity(STRICT_BUILD),
         environment=capture_environment_identity(base_environment),
-        cargo_sources=CargoSourcesIdentity(
-            root_package="demo",
-            lock_file=ExactFileIdentity(
-                "cargo/Cargo.lock",
-                "cargo-lockfile",
-                hashlib.sha256(lock_data).hexdigest(),
-                len(lock_data),
-                False,
-            ),
-            packages=(),
-        ),
+        cargo_sources=cargo_sources,
     )
-    return native_tools, base_environment, toolchain
+    return native_tools, base_environment, toolchain, cargo_workspace
 
 
 def _native_project(tmp_path: Path, *, target: str = "aarch64-apple-darwin"):
     from rextio.build.full_c6_executor import full_c6_native_driver_manifest_bytes
 
     root = _project(tmp_path)
+    (root / "Cargo.toml").write_text(
+        '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n'
+        '\n[dependencies]\ndemo-dep = "=1.2.3"\n',
+        encoding="utf-8",
+    )
+    (root / "Cargo.lock").write_text(
+        'version = 4\n\n'
+        '[[package]]\nname = "demo"\nversion = "0.1.0"\n'
+        'dependencies = ["demo-dep"]\n\n'
+        '[[package]]\nname = "demo-dep"\nversion = "1.2.3"\n'
+        'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+        'checksum = "' + "a" * 64 + '"\n',
+        encoding="utf-8",
+    )
     package = root / "python-staging" / "app"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("VALUE = 42\n", encoding="utf-8")
@@ -174,6 +221,38 @@ def _roots(tmp_path: Path) -> tuple[Path, Path]:
         root.mkdir(mode=0o700)
         root.chmod(0o700)
     return roots
+
+
+def _install_successful_native_run(
+    monkeypatch: pytest.MonkeyPatch,
+    executor: object,
+    *,
+    artifact_bytes: bytes = b"sealed-native-extension",
+) -> None:
+    monkeypatch.setattr(
+        executor,
+        "detect_host_target_triple",
+        lambda: "aarch64-apple-darwin",
+    )
+    monkeypatch.setattr(
+        executor,
+        "_full_c6_extension_suffix",
+        lambda: ".cpython-311-test.so",
+    )
+
+    def fake_run(command, *, cwd, **_kwargs):
+        artifact = (
+            Path(cwd).parent
+            / "target"
+            / "aarch64-apple-darwin"
+            / "release"
+            / "lib_rextio_native.dylib"
+        )
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(artifact_bytes)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(executor, "run_build_tool", fake_run)
 
 
 def _outputs(root: Path, *, wheel: bytes = b"reproducible-wheel"):
@@ -354,9 +433,9 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
 
     source = _native_project(tmp_path)
     roots = _roots(tmp_path)
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path,
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
     runs = []
 
@@ -372,7 +451,19 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
     )
 
     def fake_run(command, *, cwd, timeout, env, inherit_env, max_output_bytes):
-        runs.append((tuple(command), Path(cwd), dict(env), inherit_env))
+        project = Path(cwd)
+        vendor_file = project / "vendor/demo-dep-1.2.3/src/lib.rs"
+        config = project / ".cargo/config.toml"
+        runs.append(
+            (
+                tuple(command),
+                project,
+                dict(env),
+                inherit_env,
+                (vendor_file.stat().st_dev, vendor_file.stat().st_ino),
+            )
+        )
+        assert config.read_text(encoding="utf-8").endswith("offline = true\n")
         assert env["CARGO_BUILD_TARGET"] == "aarch64-apple-darwin"
         assert env["PYO3_PYTHON"] == str(native_tools.python)
         assert env["RUSTC"] == str(native_tools.rustc)
@@ -396,10 +487,12 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
         source_date_epoch=1,
         toolchain=toolchain,
         native_tools=native_tools,
+        cargo_workspace=cargo_workspace,
     )
 
     assert len(runs) == 2
     assert all(item[0] == STRICT_BUILD and item[3] is False for item in runs)
+    assert runs[0][4] != runs[1][4]
     assert receipt.execution_driver == executor.FULL_C6_NATIVE_EXECUTION_DRIVER
     assert receipt.execution_driver == "rextio-native-orchestrator-v1"
     assert receipt.postprocessor == executor.FULL_C6_NATIVE_POSTPROCESSOR
@@ -408,6 +501,12 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
         (source / executor.FULL_C6_NATIVE_DRIVER_MANIFEST).read_bytes()
     ).hexdigest()
     assert receipt.reproducibility.reproducible is True
+    public = receipt.to_dict()
+    assert public["cargo_workspace_sha256"] == cargo_workspace.digest
+    assert public["cargo_vendor_layout"] == cargo_workspace.vendor_layout
+    assert public["cargo_vendor_tree_sha256"] == cargo_workspace.vendor_tree_sha256
+    assert public["cargo_executor_config"] == cargo_workspace.executor_config.to_dict()
+    assert "wheel_bytes" not in json.dumps(public, sort_keys=True)
 
     wheels = []
     for root in roots:
@@ -437,6 +536,141 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
     assert wheels[0] == wheels[1]
 
 
+def test_native_authority_is_process_sealed_noncopyable_and_bytes_private(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    _install_successful_native_run(monkeypatch, executor)
+    authority = executor.execute_full_c6_native_two_build(
+        source,
+        *_roots(tmp_path),
+        base_environment=base_environment,
+        source_date_epoch=1,
+        toolchain=toolchain,
+        native_tools=native_tools,
+        cargo_workspace=cargo_workspace,
+    )
+
+    assert type(authority) is executor.FullC6NativeExecutionAuthority
+    assert executor.validate_full_c6_native_execution_authority(authority)
+    assert authority.authorizes_distribution is False
+    public = authority.to_dict()
+    assert len(public["wheel_captures"]) == 2
+    assert public["wheel_captures"][0]["wheel_sha256"] == (
+        authority.reproducibility.wheel_sha256
+    )
+    serialized = json.dumps(public, sort_keys=True)
+    assert "sealed-native-extension" not in serialized
+    assert "wheel_bytes" not in serialized
+    with pytest.raises(TypeError):
+        executor.FullC6NativeExecutionAuthority()
+    with pytest.raises(TypeError):
+        copy.copy(authority)
+    with pytest.raises(TypeError):
+        copy.deepcopy(authority)
+    with pytest.raises(TypeError):
+        pickle.dumps(authority)
+
+    retained = authority._sbom_payloads  # type: ignore[attr-defined]
+    object.__setattr__(authority, "_sbom_payloads", (b"{}", retained[1]))
+    assert not executor.validate_full_c6_native_execution_authority(authority)
+    with pytest.raises(executor.FullC6ExecutorError, match="stale"):
+        authority.to_dict()
+
+
+def test_native_executor_rejects_stale_or_nonreceipt_cargo_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    _install_successful_native_run(monkeypatch, executor)
+    with pytest.raises(executor.FullC6ExecutorError, match="process-sealed"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tmp_path),
+            base_environment=base_environment,
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=object(),  # type: ignore[arg-type]
+        )
+
+    source = _native_project(tmp_path / "stale")
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path / "stale",
+        source,
+    )
+    object.__setattr__(cargo_workspace, "vendor_tree_sha256", "0" * 64)
+    with pytest.raises(executor.FullC6ExecutorError, match="process-sealed"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tmp_path / "stale"),
+            base_environment=base_environment,
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
+        )
+
+
+def test_native_executor_rejects_vendor_mutation_after_cargo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    monkeypatch.setattr(
+        executor,
+        "detect_host_target_triple",
+        lambda: "aarch64-apple-darwin",
+    )
+    monkeypatch.setattr(
+        executor,
+        "_full_c6_extension_suffix",
+        lambda: ".cpython-311-test.so",
+    )
+
+    def fake_run(command, *, cwd, **_kwargs):
+        artifact = (
+            Path(cwd).parent
+            / "target/aarch64-apple-darwin/release/lib_rextio_native.dylib"
+        )
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b"native")
+        (Path(cwd) / "vendor/demo-dep-1.2.3/src/lib.rs").write_bytes(b"mutated")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(executor, "run_build_tool", fake_run)
+    with pytest.raises(executor.FullC6ExecutorError, match="materialized project tree changed"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tmp_path),
+            base_environment=base_environment,
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
+        )
+
+
 def test_native_orchestrator_rejects_missing_or_noncanonical_driver_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -456,9 +690,9 @@ def test_native_orchestrator_rejects_missing_or_noncanonical_driver_manifest(
             manifest.unlink()
         else:
             manifest.write_bytes(manifest.read_bytes() + b"\n")
-        native_tools, base_environment, toolchain = _native_inputs(
+        native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
             case_root,
-            (source / "Cargo.lock").read_bytes(),
+            source,
         )
         with pytest.raises(executor.FullC6ExecutorError, match="manifest|missing"):
             executor.execute_full_c6_native_two_build(
@@ -468,6 +702,7 @@ def test_native_orchestrator_rejects_missing_or_noncanonical_driver_manifest(
                 source_date_epoch=1,
                 toolchain=toolchain,
                 native_tools=native_tools,
+                cargo_workspace=cargo_workspace,
             )
 
 
@@ -489,9 +724,9 @@ def test_native_orchestrator_rejects_cargo_or_staging_boundary_changes(
     )
 
     source = _native_project(tmp_path / "missing-artifact")
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path / "missing-artifact",
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
     monkeypatch.setattr(
         executor,
@@ -506,15 +741,16 @@ def test_native_orchestrator_rejects_cargo_or_staging_boundary_changes(
             source_date_epoch=1,
             toolchain=toolchain,
             native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
         )
 
     source = _native_project(tmp_path / "external-source")
     external = source / "python-staging" / "vendor"
     external.mkdir()
     (external / "__init__.py").write_text("forbidden = True\n", encoding="utf-8")
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path / "external-source",
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
 
     def build_artifact(command, *, cwd, **_kwargs):
@@ -538,6 +774,7 @@ def test_native_orchestrator_rejects_cargo_or_staging_boundary_changes(
             source_date_epoch=1,
             toolchain=toolchain,
             native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
         )
 
 
@@ -550,9 +787,9 @@ def test_native_orchestrator_rejects_mismatched_concrete_tool_paths(
     import rextio.build.full_c6_executor as executor
 
     source = _native_project(tmp_path)
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path,
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
     replacement = tmp_path / "native-tools" / f"other-{role}"
     replacement.write_bytes(f"#!/bin/sh\n# other {role}\n".encode())
@@ -572,6 +809,7 @@ def test_native_orchestrator_rejects_mismatched_concrete_tool_paths(
             source_date_epoch=1,
             toolchain=toolchain,
             native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
         )
 
 
@@ -588,9 +826,9 @@ def test_native_orchestrator_binds_current_python_and_base_environment(
         lambda: "aarch64-apple-darwin",
     )
     source = _native_project(tmp_path / "python")
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path / "python",
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
     fake_python = native_tools.cargo
     fake_python_identity = capture_tool_identity(
@@ -606,12 +844,13 @@ def test_native_orchestrator_binds_current_python_and_base_environment(
             source_date_epoch=1,
             toolchain=replace(toolchain, python=fake_python_identity),
             native_tools=replace(native_tools, python=fake_python),
+            cargo_workspace=cargo_workspace,
         )
 
     source = _native_project(tmp_path / "environment")
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path / "environment",
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
     changed_environment = {
         "PATH": f"{base_environment['PATH']}{os.pathsep}/usr/bin"
@@ -624,24 +863,27 @@ def test_native_orchestrator_binds_current_python_and_base_environment(
             source_date_epoch=1,
             toolchain=toolchain,
             native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
         )
 
 
+@pytest.mark.parametrize("reserved_root", (".cargo", ".Cargo", "vendor", "Vendor"))
 def test_native_orchestrator_rejects_frozen_cargo_selector_config(
     tmp_path: Path,
+    reserved_root: str,
 ) -> None:
     import rextio.build.full_c6_executor as executor
 
     source = _native_project(tmp_path)
-    cargo_config = source / ".cargo" / "config.toml"
+    cargo_config = source / reserved_root / "config.toml"
     cargo_config.parent.mkdir()
     cargo_config.write_text(
         '[build]\nrustc = "/unbound/rustc"\n',
         encoding="utf-8",
     )
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path,
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
 
     with pytest.raises(executor.FullC6ExecutorError, match="Cargo config"):
@@ -652,6 +894,7 @@ def test_native_orchestrator_rejects_frozen_cargo_selector_config(
             source_date_epoch=1,
             toolchain=toolchain,
             native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
         )
 
 
@@ -662,9 +905,9 @@ def test_native_orchestrator_rejects_symlinked_artifact_ancestor(
     import rextio.build.full_c6_executor as executor
 
     source = _native_project(tmp_path)
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path,
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
     monkeypatch.setattr(
         executor,
@@ -699,6 +942,7 @@ def test_native_orchestrator_rejects_symlinked_artifact_ancestor(
             source_date_epoch=1,
             toolchain=toolchain,
             native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
         )
 
 
@@ -709,9 +953,9 @@ def test_native_orchestrator_rejects_concurrent_artifact_ancestor_swap(
     import rextio.build.full_c6_executor as executor
 
     source = _native_project(tmp_path)
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path,
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
     monkeypatch.setattr(
         executor,
@@ -773,6 +1017,7 @@ def test_native_orchestrator_rejects_concurrent_artifact_ancestor_swap(
             source_date_epoch=1,
             toolchain=toolchain,
             native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
         )
     assert swapped
 
@@ -789,9 +1034,9 @@ def test_native_orchestrator_rechecks_cargo_config_discovery_boundaries(
     import rextio.build.full_c6_executor as executor
 
     source = _native_project(tmp_path)
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path,
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
     monkeypatch.setattr(
         executor,
@@ -821,6 +1066,7 @@ def test_native_orchestrator_rechecks_cargo_config_discovery_boundaries(
             source_date_epoch=1,
             toolchain=toolchain,
             native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
         )
 
 
@@ -831,9 +1077,9 @@ def test_native_orchestrator_rejects_cargo_config_directory_swap(
     import rextio.build.full_c6_executor as executor
 
     source = _native_project(tmp_path)
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path,
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
     cargo_directory = tmp_path / ".cargo"
     cargo_directory.mkdir()
@@ -875,6 +1121,7 @@ def test_native_orchestrator_rejects_cargo_config_directory_swap(
             source_date_epoch=1,
             toolchain=toolchain,
             native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
         )
     assert swapped
 
@@ -886,9 +1133,9 @@ def test_native_orchestrator_requires_empty_cargo_home_before_launch(
     import rextio.build.full_c6_executor as executor
 
     source = _native_project(tmp_path)
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path,
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
     monkeypatch.setattr(
         executor,
@@ -914,6 +1161,7 @@ def test_native_orchestrator_requires_empty_cargo_home_before_launch(
             source_date_epoch=1,
             toolchain=toolchain,
             native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
         )
 
 
@@ -924,9 +1172,9 @@ def test_native_orchestrator_rejects_wheel_member_different_from_cargo_artifact(
     import rextio.build.full_c6_executor as executor
 
     source = _native_project(tmp_path)
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path,
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
     monkeypatch.setattr(
         executor,
@@ -969,6 +1217,7 @@ def test_native_orchestrator_rejects_wheel_member_different_from_cargo_artifact(
             source_date_epoch=1,
             toolchain=toolchain,
             native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
         )
 
 
@@ -980,9 +1229,9 @@ def test_native_orchestrator_materializes_the_exact_captured_wheel_bytes(
 
     source = _native_project(tmp_path)
     roots = _roots(tmp_path)
-    native_tools, base_environment, toolchain = _native_inputs(
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
         tmp_path,
-        (source / "Cargo.lock").read_bytes(),
+        source,
     )
     monkeypatch.setattr(
         executor,
@@ -1029,6 +1278,7 @@ def test_native_orchestrator_materializes_the_exact_captured_wheel_bytes(
         source_date_epoch=1,
         toolchain=toolchain,
         native_tools=native_tools,
+        cargo_workspace=cargo_workspace,
     )
 
     for root in roots:

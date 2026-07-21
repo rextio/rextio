@@ -21,17 +21,25 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import stat
 import sys
 import sysconfig
 import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TypeAlias
 
 from rextio.artifacts.profiles import detect_host_target_triple
+from rextio.build.full_c6_cargo_workspace import (
+    FULL_C6_CARGO_EXECUTOR_CONFIG,
+    FullC6CargoDependencyWorkspaceReceipt,
+    FullC6CargoWorkspaceError,
+    materialize_full_c6_cargo_dependency_workspace,
+    validate_full_c6_cargo_dependency_workspace_receipt,
+)
 from rextio.build.reproducibility import (
     ReproducibilityBuildOutputs,
     ReproducibilityError,
@@ -117,6 +125,8 @@ _PROJECT_ROOT_TOKEN = "/rextio/project"
 _CANONICAL_DIRECTORY_MODE = 0o700
 _CANONICAL_FILE_MODE = 0o644
 _CANONICAL_EXECUTABLE_MODE = 0o755
+_NATIVE_AUTHORITY_SEAL_KEY = secrets.token_bytes(32)
+_NATIVE_AUTHORITY_DOMAIN = "rextio.full-c6-native-execution-authority.v1"
 
 
 class FullC6ExecutorError(ReproducibilityError):
@@ -638,6 +648,112 @@ class FullC6ExecutorReceipt:
         return {**self._payload(), "digest": self.digest}
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class FullC6NativeExecutionAuthority:
+    """Process-sealed native evidence; never distribution authority.
+
+    Direct construction is deliberately unavailable.  The production native
+    executor retains both exact wheel captures and all preliminary output
+    bytes, while the public projection contains identities only.
+    """
+
+    executor_receipt: FullC6ExecutorReceipt
+    cargo_workspace: FullC6CargoDependencyWorkspaceReceipt
+    _wheel_captures: tuple[ExternalWheelCapture, ExternalWheelCapture] = dataclass_field(
+        repr=False
+    )
+    _native_artifact_payloads: tuple[bytes, bytes] = dataclass_field(repr=False)
+    _sbom_payloads: tuple[bytes, bytes] = dataclass_field(repr=False)
+    _provenance_input_payloads: tuple[bytes, bytes] = dataclass_field(repr=False)
+    _transaction_seal: bytes = dataclass_field(repr=False)
+    domain: str = _NATIVE_AUTHORITY_DOMAIN
+    complete_for_scope: bool = True
+    authorizes_distribution: bool = False
+
+    def __new__(cls, *_args: object, **_kwargs: object) -> FullC6NativeExecutionAuthority:
+        """Reject every direct caller construction attempt."""
+        raise TypeError("Full C6 native execution authority is executor-constructed only")
+
+    def __copy__(self) -> object:
+        raise TypeError("Full C6 native execution authority cannot be copied")
+
+    def __deepcopy__(self, _memo: object) -> object:
+        raise TypeError("Full C6 native execution authority cannot be copied")
+
+    def __reduce__(self) -> str | tuple[object, ...]:
+        raise TypeError("Full C6 native execution authority cannot be serialized")
+
+    def __reduce_ex__(self, _protocol: object) -> str | tuple[object, ...]:
+        raise TypeError("Full C6 native execution authority cannot be serialized")
+
+    def __getstate__(self) -> object:
+        raise TypeError("Full C6 native execution authority cannot be serialized")
+
+    @property
+    def digest(self) -> str:
+        """Return the semantic digest of the retained, process-sealed evidence."""
+        if not validate_full_c6_native_execution_authority(self):
+            raise FullC6ExecutorError("Full C6 native execution authority is stale")
+        return hashlib.sha256(_canonical_json(_native_authority_payload(self))).hexdigest()
+
+    def to_dict(self) -> dict[str, object]:
+        """Return path-free identities without any retained artifact bytes."""
+        if not validate_full_c6_native_execution_authority(self):
+            raise FullC6ExecutorError("Full C6 native execution authority is stale")
+        payload = _native_authority_payload(self)
+        return {**payload, "digest": hashlib.sha256(_canonical_json(payload)).hexdigest()}
+
+    @property
+    def frozen_tree(self) -> FullC6FrozenTreeManifest:
+        """Return the exact frozen generated-source tree identity."""
+        return self.executor_receipt.frozen_tree
+
+    @property
+    def invocations(self) -> tuple[FullC6InvocationReceipt, FullC6InvocationReceipt]:
+        """Return both exact closed-environment invocation identities."""
+        return self.executor_receipt.invocations
+
+    @property
+    def reproducibility(self) -> ReproducibilityReceipt:
+        """Return the exact two-build reproducibility receipt."""
+        return self.executor_receipt.reproducibility
+
+    @property
+    def execution_driver(self) -> str:
+        """Return the production native execution driver identity."""
+        return self.executor_receipt.execution_driver
+
+    @property
+    def lock_driver(self) -> str:
+        """Return the Cargo.lock acquisition driver identity."""
+        return self.executor_receipt.lock_driver
+
+    @property
+    def toolchain_sha256(self) -> str | None:
+        """Return the exact toolchain receipt digest."""
+        return self.executor_receipt.toolchain_sha256
+
+    @property
+    def cargo_executable_sha256(self) -> str | None:
+        """Return the Cargo executable byte digest."""
+        return self.executor_receipt.cargo_executable_sha256
+
+    @property
+    def postprocessor(self) -> str | None:
+        """Return the executor-owned wheel postprocessor identity."""
+        return self.executor_receipt.postprocessor
+
+    @property
+    def postprocessor_manifest_sha256(self) -> str | None:
+        """Return the native driver manifest digest."""
+        return self.executor_receipt.postprocessor_manifest_sha256
+
+    @property
+    def target_triple(self) -> str | None:
+        """Return the exact native host target triple."""
+        return self.executor_receipt.target_triple
+
+
 @dataclass(frozen=True, slots=True)
 class FullC6BuildContext:
     """Private, non-serializable context supplied to a command factory."""
@@ -733,6 +849,200 @@ class _NativePostprocessResult:
     outputs: ReproducibilityBuildOutputs
     capture: ExternalWheelCapture
     native_artifact_bytes: bytes
+    sbom_bytes: bytes
+    provenance_input_bytes: bytes
+
+
+def _native_capture_identity(capture: ExternalWheelCapture) -> dict[str, object]:
+    verification = capture.verification
+    native = capture.native_member
+    return {
+        "wheel_sha256": verification.wheel_sha256,
+        "wheel_size": len(capture.wheel_bytes),
+        "requirement": verification.requirement,
+        "metadata_member": verification.metadata_member,
+        "record_member": verification.record_member,
+        "native_member": {
+            "path": native.path,
+            "sha256": native.sha256,
+            "size": native.size,
+        },
+    }
+
+
+def _retained_payload_identity(data: bytes) -> dict[str, object]:
+    return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+
+
+def _native_authority_payload(
+    authority: FullC6NativeExecutionAuthority,
+) -> dict[str, object]:
+    cargo = authority.cargo_workspace
+    return {
+        "domain": _NATIVE_AUTHORITY_DOMAIN,
+        "complete_for_scope": True,
+        "authorizes_distribution": False,
+        "executor_receipt_sha256": authority.executor_receipt.digest,
+        "cargo_workspace_sha256": cargo.digest,
+        "cargo_sources_sha256": cargo.cargo_sources.digest,
+        "cargo_vendor_layout": cargo.vendor_layout,
+        "cargo_vendor_tree_sha256": cargo.vendor_tree_sha256,
+        "cargo_executor_config": cargo.executor_config.to_dict(),
+        "wheel_captures": [
+            _native_capture_identity(item) for item in authority._wheel_captures
+        ],
+        "native_artifacts": [
+            _retained_payload_identity(item)
+            for item in authority._native_artifact_payloads
+        ],
+        "preliminary_sboms": [
+            _retained_payload_identity(item) for item in authority._sbom_payloads
+        ],
+        "preliminary_provenance_inputs": [
+            _retained_payload_identity(item)
+            for item in authority._provenance_input_payloads
+        ],
+    }
+
+
+def _validate_retained_canonical_json(data: bytes) -> bool:
+    if type(data) is not bytes or not data:
+        return False
+    try:
+        document = json.loads(data.decode("utf-8"))
+        return _canonical_json(document) == data
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+
+
+def _validate_native_authority_shape(
+    authority: FullC6NativeExecutionAuthority,
+) -> None:
+    if type(authority.executor_receipt) is not FullC6ExecutorReceipt:
+        raise TypeError("Full C6 native executor receipt is invalid")
+    receipt = authority.executor_receipt
+    if receipt.execution_driver != FULL_C6_NATIVE_EXECUTION_DRIVER:
+        raise ValueError("Full C6 native authority requires the production driver")
+    cargo = authority.cargo_workspace
+    if not validate_full_c6_cargo_dependency_workspace_receipt(cargo):
+        raise ValueError("Full C6 native Cargo workspace receipt is stale")
+    if authority.domain != _NATIVE_AUTHORITY_DOMAIN:
+        raise ValueError("Full C6 native authority domain is invalid")
+    if authority.complete_for_scope is not True or authority.authorizes_distribution is not False:
+        raise ValueError("Full C6 native authority posture is invalid")
+    collections = (
+        authority._wheel_captures,
+        authority._native_artifact_payloads,
+        authority._sbom_payloads,
+        authority._provenance_input_payloads,
+    )
+    if any(type(item) is not tuple or len(item) != 2 for item in collections):
+        raise TypeError("Full C6 native authority requires two retained outputs")
+    if any(type(item) is not ExternalWheelCapture for item in authority._wheel_captures):
+        raise TypeError("Full C6 native wheel captures are invalid")
+    for values in collections[1:]:
+        if any(type(item) is not bytes or not item for item in values):
+            raise TypeError("Full C6 native retained payload is invalid")
+    if authority._wheel_captures[0] != authority._wheel_captures[1]:
+        raise ValueError("Full C6 native wheel captures differ")
+    if authority._native_artifact_payloads[0] != authority._native_artifact_payloads[1]:
+        raise ValueError("Full C6 native artifact payloads differ")
+    if authority._sbom_payloads[0] != authority._sbom_payloads[1]:
+        raise ValueError("Full C6 native preliminary SBOM payloads differ")
+    if authority._provenance_input_payloads[0] != authority._provenance_input_payloads[1]:
+        raise ValueError("Full C6 native preliminary provenance payloads differ")
+    for ordinal, (capture, artifact, sbom, provenance) in enumerate(
+        zip(
+            authority._wheel_captures,
+            authority._native_artifact_payloads,
+            authority._sbom_payloads,
+            authority._provenance_input_payloads,
+            strict=True,
+        )
+    ):
+        build = receipt.reproducibility.builds[ordinal]
+        if (
+            hashlib.sha256(capture.wheel_bytes).hexdigest() != build.unsigned_wheel.sha256
+            or len(capture.wheel_bytes) != build.unsigned_wheel.size
+            or hashlib.sha256(artifact).hexdigest() != capture.native_member.sha256
+            or len(artifact) != capture.native_member.size
+            or hashlib.sha256(sbom).hexdigest() != build.sbom_json.sha256
+            or len(sbom) != build.sbom_json.size
+            or hashlib.sha256(provenance).hexdigest()
+            != build.provenance_input_json.sha256
+            or len(provenance) != build.provenance_input_json.size
+            or not _validate_retained_canonical_json(sbom)
+            or not _validate_retained_canonical_json(provenance)
+        ):
+            raise ValueError("Full C6 native retained evidence differs from reproducibility")
+    lock = next(
+        (
+            item
+            for item in receipt.frozen_tree.entries
+            if item.logical_name == "Cargo.lock" and item.kind == "file"
+        ),
+        None,
+    )
+    if lock is None or lock.sha256 != cargo.cargo_sources.lock_file.sha256:
+        raise ValueError("Full C6 native Cargo.lock differs from dependency workspace")
+
+
+def validate_full_c6_native_execution_authority(
+    authority: FullC6NativeExecutionAuthority,
+) -> bool:
+    """Revalidate the process seal and every retained native output byte."""
+    if type(authority) is not FullC6NativeExecutionAuthority:
+        return False
+    try:
+        _validate_native_authority_shape(authority)
+        expected = hmac.new(
+            _NATIVE_AUTHORITY_SEAL_KEY,
+            _canonical_json(_native_authority_payload(authority)),
+            hashlib.sha256,
+        ).digest()
+    except (AttributeError, TypeError, ValueError, FullC6ExecutorError):
+        return False
+    return type(authority._transaction_seal) is bytes and hmac.compare_digest(
+        authority._transaction_seal,
+        expected,
+    )
+
+
+def _create_native_execution_authority(
+    *,
+    executor_receipt: FullC6ExecutorReceipt,
+    cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
+    results: tuple[_NativePostprocessResult, _NativePostprocessResult],
+) -> FullC6NativeExecutionAuthority:
+    authority = object.__new__(FullC6NativeExecutionAuthority)
+    object.__setattr__(authority, "executor_receipt", executor_receipt)
+    object.__setattr__(authority, "cargo_workspace", cargo_workspace)
+    object.__setattr__(authority, "_wheel_captures", tuple(item.capture for item in results))
+    object.__setattr__(
+        authority,
+        "_native_artifact_payloads",
+        tuple(item.native_artifact_bytes for item in results),
+    )
+    object.__setattr__(authority, "_sbom_payloads", tuple(item.sbom_bytes for item in results))
+    object.__setattr__(
+        authority,
+        "_provenance_input_payloads",
+        tuple(item.provenance_input_bytes for item in results),
+    )
+    object.__setattr__(authority, "domain", _NATIVE_AUTHORITY_DOMAIN)
+    object.__setattr__(authority, "complete_for_scope", True)
+    object.__setattr__(authority, "authorizes_distribution", False)
+    object.__setattr__(authority, "_transaction_seal", b"")
+    _validate_native_authority_shape(authority)
+    seal = hmac.new(
+        _NATIVE_AUTHORITY_SEAL_KEY,
+        _canonical_json(_native_authority_payload(authority)),
+        hashlib.sha256,
+    ).digest()
+    object.__setattr__(authority, "_transaction_seal", seal)
+    if not validate_full_c6_native_execution_authority(authority):
+        raise FullC6ExecutorError("Full C6 native execution authority could not be sealed")
+    return authority
 
 
 @dataclass(frozen=True, slots=True)
@@ -756,23 +1066,15 @@ class _ReceiptBoundCargoConfig:
             raise ValueError("Full C6 receipt-bound Cargo config digest is invalid")
 
 
-def _reject_frozen_cargo_config(tree: _FrozenTree) -> None:
-    """Reject source-controlled Cargo selectors in the production native path.
-
-    A later vendoring slice may materialize one executor-generated canonical
-    config from a receipt-bound manifest.  Until that separate input exists,
-    neither of Cargo's project config spellings is permitted in frozen input.
-    """
-    forbidden = {".cargo/config", ".cargo/config.toml"}
-    observed = forbidden.intersection(
-        item.public.logical_name
-        for item in tree.entries
-        if item.public.kind == "file"
-    )
-    if observed:
-        raise FullC6ExecutorError(
-            "Full C6 native frozen Cargo config is not executor-generated and receipt-bound"
-        )
+def _reject_frozen_cargo_workspace_overlays(tree: _FrozenTree) -> None:
+    """Reserve the complete ``.cargo`` and ``vendor`` namespaces for the executor."""
+    for item in tree.entries:
+        top = PurePosixPath(item.public.logical_name).parts[0]
+        if unicodedata.normalize("NFC", top).casefold() in {".cargo", "vendor"}:
+            raise FullC6ExecutorError(
+                "Full C6 native Cargo config/vendor workspace must be "
+                "executor-generated and receipt-bound"
+            )
 
 
 def execute_full_c6_two_build(
@@ -792,6 +1094,8 @@ def execute_full_c6_two_build(
     toolchain: BuildToolchainIdentity | None = None,
     native_tools: FullC6NativeToolPaths | None = None,
     native_orchestrator: bool = False,
+    cargo_workspace: FullC6CargoDependencyWorkspaceReceipt | None = None,
+    _native_results_sink: list[_NativePostprocessResult] | None = None,
 ) -> FullC6ExecutorReceipt:
     """Freeze one project and execute exactly two strict isolated builds.
 
@@ -817,6 +1121,20 @@ def execute_full_c6_two_build(
         native_tools=native_tools,
         native_orchestrator=native_orchestrator,
     )
+    if native_orchestrator:
+        if (
+            type(cargo_workspace) is not FullC6CargoDependencyWorkspaceReceipt
+            or not validate_full_c6_cargo_dependency_workspace_receipt(cargo_workspace)
+        ):
+            raise FullC6ExecutorError(
+                "Full C6 native execution requires a valid process-sealed Cargo workspace"
+            )
+        if type(_native_results_sink) is not list or _native_results_sink:
+            raise FullC6ExecutorError("Full C6 native retained-evidence sink is invalid")
+    elif cargo_workspace is not None or _native_results_sink is not None:
+        raise FullC6ExecutorError(
+            "Full C6 callback execution cannot claim a native Cargo workspace"
+        )
     source, _source_stat = _validate_source_root(source_root)
     first = _validate_quarantine_root(first_quarantine_root)
     second = _validate_quarantine_root(second_quarantine_root)
@@ -868,9 +1186,22 @@ def execute_full_c6_two_build(
     if native_orchestrator:
         assert toolchain is not None
         assert native_tools is not None
+        assert cargo_workspace is not None
         if frozen.manifest is None:
             raise FullC6ExecutorError("Full C6 native driver requires a frozen Cargo.lock")
-        _reject_frozen_cargo_config(frozen)
+        _reject_frozen_cargo_workspace_overlays(frozen)
+        if cargo_workspace.cargo_sources.digest != toolchain.cargo_sources.digest:
+            raise FullC6ExecutorError(
+                "Full C6 Cargo workspace differs from the toolchain source identity"
+            )
+        cargo_lock_data = _entry_data(frozen, "Cargo.lock")
+        if (
+            hashlib.sha256(cargo_lock_data).hexdigest()
+            != cargo_workspace.cargo_sources.lock_file.sha256
+        ):
+            raise FullC6ExecutorError(
+                "Full C6 Cargo workspace differs from the frozen Cargo.lock"
+            )
         try:
             manifest_data = _entry_data(frozen, FULL_C6_NATIVE_DRIVER_MANIFEST)
         except FullC6ExecutorError as exc:
@@ -913,7 +1244,11 @@ def execute_full_c6_two_build(
         expected_root = first if ordinal == 1 else second
         _verify_private_root(build_root, expected_root[1])
         _assert_source_unchanged(source, without_generated_lock)
-        project_root, inode_keys = _materialize_build_root(build_root, frozen)
+        project_root, inode_keys = _materialize_build_root(
+            build_root,
+            frozen,
+            cargo_workspace=(cargo_workspace if native_orchestrator else None),
+        )
         copied_inodes.append(inode_keys)
         project_copies.append(project_root)
         project_identity = os.lstat(project_root)
@@ -956,13 +1291,19 @@ def execute_full_c6_two_build(
             assert native_manifest is not None
             assert toolchain is not None
             assert native_tools is not None
+            assert cargo_workspace is not None
             argv = fixed_argv
+            receipt_bound_config = _ReceiptBoundCargoConfig(
+                location=f"project:{FULL_C6_CARGO_EXECUTOR_CONFIG}",
+                sha256=cargo_workspace.executor_config.sha256 or "",
+            )
             _verify_native_cargo_config_boundaries(
                 project_root=project_root,
                 build_root=build_root,
                 quarantine_root=expected_root[0],
                 environment=environment,
                 require_empty_cargo_home=True,
+                receipt_bound_config=receipt_bound_config,
             )
             _verify_native_toolchain_invocation(
                 argv,
@@ -988,6 +1329,7 @@ def execute_full_c6_two_build(
                     quarantine_root=expected_root[0],
                     environment=environment,
                     require_empty_cargo_home=False,
+                    receipt_bound_config=receipt_bound_config,
                 )
             if completed.returncode != 0:
                 raise FullC6ExecutorError(
@@ -1055,7 +1397,11 @@ def execute_full_c6_two_build(
         _verify_private_root(build_root, expected_root[1])
         _verify_project_root(project_root, project_identity)
         _verify_outputs_are_independent(build_root, project_root, outputs)
-        _verify_materialized_tree(project_root, frozen)
+        _verify_materialized_tree(
+            project_root,
+            frozen,
+            cargo_workspace=(cargo_workspace if native_orchestrator else None),
+        )
         _verify_project_root(project_root, project_identity)
         _verify_private_root(build_root, expected_root[1])
         _assert_source_unchanged(source, without_generated_lock)
@@ -1101,9 +1447,16 @@ def execute_full_c6_two_build(
     ):
         _verify_private_root(root, root_identity)
         _verify_project_root(project, project_identity)
-        _verify_materialized_tree(project, frozen)
+        _verify_materialized_tree(
+            project,
+            frozen,
+            cargo_workspace=(cargo_workspace if native_orchestrator else None),
+        )
     if native_orchestrator:
         assert native_manifest is not None
+        assert cargo_workspace is not None
+        if not validate_full_c6_cargo_dependency_workspace_receipt(cargo_workspace):
+            raise FullC6ExecutorError("Full C6 Cargo workspace receipt became stale")
         for result in native_results:
             refreshed = _recapture_native_output(result, native_manifest)
             if refreshed != result.capture:
@@ -1114,11 +1467,30 @@ def execute_full_c6_two_build(
                 raise FullC6ExecutorError(
                     "Full C6 verified wheel differs from reproducibility evidence"
                 )
+            for path, retained, label in (
+                (result.outputs.sbom_json, result.sbom_bytes, "SBOM"),
+                (
+                    result.outputs.provenance_input_json,
+                    result.provenance_input_bytes,
+                    "provenance input",
+                ),
+            ):
+                try:
+                    linked = os.lstat(path)
+                    current, _opened = _secure_read_regular(Path(path), linked)
+                except OSError as exc:
+                    raise FullC6ExecutorError(
+                        f"Full C6 verified native {label} could not be recaptured"
+                    ) from exc
+                if current != retained:
+                    raise FullC6ExecutorError(
+                        f"Full C6 verified native {label} changed before receipt capture"
+                    )
     _assert_source_unchanged(source, without_generated_lock)
     if frozen.manifest is None:
         raise FullC6ExecutorError("Full C6 frozen tree is missing its complete manifest")
     try:
-        return FullC6ExecutorReceipt(
+        receipt = FullC6ExecutorReceipt(
             frozen_tree=frozen.manifest,
             invocations=(invocation_receipts[0], invocation_receipts[1]),
             reproducibility=reproducibility,
@@ -1152,6 +1524,10 @@ def execute_full_c6_two_build(
         )
     except (TypeError, ValueError) as exc:
         raise FullC6ExecutorError(str(exc)) from exc
+    if native_orchestrator:
+        assert _native_results_sink is not None
+        _native_results_sink.extend(native_results)
+    return receipt
 
 
 def execute_full_c6_native_two_build(
@@ -1163,16 +1539,18 @@ def execute_full_c6_native_two_build(
     source_date_epoch: int,
     toolchain: BuildToolchainIdentity,
     native_tools: FullC6NativeToolPaths,
+    cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
     timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     max_output_bytes: int = MAX_FULL_C6_OUTPUT_BYTES,
-) -> FullC6ExecutorReceipt:
+) -> FullC6NativeExecutionAuthority:
     """Run the sole production Full C6 native build and wheel postprocessor.
 
     Unlike :func:`execute_full_c6_two_build`'s callback and command-factory
     seams, this entrypoint owns every output-producing step.  Its canonical
     manifest and Python staging bytes must already be part of ``source_root``.
     """
-    return execute_full_c6_two_build(
+    retained_results: list[_NativePostprocessResult] = []
+    receipt = execute_full_c6_two_build(
         source_root,
         first_quarantine_root,
         second_quarantine_root,
@@ -1183,6 +1561,15 @@ def execute_full_c6_native_two_build(
         toolchain=toolchain,
         native_tools=native_tools,
         native_orchestrator=True,
+        cargo_workspace=cargo_workspace,
+        _native_results_sink=retained_results,
+    )
+    if len(retained_results) != 2:
+        raise FullC6ExecutorError("Full C6 native retained evidence is incomplete")
+    return _create_native_execution_authority(
+        executor_receipt=receipt,
+        cargo_workspace=cargo_workspace,
+        results=(retained_results[0], retained_results[1]),
     )
 
 
@@ -1341,6 +1728,8 @@ def _postprocess_native_build(
         ),
         capture=capture,
         native_artifact_bytes=artifact_data,
+        sbom_bytes=_canonical_json(sbom_document),
+        provenance_input_bytes=_canonical_json(provenance_document),
     )
 
 
@@ -2141,14 +2530,29 @@ def _entry_data(tree: _FrozenTree, logical_name: str) -> bytes:
     raise FullC6ExecutorError(f"generated tree is missing exact {logical_name}")
 
 
-def _materialize_build_root(root: Path, tree: _FrozenTree) -> tuple[Path, frozenset[tuple[int, int]]]:
-    return _materialize_project(root, tree)
+def _materialize_build_root(
+    root: Path,
+    tree: _FrozenTree,
+    *,
+    cargo_workspace: FullC6CargoDependencyWorkspaceReceipt | None = None,
+) -> tuple[Path, frozenset[tuple[int, int]]]:
+    return _materialize_project(root, tree, cargo_workspace=cargo_workspace)
 
 
-def _materialize_project(root: Path, tree: _FrozenTree) -> tuple[Path, frozenset[tuple[int, int]]]:
+def _materialize_project(
+    root: Path,
+    tree: _FrozenTree,
+    *,
+    cargo_workspace: FullC6CargoDependencyWorkspaceReceipt | None = None,
+) -> tuple[Path, frozenset[tuple[int, int]]]:
     project = root / "project"
     try:
-        project.mkdir(mode=_CANONICAL_DIRECTORY_MODE)
+        if cargo_workspace is None:
+            project.mkdir(mode=_CANONICAL_DIRECTORY_MODE)
+        else:
+            if not validate_full_c6_cargo_dependency_workspace_receipt(cargo_workspace):
+                raise FullC6ExecutorError("Full C6 Cargo workspace receipt became stale")
+            materialize_full_c6_cargo_dependency_workspace(cargo_workspace, project)
         os.chmod(project, _CANONICAL_DIRECTORY_MODE)
         directories = sorted(
             (item for item in tree.entries if item.public.kind == "directory"),
@@ -2158,7 +2562,6 @@ def _materialize_project(root: Path, tree: _FrozenTree) -> tuple[Path, frozenset
             path = project.joinpath(*PurePosixPath(entry.public.logical_name).parts)
             path.mkdir(mode=_CANONICAL_DIRECTORY_MODE)
             os.chmod(path, _CANONICAL_DIRECTORY_MODE)
-        inode_keys: set[tuple[int, int]] = set()
         for entry in (item for item in tree.entries if item.public.kind == "file"):
             path = project.joinpath(*PurePosixPath(entry.public.logical_name).parts)
             assert entry.data is not None
@@ -2178,24 +2581,142 @@ def _materialize_project(root: Path, tree: _FrozenTree) -> tuple[Path, frozenset
                 observed = os.fstat(descriptor)
                 if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
                     raise FullC6ExecutorError("Full C6 project copy is not an independent file")
-                inode_keys.add((observed.st_dev, observed.st_ino))
             finally:
                 os.close(descriptor)
-        _verify_materialized_tree(project, tree)
-        return project, frozenset(inode_keys)
+        inode_keys = _verify_materialized_tree(
+            project,
+            tree,
+            cargo_workspace=cargo_workspace,
+        )
+        return project, inode_keys
     except FullC6ExecutorError:
         raise
+    except FullC6CargoWorkspaceError as exc:
+        raise FullC6ExecutorError(
+            "Full C6 Cargo workspace could not be materialized safely"
+        ) from exc
     except OSError as exc:
         raise FullC6ExecutorError("Full C6 project tree could not be materialized safely") from exc
 
 
-def _verify_materialized_tree(project: Path, expected: _FrozenTree) -> None:
-    observed = _capture_stable_tree(
-        project,
-        cargo_lock_generated=expected.cargo_lock_generated,
-    )
-    if observed.manifest != expected.manifest or observed.entries != expected.entries:
+def _verify_materialized_tree(
+    project: Path,
+    expected: _FrozenTree,
+    *,
+    cargo_workspace: FullC6CargoDependencyWorkspaceReceipt | None = None,
+) -> frozenset[tuple[int, int]]:
+    projection: dict[str, tuple[str, str | None, int, int]] = {
+        item.public.logical_name: (
+            item.public.kind,
+            item.public.sha256,
+            item.public.size,
+            item.public.mode,
+        )
+        for item in expected.entries
+    }
+    if cargo_workspace is not None:
+        if not validate_full_c6_cargo_dependency_workspace_receipt(cargo_workspace):
+            raise FullC6ExecutorError("Full C6 Cargo workspace receipt became stale")
+        for item in cargo_workspace.executor_projection:
+            if item.logical_name in projection:
+                raise FullC6ExecutorError("Full C6 Cargo workspace overlaps generated source")
+            projection[item.logical_name] = (
+                item.kind,
+                item.sha256,
+                item.size,
+                item.mode,
+            )
+    first = _capture_materialized_projection(project, projection)
+    second = _capture_materialized_projection(project, projection)
+    if first != second:
         raise FullC6ExecutorError("Full C6 materialized project tree changed")
+    return frozenset((item[-2], item[-1]) for item in first if item[1] == "file")
+
+
+def _capture_materialized_projection(
+    project: Path,
+    expected: Mapping[str, tuple[str, str | None, int, int]],
+) -> tuple[tuple[str, str, str | None, int, int, int, int], ...]:
+    try:
+        root = os.lstat(project)
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 materialized project root is unavailable") from exc
+    if not stat.S_ISDIR(root.st_mode) or stat.S_IMODE(root.st_mode) != _CANONICAL_DIRECTORY_MODE:
+        raise FullC6ExecutorError("Full C6 materialized project root changed")
+    pending: list[tuple[Path, PurePosixPath, os.stat_result]] = [
+        (project, PurePosixPath("."), root)
+    ]
+    observed: list[tuple[str, str, str | None, int, int, int, int]] = []
+    aliases: set[str] = set()
+    inodes: set[tuple[int, int]] = set()
+    while pending:
+        directory, relative_directory, expected_directory = pending.pop()
+        try:
+            before = os.lstat(directory)
+            _require_same_directory(expected_directory, before)
+            with os.scandir(directory) as iterator:
+                children = sorted(iterator, key=lambda item: item.name)
+        except OSError as exc:
+            raise FullC6ExecutorError(
+                "Full C6 materialized project could not be enumerated"
+            ) from exc
+        for child in children:
+            relative = (
+                PurePosixPath(child.name)
+                if relative_directory == PurePosixPath(".")
+                else relative_directory / child.name
+            )
+            name = relative.as_posix()
+            _validate_relative_name(name)
+            alias = unicodedata.normalize("NFC", name).casefold()
+            if alias in aliases:
+                raise FullC6ExecutorError("Full C6 materialized project contains a path alias")
+            aliases.add(alias)
+            identity = expected.get(name)
+            if identity is None:
+                raise FullC6ExecutorError("Full C6 materialized project contains an overlay")
+            try:
+                linked = child.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise FullC6ExecutorError(
+                    "Full C6 materialized project member could not be inspected"
+                ) from exc
+            kind, digest, size, mode = identity
+            if stat.S_ISLNK(linked.st_mode) or stat.S_IMODE(linked.st_mode) != mode:
+                raise FullC6ExecutorError("Full C6 materialized project member changed")
+            if kind == "directory" and stat.S_ISDIR(linked.st_mode):
+                observed.append((name, kind, None, 0, mode, linked.st_dev, linked.st_ino))
+                pending.append((Path(child.path), relative, linked))
+            elif kind == "file" and stat.S_ISREG(linked.st_mode):
+                if linked.st_nlink != 1:
+                    raise FullC6ExecutorError(
+                        "Full C6 materialized project contains a shared hardlink"
+                    )
+                data, opened = _secure_read_regular(Path(child.path), linked)
+                key = (opened.st_dev, opened.st_ino)
+                if key in inodes:
+                    raise FullC6ExecutorError(
+                        "Full C6 materialized project contains a shared hardlink"
+                    )
+                inodes.add(key)
+                actual_digest = hashlib.sha256(data).hexdigest()
+                if actual_digest != digest or len(data) != size:
+                    raise FullC6ExecutorError("Full C6 materialized project tree changed")
+                observed.append(
+                    (name, kind, actual_digest, len(data), mode, opened.st_dev, opened.st_ino)
+                )
+            else:
+                raise FullC6ExecutorError("Full C6 materialized project member changed")
+        try:
+            after = os.lstat(directory)
+        except OSError as exc:
+            raise FullC6ExecutorError("Full C6 materialized directory changed") from exc
+        _require_same_directory(before, after)
+    if set(aliases) != {
+        unicodedata.normalize("NFC", name).casefold() for name in expected
+    }:
+        raise FullC6ExecutorError("Full C6 materialized project is incomplete")
+    return tuple(sorted(observed, key=lambda item: item[0]))
 
 
 def _verify_outputs_are_independent(
@@ -2785,6 +3306,7 @@ __all__ = [
     "FullC6LockGenerationRequest",
     "FullC6TreeEntry",
     "FullC6NativeDriverManifest",
+    "FullC6NativeExecutionAuthority",
     "FullC6NativeToolPaths",
     "MAX_FULL_C6_FILE_BYTES",
     "MAX_FULL_C6_OUTPUT_BYTES",
@@ -2794,4 +3316,5 @@ __all__ = [
     "execute_full_c6_two_build",
     "execute_full_c6_native_two_build",
     "full_c6_native_driver_manifest_bytes",
+    "validate_full_c6_native_execution_authority",
 ]
