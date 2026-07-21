@@ -88,6 +88,8 @@ def _lock(tmp_path: Path) -> tuple[ToolchainSupportLock, object, object]:
 
 def _macos_projected_inputs(
     tmp_path: Path,
+    *,
+    python_layout: str = "homebrew",
 ) -> tuple[
     list[ToolchainSupportLocator],
     list[ToolchainSupportLocator],
@@ -121,10 +123,19 @@ def _macos_projected_inputs(
     python_library.write_bytes(b"fixed framework runtime")
     (config / "libpython3.11.a").symlink_to("../../../Python")
     (config / "libpython3.11.dylib").symlink_to("../../../Python")
-    site_target_text = "../../../../../../../../../lib/python3.11/site-packages"
-    site_target = (python_root / site_target_text).resolve(strict=False)
-    site_target.mkdir(parents=True)
-    (python_root / "site-packages").symlink_to(site_target_text)
+    site_packages = python_root / "site-packages"
+    if python_layout == "homebrew":
+        site_target_text = "../../../../../../../../../lib/python3.11/site-packages"
+        site_target = (python_root / site_target_text).resolve(strict=False)
+        site_target.mkdir(parents=True)
+        site_packages.symlink_to(site_target_text)
+    elif python_layout == "actions":
+        site_packages.mkdir()
+        (site_packages / "README.txt").write_bytes(
+            b"Package installation directory for GitHub Actions CPython.\n"
+        )
+    else:
+        raise AssertionError(f"unsupported Python fixture layout: {python_layout}")
 
     sdk = tmp_path / "MacOSX.sdk"
     sound = (
@@ -284,6 +295,73 @@ def test_macos_fixed_symlink_dispositions_are_closed_and_cross_bound(
         manifests=manifests,
         roots=roots,
     )
+
+
+def test_macos_actions_python_runtime_directory_variant_is_fully_bound(
+    tmp_path: Path,
+) -> None:
+    manifests, roots, python_root, _sdk, _sound = _macos_projected_inputs(
+        tmp_path,
+        python_layout="actions",
+    )
+
+    lock = generate_toolchain_support_lock(
+        target_triple="aarch64-apple-darwin",
+        manifests=manifests,
+        roots=roots,
+    )
+    python_receipt = next(
+        item for item in lock.roots if item.logical_role == "python-runtime"
+    )
+    assert {
+        item.relative_path for item in python_receipt.symlink_dispositions
+    } == {
+        "config-3.11-darwin/libpython3.11.a",
+        "config-3.11-darwin/libpython3.11.dylib",
+    }
+    parsed = parse_toolchain_support_lock(
+        lock.canonical_bytes,
+        expected_raw_sha256=lock.raw_sha256,
+    )
+    assert parsed == lock
+    assert verify_toolchain_support_lock(
+        parsed,
+        manifests=manifests,
+        roots=roots,
+    )
+
+    (python_root / "site-packages" / "README.txt").write_bytes(b"changed\n")
+    with pytest.raises(ToolchainSupportLockError, match="differ"):
+        verify_toolchain_support_lock(
+            parsed,
+            manifests=manifests,
+            roots=roots,
+        )
+
+
+@pytest.mark.parametrize("attack", ("missing", "file", "symlink-target"))
+def test_macos_actions_python_runtime_directory_variant_drift_fails_closed(
+    tmp_path: Path,
+    attack: str,
+) -> None:
+    manifests, roots, python_root, _sdk, _sound = _macos_projected_inputs(
+        tmp_path,
+        python_layout="actions",
+    )
+    site_packages = python_root / "site-packages"
+    (site_packages / "README.txt").unlink()
+    site_packages.rmdir()
+    if attack == "file":
+        site_packages.write_bytes(b"not a directory\n")
+    elif attack == "symlink-target":
+        site_packages.symlink_to("config-3.11-darwin")
+
+    with pytest.raises(ToolchainSupportLockError):
+        generate_toolchain_support_lock(
+            target_triple="aarch64-apple-darwin",
+            manifests=manifests,
+            roots=roots,
+        )
 
 
 @pytest.mark.parametrize("attack", ("missing", "target", "resolution", "extra"))

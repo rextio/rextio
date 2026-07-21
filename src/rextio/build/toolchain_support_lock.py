@@ -17,7 +17,7 @@ access times are deliberately excluded.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import ctypes
 from dataclasses import dataclass
 import errno
@@ -786,6 +786,23 @@ _MACOS_PYTHON_RUNTIME_DISPOSITIONS = (
         disposition="deny-isolated-site-packages",
     ),
 )
+_MACOS_PYTHON_RUNTIME_HOMEBREW_DISPOSITION_PATHS = frozenset(
+    {
+        "config-3.11-darwin/libpython3.11.a",
+        "config-3.11-darwin/libpython3.11.dylib",
+        "site-packages",
+    }
+)
+_MACOS_PYTHON_RUNTIME_ACTIONS_DISPOSITION_PATHS = frozenset(
+    {
+        "config-3.11-darwin/libpython3.11.a",
+        "config-3.11-darwin/libpython3.11.dylib",
+    }
+)
+_MACOS_PYTHON_RUNTIME_SITE_PACKAGES = "site-packages"
+_MACOS_PYTHON_RUNTIME_HOMEBREW_VARIANT = "homebrew"
+_MACOS_PYTHON_RUNTIME_ACTIONS_VARIANT = "actions-python-org"
+_FIXED_SYMLINK_DISPOSITION_VARIANT = "fixed"
 _MACOS_XCODE_SDK_DISPOSITIONS = (
     _FixedSymlinkDisposition(
         relative_path="System/Library/Frameworks/vecLib.framework",
@@ -1405,12 +1422,14 @@ def _validate_lock_symlink_dispositions(
         observed = {
             item.relative_path: item for item in root.symlink_dispositions
         }
-        if set(observed) != set(expected):
-            raise ToolchainSupportLockError(
-                "toolchain support lock symlink dispositions are missing or extra"
-            )
-        for relative_path, policy in expected.items():
-            receipt = observed[relative_path]
+        _select_fixed_symlink_disposition_variant(
+            target_triple=scope.target_triple,
+            logical_role=root.logical_role,
+            expected=expected,
+            observed_paths=frozenset(observed),
+        )
+        for relative_path, receipt in observed.items():
+            policy = expected[relative_path]
             if (
                 receipt.disposition != policy.disposition
                 or receipt.raw_link_target != policy.raw_link_target
@@ -1451,6 +1470,33 @@ def _validate_lock_symlink_dispositions(
                 )
 
 
+def _select_fixed_symlink_disposition_variant(
+    *,
+    target_triple: str | None,
+    logical_role: str,
+    expected: Mapping[str, _FixedSymlinkDisposition],
+    observed_paths: frozenset[str],
+) -> str:
+    expected_paths = frozenset(expected)
+    if (
+        target_triple == "aarch64-apple-darwin"
+        and logical_role == "python-runtime"
+    ):
+        if expected_paths != _MACOS_PYTHON_RUNTIME_HOMEBREW_DISPOSITION_PATHS:
+            raise ToolchainSupportLockError(
+                "toolchain support macOS Python disposition policy is incomplete"
+            )
+        if observed_paths == _MACOS_PYTHON_RUNTIME_HOMEBREW_DISPOSITION_PATHS:
+            return _MACOS_PYTHON_RUNTIME_HOMEBREW_VARIANT
+        if observed_paths == _MACOS_PYTHON_RUNTIME_ACTIONS_DISPOSITION_PATHS:
+            return _MACOS_PYTHON_RUNTIME_ACTIONS_VARIANT
+    elif observed_paths == expected_paths:
+        return _FIXED_SYMLINK_DISPOSITION_VARIANT
+    raise ToolchainSupportLockError(
+        "toolchain support fixed symlink dispositions are missing or extra"
+    )
+
+
 def _finalize_symlink_dispositions(
     *,
     target_triple: str | None,
@@ -1467,16 +1513,25 @@ def _finalize_symlink_dispositions(
     observed = {
         item.policy.relative_path: item for item in raw_dispositions
     }
-    if (
-        len(observed) != len(raw_dispositions)
-        or set(observed) != set(expected)
-    ):
+    if len(observed) != len(raw_dispositions):
         raise ToolchainSupportLockError(
             "toolchain support fixed symlink dispositions are missing or extra"
         )
+    variant = _select_fixed_symlink_disposition_variant(
+        target_triple=target_triple,
+        logical_role=logical_role,
+        expected=expected,
+        observed_paths=frozenset(observed),
+    )
     by_path = {item.relative_path: item for item in entries}
+    if variant == _MACOS_PYTHON_RUNTIME_ACTIONS_VARIANT:
+        site_packages = by_path.get(_MACOS_PYTHON_RUNTIME_SITE_PACKAGES)
+        if site_packages is None or site_packages.kind != "directory":
+            raise ToolchainSupportLockError(
+                "toolchain support Actions Python site-packages is not a regular directory"
+            )
     receipts: list[ToolchainSupportSymlinkDispositionReceipt] = []
-    for relative_path in sorted(expected, key=lambda value: (_alias(value), value)):
+    for relative_path in sorted(observed, key=lambda value: (_alias(value), value)):
         raw = observed[relative_path]
         policy = expected[relative_path]
         if raw.policy != policy:
