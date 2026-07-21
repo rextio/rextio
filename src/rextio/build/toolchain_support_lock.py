@@ -2630,8 +2630,12 @@ def _walk_tree(
                 "toolchain support tree member count exceeds the bound"
             )
         observed = _stamp(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
-        mode = stat.S_IMODE(observed.mode)
-        _validate_mode(mode)
+        _validate_tree_member_mode(
+            target_triple=target_triple,
+            logical_role=logical_role,
+            relative_path=logical,
+            full_mode=observed.mode,
+        )
         if stat.S_ISDIR(observed.mode):
             child_fd = _open_child_directory(directory_fd, name)
             try:
@@ -4197,6 +4201,49 @@ def _validate_mode(value: object) -> int:
     ):
         raise ToolchainSupportLockError("toolchain support permission mode is invalid")
     return value
+
+
+def _validate_tree_member_mode(
+    *,
+    target_triple: str | None,
+    logical_role: str,
+    relative_path: str,
+    full_mode: int,
+) -> int:
+    mode = stat.S_IMODE(full_mode)
+    try:
+        return _validate_mode(mode)
+    except ToolchainSupportLockError:
+        if stat.S_ISREG(full_mode):
+            kind = "regular"
+        elif stat.S_ISDIR(full_mode):
+            kind = "directory"
+        elif stat.S_ISLNK(full_mode):
+            kind = "symlink"
+        else:
+            kind = "special"
+        validated_target = (
+            "unscoped"
+            if target_triple is None
+            else ToolchainSupportScope(target_triple=target_triple).target_triple
+        )
+        path_sha256 = _sha256(
+            {
+                "domain": (
+                    "rextio.full-c6-toolchain-support-"
+                    "mode-diagnostic-path.v1"
+                ),
+                "relative_path": _validate_relative_path(relative_path),
+            }
+        )
+        raise ToolchainSupportLockError(
+            "toolchain support permission mode is invalid "
+            f"(target_triple={validated_target}, "
+            f"logical_role={_validate_role(logical_role)}, "
+            f"kind={kind}, "
+            f"relative_path_sha256={path_sha256}, "
+            f"mode={mode:04o})"
+        ) from None
 
 
 def _require_unaliased_inode(

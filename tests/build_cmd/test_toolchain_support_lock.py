@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import pickle
+import stat
 import ctypes
 from dataclasses import fields, replace
 import sys
@@ -1576,6 +1577,67 @@ def test_tree_rejects_casefold_alias_special_file_and_hardlink(tmp_path: Path) -
                 logical_role="hardlink-root", path=hardlinks, kind="tree"
             )
         )
+
+
+def test_tree_member_mode_diagnostic_is_exact_bounded_and_path_opaque(
+    tmp_path: Path,
+) -> None:
+    manifest, root, manifest_locator, root_locator = _inputs(tmp_path)
+    secret_name = "relative-secret-mode-member"
+    member = root / "include" / secret_name
+    member.write_bytes(b"mode diagnostic")
+    member.chmod(0o4755)
+    if stat.S_IMODE(member.lstat().st_mode) != 0o4755:
+        pytest.skip("test filesystem did not preserve the set-user-ID mode bit")
+
+    with pytest.raises(ToolchainSupportLockError) as captured:
+        generate_toolchain_support_lock(
+            target_triple="aarch64-apple-darwin",
+            manifests=[manifest_locator],
+            roots=[root_locator],
+        )
+
+    relative_path = f"include/{secret_name}"
+    expected_path_sha256 = hashlib.sha256(
+        _canonical(
+            {
+                "domain": (
+                    "rextio.full-c6-toolchain-support-"
+                    "mode-diagnostic-path.v1"
+                ),
+                "relative_path": relative_path,
+            }
+        )
+    ).hexdigest()
+    message = str(captured.value)
+    assert message == (
+        "toolchain support permission mode is invalid "
+        "(target_triple=aarch64-apple-darwin, "
+        "logical_role=python-support-root, kind=regular, "
+        f"relative_path_sha256={expected_path_sha256}, mode=4755)"
+    )
+    assert len(message.encode("utf-8")) <= 512
+    assert secret_name not in message
+    assert str(root) not in message
+    assert str(manifest) not in message
+    assert str(tmp_path) not in message
+
+
+def test_tree_member_mode_diagnostic_leaves_ordinary_mode_validation_unchanged() -> None:
+    assert (
+        support_lock._validate_tree_member_mode(
+            target_triple="x86_64-unknown-linux-gnu",
+            logical_role="linux-runtime-support",
+            relative_path="ordinary-member",
+            full_mode=stat.S_IFREG | 0o755,
+        )
+        == 0o755
+    )
+    with pytest.raises(
+        ToolchainSupportLockError,
+        match="^toolchain support permission mode is invalid$",
+    ):
+        support_lock._validate_mode(0o4755)
 
 
 def test_tree_hardlink_diagnostic_is_bounded_and_path_opaque(tmp_path: Path) -> None:
