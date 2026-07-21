@@ -22,8 +22,8 @@ from rextio.build.input_closure import (
     BuildInputIdentityError,
     ExactFileIdentity,
     InputFileSpec,
+    _capture_streamed_toolchain_executable,
     capture_build_input_closure,
-    capture_exact_file,
     capture_exact_file_bytes,
 )
 from rextio.build.strict_cargo import STRICT_CARGO_FLAGS
@@ -395,11 +395,9 @@ def capture_tool_identity(
     if name not in _TOOL_NAMES:
         raise ToolchainIdentityError("toolchain tool name is not supported")
     try:
-        executable = capture_exact_file(
+        executable = _capture_streamed_toolchain_executable(
             path,
             logical_name=f"toolchain/{name}",
-            role="toolchain-executable",
-            require_executable=True,
         )
         return ToolIdentity(
             name=name,

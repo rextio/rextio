@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 
 MAX_BUILD_INPUT_BYTES = 64 * 1024 * 1024
+MAX_TOOLCHAIN_EXECUTABLE_BYTES = 512 * 1024 * 1024
 MAX_BUILD_INPUT_NAME_CHARS = 512
 MAX_BUILD_INPUT_FILES = 1024
 MAX_BUILD_INPUT_TOTAL_BYTES = 256 * 1024 * 1024
@@ -139,7 +140,12 @@ class ExactFileIdentity:
             raise ValueError("build-input SHA-256 is invalid")
         if type(self.size) is not int or isinstance(self.size, bool):
             raise TypeError("build-input size must be an integer")
-        if self.size < 0 or self.size > MAX_BUILD_INPUT_BYTES:
+        maximum_size = (
+            MAX_TOOLCHAIN_EXECUTABLE_BYTES
+            if self.role == "toolchain-executable"
+            else MAX_BUILD_INPUT_BYTES
+        )
+        if self.size < 0 or self.size > maximum_size:
             raise ValueError("build-input size is outside the allowed range")
         if type(self.executable) is not bool:
             raise TypeError("build-input executable flag must be boolean")
@@ -340,6 +346,91 @@ def capture_exact_file_bytes(
             executable=executable,
         ),
         data,
+    )
+
+
+def _capture_streamed_toolchain_executable(
+    path: Path | str,
+    *,
+    logical_name: str,
+) -> ExactFileIdentity:
+    """Capture one bounded executable identity without retaining its bytes."""
+    _validate_logical_name(logical_name)
+    candidate = Path(path)
+    try:
+        before = os.lstat(candidate)
+    except FileNotFoundError as exc:
+        raise BuildInputIdentityError("build input is missing") from exc
+    except OSError as exc:
+        raise BuildInputIdentityError("build input could not be inspected") from exc
+    if stat.S_ISLNK(before.st_mode):
+        raise BuildInputIdentityError("build input must not be a symlink")
+    if not stat.S_ISREG(before.st_mode):
+        raise BuildInputIdentityError("build input must be a regular file")
+    if before.st_size < 0 or before.st_size > MAX_TOOLCHAIN_EXECUTABLE_BYTES:
+        raise BuildInputIdentityError("build input exceeds the byte bound")
+    executable = bool(before.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+    if not executable:
+        raise BuildInputIdentityError("toolchain input is not executable")
+
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if type(nofollow) is not int or nofollow == 0:
+        raise BuildInputIdentityError(
+            "toolchain input no-follow capture is unavailable"
+        )
+    flags = os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(candidate, flags)
+    except OSError as exc:
+        raise BuildInputIdentityError("build input could not be opened safely") from exc
+    try:
+        opened = os.fstat(fd)
+        _require_same_regular_file(before, opened, "changed during open")
+        digest = hashlib.sha256()
+        remaining = opened.st_size
+        size = 0
+        while remaining:
+            try:
+                chunk = os.read(fd, min(1024 * 1024, remaining))
+            except OSError as exc:
+                raise BuildInputIdentityError(
+                    "build input could not be read safely"
+                ) from exc
+            if not chunk:
+                raise BuildInputIdentityError("build input changed during read")
+            digest.update(chunk)
+            size += len(chunk)
+            remaining -= len(chunk)
+        try:
+            grew = os.read(fd, 1)
+        except OSError as exc:
+            raise BuildInputIdentityError(
+                "build input could not be read safely"
+            ) from exc
+        if grew:
+            raise BuildInputIdentityError("build input changed during read")
+        after = os.fstat(fd)
+        _require_same_regular_file(opened, after, "changed during read")
+        if size != after.st_size:
+            raise BuildInputIdentityError("build input changed during read")
+        try:
+            linked = os.lstat(candidate)
+        except OSError as exc:
+            raise BuildInputIdentityError("build input changed during read") from exc
+        _require_same_regular_file(after, linked, "path changed during read")
+    finally:
+        os.close(fd)
+
+    return ExactFileIdentity(
+        logical_name=logical_name,
+        role="toolchain-executable",
+        sha256=digest.hexdigest(),
+        size=size,
+        executable=True,
     )
 
 

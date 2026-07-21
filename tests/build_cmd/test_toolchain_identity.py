@@ -35,6 +35,96 @@ def test_tool_identity_binds_binary_bytes_and_detects_mutation(tmp_path: Path) -
         verify_tool_identity(cargo, identity)
 
 
+def test_tool_identity_streams_executables_above_materializing_input_bound(
+    tmp_path: Path,
+) -> None:
+    from rextio.build.input_closure import (
+        MAX_BUILD_INPUT_BYTES,
+        MAX_TOOLCHAIN_EXECUTABLE_BYTES,
+        BuildInputIdentityError,
+        capture_exact_file,
+    )
+    from rextio.build.toolchain_identity import (
+        ToolchainIdentityError,
+        capture_tool_identity,
+        verify_tool_identity,
+    )
+    assert MAX_TOOLCHAIN_EXECUTABLE_BYTES > MAX_BUILD_INPUT_BYTES
+    linker = tmp_path / "clang"
+    with linker.open("wb") as stream:
+        stream.truncate(MAX_BUILD_INPUT_BYTES + 1)
+    linker.chmod(linker.stat().st_mode | stat.S_IEXEC)
+
+    with pytest.raises(BuildInputIdentityError, match="exceeds the byte bound"):
+        capture_exact_file(
+            linker,
+            logical_name="ordinary/clang",
+            role="ordinary-input",
+            require_executable=True,
+        )
+
+    identity = capture_tool_identity(
+        "linker",
+        linker,
+        reported_version="Apple clang version 18.0.0",
+    )
+    assert identity.executable.size == MAX_BUILD_INPUT_BYTES + 1
+    verify_tool_identity(linker, identity)
+
+    with linker.open("r+b") as stream:
+        stream.seek(MAX_BUILD_INPUT_BYTES)
+        stream.write(b"x")
+    with pytest.raises(ToolchainIdentityError, match="changed"):
+        verify_tool_identity(linker, identity)
+
+    oversized = tmp_path / "oversized-clang"
+    with oversized.open("wb") as stream:
+        stream.truncate(MAX_TOOLCHAIN_EXECUTABLE_BYTES + 1)
+    oversized.chmod(oversized.stat().st_mode | stat.S_IEXEC)
+    with pytest.raises(ToolchainIdentityError, match="byte bound"):
+        capture_tool_identity(
+            "linker",
+            oversized,
+            reported_version="Apple clang version 18.0.0",
+        )
+
+
+def test_tool_identity_rejects_path_replacement_during_streamed_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import input_closure
+    from rextio.build.toolchain_identity import (
+        ToolchainIdentityError,
+        capture_tool_identity,
+    )
+
+    linker = _tool(tmp_path / "clang", "Apple clang version 18.0.0")
+    replacement = _tool(tmp_path / "replacement", "hostile replacement")
+    displaced = tmp_path / "displaced-clang"
+    real_read = input_closure.os.read
+    replaced = False
+
+    def replace_path_after_read(descriptor: int, maximum: int) -> bytes:
+        nonlocal replaced
+        data = real_read(descriptor, maximum)
+        if data and not replaced:
+            linker.rename(displaced)
+            replacement.rename(linker)
+            replaced = True
+        return data
+
+    monkeypatch.setattr(input_closure.os, "read", replace_path_after_read)
+
+    with pytest.raises(ToolchainIdentityError, match="changed"):
+        capture_tool_identity(
+            "linker",
+            linker,
+            reported_version="Apple clang version 18.0.0",
+        )
+    assert replaced is True
+
+
 def test_environment_identity_filters_unknown_and_hashes_values() -> None:
     from rextio.build.toolchain_identity import capture_environment_identity
 
