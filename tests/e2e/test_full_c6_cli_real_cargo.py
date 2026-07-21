@@ -206,3 +206,63 @@ def test_exact_two_cargo_pid_policy_rejects_other_counts(
 def test_exact_two_cargo_pid_policy_accepts_two_distinct_pids() -> None:
     harness = _load_harness_module()
     harness._assert_exact_two_cargo_pids("build/test", {101, 102})
+
+
+def _sandbox_invocation(
+    ordinal: int,
+    *,
+    plan_sha256: str = "b" * 64,
+    profile_sha256: str,
+) -> dict[str, object]:
+    return {
+        "ordinal": ordinal,
+        "argv_sha256": "a" * 64,
+        "argv_count": 8,
+        "environment": [
+            {
+                "name": "PATH",
+                "value_sha256": "c" * 64,
+                "value_size": 32,
+            }
+        ],
+        "timeout_seconds": 900.0,
+        "max_output_bytes": 1_048_576,
+        "inherit_env": False,
+        "sandbox_engine": "macos-sandbox-exec-v1",
+        "sandbox_plan_sha256": plan_sha256,
+        "sandbox_profile_sha256": profile_sha256,
+        "sandbox_seccomp_sha256": None,
+    }
+
+
+def test_executor_projection_allows_per_quarantine_sandbox_profiles(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness_module()
+    harness._assert_executor_invocations(
+        tmp_path,
+        target="aarch64-apple-darwin",
+        value=[
+            _sandbox_invocation(1, profile_sha256="d" * 64),
+            _sandbox_invocation(2, profile_sha256="e" * 64),
+        ],
+    )
+
+
+def test_executor_projection_rejects_different_semantic_sandbox_plans(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness_module()
+    with pytest.raises(AssertionError, match="sandbox contracts differ"):
+        harness._assert_executor_invocations(
+            tmp_path,
+            target="aarch64-apple-darwin",
+            value=[
+                _sandbox_invocation(1, profile_sha256="d" * 64),
+                _sandbox_invocation(
+                    2,
+                    plan_sha256="f" * 64,
+                    profile_sha256="e" * 64,
+                ),
+            ],
+        )

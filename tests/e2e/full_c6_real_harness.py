@@ -38,6 +38,49 @@ _L = 2**252 + 27742317777372353535851937790883648493
 _D = (-121665 * pow(121666, _Q - 2, _Q)) % _Q
 _I = pow(2, (_Q - 1) // 4, _Q)
 
+_SUPPORT_LOCK_OUTPUT = "authority/rextio.toolchain-support.lock.json"
+_SUPPORT_LOCK_ROLES = {
+    "aarch64-apple-darwin": (
+        (
+            "macos-sandbox-dyld-profile",
+            "macos-sandbox-system-profile",
+            "python-runtime-library",
+            "rustup-components",
+            "xcode-ar",
+            "xcode-clang",
+            "xcode-ld",
+            "xcode-ranlib",
+            "xcode-sdk-settings",
+            "xcode-version-plist",
+        ),
+        (
+            "python-runtime",
+            "rust-sysroot",
+            "xcode-clang-resource",
+            "xcode-sdk",
+        ),
+    ),
+    "x86_64-unknown-linux-gnu": (
+        (
+            "landlock-launcher",
+            "linux-ar",
+            "linux-binutils-ld",
+            "linux-bwrap",
+            "linux-dynamic-loader",
+            "linux-ranlib",
+            "python-runtime-library",
+            "rustup-components",
+        ),
+        (
+            "linux-gcc-support",
+            "linux-python-library-support",
+            "linux-runtime-support",
+            "python-runtime",
+            "rust-sysroot",
+        ),
+    ),
+}
+
 
 def _recover_x(y: int) -> int:
     value = (y * y - 1) * pow(_D * y * y + 1, _Q - 2, _Q) % _Q
@@ -99,6 +142,14 @@ def _sign(seed: bytes, message: bytes) -> tuple[bytes, bytes]:
 
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _run(
@@ -249,6 +300,8 @@ def _typed_config(
     key_sha256: str,
     cargo_lock_sha256: str,
     cargo_vendor_sha256: str,
+    support_lock_path: str | None = None,
+    support_lock_sha256: str | None = None,
     policy_sha256: str | None = None,
     final_signature: str | None = None,
 ) -> Any:
@@ -271,6 +324,8 @@ def _typed_config(
             "dedicated Full C6 E2E requires exact Rust/Cargo 1.93.1; "
             f"observed {cargo_version_output[1]}"
         )
+    if (support_lock_path is None) != (support_lock_sha256 is None):
+        raise AssertionError("Full C6 support-lock path and SHA-256 must be paired")
     return RextioConfig(
         build=BuildConfig(
             artifact_evidence_policy="required",
@@ -285,6 +340,8 @@ def _typed_config(
             artifact_cargo_vendor_sha256=cargo_vendor_sha256,
             artifact_cargo_lock="authority/Cargo.lock",
             artifact_cargo_lock_sha256=cargo_lock_sha256,
+            artifact_toolchain_support_lock=support_lock_path,
+            artifact_toolchain_support_lock_sha256=support_lock_sha256,
             artifact_trusted_public_key="authority/owner.ed25519.pub",
             artifact_trusted_public_key_sha256=key_sha256,
             artifact_final_signature=final_signature,
@@ -336,12 +393,30 @@ def _write_config(project: Path, config: Any) -> None:
         rows.append(
             f'artifact_policy_manifest_sha256 = "{build.artifact_policy_manifest_sha256}"'
         )
+    support_lock_path = build.artifact_toolchain_support_lock
+    support_lock_sha256 = build.artifact_toolchain_support_lock_sha256
+    if (support_lock_path is None) != (support_lock_sha256 is None):
+        raise AssertionError("Full C6 support-lock path and SHA-256 must be paired")
     rows.extend(
         (
             f'artifact_cargo_vendor = "{build.artifact_cargo_vendor}"',
             f'artifact_cargo_vendor_sha256 = "{build.artifact_cargo_vendor_sha256}"',
             f'artifact_cargo_lock = "{build.artifact_cargo_lock}"',
             f'artifact_cargo_lock_sha256 = "{build.artifact_cargo_lock_sha256}"',
+        )
+    )
+    if support_lock_path is not None and support_lock_sha256 is not None:
+        rows.extend(
+            (
+                f'artifact_toolchain_support_lock = "{support_lock_path}"',
+                (
+                    "artifact_toolchain_support_lock_sha256 = "
+                    f'"{support_lock_sha256}"'
+                ),
+            )
+        )
+    rows.extend(
+        (
             f'artifact_trusted_public_key = "{build.artifact_trusted_public_key}"',
             (
                 "artifact_trusted_public_key_sha256 = "
@@ -1049,11 +1124,191 @@ def _run_fresh_rextio(
     return stdout, stderr, tuple(sorted(cargo_pids))
 
 
+def _bootstrap_toolchain_support_lock(
+    project: Path,
+    *,
+    expected_target: str,
+) -> tuple[str, str, str]:
+    expected_manifest_roles, expected_root_roles = _SUPPORT_LOCK_ROLES[
+        expected_target
+    ]
+    lock_path = project / _SUPPORT_LOCK_OUTPUT
+    if lock_path.exists():
+        raise AssertionError("Full C6 support-lock output unexpectedly exists")
+    stdout, _stderr, _cargo_pids = _run_fresh_rextio(
+        [
+            str(_installed_rextio_entrypoint()),
+            "policy",
+            "bootstrap-support-lock",
+            "--project-root",
+            str(project),
+            "--output",
+            _SUPPORT_LOCK_OUTPUT,
+            "--format",
+            "json",
+        ],
+        cwd=project.parent,
+        stage="policy/bootstrap-support-lock",
+        timeout=900,
+        expect_two_cargo_builds=False,
+    )
+    try:
+        receipt = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise AssertionError("support-lock bootstrap did not emit JSON") from exc
+    if type(receipt) is not dict:
+        raise AssertionError("Full C6 support-lock bootstrap receipt is invalid")
+    expected_keys = {
+        "status",
+        "result",
+        "target",
+        "manifest_roles",
+        "root_roles",
+        "raw_sha256",
+        "merkle_sha256",
+        "config",
+        "authorizes_build",
+        "authorizes_distribution",
+    }
+    expected_config = {
+        "artifact_toolchain_support_lock": _SUPPORT_LOCK_OUTPUT,
+        "artifact_toolchain_support_lock_sha256": receipt.get("raw_sha256"),
+    }
+    if (
+        set(receipt) != expected_keys
+        or receipt.get("status")
+        != "full-c6-toolchain-support-lock-bootstrapped"
+        or receipt.get("result") != "created"
+        or receipt.get("target") != expected_target
+        or receipt.get("manifest_roles") != list(expected_manifest_roles)
+        or receipt.get("root_roles") != list(expected_root_roles)
+        or not _is_sha256(receipt.get("raw_sha256"))
+        or not _is_sha256(receipt.get("merkle_sha256"))
+        or receipt.get("config") != expected_config
+        or receipt.get("authorizes_build") is not False
+        or receipt.get("authorizes_distribution") is not False
+    ):
+        raise AssertionError("Full C6 support-lock bootstrap receipt is invalid")
+    if not lock_path.is_file():
+        raise AssertionError("Full C6 support-lock bootstrap did not create its output")
+    raw = lock_path.read_bytes()
+    raw_sha256 = cast(str, receipt["raw_sha256"])
+    merkle_sha256 = cast(str, receipt["merkle_sha256"])
+    if _sha256(raw) != raw_sha256:
+        raise AssertionError("Full C6 support-lock bytes differ from the receipt")
+
+    from rextio.build.toolchain_support_lock import parse_toolchain_support_lock
+
+    lock = parse_toolchain_support_lock(raw, expected_raw_sha256=raw_sha256)
+    manifest_roles = tuple(item.logical_role for item in lock.manifests)
+    root_roles = tuple(item.logical_role for item in lock.roots)
+    if (
+        lock.canonical_bytes != raw
+        or lock.scope.target_triple != expected_target
+        or manifest_roles != expected_manifest_roles
+        or root_roles != expected_root_roles
+        or lock.raw_sha256 != raw_sha256
+        or lock.merkle_sha256 != merkle_sha256
+        or lock.authorizes_build is not False
+        or lock.authorizes_distribution is not False
+    ):
+        raise AssertionError("Full C6 support-lock content is invalid")
+    return _SUPPORT_LOCK_OUTPUT, raw_sha256, merkle_sha256
+
+
+def _assert_executor_invocations(
+    project: Path,
+    *,
+    target: str,
+    value: object,
+) -> None:
+    expected_keys = {
+        "ordinal",
+        "argv_sha256",
+        "argv_count",
+        "environment",
+        "timeout_seconds",
+        "max_output_bytes",
+        "inherit_env",
+        "sandbox_engine",
+        "sandbox_plan_sha256",
+        "sandbox_profile_sha256",
+        "sandbox_seccomp_sha256",
+    }
+    if type(value) is not list or len(value) != 2:
+        raise AssertionError("Full C6 executor invocation projection is incomplete")
+    encoded = _canonical_json_bytes(value)
+    if os.fspath(project).encode("utf-8") in encoded:
+        raise AssertionError("Full C6 executor invocation leaked the project path")
+    expected_engine = {
+        "aarch64-apple-darwin": "macos-sandbox-exec-v1",
+        "x86_64-unknown-linux-gnu": "linux-bwrap-landlock-v1",
+    }[target]
+    normalized: list[dict[str, object]] = []
+    for ordinal, item in enumerate(value, start=1):
+        if type(item) is not dict or set(item) != expected_keys:
+            raise AssertionError("Full C6 executor invocation schema is invalid")
+        environment = item.get("environment")
+        if type(environment) is not list or not environment:
+            raise AssertionError("Full C6 executor environment receipt is empty")
+        names: list[str] = []
+        for binding in environment:
+            if (
+                type(binding) is not dict
+                or set(binding) != {"name", "value_sha256", "value_size"}
+                or type(binding.get("name")) is not str
+                or not binding["name"]
+                or not _is_sha256(binding.get("value_sha256"))
+                or type(binding.get("value_size")) is not int
+                or not 0 <= binding["value_size"] <= 64 * 1024
+            ):
+                raise AssertionError("Full C6 executor environment binding is invalid")
+            names.append(cast(str, binding["name"]))
+        seccomp = item.get("sandbox_seccomp_sha256")
+        if (
+            item.get("ordinal") != ordinal
+            or not _is_sha256(item.get("argv_sha256"))
+            or type(item.get("argv_count")) is not int
+            or not 5 <= item["argv_count"] <= 256
+            or names != sorted(names)
+            or len(names) != len(set(names))
+            or type(item.get("timeout_seconds")) not in {int, float}
+            or item["timeout_seconds"] <= 0
+            or type(item.get("max_output_bytes")) is not int
+            or item["max_output_bytes"] <= 0
+            or item.get("inherit_env") is not False
+            or item.get("sandbox_engine") != expected_engine
+            or not _is_sha256(item.get("sandbox_plan_sha256"))
+            or not _is_sha256(item.get("sandbox_profile_sha256"))
+            or (
+                target == "aarch64-apple-darwin"
+                and seccomp is not None
+            )
+            or (
+                target == "x86_64-unknown-linux-gnu"
+                and not _is_sha256(seccomp)
+            )
+        ):
+            raise AssertionError("Full C6 sandbox invocation receipt is invalid")
+        normalized.append(dict(item))
+    normalized[0].pop("ordinal")
+    normalized[1].pop("ordinal")
+    # Each launch renders a quarantine-root-specific sandbox profile.  Its
+    # digest must be valid, but only the semantic plan and (on Linux) seccomp
+    # contract are stable across the two isolated builds.
+    normalized[0].pop("sandbox_profile_sha256")
+    normalized[1].pop("sandbox_profile_sha256")
+    if normalized[0] != normalized[1]:
+        raise AssertionError("Full C6 two-build sandbox contracts differ")
+
+
 def _assert_lifecycle_report(
     project: Path,
     *,
     lifecycle: str,
     status: str,
+    support_lock_raw_sha256: str,
+    support_lock_merkle_sha256: str,
 ) -> dict[str, object]:
     report_path = project / ".rextio" / "reports" / "build.json"
     raw = report_path.read_bytes()
@@ -1123,6 +1378,22 @@ def _assert_lifecycle_report(
         or production.get("authorizes_distribution") is not False
     ):
         raise AssertionError("Full C6 production authority projection is invalid")
+    target = _expected_target()
+    if (
+        not _is_sha256(production.get("toolchain_support_plan_sha256"))
+        or production.get("toolchain_support_lock_raw_sha256")
+        != support_lock_raw_sha256
+        or production.get("toolchain_support_lock_merkle_sha256")
+        != support_lock_merkle_sha256
+        or not _is_sha256(production.get("executor_receipt_sha256"))
+        or not _is_sha256(production.get("executor_toolchain_sha256"))
+    ):
+        raise AssertionError("Full C6 support/executor authority projection is invalid")
+    _assert_executor_invocations(
+        project,
+        target=target,
+        value=production.get("executor_invocations"),
+    )
     aggregate = production.get("authority_aggregate")
     if type(aggregate) is not dict:
         raise AssertionError("Full C6 report lacks the executor-bound authority aggregate")
@@ -1166,6 +1437,8 @@ def _assert_lifecycle_report(
         or aggregate_digest != _sha256(_canonical_json_bytes(aggregate_payload))
     ):
         raise AssertionError("Full C6 authority aggregate or executor binding is invalid")
+    if bindings["executor_receipt_sha256"] != production["executor_receipt_sha256"]:
+        raise AssertionError("Full C6 executor receipt projection differs from aggregate")
     return report
 
 
@@ -1174,6 +1447,8 @@ def _invoke_build_lifecycle(
     *,
     lifecycle: str,
     status: str,
+    support_lock_raw_sha256: str,
+    support_lock_merkle_sha256: str,
 ) -> dict[str, object]:
     _run_fresh_rextio(
         [
@@ -1191,6 +1466,8 @@ def _invoke_build_lifecycle(
         project,
         lifecycle=lifecycle,
         status=status,
+        support_lock_raw_sha256=support_lock_raw_sha256,
+        support_lock_merkle_sha256=support_lock_merkle_sha256,
     )
 
 
@@ -1501,6 +1778,109 @@ def _verify_external_license_wheel_projection(
             raise AssertionError("published RECORD external license binding is not exact")
 
 
+def _assert_published_toolchain_support_materials(
+    *,
+    sbom_path: Path,
+    provenance_path: Path,
+    production: dict[str, object],
+) -> None:
+    support_materials = {
+        "builder-toolchain-support-plan": production.get(
+            "toolchain_support_plan_sha256"
+        ),
+        "builder-toolchain-support-lock-raw": production.get(
+            "toolchain_support_lock_raw_sha256"
+        ),
+        "builder-toolchain-support-lock-merkle": production.get(
+            "toolchain_support_lock_merkle_sha256"
+        ),
+    }
+    if not all(_is_sha256(value) for value in support_materials.values()):
+        raise AssertionError("publication support material digests are invalid")
+    _sbom_raw, sbom = _read_canonical_document(sbom_path)
+    _provenance_raw, provenance = _read_canonical_document(provenance_path)
+    components = sbom.get("components")
+    if type(components) is not list:
+        raise AssertionError("publication CycloneDX components are invalid")
+    for name, digest in support_materials.items():
+        expected_component = {
+            "type": "data",
+            "bom-ref": f"urn:rextio:full-c6-evidence:{name}:{digest}",
+            "name": name,
+            "hashes": [{"alg": "SHA-256", "content": digest}],
+            "properties": [
+                {
+                    "name": "rextio:role",
+                    "value": "non-authorizing-evidence-receipt",
+                }
+            ],
+        }
+        matches = [
+            item
+            for item in components
+            if type(item) is dict and item.get("name") == name
+        ]
+        if matches != [expected_component]:
+            raise AssertionError(f"CycloneDX support material {name} is invalid")
+
+    predicate = provenance.get("predicate")
+    if type(predicate) is not dict:
+        raise AssertionError("publication SLSA predicate is invalid")
+    definition = predicate.get("buildDefinition")
+    run_details = predicate.get("runDetails")
+    if type(definition) is not dict or type(run_details) is not dict:
+        raise AssertionError("publication SLSA build projection is invalid")
+    dependencies = definition.get("resolvedDependencies")
+    parameters = definition.get("internalParameters")
+    metadata_projection = run_details.get("metadata")
+    if (
+        type(dependencies) is not list
+        or type(parameters) is not dict
+        or type(metadata_projection) is not dict
+    ):
+        raise AssertionError("publication SLSA support materials are invalid")
+    receipt_bindings = parameters.get("receipt_bindings")
+    toolchain_projection = metadata_projection.get("rextio:toolchain")
+    if type(receipt_bindings) is not dict or type(toolchain_projection) is not dict:
+        raise AssertionError("publication SLSA toolchain projection is invalid")
+    for name, digest in support_materials.items():
+        expected_dependency = {
+            "uri": f"urn:rextio:full-c6-evidence:{name}",
+            "digest": {"sha256": digest},
+            "annotations": {
+                "rextio:role": "non-authorizing-evidence-receipt"
+            },
+        }
+        matches = [
+            item
+            for item in dependencies
+            if type(item) is dict
+            and item.get("uri") == expected_dependency["uri"]
+        ]
+        if matches != [expected_dependency] or receipt_bindings.get(name) != digest:
+            raise AssertionError(f"SLSA support material {name} is invalid")
+    if {
+        "support_plan_sha256": toolchain_projection.get("support_plan_sha256"),
+        "support_lock_raw_sha256": toolchain_projection.get(
+            "support_lock_raw_sha256"
+        ),
+        "support_lock_merkle_sha256": toolchain_projection.get(
+            "support_lock_merkle_sha256"
+        ),
+    } != {
+        "support_plan_sha256": support_materials[
+            "builder-toolchain-support-plan"
+        ],
+        "support_lock_raw_sha256": support_materials[
+            "builder-toolchain-support-lock-raw"
+        ],
+        "support_lock_merkle_sha256": support_materials[
+            "builder-toolchain-support-lock-merkle"
+        ],
+    }:
+        raise AssertionError("publication SLSA toolchain support projection is stale")
+
+
 def _verify_published_native_wheel(
     project: Path,
     dependency_wheel: Path,
@@ -1619,6 +1999,14 @@ def _verify_published_native_wheel(
     if receipt.get("bundle_sha256") != expected_bundle_sha256:
         raise AssertionError("Full C6 bundle digest differs from the fixed payload")
     by_role = {item["role"]: item for item in files}
+    production = details.get("production_authority")
+    if type(production) is not dict:
+        raise AssertionError("publication production authority is invalid")
+    _assert_published_toolchain_support_materials(
+        sbom_path=bundle / by_role["cyclonedx"]["logical_name"],
+        provenance_path=bundle / by_role["slsa-provenance"]["logical_name"],
+        production=production,
+    )
     authorization = (
         bundle / by_role["distribution-authorization"]["logical_name"]
     ).read_bytes()
@@ -1687,11 +2075,16 @@ def _run_lifecycle(
     wheel_sha256: str,
     cargo_lock_sha256: str,
     cargo_vendor_sha256: str,
+    support_lock_path: str,
+    support_lock_raw_sha256: str,
+    support_lock_merkle_sha256: str,
 ) -> dict[str, object]:
     bootstrap_report = _invoke_build_lifecycle(
         project,
         lifecycle="bootstrap-required",
         status="full-c6-bootstrap-required",
+        support_lock_raw_sha256=support_lock_raw_sha256,
+        support_lock_merkle_sha256=support_lock_merkle_sha256,
     )
     bootstrap_details = bootstrap_report["full_c6"]
     if type(bootstrap_details) is not dict:
@@ -1723,6 +2116,8 @@ def _run_lifecycle(
         key_sha256=key_sha256,
         cargo_lock_sha256=cargo_lock_sha256,
         cargo_vendor_sha256=cargo_vendor_sha256,
+        support_lock_path=support_lock_path,
+        support_lock_sha256=support_lock_raw_sha256,
         policy_sha256=policy_sha256,
     )
     _write_config(project, unsigned_config)
@@ -1730,6 +2125,8 @@ def _run_lifecycle(
         project,
         lifecycle="signing-required",
         status="full-c6-signing-required",
+        support_lock_raw_sha256=support_lock_raw_sha256,
+        support_lock_merkle_sha256=support_lock_merkle_sha256,
     )
     final_signature = _write_final_signature(
         project,
@@ -1744,6 +2141,8 @@ def _run_lifecycle(
         key_sha256=key_sha256,
         cargo_lock_sha256=cargo_lock_sha256,
         cargo_vendor_sha256=cargo_vendor_sha256,
+        support_lock_path=support_lock_path,
+        support_lock_sha256=support_lock_raw_sha256,
         policy_sha256=policy_sha256,
         final_signature=final_signature,
     )
@@ -1752,6 +2151,8 @@ def _run_lifecycle(
         project,
         lifecycle="publication-required",
         status="full-c6-published",
+        support_lock_raw_sha256=support_lock_raw_sha256,
+        support_lock_merkle_sha256=support_lock_merkle_sha256,
     )
 
     reports = (bootstrap_report, signing_report, publication_report)
@@ -1775,6 +2176,18 @@ def _run_lifecycle(
     if len(template_sha256s) != 1:
         raise AssertionError(
             "fresh Full C6 lifecycle recollection changed the technical template"
+        )
+    support_plan_sha256s = {
+        item.get("toolchain_support_plan_sha256")
+        for item in production_authorities
+    }
+    executor_toolchain_sha256s = {
+        item.get("executor_toolchain_sha256")
+        for item in production_authorities
+    }
+    if len(support_plan_sha256s) != 1 or len(executor_toolchain_sha256s) != 1:
+        raise AssertionError(
+            "fresh Full C6 lifecycle recollection changed toolchain authority"
         )
 
     signing_details = signing_report["full_c6"]
@@ -1885,16 +2298,32 @@ def main() -> None:
         cargo_vendor_sha256=cargo_vendor_sha256,
     )
     _write_config(project, bootstrap_config)
+    support_lock_path, support_lock_raw_sha256, support_lock_merkle_sha256 = (
+        _bootstrap_toolchain_support_lock(
+            project,
+            expected_target=expected_target,
+        )
+    )
+    pinned_config = _typed_config(
+        project,
+        wheel_sha256=wheel_sha256,
+        key_sha256=key_sha256,
+        cargo_lock_sha256=cargo_lock_sha256,
+        cargo_vendor_sha256=cargo_vendor_sha256,
+        support_lock_path=support_lock_path,
+        support_lock_sha256=support_lock_raw_sha256,
+    )
+    _write_config(project, pinned_config)
     from rextio.build.full_c6_host_inputs import collect_full_c6_analysis_scope
 
     analysis_scope = collect_full_c6_analysis_scope(
         project,
-        config=bootstrap_config,
+        config=pinned_config,
     )
-    preflight = _prepare_preflight(project, bootstrap_config, analysis_scope)
+    preflight = _prepare_preflight(project, pinned_config, analysis_scope)
     _write_license_locks(
         project,
-        config=bootstrap_config,
+        config=pinned_config,
         preflight=preflight,
         cargo_workspace=cargo_workspace,
     )
@@ -1907,6 +2336,9 @@ def main() -> None:
         wheel_sha256=wheel_sha256,
         cargo_lock_sha256=cargo_lock_sha256,
         cargo_vendor_sha256=cargo_vendor_sha256,
+        support_lock_path=support_lock_path,
+        support_lock_raw_sha256=support_lock_raw_sha256,
+        support_lock_merkle_sha256=support_lock_merkle_sha256,
     )
     _verify_published_native_wheel(
         project,
