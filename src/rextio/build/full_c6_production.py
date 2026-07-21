@@ -9,16 +9,23 @@ import hmac
 from pathlib import Path
 import secrets
 import tomllib
-from typing import SupportsIndex
+from typing import Literal, SupportsIndex, cast
 import unicodedata
 
 from rextio.build import full_c6_executor as _executor
 from rextio.build import full_c6_native_runtime as _native_runtime
 from rextio.build import orchestrator as _orchestrator
 from rextio.artifacts.evidence import (
+    ARTIFACT_POLICY_COVERAGE_CLASS_IDS,
+    AnalysisInputVerification,
     ArtifactPolicyCoverageInventory,
     CargoPackageRef,
+    ComponentLicensePolicyVerification,
     EvidenceFileRef,
+    NativeRuntimeInventory,
+    NativeRuntimeTransitiveClosureInventory,
+    ProjectSourceLicensePolicyVerification,
+    WheelEntryRef,
     canonical_json_bytes,
     artifact_policy_coverage_inventory_digest,
 )
@@ -81,17 +88,33 @@ from rextio.build.full_c6_policy import (
     FullC6ExternalAuthorityClass,
     FullC6ExternalAuthorityPartition,
     FullC6PolicyReceipt,
+    FullC6PolicyFileIdentity,
+    FullC6TransformationRecord,
+    full_c6_analysis_receipt_digest,
+    full_c6_artifact_authority_identity,
     full_c6_authority_partition_digest,
     full_c6_external_authority_identity,
     full_c6_external_authority_identity_set_digest,
     full_c6_external_authority_partition_digest,
+    full_c6_license_detector_payload_digest,
+    full_c6_lowered_ir_receipt_digest,
+    full_c6_policy_identity_mode,
+    full_c6_policy_license_disposition,
+    full_c6_policy_transformation_disposition,
+    full_c6_transformation_source_set_digest,
 )
 from rextio.build.full_c6_policy_bootstrap import (
     FullC6PolicyBootstrapInputs,
     FullC6PolicyBootstrapRequest,
     FullC6PolicyLifecycle,
-    create_configured_full_c6_policy_bootstrap_request,
+    create_full_c6_policy_bootstrap_request,
     resolve_full_c6_policy_lifecycle,
+)
+from rextio.build.full_c6_policy_template import (
+    FullC6ExternalLicenseObservation,
+    FullC6InternalLicenseObservation,
+    FullC6TechnicalPolicyRow,
+    FullC6TechnicalPolicyTemplate,
 )
 from rextio.build.full_c6_subject_wheel import (
     FullC6SubjectWheelTransaction,
@@ -130,9 +153,10 @@ from rextio.build.transformation_verification import (
 )
 from rextio.config.schema import RextioConfig
 from rextio.targets.plan import create_target_plan
+from rextio.source.wheel_authority import verify_source_wheel_license_detection
 
 
-FULL_C6_PRODUCTION_AUTHORITY_DOMAIN = "rextio.full-c6-production-authority.v1"
+FULL_C6_PRODUCTION_AUTHORITY_DOMAIN = "rextio.full-c6-production-authority.v2"
 _MAX_SOURCE_DATE_EPOCH = 2_147_483_647
 _SEAL_KEY = secrets.token_bytes(32)
 
@@ -164,10 +188,11 @@ class _FullC6ProductionMaterial:
     artifact_coverage: ArtifactPolicyCoverageInventory
     external_authority: FullC6ExternalAuthorityPartition
     authority_aggregate: FullC6AuthorityAggregateBinding
+    technical_policy_template: FullC6TechnicalPolicyTemplate
+    bootstrap_inputs: FullC6PolicyBootstrapInputs
+    bootstrap_request: FullC6PolicyBootstrapRequest
     policy: FullC6PolicyReceipt | None = None
     supply_chain: FullC6SupplyChainReceipt | None = None
-    bootstrap_inputs: FullC6PolicyBootstrapInputs | None = None
-    bootstrap_request: FullC6PolicyBootstrapRequest | None = None
 
 
 class FullC6ProductionAuthority:
@@ -227,7 +252,11 @@ class FullC6ProductionAuthority:
     def bootstrap_request(self) -> FullC6PolicyBootstrapRequest | None:
         """Return the non-authorizing owner-completion request, when required."""
         _require_valid_authority(self)
-        return self._material.bootstrap_request
+        return (
+            self._material.bootstrap_request
+            if self._material.lifecycle.status == "bootstrap-required"
+            else None
+        )
 
     def to_dict(self) -> dict[str, object]:
         """Return only path-free digests and an explicit non-authorizing posture."""
@@ -498,32 +527,52 @@ def _collect_full_c6_production_material(
         source_tree_sha256=execution.frozen_tree.digest,
     )
 
+    technical_template = _derive_technical_policy_template(
+        preflight=preflight,
+        license_materials=license_materials,
+        coverage_inputs=coverage_inputs,
+        analysis_inputs=analysis_inputs,
+        component_license_policy=component_license_policy,
+        source_license_policy=source_license_policy,
+        cargo_packages=cargo_packages,
+        cargo_path_source=cargo_path_source,
+        subject=full_c6_native_output_subject(native_output),
+        wheel_entries=full_c6_native_output_wheel_entries(native_output),
+        native_runtime_inventory=runtime_material.runtime_inventory,
+        native_runtime_closure=runtime_material.transitive_closure.inventory,
+        artifact_coverage=artifact_coverage,
+        external_authority=external_authority,
+        analysis_transaction=analysis_transaction,
+    )
+    bootstrap_inputs = _bootstrap_inputs(
+        preflight=preflight,
+        analysis_transaction=analysis_transaction,
+        artifact_coverage=artifact_coverage,
+        external_authority=external_authority,
+        build_inputs=build_inputs,
+        cargo_workspace=cargo_workspace,
+        license_materials=license_materials,
+        target_triple=runtime_authorization.target_triple,
+    )
+    trusted_key_sha256 = config.build.artifact_trusted_public_key_sha256
+    if type(trusted_key_sha256) is not str:
+        raise FullC6ProductionError("trusted owner public-key digest is unavailable")
+    bootstrap_request = create_full_c6_policy_bootstrap_request(
+        inputs=bootstrap_inputs,
+        trusted_owner_public_key_sha256=trusted_key_sha256,
+        technical_template=technical_template,
+    )
+
     policy: FullC6PolicyReceipt | None = None
     supply_chain: FullC6SupplyChainReceipt | None = None
-    bootstrap_inputs: FullC6PolicyBootstrapInputs | None = None
-    bootstrap_request: FullC6PolicyBootstrapRequest | None = None
     if lifecycle.status == "bootstrap-required":
-        bootstrap_inputs = _bootstrap_inputs(
-            preflight=preflight,
-            analysis_transaction=analysis_transaction,
-            artifact_coverage=artifact_coverage,
-            external_authority=external_authority,
-            build_inputs=build_inputs,
-            cargo_workspace=cargo_workspace,
-            license_materials=license_materials,
-            target_triple=runtime_authorization.target_triple,
-        )
-        bootstrap_request = create_configured_full_c6_policy_bootstrap_request(
-            config=config,
-            inputs=bootstrap_inputs,
-        )
+        pass
     elif lifecycle.status in {"signing-required", "publication-required"}:
         policy = load_configured_full_c6_policy(project_root=root, config=config)
-        if (
-            policy.artifact_coverage != artifact_coverage
-            or policy.external_authority != external_authority
-        ):
-            raise FullC6ProductionError("owner policy differs from observed authority")
+        _require_policy_matches_fresh_template(
+            policy=policy,
+            bootstrap_request=bootstrap_request,
+        )
         _validate_analysis_transaction(
             analysis_transaction,
             preflight=preflight,
@@ -571,6 +620,7 @@ def _collect_full_c6_production_material(
         artifact_coverage=artifact_coverage,
         external_authority=external_authority,
         authority_aggregate=aggregate,
+        technical_policy_template=technical_template,
         policy=policy,
         supply_chain=supply_chain,
         bootstrap_inputs=bootstrap_inputs,
@@ -710,39 +760,48 @@ def _validate_material(material: _FullC6ProductionMaterial) -> bool:
         )
         if expected_aggregate != material.authority_aggregate:
             return False
+        expected_inputs = _bootstrap_inputs(
+            preflight=material.preflight,
+            analysis_transaction=material.analysis_ir_transaction,
+            artifact_coverage=material.artifact_coverage,
+            external_authority=material.external_authority,
+            build_inputs=material.build_inputs,
+            cargo_workspace=material.cargo_workspace,
+            license_materials=material.license_materials_transaction,
+            target_triple=material.runtime_authorization.target_triple,
+        )
+        trusted_key = material.config.build.artifact_trusted_public_key_sha256
+        if type(trusted_key) is not str:
+            return False
+        expected_request = create_full_c6_policy_bootstrap_request(
+            inputs=expected_inputs,
+            trusted_owner_public_key_sha256=trusted_key,
+            technical_template=material.technical_policy_template,
+        )
+        if (
+            material.bootstrap_inputs != expected_inputs
+            or material.bootstrap_request != expected_request
+            or type(material.bootstrap_request) is not FullC6PolicyBootstrapRequest
+            or material.bootstrap_request.inputs is not material.bootstrap_inputs
+            or material.bootstrap_request.technical_template
+            is not material.technical_policy_template
+        ):
+            return False
         if material.lifecycle.status == "bootstrap-required":
-            expected_inputs = _bootstrap_inputs(
-                preflight=material.preflight,
-                analysis_transaction=material.analysis_ir_transaction,
-                artifact_coverage=material.artifact_coverage,
-                external_authority=material.external_authority,
-                build_inputs=material.build_inputs,
-                cargo_workspace=material.cargo_workspace,
-                license_materials=material.license_materials_transaction,
-                target_triple=material.runtime_authorization.target_triple,
-            )
-            expected_request = create_configured_full_c6_policy_bootstrap_request(
-                config=material.config,
-                inputs=expected_inputs,
-            )
             return (
-                material.bootstrap_inputs == expected_inputs
-                and material.bootstrap_request == expected_request
-                and type(material.bootstrap_request) is FullC6PolicyBootstrapRequest
-                and material.bootstrap_request.inputs is material.bootstrap_inputs
-                and material.policy is None
+                material.policy is None
                 and material.supply_chain is None
             )
         if material.lifecycle.status not in {"signing-required", "publication-required"}:
             return False
         if (
             type(material.policy) is not FullC6PolicyReceipt
-            or material.policy.artifact_coverage != material.artifact_coverage
-            or material.policy.external_authority != material.external_authority
-            or material.bootstrap_inputs is not None
-            or material.bootstrap_request is not None
         ):
             return False
+        _require_policy_matches_fresh_template(
+            policy=material.policy,
+            bootstrap_request=material.bootstrap_request,
+        )
         _validate_analysis_transaction(
             material.analysis_ir_transaction,
             preflight=material.preflight,
@@ -1111,6 +1170,544 @@ def _derive_external_authority(
     )
 
 
+def _derive_technical_policy_template(
+    *,
+    preflight: FullC6ExternalPreflightResult,
+    license_materials: FullC6LicenseMaterialsTransaction,
+    coverage_inputs: tuple[EvidenceFileRef, ...],
+    analysis_inputs: AnalysisInputVerification,
+    component_license_policy: ComponentLicensePolicyVerification,
+    source_license_policy: ProjectSourceLicensePolicyVerification,
+    cargo_packages: tuple[CargoPackageRef, ...],
+    cargo_path_source: FullC6CargoPathSource,
+    subject: EvidenceFileRef,
+    wheel_entries: tuple[WheelEntryRef, ...],
+    native_runtime_inventory: NativeRuntimeInventory,
+    native_runtime_closure: NativeRuntimeTransitiveClosureInventory,
+    artifact_coverage: ArtifactPolicyCoverageInventory,
+    external_authority: FullC6ExternalAuthorityPartition,
+    analysis_transaction: FullC6AnalysisIRTransaction,
+) -> FullC6TechnicalPolicyTemplate:
+    """Derive the serializable owner handoff from the same retained graph."""
+    internal_license_observations = _derive_internal_license_observations(
+        license_materials
+    )
+    project_license = next(
+        item
+        for item in internal_license_observations
+        if item.subject_kind == "project"
+    )
+    cargo_licenses = {
+        item.subject_canonical_identity: item
+        for item in internal_license_observations
+        if item.subject_kind == "cargo-registry-package"
+    }
+    rows: list[FullC6TechnicalPolicyRow] = []
+
+    def add_artifact(
+        class_id: str,
+        canonical_identity: str,
+        payload: object,
+        sha256: str | None,
+        size: int | None,
+    ) -> None:
+        license_observation = (
+            cargo_licenses.get(canonical_identity)
+            if class_id == "cargo-component:registry-package"
+            else project_license
+        )
+        if license_observation is None:
+            raise FullC6ProductionError(
+                "technical row lacks exact Cargo license materials"
+            )
+        rows.append(
+            _technical_row(
+                class_id=class_id,
+                canonical_identity=canonical_identity,
+                authority_identity=full_c6_artifact_authority_identity(
+                    class_id,
+                    payload,
+                ),
+                sha256=sha256,
+                size=size,
+                license_observation_sha256=(
+                    license_observation.observation_sha256
+                ),
+            )
+        )
+
+    for item in coverage_inputs:
+        if item.role == "project-python-source":
+            class_id = "file-input:project-python-source"
+        elif item.role == "generated-python-input":
+            class_id = "file-input:generated-python-input"
+        elif item.role == "generated-rust-input":
+            class_id = (
+                "file-input:generated-rust-lib"
+                if Path(item.logical_path).parts[-2:] == ("src", "lib.rs")
+                else "file-input:generated-rust-build-input"
+            )
+        elif item.role == "generated-cargo-lock":
+            class_id = "file-input:generated-cargo-lock"
+        else:
+            raise FullC6ProductionError("technical template input role is unsupported")
+        add_artifact(
+            class_id,
+            canonical_full_c6_build_input_name(item.logical_path, item.role),
+            item.to_dict(),
+            item.sha256,
+            item.size,
+        )
+    for record in analysis_inputs.records:
+        if record.state == "present":
+            if record.stub is None:
+                raise FullC6ProductionError("technical template present stub is absent")
+            item = record.stub
+            add_artifact(
+                "file-input:present-project-python-stub",
+                canonical_full_c6_build_input_name(item.logical_path, item.role),
+                item.to_dict(),
+                item.sha256,
+                item.size,
+            )
+    for item in (component_license_policy.lock_file, source_license_policy.lock_file):
+        add_artifact(
+            "file-input:policy-lock",
+            canonical_full_c6_build_input_name(item.logical_path, item.role),
+            item.to_dict(),
+            item.sha256,
+            item.size,
+        )
+    for package in cargo_packages:
+        if package.kind == "registry":
+            class_id = "cargo-component:registry-package"
+            canonical_identity = f"cargo:{package.name}@{package.version}#registry"
+            package_sha256 = package.checksum
+        elif package.kind == "path-root":
+            class_id = "cargo-component:path-root-package"
+            canonical_identity = cargo_path_source.canonical_identity
+            package_sha256 = cargo_path_source.source_tree_sha256
+        else:
+            raise FullC6ProductionError("technical template Cargo package is unsupported")
+        add_artifact(
+            class_id,
+            canonical_identity,
+            package.to_dict(),
+            package_sha256,
+            None,
+        )
+    packaged_members = {native_runtime_inventory.wheel_member}
+    packaged_members.update(
+        node.wheel_member
+        for node in native_runtime_closure.nodes
+        if node.kind == "wheel-member" and node.wheel_member is not None
+    )
+    for entry in wheel_entries:
+        class_id = (
+            "wheel-entry:packaged-native-runtime-member"
+            if entry.name in packaged_members
+            else "wheel-entry:other"
+        )
+        add_artifact(
+            class_id,
+            f"wheel/{entry.name}",
+            entry.to_dict(),
+            entry.sha256,
+            entry.uncompressed_size,
+        )
+    for node in native_runtime_closure.nodes:
+        if node.kind == "system-logical":
+            add_artifact(
+                "native-runtime:logical-system-leaf",
+                f"system:{node.name}",
+                node.to_dict(),
+                None,
+                None,
+            )
+    add_artifact(
+        "wheel-output:subject",
+        subject.logical_path,
+        subject.to_dict(),
+        subject.sha256,
+        subject.size,
+    )
+
+    source = preflight.context.source_verification.context
+    if source is None:
+        raise FullC6ProductionError("technical template SourceLock context is unavailable")
+    archive = source.manifest.archive
+    external_values: list[tuple[str, dict[str, object]]] = [
+        (
+            "external-source:wheel-archive",
+            {
+                "logical_name": f"external/{archive.filename}",
+                "sha256": archive.sha256,
+                "size": archive.size,
+            },
+        )
+    ]
+    source_paths = set(source.wheel.source_entry_paths)
+    license_paths = set(source.wheel.license_entry_paths)
+    for source_entry in source.manifest.entries:
+        class_id = (
+            "external-source:python-source"
+            if source_entry.path in source_paths
+            else (
+                "external-source:license-file"
+                if source_entry.path in license_paths
+                else "external-source:distribution-metadata"
+            )
+        )
+        external_values.append(
+            (
+                class_id,
+                {
+                    "logical_name": f"external/{source_entry.path}",
+                    "sha256": source_entry.sha256,
+                    "size": source_entry.size,
+                },
+            )
+        )
+    external_license_observation = _derive_external_license_observation(preflight)
+    for class_id, payload in external_values:
+        payload_size = payload["size"]
+        if type(payload_size) is not int:
+            raise FullC6ProductionError("external technical row size is invalid")
+        rows.append(
+            _technical_row(
+                class_id=class_id,
+                canonical_identity=str(payload["logical_name"]),
+                authority_identity=full_c6_external_authority_identity(
+                    class_id,
+                    payload,
+                ),
+                sha256=str(payload["sha256"]),
+                size=payload_size,
+                license_observation_sha256=(
+                    external_license_observation.observation_sha256
+                ),
+            )
+        )
+
+    class_order = {
+        class_id: index for index, class_id in enumerate(
+            (*ARTIFACT_POLICY_COVERAGE_CLASS_IDS, *FULL_C6_EXTERNAL_POLICY_CLASS_IDS)
+        )
+    }
+    frozen_rows = tuple(
+        sorted(
+            rows,
+            key=lambda item: (
+                class_order[item.class_id],
+                item.authority_identity,
+                item.canonical_identity.casefold(),
+            ),
+        )
+    )
+    transformations = _derive_technical_transformations(
+        frozen_rows,
+        analysis_transaction=analysis_transaction,
+        authority_partition_sha256=full_c6_authority_partition_digest(
+            artifact_coverage,
+            external_authority,
+        ),
+    )
+    return FullC6TechnicalPolicyTemplate(
+        artifact_coverage=artifact_coverage,
+        external_authority=external_authority,
+        rows=frozen_rows,
+        transformations=transformations,
+        internal_license_observations=internal_license_observations,
+        external_license_observation=external_license_observation,
+        observed_owner_identity=source.manifest.owner,
+    )
+
+
+def _technical_row(
+    *,
+    class_id: str,
+    canonical_identity: str,
+    authority_identity: str,
+    sha256: str | None,
+    size: int | None,
+    license_observation_sha256: str,
+) -> FullC6TechnicalPolicyRow:
+    license_disposition = full_c6_policy_license_disposition(class_id)
+    return FullC6TechnicalPolicyRow(
+        class_id=class_id,
+        canonical_identity=canonical_identity,
+        authority_identity=authority_identity,
+        identity_mode=full_c6_policy_identity_mode(class_id),
+        sha256=sha256,
+        size=size,
+        required_license_disposition=license_disposition,
+        transformation_disposition=full_c6_policy_transformation_disposition(class_id),
+        license_evidence_origin=(
+            "not-applicable"
+            if license_disposition != "owner-approved-allow"
+            else (
+                "production-external-observation"
+                if class_id in FULL_C6_EXTERNAL_POLICY_CLASS_IDS
+                else "owner-project-observation"
+            )
+        ),
+        license_observation_sha256=(
+            None
+            if license_disposition != "owner-approved-allow"
+            else license_observation_sha256
+        ),
+    )
+
+
+def _derive_technical_transformations(
+    rows: tuple[FullC6TechnicalPolicyRow, ...],
+    *,
+    analysis_transaction: FullC6AnalysisIRTransaction,
+    authority_partition_sha256: str,
+) -> tuple[FullC6TransformationRecord, ...]:
+    source_classes = {
+        "file-input:project-python-source",
+        "file-input:present-project-python-stub",
+        "external-source:python-source",
+    }
+    output_kinds = {
+        "file-input:generated-python-input": "python-wrapper-generation-v1",
+        "file-input:generated-rust-lib": "python-to-rust-lowering-v1",
+        "file-input:generated-rust-build-input": "python-to-rust-lowering-v1",
+    }
+    sources = tuple(
+        sorted(
+            (row for row in rows if row.class_id in source_classes),
+            key=lambda item: item.authority_identity,
+        )
+    )
+    source_identities = tuple(item.authority_identity for item in sources)
+    source_sha256s = tuple(item.canonical_identity_sha256 for item in sources)
+    source_set_sha256 = full_c6_transformation_source_set_digest(
+        source_identities,
+        source_sha256s,
+    )
+    outputs = tuple(item for item in rows if item.class_id in output_kinds)
+    records: list[FullC6TransformationRecord] = []
+    for index, output in enumerate(outputs, start=1):
+        kind = output_kinds[output.class_id]
+        analysis_receipt = full_c6_analysis_receipt_digest(
+            authority_partition_sha256=authority_partition_sha256,
+            source_identity_set_sha256=source_set_sha256,
+            output_identity_sha256=output.canonical_identity_sha256,
+            analysis_sha256=analysis_transaction.analysis_sha256,
+        )
+        lowered_ir = analysis_transaction.lowered_ir_sha256(
+            transformation_kind=kind,
+            output_identity=output.authority_identity,
+            output_identity_sha256=output.canonical_identity_sha256,
+        )
+        records.append(
+            FullC6TransformationRecord(
+                record_id=f"transformation/{index:04d}",
+                kind=kind,
+                source_identities=source_identities,
+                source_identity_sha256s=source_sha256s,
+                output_identity=output.authority_identity,
+                output_identity_sha256=output.canonical_identity_sha256,
+                authority_partition_sha256=authority_partition_sha256,
+                source_identity_set_sha256=source_set_sha256,
+                generator_sha256=analysis_transaction.generator_sha256,
+                analysis_sha256=analysis_transaction.analysis_sha256,
+                analysis_receipt_sha256=analysis_receipt,
+                lowered_ir_sha256=lowered_ir,
+                lowered_ir_receipt_sha256=full_c6_lowered_ir_receipt_digest(
+                    authority_partition_sha256=authority_partition_sha256,
+                    transformation_kind=kind,
+                    source_identity_set_sha256=source_set_sha256,
+                    output_identity_sha256=output.canonical_identity_sha256,
+                    generator_sha256=analysis_transaction.generator_sha256,
+                    analysis_receipt_sha256=analysis_receipt,
+                    lowered_ir_sha256=lowered_ir,
+                ),
+            )
+        )
+    return tuple(records)
+
+
+def _derive_external_license_observation(
+    preflight: FullC6ExternalPreflightResult,
+) -> FullC6ExternalLicenseObservation:
+    source = preflight.context.source_verification.context
+    if source is None:
+        raise FullC6ProductionError("external license SourceLock context is unavailable")
+    detection = source.wheel.license_detection
+    if (
+        not verify_source_wheel_license_detection(
+            detection,
+            source.wheel.license_entry_paths,
+            source.wheel.license_payloads,
+        )
+        or detection.status != "detected"
+        or detection.detected_spdx is None
+    ):
+        raise FullC6ProductionError("external license observation is incomplete")
+    entries = {item.path: item for item in source.wheel.entries}
+    files: list[FullC6PolicyFileIdentity] = []
+    for path, payload in zip(
+        source.wheel.license_entry_paths,
+        source.wheel.license_payloads,
+        strict=True,
+    ):
+        entry = entries.get(path)
+        digest = hashlib.sha256(payload).hexdigest()
+        if entry is None or entry.sha256 != digest or entry.size != len(payload):
+            raise FullC6ProductionError("external license bytes changed")
+        files.append(
+            FullC6PolicyFileIdentity(
+                logical_path=f"external/{path}",
+                sha256=digest,
+                size=len(payload),
+                role="license-file",
+            )
+        )
+    frozen = tuple(sorted(files, key=lambda item: item.logical_path.casefold()))
+    source_receipt = detection.semantic_sha256
+    return FullC6ExternalLicenseObservation(
+        declared_spdx=source.manifest.declared_license,
+        detected_spdx=detection.detected_spdx,
+        source_detector_receipt_sha256=source_receipt,
+        detector_payload_sha256=full_c6_license_detector_payload_digest(
+            detection.detected_spdx,
+            frozen,
+            source_detector_receipt_sha256=source_receipt,
+        ),
+        license_files=frozen,
+    )
+
+
+def _derive_internal_license_observations(
+    license_materials: FullC6LicenseMaterialsTransaction,
+) -> tuple[FullC6InternalLicenseObservation, ...]:
+    if not validate_full_c6_license_materials_transaction(license_materials):
+        raise FullC6ProductionError("internal license materials are stale")
+    observations: list[FullC6InternalLicenseObservation] = []
+    for source in (license_materials.project, *license_materials.cargo_packages):
+        files = tuple(
+            sorted(
+                (
+                    FullC6PolicyFileIdentity(
+                        logical_path=item.logical_name,
+                        sha256=item.sha256,
+                        size=item.size,
+                        role="license-file",
+                    )
+                    for item in source.license_files
+                ),
+                key=lambda item: item.logical_path.casefold(),
+            )
+        )
+        source_receipt = source.detector_receipt_sha256
+        subject_identity = (
+            f"project:{source.name}@{source.version or 'unversioned'}"
+            if source.subject_kind == "project"
+            else f"cargo:{source.name}@{source.version}#registry"
+        )
+        observations.append(
+            FullC6InternalLicenseObservation(
+                subject_kind=cast(
+                    Literal["project", "cargo-registry-package"],
+                    source.subject_kind,
+                ),
+                subject_canonical_identity=subject_identity,
+                declared_spdx=source.declared_spdx,
+                detected_spdx=source.observed_spdx,
+                source_detector_receipt_sha256=source_receipt,
+                detector_payload_sha256=full_c6_license_detector_payload_digest(
+                    source.observed_spdx,
+                    files,
+                    source_detector_receipt_sha256=source_receipt,
+                ),
+                license_files=files,
+            )
+        )
+    return tuple(
+        sorted(
+            observations,
+            key=lambda item: (
+                item.subject_kind,
+                item.subject_canonical_identity.casefold(),
+                item.observation_sha256,
+            ),
+        )
+    )
+
+
+def _require_policy_matches_fresh_template(
+    *,
+    policy: FullC6PolicyReceipt,
+    bootstrap_request: FullC6PolicyBootstrapRequest,
+) -> None:
+    template = bootstrap_request.technical_template
+    if policy.bootstrap_request_sha256 != bootstrap_request.request_sha256:
+        raise FullC6ProductionError("owner policy bootstrap lineage is stale")
+    if (
+        policy.artifact_coverage != template.artifact_coverage
+        or policy.external_authority != template.external_authority
+        or policy.transformations != template.transformations
+        or len(policy.rows) != len(template.rows)
+    ):
+        raise FullC6ProductionError("owner policy differs from fresh technical template")
+    for actual, observed in zip(policy.rows, template.rows, strict=True):
+        if (
+            actual.class_id,
+            actual.canonical_identity,
+            actual.authority_identity,
+            actual.identity_mode,
+            actual.sha256,
+            actual.size,
+            actual.license_disposition,
+            actual.transformation_disposition,
+        ) != (
+            observed.class_id,
+            observed.canonical_identity,
+            observed.authority_identity,
+            observed.identity_mode,
+            observed.sha256,
+            observed.size,
+            observed.required_license_disposition,
+            observed.transformation_disposition,
+        ):
+            raise FullC6ProductionError("owner policy row differs from fresh observation")
+        if observed.required_license_disposition == "owner-approved-allow":
+            observation: (
+                FullC6ExternalLicenseObservation | FullC6InternalLicenseObservation
+            )
+            if observed.license_evidence_origin == "production-external-observation":
+                observation = template.external_license_observation
+            else:
+                matches = tuple(
+                    item
+                    for item in template.internal_license_observations
+                    if item.observation_sha256
+                    == observed.license_observation_sha256
+                )
+                if len(matches) != 1:
+                    raise FullC6ProductionError(
+                        "owner policy internal license observation is stale"
+                    )
+                observation = matches[0]
+            evidence = actual.license_evidence
+            if (
+                evidence is None
+                or evidence.declared_spdx != observation.declared_spdx
+                or evidence.detected_spdx != observation.detected_spdx
+                or evidence.source_detector_receipt_sha256
+                != observation.source_detector_receipt_sha256
+                or evidence.detector_payload_sha256
+                != observation.detector_payload_sha256
+                or evidence.license_files != observation.license_files
+            ):
+                raise FullC6ProductionError(
+                    "owner policy evidence differs from fresh exact license bytes"
+                )
+
+
 def _bootstrap_inputs(
     *,
     preflight: FullC6ExternalPreflightResult,
@@ -1191,9 +1788,11 @@ def _material_projection(material: _FullC6ProductionMaterial) -> dict[str, objec
         ),
         "bootstrap_request_sha256": (
             material.bootstrap_request.request_sha256
-            if material.bootstrap_request is not None
-            else None
         ),
+        "technical_policy_template_sha256": (
+            material.technical_policy_template.template_sha256
+        ),
+        "executor_invocation_count": len(material.executor_receipt.invocations),
         "complete_for_scope": True,
         "signed": False,
         "distribution_authorized": False,
@@ -1224,6 +1823,9 @@ def _seal(authority: FullC6ProductionAuthority) -> bytes:
                 "executor_receipt",
                 "build_inputs",
                 "authority_aggregate",
+                "technical_policy_template",
+                "bootstrap_inputs",
+                "bootstrap_request",
             )
             },
         },

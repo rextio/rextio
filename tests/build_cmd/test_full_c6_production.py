@@ -14,7 +14,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from rextio.artifacts.evidence import EvidenceFileRef
+from rextio.artifacts.evidence import EvidenceFileRef, sha256_hex
+from rextio.build.full_c6_policy import (
+    FullC6PolicyFileIdentity,
+    full_c6_license_detector_payload_digest,
+)
+from rextio.build.full_c6_policy_completion import finalize_full_c6_policy_manifest
+from rextio.build.full_c6_policy_manifest import parse_full_c6_policy_manifest
 
 
 _EXTERNAL = runpy.run_path(
@@ -22,6 +28,12 @@ _EXTERNAL = runpy.run_path(
 )
 _POLICY = runpy.run_path(
     str(Path(__file__).with_name("test_full_c6_policy.py"))
+)
+_BOOTSTRAP = runpy.run_path(
+    str(Path(__file__).with_name("test_full_c6_policy_bootstrap.py"))
+)
+_COMPLETION = runpy.run_path(
+    str(Path(__file__).with_name("test_full_c6_policy_completion.py"))
 )
 
 
@@ -131,6 +143,11 @@ def _collect_bounded_production_authority(
         "_derive_external_authority",
         lambda _preflight: external,
     )
+    monkeypatch.setattr(
+        production,
+        "_derive_technical_policy_template",
+        lambda **_kwargs: _BOOTSTRAP["_technical_template"](),
+    )
 
     if pinned_policy:
         class _SupplyChain:
@@ -148,6 +165,11 @@ def _collect_bounded_production_authority(
             production,
             "_validate_analysis_transaction",
             lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            production,
+            "_require_policy_matches_fresh_template",
+            lambda **_kwargs: None,
         )
         monkeypatch.setattr(
             production,
@@ -310,6 +332,8 @@ def test_collector_mints_one_sealed_path_free_non_authorizing_authority(
     digest = "a" * 64
 
     class _Digest:
+        invocations = (object(), object())
+
         def __init__(self, value: str = digest) -> None:
             self.digest = value
 
@@ -337,6 +361,9 @@ def test_collector_mints_one_sealed_path_free_non_authorizing_authority(
         artifact_coverage=_Digest(),
         external_authority=SimpleNamespace(canonical_partition_sha256=digest),
         authority_aggregate=_Aggregate(),
+        technical_policy_template=SimpleNamespace(template_sha256=digest),
+        bootstrap_inputs=object(),
+        bootstrap_request=SimpleNamespace(request_sha256=digest),
     )
     monkeypatch.setattr(
         production,
@@ -381,6 +408,7 @@ def test_collector_mints_one_sealed_path_free_non_authorizing_authority(
     assert projected["signed"] is False
     assert projected["distribution_authorized"] is False
     assert projected["authorizes_distribution"] is False
+    assert projected["executor_invocation_count"] == 2
     assert authority.lifecycle.status == "signing-required"
 
     object.__setattr__(authority, "_material", copy.copy(material))
@@ -445,6 +473,101 @@ def test_pinned_policy_authority_exposes_only_private_validated_material(
     assert material.supply_chain is authority._material.supply_chain
     assert material.runtime_authorization is authority._material.runtime_authorization
     assert material.executor_receipt is authority._material.executor_receipt
+
+
+def test_fresh_template_accepts_only_the_exact_finalized_policy(tmp_path: Path) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    bootstrap = _BOOTSTRAP["_request"](tmp_path)
+    completion = _COMPLETION["_completion"](bootstrap)
+    manifest = finalize_full_c6_policy_manifest(
+        bootstrap=bootstrap,
+        completion=completion,
+    )
+    policy = parse_full_c6_policy_manifest(
+        manifest,
+        expected_sha256=sha256_hex(manifest),
+    )
+
+    production._require_policy_matches_fresh_template(
+        policy=policy,
+        bootstrap_request=bootstrap,
+    )
+
+    row_index = next(
+        index
+        for index, row in enumerate(policy.rows)
+        if row.class_id == "wheel-entry:other"
+    )
+    rows = list(policy.rows)
+    rows[row_index] = replace(
+        rows[row_index],
+        canonical_identity=f"{rows[row_index].canonical_identity}.changed",
+        size=(rows[row_index].size or 0) + 1,
+    )
+    changed = replace(policy, rows=tuple(rows))
+    with pytest.raises(production.FullC6ProductionError, match="fresh observation"):
+        production._require_policy_matches_fresh_template(
+            policy=changed,
+            bootstrap_request=bootstrap,
+        )
+
+    with pytest.raises(production.FullC6ProductionError, match="lineage is stale"):
+        production._require_policy_matches_fresh_template(
+            policy=replace(policy, bootstrap_request_sha256="0" * 64),
+            bootstrap_request=bootstrap,
+        )
+
+
+def test_fresh_template_rejects_fabricated_internal_license_bytes(
+    tmp_path: Path,
+) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    bootstrap = _BOOTSTRAP["_request"](tmp_path)
+    completion = _COMPLETION["_completion"](bootstrap)
+    manifest = finalize_full_c6_policy_manifest(
+        bootstrap=bootstrap,
+        completion=completion,
+    )
+    policy = parse_full_c6_policy_manifest(
+        manifest,
+        expected_sha256=sha256_hex(manifest),
+    )
+    row_index = next(
+        index
+        for index, row in enumerate(policy.rows)
+        if row.class_id == "file-input:project-python-source"
+    )
+    row = policy.rows[row_index]
+    evidence = row.license_evidence
+    assert evidence is not None
+    files = (
+        FullC6PolicyFileIdentity(
+            logical_path="licenses/FABRICATED-LICENSE",
+            sha256="9" * 64,
+            size=101,
+            role="license-file",
+        ),
+    )
+    changed_evidence = replace(
+        evidence,
+        license_files=files,
+        detector_payload_sha256=full_c6_license_detector_payload_digest(
+            evidence.detected_spdx,
+            files,
+            source_detector_receipt_sha256=(
+                evidence.source_detector_receipt_sha256
+            ),
+        ),
+    )
+    rows = list(policy.rows)
+    rows[row_index] = replace(row, license_evidence=changed_evidence)
+    changed = replace(policy, rows=tuple(rows))
+
+    with pytest.raises(production.FullC6ProductionError, match="exact license bytes"):
+        production._require_policy_matches_fresh_template(
+            policy=changed,
+            bootstrap_request=bootstrap,
+        )
 
 
 def test_deep_validator_rejects_equal_retained_receipt_replacement(
