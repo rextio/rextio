@@ -1124,6 +1124,46 @@ def test_tree_rejects_casefold_alias_special_file_and_hardlink(tmp_path: Path) -
         )
 
 
+def test_tree_hardlink_diagnostic_is_bounded_and_path_opaque(tmp_path: Path) -> None:
+    secret_root = tmp_path / "absolute-secret-support-root"
+    secret_root.mkdir()
+    first_relative_path = "relative-secret-alias"
+    original = secret_root / "relative-secret-original"
+    original.write_bytes(b"shared")
+    try:
+        os.link(original, secret_root / first_relative_path)
+    except OSError as exc:
+        pytest.skip(f"hardlink creation unavailable: {exc}")
+
+    with pytest.raises(ToolchainSupportLockError) as captured:
+        capture_toolchain_support_tree(
+            create_toolchain_support_locator(
+                logical_role="diagnostic-root", path=secret_root, kind="tree"
+            )
+        )
+
+    message = str(captured.value)
+    expected_path_sha256 = hashlib.sha256(
+        _canonical(
+            {
+                "domain": (
+                    "rextio.full-c6-toolchain-support-"
+                    "hardlink-diagnostic-path.v1"
+                ),
+                "relative_path": first_relative_path,
+            }
+        )
+    ).hexdigest()
+    assert "logical_role=diagnostic-root" in message
+    assert f"relative_path_sha256={expected_path_sha256}" in message
+    assert "st_nlink=2" in message
+    assert "in_root_inode_observation_count=1" in message
+    assert first_relative_path not in message
+    assert original.name not in message
+    assert str(secret_root) not in message
+    assert str(tmp_path) not in message
+
+
 def test_manifest_rejects_symlink_and_hardlink(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest"
     manifest.write_bytes(b"manifest")

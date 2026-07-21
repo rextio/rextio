@@ -1726,6 +1726,7 @@ def _capture_tree_once(
         root_stamp, root_xattrs = _walk_tree(
             root_fd,
             root_path=locator._absolute_path,
+            logical_role=locator.logical_role,
             relative=PurePosixPath(),
             entries=raw_entries,
             dispositions=raw_dispositions,
@@ -1834,6 +1835,7 @@ def _walk_tree(
     directory_fd: int,
     *,
     root_path: Path,
+    logical_role: str,
     relative: PurePosixPath,
     entries: list[_RawTreeEntry],
     dispositions: list[_RawSymlinkDisposition],
@@ -1893,6 +1895,7 @@ def _walk_tree(
                 child_final, child_xattrs = _walk_tree(
                     child_fd,
                     root_path=root_path,
+                    logical_role=logical_role,
                     relative=child_relative,
                     entries=entries,
                     dispositions=dispositions,
@@ -1932,7 +1935,12 @@ def _walk_tree(
                 os.close(child_fd)
             continue
         if stat.S_ISREG(observed.mode):
-            _require_unaliased_inode(observed, inode_keys, label="regular file")
+            _require_unaliased_regular_tree_inode(
+                observed,
+                inode_keys,
+                logical_role=logical_role,
+                relative_path=logical,
+            )
             if observed.size > MAX_TOOLCHAIN_SUPPORT_FILE_BYTES:
                 raise ToolchainSupportLockError(
                     "toolchain support file exceeds the byte bound"
@@ -3281,6 +3289,36 @@ def _require_unaliased_inode(
             f"toolchain support {label} reuses an inode"
         )
     inode_keys.add(key)
+
+
+def _require_unaliased_regular_tree_inode(
+    value: _FilesystemStamp,
+    inode_keys: set[tuple[int, int]],
+    *,
+    logical_role: str,
+    relative_path: str,
+) -> None:
+    key = value.device, value.inode
+    if value.links != 1:
+        observation_count = 1 + int(key in inode_keys)
+        path_sha256 = _sha256(
+            {
+                "domain": (
+                    "rextio.full-c6-toolchain-support-"
+                    "hardlink-diagnostic-path.v1"
+                ),
+                "relative_path": _validate_relative_path(relative_path),
+            }
+        )
+        raise ToolchainSupportLockError(
+            "toolchain support regular tree member is a shared hardlink "
+            f"(logical_role={_validate_role(logical_role)}, "
+            f"relative_path_sha256={path_sha256}, "
+            f"st_nlink={value.links}, "
+            "in_root_inode_observation_count="
+            f"{observation_count})"
+        )
+    _require_unaliased_inode(value, inode_keys, label="regular file")
 
 
 def _require_locator(locator: object, *, kind: str) -> ToolchainSupportLocator:
