@@ -205,6 +205,47 @@ def _macos_projected_inputs(
     return manifests, roots, python_root, sdk, sound
 
 
+def _linux_cross_root_inputs(
+    tmp_path: Path,
+) -> tuple[
+    list[ToolchainSupportLocator],
+    list[ToolchainSupportLocator],
+    Path,
+    Path,
+]:
+    manifest = tmp_path / "linux-toolchain.manifest"
+    manifest.write_bytes(b"gcc=13\nglibc=2.39\n")
+    lib_root = tmp_path / "usr" / "lib"
+    gcc_root = lib_root / "gcc" / "x86_64-linux-gnu" / "13"
+    runtime_root = lib_root / "x86_64-linux-gnu"
+    gcc_root.mkdir(parents=True)
+    runtime_root.mkdir(parents=True)
+    (runtime_root / "libasan.so.8").write_bytes(b"bound runtime support\n")
+    (gcc_root / "libasan.so").symlink_to(
+        "../../../x86_64-linux-gnu/libasan.so.8"
+    )
+    manifests = [
+        create_toolchain_support_locator(
+            logical_role="linux-toolchain-manifest",
+            path=manifest,
+            kind="file",
+        )
+    ]
+    roots = [
+        create_toolchain_support_locator(
+            logical_role="linux-gcc-support",
+            path=gcc_root,
+            kind="tree",
+        ),
+        create_toolchain_support_locator(
+            logical_role="linux-runtime-support",
+            path=runtime_root,
+            kind="tree",
+        ),
+    ]
+    return manifests, roots, gcc_root, runtime_root
+
+
 def test_generation_is_canonical_path_free_aggregate_and_round_trips(
     tmp_path: Path,
 ) -> None:
@@ -217,6 +258,8 @@ def test_generation_is_canonical_path_free_aggregate_and_round_trips(
     )
     document = json.loads(lock.canonical_bytes)
 
+    assert TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION == 3
+    assert TOOLCHAIN_SUPPORT_LOCK_DOMAIN.endswith("support-lock.v3")
     assert document["kind"] == TOOLCHAIN_SUPPORT_LOCK_KIND
     assert document["schema_version"] == TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION
     assert document["domain"] == TOOLCHAIN_SUPPORT_LOCK_DOMAIN
@@ -518,6 +561,232 @@ def test_linux_target_and_locator_order_are_deterministic(tmp_path: Path) -> Non
         "manifest-b",
     ]
     assert [item.logical_role for item in first.roots] == ["root-a", "root-b"]
+
+
+def test_linux_gcc_cross_root_symlink_is_bound_and_input_order_invariant(
+    tmp_path: Path,
+) -> None:
+    manifests, roots, gcc_root, runtime_root = _linux_cross_root_inputs(tmp_path)
+
+    first = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=manifests,
+        roots=roots,
+    )
+    second = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=list(reversed(manifests)),
+        roots=list(reversed(roots)),
+    )
+
+    assert first.canonical_bytes == second.canonical_bytes
+    assert [item.logical_role for item in first.roots] == [
+        "linux-gcc-support",
+        "linux-runtime-support",
+    ]
+    gcc_receipt, runtime_receipt = first.roots
+    assert gcc_receipt.disposition_count == 1
+    disposition = gcc_receipt.symlink_dispositions[0]
+    assert disposition.disposition == "bind-external-support-root"
+    assert disposition.relative_path == "libasan.so"
+    assert disposition.raw_link_target == (
+        "../../../x86_64-linux-gnu/libasan.so.8"
+    )
+    assert disposition.canonical_link_target is None
+    assert disposition.external_manifest_role is None
+    assert disposition.external_manifest_merkle_sha256 is None
+    assert disposition.external_support_root_role == "linux-runtime-support"
+    assert (
+        disposition.external_support_root_merkle_sha256
+        == runtime_receipt.merkle_sha256
+    )
+    assert disposition.resolved_relative_path == "libasan.so.8"
+    assert str(gcc_root).encode() not in first.canonical_bytes
+    assert str(runtime_root).encode() not in first.canonical_bytes
+    assert parse_toolchain_support_lock(
+        first.canonical_bytes,
+        expected_raw_sha256=first.raw_sha256,
+    ) == first
+    assert verify_toolchain_support_lock(
+        first,
+        manifests=manifests,
+        roots=list(reversed(roots)),
+    )
+
+
+def test_linux_cross_root_target_mutation_fails_verification(tmp_path: Path) -> None:
+    manifests, roots, _gcc_root, runtime_root = _linux_cross_root_inputs(tmp_path)
+    lock = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=manifests,
+        roots=roots,
+    )
+
+    (runtime_root / "libasan.so.8").write_bytes(b"changed runtime support\n")
+
+    with pytest.raises(ToolchainSupportLockError, match="differ"):
+        verify_toolchain_support_lock(
+            lock,
+            manifests=manifests,
+            roots=roots,
+        )
+
+
+def test_linux_cross_root_requires_exact_target_role_and_closed_fields(
+    tmp_path: Path,
+) -> None:
+    manifests, roots, _gcc_root, runtime_root = _linux_cross_root_inputs(tmp_path)
+    wrong_role = create_toolchain_support_locator(
+        logical_role="linux-runtime-other",
+        path=runtime_root,
+        kind="tree",
+    )
+    with pytest.raises(ToolchainSupportLockError, match="escapes"):
+        generate_toolchain_support_lock(
+            target_triple="x86_64-unknown-linux-gnu",
+            manifests=manifests,
+            roots=[roots[0], wrong_role],
+        )
+
+    lock = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=manifests,
+        roots=roots,
+    )
+    for field, value in (
+        ("external_support_root_role", "linux-runtime-other"),
+        ("external_support_root_merkle_sha256", "0" * 64),
+        ("resolved_relative_path", "other.so"),
+    ):
+        stale = lock.to_dict()
+        disposition = stale["roots"][0]["symlink_dispositions"][0]
+        disposition[field] = value
+        stale_bytes = _canonical(stale)
+        with pytest.raises(ToolchainSupportLockError):
+            parse_toolchain_support_lock(
+                stale_bytes,
+                expected_raw_sha256=hashlib.sha256(stale_bytes).hexdigest(),
+            )
+
+    for mutation in ("missing", "extra"):
+        open_document = lock.to_dict()
+        disposition = open_document["roots"][0]["symlink_dispositions"][0]
+        if mutation == "missing":
+            del disposition["external_support_root_role"]
+        else:
+            disposition["ambient_support_root"] = "/tmp/runtime"
+        open_bytes = _canonical(open_document)
+        with pytest.raises(ToolchainSupportLockError, match="schema"):
+            parse_toolchain_support_lock(
+                open_bytes,
+                expected_raw_sha256=hashlib.sha256(open_bytes).hexdigest(),
+            )
+
+
+def test_linux_cross_root_rejects_overlapping_and_aliased_root_locators(
+    tmp_path: Path,
+) -> None:
+    manifests, roots, gcc_root, _runtime_root = _linux_cross_root_inputs(tmp_path)
+    nested = gcc_root / "nested"
+    nested.mkdir()
+    (nested / "member").write_bytes(b"nested\n")
+    nested_locator = create_toolchain_support_locator(
+        logical_role="linux-runtime-support",
+        path=nested,
+        kind="tree",
+    )
+    alias_locator = create_toolchain_support_locator(
+        logical_role="linux-runtime-support",
+        path=gcc_root,
+        kind="tree",
+    )
+
+    for target in (nested_locator, alias_locator):
+        with pytest.raises(ToolchainSupportLockError, match="overlap|alias"):
+            generate_toolchain_support_lock(
+                target_triple="x86_64-unknown-linux-gnu",
+                manifests=manifests,
+                roots=[roots[0], target],
+            )
+
+
+def test_linux_cross_root_allows_existing_nested_nonedge_roots(
+    tmp_path: Path,
+) -> None:
+    manifests, roots, _gcc_root, _runtime_root = _linux_cross_root_inputs(tmp_path)
+    python_library_root = tmp_path / "python" / "lib"
+    python_runtime = python_library_root / "python3.11"
+    python_runtime.mkdir(parents=True)
+    (python_runtime / "encodings.py").write_bytes(b"# runtime\n")
+    nested_roots = [
+        create_toolchain_support_locator(
+            logical_role="linux-python-library-support",
+            path=python_library_root,
+            kind="tree",
+        ),
+        create_toolchain_support_locator(
+            logical_role="python-runtime",
+            path=python_runtime,
+            kind="tree",
+        ),
+    ]
+
+    lock = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=manifests,
+        roots=[*roots, *nested_roots],
+    )
+
+    assert {item.logical_role for item in lock.roots} == {
+        "linux-gcc-support",
+        "linux-python-library-support",
+        "linux-runtime-support",
+        "python-runtime",
+    }
+
+
+def test_linux_cross_root_rejects_inode_aliased_edge_endpoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _manifests, roots, gcc_root, _runtime_root = _linux_cross_root_inputs(tmp_path)
+    shared_fd = os.open(gcc_root, os.O_RDONLY)
+    shared_stamp = support_lock._stamp(os.fstat(shared_fd))
+
+    def open_same_inode(
+        _path: Path,
+    ) -> list[tuple[int, int | None, str | None, object]]:
+        return [(os.dup(shared_fd), None, None, shared_stamp)]
+
+    monkeypatch.setattr(support_lock, "_open_directory_chain", open_same_inode)
+    try:
+        with pytest.raises(ToolchainSupportLockError, match="overlap|alias"):
+            support_lock._validate_external_support_root_isolation(
+                source=roots[0],
+                target=roots[1],
+            )
+    finally:
+        os.close(shared_fd)
+
+
+def test_linux_cross_root_rejects_other_escape_and_standalone_capture(
+    tmp_path: Path,
+) -> None:
+    manifests, roots, gcc_root, _runtime_root = _linux_cross_root_inputs(tmp_path)
+    with pytest.raises(ToolchainSupportLockError, match="escapes"):
+        capture_toolchain_support_tree(roots[0])
+
+    (gcc_root / "libasan.so").unlink()
+    outside = tmp_path / "usr" / "lib" / "outside.so"
+    outside.write_bytes(b"not runtime support\n")
+    (gcc_root / "libasan.so").symlink_to("../../../outside.so")
+
+    with pytest.raises(ToolchainSupportLockError, match="exact runtime root"):
+        generate_toolchain_support_lock(
+            target_triple="x86_64-unknown-linux-gnu",
+            manifests=manifests,
+            roots=roots,
+        )
 
 
 def test_large_tree_serializes_only_one_bounded_aggregate(tmp_path: Path) -> None:
@@ -1156,6 +1425,10 @@ def test_tree_hardlink_diagnostic_is_bounded_and_path_opaque(tmp_path: Path) -> 
     ).hexdigest()
     assert "logical_role=diagnostic-root" in message
     assert f"relative_path_sha256={expected_path_sha256}" in message
+    observed = original.stat()
+    assert f"st_uid={observed.st_uid}" in message
+    assert f"st_gid={observed.st_gid}" in message
+    assert f"st_mode={observed.st_mode}" in message
     assert "st_nlink=2" in message
     assert "in_root_inode_observation_count=1" in message
     assert first_relative_path not in message

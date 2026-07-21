@@ -7,9 +7,11 @@ only the narrow CPython 3.11 / PyO3 host-cdylib profile and does not authorize a
 build or distribution.
 
 Regular files are streamed through descriptor-pinned, no-follow opens.  Trees
-are inventoried without following links.  A relative symlink is accepted only
-when its component-wise resolution terminates at another captured member in
-the same tree; absolute, escaping, broken, and cyclic links fail closed.
+are inventoried without following links.  Relative symlinks normally must
+terminate at another member in the same tree.  The Linux host profile adds one
+acyclic GCC-support-to-runtime-support edge whose target tree is captured both
+before and after the source; every other absolute, escaping, broken, cyclic,
+or re-escaping link fails closed.
 Content Merkle nodes also bind stable observable stat metadata and exact
 bounded xattr name/value receipts (including macOS resource forks).  Volatile
 access times are deliberately excluded.
@@ -34,8 +36,8 @@ import unicodedata
 
 
 TOOLCHAIN_SUPPORT_LOCK_KIND = "full-c6-toolchain-support-lock"
-TOOLCHAIN_SUPPORT_LOCK_DOMAIN = "rextio.full-c6-toolchain-support-lock.v2"
-TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION = 2
+TOOLCHAIN_SUPPORT_LOCK_DOMAIN = "rextio.full-c6-toolchain-support-lock.v3"
+TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION = 3
 TOOLCHAIN_SUPPORT_SCOPE = "cpython-3.11-pyo3-host-cdylib-v1"
 TOOLCHAIN_SUPPORT_TARGETS = (
     "aarch64-apple-darwin",
@@ -126,6 +128,8 @@ _SYMLINK_DISPOSITION_FIELDS = {
     "canonical_link_target",
     "external_manifest_role",
     "external_manifest_merkle_sha256",
+    "external_support_root_role",
+    "external_support_root_merkle_sha256",
     "resolved_relative_path",
     "resolved_path_sha256",
     "mode",
@@ -367,7 +371,7 @@ class _ToolchainSupportTreeEntry:
 
 @dataclass(frozen=True, slots=True)
 class ToolchainSupportSymlinkDispositionReceipt:
-    """One fixed target/role-specific symlink that generic trees reject."""
+    """One closed fixed-policy or bounded cross-root symlink receipt."""
 
     relative_path: str
     disposition: str
@@ -375,6 +379,8 @@ class ToolchainSupportSymlinkDispositionReceipt:
     canonical_link_target: str | None
     external_manifest_role: str | None
     external_manifest_merkle_sha256: str | None
+    external_support_root_role: str | None
+    external_support_root_merkle_sha256: str | None
     resolved_relative_path: str | None
     resolved_path_sha256: str
     mode: int
@@ -390,6 +396,7 @@ class ToolchainSupportSymlinkDispositionReceipt:
         _validate_relative_path(self.relative_path)
         if self.disposition not in {
             "bind-external-manifest",
+            "bind-external-support-root",
             "deny-isolated-site-packages",
             "normalize-in-root-alias",
         }:
@@ -422,8 +429,55 @@ class ToolchainSupportSymlinkDispositionReceipt:
                 self.external_manifest_merkle_sha256,
                 "support disposition external manifest Merkle SHA-256",
             )
+        if self.external_support_root_role is not None:
+            _validate_role(self.external_support_root_role)
+        if self.external_support_root_merkle_sha256 is not None:
+            _require_sha256(
+                self.external_support_root_merkle_sha256,
+                "support disposition external support-root Merkle SHA-256",
+            )
         if self.resolved_relative_path is not None:
             _validate_relative_path(self.resolved_relative_path)
+        if self.disposition == "bind-external-manifest":
+            valid_shape = (
+                self.canonical_link_target is not None
+                and self.external_manifest_role is not None
+                and self.external_manifest_merkle_sha256 is not None
+                and self.external_support_root_role is None
+                and self.external_support_root_merkle_sha256 is None
+                and self.resolved_relative_path is None
+            )
+        elif self.disposition == "bind-external-support-root":
+            valid_shape = (
+                self.canonical_link_target is None
+                and self.external_manifest_role is None
+                and self.external_manifest_merkle_sha256 is None
+                and self.external_support_root_role is not None
+                and self.external_support_root_merkle_sha256 is not None
+                and self.resolved_relative_path is not None
+            )
+        elif self.disposition == "deny-isolated-site-packages":
+            valid_shape = (
+                self.canonical_link_target is None
+                and self.external_manifest_role is None
+                and self.external_manifest_merkle_sha256 is None
+                and self.external_support_root_role is None
+                and self.external_support_root_merkle_sha256 is None
+                and self.resolved_relative_path is None
+            )
+        else:
+            valid_shape = (
+                self.canonical_link_target is not None
+                and self.external_manifest_role is None
+                and self.external_manifest_merkle_sha256 is None
+                and self.external_support_root_role is None
+                and self.external_support_root_merkle_sha256 is None
+                and self.resolved_relative_path is not None
+            )
+        if not valid_shape:
+            raise ToolchainSupportLockError(
+                "toolchain support symlink disposition binding shape is invalid"
+            )
         _require_sha256(
             self.resolved_path_sha256,
             "support disposition resolved path SHA-256",
@@ -465,6 +519,10 @@ class ToolchainSupportSymlinkDispositionReceipt:
             "canonical_link_target": self.canonical_link_target,
             "external_manifest_role": self.external_manifest_role,
             "external_manifest_merkle_sha256": self.external_manifest_merkle_sha256,
+            "external_support_root_role": self.external_support_root_role,
+            "external_support_root_merkle_sha256": (
+                self.external_support_root_merkle_sha256
+            ),
             "resolved_relative_path": self.resolved_relative_path,
             "resolved_path_sha256": self.resolved_path_sha256,
             "mode": self.mode,
@@ -763,6 +821,12 @@ class _RawSymlinkDisposition:
     xattrs_sha256: str
     size: int
     raw_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ExternalSupportRootBinding:
+    locator: ToolchainSupportLocator
+    receipt: ToolchainSupportTreeReceipt
 
 
 _MACOS_PYTHON_RUNTIME_DISPOSITIONS = (
@@ -1066,6 +1130,7 @@ def capture_toolchain_support_tree(
         locator,
         target_triple=None,
         manifest_bindings={},
+        external_support_root_binding=None,
         budget=_XattrBudget(
             remaining_count=MAX_TOOLCHAIN_SUPPORT_TREE_XATTRS,
             remaining_bytes=MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES,
@@ -1081,6 +1146,7 @@ def _capture_stable_tree(
         str,
         tuple[ToolchainSupportLocator, ToolchainSupportFileReceipt],
     ],
+    external_support_root_binding: _ExternalSupportRootBinding | None,
     budget: _XattrBudget,
 ) -> ToolchainSupportTreeReceipt:
     capture_budget = _XattrBudget(
@@ -1100,12 +1166,14 @@ def _capture_stable_tree(
         locator,
         target_triple=target_triple,
         manifest_bindings=manifest_bindings,
+        external_support_root_binding=external_support_root_binding,
         xattr_budget=capture_budget,
     )
     second = _capture_tree_once(
         locator,
         target_triple=target_triple,
         manifest_bindings=manifest_bindings,
+        external_support_root_binding=external_support_root_binding,
         xattr_budget=replay_budget,
     )
     if first != second or capture_budget != replay_budget:
@@ -1158,14 +1226,63 @@ def _capture_lock_receipts(
             strict=True,
         )
     }
-    root_receipts = tuple(
-        _capture_stable_tree(
+    roots_by_role = {item.logical_role: item for item in ordered_roots}
+    captured_roots: dict[str, ToolchainSupportTreeReceipt] = {}
+    gcc_locator = roots_by_role.get("linux-gcc-support")
+    runtime_locator = roots_by_role.get("linux-runtime-support")
+    if (
+        target_triple == "x86_64-unknown-linux-gnu"
+        and gcc_locator is not None
+        and runtime_locator is not None
+    ):
+        _validate_external_support_root_isolation(
+            source=gcc_locator,
+            target=runtime_locator,
+        )
+        runtime_receipt = _capture_stable_tree(
+            runtime_locator,
+            target_triple=target_triple,
+            manifest_bindings=manifest_bindings,
+            external_support_root_binding=None,
+            budget=budget,
+        )
+        captured_roots[runtime_locator.logical_role] = runtime_receipt
+        captured_roots[gcc_locator.logical_role] = _capture_stable_tree(
+            gcc_locator,
+            target_triple=target_triple,
+            manifest_bindings=manifest_bindings,
+            external_support_root_binding=_ExternalSupportRootBinding(
+                locator=runtime_locator,
+                receipt=runtime_receipt,
+            ),
+            budget=budget,
+        )
+        replayed_runtime = _capture_stable_tree(
+            runtime_locator,
+            target_triple=target_triple,
+            manifest_bindings=manifest_bindings,
+            external_support_root_binding=None,
+            budget=_XattrBudget(
+                remaining_count=MAX_TOOLCHAIN_SUPPORT_TREE_XATTRS,
+                remaining_bytes=MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES,
+            ),
+        )
+        if replayed_runtime != runtime_receipt:
+            raise ToolchainSupportLockError(
+                "toolchain support external runtime root changed across source capture"
+            )
+    for item in ordered_roots:
+        if item.logical_role in captured_roots:
+            continue
+        captured_roots[item.logical_role] = _capture_stable_tree(
             item,
             target_triple=target_triple,
             manifest_bindings=manifest_bindings,
+            external_support_root_binding=None,
             budget=budget,
         )
-        for item in ordered_roots
+    root_receipts = tuple(
+        captured_roots[item.logical_role] for item in ordered_roots
     )
     captured_count = sum(item.xattr_count for item in manifest_receipts) + sum(
         item.xattr_count for item in root_receipts
@@ -1432,13 +1549,16 @@ def _validate_lock_symlink_dispositions(
     roots: tuple[ToolchainSupportTreeReceipt, ...],
 ) -> None:
     manifests_by_role = {item.logical_role: item for item in manifests}
+    roots_by_role = {item.logical_role: item for item in roots}
     for root in roots:
         expected = _fixed_symlink_disposition_map(
             scope.target_triple,
             root.logical_role,
         )
         observed = {
-            item.relative_path: item for item in root.symlink_dispositions
+            item.relative_path: item
+            for item in root.symlink_dispositions
+            if item.disposition != "bind-external-support-root"
         }
         _select_fixed_symlink_disposition_variant(
             target_triple=scope.target_triple,
@@ -1485,6 +1605,36 @@ def _validate_lock_symlink_dispositions(
             ):
                 raise ToolchainSupportLockError(
                     "toolchain support normalized SDK disposition is stale"
+                )
+        external = tuple(
+            item
+            for item in root.symlink_dispositions
+            if item.disposition == "bind-external-support-root"
+        )
+        if not external:
+            continue
+        runtime = roots_by_role.get("linux-runtime-support")
+        if (
+            scope.target_triple != "x86_64-unknown-linux-gnu"
+            or root.logical_role != "linux-gcc-support"
+            or runtime is None
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support external support-root edge is outside policy"
+            )
+        for receipt in external:
+            if (
+                receipt.canonical_link_target is not None
+                or receipt.external_manifest_role is not None
+                or receipt.external_manifest_merkle_sha256 is not None
+                or receipt.external_support_root_role
+                != "linux-runtime-support"
+                or receipt.external_support_root_merkle_sha256
+                != runtime.merkle_sha256
+                or receipt.resolved_relative_path is None
+            ):
+                raise ToolchainSupportLockError(
+                    "toolchain support external support-root binding is stale"
                 )
 
 
@@ -1653,6 +1803,8 @@ def _new_symlink_disposition_receipt(
     external_manifest_role: str | None,
     external_manifest_merkle_sha256: str | None,
     resolved_relative_path: str | None,
+    external_support_root_role: str | None = None,
+    external_support_root_merkle_sha256: str | None = None,
 ) -> ToolchainSupportSymlinkDispositionReceipt:
     provisional = ToolchainSupportSymlinkDispositionReceipt.__new__(
         ToolchainSupportSymlinkDispositionReceipt
@@ -1664,6 +1816,10 @@ def _new_symlink_disposition_receipt(
         "canonical_link_target": raw.policy.canonical_link_target,
         "external_manifest_role": external_manifest_role,
         "external_manifest_merkle_sha256": external_manifest_merkle_sha256,
+        "external_support_root_role": external_support_root_role,
+        "external_support_root_merkle_sha256": (
+            external_support_root_merkle_sha256
+        ),
         "resolved_relative_path": resolved_relative_path,
         "resolved_path_sha256": resolved_path_sha256,
         "mode": raw.mode,
@@ -1684,6 +1840,10 @@ def _new_symlink_disposition_receipt(
         canonical_link_target=raw.policy.canonical_link_target,
         external_manifest_role=external_manifest_role,
         external_manifest_merkle_sha256=external_manifest_merkle_sha256,
+        external_support_root_role=external_support_root_role,
+        external_support_root_merkle_sha256=(
+            external_support_root_merkle_sha256
+        ),
         resolved_relative_path=resolved_relative_path,
         resolved_path_sha256=resolved_path_sha256,
         mode=raw.mode,
@@ -1697,6 +1857,173 @@ def _new_symlink_disposition_receipt(
     )
 
 
+def _extract_external_support_root_dispositions(
+    *,
+    root_path: Path,
+    entries: tuple[_ToolchainSupportTreeEntry, ...],
+    binding: _ExternalSupportRootBinding | None,
+) -> tuple[
+    tuple[_ToolchainSupportTreeEntry, ...],
+    tuple[ToolchainSupportSymlinkDispositionReceipt, ...],
+]:
+    retained: list[_ToolchainSupportTreeEntry] = []
+    dispositions: list[ToolchainSupportSymlinkDispositionReceipt] = []
+    for entry in entries:
+        if entry.kind != "symlink":
+            retained.append(entry)
+            continue
+        assert entry.link_target is not None
+        candidate = _lexical_absolute_link_target(
+            root_path=root_path,
+            relative_path=entry.relative_path,
+            link_target=entry.link_target,
+        )
+        try:
+            candidate.relative_to(root_path)
+        except ValueError:
+            pass
+        else:
+            retained.append(entry)
+            continue
+        if binding is None:
+            retained.append(entry)
+            continue
+        try:
+            candidate_relative = candidate.relative_to(binding.locator._absolute_path)
+        except ValueError as exc:
+            raise ToolchainSupportLockError(
+                "toolchain support external symlink did not enter the exact runtime root"
+            ) from exc
+        if not candidate_relative.parts:
+            raise ToolchainSupportLockError(
+                "toolchain support external symlink did not resolve to a regular runtime member"
+            )
+        resolved_relative = _resolve_external_support_member(
+            root_path=binding.locator._absolute_path,
+            initial_relative=PurePosixPath(candidate_relative.as_posix()),
+        )
+        raw = _RawSymlinkDisposition(
+            policy=_FixedSymlinkDisposition(
+                relative_path=entry.relative_path,
+                raw_link_target=entry.link_target,
+                disposition="bind-external-support-root",
+            ),
+            mode=entry.mode,
+            metadata_sha256=entry.metadata_sha256,
+            xattr_count=entry.xattr_count,
+            xattr_bytes=entry.xattr_bytes,
+            xattrs_sha256=entry.xattrs_sha256,
+            size=entry.size,
+            raw_sha256=cast(str, entry.raw_sha256),
+        )
+        resolved_path = binding.locator._absolute_path / PurePosixPath(
+            resolved_relative
+        )
+        dispositions.append(
+            _new_symlink_disposition_receipt(
+                raw=raw,
+                resolved_path_sha256=_locator_path_digest(resolved_path),
+                external_manifest_role=None,
+                external_manifest_merkle_sha256=None,
+                external_support_root_role=binding.locator.logical_role,
+                external_support_root_merkle_sha256=binding.receipt.merkle_sha256,
+                resolved_relative_path=resolved_relative,
+            )
+        )
+    return tuple(retained), tuple(dispositions)
+
+
+def _lexical_absolute_link_target(
+    *,
+    root_path: Path,
+    relative_path: str,
+    link_target: str,
+) -> Path:
+    parts = list(root_path.parts[1:])
+    parts.extend(PurePosixPath(relative_path).parent.parts)
+    for part in link_target.split("/"):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not parts:
+                raise ToolchainSupportLockError(
+                    "toolchain support symlink escapes the filesystem root"
+                )
+            parts.pop()
+            continue
+        parts.append(part)
+    return Path("/", *parts)
+
+
+def _resolve_external_support_member(
+    *,
+    root_path: Path,
+    initial_relative: PurePosixPath,
+) -> str:
+    pending = list(initial_relative.parts)
+    resolved: list[str] = []
+    visited: set[str] = set()
+    hops = 0
+    while pending:
+        part = pending.pop(0)
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not resolved:
+                raise ToolchainSupportLockError(
+                    "toolchain support external symlink re-escapes its runtime root"
+                )
+            resolved.pop()
+            continue
+        resolved.append(part)
+        relative = PurePosixPath(*resolved).as_posix()
+        path = root_path / PurePosixPath(relative)
+        try:
+            observed = os.lstat(path)
+        except OSError as exc:
+            raise ToolchainSupportLockError(
+                "toolchain support external symlink is broken"
+            ) from exc
+        if stat.S_ISLNK(observed.st_mode):
+            if relative in visited:
+                raise ToolchainSupportLockError(
+                    "toolchain support external symlink graph contains a cycle"
+                )
+            visited.add(relative)
+            hops += 1
+            if hops > MAX_TOOLCHAIN_SUPPORT_TREE_DEPTH:
+                raise ToolchainSupportLockError(
+                    "toolchain support external symlink graph exceeds the depth bound"
+                )
+            try:
+                target = os.readlink(path)
+            except OSError as exc:
+                raise ToolchainSupportLockError(
+                    "toolchain support external symlink could not be read"
+                ) from exc
+            _validate_link_target(target)
+            pending = (
+                list(PurePosixPath(relative).parent.parts)
+                + target.split("/")
+                + pending
+            )
+            resolved = []
+            continue
+        if pending and not stat.S_ISDIR(observed.st_mode):
+            raise ToolchainSupportLockError(
+                "toolchain support external symlink crosses a nondirectory member"
+            )
+        if not pending and not stat.S_ISREG(observed.st_mode):
+            raise ToolchainSupportLockError(
+                "toolchain support external symlink did not resolve to a regular runtime member"
+            )
+    if not resolved:
+        raise ToolchainSupportLockError(
+            "toolchain support external symlink did not resolve to a regular runtime member"
+        )
+    return PurePosixPath(*resolved).as_posix()
+
+
 def _capture_tree_once(
     locator: ToolchainSupportLocator,
     *,
@@ -1705,6 +2032,7 @@ def _capture_tree_once(
         str,
         tuple[ToolchainSupportLocator, ToolchainSupportFileReceipt],
     ],
+    external_support_root_binding: _ExternalSupportRootBinding | None,
     xattr_budget: _XattrBudget,
 ) -> ToolchainSupportTreeReceipt:
     starting_xattr_count = xattr_budget.remaining_count
@@ -1770,14 +2098,27 @@ def _capture_tree_once(
         )
         for item in sorted(raw_entries, key=lambda item: (_alias(item.relative_path), item.relative_path))
     )
+    entries_without_merkle, external_dispositions = (
+        _extract_external_support_root_dispositions(
+            root_path=locator._absolute_path,
+            entries=entries_without_merkle,
+            binding=external_support_root_binding,
+        )
+    )
     _validate_tree_namespace(entries_without_merkle, validate_merkle=False)
-    dispositions = _finalize_symlink_dispositions(
+    fixed_dispositions = _finalize_symlink_dispositions(
         target_triple=target_triple,
         logical_role=locator.logical_role,
         root_path=locator._absolute_path,
         entries=entries_without_merkle,
         raw_dispositions=tuple(raw_dispositions),
         manifest_bindings=manifest_bindings,
+    )
+    dispositions = tuple(
+        sorted(
+            (*fixed_dispositions, *external_dispositions),
+            key=lambda item: (_alias(item.relative_path), item.relative_path),
+        )
     )
     entries, merkle = _build_tree_merkle(
         logical_role=locator.logical_role,
@@ -2701,7 +3042,7 @@ def _symlink_disposition_merkle(
 ) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-symlink-disposition.v1",
+            "domain": "rextio.full-c6-toolchain-support-symlink-disposition.v2",
             "relative_path": receipt.relative_path,
             "disposition": receipt.disposition,
             "raw_link_target": receipt.raw_link_target,
@@ -2709,6 +3050,10 @@ def _symlink_disposition_merkle(
             "external_manifest_role": receipt.external_manifest_role,
             "external_manifest_merkle_sha256": (
                 receipt.external_manifest_merkle_sha256
+            ),
+            "external_support_root_role": receipt.external_support_root_role,
+            "external_support_root_merkle_sha256": (
+                receipt.external_support_root_merkle_sha256
             ),
             "resolved_relative_path": receipt.resolved_relative_path,
             "resolved_path_sha256": receipt.resolved_path_sha256,
@@ -2852,6 +3197,12 @@ def _parse_symlink_disposition(
         external_manifest_role=optional_string("external_manifest_role"),
         external_manifest_merkle_sha256=optional_string(
             "external_manifest_merkle_sha256"
+        ),
+        external_support_root_role=optional_string(
+            "external_support_root_role"
+        ),
+        external_support_root_merkle_sha256=optional_string(
+            "external_support_root_merkle_sha256"
         ),
         resolved_relative_path=optional_string("resolved_relative_path"),
         resolved_path_sha256=_string(
@@ -3314,6 +3665,9 @@ def _require_unaliased_regular_tree_inode(
             "toolchain support regular tree member is a shared hardlink "
             f"(logical_role={_validate_role(logical_role)}, "
             f"relative_path_sha256={path_sha256}, "
+            f"st_uid={value.uid}, "
+            f"st_gid={value.gid}, "
+            f"st_mode={value.mode}, "
             f"st_nlink={value.links}, "
             "in_root_inode_observation_count="
             f"{observation_count})"
@@ -3364,6 +3718,41 @@ def _validated_locator_sets(
             "toolchain support locators contain an NFC/casefold role alias"
         )
     return manifest_locators, root_locators
+
+
+def _validate_external_support_root_isolation(
+    *,
+    source: ToolchainSupportLocator,
+    target: ToolchainSupportLocator,
+) -> None:
+    source_path = source._absolute_path
+    target_path = target._absolute_path
+    if (
+        source_path == target_path
+        or source_path in target_path.parents
+        or target_path in source_path.parents
+    ):
+        raise ToolchainSupportLockError(
+            "toolchain support external root locators overlap or alias"
+        )
+    inode_keys: set[tuple[int, int]] = set()
+    for locator in (source, target):
+        chain = _open_directory_chain(locator._absolute_path)
+        try:
+            observed = _stamp(os.fstat(chain[-1][0]))
+            if not stat.S_ISDIR(observed.mode):
+                raise ToolchainSupportLockError(
+                    "toolchain support external root locator is not a directory"
+                )
+            key = observed.device, observed.inode
+            if key in inode_keys:
+                raise ToolchainSupportLockError(
+                    "toolchain support external root locators overlap or alias"
+                )
+            inode_keys.add(key)
+            _verify_directory_chain(chain)
+        finally:
+            _close_directory_chain(chain)
 
 
 def _require_flag(name: str) -> int:
