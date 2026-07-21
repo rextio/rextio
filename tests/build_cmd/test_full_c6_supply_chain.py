@@ -181,7 +181,14 @@ def _toolchain(policy: FullC6PolicyReceipt) -> BuildToolchainIdentity:
         linker=_tool("linker", "6" * 64, version="GNU-2.42"),
         inspectors=(_tool("readelf", "7" * 64, version="GNU-2.42"),),
         argv=ArgvIdentity(
-            values=("cargo", "build", "--locked", "--offline", "--frozen")
+            values=(
+                "cargo",
+                "build",
+                "--release",
+                "--locked",
+                "--offline",
+                "--frozen",
+            )
         ),
         environment=(),
         cargo_sources=CargoSourcesIdentity(
@@ -529,6 +536,47 @@ def test_complete_documents_are_canonical_deterministic_and_non_authorizing() ->
     )
     assert first.reproducible_provenance_input_sha256 == (
         reproducibility.provenance_input_canonical_sha256
+    )
+    toolchain = arguments["toolchain"]
+    assert isinstance(toolchain, BuildToolchainIdentity)
+    support_materials = {
+        "builder-toolchain-support-plan": toolchain.support_plan_sha256,
+        "builder-toolchain-support-lock-raw": toolchain.support_lock_raw_sha256,
+        "builder-toolchain-support-lock-merkle": (
+            toolchain.support_lock_merkle_sha256
+        ),
+    }
+    assert first.toolchain_support_plan_sha256 == toolchain.support_plan_sha256
+    assert first.toolchain_support_lock_raw_sha256 == (
+        toolchain.support_lock_raw_sha256
+    )
+    assert first.toolchain_support_lock_merkle_sha256 == (
+        toolchain.support_lock_merkle_sha256
+    )
+    component_hashes = {
+        component["name"]: component["hashes"][0]["content"]
+        for component in sbom["components"]  # type: ignore[index]
+        if component.get("name") in support_materials
+    }
+    assert component_hashes == support_materials
+    receipt_bindings = provenance["predicate"]["buildDefinition"][  # type: ignore[index]
+        "internalParameters"
+    ]["receipt_bindings"]
+    assert {
+        name: receipt_bindings[name]
+        for name in support_materials
+    } == support_materials
+    provenance_toolchain = provenance["predicate"]["runDetails"][  # type: ignore[index]
+        "metadata"
+    ]["rextio:toolchain"]
+    assert provenance_toolchain["support_plan_sha256"] == (
+        toolchain.support_plan_sha256
+    )
+    assert provenance_toolchain["support_lock_raw_sha256"] == (
+        toolchain.support_lock_raw_sha256
+    )
+    assert provenance_toolchain["support_lock_merkle_sha256"] == (
+        toolchain.support_lock_merkle_sha256
     )
     properties = {
         item["name"]: item["value"]
@@ -1124,3 +1172,18 @@ def test_forged_public_input_and_output_dataclasses_are_reconstructed() -> None:
     object.__setattr__(projected, "reproducible_sbom_input_sha256", "0" * 64)
     with pytest.raises(FullC6SupplyChainError, match="SBOM"):
         verify_full_c6_supply_chain_receipt(projected)
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "toolchain_support_plan_sha256",
+        "toolchain_support_lock_raw_sha256",
+        "toolchain_support_lock_merkle_sha256",
+    ),
+)
+def test_support_plan_and_lock_material_mutation_fails_closed(field: str) -> None:
+    receipt = build_full_c6_supply_chain_receipt(**_arguments())  # type: ignore[arg-type]
+    object.__setattr__(receipt, field, "0" * 64)
+    with pytest.raises(FullC6SupplyChainError):
+        verify_full_c6_supply_chain_receipt(receipt)

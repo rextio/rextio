@@ -718,6 +718,10 @@ def _validate_executor_bindings(
                 timeout_seconds=item.timeout_seconds,
                 max_output_bytes=item.max_output_bytes,
                 inherit_env=item.inherit_env,
+                sandbox_engine=item.sandbox_engine,
+                sandbox_plan_sha256=item.sandbox_plan_sha256,
+                sandbox_profile_sha256=item.sandbox_profile_sha256,
+                sandbox_seccomp_sha256=item.sandbox_seccomp_sha256,
             )
             for item in value.invocations
             if type(item) is FullC6InvocationReceipt
@@ -755,6 +759,12 @@ def _validate_executor_bindings(
             "Full C6 rejects callback and test-only executor authority"
         )
     invocation = rebuilt.invocations[0]
+    payload_argv = toolchain.argv.values
+    if target_triple == "x86_64-unknown-linux-gnu":
+        payload_argv = _executor._linux_native_payload_argv(payload_argv)
+    payload_argv_sha256 = hashlib.sha256(
+        canonical_json_bytes(list(payload_argv))
+    ).hexdigest()
     cargo_lock = tuple(
         item
         for item in rebuilt.frozen_tree.entries
@@ -769,13 +779,13 @@ def _validate_executor_bindings(
     expected = (
         (rebuilt.toolchain_sha256, toolchain.digest),
         (rebuilt.cargo_executable_sha256, toolchain.cargo.executable.sha256),
-        (invocation.argv_sha256, toolchain.argv.digest),
-        (rebuilt.invocations[1].argv_sha256, toolchain.argv.digest),
+        (invocation.argv_sha256, payload_argv_sha256),
+        (rebuilt.invocations[1].argv_sha256, payload_argv_sha256),
         (rebuilt.reproducibility.wheel_sha256, subject.sha256),
     )
     if (
-        invocation.argv_count != len(toolchain.argv.values)
-        or rebuilt.invocations[1].argv_count != len(toolchain.argv.values)
+        invocation.argv_count != len(payload_argv)
+        or rebuilt.invocations[1].argv_count != len(payload_argv)
         or len(cargo_lock) != 1
         or len(driver_manifests) != 1
         or cargo_lock[0].sha256 != expected_lock.sha256

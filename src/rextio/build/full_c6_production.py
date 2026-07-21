@@ -1941,6 +1941,11 @@ def _material_projection(material: _FullC6ProductionMaterial) -> dict[str, objec
         "toolchain_support_lock_merkle_sha256": (
             material.toolchain_support_lock.merkle_sha256
         ),
+        "executor_receipt_sha256": material.executor_receipt.digest,
+        "executor_toolchain_sha256": material.executor_receipt.toolchain_sha256,
+        "executor_invocations": [
+            item.to_dict() for item in material.executor_receipt.invocations
+        ],
         "executor_invocation_count": len(material.executor_receipt.invocations),
         "complete_for_scope": True,
         "signed": False,

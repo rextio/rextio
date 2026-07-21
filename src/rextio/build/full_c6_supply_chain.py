@@ -378,6 +378,9 @@ class FullC6SupplyChainReceipt:
     source_lock_signature_sha256: str
     build_input_closure_sha256: str
     toolchain_sha256: str
+    toolchain_support_plan_sha256: str
+    toolchain_support_lock_raw_sha256: str
+    toolchain_support_lock_merkle_sha256: str
     cargo_path_source_sha256: str
     runtime_authorization_sha256: str
     reproducibility_sha256: str
@@ -410,6 +413,15 @@ class FullC6SupplyChainReceipt:
             (self.source_lock_signature_sha256, "SourceLock signature"),
             (self.build_input_closure_sha256, "build-input closure"),
             (self.toolchain_sha256, "toolchain"),
+            (self.toolchain_support_plan_sha256, "toolchain support plan"),
+            (
+                self.toolchain_support_lock_raw_sha256,
+                "toolchain support lock raw bytes",
+            ),
+            (
+                self.toolchain_support_lock_merkle_sha256,
+                "toolchain support lock Merkle root",
+            ),
             (self.cargo_path_source_sha256, "Cargo path source"),
             (self.runtime_authorization_sha256, "runtime authorization"),
             (self.reproducibility_sha256, "reproducibility"),
@@ -1393,6 +1405,15 @@ def _receipt_materials(
         ("source-lock-v2-signature", signature),
         ("build-input-closure", build_inputs.digest),
         ("builder-toolchain", toolchain.digest),
+        ("builder-toolchain-support-plan", toolchain.support_plan_sha256),
+        (
+            "builder-toolchain-support-lock-raw",
+            toolchain.support_lock_raw_sha256,
+        ),
+        (
+            "builder-toolchain-support-lock-merkle",
+            toolchain.support_lock_merkle_sha256,
+        ),
         ("cargo-path-source", cargo_root.source_tree_sha256),
         (FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAME, authority_aggregate.digest),
         *_authority_aggregate_materials(authority_aggregate),
@@ -2043,6 +2064,13 @@ def build_full_c6_supply_chain_receipt(
         source_lock_signature_sha256=signature_sha256,
         build_input_closure_sha256=trusted_inputs.digest,
         toolchain_sha256=trusted_toolchain.digest,
+        toolchain_support_plan_sha256=trusted_toolchain.support_plan_sha256,
+        toolchain_support_lock_raw_sha256=(
+            trusted_toolchain.support_lock_raw_sha256
+        ),
+        toolchain_support_lock_merkle_sha256=(
+            trusted_toolchain.support_lock_merkle_sha256
+        ),
         cargo_path_source_sha256=trusted_cargo_root.source_tree_sha256,
         runtime_authorization_sha256=trusted_runtime.digest,
         reproducibility_sha256=trusted_reproducibility.digest,
@@ -2165,6 +2193,13 @@ def _receipt_bindings(value: FullC6SupplyChainReceipt) -> dict[str, str]:
         "source-lock-v2-signature": value.source_lock_signature_sha256,
         "build-input-closure": value.build_input_closure_sha256,
         "builder-toolchain": value.toolchain_sha256,
+        "builder-toolchain-support-plan": value.toolchain_support_plan_sha256,
+        "builder-toolchain-support-lock-raw": (
+            value.toolchain_support_lock_raw_sha256
+        ),
+        "builder-toolchain-support-lock-merkle": (
+            value.toolchain_support_lock_merkle_sha256
+        ),
         "cargo-path-source": value.cargo_path_source_sha256,
         FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAME: (
             value.authority_aggregate.digest
@@ -2537,6 +2572,13 @@ def verify_full_c6_supply_chain_receipt(
         source_lock_signature_sha256=value.source_lock_signature_sha256,
         build_input_closure_sha256=value.build_input_closure_sha256,
         toolchain_sha256=value.toolchain_sha256,
+        toolchain_support_plan_sha256=value.toolchain_support_plan_sha256,
+        toolchain_support_lock_raw_sha256=(
+            value.toolchain_support_lock_raw_sha256
+        ),
+        toolchain_support_lock_merkle_sha256=(
+            value.toolchain_support_lock_merkle_sha256
+        ),
         cargo_path_source_sha256=value.cargo_path_source_sha256,
         runtime_authorization_sha256=value.runtime_authorization_sha256,
         reproducibility_sha256=value.reproducibility_sha256,

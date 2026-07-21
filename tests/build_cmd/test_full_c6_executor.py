@@ -65,6 +65,11 @@ def _use_fixed_pyo3_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(
         executor,
+        "_require_native_toolchain_support_critical",
+        lambda *_args, **_kwargs: support_plan,
+    )
+    monkeypatch.setattr(
+        executor,
         "_native_read_sandbox_plan",
         lambda **_kwargs: sandbox_plan,
     )
@@ -401,6 +406,22 @@ def test_executor_freezes_two_independent_copies_and_returns_path_free_receipt(
         "src/lib.rs",
     }
     assert receipt.invocations[0].argv_sha256 == receipt.invocations[1].argv_sha256
+    for invocation in receipt.invocations:
+        assert invocation.sandbox_engine is None
+        assert invocation.sandbox_plan_sha256 is None
+        assert invocation.sandbox_profile_sha256 is None
+        assert invocation.sandbox_seccomp_sha256 is None
+    callback_with_sandbox = tuple(
+        replace(
+            invocation,
+            sandbox_engine="macos-sandbox-exec-v1",
+            sandbox_plan_sha256="a" * 64,
+            sandbox_profile_sha256="b" * 64,
+        )
+        for invocation in receipt.invocations
+    )
+    with pytest.raises(ValueError, match="cannot claim sandbox"):
+        replace(receipt, invocations=callback_with_sandbox)
     serialized = json.dumps(receipt.to_dict(), sort_keys=True)
     assert str(tmp_path) not in serialized
     assert str(source) not in repr(receipt)
@@ -679,6 +700,30 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
     assert receipt.pyo3_config_size == _pyo3_identity().size
     assert receipt.pyo3_config_profile_sha256 == _pyo3_identity().digest
     assert receipt.invocations[0].environment == receipt.invocations[1].environment
+    for invocation in receipt.invocations:
+        assert invocation.sandbox_engine == "macos-sandbox-exec-v1"
+        assert invocation.sandbox_plan_sha256 == "7" * 64
+        assert invocation.sandbox_profile_sha256 == "8" * 64
+        assert invocation.sandbox_seccomp_sha256 is None
+    executor_receipt = receipt.executor_receipt
+    different_rendering = replace(
+        executor_receipt.invocations[1],
+        sandbox_profile_sha256="9" * 64,
+    )
+    rebuilt_with_fresh_profile = replace(
+        executor_receipt,
+        invocations=(executor_receipt.invocations[0], different_rendering),
+    )
+    assert rebuilt_with_fresh_profile.digest != executor_receipt.digest
+    mismatched_plan = replace(
+        executor_receipt.invocations[1],
+        sandbox_plan_sha256="6" * 64,
+    )
+    with pytest.raises(ValueError, match="sandbox plans differ"):
+        replace(
+            executor_receipt,
+            invocations=(executor_receipt.invocations[0], mismatched_plan),
+        )
     assert runs[0][2]["PYO3_CONFIG_FILE"] == runs[1][2]["PYO3_CONFIG_FILE"]
     assert runs[0][5] == runs[1][5]
     assert not Path(runs[0][2]["PYO3_CONFIG_FILE"]).exists()
@@ -723,6 +768,64 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
             assert posture["authority"] == "non-authorizing"
             assert posture["distribution_authorized"] is False
     assert wheels[0] == wheels[1]
+
+
+@pytest.mark.parametrize("fail_final_rewalk", (False, True))
+def test_native_executor_performs_exactly_two_full_support_rewalks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_final_rewalk: bool,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    _install_successful_native_run(monkeypatch, executor)
+    support_plan = SimpleNamespace(macos_platform_anchor=None)
+    full_rewalks: list[int] = []
+
+    def full_rewalk(*_args, **_kwargs):
+        full_rewalks.append(len(full_rewalks) + 1)
+        if fail_final_rewalk and len(full_rewalks) == 2:
+            raise executor.FullC6ExecutorError(
+                "simulated final support mutation"
+            )
+        return support_plan
+
+    monkeypatch.setattr(executor, "_require_native_toolchain_support", full_rewalk)
+    if fail_final_rewalk:
+        with pytest.raises(
+            executor.FullC6ExecutorError,
+            match="final support mutation",
+        ):
+            executor.execute_full_c6_native_two_build(
+                source,
+                *_roots(tmp_path),
+                base_environment=base_environment,
+                source_date_epoch=1,
+                toolchain=toolchain,
+                native_tools=native_tools,
+                cargo_workspace=cargo_workspace,
+                output_license_contract=_output_license_contract(),
+            )
+    else:
+        authority = executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tmp_path),
+            base_environment=base_environment,
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
+        )
+        assert authority.executor_receipt.execution_driver == (
+            executor.FULL_C6_NATIVE_EXECUTION_DRIVER
+        )
+    assert full_rewalks == [1, 2]
 
 
 def test_native_executor_rejects_pyo3_config_changed_by_cargo(

@@ -54,6 +54,7 @@ from rextio.build.full_c6_executor import (
     FullC6InvocationReceipt,
     FullC6TreeEntry,
 )
+from rextio.build.full_c6_linux_launcher import FULL_C6_LINUX_CARGO
 from rextio.build.full_c6_policy import (
     FULL_C6_EXTERNAL_AUTHORITY_IDENTITY_SCHEME,
     FullC6LicenseEvidence,
@@ -544,14 +545,22 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         ),
         cargo_lock_generated=False,
     )
+    payload_argv = (FULL_C6_LINUX_CARGO, *toolchain.argv.values[1:])
+    payload_argv_sha256 = hashlib.sha256(
+        canonical_json_bytes(list(payload_argv))
+    ).hexdigest()
     invocations = tuple(
         FullC6InvocationReceipt(
             ordinal=ordinal,
-            argv_sha256=toolchain.argv.digest,
-            argv_count=len(toolchain.argv.values),
+            argv_sha256=payload_argv_sha256,
+            argv_count=len(payload_argv),
             environment=(),
             timeout_seconds=60,
             max_output_bytes=4096,
+            sandbox_engine="linux-bwrap-landlock-v1",
+            sandbox_plan_sha256="a" * 64,
+            sandbox_profile_sha256=(f"{ordinal:x}" * 64)[:64],
+            sandbox_seccomp_sha256="b" * 64,
         )
         for ordinal in (1, 2)
     )
@@ -934,8 +943,19 @@ def test_gate_rejects_forged_pyo3_executor_binding(
 def test_gate_rejects_callback_or_unbound_executor_authority(tmp_path: Path) -> None:
     arguments = _fixture(tmp_path)
     executor = arguments["executor"]
+    callback_invocations = tuple(
+        replace(
+            item,
+            sandbox_engine=None,
+            sandbox_plan_sha256=None,
+            sandbox_profile_sha256=None,
+            sandbox_seccomp_sha256=None,
+        )
+        for item in executor.invocations  # type: ignore[attr-defined]
+    )
     arguments["executor"] = replace(
         executor,  # type: ignore[arg-type]
+        invocations=callback_invocations,
         execution_driver="callback-test-seam",
         toolchain_sha256=None,
         cargo_executable_sha256=None,
@@ -947,6 +967,33 @@ def test_gate_rejects_callback_or_unbound_executor_authority(tmp_path: Path) -> 
         pyo3_config_profile_sha256=None,
     )
     with pytest.raises(FullC6GateError, match="callback and test-only"):
+        _request(arguments)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("sandbox_plan_sha256", "c" * 64),
+        ("sandbox_profile_sha256", "d" * 64),
+        ("sandbox_seccomp_sha256", "e" * 64),
+    ),
+)
+def test_gate_rejects_stale_sandbox_invocation_evidence(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    arguments = _fixture(tmp_path)
+    executor = arguments["executor"]
+    invocations = tuple(
+        replace(item, **{field: value})
+        for item in executor.invocations  # type: ignore[attr-defined]
+    )
+    arguments["executor"] = replace(  # type: ignore[arg-type]
+        executor,
+        invocations=invocations,
+    )
+    with pytest.raises(FullC6GateError):
         _request(arguments)
 
 

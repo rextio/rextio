@@ -431,15 +431,43 @@ def test_collector_mints_one_sealed_path_free_non_authorizing_authority(
     production = importlib.import_module("rextio.build.full_c6_production")
     digest = "a" * 64
 
-    class _Digest:
-        invocations = (object(), object())
+    class _Invocation:
+        def __init__(self, ordinal: int) -> None:
+            self.ordinal = ordinal
+            self.private_host_path = tmp_path / f"private-{ordinal}"
 
+        def to_dict(self) -> dict[str, object]:
+            return {
+                "ordinal": self.ordinal,
+                "argv_sha256": digest,
+                "argv_count": 6,
+                "environment": [
+                    {
+                        "name": "HOME",
+                        "value_sha256": digest,
+                        "value_size": 18,
+                    }
+                ],
+                "timeout_seconds": 60.0,
+                "max_output_bytes": 4096,
+                "inherit_env": False,
+                "sandbox_engine": "linux-bwrap-landlock-v1",
+                "sandbox_plan_sha256": digest,
+                "sandbox_profile_sha256": digest,
+                "sandbox_seccomp_sha256": digest,
+            }
+
+    class _Digest:
         def __init__(self, value: str = digest) -> None:
             self.digest = value
 
     class _Aggregate(_Digest):
         def to_dict(self) -> dict[str, object]:
             return {"bindings": {"analysis_ir_transaction_sha256": self.digest}}
+
+    executor_receipt = _Digest()
+    executor_receipt.toolchain_sha256 = digest
+    executor_receipt.invocations = (_Invocation(1), _Invocation(2))
 
     material = production._FullC6ProductionMaterial(
         preflight=object(),
@@ -460,7 +488,7 @@ def test_collector_mints_one_sealed_path_free_non_authorizing_authority(
         subject_wheel_transaction=_Digest(),
         native_runtime_authority=_Digest(),
         runtime_authorization=_Digest(),
-        executor_receipt=_Digest(),
+        executor_receipt=executor_receipt,
         build_inputs=_Digest(),
         cargo_path_source=_Digest(),
         artifact_coverage=_Digest(),
@@ -511,6 +539,12 @@ def test_collector_mints_one_sealed_path_free_non_authorizing_authority(
 
     projected = authority.to_dict()
     assert str(tmp_path) not in repr(projected)
+    assert projected["executor_receipt_sha256"] == digest
+    assert projected["executor_toolchain_sha256"] == digest
+    assert projected["executor_invocations"] == [
+        executor_receipt.invocations[0].to_dict(),
+        executor_receipt.invocations[1].to_dict(),
+    ]
     assert projected["complete_for_scope"] is True
     assert projected["signed"] is False
     assert projected["distribution_authorized"] is False

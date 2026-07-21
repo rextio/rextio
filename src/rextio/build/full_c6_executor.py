@@ -780,6 +780,10 @@ class FullC6InvocationReceipt:
     timeout_seconds: float
     max_output_bytes: int
     inherit_env: bool = False
+    sandbox_engine: str | None = None
+    sandbox_plan_sha256: str | None = None
+    sandbox_profile_sha256: str | None = None
+    sandbox_seccomp_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if self.ordinal not in (1, 2):
@@ -799,6 +803,25 @@ class FullC6InvocationReceipt:
         _validate_output_bound(self.max_output_bytes)
         if self.inherit_env is not False:
             raise ValueError("Full C6 invocation must not inherit the host environment")
+        sandbox_values = (
+            self.sandbox_engine,
+            self.sandbox_plan_sha256,
+            self.sandbox_profile_sha256,
+            self.sandbox_seccomp_sha256,
+        )
+        if all(item is None for item in sandbox_values):
+            pass
+        elif self.sandbox_engine == "linux-bwrap-landlock-v1":
+            _require_sha256(self.sandbox_plan_sha256, "Linux sandbox plan")
+            _require_sha256(self.sandbox_profile_sha256, "Linux sandbox profile")
+            _require_sha256(self.sandbox_seccomp_sha256, "Linux sandbox seccomp")
+        elif self.sandbox_engine == "macos-sandbox-exec-v1":
+            _require_sha256(self.sandbox_plan_sha256, "macOS sandbox plan")
+            _require_sha256(self.sandbox_profile_sha256, "macOS sandbox profile")
+            if self.sandbox_seccomp_sha256 is not None:
+                raise ValueError("macOS sandbox invocation cannot claim seccomp")
+        else:
+            raise ValueError("Full C6 invocation sandbox binding is incomplete")
         object.__setattr__(self, "environment", environment)
 
     def to_dict(self) -> dict[str, object]:
@@ -811,6 +834,10 @@ class FullC6InvocationReceipt:
             "timeout_seconds": self.timeout_seconds,
             "max_output_bytes": self.max_output_bytes,
             "inherit_env": False,
+            "sandbox_engine": self.sandbox_engine,
+            "sandbox_plan_sha256": self.sandbox_plan_sha256,
+            "sandbox_profile_sha256": self.sandbox_profile_sha256,
+            "sandbox_seccomp_sha256": self.sandbox_seccomp_sha256,
         }
 
 
@@ -846,6 +873,8 @@ class FullC6ExecutorReceipt:
             raise TypeError("Full C6 executor invocation receipt is invalid")
         if not hmac.compare_digest(invocations[0].argv_sha256, invocations[1].argv_sha256):
             raise ValueError("Full C6 executor commands differ between builds")
+        if invocations[0].environment != invocations[1].environment:
+            raise ValueError("Full C6 executor environments differ between builds")
         if type(self.reproducibility) is not ReproducibilityReceipt:
             raise TypeError("Full C6 executor reproducibility receipt is invalid")
         if self.execution_driver not in {
@@ -885,6 +914,22 @@ class FullC6ExecutorReceipt:
                 self.pyo3_config_profile_sha256,
                 "executor PyO3 config profile",
             )
+            expected_engine = (
+                "macos-sandbox-exec-v1"
+                if self.target_triple == "aarch64-apple-darwin"
+                else "linux-bwrap-landlock-v1"
+            )
+            if any(item.sandbox_engine != expected_engine for item in invocations):
+                raise ValueError("Full C6 executor sandbox engine is invalid")
+            if not hmac.compare_digest(
+                invocations[0].sandbox_plan_sha256 or "",
+                invocations[1].sandbox_plan_sha256 or "",
+            ):
+                raise ValueError("Full C6 executor sandbox plans differ between builds")
+            if invocations[0].sandbox_seccomp_sha256 != (
+                invocations[1].sandbox_seccomp_sha256
+            ):
+                raise ValueError("Full C6 executor seccomp bindings differ between builds")
         elif any(
             item is not None
             for item in (
@@ -899,6 +944,17 @@ class FullC6ExecutorReceipt:
             )
         ):
             raise ValueError("non-authoritative executor cannot claim toolchain bindings")
+        elif any(
+            item is not None
+            for invocation in invocations
+            for item in (
+                invocation.sandbox_engine,
+                invocation.sandbox_plan_sha256,
+                invocation.sandbox_profile_sha256,
+                invocation.sandbox_seccomp_sha256,
+            )
+        ):
+            raise ValueError("non-authoritative executor cannot claim sandbox bindings")
         if self.domain != FULL_C6_EXECUTOR_DOMAIN or self.scope != FULL_C6_EXECUTOR_SCOPE:
             raise ValueError("Full C6 executor domain or scope is invalid")
         if self.complete_for_scope is not True or self.authorizes_distribution is not False:
@@ -1388,12 +1444,17 @@ def _validate_native_authority_shape(
         or manifest_entry.size != len(manifest.to_bytes())
     ):
         raise ValueError("Full C6 native driver differs from frozen source")
+    expected_payload_argv = (
+        _linux_native_payload_argv(manifest.cargo_argv)
+        if manifest.target_triple == "x86_64-unknown-linux-gnu"
+        else manifest.cargo_argv
+    )
     expected_argv_sha256 = hashlib.sha256(
-        _canonical_json(list(manifest.cargo_argv))
+        _canonical_json(list(expected_payload_argv))
     ).hexdigest()
     if any(
         item.argv_sha256 != expected_argv_sha256
-        or item.argv_count != len(manifest.cargo_argv)
+        or item.argv_count != len(expected_payload_argv)
         for item in receipt.invocations
     ):
         raise ValueError("Full C6 native argv differs from driver manifest")
@@ -1703,10 +1764,12 @@ def execute_full_c6_two_build(
             raise FullC6ExecutorError(
                 "Full C6 native execution requires one external PyO3 config path"
             )
-        trusted_support_plan = _require_native_toolchain_support(
+        assert toolchain is not None
+        trusted_support_plan = _require_native_toolchain_support_critical(
             toolchain_support_plan,
             toolchain_support_lock,
             target_triple=_native_pyo3_config_identity.target_triple,
+            toolchain=toolchain,
         )
         try:
             verify_full_c6_pyo3_config(
@@ -1985,10 +2048,11 @@ def execute_full_c6_two_build(
                 config_path=pyo3_config_path,
                 identity=_native_pyo3_config_identity,
             )
-            _require_native_toolchain_support(
+            _require_native_toolchain_support_critical(
                 trusted_support_plan,
                 toolchain_support_lock,
                 target_triple=native_manifest.target_triple,
+                toolchain=toolchain,
             )
             sandbox_plan = _native_read_sandbox_plan(
                 target_triple=native_manifest.target_triple,
@@ -2099,10 +2163,11 @@ def execute_full_c6_two_build(
                 assert pyo3_support_root is not None
                 assert pyo3_support_root_identity is not None
                 assert pyo3_config_file_identity is not None
-                _require_native_toolchain_support(
+                _require_native_toolchain_support_critical(
                     trusted_support_plan,
                     toolchain_support_lock,
                     target_triple=native_manifest.target_triple,
+                    toolchain=toolchain,
                 )
                 _verify_native_pyo3_binding(
                     environment,
@@ -2222,6 +2287,9 @@ def execute_full_c6_two_build(
                 pyo3_config_path=(pyo3_config_path if native_orchestrator else None),
                 timeout_seconds=float(timeout_seconds),
                 max_output_bytes=max_output_bytes,
+                sandbox_evidence=(
+                    native_sandbox_evidence[-1] if native_orchestrator else None
+                ),
             )
         )
         return outputs
@@ -2428,6 +2496,7 @@ def execute_full_c6_native_two_build(
         toolchain_support_plan,
         toolchain_support_lock,
         target_triple=pyo3_config_identity.target_triple,
+        toolchain=toolchain,
     )
     retained_results: list[_NativePostprocessResult] = []
     retained_sandbox_evidence: list[_NativeSandboxInvocationEvidence] = []
@@ -2480,6 +2549,7 @@ def execute_full_c6_native_two_build(
         trusted_support_plan,
         toolchain_support_lock,
         target_triple=pyo3_config_identity.target_triple,
+        toolchain=toolchain,
     )
     authority = _create_native_execution_authority(
         executor_receipt=receipt,
@@ -2487,11 +2557,6 @@ def execute_full_c6_native_two_build(
         toolchain=toolchain,
         pyo3_config_identity=pyo3_config_identity,
         results=(retained_results[0], retained_results[1]),
-    )
-    _require_native_toolchain_support(
-        trusted_support_plan,
-        toolchain_support_lock,
-        target_triple=pyo3_config_identity.target_triple,
     )
     return authority
 
@@ -3822,7 +3887,20 @@ def _invocation_receipt(
     pyo3_config_path: Path | None = None,
     timeout_seconds: float,
     max_output_bytes: int,
+    sandbox_evidence: _NativeSandboxInvocationEvidence | None = None,
 ) -> FullC6InvocationReceipt:
+    if sandbox_evidence is not None:
+        if type(sandbox_evidence) is not _NativeSandboxInvocationEvidence:
+            raise FullC6ExecutorError("Full C6 sandbox invocation evidence is invalid")
+        if (
+            sandbox_evidence.ordinal != ordinal
+            or sandbox_evidence.payload_argv != argv
+            or sandbox_evidence.payload_environment
+            != tuple(sorted(environment.items()))
+        ):
+            raise FullC6ExecutorError(
+                "Full C6 sandbox evidence differs from canonical payload invocation"
+            )
     canonical_environment = _canonical_invocation_environment(
         environment,
         build_root=build_root,
@@ -3845,6 +3923,24 @@ def _invocation_receipt(
             environment=bindings,
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
+            sandbox_engine=(
+                sandbox_evidence.engine if sandbox_evidence is not None else None
+            ),
+            sandbox_plan_sha256=(
+                sandbox_evidence.plan_sha256
+                if sandbox_evidence is not None
+                else None
+            ),
+            sandbox_profile_sha256=(
+                sandbox_evidence.profile_sha256
+                if sandbox_evidence is not None
+                else None
+            ),
+            sandbox_seccomp_sha256=(
+                sandbox_evidence.seccomp_sha256
+                if sandbox_evidence is not None
+                else None
+            ),
         )
     except (TypeError, ValueError) as exc:
         raise FullC6ExecutorError(str(exc)) from exc
@@ -4043,18 +4139,18 @@ def _require_native_toolchain_support(
     lock: ToolchainSupportLock | None,
     *,
     target_triple: str,
+    toolchain: BuildToolchainIdentity,
 ) -> FullC6ToolchainSupportPlan:
-    """Rewalk the exact process-sealed support closure at a native stage gate."""
+    """Perform one explicitly bounded full support-lock rewalk."""
     try:
-        trusted = require_full_c6_toolchain_support_plan(plan)
-        if trusted.target_triple != target_triple:
-            raise FullC6ToolchainSupportError(
-                "Full C6 support plan target differs from native execution"
-            )
-        revalidate_full_c6_toolchain_support_plan(trusted)
-        if type(lock) is not ToolchainSupportLock or not (
-            verify_full_c6_toolchain_support_lock(trusted, lock)
-        ):
+        trusted = _require_native_toolchain_support_identity(
+            plan,
+            lock,
+            target_triple=target_triple,
+            toolchain=toolchain,
+        )
+        assert lock is not None
+        if not verify_full_c6_toolchain_support_lock(trusted, lock):
             raise FullC6ToolchainSupportError(
                 "Full C6 support lock verification failed"
             )
@@ -4063,6 +4159,71 @@ def _require_native_toolchain_support(
         raise FullC6ExecutorError(
             "Full C6 toolchain support closure failed closed"
         ) from exc
+
+
+def _require_native_toolchain_support_critical(
+    plan: FullC6ToolchainSupportPlan | None,
+    lock: ToolchainSupportLock | None,
+    *,
+    target_triple: str,
+    toolchain: BuildToolchainIdentity,
+) -> FullC6ToolchainSupportPlan:
+    """Revalidate only sealed critical leaves between the two full rewalks."""
+    try:
+        trusted = _require_native_toolchain_support_identity(
+            plan,
+            lock,
+            target_triple=target_triple,
+            toolchain=toolchain,
+        )
+        revalidate_full_c6_toolchain_support_plan(trusted)
+        return trusted
+    except FullC6ToolchainSupportError as exc:
+        raise FullC6ExecutorError(
+            "Full C6 critical toolchain support binding failed closed"
+        ) from exc
+
+
+def _require_native_toolchain_support_identity(
+    plan: FullC6ToolchainSupportPlan | None,
+    lock: ToolchainSupportLock | None,
+    *,
+    target_triple: str,
+    toolchain: BuildToolchainIdentity,
+) -> FullC6ToolchainSupportPlan:
+    trusted = require_full_c6_toolchain_support_plan(plan)
+    if trusted.target_triple != target_triple:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support plan target differs from native execution"
+        )
+    if type(toolchain) is not BuildToolchainIdentity:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support identity lacks an exact toolchain"
+        )
+    if type(lock) is not ToolchainSupportLock:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support identity lacks an exact lock"
+        )
+    try:
+        bindings = (
+            (trusted.digest, toolchain.support_plan_sha256),
+            (lock.raw_sha256, toolchain.support_lock_raw_sha256),
+            (lock.merkle_sha256, toolchain.support_lock_merkle_sha256),
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise FullC6ToolchainSupportError(
+            "Full C6 support identity could not be reconstructed"
+        ) from exc
+    if any(
+        type(actual) is not str
+        or type(expected) is not str
+        or not hmac.compare_digest(actual, expected)
+        for actual, expected in bindings
+    ):
+        raise FullC6ToolchainSupportError(
+            "Full C6 support plan or lock differs from toolchain identity"
+        )
+    return trusted
 
 
 def _native_support_mapping(
