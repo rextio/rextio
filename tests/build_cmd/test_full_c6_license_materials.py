@@ -13,6 +13,7 @@ import zipfile
 
 import pytest
 
+import rextio.build.full_c6_output_license as output_license_module
 from rextio.build.full_c6_cargo_workspace import (
     FullC6CargoDependencyWorkspaceReceipt,
     collect_full_c6_cargo_dependency_workspace,
@@ -25,6 +26,7 @@ from rextio.build.full_c6_license_materials import (
     validate_full_c6_license_materials_transaction,
 )
 from rextio.build.full_c6_output_license import (
+    MAX_OUTPUT_WHEEL_LICENSE_FILES,
     MAX_OUTPUT_WHEEL_LICENSE_TOTAL_BYTES,
     FullC6OutputLicenseDerivationError,
     OutputWheelLicenseContract,
@@ -528,6 +530,86 @@ def test_output_license_verification_rejects_cross_field_mismatch(
             license_members=members,
             record_member=record_member,
             wheel_sha256="d" * 64,
+        )
+
+
+def test_output_license_contract_accepts_real_full_c6_shaped_108_file_set() -> None:
+    files = tuple(
+        sorted(
+            (
+                OutputWheelLicenseFile("project/LICENSE", b"project license\n"),
+                *(
+                    OutputWheelLicenseFile(
+                        f"cargo/package-{index:03d}/LICENSE",
+                        f"cargo license {index}\n".encode(),
+                    )
+                    for index in range(106)
+                ),
+                OutputWheelLicenseFile(
+                    "external/demo-pkg/1.0.0/LICENSE",
+                    b"external license\n",
+                ),
+            ),
+            key=lambda item: item.path,
+        )
+    )
+
+    contract = OutputWheelLicenseContract(
+        expression="MIT",
+        files=files,
+        external_source_distribution="demo-pkg",
+        external_source_version="1.0.0",
+        source_lock_verification_sha256="a" * 64,
+    )
+
+    assert len(contract.files) == 108
+    assert sum(path.startswith("project/") for path in contract.paths) == 1
+    assert sum(path.startswith("cargo/") for path in contract.paths) == 106
+    assert sum(path.startswith("external/") for path in contract.paths) == 1
+
+
+@pytest.mark.parametrize(("count", "accepted"), ((128, True), (129, False)))
+def test_output_license_contract_enforces_bounded_128_file_cap(
+    count: int,
+    accepted: bool,
+) -> None:
+    files = tuple(
+        OutputWheelLicenseFile(
+            f"cargo/package-{index:03d}/LICENSE",
+            b"license\n",
+        )
+        for index in range(count)
+    )
+
+    if accepted:
+        contract = OutputWheelLicenseContract(expression="MIT", files=files)
+        assert len(contract.files) == MAX_OUTPUT_WHEEL_LICENSE_FILES
+    else:
+        with pytest.raises(ValueError, match="license-file set is invalid"):
+            OutputWheelLicenseContract(expression="MIT", files=files)
+
+
+def test_output_license_count_cap_preserves_path_alias_and_total_byte_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="path is invalid"):
+        OutputWheelLicenseFile("../LICENSE", b"license\n")
+
+    with pytest.raises(ValueError, match="contains aliases"):
+        OutputWheelLicenseContract(
+            expression="MIT",
+            files=(
+                OutputWheelLicenseFile("project/LICENSE", b"one\n"),
+                OutputWheelLicenseFile("project/license", b"two\n"),
+            ),
+        )
+
+    assert MAX_OUTPUT_WHEEL_LICENSE_TOTAL_BYTES == 64 * 1024 * 1024
+    monkeypatch.setattr(output_license_module, "MAX_OUTPUT_WHEEL_LICENSE_TOTAL_BYTES", 1)
+    with pytest.raises(ValueError, match="outside the byte bound"):
+        OutputWheelLicenseContract(
+            expression="MIT",
+            files=(OutputWheelLicenseFile("project/LICENSE", b"too large\n"),),
         )
 
 
