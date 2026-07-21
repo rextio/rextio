@@ -33,6 +33,7 @@ import unicodedata
 from typing import TYPE_CHECKING, SupportsIndex, cast
 
 if TYPE_CHECKING:
+    from rextio.build.full_c6_pipeline import FullC6PublicationAdapter
     from rextio.build.full_c6_production import (
         FullC6ProductionAuthority,
         _FullC6ProductionMaterial,
@@ -93,6 +94,9 @@ class FullC6HostInputsError(RuntimeError):
 @dataclass(slots=True)
 class _Lease:
     active: bool = True
+    generation: int = 0
+    quarantine_cleaned: bool = False
+    publication_authority: object | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +204,7 @@ class FullC6PublicationPlan:
         self._require_active()
         return self._bundle_name
 
-    def atomic_adapter(self) -> object:
+    def atomic_adapter(self) -> FullC6PublicationAdapter:
         """Create the sealed publication adapter without serializing local paths."""
         self._require_active()
         from rextio.build.full_c6_pipeline import _full_c6_atomic_publication_adapter
@@ -216,6 +220,8 @@ class FullC6PublicationPlan:
         )
 
     def _require_active(self) -> None:
+        if type(self._lease) is not _Lease or not self._lease.active:
+            raise FullC6HostInputsError("Full C6 host prerequisite lease has ended")
         try:
             seal_valid = (
                 type(self) is FullC6PublicationPlan
@@ -228,8 +234,13 @@ class FullC6PublicationPlan:
             ) from exc
         if not seal_valid:
             raise FullC6HostInputsError("Full C6 publication plan seal is invalid")
-        if type(self._lease) is not _Lease or not self._lease.active:
-            raise FullC6HostInputsError("Full C6 host prerequisite lease has ended")
+        if (
+            not self._lease.quarantine_cleaned
+            or self._lease.publication_authority is not self._authority
+        ):
+            raise FullC6HostInputsError(
+                "Full C6 publication plan lacks completed prepublication cleanup"
+            )
         _verify_directory_binding(
             self._state_directory, self._state_binding, label="state"
         )
@@ -265,6 +276,8 @@ class FullC6HostPrerequisites:
         "_project_root",
         "_project_binding",
         "_publication_root",
+        "_quarantine_container",
+        "_quarantine_container_binding",
         "_second_quarantine_root",
         "_second_quarantine_binding",
         "_state_directory",
@@ -284,6 +297,8 @@ class FullC6HostPrerequisites:
     _project_root: Path
     _project_binding: _DirectoryBinding
     _publication_root: Path
+    _quarantine_container: Path
+    _quarantine_container_binding: _DirectoryBinding
     _second_quarantine_root: Path
     _second_quarantine_binding: _DirectoryBinding
     _state_directory: Path
@@ -364,13 +379,13 @@ class FullC6HostPrerequisites:
     @property
     def first_quarantine_root(self) -> Path:
         """Return the first fresh inode-bound quarantine root."""
-        self._require_active()
+        self._require_active_quarantines()
         return self._first_quarantine_root
 
     @property
     def second_quarantine_root(self) -> Path:
         """Return the second fresh inode-bound quarantine root."""
-        self._require_active()
+        self._require_active_quarantines()
         return self._second_quarantine_root
 
     @property
@@ -387,7 +402,7 @@ class FullC6HostPrerequisites:
 
     def production_arguments(self) -> dict[str, object]:
         """Return the exact keyword-only arguments for the production collector."""
-        self._require_active()
+        self._require_active_quarantines()
         return {
             "project_root": self._project_root,
             "config": self._config,
@@ -401,23 +416,47 @@ class FullC6HostPrerequisites:
             "source_date_epoch": FULL_C6_SOURCE_DATE_EPOCH,
         }
 
+    def complete_prepublication_cleanup(self, authority: object) -> None:
+        """Irreversibly clean build quarantines before publication can begin.
+
+        The transition is bound to the exact retained production authority and
+        is idempotent only for that same object.  Once it succeeds, quarantine
+        paths can no longer be obtained or reused, and context exit performs no
+        further fallible filesystem cleanup.  This keeps the later atomic
+        publication rename as the final fallible commit boundary.
+        """
+        self._require_active()
+        self._require_matching_publication_material(authority)
+        lease = self._lease
+        if lease.quarantine_cleaned:
+            if lease.publication_authority is not authority:
+                raise FullC6HostInputsError(
+                    "Full C6 prepublication cleanup authority changed"
+                )
+            return
+        _remove_private_quarantine_container(
+            self._quarantine_container,
+            self._quarantine_container_binding,
+        )
+        lease.quarantine_cleaned = True
+        lease.publication_authority = authority
+        object.__setattr__(self, "_seal", _host_prerequisites_seal(self))
+        # Revalidate all persistent bindings after cleanup.  A failure here is
+        # still prepublication and context exit is already cleanup-idempotent.
+        self._require_active()
+
     def derive_publication_plan(self, authority: object) -> FullC6PublicationPlan:
         """Bind publication to a valid final-state authority and its real wheel."""
         self._require_active()
         from rextio.build.full_c6_native_output import full_c6_native_output_wheel_path
 
-        material = _validated_production_material(authority)
-        if material.lifecycle.status != "publication-required":
-            raise FullC6HostInputsError(
-                "Full C6 publication plan requires publication-required lifecycle"
-            )
+        material = self._require_matching_publication_material(authority)
         if (
-            material.project_root != self._project_root
-            or material.config is not self._config
-            or material.cargo_workspace is not self._cargo_workspace
+            not self._lease.quarantine_cleaned
+            or self._lease.publication_authority is not authority
         ):
             raise FullC6HostInputsError(
-                "Full C6 production authority replaced host prerequisites"
+                "Full C6 publication requires completed prepublication cleanup"
             )
         subject_path = full_c6_native_output_wheel_path(
             material.native_output_transaction
@@ -483,7 +522,35 @@ class FullC6HostPrerequisites:
         object.__setattr__(plan, "_seal", _publication_plan_seal(plan))
         return plan
 
+    def _require_matching_publication_material(
+        self,
+        authority: object,
+    ) -> _FullC6ProductionMaterial:
+        material = _validated_production_material(authority)
+        if material.lifecycle.status != "publication-required":
+            raise FullC6HostInputsError(
+                "Full C6 publication plan requires publication-required lifecycle"
+            )
+        if (
+            material.project_root != self._project_root
+            or material.config is not self._config
+            or material.cargo_workspace is not self._cargo_workspace
+        ):
+            raise FullC6HostInputsError(
+                "Full C6 production authority replaced host prerequisites"
+            )
+        return material
+
+    def _require_active_quarantines(self) -> None:
+        self._require_active()
+        if self._lease.quarantine_cleaned:
+            raise FullC6HostInputsError(
+                "Full C6 prepublication quarantine cleanup is complete"
+            )
+
     def _require_active(self) -> None:
+        if type(self._lease) is not _Lease or not self._lease.active:
+            raise FullC6HostInputsError("Full C6 host prerequisite lease has ended")
         try:
             seal_valid = (
                 type(self) is FullC6HostPrerequisites
@@ -496,23 +563,27 @@ class FullC6HostPrerequisites:
             ) from exc
         if not seal_valid:
             raise FullC6HostInputsError("Full C6 host prerequisite seal is invalid")
-        if type(self._lease) is not _Lease or not self._lease.active:
-            raise FullC6HostInputsError("Full C6 host prerequisite lease has ended")
         _verify_directory_binding(
             self._project_root,
             self._project_binding,
             label="project",
         )
-        _verify_directory_binding(
-            self._first_quarantine_root,
-            self._first_quarantine_binding,
-            label="first quarantine",
-        )
-        _verify_directory_binding(
-            self._second_quarantine_root,
-            self._second_quarantine_binding,
-            label="second quarantine",
-        )
+        if not self._lease.quarantine_cleaned:
+            _verify_directory_binding(
+                self._quarantine_container,
+                self._quarantine_container_binding,
+                label="quarantine container",
+            )
+            _verify_directory_binding(
+                self._first_quarantine_root,
+                self._first_quarantine_binding,
+                label="first quarantine",
+            )
+            _verify_directory_binding(
+                self._second_quarantine_root,
+                self._second_quarantine_binding,
+                label="second quarantine",
+            )
         _verify_directory_binding(
             self._state_directory,
             self._state_binding,
@@ -573,6 +644,12 @@ def collect_full_c6_host_prerequisites(
         prerequisites, "_state_binding", _directory_binding(state_directory)
     )
     object.__setattr__(prerequisites, "_publication_root", publication_root)
+    object.__setattr__(prerequisites, "_quarantine_container", container)
+    object.__setattr__(
+        prerequisites,
+        "_quarantine_container_binding",
+        container_binding,
+    )
     object.__setattr__(
         prerequisites, "_base_environment", tuple(sorted(base_environment.items()))
     )
@@ -589,11 +666,17 @@ def collect_full_c6_host_prerequisites(
         raise
     finally:
         lease.active = False
-        try:
-            _remove_private_quarantine_container(container, container_binding)
-        except FullC6HostInputsError:
-            if not raised:
-                raise
+        lease.generation += 1
+        # Context exit is irreversible.  Invalidate rather than recomputing a
+        # semantic HMAC so no fallible projection work can follow a committed
+        # publication; direct reactivation then fails the seal check.
+        object.__setattr__(prerequisites, "_seal", b"")
+        if not lease.quarantine_cleaned:
+            try:
+                _remove_private_quarantine_container(container, container_binding)
+            except FullC6HostInputsError:
+                if not raised:
+                    raise
 
 
 def _require_supported_host() -> str:
@@ -1747,6 +1830,16 @@ def _host_prerequisites_seal(value: FullC6HostPrerequisites) -> bytes:
             "native_tools": id(value._native_tools),
             "cargo_workspace": id(value._cargo_workspace),
         },
+        "lease_state": {
+            "active": value._lease.active,
+            "generation": value._lease.generation,
+            "quarantine_cleaned": value._lease.quarantine_cleaned,
+            "publication_authority": (
+                id(value._lease.publication_authority)
+                if value._lease.publication_authority is not None
+                else None
+            ),
+        },
         "semantics": {
             "config": hashlib.sha256(repr(value._config).encode()).hexdigest(),
             "toolchain": getattr(value._toolchain, "digest", None),
@@ -1759,6 +1852,7 @@ def _host_prerequisites_seal(value: FullC6HostPrerequisites) -> bytes:
             name: hashlib.sha256(os.fspath(path).encode()).hexdigest()
             for name, path in (
                 ("project", value._project_root),
+                ("quarantine-container", value._quarantine_container),
                 ("first-quarantine", value._first_quarantine_root),
                 ("second-quarantine", value._second_quarantine_root),
                 ("state", value._state_directory),
@@ -1767,6 +1861,9 @@ def _host_prerequisites_seal(value: FullC6HostPrerequisites) -> bytes:
         },
         "directories": {
             "project": _directory_binding_payload(value._project_binding),
+            "quarantine-container": _directory_binding_payload(
+                value._quarantine_container_binding
+            ),
             "first-quarantine": _directory_binding_payload(
                 value._first_quarantine_binding
             ),
@@ -1784,6 +1881,16 @@ def _publication_plan_seal(value: FullC6PublicationPlan) -> bytes:
         "domain": f"{FULL_C6_HOST_INPUTS_DOMAIN}.publication-plan",
         "authority": id(value._authority),
         "lease": id(value._lease),
+        "lease_state": {
+            "active": value._lease.active,
+            "generation": value._lease.generation,
+            "quarantine_cleaned": value._lease.quarantine_cleaned,
+            "publication_authority": (
+                id(value._lease.publication_authority)
+                if value._lease.publication_authority is not None
+                else None
+            ),
+        },
         "wheel_filename": value._wheel_filename,
         "bundle_name": value._bundle_name,
         "paths": {

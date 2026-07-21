@@ -656,6 +656,16 @@ def test_context_owns_two_fresh_quarantines_and_cleans_them(
             _ = prerequisites.project_root
         object.__setattr__(prerequisites, "_project_root", project)
 
+        # Direct mutation of the otherwise-private transition state must not
+        # bypass real quarantine deletion or make context exit skip cleanup.
+        prerequisites._lease.quarantine_cleaned = True
+        prerequisites._lease.publication_authority = object()
+        with pytest.raises(FullC6HostInputsError, match="seal is invalid"):
+            _ = prerequisites.project_root
+        prerequisites._lease.quarantine_cleaned = False
+        prerequisites._lease.publication_authority = None
+        assert prerequisites.project_root == project
+
     assert not first.parent.exists()
     with pytest.raises(FullC6HostInputsError, match="lease has ended"):
         _ = prerequisites.project_root
@@ -705,8 +715,26 @@ def test_publication_plan_requires_valid_final_authority_and_real_wheel(
         "validate_full_c6_production_authority",
         lambda _authority: True,
     )
+    remove_quarantines = host_inputs._remove_private_quarantine_container
+    cleanup_calls = 0
+
+    def tracked_cleanup(
+        container: Path,
+        binding: host_inputs._DirectoryBinding,
+    ) -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        remove_quarantines(container, binding)
+
+    monkeypatch.setattr(
+        host_inputs,
+        "_remove_private_quarantine_container",
+        tracked_cleanup,
+    )
 
     with collect_full_c6_host_prerequisites(project, config=config) as prerequisites:
+        first_quarantine = prerequisites.first_quarantine_root
+        second_quarantine = prerequisites.second_quarantine_root
         wheel = prerequisites.state_directory / "native" / "demo-0.1.0-cp311-macosx.whl"
         wheel.parent.mkdir(mode=0o700)
         wheel.write_bytes(b"wheel")
@@ -728,6 +756,22 @@ def test_publication_plan_requires_valid_final_authority_and_real_wheel(
         object.__setattr__(authority, "_transaction_seal", b"test")
 
         assert not (project / "dist").exists()
+        with pytest.raises(FullC6HostInputsError, match="prepublication cleanup"):
+            prerequisites.derive_publication_plan(authority)
+        prerequisites.complete_prepublication_cleanup(authority)
+        prerequisites.complete_prepublication_cleanup(authority)
+        assert cleanup_calls == 1
+        replaced_authority = object.__new__(
+            full_c6_production.FullC6ProductionAuthority
+        )
+        object.__setattr__(replaced_authority, "_material", material)
+        object.__setattr__(replaced_authority, "_transaction_seal", b"replacement")
+        with pytest.raises(FullC6HostInputsError, match="authority changed"):
+            prerequisites.complete_prepublication_cleanup(replaced_authority)
+        assert not first_quarantine.parent.exists()
+        assert not second_quarantine.exists()
+        with pytest.raises(FullC6HostInputsError, match="cleanup is complete"):
+            _ = prerequisites.first_quarantine_root
         plan = prerequisites.derive_publication_plan(authority)
         assert plan.wheel_filename == wheel.name
         assert plan.bundle_name == f"{wheel.name.removesuffix('.whl')}.full-c6"
@@ -762,6 +806,12 @@ def test_publication_plan_requires_valid_final_authority_and_real_wheel(
 
     with pytest.raises(FullC6HostInputsError, match="lease has ended"):
         _ = plan.wheel_filename
+    assert cleanup_calls == 1
+    prerequisites._lease.active = True
+    with pytest.raises(FullC6HostInputsError, match="seal is invalid"):
+        _ = prerequisites.project_root
+    with pytest.raises(FullC6HostInputsError, match="seal is invalid"):
+        _ = plan.wheel_filename
 
 
 def test_publication_plan_rejects_invalid_or_foreign_authority(
@@ -787,7 +837,76 @@ def test_publication_plan_rejects_invalid_or_foreign_authority(
 
     with collect_full_c6_host_prerequisites(project, config=_host_config()) as prerequisites:
         with pytest.raises(FullC6HostInputsError, match="valid production authority"):
-            prerequisites.derive_publication_plan(object())
+            prerequisites.complete_prepublication_cleanup(object())
+
+
+def test_post_cleanup_revalidation_failure_is_not_retried_on_context_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = _host_config()
+    cargo_sources = object()
+    workspace = SimpleNamespace(cargo_sources=cargo_sources)
+    toolchain = SimpleNamespace(cargo_sources=cargo_sources)
+    monkeypatch.setattr(
+        host_inputs,
+        "_require_supported_host",
+        lambda: "aarch64-apple-darwin",
+    )
+    monkeypatch.setattr(
+        host_inputs,
+        "_collect_configured_cargo_workspace",
+        lambda _root, _config: workspace,
+    )
+    monkeypatch.setattr(
+        host_inputs,
+        "_collect_toolchain",
+        lambda **_kwargs: (object(), toolchain, {}),
+    )
+    monkeypatch.setattr(
+        full_c6_production,
+        "validate_full_c6_production_authority",
+        lambda _authority: True,
+    )
+    cleanup_calls = 0
+    remove_quarantines = host_inputs._remove_private_quarantine_container
+
+    with collect_full_c6_host_prerequisites(project, config=config) as prerequisites:
+        quarantine_container = prerequisites.first_quarantine_root.parent
+        state_directory = prerequisites.state_directory
+        material = SimpleNamespace(
+            lifecycle=SimpleNamespace(status="publication-required"),
+            project_root=project,
+            config=config,
+            cargo_workspace=workspace,
+        )
+        authority = object.__new__(full_c6_production.FullC6ProductionAuthority)
+        object.__setattr__(authority, "_material", material)
+        object.__setattr__(authority, "_transaction_seal", b"test")
+
+        def cleanup_then_change_state(
+            container: Path,
+            binding: host_inputs._DirectoryBinding,
+        ) -> None:
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+            remove_quarantines(container, binding)
+            state_directory.chmod(0o755)
+
+        monkeypatch.setattr(
+            host_inputs,
+            "_remove_private_quarantine_container",
+            cleanup_then_change_state,
+        )
+        with pytest.raises(FullC6HostInputsError, match="directory changed"):
+            prerequisites.complete_prepublication_cleanup(authority)
+        assert cleanup_calls == 1
+        assert not quarantine_container.exists()
+        assert not (project / "dist").exists()
+
+    assert cleanup_calls == 1
 
 
 @pytest.mark.skipif(

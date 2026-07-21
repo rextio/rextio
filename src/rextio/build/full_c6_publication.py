@@ -386,6 +386,20 @@ def _publish_full_c6_bundle(
             }
         )
     ).hexdigest()
+    authorization_bytes = captured[ROLE_DISTRIBUTION_AUTHORIZATION].data
+    # Construct and validate the exact path-free receipt before the commit
+    # operation.  Once the no-replace rename succeeds there must be no later
+    # validation capable of turning a committed authorized bundle into a
+    # reported failure.
+    receipt = FullC6PublicationReceipt(
+        target_triple=trusted_evidence.target_triple,
+        subject_sha256=trusted_evidence.subject.sha256,
+        evidence_sha256=trusted_authorization.evidence_sha256,
+        authorization_sha256=hashlib.sha256(authorization_bytes).hexdigest(),
+        manifest_sha256=manifest_sha256,
+        bundle_sha256=bundle_sha256,
+        files=published_files,
+    )
 
     root_path = Path(publication_root)
     root_fd, root_stat = _open_safe_directory(
@@ -462,6 +476,25 @@ def _publish_full_c6_bundle(
             manifest_bytes=manifest_bytes,
             expected_members=staged_members,
         )
+        # Persist the complete staged tree and its parent entry before the
+        # final rename.  Cross-crash durability of the rename itself remains
+        # best effort because a post-rename fsync failure cannot safely revoke
+        # a bundle that is already visible at its committed name.
+        os.fsync(root_fd)
+        _revalidate_directory(root_path, root_stat, label="publication root")
+        _verify_staging_directory(
+            staging_fd,
+            captured=captured,
+            files=published_files,
+            manifest_bytes=manifest_bytes,
+            expected_members=staged_members,
+        )
+        _require_directory_member_identity(
+            root_fd,
+            staging_name,
+            expected_identity=staging_identity,
+            label="staging",
+        )
         _require_missing_directory_member(root_fd, bundle_name)
         _atomic_rename_noreplace(
             root_fd,
@@ -469,54 +502,25 @@ def _publish_full_c6_bundle(
             destination_name=bundle_name,
         )
         renamed = True
-        destination_fd = _open_directory_member(
-            root_fd,
-            bundle_name,
-            expected_identity=staging_identity,
-            label="published bundle",
-        )
-        try:
-            _verify_staging_directory(
-                destination_fd,
-                captured=captured,
-                files=published_files,
-                manifest_bytes=manifest_bytes,
-                expected_members=staged_members,
-            )
-            destination_stat = os.fstat(destination_fd)
-            staging_stat = os.fstat(staging_fd)
-            if (destination_stat.st_dev, destination_stat.st_ino) != (
-                staging_stat.st_dev,
-                staging_stat.st_ino,
-            ):
-                raise FullC6PublicationError(
-                    "Full C6 published bundle no longer names the staged inode"
-                )
-        finally:
-            os.close(destination_fd)
-        os.fsync(root_fd)
-        _revalidate_directory(root_path, root_stat, label="publication root")
+        _best_effort_postcommit_fsync(root_fd)
     except FullC6PublicationError:
         raise
     except OSError as exc:
         raise FullC6PublicationError("Full C6 bundle publication failed closed") from exc
     finally:
         if staging_fd is not None:
-            os.close(staging_fd)
+            if renamed:
+                _best_effort_close(staging_fd)
+            else:
+                os.close(staging_fd)
         if not renamed and staging_identity is not None:
             _remove_owned_staging(root_path, staging_name, staging_identity)
-        os.close(root_fd)
+        if renamed:
+            _best_effort_close(root_fd)
+        else:
+            os.close(root_fd)
 
-    authorization_bytes = captured[ROLE_DISTRIBUTION_AUTHORIZATION].data
-    return FullC6PublicationReceipt(
-        target_triple=trusted_evidence.target_triple,
-        subject_sha256=trusted_evidence.subject.sha256,
-        evidence_sha256=trusted_authorization.evidence_sha256,
-        authorization_sha256=hashlib.sha256(authorization_bytes).hexdigest(),
-        manifest_sha256=manifest_sha256,
-        bundle_sha256=bundle_sha256,
-        files=published_files,
-    )
+    return receipt
 
 
 def _rebuild_request(value: FinalAuthorizationRequest) -> FinalAuthorizationRequest:
@@ -938,39 +942,6 @@ def _require_directory_member_identity(
         raise FullC6PublicationError(f"Full C6 {label} name-to-inode binding changed")
 
 
-def _open_directory_member(
-    directory_fd: int,
-    name: str,
-    *,
-    expected_identity: tuple[int, int],
-    label: str,
-) -> int:
-    _require_directory_member_identity(
-        directory_fd,
-        name,
-        expected_identity=expected_identity,
-        label=label,
-    )
-    try:
-        descriptor = os.open(
-            name,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=directory_fd,
-        )
-        observed = os.fstat(descriptor)
-        if (
-            not stat.S_ISDIR(observed.st_mode)
-            or (observed.st_dev, observed.st_ino) != expected_identity
-        ):
-            os.close(descriptor)
-            raise FullC6PublicationError(f"Full C6 {label} changed during open")
-        return descriptor
-    except FullC6PublicationError:
-        raise
-    except OSError as exc:
-        raise FullC6PublicationError(f"Full C6 {label} could not be opened safely") from exc
-
-
 def _revalidate_directory(path: Path, expected: os.stat_result, *, label: str) -> None:
     try:
         observed = os.lstat(path)
@@ -1001,6 +972,26 @@ def _write_exclusive_file(directory_fd: int, name: str, data: bytes, *, mode: in
             raise FullC6PublicationError("Full C6 written file size mismatch")
     finally:
         os.close(descriptor)
+
+
+def _best_effort_postcommit_fsync(directory_fd: int) -> None:
+    """Request directory durability without revoking an already committed rename."""
+    try:
+        os.fsync(directory_fd)
+    except OSError:
+        # The atomic no-replace rename is the publication commit point.  Once
+        # it succeeds, an fsync error can describe uncertain crash durability
+        # but cannot truthfully turn the visible signed bundle into a failed or
+        # unauthorized publication.
+        return
+
+
+def _best_effort_close(descriptor: int) -> None:
+    """Close a post-commit descriptor without manufacturing a false failure."""
+    try:
+        os.close(descriptor)
+    except OSError:
+        return
 
 
 def _verify_staging_directory(

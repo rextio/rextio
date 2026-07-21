@@ -36,13 +36,27 @@ from rextio.build.orchestrator import (
     build_hybrid_artifact,
     required_artifact_evidence_scope_is_valid,
 )
+from rextio.build.full_c6_host_inputs import (
+    FullC6HostInputsError,
+    collect_full_c6_host_prerequisites,
+)
+from rextio.build.full_c6_gate import FullC6GateError
 from rextio.build.full_c6_pipeline import (
     FULL_C6_DISTRIBUTION_POLICY,
+    FullC6ExternalPreflightResult,
     FullC6PipelineError,
-    FullC6TypedPolicyRequiredError,
-    load_configured_full_c6_policy,
+    finalize_configured_full_c6_distribution,
     prepare_full_c6_external_build,
 )
+from rextio.build.full_c6_policy_bootstrap import (
+    FullC6PolicyBootstrapError,
+    materialize_full_c6_policy_bootstrap_request,
+)
+from rextio.build.full_c6_production import (
+    FullC6ProductionError,
+    collect_full_c6_production_authority,
+)
+from rextio.build.full_c6_publication import FullC6PublicationError
 from rextio.plugins.capabilities import (
     StandalonePluginContext,
     build_standalone_plugin_context,
@@ -76,6 +90,7 @@ from rextio.source.external import (
     ExternalSourceBuildBlockedError,
     ExternalSourceC5NotImplementedError,
 )
+from rextio.source.planning import ensure_host_source_plan
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
@@ -214,22 +229,31 @@ def _report_full_c6_pipeline_failure(
     project_root: Path,
     analysis: ProjectAnalysis,
     fallback: str,
-    error: FullC6PipelineError,
+    error: Exception,
     reporter: Reporter,
+    *,
+    stage: str,
 ) -> int:
     """Report one actionable strict Full C6 fail-closed result."""
     reports_dir = project_root / ".rextio" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     for stale in ("build.json", "generate.json", "check.json"):
         (reports_dir / stale).unlink(missing_ok=True)
-    write_check_report(project_root, analysis)
+    analysis_data = _write_full_c6_check_report(reports_dir, analysis)
+    public_message = f"RXT060 strict Full C6 {stage} failed closed."
     (reports_dir / "build.json").write_text(
         json.dumps(
             {
-                "analysis": analysis.to_dict(),
+                "analysis": analysis_data,
                 "contract_version": TOOLING_CONTRACT_VERSION,
-                "error": {"code": "RXT060", "message": str(error)},
+                "error": {
+                    "code": "RXT060",
+                    "domain": type(error).__name__,
+                    "message": public_message,
+                },
                 "fallback": fallback,
+                "lifecycle": "failed",
+                "stage": stage,
                 "status": "full-c6-required-failed",
                 "distribution_authorized": False,
             },
@@ -239,18 +263,251 @@ def _report_full_c6_pipeline_failure(
         + "\n",
         encoding="utf-8",
     )
-    reporter.error(str(error))
-    if isinstance(error, FullC6TypedPolicyRequiredError):
-        reporter.error(
-            "Suggestion: invoke the complete programmatic Full C6 pipeline with an "
-            "explicit verified FullC6PolicyReceipt; preview evidence is not policy authority."
-        )
-    else:
-        reporter.error(
-            "Suggestion: verify the exact SourceLock v2 manifest/signature, source wheel, "
-            "trusted public key pin, and unchanged project imports, then rerun."
-        )
+    reporter.error(public_message)
+    reporter.error(
+        "Suggestion: verify the strict configuration, pinned inputs, current lifecycle "
+        "material, and unchanged project sources, then rerun."
+    )
     return 1
+
+
+def _write_full_c6_check_report(
+    reports_dir: Path,
+    analysis: ProjectAnalysis,
+) -> dict[str, object]:
+    """Write a strict report without serializing a machine-local absolute root."""
+    ensure_host_source_plan(analysis)
+    data = analysis.to_dict()
+    data["project_root"] = "."
+    (reports_dir / "check.json").write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return data
+
+
+def _full_c6_lexical_project_root(raw_project_root: str) -> str:
+    """Make ordinary relative CLI roots absolute without resolving lexical evidence."""
+    candidate = Path(raw_project_root)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return os.fspath(candidate)
+
+
+def _full_c6_typed_receipt(value: object, *, label: str) -> dict[str, object]:
+    """Project one already-validated path-free receipt into a report."""
+    to_dict = getattr(value, "to_dict", None)
+    if not callable(to_dict):
+        raise FullC6PipelineError(f"RXT060 strict Full C6 {label} receipt is invalid")
+    payload = to_dict()
+    if type(payload) is not dict:
+        raise FullC6PipelineError(f"RXT060 strict Full C6 {label} receipt is invalid")
+    return payload
+
+
+def _report_full_c6_pipeline_success(
+    project_root: Path,
+    analysis: ProjectAnalysis,
+    fallback: str,
+    reporter: Reporter,
+    *,
+    lifecycle: str,
+    status: str,
+    distribution_authorized: bool,
+    details: dict[str, object],
+    next_action: str,
+) -> int:
+    """Publish one path-free strict lifecycle result after host cleanup succeeds."""
+    reports_dir = project_root / ".rextio" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    for stale in ("build.json", "generate.json", "check.json"):
+        (reports_dir / stale).unlink(missing_ok=True)
+    analysis_data = _write_full_c6_check_report(reports_dir, analysis)
+    report = {
+        "analysis": analysis_data,
+        "contract_version": TOOLING_CONTRACT_VERSION,
+        "distribution_authorized": distribution_authorized,
+        "fallback": fallback,
+        "full_c6": details,
+        "lifecycle": lifecycle,
+        "next_action": next_action,
+        "status": status,
+    }
+    (reports_dir / "build.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    report_name = ".rextio/reports/build.json"
+    reporter.print_result(
+        text="\n".join(
+            (
+                "Rextio strict Full C6 lifecycle:",
+                f"  lifecycle: {lifecycle}",
+                f"  status: {status}",
+                "  distribution authorized: "
+                f"{'true' if distribution_authorized else 'false'}",
+                f"  next owner action: {next_action}",
+                f"  wrote {report_name}",
+            )
+        ),
+        data={
+            "distribution_authorized": distribution_authorized,
+            "full_c6": details,
+            "lifecycle": lifecycle,
+            "next_action": next_action,
+            "report": report_name,
+            "status": status,
+        },
+    )
+    return 0
+
+
+def _run_full_c6_cli_lifecycle(
+    *,
+    raw_project_root: str,
+    project_root: Path,
+    analysis: ProjectAnalysis,
+    preflight: FullC6ExternalPreflightResult,
+    config: RextioConfig,
+    fallback: str,
+    reporter: Reporter,
+) -> int:
+    """Run the closed bootstrap/signing/publication CLI state machine."""
+    stage = "host-prerequisites"
+    try:
+        with collect_full_c6_host_prerequisites(
+            raw_project_root,
+            config=config,
+        ) as prerequisites:
+            stage = "production-authority"
+            authority = collect_full_c6_production_authority(
+                preflight,
+                project_root=prerequisites.project_root,
+                config=prerequisites.config,
+                toolchain=prerequisites.toolchain,
+                native_tools=prerequisites.native_tools,
+                cargo_workspace=prerequisites.cargo_workspace,
+                first_quarantine_root=prerequisites.first_quarantine_root,
+                second_quarantine_root=prerequisites.second_quarantine_root,
+                state_directory=prerequisites.state_directory,
+                base_environment=prerequisites.base_environment,
+                source_date_epoch=prerequisites.source_date_epoch,
+            )
+            lifecycle = authority.lifecycle.status
+            authority_report = authority.to_dict()
+            status: str
+            distribution_authorized: bool
+            details: dict[str, object]
+            next_action: str
+            if lifecycle == "bootstrap-required":
+                stage = "policy-bootstrap"
+                request = authority.bootstrap_request
+                if request is None:
+                    raise FullC6ProductionError(
+                        "Full C6 bootstrap lifecycle lacks its typed request"
+                    )
+                bootstrap = materialize_full_c6_policy_bootstrap_request(
+                    state_directory=prerequisites.state_directory,
+                    request=request,
+                )
+                status = "full-c6-bootstrap-required"
+                distribution_authorized = False
+                next_action = (
+                    "complete and pin the owner policy manifest from the bootstrap request"
+                )
+                details = {
+                    "policy_bootstrap": bootstrap.to_dict(),
+                    "production_authority": authority_report,
+                }
+            elif lifecycle == "signing-required":
+                stage = "signing-request"
+                result = finalize_configured_full_c6_distribution(
+                    project_root=project_root,
+                    config=config,
+                    authority=authority,
+                )
+                if result.status != "signing-required" or result.distribution_authorized:
+                    raise FullC6PipelineError(
+                        "RXT060 unsigned Full C6 lifecycle returned invalid authority"
+                    )
+                status = "full-c6-signing-required"
+                distribution_authorized = False
+                next_action = (
+                    "sign the canonical authorization request externally and configure "
+                    "the detached signature"
+                )
+                details = {
+                    "authorization_request": result.request.to_dict(),
+                    "production_authority": authority_report,
+                    "signing_request_receipt": _full_c6_typed_receipt(
+                        result.signing_request_receipt,
+                        label="signing-request",
+                    ),
+                }
+            elif lifecycle == "publication-required":
+                stage = "prepublication-cleanup"
+                prerequisites.complete_prepublication_cleanup(authority)
+                stage = "publication-plan"
+                publication_plan = prerequisites.derive_publication_plan(authority)
+                stage = "publication"
+                result = finalize_configured_full_c6_distribution(
+                    project_root=project_root,
+                    config=config,
+                    authority=authority,
+                    publication_adapter=publication_plan.atomic_adapter(),
+                )
+                if (
+                    result.status != "published"
+                    or not result.distribution_authorized
+                    or result.publication_receipt is None
+                ):
+                    raise FullC6PipelineError(
+                        "RXT060 published Full C6 lifecycle returned invalid authority"
+                    )
+                status = "full-c6-published"
+                distribution_authorized = True
+                next_action = "review and retain the atomic publication receipt"
+                details = {
+                    "authorization_request": result.request.to_dict(),
+                    "publication_receipt": result.publication_receipt.to_dict(),
+                    "production_authority": authority_report,
+                    "signing_request_receipt": _full_c6_typed_receipt(
+                        result.signing_request_receipt,
+                        label="signing-request",
+                    ),
+                }
+            else:
+                raise FullC6ProductionError(
+                    "Full C6 production authority returned an invalid lifecycle"
+                )
+            stage = "host-cleanup"
+    except (
+        FullC6HostInputsError,
+        FullC6GateError,
+        FullC6PipelineError,
+        FullC6PolicyBootstrapError,
+        FullC6ProductionError,
+        FullC6PublicationError,
+    ) as error:
+        return _report_full_c6_pipeline_failure(
+            project_root,
+            analysis,
+            fallback,
+            error,
+            reporter,
+            stage=stage,
+        )
+    return _report_full_c6_pipeline_success(
+        project_root,
+        analysis,
+        fallback,
+        reporter,
+        lifecycle=lifecycle,
+        status=status,
+        distribution_authorized=distribution_authorized,
+        details=details,
+        next_action=next_action,
+    )
 
 
 def _report_required_evidence_failure(
@@ -432,7 +689,11 @@ def _rust_toolchain_error(config: RextioConfig, build_tool: str) -> str | None:
 def run(args: Namespace) -> int:
     """Run the build command; return the process exit code."""
     reporter = Reporter.from_args(args)
-    project_root = Path(args.project_root).resolve()
+    raw_project_root = os.fspath(args.project_root)
+    if type(raw_project_root) is not str:
+        reporter.error("RXT060 Build project path must be text.")
+        return 1
+    project_root = Path(raw_project_root).resolve()
     try:
         config = override_config(
             load_config(project_root, environ=os.environ),
@@ -546,22 +807,25 @@ def run(args: Namespace) -> int:
                 ),
             )
             analysis = preflight.analysis
-            load_configured_full_c6_policy(project_root=project_root, config=config)
         except FullC6PipelineError as error:
             return _report_full_c6_pipeline_failure(
-                project_root, analysis, fallback, error, reporter
+                project_root,
+                analysis,
+                fallback,
+                error,
+                reporter,
+                stage="external-preflight",
             )
-        return _report_full_c6_pipeline_failure(
-            project_root,
-            analysis,
-            fallback,
-            FullC6TypedPolicyRequiredError(
-                "RXT060 Full C6 CLI distribution requires an explicit typed "
-                "FullC6PolicyReceipt; automatic derivation from preview evidence is unsafe"
-            ),
-            reporter,
+        return _run_full_c6_cli_lifecycle(
+            raw_project_root=_full_c6_lexical_project_root(raw_project_root),
+            project_root=project_root,
+            analysis=analysis,
+            preflight=preflight,
+            config=config,
+            fallback=fallback,
+            reporter=reporter,
         )
-    if analysis.external_source_plan is not None and not has_parse_error:
+    if analysis.external_source_plan is not None:
         return _report_external_source_build_blocked(
             project_root,
             analysis,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 from pathlib import Path
 import runpy
 from types import SimpleNamespace
@@ -46,7 +45,6 @@ from rextio.build.transformation_verification import (
 )
 from rextio.build.runtime_authorization import RUNTIME_VERIFICATION_NATIVE_FRESH
 from rextio.build.wheel_builder import build_artifact_wheel
-from rextio.cli.main import main
 from rextio.config.schema import (
     BuildConfig,
     ImportPackagePolicy,
@@ -649,71 +647,3 @@ def test_signed_pipeline_passes_sealed_gate_then_atomically_publishes(tmp_path: 
     object.__setattr__(mutated_authority_adapter, "authority", equal_authority)
     with pytest.raises(FullC6PipelineError, match="adapter seal"):
         mutated_authority_adapter(equal_authority, result.request, result.gate)
-
-
-def test_cli_strict_mode_fails_actionably_without_typed_policy(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    (tmp_path / "app.py").write_text("def value(x: int) -> int: return x\n", encoding="utf-8")
-    (tmp_path / "rextio.toml").write_text(
-        f"""\
-[build]
-artifact_evidence_policy = "required"
-artifact_distribution_policy = "full-c6-required"
-artifact_source_lock_manifest = "locks/source.json"
-artifact_source_lock_signature = "locks/source.sig.json"
-artifact_policy_manifest = "locks/rextio.full-c6-policy.json"
-artifact_policy_manifest_sha256 = "{'3' * 64}"
-artifact_cargo_vendor = "vendor/cargo"
-artifact_cargo_vendor_sha256 = "{'4' * 64}"
-artifact_cargo_lock = "locks/Cargo.lock"
-artifact_cargo_lock_sha256 = "{'5' * 64}"
-artifact_trusted_public_key = "locks/owner.pub"
-artifact_trusted_public_key_sha256 = "{'1' * 64}"
-artifact_signing_request_output = "state/{FULL_C6_SIGNING_REQUEST_FILENAME}"
-
-[rust]
-build_tool = "cargo"
-importable = false
-
-[plugins]
-enabled = []
-
-[imports]
-default_external_policy = "fallback"
-
-[imports.packages.demo_pkg]
-policy = "try-native"
-max_depth = 1
-distribution = "demo-pkg"
-version = "1.0.0"
-source_archive = "locks/demo_pkg-1.0.0-py3-none-any.whl"
-source_archive_sha256 = "{'2' * 64}"
-""",
-        encoding="utf-8",
-    )
-    analysis = analyze_project(tmp_path)
-    monkeypatch.setattr("rextio.cli.build_cmd.analyze_project", lambda *_a, **_k: analysis)
-    monkeypatch.setattr(
-        "rextio.cli.build_cmd.prepare_full_c6_external_build",
-        lambda **_kwargs: SimpleNamespace(analysis=analysis),
-    )
-    monkeypatch.setattr(
-        "rextio.cli.build_cmd.load_configured_full_c6_policy",
-        lambda **_kwargs: object(),
-    )
-
-    exit_code = main(["build", str(tmp_path)])
-
-    captured = capsys.readouterr()
-    report = json.loads(
-        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
-    )
-    assert exit_code == 1
-    assert "RXT060" in captured.err
-    assert "FullC6PolicyReceipt" in captured.err
-    assert report["status"] == "full-c6-required-failed"
-    assert report["distribution_authorized"] is False
-    assert not (tmp_path / "dist").exists()

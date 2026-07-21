@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 from dataclasses import replace
 import errno
+import hashlib
 import os
 from pathlib import Path
 import runpy
@@ -556,7 +557,7 @@ def test_publication_independently_verifies_detached_ed25519_signature(
     assert tuple(publication_root.iterdir()) == ()
 
 
-def test_tamper_during_rename_fails_without_publication_receipt(
+def test_post_commit_tamper_cannot_turn_completed_rename_into_false_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -583,16 +584,86 @@ def test_tamper_during_rename_fails_without_publication_receipt(
         )
 
     monkeypatch.setattr(module, "_atomic_rename_noreplace", rename_then_tamper)
-    with pytest.raises(FullC6PublicationError, match="staged payload changed"):
-        _publish_full_c6_bundle(
-            publication_root=publication_root,
-            bundle_name="candidate",
-            bundle_files=files,
-            request=request,
-            gate_result=result,
-            public_key_path=tmp_path / "gate" / "owner.pub",
+    receipt = _publish_full_c6_bundle(
+        publication_root=publication_root,
+        bundle_name="candidate",
+        bundle_files=files,
+        request=request,
+        gate_result=result,
+        public_key_path=tmp_path / "gate" / "owner.pub",
+    )
+
+    published_evidence = (
+        publication_root / "candidate" / "rextio.full-c6-evidence.json"
+    )
+    expected = next(item for item in receipt.files if item.role == ROLE_FINAL_EVIDENCE)
+    assert receipt.publication_completed is True
+    assert published_evidence.read_bytes() == b"tampered-after-rename"
+    assert hashlib.sha256(published_evidence.read_bytes()).hexdigest() != expected.sha256
+
+
+def test_post_commit_directory_fsync_failure_keeps_completed_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files, request, result = _authorized_bundle(tmp_path)
+    publication_root = tmp_path / "dist"
+    publication_root.mkdir(mode=0o700)
+    import rextio.build.full_c6_publication as module
+
+    rename = module._atomic_rename_noreplace
+    fsync = module.os.fsync
+    committed = False
+
+    def tracked_rename(
+        directory_fd: int,
+        *,
+        source_name: str,
+        destination_name: str,
+    ) -> None:
+        nonlocal committed
+        rename(
+            directory_fd,
+            source_name=source_name,
+            destination_name=destination_name,
         )
+        committed = True
+
+    def fail_only_after_commit(descriptor: int) -> None:
+        if committed:
+            raise OSError("synthetic post-commit durability uncertainty")
+        fsync(descriptor)
+
+    monkeypatch.setattr(module, "_atomic_rename_noreplace", tracked_rename)
+    monkeypatch.setattr(module.os, "fsync", fail_only_after_commit)
+
+    receipt = _publish_full_c6_bundle(
+        publication_root=publication_root,
+        bundle_name="candidate",
+        bundle_files=files,
+        request=request,
+        gate_result=result,
+        public_key_path=tmp_path / "gate" / "owner.pub",
+    )
+
+    assert committed is True
+    assert receipt.publication_completed is True
     assert (publication_root / "candidate").is_dir()
+
+
+def test_post_commit_durability_and_close_helpers_never_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_publication as module
+
+    def fail(_descriptor: int) -> None:
+        raise OSError("synthetic post-commit descriptor failure")
+
+    monkeypatch.setattr(module.os, "fsync", fail)
+    monkeypatch.setattr(module.os, "close", fail)
+
+    module._best_effort_postcommit_fsync(-1)
+    module._best_effort_close(-1)
 
 
 def test_mutated_request_cannot_replay_authorization(tmp_path: Path) -> None:
