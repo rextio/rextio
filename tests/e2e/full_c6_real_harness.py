@@ -48,6 +48,7 @@ _XCODE_HARDLINK_RELATIVE_PATH_SHA256 = (
 )
 _XCODE_HARDLINK_ALIAS_COUNT = 3
 _XCODE_HARDLINK_MAX_ENTRIES = 250_000
+_XCODE_HARDLINK_APP_MAX_ENTRIES = 1_000_000
 _XCODE_HARDLINK_MAX_DEPTH = 64
 _XCODE_HARDLINK_MAX_PATH_BYTES = 8_192
 _XCODE_HARDLINK_ERROR_RE = re.compile(
@@ -63,6 +64,15 @@ _PATH_FREE_SUPPORT_LOCK_MESSAGES_WITH_SEMANTIC_SLASH = frozenset(
         "toolchain support locators contain an NFC/casefold role alias",
     }
 )
+_LINUX_FOLDED_NAME_CAUSE = (
+    "toolchain support directory contains an NFC/casefold alias"
+)
+_LINUX_FOLDED_NAME_ROLE = "linux-runtime-support"
+_LINUX_FOLDED_NAME_MAX_ENTRIES = 250_000
+_LINUX_FOLDED_NAME_MAX_DEPTH = 64
+_LINUX_FOLDED_NAME_MAX_PATH_BYTES = 8_192
+_LINUX_FOLDED_NAME_MAX_GROUPS = 16
+_LINUX_FOLDED_NAME_MAX_GROUP_MEMBERS = 16
 _SUPPORT_LOCK_ROLES = {
     "aarch64-apple-darwin": (
         (
@@ -1133,6 +1143,8 @@ def _bounded_xcode_hardlink_alias_message(
     boundary: Path,
     target_relative_path: PurePosixPath,
     expected_stamp_sha256: str,
+    app_boundary: Path | None = None,
+    app_target_relative_path: PurePosixPath | None = None,
 ) -> str:
     from rextio.build import toolchain_support_lock as support_lock
 
@@ -1141,13 +1153,18 @@ def _bounded_xcode_hardlink_alias_message(
             "toolchain support xcode hardlink diagnostic stamp is invalid"
         )
 
-    def scan_once() -> tuple[Any, tuple[str, ...]]:
+    def scan_once(
+        *,
+        scan_boundary: Path,
+        scan_target_relative_path: PurePosixPath,
+        max_entries: int,
+    ) -> tuple[Any, tuple[str, ...]]:
         target_stamp = _open_xcode_hardlink_target(
-            boundary=boundary,
-            target_relative_path=target_relative_path,
+            boundary=scan_boundary,
+            target_relative_path=scan_target_relative_path,
             expected_stamp_sha256=expected_stamp_sha256,
         )
-        boundary_chain = support_lock._open_directory_chain(boundary)
+        boundary_chain = support_lock._open_directory_chain(scan_boundary)
         aliases: list[str] = []
         entry_count = 0
 
@@ -1169,7 +1186,7 @@ def _bounded_xcode_hardlink_alias_message(
             )
             for name in ordered:
                 entry_count += 1
-                if entry_count > _XCODE_HARDLINK_MAX_ENTRIES:
+                if entry_count > max_entries:
                     raise support_lock.ToolchainSupportLockError(
                         "toolchain support xcode hardlink diagnostic entry bound exceeded"
                     )
@@ -1284,8 +1301,8 @@ def _bounded_xcode_hardlink_alias_message(
         finally:
             support_lock._close_directory_chain(boundary_chain)
         if (
-            len(aliases) != _XCODE_HARDLINK_ALIAS_COUNT
-            or target_relative_path.as_posix() not in aliases
+            not 1 <= len(aliases) <= _XCODE_HARDLINK_ALIAS_COUNT
+            or scan_target_relative_path.as_posix() not in aliases
         ):
             raise support_lock.ToolchainSupportLockError(
                 "toolchain support xcode hardlink diagnostic alias count differs"
@@ -1301,25 +1318,78 @@ def _bounded_xcode_hardlink_alias_message(
         )
         return target_stamp, digests
 
-    first = scan_once()
-    second = scan_once()
-    if first != second:
-        raise support_lock.ToolchainSupportLockError(
-            "toolchain support xcode hardlink diagnostic changed across scans"
+    def stable_scan(
+        *,
+        scan_boundary: Path,
+        scan_target_relative_path: PurePosixPath,
+        max_entries: int,
+    ) -> tuple[Any, tuple[str, ...]]:
+        first = scan_once(
+            scan_boundary=scan_boundary,
+            scan_target_relative_path=scan_target_relative_path,
+            max_entries=max_entries,
         )
-    final_target_stamp = _open_xcode_hardlink_target(
-        boundary=boundary,
-        target_relative_path=target_relative_path,
-        expected_stamp_sha256=expected_stamp_sha256,
-    )
-    if final_target_stamp != first[0]:
-        raise support_lock.ToolchainSupportLockError(
-            "toolchain support xcode hardlink diagnostic changed after scans"
+        second = scan_once(
+            scan_boundary=scan_boundary,
+            scan_target_relative_path=scan_target_relative_path,
+            max_entries=max_entries,
         )
-    target_stamp, digests = first
+        if first != second:
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support xcode hardlink diagnostic changed across scans"
+            )
+        final_target_stamp = _open_xcode_hardlink_target(
+            boundary=scan_boundary,
+            target_relative_path=scan_target_relative_path,
+            expected_stamp_sha256=expected_stamp_sha256,
+        )
+        if final_target_stamp != first[0]:
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support xcode hardlink diagnostic changed after scans"
+            )
+        return first
+
+    if (app_boundary is None) != (app_target_relative_path is None):
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode hardlink diagnostic app scope is invalid"
+        )
+    scope = "toolchain"
+    try:
+        result = stable_scan(
+            scan_boundary=boundary,
+            scan_target_relative_path=target_relative_path,
+            max_entries=_XCODE_HARDLINK_MAX_ENTRIES,
+        )
+    except support_lock.ToolchainSupportLockError as exc:
+        if (
+            str(exc)
+            != "toolchain support xcode hardlink diagnostic entry bound exceeded"
+            or app_boundary is None
+            or app_target_relative_path is None
+        ):
+            raise
+        scope = "app"
+        result = stable_scan(
+            scan_boundary=app_boundary,
+            scan_target_relative_path=app_target_relative_path,
+            max_entries=_XCODE_HARDLINK_APP_MAX_ENTRIES,
+        )
+    if (
+        len(result[1]) < _XCODE_HARDLINK_ALIAS_COUNT
+        and app_boundary is not None
+        and app_target_relative_path is not None
+        and scope != "app"
+    ):
+        scope = "app"
+        result = stable_scan(
+            scan_boundary=app_boundary,
+            scan_target_relative_path=app_target_relative_path,
+            max_entries=_XCODE_HARDLINK_APP_MAX_ENTRIES,
+        )
+    target_stamp, digests = result
     message = (
         "toolchain support xcode hardlink aliases "
-        f"(nlink={target_stamp.links},count={len(digests)},"
+        f"(scope={scope},nlink={target_stamp.links},count={len(digests)},"
         f"digests={','.join(digests)})"
     )
     if (
@@ -1390,11 +1460,225 @@ def _diagnose_exact_xcode_hardlink_aliases(
     target_relative = PurePosixPath(*root_relative.parts) / PurePosixPath(
         _XCODE_HARDLINK_RELATIVE_PATH
     )
+    app_boundary = Path("/Applications/Xcode.app")
+    app_target_relative = PurePosixPath(
+        *(boundary.joinpath(*target_relative.parts).relative_to(app_boundary).parts)
+    )
     return _bounded_xcode_hardlink_alias_message(
         boundary=boundary,
         target_relative_path=target_relative,
         expected_stamp_sha256=expected_stamp_sha256,
+        app_boundary=app_boundary,
+        app_target_relative_path=app_target_relative,
     )
+
+
+def _bounded_linux_folded_name_topology_message(root: Path) -> str:
+    from rextio.build import toolchain_support_lock as support_lock
+
+    def scan_once() -> tuple[tuple[str, int], ...]:
+        chain = support_lock._open_directory_chain(root)
+        group_receipts: list[tuple[str, int]] = []
+        entry_count = 0
+
+        def walk(
+            directory_fd: int,
+            *,
+            relative: PurePosixPath,
+        ) -> Any:
+            nonlocal entry_count
+            directory_before = support_lock._stamp(os.fstat(directory_fd))
+            if not stat.S_ISDIR(directory_before.mode):
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support linux folded-name directory is invalid"
+                )
+            names = support_lock._bounded_directory_names(directory_fd)
+            groups: dict[str, list[str]] = {}
+            for name in names:
+                groups.setdefault(support_lock._alias(name), []).append(name)
+            directory_relative = relative.as_posix() if relative.parts else ""
+            for folded_key, members in sorted(groups.items()):
+                if len(members) < 2:
+                    continue
+                if len(members) > _LINUX_FOLDED_NAME_MAX_GROUP_MEMBERS:
+                    raise support_lock.ToolchainSupportLockError(
+                        "toolchain support linux folded-name member bound exceeded"
+                    )
+                if len(group_receipts) >= _LINUX_FOLDED_NAME_MAX_GROUPS:
+                    raise support_lock.ToolchainSupportLockError(
+                        "toolchain support linux folded-name group bound exceeded"
+                    )
+                group_receipts.append(
+                    (
+                        _xcode_hardlink_diagnostic_sha256(
+                            "rextio.full-c6-linux-folded-name-group.v1",
+                            {
+                                "directory_relative_path": directory_relative,
+                                "folded_key": folded_key,
+                                "member_names": sorted(members),
+                            },
+                        ),
+                        len(members),
+                    )
+                )
+            ordered = sorted(
+                names,
+                key=lambda item: (support_lock._alias(item), item),
+            )
+            for name in ordered:
+                entry_count += 1
+                if entry_count > _LINUX_FOLDED_NAME_MAX_ENTRIES:
+                    raise support_lock.ToolchainSupportLockError(
+                        "toolchain support linux folded-name entry bound exceeded"
+                    )
+                child_relative = relative / name
+                logical = child_relative.as_posix()
+                if (
+                    len(child_relative.parts) > _LINUX_FOLDED_NAME_MAX_DEPTH
+                    or len(logical.encode("utf-8"))
+                    > _LINUX_FOLDED_NAME_MAX_PATH_BYTES
+                ):
+                    raise support_lock.ToolchainSupportLockError(
+                        "toolchain support linux folded-name path bound exceeded"
+                    )
+                observed = support_lock._stamp(
+                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                )
+                if not stat.S_ISDIR(observed.mode):
+                    continue
+                child_fd = support_lock._open_child_directory(directory_fd, name)
+                try:
+                    opened = support_lock._stamp(os.fstat(child_fd))
+                    if opened != observed:
+                        raise support_lock.ToolchainSupportLockError(
+                            "toolchain support linux folded-name directory changed"
+                        )
+                    child_final = walk(
+                        child_fd,
+                        relative=child_relative,
+                    )
+                    linked = support_lock._stamp(
+                        os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    )
+                    if linked != child_final:
+                        raise support_lock.ToolchainSupportLockError(
+                            "toolchain support linux folded-name directory changed"
+                        )
+                finally:
+                    os.close(child_fd)
+            after_names = support_lock._bounded_directory_names(directory_fd)
+            if sorted(
+                after_names,
+                key=lambda item: (support_lock._alias(item), item),
+            ) != ordered:
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support linux folded-name inventory changed"
+                )
+            directory_after = support_lock._stamp(os.fstat(directory_fd))
+            if not support_lock._same_stable_stamp(
+                directory_after,
+                directory_before,
+            ):
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support linux folded-name directory changed"
+                )
+            return directory_after
+
+        try:
+            walk(chain[-1][0], relative=PurePosixPath())
+            support_lock._verify_directory_chain(chain)
+        except support_lock.ToolchainSupportLockError:
+            raise
+        except OSError as exc:
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support linux folded-name scan failed closed"
+            ) from exc
+        finally:
+            support_lock._close_directory_chain(chain)
+        ordered_receipts = tuple(sorted(group_receipts))
+        if (
+            len({item[0] for item in ordered_receipts})
+            != len(ordered_receipts)
+        ):
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support linux folded-name group hashes collide"
+            )
+        return ordered_receipts
+
+    first = scan_once()
+    second = scan_once()
+    if first != second:
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support linux folded-name topology changed across scans"
+        )
+    if not 1 <= len(first) <= _LINUX_FOLDED_NAME_MAX_GROUPS:
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support linux folded-name topology is empty"
+        )
+    merkle = _xcode_hardlink_diagnostic_sha256(
+        "rextio.full-c6-linux-folded-name-topology.v1",
+        {
+            "groups": [
+                {"group_sha256": digest, "member_count": member_count}
+                for digest, member_count in first
+            ]
+        },
+    )
+    member_count = sum(item[1] for item in first)
+    message = (
+        "toolchain support linux folded-name topology "
+        f"(groups={len(first)},members={member_count},merkle={merkle})"
+    )
+    if (
+        not message.isascii()
+        or len(message) > 278
+        or any(
+            character not in " -_.,()=" and not character.isalnum()
+            for character in message
+        )
+    ):
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support linux folded-name output is invalid"
+        )
+    return message
+
+
+def _diagnose_exact_linux_folded_name_topology(
+    plan: object,
+    error: BaseException,
+) -> str | None:
+    from rextio.build import full_c6_toolchain_support as support
+    from rextio.build.toolchain_support_lock import ToolchainSupportLockError
+
+    if (
+        type(plan) is not support.FullC6ToolchainSupportPlan
+        or plan._target_triple != "x86_64-unknown-linux-gnu"
+    ):
+        return None
+    current: BaseException | None = error
+    seen: set[int] = set()
+    matched = False
+    for _ in range(16):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if (
+            type(current) is ToolchainSupportLockError
+            and str(current) == _LINUX_FOLDED_NAME_CAUSE
+        ):
+            matched = True
+            break
+        current = current.__cause__ or current.__context__
+    if not matched:
+        return None
+    roots = tuple(
+        locator
+        for locator in plan._root_locators
+        if locator.logical_role == _LINUX_FOLDED_NAME_ROLE
+    )
+    if len(roots) != 1:
+        return None
+    return _bounded_linux_folded_name_topology_message(roots[0]._absolute_path)
 
 
 def _format_support_lock_diagnostic(error: BaseException) -> str:
@@ -1519,14 +1803,22 @@ def _diagnose_support_lock_generation(
         support.generate_full_c6_toolchain_support_lock(plan)
     except Exception as exc:
         if plan is not None:
-            try:
-                hardlink_message = _diagnose_exact_xcode_hardlink_aliases(plan, exc)
-            except Exception:
-                hardlink_message = None
-            if hardlink_message is not None:
-                return _format_support_lock_diagnostic(
-                    ToolchainSupportLockError(hardlink_message)
-                )
+            for diagnose in (
+                _diagnose_exact_xcode_hardlink_aliases,
+                _diagnose_exact_linux_folded_name_topology,
+            ):
+                try:
+                    message = diagnose(plan, exc)
+                except ToolchainSupportLockError as diagnostic_error:
+                    if type(diagnostic_error) is ToolchainSupportLockError:
+                        return _format_support_lock_diagnostic(diagnostic_error)
+                    continue
+                except Exception:
+                    continue
+                if message is not None:
+                    return _format_support_lock_diagnostic(
+                        ToolchainSupportLockError(message)
+                    )
         return _format_support_lock_diagnostic(exc)
     return "[full-c6-e2e] support-lock diagnostic: generation-only rerun succeeded"
 

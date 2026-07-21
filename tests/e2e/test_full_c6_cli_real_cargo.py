@@ -435,9 +435,10 @@ def test_xcode_hardlink_alias_diagnostic_is_deterministic_bounded_and_opaque(
 
     assert repeated == message
     assert message.isascii()
-    assert len(message) == 261
+    assert len(message) == 277
     assert message.startswith(
-        "toolchain support xcode hardlink aliases (nlink=3,count=3,digests="
+        "toolchain support xcode hardlink aliases "
+        "(scope=toolchain,nlink=3,count=3,digests="
     )
     assert message.endswith(")")
     digests = message.removesuffix(")").rsplit("digests=", 1)[1].split(",")
@@ -465,6 +466,64 @@ def test_xcode_hardlink_alias_diagnostic_is_deterministic_bounded_and_opaque(
     )
     assert f"ToolchainSupportLockError={message}" in diagnostic
     assert len(diagnostic.encode("ascii")) <= 512
+
+
+def test_xcode_hardlink_alias_diagnostic_expands_to_fixed_app_scope(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness_module()
+    from rextio.build import toolchain_support_lock as support_lock
+
+    app_boundary = tmp_path / "Xcode.app"
+    boundary = (
+        app_boundary
+        / "Contents/Developer/Toolchains/XcodeDefault.xctoolchain"
+    )
+    target_relative = PurePosixPath(
+        "usr/lib/clang/21/include/__clang_cuda_builtin_vars.h"
+    )
+    target = boundary.joinpath(*target_relative.parts)
+    second = boundary / "usr/lib/tapi/21/include/__clang_cuda_builtin_vars.h"
+    third = app_boundary / "Contents/Shared/usr/include/__clang_cuda_builtin_vars.h"
+    for path in (target, second, third):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"fixed app-scope xcode hardlink fixture")
+    try:
+        os.link(target, second)
+        os.link(target, third)
+    except OSError as exc:
+        pytest.skip(f"hardlink creation unavailable: {exc}")
+    observed = support_lock._stamp(target.stat())
+    expected_stamp_sha256 = support_lock._xcode_hardlink_full_stamp_sha256(
+        observed
+    )
+    app_target_relative = PurePosixPath(
+        *target.relative_to(app_boundary).parts
+    )
+
+    message = harness._bounded_xcode_hardlink_alias_message(
+        boundary=boundary,
+        target_relative_path=target_relative,
+        expected_stamp_sha256=expected_stamp_sha256,
+        app_boundary=app_boundary,
+        app_target_relative_path=app_target_relative,
+    )
+
+    assert message.startswith(
+        "toolchain support xcode hardlink aliases "
+        "(scope=app,nlink=3,count=3,digests="
+    )
+    digests = message.removesuffix(")").rsplit("digests=", 1)[1].split(",")
+    expected = sorted(
+        harness._xcode_hardlink_diagnostic_sha256(
+            "rextio.full-c6-xcode-hardlink-path-diagnostic.v1",
+            {"root_relative_path": path.relative_to(app_boundary).as_posix()},
+        )
+        for path in (target, second, third)
+    )
+    assert digests == expected
+    assert len(message) == 271
+    assert str(app_boundary) not in message
 
 
 @pytest.mark.parametrize(
@@ -661,6 +720,165 @@ def test_xcode_hardlink_alias_diagnostic_enforces_scan_bounds(
         )
 
 
+def _install_test_folded_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rextio.build import toolchain_support_lock as support_lock
+
+    original = support_lock._alias
+
+    def alias(value: str) -> str:
+        if value in {"collision-left", "collision-right"}:
+            return "collision-key"
+        return original(value)
+
+    monkeypatch.setattr(support_lock, "_alias", alias)
+
+
+def _linux_folded_name_group(directory: Path) -> tuple[str, str]:
+    directory.mkdir(parents=True, exist_ok=True)
+    names = ("collision-left", "collision-right")
+    for name in names:
+        (directory / name).write_bytes(name.encode("utf-8"))
+    return names
+
+
+def test_linux_folded_name_topology_is_deterministic_bounded_and_opaque(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+    _install_test_folded_alias(monkeypatch)
+    root = tmp_path / "secret-linux-runtime-root"
+    group_directory = root / "secret-collision-directory"
+    names = _linux_folded_name_group(group_directory)
+
+    message = harness._bounded_linux_folded_name_topology_message(root)
+    repeated = harness._bounded_linux_folded_name_topology_message(root)
+
+    assert repeated == message
+    assert message.startswith(
+        "toolchain support linux folded-name topology "
+        "(groups=1,members=2,merkle="
+    )
+    assert message.endswith(")")
+    merkle = message.removesuffix(")").rsplit("merkle=", 1)[1]
+    assert len(merkle) == 64
+    assert all(character in "0123456789abcdef" for character in merkle)
+    assert message.isascii()
+    assert len(message) == 137
+    assert str(root) not in message
+    assert group_directory.name not in message
+    for name in names:
+        assert name not in message
+    diagnostic = harness._format_support_lock_diagnostic(
+        ToolchainSupportLockError(message)
+    )
+    assert f"ToolchainSupportLockError={message}" in diagnostic
+    assert len(diagnostic.encode("ascii")) <= 512
+
+
+def test_linux_folded_name_topology_binds_multiple_groups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+    _install_test_folded_alias(monkeypatch)
+    root = tmp_path / "runtime"
+    _linux_folded_name_group(root / "first-secret-group")
+    single = harness._bounded_linux_folded_name_topology_message(root)
+    _linux_folded_name_group(root / "second-secret-group")
+
+    multiple = harness._bounded_linux_folded_name_topology_message(root)
+
+    assert "groups=1" in single
+    assert "members=2" in single
+    assert "groups=2" in multiple
+    assert "members=4" in multiple
+    assert multiple != single
+
+
+def test_linux_folded_name_topology_never_follows_symlink_directories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+    _install_test_folded_alias(monkeypatch)
+    root = tmp_path / "runtime"
+    _linux_folded_name_group(root / "in-root-group")
+    outside = tmp_path / "outside-secret"
+    outside_names = _linux_folded_name_group(outside)
+    link = root / "outside-secret-link"
+    link.symlink_to(outside, target_is_directory=True)
+
+    with_link = harness._bounded_linux_folded_name_topology_message(root)
+    link.unlink()
+    without_link = harness._bounded_linux_folded_name_topology_message(root)
+
+    assert with_link == without_link
+    assert "groups=1" in with_link
+    assert str(outside) not in with_link
+    for name in outside_names:
+        assert name not in with_link
+
+
+def test_linux_folded_name_topology_detects_race_between_scans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+    _install_test_folded_alias(monkeypatch)
+    root = tmp_path / "runtime"
+    group = root / "group"
+    _first, second = _linux_folded_name_group(group)
+    from rextio.build import toolchain_support_lock as support_lock
+
+    original = support_lock._open_directory_chain
+    scan_count = 0
+
+    def mutate_before_second_scan(path: Path) -> object:
+        nonlocal scan_count
+        scan_count += 1
+        if scan_count == 2:
+            (group / second).rename(group / "unique-member")
+        return original(path)
+
+    monkeypatch.setattr(
+        support_lock,
+        "_open_directory_chain",
+        mutate_before_second_scan,
+    )
+
+    with pytest.raises(ToolchainSupportLockError, match="changed across scans"):
+        harness._bounded_linux_folded_name_topology_message(root)
+    assert scan_count == 2
+
+
+@pytest.mark.parametrize(
+    ("constant", "value", "match"),
+    [
+        ("_LINUX_FOLDED_NAME_MAX_GROUPS", 1, "group bound"),
+        ("_LINUX_FOLDED_NAME_MAX_ENTRIES", 1, "entry bound"),
+        ("_LINUX_FOLDED_NAME_MAX_DEPTH", 1, "path bound"),
+        ("_LINUX_FOLDED_NAME_MAX_PATH_BYTES", 2, "path bound"),
+    ],
+)
+def test_linux_folded_name_topology_enforces_bounds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    constant: str,
+    value: int,
+    match: str,
+) -> None:
+    harness = _load_harness_module()
+    _install_test_folded_alias(monkeypatch)
+    root = tmp_path / "runtime"
+    _linux_folded_name_group(root / "first-group")
+    _linux_folded_name_group(root / "second-group")
+    monkeypatch.setattr(harness, constant, value)
+
+    with pytest.raises(ToolchainSupportLockError, match=match):
+        harness._bounded_linux_folded_name_topology_message(root)
+
+
 @pytest.mark.parametrize(
     "raw_path",
     [
@@ -812,6 +1030,50 @@ def test_support_lock_diagnostic_rerun_is_generation_only(
         "generate": plan,
     }
     assert list(tmp_path.iterdir()) == []
+
+
+def test_support_lock_diagnostic_exposes_exact_bounded_scan_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+    from rextio.build import full_c6_toolchain_support as support
+
+    plan = object()
+    scan_error = ToolchainSupportLockError(
+        "toolchain support xcode hardlink diagnostic entry bound exceeded"
+    )
+
+    def load_config(*_args: object, **_kwargs: object) -> tuple[object, None]:
+        return object(), None
+
+    def discover(*_args: object, **_kwargs: object) -> object:
+        return plan
+
+    def generate(_plan: object) -> None:
+        raise RuntimeError("original private failure")
+
+    def diagnose(candidate: object, _error: BaseException) -> str | None:
+        assert candidate is plan
+        raise scan_error
+
+    monkeypatch.setattr(support, "_load_full_c6_support_bootstrap_config", load_config)
+    monkeypatch.setattr(support, "_discover_full_c6_bootstrap_plan", discover)
+    monkeypatch.setattr(support, "generate_full_c6_toolchain_support_lock", generate)
+    monkeypatch.setattr(harness, "_diagnose_exact_xcode_hardlink_aliases", diagnose)
+
+    diagnostic = harness._diagnose_support_lock_generation(
+        tmp_path,
+        inherited_environment={},
+    )
+
+    assert diagnostic == (
+        "[full-c6-e2e] support-lock diagnostic: "
+        f"ToolchainSupportLockError={scan_error}; "
+        "OSError=<unavailable>; errno=<unavailable>; "
+        "OtherErrorType=RuntimeError; OtherErrorMessage=<unavailable>"
+    )
+    assert "original private failure" not in diagnostic
 
 
 def test_fresh_rextio_failure_runs_requested_support_lock_diagnostic(
