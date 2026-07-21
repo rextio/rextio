@@ -484,6 +484,11 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
         )
         assert config.read_text(encoding="utf-8").endswith("offline = true\n")
         assert env["CARGO_BUILD_TARGET"] == "aarch64-apple-darwin"
+        assert (
+            env["CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER"]
+            == str(native_tools.linker)
+        )
+        assert "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER" not in env
         assert env["PYO3_PYTHON"] == str(native_tools.python)
         assert env["RUSTC"] == str(native_tools.rustc)
         assert f"linker={native_tools.linker}" in env["CARGO_ENCODED_RUSTFLAGS"]
@@ -554,6 +559,145 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
             assert posture["authority"] == "non-authorizing"
             assert posture["distribution_authorized"] is False
     assert wheels[0] == wheels[1]
+
+
+@pytest.mark.parametrize(
+    "linker_variable",
+    (
+        "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
+    ),
+)
+def test_native_orchestrator_rejects_caller_linker_environment_override(
+    tmp_path: Path,
+    linker_variable: str,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+
+    with pytest.raises(executor.FullC6ExecutorError, match="cannot override"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tmp_path),
+            base_environment={
+                **base_environment,
+                linker_variable: str(native_tools.linker),
+            },
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("target_triple", "active", "inactive"),
+    (
+        (
+            "aarch64-apple-darwin",
+            "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
+        ),
+        (
+            "x86_64-unknown-linux-gnu",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
+            "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
+        ),
+    ),
+)
+def test_native_linker_environment_binds_only_the_active_captured_linker(
+    tmp_path: Path,
+    target_triple: str,
+    active: str,
+    inactive: str,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path, target=target_triple)
+    native_tools, base_environment, toolchain, _cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    environment = {
+        **base_environment,
+        "CARGO_ENCODED_RUSTFLAGS": "--remap-path-prefix=/one=/rextio/project\x1f"
+        "--remap-path-prefix=/two=/rextio/build",
+    }
+
+    executor._bind_native_environment(
+        environment,
+        native_tools=native_tools,
+        target_triple=target_triple,
+    )
+
+    assert environment[active] == str(native_tools.linker)
+    assert inactive not in environment
+    executor._verify_native_toolchain_invocation(
+        STRICT_BUILD,
+        environment=environment,
+        toolchain=toolchain,
+        native_tools=native_tools,
+        target_triple=target_triple,
+        require_owned_environment=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing", "wrong-path", "same-name-shadow", "both-targets"),
+)
+def test_native_linker_environment_binding_fails_closed(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, _cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    environment = {
+        **base_environment,
+        "CARGO_ENCODED_RUSTFLAGS": "--remap-path-prefix=/one=/rextio/project\x1f"
+        "--remap-path-prefix=/two=/rextio/build",
+    }
+    executor._bind_native_environment(
+        environment,
+        native_tools=native_tools,
+        target_triple="aarch64-apple-darwin",
+    )
+    active = "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER"
+    inactive = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"
+    if mutation == "missing":
+        environment.pop(active)
+    elif mutation == "wrong-path":
+        environment[active] = str(native_tools.rustc)
+    elif mutation == "same-name-shadow":
+        shadow = tmp_path / "shadow" / native_tools.linker.name
+        shadow.parent.mkdir()
+        shadow.write_bytes(native_tools.linker.read_bytes())
+        shadow.chmod(0o755)
+        environment[active] = str(shadow.resolve())
+    else:
+        environment[inactive] = str(native_tools.linker)
+
+    match = "inactive native linker" if mutation == "both-targets" else "owned environment"
+    with pytest.raises(executor.FullC6ExecutorError, match=match):
+        executor._verify_native_toolchain_invocation(
+            STRICT_BUILD,
+            environment=environment,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            target_triple="aarch64-apple-darwin",
+            require_owned_environment=True,
+        )
 
 
 def test_native_authority_is_process_sealed_noncopyable_and_bytes_private(

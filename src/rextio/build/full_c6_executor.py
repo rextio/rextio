@@ -96,6 +96,12 @@ MAX_FULL_C6_PATH_CHARS = 4096
 MAX_FULL_C6_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_FULL_C6_NATIVE_DRIVER_MANIFEST_BYTES = 8 * 1024 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_NATIVE_LINKER_ENV_NAMES = frozenset(
+    {
+        "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
+    }
+)
 _RESERVED_ENV = frozenset(
     {
         "CARGO_ENCODED_RUSTFLAGS",
@@ -113,7 +119,7 @@ _RESERVED_ENV = frozenset(
         "SOURCE_DATE_EPOCH",
         "TZ",
     }
-)
+) | _NATIVE_LINKER_ENV_NAMES
 _EXECUTOR_ENV_ALLOWLIST = STRICT_BUILD_ENV_ALLOWLIST | frozenset({"HOME"})
 _FORBIDDEN_ENV = frozenset(
     {
@@ -3440,11 +3446,15 @@ def _verify_native_toolchain_invocation(
         return
     expected_values = {
         "CARGO_BUILD_TARGET": target_triple,
+        _native_linker_environment_name(target_triple): str(resolved_tools["linker"]),
         "PYO3_PYTHON": str(resolved_tools["python"]),
         "RUSTC": str(resolved_tools["rustc"]),
     }
     if any(environment.get(name) != value for name, value in expected_values.items()):
         raise FullC6ExecutorError("Full C6 native owned environment binding changed")
+    inactive_linker_names = _NATIVE_LINKER_ENV_NAMES.difference(expected_values)
+    if any(name in environment for name in inactive_linker_names):
+        raise FullC6ExecutorError("Full C6 inactive native linker binding is present")
     encoded = environment.get("CARGO_ENCODED_RUSTFLAGS", "").split("\x1f")
     expected_flags = _native_linker_rustflags(
         resolved_tools["linker"],
@@ -3496,6 +3506,9 @@ def _bind_native_environment(
         linker = native_tools.linker.resolve(strict=True)
     except OSError as exc:
         raise FullC6ExecutorError("Full C6 native tool path is unavailable") from exc
+    linker_environment_name = _native_linker_environment_name(target_triple)
+    if any(name in environment for name in _NATIVE_LINKER_ENV_NAMES):
+        raise FullC6ExecutorError("Full C6 native linker environment is already bound")
     remaps = environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
     environment.update(
         {
@@ -3503,6 +3516,7 @@ def _bind_native_environment(
             "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(
                 (*remaps, *_native_linker_rustflags(linker, target_triple))
             ),
+            linker_environment_name: str(linker),
             "PYO3_PYTHON": str(python),
             "RUSTC": str(rustc),
         }
@@ -3710,6 +3724,14 @@ def _native_linker_rustflags(linker: Path, target_triple: str) -> tuple[str, ...
         )
     if target_triple == "x86_64-unknown-linux-gnu":
         return flags
+    raise FullC6ExecutorError("Full C6 native target binding is invalid")
+
+
+def _native_linker_environment_name(target_triple: str) -> str:
+    if target_triple == "aarch64-apple-darwin":
+        return "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER"
+    if target_triple == "x86_64-unknown-linux-gnu":
+        return "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"
     raise FullC6ExecutorError("Full C6 native target binding is invalid")
 
 
