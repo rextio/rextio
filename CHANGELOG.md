@@ -5,10 +5,256 @@
 **Experimental branch work; not tagged or published to PyPI.** The latest
 published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
 contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.20.0** (package version stays **0.1.4**). Prior
+**1.4** and tooling contract **2.24.0** (package version stays **0.1.4**). Prior
 Train C host-planning work remains under the same unreleased line. Unreleased
 feature PRs target the `0.1.5` integration branch; `main` stays at the published
-0.1.4 commit until the final authorized release PR.
+0.1.4 commit until the final authorized release PR. Nothing in this Alpha
+authorizes the `0.1.5` → `main` merge, a tag, or a PyPI upload.
+
+### Full C6 support closure and production sandbox receipts (tooling contract 2.24.0)
+
+- Add `rextio policy bootstrap-support-lock --project-root . --output
+  authority/rextio.toolchain-support.lock.json --format json` so owners can
+  create or exactly reuse one canonical host support lock before a strict
+  lifecycle. Its host-absolute-path-free result retains the project-relative
+  config path and returns the exact
+  `artifact_toolchain_support_lock` / `_sha256` config pair plus target,
+  manifest/root roles, raw digest, and Merkle digest; it authorizes neither a
+  build nor distribution.
+- Require an existing owner-private mode-`0700` output parent and create or
+  exactly reuse a single-link mode-`0600` canonical lock. Linked, aliased,
+  changed, differently configured, or concurrently conflicting output fails
+  closed.
+- Bind the fixed platform support closure into the process-sealed plan,
+  canonical lock bytes, raw SHA-256, and tree Merkle SHA-256. Linux execution
+  runs Cargo through `bwrap`, a sealed seccomp filter, the support-locked
+  isolated CPython launcher, and Landlock; macOS uses `sandbox-exec` with the
+  exact Xcode, SDK, and sealed-system-volume anchor bindings.
+- Add the closed sandbox-engine identifier plus path-free plan/profile digests
+  to both invocation receipts, and the sealed seccomp digest on Linux.
+  `sandbox_profile_sha256` is the engine-specific, path-tokenized
+  semantic profile identity and must agree across both builds and equivalent
+  lifecycle runs; the raw rendered profile may contain private per-run paths
+  and is neither serialized nor signed. Propagate support-plan/raw-lock/Merkle
+  identities into strict SBOM and SLSA materials, and reject any receipt or
+  authority reconstruction that drops or changes those bindings.
+- Remove inherited macOS executable-mapping allowances for mutable/data-volume
+  roots by denying `file-map-executable` alongside read/write access under
+  `/private/var`, `/private/etc`, `/Library`, `/dev`, `/cores`, and
+  `/System/Volumes/Preboot`. A real macOS arm64 control probe confirms that a
+  pre-opened `/Library/Apple/usr/lib` image maps under the inherited policy but
+  fails under the hardened profile, while sealed-system execution still works.
+  Only paths already bound by an explicit `read-execute` rule, or a bound
+  read-write directory capability, regain executable mapping and process
+  execution; ambient mutable paths remain blocked.
+- Reserve every configured `imports.packages.*.source_archive` path during
+  support-lock bootstrap. Before opening the output, NFC/case-folded path parts
+  cannot form exact, ancestor, or descendant aliases with any source archive
+  (including one that does not exist yet) or the other configured lifecycle
+  artifacts.
+- Perform three full support-tree verifications per strict `rextio build`
+  invocation: once while collecting the configured host lock, once at
+  native-executor entry, and once immediately before executor authority mint.
+  The executor therefore performs exactly two full rewalks, and every
+  owner-policy lifecycle stage repeats the sequence independently.
+  External/production/internal and per-build boundaries perform no additional
+  full walk; they revalidate the process seal, critical leaves, and exact
+  plan/raw/Merkle digest identity.
+- Record one local macOS arm64 observation of roughly **104,645** support
+  members, **2.67 GB**, and about **45 seconds** per full verification. These
+  are machine-specific measurements, not performance limits or guarantees.
+- Keep the bounded Alpha threat model explicit: it does not defend against
+  hostile same-UID concurrent replacement, kernel or operating-system
+  compromise, or provide complete time, randomness, scheduling, or CPU
+  virtualization. It is not a general hermetic-build claim.
+- Preserve the frozen CPython 3.11/PyO3/Cargo scope on macOS arm64 and Linux
+  x86_64 with exactly one depth-1 `py3-none-any` dependency and direct typed
+  scalar leaves. Plugins, executables, rust-crate output, top-level AOT,
+  embedding, Windows, general recursion, and broader external-source lowering
+  remain excluded.
+- Keep exact-HEAD macOS arm64 and Linux x86_64 heavy E2E status **pending**
+  until the feature branch is pushed and CI runs the blocking jobs.
+- Advance only the unreleased tooling contract to **2.24.0**. Package
+  **0.1.4** and plugin API **1.4** remain unchanged.
+
+### C5.2 / Full C6 bounded Alpha coordinator and owner-policy handoff (tooling contracts 2.22.0-2.23.0)
+
+- Connect one exact SourceLock-v2-admitted depth-1 `py3-none-any` dependency to
+  project call sites. Only direct final-import calls with statically typed
+  scalar positional arguments reach private Rust leaf functions; stale source,
+  aliases, mutation, value escape, unsupported calls, or analysis drift fail
+  closed.
+- Preserve the original dependency as exact `Requires-Dist` metadata instead
+  of vendoring it. Generated PyO3 code checks installed distribution identity,
+  version, `RECORD` membership, located paths, and exact reached-module source
+  bytes through descriptor-relative, no-follow reads. It never imports or
+  introspects the external dependency module or callable; the signed source
+  analysis already binds callable identity.
+- Carry the SourceLock wheel's exact PEP 639 license payloads into the final
+  wheel as `License-File` members below
+  `external/<normalized-distribution>/<version>/`, with exact METADATA/RECORD,
+  SourceLock-verification, subject, mapping, and byte bindings.
+- Add one sealed, same-transaction `FullC6ExternalBuildContext` and require it
+  at the orchestrator boundary. Reconstructed linkage, runtime guard, source
+  wheel inventory, and fresh analysis must all agree before Cargo or packaging.
+- Replace the initial digest/count-only bootstrap with canonical schema/domain
+  v2. The public request embeds an exact technical template for the combined
+  C6.14+C5.2 partition, transformation set, and exact project/Cargo plus
+  external-wheel license observations, while remaining host-path-free,
+  non-authorizing, and free of source/license payload bytes.
+- Add a separate canonical owner-completion document. The owner must explicitly
+  allow every applicable observed license row and accept the exact observed
+  transformation set. `rextio policy finalize` combines the explicitly named
+  bootstrap/completion files offline into the canonical v2 policy manifest; it
+  does not sign or authorize the result.
+- Bind the final manifest to the v2 bootstrap request, trusted public-key digest,
+  exact observations, and fresh production recollection. Every bootstrap,
+  signing-request, and publication `rextio build` run recollects the graph and
+  executes two actual isolated offline builds; a prior report or serialized
+  receipt cannot replace that work. `FullC6ProductionAuthority` is only a
+  process-local evidence seal, never serialized publication authority.
+- Keep the three-stage lifecycle: bootstrap; separately completed and pinned
+  policy → canonical signing request; then externally detached-signed,
+  create-if-absent atomic publication. Rextio neither invents owner decisions nor
+  accepts, creates, or retains a private signing key.
+- Seal the exact bounded project Python file/directory namespace through initial
+  analysis, C5.2 reanalysis, and transformation replay. A custom
+  `.rextioignore`, nonignored alias/special entry, namespace mutation, or replay
+  scope loss fails closed. Failures before that authority exists are stderr-only
+  and do not write through an untrusted project `.rextio` path.
+- Freeze host admission to CPython 3.11 exactly on macOS arm64 or Linux x86_64,
+  a non-editable, cache-free installed Rextio package whose complete `rextio/`
+  tree matches wheel `RECORD`, and rustup-selected Cargo/rustc. The strict host
+  requires a `pip --no-compile` installation, no `rextio/` `__pycache__`/`.pyc`
+  `RECORD` row or physical package-tree entry, and a process started with
+  `PYTHONDONTWRITEBYTECODE=1` (or equivalent `-B`). Require SHA-256-pinned
+  `Cargo.lock` plus a pinned vendored tree and run both builds as
+  `cargo build --release --locked --offline --frozen`.
+- Treat that cache-free inventory as bounded build-evidence integrity, not a
+  hostile-process secure-boot boundary: Rextio is already executing in the
+  owner process and does not defend against a compromised OS or account.
+- Treat the Cargo lock/vendor digest as owner-pinned input integrity only; this
+  does not authenticate a registry, crate publisher, or upstream origin.
+- Keep the profile to one external package and no plugins, executable,
+  rust-crate, top-level AOT, embedding, Windows, recursion, or general package
+  lowering.
+- Advance only the unreleased tooling contract to **2.23.0**. Package **0.1.4**
+  and plugin API **1.4** remain unchanged.
+
+### Full C6 strict authority and publication primitives (tooling contract 2.21.0)
+
+- Add immutable Full-C6 preauthorization/final evidence and a sealed
+  distribution-authorization token that only the hard gate can mint.
+- Execute two isolated, offline, frozen-input Cargo builds and require
+  byte-identical wheel output, exact live toolchain/environment validation, and
+  no source-tree mutation outside the single bounded lock-generation
+  transition. Semantic receipts preserve caller-controlled environment values
+  exactly while projecting executor-owned `HOME`, `CARGO_HOME`,
+  `CARGO_TARGET_DIR`, and the project/build remap operands to stable
+  `/rextio/project` and `/rextio/build` identities.
+- Rebuild and cross-bind the standards SBOM/provenance, complete frozen policy,
+  SourceLock v2 source wheel, build-input closure, Cargo source identities,
+  runtime authorization, toolchain identity, and reproducibility receipts.
+- Verify the detached Ed25519 authorization over the domain-separated message
+  `REXTIO-FULL-C6-ED25519-V1\0 || canonical-request-bytes`, using one pinned raw
+  32-byte public key and a closed seven-field canonical envelope containing the
+  canonical Base64 form of one raw 64-byte signature. The envelope is bounded
+  to 16 KiB. Rextio accepts no private signing key and never treats a preview
+  lock or readiness record as a final signature.
+- Publish a seven-file pinned-parent atomic bundle: wheel, CycloneDX, SLSA
+  provenance, final evidence, detached-signature envelope, authorization, and
+  `rextio.full-c6-manifest.json`. Existing targets,
+  unsafe links/types, byte changes, races, or partial publication fail closed.
+  Temporary host-output and private-quarantine cleanup completes before the
+  final no-replace directory rename; that successful rename is the publication
+  commit point.
+- Certify the complete local macOS arm64 installed-wheel lifecycle at commit
+  `f9eb5e6`: CPython 3.11.15, Cargo 1.93.1, all five real-E2E checks, all three
+  stages with exactly two distinct Cargo PIDs each, final published/authorized
+  state, fresh installation, external LICENSE/METADATA/RECORD bindings, runtime
+  guard poison check, and no bytecode cache. The subsequent 256 MiB installed-
+  input budget hardening is unit-tested; exact-HEAD and Linux x86_64 blocking
+  CI remain pending.
+
+### Fixed
+
+- Normalize malformed or adversarial support-lock property failures at the
+  external-execution and production boundaries into their fixed fail-closed
+  Full-C6 errors instead of leaking lower-layer exception types.
+- Require a cache-free Full-C6 host process and install. `sys.dont_write_bytecode`
+  must already be true; wheel installation must omit compilation; RECORD and
+  the complete physical `rextio/` namespace reject every `rextio/`
+  `__pycache__`/`.pyc` row or entry, unrecorded package directory/member, alias,
+  special entry, and between-walk addition.
+  Enforce the existing 256 MiB cumulative installed-input budget twice: reject
+  the aggregate sizes declared for `rextio/` `RECORD` members before the tree walk, then
+  independently recheck aggregate actual `stat` sizes and bounded reads during
+  the walk. This closes executable bytecode and oversized inputs outside the
+  RECORD-backed evidence set without claiming hostile-process secure boot.
+- Open the external installed-distribution root from `/` one directory component
+  at a time with `openat`/`O_NOFOLLOW`, rather than following a linked root or
+  ancestor. Open the final source with `O_NONBLOCK` as well as `O_NOFOLLOW`, then
+  require a single-link regular file, so a FIFO or other special file fails
+  quickly instead of blocking extension import.
+- Resolve `importlib.import_module`, `globals`/`vars`, `sys.modules`,
+  `__builtins__`, `__dict__`, and other loader/reflective capabilities through
+  the complete project re-export graph. Direct, multi-hop, and package-init
+  laundering now fail the strict external-linkage gate.
+- Canonicalize only executor-owned per-run environment paths in lifecycle
+  receipts after validating the exact absolute values supplied to Cargo. This
+  keeps bootstrap, signing-request, and publication authorization requests
+  stable without weakening caller-controlled environment binding.
+- Permit unrelated ambient directory size/time churn only for absolute
+  ancestors above the generated root while keeping their device/inode/mode and
+  every generated-root/descendant identity exact. The separate bounded C6.9
+  refresh may still admit only the generated root's expected size/time delta.
+- Recheck the final loaded-image snapshot after symbol-provider identity probes
+  and on every native-runtime authority validation. A late loader side effect
+  taints the process and cannot mint or retain Full-C6 runtime authority.
+- Accept the concrete platform `Path` type in strict finalization and project
+  every strict analysis report path to a canonical project-relative value;
+  residual private roots, unexpected containers, or unsafe projection fail
+  through the fixed `RXT060` boundary.
+- Preserve portable ordinary wheel behavior on POSIX and Windows while keeping
+  the strict Full-C6 external-source collector descriptor-pinned and no-follow.
+- Reject Windows drive-relative Full-C6 config paths and cover ordinary
+  symlink, hardlink, Nuitka-sibling, and FIFO wheel inputs independently from
+  the strict profile.
+- Bind pip-rewritten installed dependency `RECORD` bytes separately from the
+  source-wheel archive's own `RECORD`, while requiring every shared source,
+  METADATA, WHEEL, and license identity to agree exactly.
+- Accept Cargo's exact historical `MIT/Apache-2.0` metadata spelling only at
+  Full-C6 Cargo-license ingestion, where its policy observation is canonicalized
+  to `MIT OR Apache-2.0`. The original `Cargo.toml` bytes and digest remain
+  evidence-bound; whitespace, reversed operands, and every other slash form
+  still fail closed.
+- Raise the bounded output-wheel license-file count from 64 to **128** so the
+  frozen real PyO3 graph's 108 exact files (project 1 + Cargo 106 + external 1)
+  fit the declared profile. A 129th file still fails closed; path, ordering,
+  alias, per-file, and 64 MiB aggregate-byte bounds are unchanged.
+- Bind the strict Cargo host linker through the active target's exact
+  executor-owned `CARGO_TARGET_*_LINKER` variable. Its value must be the already
+  verified linker path, caller overrides and the inactive target variable are
+  rejected, and the scrubbed `PATH` remains limited to Cargo rather than being
+  broadened to ambient compiler tools.
+- Stabilize the macOS Full-C6 Mach-O self identity as the exact
+  `@rpath/lib_rextio_native.dylib` while retaining the linker's default,
+  content-derived deterministic `LC_UUID` required for dyld loadability; Linux
+  linker flags are unchanged. Runtime inventory accepts that value only as the
+  independently verified first self-ID row and rejects unverified or misplaced
+  lookalikes. A dedicated real two-build experiment produced byte-identical
+  unsigned wheels, UUIDs, ad-hoc signatures, and `RECORD`, contained no
+  quarantine path bytes, and loaded the native extension. That narrower
+  experiment alone was not a complete lifecycle claim; the later macOS arm64
+  local real-E2E above certifies the full three-stage path through `f9eb5e6`.
+- Admit exactly `/usr/lib/system/libcommonCrypto.dylib` as an additional
+  macOS dyld shared-cache singleton provider for the direct
+  `/usr/lib/libSystem.B.dylib` dependency. This is a bounded one-hop relation,
+  not a broad `/usr/lib/system/*` allowance: the provider must be observed in
+  the final platform-image snapshot, scoped and global lookup must resolve the
+  same address, and `dladdr` must identify that exact provider. Unobserved,
+  differently addressed, or otherwise named descendants fail closed; the
+  existing OS-build and native-runtime authority bindings remain unchanged.
 
 ### C6.15 scoped artifact-class policy verification
 
@@ -530,8 +776,9 @@ does not authorize external-source packaging.
   verified C6 SourceLock the status is `external-source-c6-blocked`; with a
   verified lock the distinct post-authorization block is
   `external-source-c5-not-implemented`. Programmatic build orchestration fails
-  closed as well. Actual packaging, executable/crate output, and redistribution
-  remain unavailable until remaining C5.2 source-native work exists.
+  closed as well. In this preview path, packaging, executable/crate output, and
+  redistribution remain unavailable; only the separate strict Full-C6/C5.2
+  profile described above opens the bounded host-extension path.
 - Serialize and emit a mandatory warning that dependency source translation can
   create derivative-work or redistribution obligations, especially for
   GNU/copyleft licenses, and that the preview is not legal advice.

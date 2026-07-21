@@ -14,7 +14,14 @@ An index of the project's documentation. See the top-level
 - [Host source-AOT and native executables](source-aot-and-executables.md) —
   **unreleased Release Train C** source graph, `ModuleInitIR`, artifact profile,
   explicit executable fallback, narrow initializer-before-main boundary, and
-  the C5.1 external-distribution inventory/build gate.
+  the C5.1 preview plus the frozen Full-C6/C5.2 public technical-template,
+  owner-completion/finalization, cache-free host, public support-lock
+  bootstrap, path-tokenized semantic production-sandbox receipts, mutable-host
+  executable-map denial with explicit capability-only regrant,
+  source-archive/output alias closure, domain-separated signing, and seven-file
+  atomic-publication Alpha. The cache-free gate protects evidence
+  integrity in an owner-controlled process; it rejects both declared and actual
+  installed-tree aggregates above 256 MiB and is not hostile secure boot.
 
 ## Specs
 
@@ -43,10 +50,30 @@ An index of the project's documentation. See the top-level
   `2.16.0` C6.11 scoped Cargo component-license policy verification,
   `2.17.0` C6.12 scoped project-source license-policy verification,
   `2.18.0` C6.13 scoped analysis-input verification, `2.19.0` C6.14 compact
-  artifact-policy coverage inventory, and current `2.20.0` C6.15 scoped
-  artifact-class policy verification;
+  artifact-policy coverage inventory, `2.20.0` C6.15 scoped artifact-class
+  policy verification, `2.21.0` strict Full-C6 authority/executor/signing/
+  atomic-publication primitives, `2.22.0` bounded C5.2 linkage and initial CLI
+  coordination, historical `2.23.0` exact technical-template/bootstrap v2 plus
+  explicit owner completion and `rextio policy finalize` handoff, and current
+  `2.24.0` public support-lock bootstrap plus path-free semantic
+  sandbox/support receipt surfaces, mutable-volume executable-map denial with
+  explicit bound-capability regrant, and exact/ancestor/descendant protection
+  between its output and every configured source archive. It also
+  defines the strict lifecycle report, authorization-request, detached-signature,
+  publication-manifest, and policy-finalizer JSON shapes;
   published 0.1.4
   remains the 2.2.0 producer.
+
+Train C remains integration-branch work. Its evidence and publication authority
+do not authorize a `0.1.5` → `main` merge, a release tag, or a PyPI upload. The
+complete macOS arm64 local installed-wheel lifecycle through `f9eb5e6` is
+historical evidence. The subsequent installed-input and 2.24.0 support-lock /
+sandbox work is unit-tested; exact-HEAD macOS arm64 and Linux x86_64 heavy E2E
+remain pending until the branch is pushed and blocking CI runs. One local
+macOS support closure measured roughly 104,645 members / 2.67 GB and about
+45 seconds per full verification; those figures are observations, not
+guarantees.
+
 - [Plugin lowering](specs/plugin-lowering.md) — draft (0.1.1+; plugin API 1.1
   on PyPI 0.1.1, **1.2** additive on published 0.1.2, and **1.3** on published
   0.1.3 and retained in 0.1.4): the claim/lower hook that lets plugins translate

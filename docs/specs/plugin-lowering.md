@@ -8,7 +8,7 @@ First consumer: rextio-numpy
 contract **2.2.0**. The unreleased Train C branch (package version still
 **0.1.4**) advances to plugin API **1.4**; the standalone artifact capability
 shape below was added in tooling contract **2.4.0**. The current branch producer
-is **2.20.0** because C5.1/C6.1/C6.2/C6.3/C6.4/C6.5/C6.6/C6.7/C6.8/C6.9/C6.10/C6.11/C6.12/C6.13/C6.14/C6.15 add unrelated external-source
+is **2.24.0** because C5.1/C6.1-C6.15 and the strict Full-C6/C5.2 Alpha add unrelated external-source
 inventory, authorization-contract evidence, host-extension wheel artifact
 evidence, its opt-in required gate, and a direct native runtime linkage
 inventory plus an always-blocked distribution-readiness assessment and bounded
@@ -20,7 +20,29 @@ project-source license-policy verification, C6.13 scoped analysis-input
 verification, C6.14 compact artifact-policy coverage inventory, and C6.15
 scoped artifact-class policy verification. Plugin API
 remains **1.4**; C6.4-C6.15 do
-not add runtime-bearing plugin support.
+not add runtime-bearing plugin support. These unreleased contracts do not
+authorize merging `0.1.5` into `main`, tagging, or publishing to PyPI.
+
+Contracts 2.21.0-2.24.0 do not widen this plugin API. Their strict C5.2 path is
+a separate core-owned linkage contract for exactly one SourceLock-authorized,
+digest-pinned depth-1 `py3-none-any` dependency and direct typed scalar leaf
+calls. It emits private
+external Rust functions while retaining the Python dependency through exact
+`Requires-Dist` and a runtime identity/source-byte guard that never imports or
+introspects the external module or callable. Contract 2.23.0's public technical
+template, explicit owner completion, and offline policy finalizer are likewise
+core-owned and do not invoke plugin hooks. Contract 2.24.0's public support-lock
+bootstrap and sandbox/support receipts are also core-owned and do not invoke
+plugin discovery, lowering, or standalone capability hooks. Its bootstrap
+reserves every configured `imports.packages.*.source_archive` against exact,
+ancestor, or descendant aliasing with the support-lock output, and its public
+sandbox receipt binds an engine-specific, path-tokenized semantic profile—not
+the raw rendered profile or its private paths. The sandbox regrants executable
+mapping only to core-bound read-execute paths/read-write directories, never by
+plugin claim. The frozen Full-C6 profile
+requires `[plugins] enabled = []` and excludes plugin, executable, rust-crate,
+native-top-level, embedding, and Windows artifacts; no plugin claim or
+`artifact_capability()` result can opt into that profile.
 
 ## Purpose
 
@@ -821,6 +843,23 @@ assignment and a later accepted assignment defeats the earlier definition.
 Host-extension builds (PyO3 wheels) keep using the 1.1–1.3 lowering members and
 boundary conversion. Boundary-free standalone artifacts — **`rust-crate`** and
 **`host-executable`** — never infer plugin support from those surfaces.
+
+The strict Full-C6/C5.2 Alpha is not a standalone-plugin profile. It accepts
+only a plugin-free, core-owned PyO3 host-extension path and does not call this
+section's hook. Its installed-host input must be cache-free and bounded: no
+`__pycache__`/`.pyc` among the `rextio/` RECORD members or physical package
+tree, no unrecorded package-tree member, and no more than 256 MiB by both the
+pre-walk `rextio/` RECORD declared-size aggregate and the independently
+checked actual `stat`/read aggregate. This is an evidence-integrity contract
+for an owner-controlled process, not hostile-process secure boot. The
+domain-separated detached-signature and seven-file atomic-publication
+contracts likewise do not widen plugin API 1.4 or make an
+`artifact_capability()` declaration authoritative. The plugin-free macOS arm64
+installed-wheel lifecycle is certified by the final local real-E2E at
+`f9eb5e6`; the subsequent byte-budget hardening is unit-tested, and exact-HEAD
+macOS arm64 plus Linux x86_64 blocking CI for the 2.24.0 support-lock/sandbox
+changes remain pending until branch push. This result does not certify or
+widen any plugin-bearing Full-C6 profile.
 
 ### 10.1 Explicit hook (separate extension Protocol)
 
