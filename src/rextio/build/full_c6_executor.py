@@ -65,6 +65,7 @@ from rextio.build.wheel_builder import (
     ExternalWheelCapture,
     ExternalWheelContract,
     ExternalWheelMemberIdentity,
+    ExternalWheelNativeMemberIdentity,
     WheelContractError,
     build_artifact_wheel,
     capture_external_wheel_contract,
@@ -1034,6 +1035,20 @@ class _NativePostprocessResult:
     provenance_input_bytes: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class _FullC6NativeOutputMaterial:
+    """Narrow executor-owned bridge to one validated native output."""
+
+    executor_receipt: FullC6ExecutorReceipt
+    cargo_workspace: FullC6CargoDependencyWorkspaceReceipt
+    wheel_filename: str
+    wheel_bytes: bytes
+    native_member: ExternalWheelNativeMemberIdentity
+    native_artifact_bytes: bytes
+    external_contract: ExternalWheelContract
+    output_license_contract: OutputWheelLicenseContract
+
+
 def _native_capture_identity(capture: ExternalWheelCapture) -> dict[str, object]:
     verification = capture.verification
     native = capture.native_member
@@ -1296,6 +1311,42 @@ def validate_full_c6_native_execution_authority(
     return type(authority._transaction_seal) is bytes and hmac.compare_digest(
         authority._transaction_seal,
         expected,
+    )
+
+
+def _validated_full_c6_native_output_material(
+    authority: FullC6NativeExecutionAuthority,
+) -> _FullC6NativeOutputMaterial:
+    """Expose one exact output only to the persistent transaction factory.
+
+    This intentionally remains a private executor boundary.  Public callers
+    cannot supply or replace any retained wheel, artifact, contract, receipt,
+    or workspace input when materializing a Full C6 native output.
+    """
+    if (
+        type(authority) is not FullC6NativeExecutionAuthority
+        or not validate_full_c6_native_execution_authority(authority)
+    ):
+        raise FullC6ExecutorError("Full C6 native execution authority is stale")
+    capture = authority._wheel_captures[0]
+    native_member = capture.native_member
+    return _FullC6NativeOutputMaterial(
+        executor_receipt=authority.executor_receipt,
+        cargo_workspace=authority.cargo_workspace,
+        wheel_filename=_require_canonical_wheel_filename(authority._wheel_filename),
+        wheel_bytes=capture.wheel_bytes,
+        native_member=ExternalWheelNativeMemberIdentity(
+            path=native_member.path,
+            sha256=native_member.sha256,
+            size=native_member.size,
+        ),
+        native_artifact_bytes=authority._native_artifact_payloads[0],
+        external_contract=_rebuild_external_wheel_contract(
+            authority._driver_manifest.external_contract
+        ),
+        output_license_contract=rebuild_output_wheel_license_contract(
+            authority._driver_manifest.output_license_contract
+        ),
     )
 
 
