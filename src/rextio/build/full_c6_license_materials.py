@@ -61,6 +61,8 @@ _SUBJECT_IDENTITY = re.compile(
     r"^urn:rextio:full-c6-license-material:(?:project|cargo):[0-9a-f]{64}$"
 )
 _LICENSE_BASENAMES = ("LICENSE", "LICENCE", "COPYING", "NOTICE")
+_CARGO_LEGACY_MIT_APACHE_SPDX = "MIT/Apache-2.0"
+_CARGO_CANONICAL_MIT_APACHE_SPDX = "MIT OR Apache-2.0"
 _PROJECT_METADATA_LOGICAL_NAME = "project/pyproject.toml"
 _SEAL_KEY = secrets.token_bytes(32)
 
@@ -566,7 +568,7 @@ def _capture_cargo_observations(
             raise FullC6LicenseMaterialsError(
                 "Cargo package name/version differs from the workspace receipt"
             )
-        expression = _canonical_spdx(
+        expression = _canonical_cargo_spdx(
             package_table.get("license"),
             subject=f"Cargo package {package.package.name}",
         )
@@ -654,6 +656,13 @@ def _canonical_spdx(value: object, *, subject: str) -> str:
         raise FullC6LicenseMaterialsError(
             f"{subject} SPDX license expression is unsupported or noncanonical"
         ) from exc
+
+
+def _canonical_cargo_spdx(value: object, *, subject: str) -> str:
+    """Accept Cargo's one historical MIT/Apache alias at metadata ingestion."""
+    if type(value) is str and value == _CARGO_LEGACY_MIT_APACHE_SPDX:
+        value = _CARGO_CANONICAL_MIT_APACHE_SPDX
+    return _canonical_spdx(value, subject=subject)
 
 
 def _material_file(logical_name: str, role: str, payload: bytes) -> FullC6LicenseMaterialFile:

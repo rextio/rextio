@@ -384,6 +384,66 @@ def test_cargo_manifest_name_and_version_are_rechecked_against_workspace(
         )
 
 
+def test_cargo_accepts_exact_legacy_mit_apache_alias_without_rewriting_manifest(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    _write_project(project)
+    workspace = _cargo_workspace(
+        tmp_path,
+        license_expression="MIT/Apache-2.0",
+    )
+    manifest_name, manifest_payload = next(
+        (name, payload)
+        for name, payload in workspace.metadata_payloads()
+        if name.endswith("/Cargo.toml")
+    )
+    assert b'license = "MIT/Apache-2.0"' in manifest_payload
+
+    transaction = collect_full_c6_license_materials(
+        project_root=project,
+        cargo_workspace=workspace,
+    )
+
+    cargo = transaction.cargo_packages[0]
+    assert cargo.declared_spdx == "MIT OR Apache-2.0"
+    assert cargo.observed_spdx == "MIT OR Apache-2.0"
+    assert cargo.metadata_file.logical_name == manifest_name
+    assert cargo.metadata_file.sha256 == hashlib.sha256(manifest_payload).hexdigest()
+    assert cargo.metadata_file.size == len(manifest_payload)
+    assert transaction.cargo_workspace_sha256 == workspace.digest
+    assert validate_full_c6_license_materials_transaction(transaction)
+
+
+@pytest.mark.parametrize(
+    "license_expression",
+    (
+        " MIT/Apache-2.0",
+        "MIT/Apache-2.0 ",
+        "Apache-2.0/MIT",
+        "MIT / Apache-2.0",
+        "MIT/BSD-3-Clause",
+        "MIT/Apache-2.0.opt-1",
+    ),
+)
+def test_cargo_rejects_nonexact_legacy_spdx_variants(
+    tmp_path: Path,
+    license_expression: str,
+) -> None:
+    project = tmp_path / "project"
+    _write_project(project)
+    workspace = _cargo_workspace(
+        tmp_path,
+        license_expression=license_expression,
+    )
+
+    with pytest.raises(FullC6LicenseMaterialsError, match="unsupported or noncanonical"):
+        collect_full_c6_license_materials(
+            project_root=project,
+            cargo_workspace=workspace,
+        )
+
+
 def test_spdx_helper_uses_the_single_bounded_full_c6_allowlist() -> None:
     assert canonicalize_full_c6_spdx_expression("MIT OR Apache-2.0") == ("MIT OR Apache-2.0")
     with pytest.raises(FullC6PolicyError, match="canonical SPDX"):
