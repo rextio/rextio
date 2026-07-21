@@ -3724,8 +3724,6 @@ def _native_linker_rustflags(linker: Path, target_triple: str) -> tuple[str, ...
             "link-arg=dynamic_lookup",
             "-C",
             f"link-arg=-Wl,-install_name,{_MACHO_STABLE_SELF_INSTALL_NAME}",
-            "-C",
-            "link-arg=-Wl,-no_uuid",
         )
     if target_triple == "x86_64-unknown-linux-gnu":
         return flags

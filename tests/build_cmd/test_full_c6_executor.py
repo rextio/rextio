@@ -666,8 +666,6 @@ def test_native_linker_flags_bind_reproducible_macho_identity_only_on_macos(
         "link-arg=dynamic_lookup",
         "-C",
         "link-arg=-Wl,-install_name,@rpath/lib_rextio_native.dylib",
-        "-C",
-        "link-arg=-Wl,-no_uuid",
     )
     assert executor._native_linker_rustflags(
         linker,
@@ -677,7 +675,7 @@ def test_native_linker_flags_bind_reproducible_macho_identity_only_on_macos(
 
 @pytest.mark.parametrize(
     "mutation",
-    ("missing-install-name", "wrong-install-name", "missing-no-uuid", "extra-flag"),
+    ("missing-install-name", "wrong-install-name", "forbidden-no-uuid", "extra-flag"),
 )
 def test_native_owned_macho_linker_flags_fail_closed(
     tmp_path: Path,
@@ -702,15 +700,14 @@ def test_native_owned_macho_linker_flags_fail_closed(
     )
     flags = environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
     install_name = "link-arg=-Wl,-install_name,@rpath/lib_rextio_native.dylib"
-    no_uuid = "link-arg=-Wl,-no_uuid"
     if mutation == "missing-install-name":
         flags.remove(install_name)
     elif mutation == "wrong-install-name":
         flags[flags.index(install_name)] = (
             "link-arg=-Wl,-install_name,@rpath/lib_other.dylib"
         )
-    elif mutation == "missing-no-uuid":
-        flags.remove(no_uuid)
+    elif mutation == "forbidden-no-uuid":
+        flags.extend(("-C", "link-arg=-Wl,-no_uuid"))
     else:
         flags.extend(("-C", "link-arg=-Wl,-headerpad_max_install_names"))
     environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
