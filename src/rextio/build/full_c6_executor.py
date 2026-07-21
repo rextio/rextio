@@ -25,7 +25,6 @@ import secrets
 import shutil
 import stat
 import sys
-import sysconfig
 import time
 import unicodedata
 from dataclasses import dataclass, field as dataclass_field
@@ -45,6 +44,15 @@ from rextio.build.full_c6_output_license import (
     OutputWheelLicenseFile,
     OutputWheelLicenseVerification,
     rebuild_output_wheel_license_contract,
+)
+from rextio.build.full_c6_pyo3_config import (
+    FULL_C6_PYO3_CONFIG_NAME,
+    FullC6Pyo3ConfigError,
+    FullC6Pyo3ConfigIdentity,
+    bind_full_c6_pyo3_environment,
+    capture_full_c6_pyo3_config,
+    materialize_full_c6_pyo3_config,
+    verify_full_c6_pyo3_config,
 )
 from rextio.build.reproducibility import (
     ReproducibilityBuildOutputs,
@@ -97,6 +105,13 @@ MAX_FULL_C6_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_FULL_C6_NATIVE_DRIVER_MANIFEST_BYTES = 8 * 1024 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MACHO_STABLE_SELF_INSTALL_NAME = "@rpath/lib_rextio_native.dylib"
+_FULL_C6_EXTENSION_SUFFIXES = {
+    "aarch64-apple-darwin": ".cpython-311-darwin.so",
+    "x86_64-unknown-linux-gnu": ".cpython-311-x86_64-linux-gnu.so",
+}
+_PYO3_ENV_NAMES = frozenset(
+    {"PYO3_CONFIG_FILE", "PYO3_ENVIRONMENT_SIGNATURE"}
+)
 _NATIVE_LINKER_ENV_NAMES = frozenset(
     {
         "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
@@ -114,6 +129,8 @@ _RESERVED_ENV = frozenset(
         "LANG",
         "LC_ALL",
         "PYTHONHASHSEED",
+        "PYO3_CONFIG_FILE",
+        "PYO3_ENVIRONMENT_SIGNATURE",
         "PYO3_PYTHON",
         "RUSTC",
         "RUSTFLAGS",
@@ -121,7 +138,9 @@ _RESERVED_ENV = frozenset(
         "TZ",
     }
 ) | _NATIVE_LINKER_ENV_NAMES
-_EXECUTOR_ENV_ALLOWLIST = STRICT_BUILD_ENV_ALLOWLIST | frozenset({"HOME"})
+_EXECUTOR_ENV_ALLOWLIST = (
+    STRICT_BUILD_ENV_ALLOWLIST | frozenset({"HOME"}) | _PYO3_ENV_NAMES
+)
 _FORBIDDEN_ENV = frozenset(
     {
         "ALL_PROXY",
@@ -775,6 +794,9 @@ class FullC6ExecutorReceipt:
     postprocessor: str | None = None
     postprocessor_manifest_sha256: str | None = None
     target_triple: str | None = None
+    pyo3_config_sha256: str | None = None
+    pyo3_config_size: int | None = None
+    pyo3_config_profile_sha256: str | None = None
     domain: str = FULL_C6_EXECUTOR_DOMAIN
     scope: str = FULL_C6_EXECUTOR_SCOPE
     complete_for_scope: bool = True
@@ -818,6 +840,17 @@ class FullC6ExecutorReceipt:
                 "x86_64-unknown-linux-gnu",
             }:
                 raise ValueError("Full C6 executor target is unsupported")
+            _require_sha256(self.pyo3_config_sha256, "executor PyO3 config")
+            if (
+                type(self.pyo3_config_size) is not int
+                or isinstance(self.pyo3_config_size, bool)
+                or not (1 <= self.pyo3_config_size <= 64 * 1024)
+            ):
+                raise ValueError("Full C6 executor PyO3 config size is invalid")
+            _require_sha256(
+                self.pyo3_config_profile_sha256,
+                "executor PyO3 config profile",
+            )
         elif any(
             item is not None
             for item in (
@@ -826,6 +859,9 @@ class FullC6ExecutorReceipt:
                 self.postprocessor,
                 self.postprocessor_manifest_sha256,
                 self.target_triple,
+                self.pyo3_config_sha256,
+                self.pyo3_config_size,
+                self.pyo3_config_profile_sha256,
             )
         ):
             raise ValueError("non-authoritative executor cannot claim toolchain bindings")
@@ -856,6 +892,9 @@ class FullC6ExecutorReceipt:
             "postprocessor": self.postprocessor,
             "postprocessor_manifest_sha256": self.postprocessor_manifest_sha256,
             "target_triple": self.target_triple,
+            "pyo3_config_sha256": self.pyo3_config_sha256,
+            "pyo3_config_size": self.pyo3_config_size,
+            "pyo3_config_profile_sha256": self.pyo3_config_profile_sha256,
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -875,6 +914,7 @@ class FullC6NativeExecutionAuthority:
     executor_receipt: FullC6ExecutorReceipt
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt
     _toolchain: BuildToolchainIdentity = dataclass_field(repr=False)
+    _pyo3_config_identity: FullC6Pyo3ConfigIdentity = dataclass_field(repr=False)
     _driver_manifest: FullC6NativeDriverManifest = dataclass_field(repr=False)
     _wheel_filename: str = dataclass_field(repr=False)
     _wheel_captures: tuple[ExternalWheelCapture, ExternalWheelCapture] = dataclass_field(
@@ -974,6 +1014,21 @@ class FullC6NativeExecutionAuthority:
     def target_triple(self) -> str | None:
         """Return the exact native host target triple."""
         return self.executor_receipt.target_triple
+
+    @property
+    def pyo3_config_profile_sha256(self) -> str | None:
+        """Return the exact path-free PyO3 configuration profile digest."""
+        return self.executor_receipt.pyo3_config_profile_sha256
+
+    @property
+    def pyo3_config_sha256(self) -> str | None:
+        """Return the exact fixed PyO3 configuration byte digest."""
+        return self.executor_receipt.pyo3_config_sha256
+
+    @property
+    def pyo3_config_size(self) -> int | None:
+        """Return the exact fixed PyO3 configuration byte size."""
+        return self.executor_receipt.pyo3_config_size
 
     @property
     def wheel_filename(self) -> str:
@@ -1167,6 +1222,7 @@ def _native_authority_payload(
         "authorizes_distribution": False,
         "executor_receipt_sha256": authority.executor_receipt.digest,
         "toolchain_sha256": authority._toolchain.digest,
+        "pyo3_config_profile": authority._pyo3_config_identity.to_dict(),
         "driver_manifest_sha256": manifest.digest,
         "wheel_filename": authority._wheel_filename,
         "external_wheel_contract": _external_wheel_contract_identity(
@@ -1233,6 +1289,28 @@ def _validate_native_authority_shape(
         or authority._toolchain.digest != receipt.toolchain_sha256
     ):
         raise ValueError("Full C6 native toolchain identity is stale")
+    pyo3_config = authority._pyo3_config_identity
+    if type(pyo3_config) is not FullC6Pyo3ConfigIdentity:
+        raise TypeError("Full C6 native PyO3 config identity is invalid")
+    try:
+        rebuilt_pyo3_config = FullC6Pyo3ConfigIdentity(
+            target_triple=pyo3_config.target_triple,
+            sha256=pyo3_config.sha256,
+            size=pyo3_config.size,
+            content=pyo3_config.content,
+            domain=pyo3_config.domain,
+            scope=pyo3_config.scope,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Full C6 native PyO3 config identity is stale") from exc
+    if (
+        rebuilt_pyo3_config != pyo3_config
+        or pyo3_config.target_triple != receipt.target_triple
+        or pyo3_config.sha256 != receipt.pyo3_config_sha256
+        or pyo3_config.size != receipt.pyo3_config_size
+        or pyo3_config.digest != receipt.pyo3_config_profile_sha256
+    ):
+        raise ValueError("Full C6 native PyO3 config differs from executor receipt")
     manifest = authority._driver_manifest
     if type(manifest) is not FullC6NativeDriverManifest:
         raise TypeError("Full C6 native driver manifest is invalid")
@@ -1422,6 +1500,7 @@ def _create_native_execution_authority(
     executor_receipt: FullC6ExecutorReceipt,
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
     toolchain: BuildToolchainIdentity,
+    pyo3_config_identity: FullC6Pyo3ConfigIdentity,
     results: tuple[_NativePostprocessResult, _NativePostprocessResult],
 ) -> FullC6NativeExecutionAuthority:
     manifests = tuple(item.driver_manifest for item in results)
@@ -1434,6 +1513,7 @@ def _create_native_execution_authority(
     object.__setattr__(authority, "executor_receipt", executor_receipt)
     object.__setattr__(authority, "cargo_workspace", cargo_workspace)
     object.__setattr__(authority, "_toolchain", toolchain)
+    object.__setattr__(authority, "_pyo3_config_identity", pyo3_config_identity)
     object.__setattr__(authority, "_driver_manifest", manifests[0])
     object.__setattr__(authority, "_wheel_filename", filenames[0])
     object.__setattr__(authority, "_wheel_captures", tuple(item.capture for item in results))
@@ -1521,6 +1601,7 @@ def execute_full_c6_two_build(
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt | None = None,
     _native_results_sink: list[_NativePostprocessResult] | None = None,
     _native_output_license_contract: OutputWheelLicenseContract | None = None,
+    _native_pyo3_config_identity: FullC6Pyo3ConfigIdentity | None = None,
 ) -> FullC6ExecutorReceipt:
     """Freeze one project and execute exactly two strict isolated builds.
 
@@ -1556,6 +1637,10 @@ def execute_full_c6_two_build(
             )
         if type(_native_results_sink) is not list or _native_results_sink:
             raise FullC6ExecutorError("Full C6 native retained-evidence sink is invalid")
+        if type(_native_pyo3_config_identity) is not FullC6Pyo3ConfigIdentity:
+            raise FullC6ExecutorError(
+                "Full C6 native execution requires one fixed PyO3 config identity"
+            )
         try:
             native_output_license_contract = rebuild_output_wheel_license_contract(
                 _native_output_license_contract  # type: ignore[arg-type]
@@ -1568,6 +1653,7 @@ def execute_full_c6_two_build(
         cargo_workspace is not None
         or _native_results_sink is not None
         or _native_output_license_contract is not None
+        or _native_pyo3_config_identity is not None
     ):
         raise FullC6ExecutorError(
             "Full C6 callback execution cannot claim a native Cargo workspace"
@@ -1665,6 +1751,11 @@ def execute_full_c6_two_build(
             raise FullC6ExecutorError(
                 "Full C6 native driver target differs from the current host"
             )
+        assert _native_pyo3_config_identity is not None
+        if _native_pyo3_config_identity.target_triple != native_manifest.target_triple:
+            raise FullC6ExecutorError(
+                "Full C6 PyO3 config target differs from the native driver"
+            )
         _reject_private_argv(fixed_argv, source=source, roots=(first[0], second[0]))
         _verify_native_toolchain_invocation(
             fixed_argv,
@@ -1703,14 +1794,30 @@ def execute_full_c6_two_build(
             environment_seed,
             source_date_epoch=source_date_epoch,
         )
+        pyo3_config_path: Path | None = None
         if native_orchestrator:
             assert native_manifest is not None
             assert native_tools is not None
+            assert _native_pyo3_config_identity is not None
             _bind_native_environment(
                 environment,
                 native_tools=native_tools,
                 target_triple=native_manifest.target_triple,
             )
+            try:
+                pyo3_config_path = materialize_full_c6_pyo3_config(
+                    build_root,
+                    _native_pyo3_config_identity,
+                )
+                environment = bind_full_c6_pyo3_environment(
+                    environment,
+                    config_path=pyo3_config_path,
+                    identity=_native_pyo3_config_identity,
+                )
+            except FullC6Pyo3ConfigError as exc:
+                raise FullC6ExecutorError(
+                    "Full C6 fixed PyO3 config could not be bound"
+                ) from exc
         context = FullC6BuildContext(
             ordinal=ordinal,
             build_root=build_root,
@@ -1735,6 +1842,8 @@ def execute_full_c6_two_build(
             assert toolchain is not None
             assert native_tools is not None
             assert cargo_workspace is not None
+            assert pyo3_config_path is not None
+            assert _native_pyo3_config_identity is not None
             argv = fixed_argv
             receipt_bound_config = _ReceiptBoundCargoConfig(
                 location=f"project:{FULL_C6_CARGO_EXECUTOR_CONFIG}",
@@ -1755,6 +1864,13 @@ def execute_full_c6_two_build(
                 native_tools=native_tools,
                 target_triple=native_manifest.target_triple,
                 require_owned_environment=True,
+                pyo3_config_path=pyo3_config_path,
+                pyo3_config_identity=_native_pyo3_config_identity,
+            )
+            _verify_native_pyo3_binding(
+                environment,
+                config_path=pyo3_config_path,
+                identity=_native_pyo3_config_identity,
             )
             try:
                 completed = run_build_tool(
@@ -1766,6 +1882,11 @@ def execute_full_c6_two_build(
                     max_output_bytes=max_output_bytes,
                 )
             finally:
+                _verify_native_pyo3_binding(
+                    environment,
+                    config_path=pyo3_config_path,
+                    identity=_native_pyo3_config_identity,
+                )
                 _verify_native_cargo_config_boundaries(
                     project_root=project_root,
                     build_root=build_root,
@@ -1785,6 +1906,8 @@ def execute_full_c6_two_build(
                 native_tools=native_tools,
                 target_triple=native_manifest.target_triple,
                 require_owned_environment=True,
+                pyo3_config_path=pyo3_config_path,
+                pyo3_config_identity=_native_pyo3_config_identity,
             )
             native_result = _postprocess_native_build(
                 context=context,
@@ -1980,6 +2103,21 @@ def execute_full_c6_two_build(
             target_triple=(
                 native_manifest.target_triple if native_manifest is not None else None
             ),
+            pyo3_config_sha256=(
+                _native_pyo3_config_identity.sha256
+                if native_orchestrator and _native_pyo3_config_identity is not None
+                else None
+            ),
+            pyo3_config_size=(
+                _native_pyo3_config_identity.size
+                if native_orchestrator and _native_pyo3_config_identity is not None
+                else None
+            ),
+            pyo3_config_profile_sha256=(
+                _native_pyo3_config_identity.digest
+                if native_orchestrator and _native_pyo3_config_identity is not None
+                else None
+            ),
         )
     except (TypeError, ValueError) as exc:
         raise FullC6ExecutorError(str(exc)) from exc
@@ -2017,6 +2155,14 @@ def execute_full_c6_native_two_build(
         raise FullC6ExecutorError(
             "Full C6 native execution requires an exact output license contract"
         ) from exc
+    try:
+        pyo3_config_identity = capture_full_c6_pyo3_config(
+            detect_host_target_triple()
+        )
+    except (FullC6Pyo3ConfigError, ValueError) as exc:
+        raise FullC6ExecutorError(
+            "Full C6 native execution requires the fixed CPython 3.11 PyO3 profile"
+        ) from exc
     retained_results: list[_NativePostprocessResult] = []
     receipt = execute_full_c6_two_build(
         source_root,
@@ -2032,6 +2178,7 @@ def execute_full_c6_native_two_build(
         cargo_workspace=cargo_workspace,
         _native_results_sink=retained_results,
         _native_output_license_contract=output_license_contract,
+        _native_pyo3_config_identity=pyo3_config_identity,
     )
     if len(retained_results) != 2:
         raise FullC6ExecutorError("Full C6 native retained evidence is incomplete")
@@ -2039,6 +2186,7 @@ def execute_full_c6_native_two_build(
         executor_receipt=receipt,
         cargo_workspace=cargo_workspace,
         toolchain=toolchain,
+        pyo3_config_identity=pyo3_config_identity,
         results=(retained_results[0], retained_results[1]),
     )
 
@@ -2053,7 +2201,7 @@ def _postprocess_native_build(
     """Create one wheel and two preliminary non-authorizing documents."""
     if frozen.manifest is None:
         raise FullC6ExecutorError("Full C6 native postprocessor lacks a frozen tree")
-    extension_suffix = _full_c6_extension_suffix()
+    extension_suffix = _full_c6_extension_suffix(manifest.target_triple)
     artifact = (
         context.build_root
         / "target"
@@ -2230,7 +2378,9 @@ def _recapture_native_output(
         return capture_external_wheel_contract(
             result.outputs.unsigned_wheel,
             manifest.external_contract,
-            native_member_path=f"_rextio_native{_full_c6_extension_suffix()}",
+            native_member_path=(
+                f"_rextio_native{_full_c6_extension_suffix(manifest.target_triple)}"
+            ),
             native_member_bytes=result.native_artifact_bytes,
         )
     except (OSError, TypeError, ValueError, WheelContractError) as exc:
@@ -2239,21 +2389,14 @@ def _recapture_native_output(
         ) from exc
 
 
-def _full_c6_extension_suffix() -> str:
-    """Return the exact pinned CPython 3.11 extension suffix."""
-    if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11):
+def _full_c6_extension_suffix(target_triple: str) -> str:
+    """Return the exact target-fixed CPython 3.11 extension suffix."""
+    try:
+        return _FULL_C6_EXTENSION_SUFFIXES[target_triple]
+    except KeyError as exc:
         raise FullC6ExecutorError(
-            "Full C6 native Alpha postprocessor requires exact CPython 3.11"
-        )
-    extension_suffix = sysconfig.get_config_var("EXT_SUFFIX")
-    if (
-        type(extension_suffix) is not str
-        or not extension_suffix
-        or PurePosixPath(extension_suffix).name != extension_suffix
-        or not extension_suffix.endswith(".so")
-    ):
-        raise FullC6ExecutorError("Full C6 CPython extension suffix is unavailable")
-    return extension_suffix
+            "Full C6 CPython extension suffix target is unsupported"
+        ) from exc
 
 
 def _native_cargo_artifact_name(target_triple: str) -> str:
@@ -3426,6 +3569,11 @@ def _canonical_invocation_environment(
             f"{_BUILD_ROOT_TOKEN}/target",
         ),
     }
+    if "PYO3_CONFIG_FILE" in canonical:
+        owned_paths["PYO3_CONFIG_FILE"] = (
+            build_root / FULL_C6_PYO3_CONFIG_NAME,
+            f"{_BUILD_ROOT_TOKEN}/{FULL_C6_PYO3_CONFIG_NAME}",
+        )
     for name, (expected, token) in owned_paths.items():
         if canonical.get(name) != str(expected):
             raise FullC6ExecutorError(
@@ -3465,6 +3613,8 @@ def _verify_native_toolchain_invocation(
     native_tools: FullC6NativeToolPaths | None = None,
     target_triple: str | None = None,
     require_owned_environment: bool = False,
+    pyo3_config_path: Path | None = None,
+    pyo3_config_identity: FullC6Pyo3ConfigIdentity | None = None,
 ) -> None:
     """Bind an invocation to every concrete native tool selected at runtime."""
     if argv != toolchain.argv.values:
@@ -3514,7 +3664,6 @@ def _verify_native_toolchain_invocation(
     expected_values = {
         "CARGO_BUILD_TARGET": target_triple,
         _native_linker_environment_name(target_triple): str(resolved_tools["linker"]),
-        "PYO3_PYTHON": str(resolved_tools["python"]),
         "RUSTC": str(resolved_tools["rustc"]),
     }
     if any(environment.get(name) != value for name, value in expected_values.items()):
@@ -3522,6 +3671,14 @@ def _verify_native_toolchain_invocation(
     inactive_linker_names = _NATIVE_LINKER_ENV_NAMES.difference(expected_values)
     if any(name in environment for name in inactive_linker_names):
         raise FullC6ExecutorError("Full C6 inactive native linker binding is present")
+    if (pyo3_config_path is None) != (pyo3_config_identity is None):
+        raise FullC6ExecutorError("Full C6 native PyO3 binding is incomplete")
+    if pyo3_config_path is not None and pyo3_config_identity is not None:
+        _verify_native_pyo3_binding(
+            environment,
+            config_path=pyo3_config_path,
+            identity=pyo3_config_identity,
+        )
     encoded = environment.get("CARGO_ENCODED_RUSTFLAGS", "").split("\x1f")
     expected_flags = _native_linker_rustflags(
         resolved_tools["linker"],
@@ -3568,7 +3725,6 @@ def _bind_native_environment(
     target_triple: str,
 ) -> None:
     try:
-        python = native_tools.python.resolve(strict=True)
         rustc = native_tools.rustc.resolve(strict=True)
         linker = native_tools.linker.resolve(strict=True)
     except OSError as exc:
@@ -3584,10 +3740,38 @@ def _bind_native_environment(
                 (*remaps, *_native_linker_rustflags(linker, target_triple))
             ),
             linker_environment_name: str(linker),
-            "PYO3_PYTHON": str(python),
             "RUSTC": str(rustc),
         }
     )
+
+
+def _verify_native_pyo3_binding(
+    environment: Mapping[str, str],
+    *,
+    config_path: Path,
+    identity: FullC6Pyo3ConfigIdentity,
+) -> None:
+    """Revalidate the sole PyO3 discovery input at the Cargo boundary."""
+    observed_names = frozenset(
+        name for name in environment if name.startswith("PYO3_")
+    )
+    if observed_names != _PYO3_ENV_NAMES:
+        raise FullC6ExecutorError(
+            "Full C6 native environment contains residual PyO3 discovery channels"
+        )
+    if (
+        environment.get("PYO3_CONFIG_FILE") != os.fspath(config_path)
+        or environment.get("PYO3_ENVIRONMENT_SIGNATURE") != identity.digest
+        or any(
+            name in environment
+            for name in ("CONDA_PREFIX", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME")
+        )
+    ):
+        raise FullC6ExecutorError("Full C6 native PyO3 environment binding changed")
+    try:
+        verify_full_c6_pyo3_config(config_path, identity)
+    except FullC6Pyo3ConfigError as exc:
+        raise FullC6ExecutorError("Full C6 fixed PyO3 config became stale") from exc
 
 
 def _verify_native_cargo_config_boundaries(

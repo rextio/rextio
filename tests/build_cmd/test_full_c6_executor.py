@@ -28,6 +28,32 @@ STRICT_BUILD = (
 )
 
 
+def _pyo3_identity(target: str = "aarch64-apple-darwin"):
+    from rextio.build.full_c6_pyo3_config import FullC6Pyo3ConfigIdentity
+
+    content = (
+        b"implementation=CPython\n"
+        b"version=3.11\n"
+        b"shared=true\n"
+        b"pointer_width=64\n"
+        b"build_flags=\n"
+        b"suppress_build_script_link_lines=true\n"
+    )
+    return FullC6Pyo3ConfigIdentity(
+        target_triple=target,
+        sha256=hashlib.sha256(content).hexdigest(),
+        size=len(content),
+        content=content,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _use_fixed_pyo3_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    monkeypatch.setattr(executor, "capture_full_c6_pyo3_config", _pyo3_identity)
+
+
 def _project(tmp_path: Path, *, lock: bool = True) -> Path:
     root = tmp_path / "generated-project"
     source = root / "src"
@@ -256,7 +282,7 @@ def _install_successful_native_run(
     monkeypatch.setattr(
         executor,
         "_full_c6_extension_suffix",
-        lambda: ".cpython-311-test.so",
+        lambda _target: ".cpython-311-test.so",
     )
 
     def fake_run(command, *, cwd, **_kwargs):
@@ -535,6 +561,7 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
         source,
     )
     runs = []
+    captures = []
 
     monkeypatch.setattr(
         executor,
@@ -544,8 +571,14 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
     monkeypatch.setattr(
         executor,
         "_full_c6_extension_suffix",
-        lambda: ".cpython-311-test.so",
+        lambda _target: ".cpython-311-test.so",
     )
+
+    def capture_once(target_triple: str):
+        captures.append(target_triple)
+        return _pyo3_identity(target_triple)
+
+    monkeypatch.setattr(executor, "capture_full_c6_pyo3_config", capture_once)
 
     def fake_run(command, *, cwd, timeout, env, inherit_env, max_output_bytes):
         project = Path(cwd)
@@ -567,7 +600,15 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
             == str(native_tools.linker)
         )
         assert "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER" not in env
-        assert env["PYO3_PYTHON"] == str(native_tools.python)
+        assert "PYO3_PYTHON" not in env
+        assert set(name for name in env if name.startswith("PYO3_")) == {
+            "PYO3_CONFIG_FILE",
+            "PYO3_ENVIRONMENT_SIGNATURE",
+        }
+        config_path = Path(env["PYO3_CONFIG_FILE"])
+        assert config_path.parent == Path(cwd).parent
+        assert config_path.read_bytes() == _pyo3_identity().content
+        assert env["PYO3_ENVIRONMENT_SIGNATURE"] == _pyo3_identity().digest
         assert env["RUSTC"] == str(native_tools.rustc)
         assert f"linker={native_tools.linker}" in env["CARGO_ENCODED_RUSTFLAGS"]
         artifact = (
@@ -594,12 +635,21 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
     )
 
     assert len(runs) == 2
+    assert captures == ["aarch64-apple-darwin"]
     assert all(item[0] == STRICT_BUILD and item[3] is False for item in runs)
     assert runs[0][4] != runs[1][4]
     assert receipt.execution_driver == executor.FULL_C6_NATIVE_EXECUTION_DRIVER
     assert receipt.execution_driver == "rextio-native-orchestrator-v1"
     assert receipt.postprocessor == executor.FULL_C6_NATIVE_POSTPROCESSOR
     assert receipt.target_triple == "aarch64-apple-darwin"
+    assert receipt.pyo3_config_sha256 == _pyo3_identity().sha256
+    assert receipt.pyo3_config_size == _pyo3_identity().size
+    assert receipt.pyo3_config_profile_sha256 == _pyo3_identity().digest
+    assert receipt.invocations[0].environment == receipt.invocations[1].environment
+    assert runs[0][2]["PYO3_CONFIG_FILE"] != runs[1][2]["PYO3_CONFIG_FILE"]
+    assert os.stat(runs[0][2]["PYO3_CONFIG_FILE"]).st_ino != os.stat(
+        runs[1][2]["PYO3_CONFIG_FILE"]
+    ).st_ino
     assert receipt.postprocessor_manifest_sha256 == hashlib.sha256(
         (source / executor.FULL_C6_NATIVE_DRIVER_MANIFEST).read_bytes()
     ).hexdigest()
@@ -609,7 +659,11 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
     assert public["cargo_vendor_layout"] == cargo_workspace.vendor_layout
     assert public["cargo_vendor_tree_sha256"] == cargo_workspace.vendor_tree_sha256
     assert public["cargo_executor_config"] == cargo_workspace.executor_config.to_dict()
-    assert "wheel_bytes" not in json.dumps(public, sort_keys=True)
+    assert public["pyo3_config_profile"] == _pyo3_identity().to_dict()
+    serialized_public = json.dumps(public, sort_keys=True)
+    assert "wheel_bytes" not in serialized_public
+    assert "PYO3_CONFIG_FILE" not in serialized_public
+    assert all(str(root) not in serialized_public for root in roots)
 
     wheels = []
     for root in roots:
@@ -637,6 +691,108 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
             assert posture["authority"] == "non-authorizing"
             assert posture["distribution_authorized"] is False
     assert wheels[0] == wheels[1]
+
+
+def test_native_executor_rejects_pyo3_config_changed_by_cargo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    _install_successful_native_run(monkeypatch, executor)
+
+    def mutate_config(command, *, env, **_kwargs):
+        Path(env["PYO3_CONFIG_FILE"]).write_bytes(b"stale-config")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(executor, "run_build_tool", mutate_config)
+    with pytest.raises(executor.FullC6ExecutorError, match="PyO3 config became stale"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tmp_path),
+            base_environment=base_environment,
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
+        )
+
+
+@pytest.mark.parametrize("channel", ("PYO3_PYTHON", "PYO3_FUTURE_DISCOVERY"))
+def test_native_executor_rejects_residual_or_additive_pyo3_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    channel: str,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    real_bind = executor.bind_full_c6_pyo3_environment
+
+    def bind_with_residual(*args, **kwargs):
+        environment = real_bind(*args, **kwargs)
+        environment[channel] = "ambient-override"
+        return environment
+
+    monkeypatch.setattr(
+        executor,
+        "bind_full_c6_pyo3_environment",
+        bind_with_residual,
+    )
+    with pytest.raises(executor.FullC6ExecutorError, match="residual PyO3"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tmp_path),
+            base_environment=base_environment,
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
+        )
+
+
+def test_native_receipt_cannot_omit_or_forge_pyo3_profile_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    _install_successful_native_run(monkeypatch, executor)
+    authority = executor.execute_full_c6_native_two_build(
+        source,
+        *_roots(tmp_path),
+        base_environment=base_environment,
+        source_date_epoch=1,
+        toolchain=toolchain,
+        native_tools=native_tools,
+        cargo_workspace=cargo_workspace,
+        output_license_contract=_output_license_contract(),
+    )
+
+    receipt = authority.executor_receipt
+    with pytest.raises(ValueError, match="PyO3 config profile"):
+        replace(receipt, pyo3_config_profile_sha256=None)
+    original = receipt.pyo3_config_profile_sha256
+    object.__setattr__(receipt, "pyo3_config_profile_sha256", "0" * 64)
+    assert not executor.validate_full_c6_native_execution_authority(authority)
+    object.__setattr__(receipt, "pyo3_config_profile_sha256", original)
+    assert executor.validate_full_c6_native_execution_authority(authority)
 
 
 @pytest.mark.parametrize(
@@ -749,6 +905,27 @@ def test_native_linker_flags_bind_reproducible_macho_identity_only_on_macos(
         linker,
         "x86_64-unknown-linux-gnu",
     ) == ("-C", f"linker={linker}")
+
+
+@pytest.mark.parametrize(
+    ("target_triple", "expected"),
+    (
+        ("aarch64-apple-darwin", ".cpython-311-darwin.so"),
+        (
+            "x86_64-unknown-linux-gnu",
+            ".cpython-311-x86_64-linux-gnu.so",
+        ),
+    ),
+)
+def test_native_extension_suffix_is_target_fixed_not_ambient(
+    target_triple: str,
+    expected: str,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    assert executor._full_c6_extension_suffix(target_triple) == expected
+    with pytest.raises(executor.FullC6ExecutorError, match="unsupported"):
+        executor._full_c6_extension_suffix("aarch64-unknown-linux-gnu")
 
 
 @pytest.mark.parametrize(
@@ -1154,7 +1331,7 @@ def test_native_executor_rejects_vendor_mutation_after_cargo(
     monkeypatch.setattr(
         executor,
         "_full_c6_extension_suffix",
-        lambda: ".cpython-311-test.so",
+        lambda _target: ".cpython-311-test.so",
     )
 
     def fake_run(command, *, cwd, **_kwargs):
@@ -1231,7 +1408,7 @@ def test_native_orchestrator_rejects_cargo_or_staging_boundary_changes(
     monkeypatch.setattr(
         executor,
         "_full_c6_extension_suffix",
-        lambda: ".cpython-311-test.so",
+        lambda _target: ".cpython-311-test.so",
     )
 
     source = _native_project(tmp_path / "missing-artifact")
@@ -1434,7 +1611,7 @@ def test_native_orchestrator_rejects_symlinked_artifact_ancestor(
     monkeypatch.setattr(
         executor,
         "_full_c6_extension_suffix",
-        lambda: ".cpython-311-test.so",
+        lambda _target: ".cpython-311-test.so",
     )
 
     def fake_run(command, *, cwd, **_kwargs):
@@ -1483,7 +1660,7 @@ def test_native_orchestrator_rejects_concurrent_artifact_ancestor_swap(
     monkeypatch.setattr(
         executor,
         "_full_c6_extension_suffix",
-        lambda: ".cpython-311-test.so",
+        lambda _target: ".cpython-311-test.so",
     )
     release_path: Path | None = None
 
@@ -1706,7 +1883,7 @@ def test_native_orchestrator_rejects_wheel_member_different_from_cargo_artifact(
     monkeypatch.setattr(
         executor,
         "_full_c6_extension_suffix",
-        lambda: ".cpython-311-test.so",
+        lambda _target: ".cpython-311-test.so",
     )
 
     def fake_run(command, *, cwd, **_kwargs):
@@ -1764,7 +1941,7 @@ def test_native_orchestrator_materializes_the_exact_captured_wheel_bytes(
     monkeypatch.setattr(
         executor,
         "_full_c6_extension_suffix",
-        lambda: ".cpython-311-test.so",
+        lambda _target: ".cpython-311-test.so",
     )
 
     def fake_run(command, *, cwd, **_kwargs):
