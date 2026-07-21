@@ -48,6 +48,7 @@ from rextio.build.runtime_resolution import (
     ElfLoadPlan,
     MachoLoadPlan,
     _CandidateReceipt,
+    _directory_stamps_match,
     _loader_path_suffix,
     _member_parent,
     _read_candidate_secure,
@@ -439,7 +440,11 @@ def verify_native_runtime_transitive_closure(
         for receipt in observation.receipts:
             current = _read_candidate_secure(root=root, parts=receipt.parts)
             if (
-                current.directory_stamps != receipt.directory_stamps
+                not _directory_stamps_match(
+                    previous=receipt.directory_stamps,
+                    current=current.directory_stamps,
+                    root=root,
+                )
                 or current.file_stamp != receipt.file_stamp
                 or current.sha256 != receipt.sha256
                 or current.size != receipt.size

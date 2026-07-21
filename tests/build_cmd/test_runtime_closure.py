@@ -195,6 +195,49 @@ def test_collects_deterministic_cycle_safe_graph_and_verifies_receipts(
     )
 
 
+def test_closure_verification_ignores_only_ambient_sibling_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ambient = tmp_path / "ambient"
+    root = ambient / "python"
+    members, entries, inventory, resolution = _graph_fixture(root)
+    monkeypatch.setattr(
+        runtime_closure,
+        "_inspect_packaged_node",
+        _cycle_inspector(members),
+    )
+    observation = runtime_closure._collect_native_runtime_transitive_closure(
+        installed_path=root / "pkg" / "_rextio_native.so",
+        expected_python_root=root,
+        wheel_entries=entries,
+        runtime_inventory=inventory,
+        path_resolution=resolution,
+        target_triple="x86_64-unknown-linux-gnu",
+        timeout=5.0,
+    )
+    assert runtime_closure.verify_native_runtime_transitive_closure(
+        observation,
+        expected_python_root=root,
+    )
+
+    ambient_sibling = ambient / "unrelated-host-entry.tmp"
+    ambient_sibling.write_bytes(b"temporary")
+    ambient_sibling.unlink()
+    assert runtime_closure.verify_native_runtime_transitive_closure(
+        observation,
+        expected_python_root=root,
+    )
+
+    owned_sibling = root / "owned-entry.tmp"
+    owned_sibling.write_bytes(b"temporary")
+    owned_sibling.unlink()
+    assert not runtime_closure.verify_native_runtime_transitive_closure(
+        observation,
+        expected_python_root=root,
+    )
+
+
 def test_public_collector_omits_only_c69_on_malformed_recursive_inspection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

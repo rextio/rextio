@@ -502,6 +502,90 @@ def test_candidate_receipt_detects_parent_swap_and_restore(tmp_path: Path) -> No
     )
 
 
+def test_directory_receipt_ignores_only_ambient_sibling_metadata(
+    tmp_path: Path,
+) -> None:
+    ambient = tmp_path / "ambient"
+    root = ambient / "python"
+    candidate = root / "pkg/lib.so"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"original")
+    receipt = runtime_resolution._read_candidate_secure(
+        root=root,
+        parts=("pkg", "lib.so"),
+    )
+    observation = runtime_resolution.NativeRuntimePathResolutionObservation(
+        inventory=NativeRuntimePathResolutionInventory(
+            subject_wheel_member="pkg/_rextio_native.so",
+            subject_sha256="e" * 64,
+            records=(),
+        ),
+        receipts=(receipt,),
+    )
+    root_index = len(root.parts) - 1
+    ambient_index = root_index - 1
+    assert ambient_index >= 0
+
+    sibling = ambient / "unrelated-host-entry.tmp"
+    sibling.write_bytes(b"temporary")
+    sibling.unlink()
+    current = runtime_resolution._read_candidate_secure(
+        root=root,
+        parts=("pkg", "lib.so"),
+    )
+    before_ambient = receipt.directory_stamps[ambient_index]
+    after_ambient = current.directory_stamps[ambient_index]
+    assert (before_ambient.ctime_ns, before_ambient.mtime_ns) != (
+        after_ambient.ctime_ns,
+        after_ambient.mtime_ns,
+    )
+    assert (
+        before_ambient.device,
+        before_ambient.inode,
+        before_ambient.mode,
+    ) == (
+        after_ambient.device,
+        after_ambient.inode,
+        after_ambient.mode,
+    )
+    assert runtime_resolution.verify_native_runtime_path_resolution(
+        observation,
+        expected_python_root=root,
+    )
+
+    for field, value in (
+        ("device", before_ambient.device + 1),
+        ("inode", before_ambient.inode + 1),
+        ("mode", before_ambient.mode ^ 0o001),
+    ):
+        changed = list(receipt.directory_stamps)
+        changed[ambient_index] = replace(before_ambient, **{field: value})
+        assert not runtime_resolution._directory_stamps_match(
+            previous=receipt.directory_stamps,
+            current=tuple(changed),
+            root=root,
+        )
+
+    changed = list(receipt.directory_stamps)
+    changed[root_index] = replace(
+        changed[root_index],
+        ctime_ns=changed[root_index].ctime_ns + 1,
+    )
+    assert not runtime_resolution._directory_stamps_match(
+        previous=receipt.directory_stamps,
+        current=tuple(changed),
+        root=root,
+    )
+
+    owned_sibling = root / "owned-entry.tmp"
+    owned_sibling.write_bytes(b"temporary")
+    owned_sibling.unlink()
+    assert not runtime_resolution.verify_native_runtime_path_resolution(
+        observation,
+        expected_python_root=root,
+    )
+
+
 def test_refresh_rebuilds_receipts_after_private_snapshot_lifecycle(
     tmp_path: Path,
 ) -> None:
@@ -539,6 +623,9 @@ def test_refresh_rebuilds_receipts_after_private_snapshot_lifecycle(
             ),
         ),
     )
+    ambient_sibling = tmp_path / "unrelated-host-entry.tmp"
+    ambient_sibling.write_bytes(b"temporary")
+    ambient_sibling.unlink()
     before = runtime_resolution.refresh_native_runtime_path_resolution_observation(
         seed,
         expected_python_root=root,
