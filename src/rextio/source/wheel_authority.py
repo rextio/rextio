@@ -12,6 +12,7 @@ import base64
 import binascii
 import csv
 import hashlib
+import hmac
 import io
 import os
 import re
@@ -37,6 +38,42 @@ from rextio.source.models import SourceModule, SourceOrigin
 
 
 SOURCE_WHEEL_AUTHORITY_DOMAIN = "rextio.external-source-wheel-authority.v1"
+SOURCE_WHEEL_LICENSE_DETECTION_DOMAIN = "rextio.source-wheel-license-detection.v1"
+SOURCE_WHEEL_LICENSE_DETECTION_KIND = "bounded-license-text-detection"
+SOURCE_WHEEL_LICENSE_DETECTOR = "rextio-mit-license-text"
+SOURCE_WHEEL_LICENSE_DETECTOR_VERSION = "1"
+_MIT_LICENSE_TITLES = ("MIT License",)
+_MIT_COPYRIGHT = re.compile(
+    r"Copyright(?: \(c\)| ©)? [0-9]{4}(?:-[0-9]{4})? "
+    r"[A-Za-z0-9][A-Za-z0-9 .,_+@()&'/-]{0,200}"
+)
+_MIT_LICENSE_CANONICAL_BODY = """Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE."""
+_MIT_LICENSE_RULESET = (
+    f"titles={','.join(_MIT_LICENSE_TITLES)}\n"
+    f"copyright_regex={_MIT_COPYRIGHT.pattern}\n"
+    "copyright_lines=1..4\n"
+    f"body={_MIT_LICENSE_CANONICAL_BODY}"
+)
+SOURCE_WHEEL_LICENSE_DETECTOR_RULESET_SHA256 = hashlib.sha256(
+    b"rextio.source-wheel-license-detection.ruleset.v1\0MIT\0one-file\0"
+    + _MIT_LICENSE_RULESET.encode("utf-8")
+).hexdigest()
 MAX_SOURCE_WHEEL_BYTES = 128 * 1024 * 1024
 MAX_SOURCE_WHEEL_ENTRIES = MAX_RECORD_ENTRIES
 MAX_SOURCE_WHEEL_TOTAL_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
@@ -122,6 +159,180 @@ class SourceWheelEntryIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceWheelLicensePayloadIdentity:
+    """Exact license payload identity consumed by the bounded detector."""
+
+    path: str
+    sha256: str
+    size: int
+
+    def __post_init__(self) -> None:
+        _validate_member_name(self.path)
+        if type(self.sha256) is not str or _SHA256.fullmatch(self.sha256) is None:
+            raise ValueError("source wheel license payload SHA-256 is invalid")
+        if (
+            type(self.size) is not int
+            or isinstance(self.size, bool)
+            or not 0 <= self.size <= MAX_FILE_BYTES
+        ):
+            raise ValueError("source wheel license payload size is invalid")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the path-free-host exact payload identity."""
+        return {"path": self.path, "sha256": self.sha256, "size": self.size}
+
+
+@dataclass(frozen=True, slots=True)
+class SourceWheelLicenseDetectionReceipt:
+    """Independent, byte-derived, non-authorizing bounded detector result."""
+
+    status: str
+    detected_spdx: str | None
+    license_payloads: tuple[SourceWheelLicensePayloadIdentity, ...]
+    domain: str = SOURCE_WHEEL_LICENSE_DETECTION_DOMAIN
+    kind: str = SOURCE_WHEEL_LICENSE_DETECTION_KIND
+    detector: str = SOURCE_WHEEL_LICENSE_DETECTOR
+    detector_version: str = SOURCE_WHEEL_LICENSE_DETECTOR_VERSION
+    detector_ruleset_sha256: str = SOURCE_WHEEL_LICENSE_DETECTOR_RULESET_SHA256
+    complete_for_scope: bool = True
+    authorizes_build: bool = False
+    authorizes_distribution: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            self.domain != SOURCE_WHEEL_LICENSE_DETECTION_DOMAIN
+            or self.kind != SOURCE_WHEEL_LICENSE_DETECTION_KIND
+            or self.detector != SOURCE_WHEEL_LICENSE_DETECTOR
+            or self.detector_version != SOURCE_WHEEL_LICENSE_DETECTOR_VERSION
+            or self.detector_ruleset_sha256 != SOURCE_WHEEL_LICENSE_DETECTOR_RULESET_SHA256
+        ):
+            raise ValueError("source wheel license detector identity is invalid")
+        if self.status not in {"detected", "unsupported"}:
+            raise ValueError("source wheel license detector status is invalid")
+        if (self.status, self.detected_spdx) not in {
+            ("detected", "MIT"),
+            ("unsupported", None),
+        }:
+            raise ValueError("source wheel license detector result is invalid")
+        if type(self.license_payloads) is not tuple or not self.license_payloads:
+            raise TypeError("source wheel license detector payloads are invalid")
+        if any(
+            type(item) is not SourceWheelLicensePayloadIdentity
+            for item in self.license_payloads
+        ):
+            raise TypeError("source wheel license detector payload identity is invalid")
+        canonical = tuple(sorted(self.license_payloads, key=lambda item: item.path.casefold()))
+        if self.license_payloads != canonical or len(
+            {item.path.casefold() for item in self.license_payloads}
+        ) != len(self.license_payloads):
+            raise ValueError("source wheel license detector payloads are noncanonical")
+        if (
+            self.complete_for_scope is not True
+            or self.authorizes_build
+            or self.authorizes_distribution
+        ):
+            raise ValueError("source wheel license detector authority posture is invalid")
+
+    @property
+    def semantic_sha256(self) -> str:
+        """Return the exact detector identity, result, and input digest."""
+        return hashlib.sha256(_canonical_bytes(self.to_dict())).hexdigest()
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the canonical independent detector receipt."""
+        return {
+            "domain": SOURCE_WHEEL_LICENSE_DETECTION_DOMAIN,
+            "kind": SOURCE_WHEEL_LICENSE_DETECTION_KIND,
+            "detector": SOURCE_WHEEL_LICENSE_DETECTOR,
+            "detector_version": SOURCE_WHEEL_LICENSE_DETECTOR_VERSION,
+            "detector_ruleset_sha256": SOURCE_WHEEL_LICENSE_DETECTOR_RULESET_SHA256,
+            "status": self.status,
+            "detected_spdx": self.detected_spdx,
+            "license_payloads": [item.to_dict() for item in self.license_payloads],
+            "complete_for_scope": True,
+            "authorizes_build": False,
+            "authorizes_distribution": False,
+        }
+
+
+def detect_source_wheel_license_payloads(
+    paths: tuple[str, ...],
+    payloads: tuple[bytes, ...],
+) -> SourceWheelLicenseDetectionReceipt:
+    """Run the bounded detector using only exact license-file payload bytes."""
+    if (
+        type(paths) is not tuple
+        or type(payloads) is not tuple
+        or not paths
+        or len(paths) != len(payloads)
+        or paths != tuple(sorted(paths))
+        or len({path.casefold() for path in paths}) != len(paths)
+        or any(type(path) is not str for path in paths)
+        or any(type(payload) is not bytes for payload in payloads)
+    ):
+        raise SourceWheelAuthorityError("license-detector-input-invalid")
+    identities: list[SourceWheelLicensePayloadIdentity] = []
+    for path, payload in zip(paths, payloads, strict=True):
+        try:
+            identity = SourceWheelLicensePayloadIdentity(
+                path=path,
+                sha256=hashlib.sha256(payload).hexdigest(),
+                size=len(payload),
+            )
+        except ValueError as exc:
+            raise SourceWheelAuthorityError("license-detector-input-invalid") from exc
+        identities.append(identity)
+    detected = len(payloads) == 1 and _is_bounded_mit_license(payloads[0])
+    return SourceWheelLicenseDetectionReceipt(
+        status="detected" if detected else "unsupported",
+        detected_spdx="MIT" if detected else None,
+        license_payloads=tuple(identities),
+    )
+
+
+def verify_source_wheel_license_detection(
+    receipt: SourceWheelLicenseDetectionReceipt,
+    paths: tuple[str, ...],
+    payloads: tuple[bytes, ...],
+) -> bool:
+    """Re-run the byte-only detector and compare the complete exact receipt."""
+    if type(receipt) is not SourceWheelLicenseDetectionReceipt:
+        return False
+    try:
+        rebuilt = detect_source_wheel_license_payloads(paths, payloads)
+    except (SourceWheelAuthorityError, TypeError, ValueError):
+        return False
+    return hmac.compare_digest(receipt.semantic_sha256, rebuilt.semantic_sha256)
+
+
+def _is_bounded_mit_license(payload: bytes) -> bool:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    if "\x00" in text:
+        return False
+    normalized = unicodedata.normalize(
+        "NFC",
+        text.replace("\r\n", "\n").replace("\r", "\n"),
+    )
+    lines = [line.rstrip(" \t") for line in normalized.rstrip("\n").split("\n")]
+    if len(lines) < 5 or lines[0] not in _MIT_LICENSE_TITLES or lines[1] != "":
+        return False
+    separator = next(
+        (index for index in range(2, min(len(lines), 7)) if lines[index] == ""),
+        None,
+    )
+    if separator is None or not 3 <= separator <= 6:
+        return False
+    copyright_lines = lines[2:separator]
+    if not all(_MIT_COPYRIGHT.fullmatch(line) for line in copyright_lines):
+        return False
+    body = "\n".join(lines[separator + 1 :])
+    return hmac.compare_digest(body, _MIT_LICENSE_CANONICAL_BODY)
+
+
+@dataclass(frozen=True, slots=True)
 class VerifiedSourceWheel:
     """Exact wheel authority plus immutable depth-1 analysis snapshots."""
 
@@ -135,6 +346,8 @@ class VerifiedSourceWheel:
     metadata_entry_paths: tuple[str, ...]
     license_entry_paths: tuple[str, ...]
     snapshots: tuple[ExternalSourceSnapshot, ...] = field(repr=False)
+    license_payloads: tuple[bytes, ...] = field(repr=False)
+    license_detection: SourceWheelLicenseDetectionReceipt
     domain: str = SOURCE_WHEEL_AUTHORITY_DOMAIN
     authority: str = "analysis-input-only"
     authorizes_build: bool = False
@@ -166,6 +379,31 @@ class VerifiedSourceWheel:
         ):
             if collection != tuple(sorted(collection)) or len(collection) != len(set(collection)):
                 raise ValueError("source wheel selected entry paths are not canonical")
+        if (
+            type(self.license_payloads) is not tuple
+            or len(self.license_payloads) != len(self.license_entry_paths)
+            or any(type(payload) is not bytes for payload in self.license_payloads)
+        ):
+            raise ValueError("source wheel license payload snapshot is invalid")
+        entry_by_path = {item.path: item for item in self.entries}
+        for path, payload in zip(
+            self.license_entry_paths,
+            self.license_payloads,
+            strict=True,
+        ):
+            entry = entry_by_path.get(path)
+            if (
+                entry is None
+                or entry.size != len(payload)
+                or entry.sha256 != hashlib.sha256(payload).hexdigest()
+            ):
+                raise ValueError("source wheel license payload identity is stale")
+        if not verify_source_wheel_license_detection(
+            self.license_detection,
+            self.license_entry_paths,
+            self.license_payloads,
+        ):
+            raise ValueError("source wheel license detector receipt is stale")
 
     @property
     def semantic_sha256(self) -> str:
@@ -186,6 +424,7 @@ class VerifiedSourceWheel:
             "source_entry_paths": list(self.source_entry_paths),
             "metadata_entry_paths": list(self.metadata_entry_paths),
             "license_entry_paths": list(self.license_entry_paths),
+            "license_detection": self.license_detection.to_dict(),
             "snapshots": [item.to_dict() for item in self.snapshots],
             "authorizes_build": False,
             "authorizes_distribution": False,
@@ -402,6 +641,7 @@ def _verify_source_wheel_bytes(
             raise SourceWheelAuthorityError("archive-module-plan-mismatch")
         snapshots.append(ExternalSourceSnapshot(module=module, source_bytes=raw_entries[name]))
 
+    license_payloads = tuple(raw_entries[name] for name in license_names)
     return VerifiedSourceWheel(
         package=plan.package,
         distribution=plan.distribution,
@@ -413,6 +653,8 @@ def _verify_source_wheel_bytes(
         metadata_entry_paths=metadata_names,
         license_entry_paths=license_names,
         snapshots=tuple(sorted(snapshots, key=lambda item: item.module.module_name)),
+        license_payloads=license_payloads,
+        license_detection=detect_source_wheel_license_payloads(license_names, license_payloads),
     )
 
 
@@ -603,9 +845,18 @@ def _canonical_bytes(value: object) -> bytes:
 
 __all__ = [
     "SOURCE_WHEEL_AUTHORITY_DOMAIN",
+    "SOURCE_WHEEL_LICENSE_DETECTION_DOMAIN",
+    "SOURCE_WHEEL_LICENSE_DETECTION_KIND",
+    "SOURCE_WHEEL_LICENSE_DETECTOR",
+    "SOURCE_WHEEL_LICENSE_DETECTOR_RULESET_SHA256",
+    "SOURCE_WHEEL_LICENSE_DETECTOR_VERSION",
     "SourceWheelArchiveIdentity",
     "SourceWheelAuthorityError",
     "SourceWheelEntryIdentity",
+    "SourceWheelLicenseDetectionReceipt",
+    "SourceWheelLicensePayloadIdentity",
     "VerifiedSourceWheel",
+    "detect_source_wheel_license_payloads",
+    "verify_source_wheel_license_detection",
     "verify_source_wheel",
 ]

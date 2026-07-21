@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import hashlib
 import hmac
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import stat
 
 from rextio.artifacts.evidence import EvidenceFileRef, WheelEntryRef, canonical_json_bytes
@@ -35,10 +35,21 @@ from rextio.artifacts.full_authorization import (
     full_c6_evidence_digest,
     full_c6_preauthorization_evidence_digest,
 )
-from rextio.build.full_c6_policy import FullC6PolicyReceipt
+from rextio.build.full_c6_analysis_transaction import (
+    FullC6AnalysisIRTransaction,
+    FullC6AnalysisTransactionError,
+    validate_full_c6_analysis_ir_transaction,
+)
+from rextio.build.full_c6_policy import (
+    FullC6PolicyFileIdentity,
+    FullC6PolicyReceipt,
+    full_c6_license_detector_payload_digest,
+)
 from rextio.build.full_c6_executor import (
     FULL_C6_CALLBACK_LOCK_DRIVER,
+    FULL_C6_NATIVE_DRIVER_MANIFEST,
     FULL_C6_NATIVE_EXECUTION_DRIVER,
+    FULL_C6_NATIVE_POSTPROCESSOR,
     FullC6EnvironmentBinding,
     FullC6ExecutorReceipt,
     FullC6FrozenTreeManifest,
@@ -54,6 +65,7 @@ from rextio.build.full_c6_supply_chain import (
 from rextio.build.input_closure import (
     BuildInputClosure,
     BuildInputIdentityError,
+    ExactFileIdentity,
     capture_exact_file,
     capture_exact_file_bytes,
 )
@@ -79,6 +91,7 @@ from rextio.source.source_lock_v2 import (
     SourceLockV2VerifiedContext,
     validate_source_lock_v2_verified_context,
 )
+from rextio.source.wheel_authority import verify_source_wheel_license_detection
 
 
 FULL_C6_EXTERNAL_ARCHIVE_RECEIPT_DOMAIN = (
@@ -134,6 +147,7 @@ def prepare_full_c6_preauthorization_evidence(
     wheel_entries: tuple[WheelEntryRef, ...],
     policy: FullC6PolicyReceipt,
     source_verification: SourceLockV2Verification,
+    analysis_ir_transaction: FullC6AnalysisIRTransaction,
     toolchain: BuildToolchainIdentity,
     cargo_path_source: FullC6CargoPathSource,
     runtime_authorization: RuntimeAuthorizationReceipt,
@@ -151,11 +165,24 @@ def prepare_full_c6_preauthorization_evidence(
             source_context=trusted_context,
             expected_public_key_sha256=expected_public_key_sha256,
         )
+        validate_full_c6_analysis_ir_transaction(
+            analysis_ir_transaction,
+            source_verification=source_verification,
+            build_inputs=build_inputs,
+            policy=policy,
+        )
+        _require_external_license_bindings(
+            policy=policy,
+            source_context=trusted_context,
+        )
         _revalidate_subject(subject_path, subject)
         trusted_executor = _validate_executor_bindings(
             executor,
             toolchain=toolchain,
             subject=subject,
+            target_triple=target_triple,
+            build_inputs=build_inputs,
+            policy=policy,
         )
         if (
             type(runtime_authorization) is not RuntimeAuthorizationReceipt
@@ -232,6 +259,7 @@ def authorize_full_c6_distribution(
     wheel_entries: tuple[WheelEntryRef, ...],
     policy: FullC6PolicyReceipt,
     source_verification: SourceLockV2Verification,
+    analysis_ir_transaction: FullC6AnalysisIRTransaction,
     toolchain: BuildToolchainIdentity,
     cargo_path_source: FullC6CargoPathSource,
     runtime_authorization: RuntimeAuthorizationReceipt,
@@ -251,6 +279,7 @@ def authorize_full_c6_distribution(
         wheel_entries=wheel_entries,
         policy=policy,
         source_verification=source_verification,
+        analysis_ir_transaction=analysis_ir_transaction,
         toolchain=toolchain,
         cargo_path_source=cargo_path_source,
         runtime_authorization=runtime_authorization,
@@ -368,7 +397,11 @@ def authorize_full_c6_distribution(
         return result
     except FullC6GateError:
         raise
-    except (BuildInputIdentityError, SignatureVerificationError) as exc:
+    except (
+        BuildInputIdentityError,
+        FullC6AnalysisTransactionError,
+        SignatureVerificationError,
+    ) as exc:
         raise FullC6GateError("Full C6 final signature or output verification failed") from exc
     except Exception as exc:
         raise FullC6GateError("Full C6 authorization failed closed") from exc
@@ -397,11 +430,94 @@ def _rebuild_source_verification(
     return context
 
 
+def _require_external_license_bindings(
+    *,
+    policy: FullC6PolicyReceipt,
+    source_context: SourceLockV2VerifiedContext,
+) -> None:
+    """Re-derive external license evidence from the admitted wheel bytes."""
+    wheel = source_context.wheel
+    detection = wheel.license_detection
+    if (
+        not verify_source_wheel_license_detection(
+            detection,
+            wheel.license_entry_paths,
+            wheel.license_payloads,
+        )
+        or detection.status != "detected"
+        or detection.detected_spdx is None
+        or detection.detected_spdx != source_context.manifest.observed_license
+    ):
+        raise FullC6GateError(
+            "Full C6 requires independent exact-byte license detection"
+        )
+    source_detector_receipt_sha256 = detection.semantic_sha256
+    entries = {item.path: item for item in wheel.entries}
+    files: list[FullC6PolicyFileIdentity] = []
+    if len(wheel.license_payloads) != len(wheel.license_entry_paths):
+        raise FullC6GateError("Full C6 external license payload coverage is incomplete")
+    for path, payload in zip(
+        wheel.license_entry_paths,
+        wheel.license_payloads,
+        strict=True,
+    ):
+        entry = entries.get(path)
+        digest = hashlib.sha256(payload).hexdigest()
+        if (
+            type(payload) is not bytes
+            or entry is None
+            or entry.sha256 != digest
+            or entry.size != len(payload)
+        ):
+            raise FullC6GateError("Full C6 external license payload bytes are stale")
+        files.append(
+            FullC6PolicyFileIdentity(
+                logical_path=f"external/{path}",
+                sha256=digest,
+                size=len(payload),
+                role="license-file",
+            )
+        )
+    actual_files = tuple(sorted(files, key=lambda item: item.logical_path.casefold()))
+    try:
+        detector_payload_sha256 = full_c6_license_detector_payload_digest(
+            detection.detected_spdx,
+            actual_files,
+            source_detector_receipt_sha256=source_detector_receipt_sha256,
+        )
+    except (TypeError, ValueError) as exc:
+        raise FullC6GateError("Full C6 external license observation is invalid") from exc
+    external_rows = tuple(
+        row for row in policy.rows if row.class_id.startswith("external-source:")
+    )
+    if not external_rows:
+        raise FullC6GateError("Full C6 external license policy coverage is empty")
+    for row in external_rows:
+        evidence = row.license_evidence
+        if (
+            evidence is None
+            or evidence.detected_spdx != detection.detected_spdx
+            or evidence.source_detector_receipt_sha256
+            != source_detector_receipt_sha256
+            or evidence.license_files != actual_files
+            or not hmac.compare_digest(
+                evidence.detector_payload_sha256,
+                detector_payload_sha256,
+            )
+        ):
+            raise FullC6GateError(
+                "Full C6 external license policy is not derived from exact wheel bytes"
+            )
+
+
 def _validate_executor_bindings(
     value: FullC6ExecutorReceipt,
     *,
     toolchain: BuildToolchainIdentity,
     subject: EvidenceFileRef,
+    target_triple: str,
+    build_inputs: BuildInputClosure,
+    policy: FullC6PolicyReceipt,
 ) -> FullC6ExecutorReceipt:
     """Rebuild and cross-bind the only executor posture accepted by Full C6."""
     if type(value) is not FullC6ExecutorReceipt:
@@ -453,6 +569,9 @@ def _validate_executor_bindings(
             lock_driver=value.lock_driver,
             toolchain_sha256=value.toolchain_sha256,
             cargo_executable_sha256=value.cargo_executable_sha256,
+            postprocessor=value.postprocessor,
+            postprocessor_manifest_sha256=value.postprocessor_manifest_sha256,
+            target_triple=value.target_triple,
             domain=value.domain,
             scope=value.scope,
             complete_for_scope=value.complete_for_scope,
@@ -475,6 +594,11 @@ def _validate_executor_bindings(
         for item in rebuilt.frozen_tree.entries
         if item.kind == "file" and item.logical_name == "Cargo.lock"
     )
+    driver_manifests = tuple(
+        item
+        for item in rebuilt.frozen_tree.entries
+        if item.kind == "file" and item.logical_name == FULL_C6_NATIVE_DRIVER_MANIFEST
+    )
     expected_lock = toolchain.cargo_sources.lock_file
     expected = (
         (rebuilt.toolchain_sha256, toolchain.digest),
@@ -487,8 +611,12 @@ def _validate_executor_bindings(
         invocation.argv_count != len(toolchain.argv.values)
         or rebuilt.invocations[1].argv_count != len(toolchain.argv.values)
         or len(cargo_lock) != 1
+        or len(driver_manifests) != 1
         or cargo_lock[0].sha256 != expected_lock.sha256
         or cargo_lock[0].size != expected_lock.size
+        or rebuilt.postprocessor != FULL_C6_NATIVE_POSTPROCESSOR
+        or rebuilt.target_triple != target_triple
+        or driver_manifests[0].sha256 != rebuilt.postprocessor_manifest_sha256
         or any(
             type(actual) is not str
             or type(wanted) is not str
@@ -499,7 +627,129 @@ def _validate_executor_bindings(
         raise FullC6GateError(
             "Full C6 executor tree, invocations, or toolchain binding is stale"
         )
+    _require_executor_build_input_projection(
+        executor=rebuilt,
+        build_inputs=build_inputs,
+        policy=policy,
+    )
     return rebuilt
+
+
+def _require_executor_build_input_projection(
+    *,
+    executor: FullC6ExecutorReceipt,
+    build_inputs: BuildInputClosure,
+    policy: FullC6PolicyReceipt,
+) -> None:
+    """Bind every frozen Cargo-project file to the exact closure projection.
+
+    Project sources, stubs, and the policy lock remain outside the executor
+    project, but their complete closure digest is signed in the same
+    preauthorization graph.  Generated Rust is projected at the executor root
+    and generated Python is projected below ``python-staging``.  The native
+    driver manifest is the sole executor-owned file and is separately bound to
+    its receipt digest below.
+    """
+    if type(build_inputs) is not BuildInputClosure or type(policy) is not FullC6PolicyReceipt:
+        raise FullC6GateError("Full C6 executor build-input projection is invalid")
+    closure = {item.logical_name: item for item in build_inputs.files}
+    generated_classes = {
+        "file-input:generated-python-input": "python",
+        "file-input:generated-rust-lib": "rust",
+        "file-input:generated-rust-build-input": "rust",
+        "file-input:generated-cargo-lock": "rust",
+    }
+    generated_rows = tuple(
+        row for row in policy.rows if row.class_id in generated_classes
+    )
+    if {row.class_id for row in generated_rows} != set(generated_classes):
+        raise FullC6GateError("Full C6 generated input classes are incomplete")
+    projected: dict[str, ExactFileIdentity] = {}
+    for row in generated_rows:
+        generated_kind = generated_classes[row.class_id]
+        relative = _full_c6_generated_executor_path(
+            row.canonical_identity,
+            generated_kind=generated_kind,
+        )
+        if row.class_id == "file-input:generated-rust-lib" and relative != "src/lib.rs":
+            raise FullC6GateError("Full C6 generated Rust lib path is invalid")
+        item = closure.get(row.canonical_identity)
+        if (
+            item is None
+            or row.sha256 != item.sha256
+            or row.size != item.size
+            or relative in projected
+        ):
+            raise FullC6GateError("Full C6 generated closure projection is stale")
+        projected[relative] = item
+    tree_files = {
+        item.logical_name: item
+        for item in executor.frozen_tree.entries
+        if item.kind == "file"
+    }
+    executor_owned = {FULL_C6_NATIVE_DRIVER_MANIFEST}
+    if set(projected) | executor_owned != set(tree_files):
+        raise FullC6GateError(
+            "Full C6 executor frozen tree differs from the generated closure"
+        )
+    driver_manifest = tree_files[FULL_C6_NATIVE_DRIVER_MANIFEST]
+    if (
+        driver_manifest.sha256 is None
+        or executor.postprocessor_manifest_sha256 is None
+        or not hmac.compare_digest(
+            driver_manifest.sha256,
+            executor.postprocessor_manifest_sha256,
+        )
+        or driver_manifest.mode != 0o644
+    ):
+        raise FullC6GateError("Full C6 native driver manifest binding is stale")
+    for logical_name, exact_file in projected.items():
+        tree_file = tree_files[logical_name]
+        executable = tree_file.mode == 0o755
+        if (
+            tree_file.sha256 != exact_file.sha256
+            or tree_file.size != exact_file.size
+            or executable != exact_file.executable
+        ):
+            raise FullC6GateError(
+                "Full C6 executor frozen tree bytes differ from the build-input closure"
+            )
+
+
+def _full_c6_generated_executor_path(
+    canonical_identity: str,
+    *,
+    generated_kind: str,
+) -> str:
+    """Project one explicit generated identity into the executor tree.
+
+    Production identities are rooted below ``.rextio/generated``.  The
+    path-free policy fixtures use the shorter ``generated`` root.  No basename
+    or suffix-only guessing is accepted for either form.
+    """
+    if generated_kind not in {"python", "rust"}:
+        raise FullC6GateError("Full C6 generated projection kind is invalid")
+    parts = PurePosixPath(canonical_identity).parts
+    production_marker = (".rextio", "generated", generated_kind)
+    production_matches = tuple(
+        index
+        for index in range(len(parts) - len(production_marker) + 1)
+        if parts[index : index + len(production_marker)] == production_marker
+    )
+    if len(production_matches) == 1:
+        relative_parts = parts[production_matches[0] + len(production_marker) :]
+    elif len(production_matches) > 1:
+        raise FullC6GateError("Full C6 generated input root is ambiguous")
+    elif parts[:2] == ("generated", generated_kind):
+        relative_parts = parts[2:]
+    else:
+        raise FullC6GateError("Full C6 generated input root is invalid")
+    if not relative_parts:
+        raise FullC6GateError("Full C6 generated input path is invalid")
+    relative = PurePosixPath(*relative_parts)
+    if generated_kind == "python":
+        relative = PurePosixPath("python-staging") / relative
+    return relative.as_posix()
 
 
 def _require_owner_key_bindings(

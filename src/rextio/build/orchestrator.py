@@ -1662,8 +1662,11 @@ def generate_source_artifact(
     rust_importable: bool = False,
     rust_crate_name: str = "rextio_generated_rust",
     embedding_enabled: bool = False,
+    full_c6_external_context: FullC6ExternalBuildContext | None = None,
 ) -> GenerateResult:
     """Generate native and Python source artifacts without compiling."""
+    if full_c6_external_context is not None:
+        validate_full_c6_external_context(full_c6_external_context, analysis)
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
     artifact_profiles = _generate_artifact_profiles(
@@ -1684,6 +1687,7 @@ def generate_source_artifact(
         layout,
         target_plan,
         embedding_enabled=embedding_enabled,
+        full_c6_external_context=full_c6_external_context,
     )
     rust_crate_source = _generate_rust_crate_source(
         plan,

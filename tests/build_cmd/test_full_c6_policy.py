@@ -225,6 +225,7 @@ def _license(
     declared: str = "MIT",
     detected: str = "MIT",
     files: tuple[FullC6PolicyFileIdentity, ...] | None = None,
+    source_detector_receipt_sha256: str = "c" * 64,
     detector_payload_sha256: str = "b" * 64,
 ) -> FullC6LicenseEvidence:
     return FullC6LicenseEvidence(
@@ -233,6 +234,7 @@ def _license(
         subject_authority_identity=authority_identity,
         subject_identity_sha256=authority_identity.rsplit(":", 1)[-1],
         authority_partition_sha256=authority_partition_sha256,
+        source_detector_receipt_sha256=source_detector_receipt_sha256,
         detector_payload_sha256=detector_payload_sha256,
         license_files=files or (_file("licenses/PROJECT-LICENSE"),),
     )
@@ -317,6 +319,7 @@ def _record(
     authority_partition_sha256: str,
     analysis_sha256: str,
     lowered_ir_sha256: str,
+    generator_sha256: str = "c" * 64,
     analysis_receipt_kind: str = FULL_C6_ANALYSIS_RECEIPT_KIND,
     lowered_ir_receipt_kind: str = FULL_C6_LOWERED_IR_RECEIPT_KIND,
 ) -> FullC6TransformationRecord:
@@ -335,7 +338,7 @@ def _record(
         transformation_kind=kind,
         source_identity_set_sha256=source_set,
         output_identity_sha256=output_identity_sha256,
-        generator_sha256="c" * 64,
+        generator_sha256=generator_sha256,
         analysis_receipt_sha256=analysis_receipt,
         lowered_ir_sha256=lowered_ir_sha256,
     )
@@ -348,7 +351,7 @@ def _record(
         output_identity_sha256=output_identity_sha256,
         authority_partition_sha256=authority_partition_sha256,
         source_identity_set_sha256=source_set,
-        generator_sha256="c" * 64,
+        generator_sha256=generator_sha256,
         analysis_sha256=analysis_sha256,
         analysis_receipt_sha256=analysis_receipt,
         lowered_ir_sha256=lowered_ir_sha256,
@@ -614,6 +617,15 @@ def test_detector_and_license_file_set_are_bound_to_each_exact_row() -> None:
         != first.license_evidence.license_file_identity_set_sha256
     )
     assert different_files.detector_receipt_sha256 != first.license_evidence.detector_receipt_sha256
+
+    different_source_detector = replace(
+        first.license_evidence,
+        source_detector_receipt_sha256="9" * 64,
+    )
+    assert (
+        different_source_detector.detector_receipt_sha256
+        != first.license_evidence.detector_receipt_sha256
+    )
 
     stale = replace(
         first.license_evidence,

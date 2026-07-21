@@ -24,7 +24,20 @@ from rextio.build.full_c6_pipeline import (
     load_configured_full_c6_policy,
     prepare_full_c6_external_build,
 )
-from rextio.build.orchestrator import _generate_native_source, build_hybrid_artifact
+from rextio.build.orchestrator import (
+    _generate_native_source,
+    build_hybrid_artifact,
+    generate_source_artifact,
+)
+from rextio.build.supply_chain import (
+    capture_generated_python_inputs,
+    capture_generated_rust_inputs,
+    capture_project_source_snapshot,
+)
+from rextio.build.transformation_inventory import collect_source_transformation_inventory
+from rextio.build.transformation_verification import (
+    collect_scoped_source_transformation_verification,
+)
 from rextio.build.runtime_authorization import RUNTIME_VERIFICATION_NATIVE_FRESH
 from rextio.build.wheel_builder import build_artifact_wheel
 from rextio.cli.main import main
@@ -148,6 +161,51 @@ def test_signed_source_preflight_threads_private_ir_guard_and_wheel_contract(
     assert not any(name.startswith("demo_pkg/") and name.endswith(".py") for name in names)
 
 
+def test_source_only_generation_replays_exact_external_c5_2_ir(tmp_path: Path) -> None:
+    preflight = _external_preflight(tmp_path)
+    project = preflight.analysis.project_root
+    result = generate_source_artifact(
+        project,
+        preflight.analysis,
+        "cpython",
+        full_c6_external_context=preflight.context,
+    )
+    snapshot = capture_project_source_snapshot(project_root=project, plan=result.plan)
+    snapshot = capture_generated_python_inputs(
+        snapshot,
+        project_root=project,
+        layout=result.layout,
+    )
+    snapshot = capture_generated_rust_inputs(
+        snapshot,
+        project_root=project,
+        layout=result.layout,
+    )
+    inventory = collect_source_transformation_inventory(
+        project_root=project,
+        plan=result.plan,
+        input_snapshot=snapshot,
+    )
+    assert inventory is not None
+
+    verification = collect_scoped_source_transformation_verification(
+        project_root=project,
+        plan=result.plan,
+        input_snapshot=snapshot,
+        transformation_inventory=inventory,
+        embedding_enabled=False,
+        external_native_registry=preflight.context.registry,
+        external_runtime_guard=preflight.context.runtime_guard,
+    )
+
+    assert verification is not None
+    assert any(
+        item.logical_path.endswith("/src/lib.rs")
+        and item.sha256 == verification.generated_rust.sha256
+        for item in snapshot.generated_rust
+    )
+
+
 def test_direct_orchestrator_requires_strict_context_and_policy_pair(tmp_path: Path) -> None:
     preflight = _external_preflight(tmp_path)
     with pytest.raises(FullC6PipelineError, match="same-transaction"):
@@ -190,6 +248,7 @@ def _finalization_materials(tmp_path: Path):
         wheel_entries=arguments["wheel_entries"],  # type: ignore[arg-type]
         policy=arguments["policy"],  # type: ignore[arg-type]
         source_verification=arguments["source_verification"],  # type: ignore[arg-type]
+        analysis_ir_transaction=arguments["analysis_ir_transaction"],  # type: ignore[arg-type]
         toolchain=arguments["toolchain"],  # type: ignore[arg-type]
         cargo_path_source=arguments["cargo_path_source"],  # type: ignore[arg-type]
         runtime_authorization=arguments["runtime_authorization"],  # type: ignore[arg-type]

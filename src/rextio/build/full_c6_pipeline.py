@@ -31,6 +31,7 @@ from rextio.analyzer.models import ProjectAnalysis
 from rextio.artifacts.evidence import EvidenceFileRef, WheelEntryRef, canonical_json_bytes
 from rextio.artifacts.full_authorization import full_c6_preauthorization_evidence_digest
 from rextio.build.full_c6_executor import FullC6ExecutorReceipt
+from rextio.build.full_c6_analysis_transaction import FullC6AnalysisIRTransaction
 from rextio.build.full_c6_gate import (
     FullC6GateResult,
     authorize_full_c6_distribution,
@@ -338,6 +339,7 @@ class FullC6FinalizationMaterials:
     wheel_entries: tuple[WheelEntryRef, ...]
     policy: FullC6PolicyReceipt
     source_verification: SourceLockV2Verification = field(repr=False)
+    analysis_ir_transaction: FullC6AnalysisIRTransaction = field(repr=False)
     toolchain: BuildToolchainIdentity
     cargo_path_source: FullC6CargoPathSource
     runtime_authorization: RuntimeAuthorizationReceipt
@@ -353,6 +355,7 @@ class FullC6FinalizationMaterials:
             or type(self.wheel_entries) is not tuple
             or any(type(item) is not WheelEntryRef for item in self.wheel_entries)
             or type(self.source_verification) is not SourceLockV2Verification
+            or type(self.analysis_ir_transaction) is not FullC6AnalysisIRTransaction
             or type(self.toolchain) is not BuildToolchainIdentity
             or type(self.cargo_path_source) is not FullC6CargoPathSource
             or type(self.runtime_authorization) is not RuntimeAuthorizationReceipt
@@ -440,6 +443,7 @@ def finalize_full_c6_distribution(
         wheel_entries=materials.wheel_entries,
         policy=materials.policy,
         source_verification=materials.source_verification,
+        analysis_ir_transaction=materials.analysis_ir_transaction,
         toolchain=materials.toolchain,
         cargo_path_source=materials.cargo_path_source,
         runtime_authorization=materials.runtime_authorization,
@@ -483,6 +487,7 @@ def finalize_full_c6_distribution(
         wheel_entries=materials.wheel_entries,
         policy=materials.policy,
         source_verification=materials.source_verification,
+        analysis_ir_transaction=materials.analysis_ir_transaction,
         toolchain=materials.toolchain,
         cargo_path_source=materials.cargo_path_source,
         runtime_authorization=materials.runtime_authorization,

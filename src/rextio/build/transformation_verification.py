@@ -35,6 +35,7 @@ from rextio.codegen.rust.generator import generate_rust_module
 from rextio.ir.lowering import lower_project
 from rextio.partition.build_plan import BuildPlan
 from rextio.source.models import SourceModule, SourceOrigin
+from rextio.source.external_linkage import ExternalNativeRegistry, ExternalRuntimeGuard
 
 if TYPE_CHECKING:
     from rextio.build.supply_chain import EvidenceInputSnapshot
@@ -76,6 +77,8 @@ def collect_scoped_source_transformation_verification(
     input_snapshot: EvidenceInputSnapshot,
     transformation_inventory: SourceTransformationInventory,
     embedding_enabled: bool,
+    external_native_registry: ExternalNativeRegistry | None = None,
+    external_runtime_guard: ExternalRuntimeGuard | None = None,
 ) -> SourceTransformationVerification | None:
     """Replay one complete plugin-free project-native PyO3 closure, or ``None``."""
     try:
@@ -85,6 +88,8 @@ def collect_scoped_source_transformation_verification(
             input_snapshot=input_snapshot,
             transformation_inventory=transformation_inventory,
             embedding_enabled=embedding_enabled,
+            external_native_registry=external_native_registry,
+            external_runtime_guard=external_runtime_guard,
         )
     except Exception:
         return None
@@ -97,6 +102,8 @@ def _collect_scoped_source_transformation_verification(
     input_snapshot: EvidenceInputSnapshot,
     transformation_inventory: SourceTransformationInventory,
     embedding_enabled: bool,
+    external_native_registry: ExternalNativeRegistry | None,
+    external_runtime_guard: ExternalRuntimeGuard | None,
 ) -> SourceTransformationVerification:
     from rextio.build.supply_chain import EvidenceInputSnapshot as SnapshotModel
 
@@ -108,6 +115,13 @@ def _collect_scoped_source_transformation_verification(
         raise TypeError("source transformation verification inventory is invalid")
     if type(embedding_enabled) is not bool or embedding_enabled:
         raise ValueError("source transformation verification embedding is out of scope")
+    if (external_native_registry is None) != (external_runtime_guard is None):
+        raise ValueError("source transformation verification external context is incomplete")
+    if external_native_registry is not None and (
+        type(external_native_registry) is not ExternalNativeRegistry
+        or type(external_runtime_guard) is not ExternalRuntimeGuard
+    ):
+        raise TypeError("source transformation verification external context is invalid")
     if input_snapshot.unavailable_reason is not None:
         raise ValueError("source transformation verification snapshot is unavailable")
 
@@ -184,6 +198,7 @@ def _collect_scoped_source_transformation_verification(
         delegate_fallback=False,
         plugin_registry=None,
         plugin_config=None,
+        external_native_registry=external_native_registry,
     )
     original_stub_inputs = plan.analysis._stub_inputs
     if original_stub_inputs is not None:
@@ -197,9 +212,20 @@ def _collect_scoped_source_transformation_verification(
         replay_analysis,
         include_embedding=False,
         plugin_types=None,
+        external_native_registry=external_native_registry,
     )
     ir_qualnames = tuple(function.qualname for function in module_ir.functions)
-    if ir_qualnames != tuple(sorted(accepted)):
+    external_qualnames = (
+        tuple(function.qualname for function in external_native_registry.private_functions)
+        if external_native_registry is not None
+        else ()
+    )
+    expected_ir_qualnames = (*accepted, *external_qualnames)
+    if (
+        len(set(expected_ir_qualnames)) != len(expected_ir_qualnames)
+        or len(ir_qualnames) != len(expected_ir_qualnames)
+        or set(ir_qualnames) != set(expected_ir_qualnames)
+    ):
         raise ValueError("source transformation verification lowered closure differs")
     if any(
         function.native_runtime_semantics
@@ -207,6 +233,7 @@ def _collect_scoped_source_transformation_verification(
         or function.has_boundary_calls
         or function.plugin_lowered
         for function in module_ir.functions
+        if function.qualname in accepted
     ):
         raise ValueError("source transformation verification lowered flags are out of scope")
     regenerated = generate_rust_module(
@@ -214,6 +241,7 @@ def _collect_scoped_source_transformation_verification(
         boundary_call_return_types={},
         plugin_providers={},
         plugin_types_by_key={},
+        external_runtime_guard=external_runtime_guard,
     ).encode("utf-8")
     if regenerated != initial_generated.data:
         raise ValueError("source transformation verification regenerated Rust differs")

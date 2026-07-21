@@ -233,6 +233,8 @@ class FullC6SupplyChainReceipt:
     cargo_path_source_sha256: str
     runtime_authorization_sha256: str
     reproducibility_sha256: str
+    reproducible_sbom_input_sha256: str
+    reproducible_provenance_input_sha256: str
     sbom_json: bytes = field(repr=False)
     provenance_json: bytes = field(repr=False)
     domain: str = FULL_C6_SUPPLY_CHAIN_DOMAIN
@@ -260,6 +262,11 @@ class FullC6SupplyChainReceipt:
             (self.cargo_path_source_sha256, "Cargo path source"),
             (self.runtime_authorization_sha256, "runtime authorization"),
             (self.reproducibility_sha256, "reproducibility"),
+            (self.reproducible_sbom_input_sha256, "reproducible SBOM input"),
+            (
+                self.reproducible_provenance_input_sha256,
+                "reproducible provenance input",
+            ),
         ):
             _require_sha256(value, label)
         sbom = validate_full_c6_supply_chain_document(self.sbom_json, document_kind="sbom")
@@ -393,6 +400,7 @@ def _rebuild_license(value: FullC6LicenseEvidence) -> FullC6LicenseEvidence:
         subject_authority_identity=value.subject_authority_identity,
         subject_identity_sha256=value.subject_identity_sha256,
         authority_partition_sha256=value.authority_partition_sha256,
+        source_detector_receipt_sha256=value.source_detector_receipt_sha256,
         detector_payload_sha256=value.detector_payload_sha256,
         license_files=tuple(_rebuild_policy_file(item) for item in value.license_files),
         detector_receipt_kind=value.detector_receipt_kind,
@@ -983,6 +991,11 @@ def _receipt_materials(
         ("cargo-path-source", cargo_root.source_tree_sha256),
         ("runtime-authorization", runtime.digest),
         ("two-build-reproducibility", reproducibility.digest),
+        ("reproducible-sbom-input", reproducibility.sbom_canonical_sha256),
+        (
+            "reproducible-provenance-input",
+            reproducibility.provenance_input_canonical_sha256,
+        ),
     )
 
 
@@ -1177,6 +1190,14 @@ def _build_sbom(
                 {"name": "rextio:target_triple", "value": target_triple},
                 {"name": "rextio:composition", "value": "complete"},
                 {"name": "rextio:partition_sha256", "value": partition_sha256},
+                {
+                    "name": "rextio:reproducible_sbom_input_sha256",
+                    "value": reproducibility.sbom_canonical_sha256,
+                },
+                {
+                    "name": "rextio:reproducible_provenance_input_sha256",
+                    "value": reproducibility.provenance_input_canonical_sha256,
+                },
                 {"name": "rextio:signed", "value": "false"},
                 {"name": "rextio:distribution_authorized", "value": "false"},
             ],
@@ -1280,6 +1301,14 @@ def _build_provenance(
                     "scope": FULL_C6_SCOPE,
                     "partition_sha256": partition_sha256,
                     "receipt_bindings": bindings,
+                    "reproducibility_input_projection": {
+                        "sbom_canonical_sha256": (
+                            reproducibility.sbom_canonical_sha256
+                        ),
+                        "provenance_input_canonical_sha256": (
+                            reproducibility.provenance_input_canonical_sha256
+                        ),
+                    },
                     "cargo_argv_sha256": toolchain.argv.digest,
                     "environment": [item.to_dict() for item in toolchain.environment],
                     "complete_for_scope": True,
@@ -1432,6 +1461,12 @@ def build_full_c6_supply_chain_receipt(
         cargo_path_source_sha256=trusted_cargo_root.source_tree_sha256,
         runtime_authorization_sha256=trusted_runtime.digest,
         reproducibility_sha256=trusted_reproducibility.digest,
+        reproducible_sbom_input_sha256=(
+            trusted_reproducibility.sbom_canonical_sha256
+        ),
+        reproducible_provenance_input_sha256=(
+            trusted_reproducibility.provenance_input_canonical_sha256
+        ),
         sbom_json=sbom_json,
         provenance_json=provenance_json,
     )
@@ -1545,6 +1580,10 @@ def _receipt_bindings(value: FullC6SupplyChainReceipt) -> dict[str, str]:
         "cargo-path-source": value.cargo_path_source_sha256,
         "runtime-authorization": value.runtime_authorization_sha256,
         "two-build-reproducibility": value.reproducibility_sha256,
+        "reproducible-sbom-input": value.reproducible_sbom_input_sha256,
+        "reproducible-provenance-input": (
+            value.reproducible_provenance_input_sha256
+        ),
     }
 
 
@@ -1577,6 +1616,10 @@ def _validate_receipt_documents(
             or properties.get("rextio:target_triple") != value.target_triple
             or properties.get("rextio:composition") != "complete"
             or properties.get("rextio:partition_sha256") != value.partition_sha256
+            or properties.get("rextio:reproducible_sbom_input_sha256")
+            != value.reproducible_sbom_input_sha256
+            or properties.get("rextio:reproducible_provenance_input_sha256")
+            != value.reproducible_provenance_input_sha256
             or properties.get("rextio:signed") != "false"
             or properties.get("rextio:distribution_authorized") != "false"
         ):
@@ -1603,6 +1646,13 @@ def _validate_receipt_documents(
             or parameters.get("scope") != FULL_C6_SCOPE
             or parameters.get("partition_sha256") != value.partition_sha256
             or parameters.get("receipt_bindings") != _receipt_bindings(value)
+            or parameters.get("reproducibility_input_projection")
+            != {
+                "sbom_canonical_sha256": value.reproducible_sbom_input_sha256,
+                "provenance_input_canonical_sha256": (
+                    value.reproducible_provenance_input_sha256
+                ),
+            }
             or parameters.get("complete_for_scope") is not True
             or parameters.get("signed") is not False
             or parameters.get("distribution_authorized") is not False
@@ -1630,6 +1680,10 @@ def verify_full_c6_supply_chain_receipt(
         cargo_path_source_sha256=value.cargo_path_source_sha256,
         runtime_authorization_sha256=value.runtime_authorization_sha256,
         reproducibility_sha256=value.reproducibility_sha256,
+        reproducible_sbom_input_sha256=value.reproducible_sbom_input_sha256,
+        reproducible_provenance_input_sha256=(
+            value.reproducible_provenance_input_sha256
+        ),
         sbom_json=bytes(value.sbom_json),
         provenance_json=bytes(value.provenance_json),
         domain=value.domain,

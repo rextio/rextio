@@ -9,7 +9,12 @@ import runpy
 
 import pytest
 
-from rextio.artifacts.evidence import EvidenceFileRef
+from rextio.artifacts.evidence import (
+    EvidenceFileRef,
+    SourceTransformationVerification,
+    canonical_json_bytes,
+    sha256_hex,
+)
 from rextio.artifacts.full_authorization import (
     FULL_C6_PREAUTHORIZATION_RECEIPT_IDS,
     FULL_C6_RECEIPT_IDS,
@@ -21,8 +26,14 @@ from rextio.build.full_c6_gate import (
     authorize_full_c6_distribution,
     prepare_full_c6_preauthorization_evidence,
 )
+from rextio.build.full_c6_analysis_transaction import (
+    FullC6AnalysisIRTransaction,
+    create_full_c6_analysis_ir_transaction,
+)
 from rextio.build.full_c6_executor import (
+    FULL_C6_NATIVE_DRIVER_MANIFEST,
     FULL_C6_NATIVE_EXECUTION_DRIVER,
+    FULL_C6_NATIVE_POSTPROCESSOR,
     FULL_C6_PREEXISTING_LOCK_DRIVER,
     FullC6ExecutorReceipt,
     FullC6FrozenTreeManifest,
@@ -31,8 +42,11 @@ from rextio.build.full_c6_executor import (
 )
 from rextio.build.full_c6_policy import (
     FULL_C6_EXTERNAL_AUTHORITY_IDENTITY_SCHEME,
+    FullC6LicenseEvidence,
+    FullC6PolicyFileIdentity,
     FullC6PolicyReceipt,
     full_c6_authority_partition_digest,
+    full_c6_license_detector_payload_digest,
 )
 from rextio.build.full_c6_supply_chain import (
     FullC6CargoPathSource,
@@ -147,6 +161,27 @@ def _policy_for(
         for authority, logical_name, digest, size in values
     }
     subject_sha256 = hashlib.sha256(subject_bytes).hexdigest()
+    wheel = verification.context.wheel
+    wheel_entries = {item.path: item for item in wheel.entries}
+    license_files = tuple(
+        FullC6PolicyFileIdentity(
+            logical_path=f"external/{path}",
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size=len(payload),
+            role="license-file",
+        )
+        for path, payload in zip(
+            wheel.license_entry_paths,
+            wheel.license_payloads,
+            strict=True,
+        )
+        if wheel_entries[path].sha256 == hashlib.sha256(payload).hexdigest()
+    )
+    detector_payload_sha256 = full_c6_license_detector_payload_digest(
+        wheel.license_detection.detected_spdx or "",
+        license_files,
+        source_detector_receipt_sha256=wheel.license_detection.semantic_sha256,
+    )
     rebuilt_rows = []
     for row in rows:
         if row.authority_identity in values_by_authority:
@@ -157,8 +192,38 @@ def _policy_for(
                 sha256=digest,
                 size=size,
             )
+            assert row.license_evidence is not None
+            row = replace(
+                row,
+                license_evidence=FullC6LicenseEvidence(
+                    declared_spdx=manifest.declared_license,
+                    detected_spdx=wheel.license_detection.detected_spdx or "",
+                    subject_authority_identity=row.authority_identity,
+                    subject_identity_sha256=row.canonical_identity_sha256,
+                    authority_partition_sha256=partition,
+                    source_detector_receipt_sha256=(
+                        wheel.license_detection.semantic_sha256
+                    ),
+                    detector_payload_sha256=detector_payload_sha256,
+                    license_files=license_files,
+                ),
+            )
         elif row.class_id == "wheel-output:subject":
             row = replace(row, sha256=subject_sha256, size=len(subject_bytes))
+        elif row.class_id == "file-input:generated-rust-lib":
+            row = replace(
+                row,
+                canonical_identity="generated/rust/src/lib.rs",
+                sha256="d" * 64,
+                size=80,
+            )
+        elif row.class_id == "file-input:generated-rust-build-input":
+            row = replace(
+                row,
+                canonical_identity="generated/rust/Cargo.toml",
+                sha256="a" * 64,
+                size=64,
+            )
         rebuilt_rows.append(row)
     trusted_rows = tuple(rebuilt_rows)
     transformations = _POLICY["_transformations"](  # type: ignore[operator]
@@ -177,6 +242,72 @@ def _policy_for(
     )
 
 
+def _project_transformation(
+    policy: FullC6PolicyReceipt,
+) -> SourceTransformationVerification:
+    project_source = _row(policy, "file-input:project-python-source")
+    generated_rust = _row(policy, "file-input:generated-rust-lib")
+    source_inputs = (
+        EvidenceFileRef(
+            logical_path=project_source.canonical_identity,
+            sha256=project_source.sha256 or "",
+            size=project_source.size or 0,
+            role="project-python-source",
+        ),
+    )
+    generated = EvidenceFileRef(
+        logical_path=generated_rust.canonical_identity,
+        sha256=generated_rust.sha256 or "",
+        size=generated_rust.size or 0,
+        role="generated-rust-input",
+    )
+    return SourceTransformationVerification(
+        source_transformation_inventory_sha256="7" * 64,
+        source_input_set_sha256=sha256_hex(
+            canonical_json_bytes([item.to_dict() for item in source_inputs])
+        ),
+        module_ir_sha256="8" * 64,
+        function_qualnames=("app.compute",),
+        source_inputs=source_inputs,
+        generated_rust=generated,
+        regenerated_rust_sha256=generated.sha256,
+        regenerated_rust_size=generated.size,
+        generator_backend="rextio-core-rust-pyo3-v1",
+    )
+
+
+def _bind_policy_to_transaction(
+    policy: FullC6PolicyReceipt,
+    transaction: FullC6AnalysisIRTransaction,
+) -> FullC6PolicyReceipt:
+    transformations = tuple(
+        _POLICY["_record"](  # type: ignore[operator]
+            record_id=record.record_id,
+            kind=record.kind,
+            source_identities=record.source_identities,
+            source_identity_sha256s=record.source_identity_sha256s,
+            output_identity=record.output_identity,
+            output_identity_sha256=record.output_identity_sha256,
+            authority_partition_sha256=record.authority_partition_sha256,
+            analysis_sha256=transaction.analysis_sha256,
+            lowered_ir_sha256=transaction.lowered_ir_sha256(
+                transformation_kind=record.kind,
+                output_identity=record.output_identity,
+                output_identity_sha256=record.output_identity_sha256,
+            ),
+            generator_sha256=transaction.generator_sha256,
+        )
+        for record in policy.transformations
+    )
+    return FullC6PolicyReceipt(
+        rows=policy.rows,
+        transformations=transformations,
+        owner_declaration=policy.owner_declaration,
+        artifact_coverage=policy.artifact_coverage,
+        external_authority=policy.external_authority,
+    )
+
+
 def _fixture(tmp_path: Path) -> dict[str, object]:
     signed = _SOURCE["_write_signed"](tmp_path / "source-lock")  # type: ignore[operator]
     verification = _SOURCE["_verify_context"](signed)  # type: ignore[operator]
@@ -190,6 +321,13 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         subject_bytes=subject_bytes,
         key_hash=signed.key_hash,
     )
+    build_inputs = _SUPPLY["_build_inputs"](policy)  # type: ignore[operator]
+    transaction = create_full_c6_analysis_ir_transaction(
+        project_transformation=_project_transformation(policy),
+        source_verification=verification,
+        build_inputs=build_inputs,
+    )
+    policy = _bind_policy_to_transaction(policy, transaction)
     subject_row = _row(policy, "wheel-output:subject")
     subject = EvidenceFileRef(
         logical_path=subject_row.canonical_identity,
@@ -197,12 +335,15 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         size=subject_row.size or 0,
         role="host-extension-wheel",
     )
-    build_inputs = _SUPPLY["_build_inputs"](policy)  # type: ignore[operator]
+    assert build_inputs == _SUPPLY["_build_inputs"](policy)  # type: ignore[operator]
     wheel_entries = _SUPPLY["_wheel_entries"](policy)  # type: ignore[operator]
     toolchain = _SUPPLY["_toolchain"](policy)  # type: ignore[operator]
     runtime = _SUPPLY["_runtime"](policy)  # type: ignore[operator]
     reproducibility = _SUPPLY["_reproducibility"](policy)  # type: ignore[operator]
     lock = toolchain.cargo_sources.lock_file
+    driver_manifest_sha256 = "e" * 64
+    lib = _row(policy, "file-input:generated-rust-lib")
+    generated_python = _row(policy, "file-input:generated-python-input")
     frozen_tree = FullC6FrozenTreeManifest(
         entries=(
             FullC6TreeEntry(
@@ -217,6 +358,34 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
                 kind="file",
                 sha256="a" * 64,
                 size=64,
+                mode=0o644,
+            ),
+            FullC6TreeEntry(
+                logical_name="python-staging",
+                kind="directory",
+                sha256=None,
+                size=0,
+                mode=0o700,
+            ),
+            FullC6TreeEntry(
+                logical_name="python-staging/wrapper.py",
+                kind="file",
+                sha256=generated_python.sha256,
+                size=generated_python.size or 0,
+                mode=0o644,
+            ),
+            FullC6TreeEntry(
+                logical_name=FULL_C6_NATIVE_DRIVER_MANIFEST,
+                kind="file",
+                sha256=driver_manifest_sha256,
+                size=256,
+                mode=0o644,
+            ),
+            FullC6TreeEntry(
+                logical_name="src/lib.rs",
+                kind="file",
+                sha256=lib.sha256,
+                size=lib.size or 0,
                 mode=0o644,
             ),
         ),
@@ -241,6 +410,9 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         lock_driver=FULL_C6_PREEXISTING_LOCK_DRIVER,
         toolchain_sha256=toolchain.digest,
         cargo_executable_sha256=toolchain.cargo.executable.sha256,
+        postprocessor=FULL_C6_NATIVE_POSTPROCESSOR,
+        postprocessor_manifest_sha256=driver_manifest_sha256,
+        target_triple=TARGET,
     )
     root = _row(policy, "cargo-component:path-root-package")
     cargo_path_source = FullC6CargoPathSource(
@@ -269,6 +441,7 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         "wheel_entries": wheel_entries,
         "policy": policy,
         "source_verification": verification,
+        "analysis_ir_transaction": transaction,
         "toolchain": toolchain,
         "cargo_path_source": cargo_path_source,
         "runtime_authorization": runtime,
@@ -385,6 +558,9 @@ def test_gate_rejects_callback_or_unbound_executor_authority(tmp_path: Path) -> 
         execution_driver="callback-test-seam",
         toolchain_sha256=None,
         cargo_executable_sha256=None,
+        postprocessor=None,
+        postprocessor_manifest_sha256=None,
+        target_triple=None,
     )
     with pytest.raises(FullC6GateError, match="callback and test-only"):
         _request(arguments)
@@ -421,6 +597,89 @@ def test_gate_cross_binds_executor_tree_invocations_and_toolchain(
         changed = replace(executor, frozen_tree=replace(tree, entries=entries))  # type: ignore[arg-type]
     arguments["executor"] = changed
     with pytest.raises(FullC6GateError, match="tree, invocations, or toolchain"):
+        _request(arguments)
+
+
+def test_gate_rejects_non_lock_frozen_tree_bytes_outside_the_exact_closure(
+    tmp_path: Path,
+) -> None:
+    arguments = _fixture(tmp_path)
+    executor = arguments["executor"]
+    tree = executor.frozen_tree  # type: ignore[attr-defined]
+    entries = tuple(
+        replace(item, sha256="4" * 64)
+        if item.logical_name == "src/lib.rs"
+        else item
+        for item in tree.entries
+    )
+    arguments["executor"] = replace(
+        executor,  # type: ignore[arg-type]
+        frozen_tree=replace(tree, entries=entries),
+    )
+    with pytest.raises(FullC6GateError, match="bytes differ from the build-input closure"):
+        _request(arguments)
+
+
+def test_gate_rejects_generated_python_staging_bytes_outside_exact_closure(
+    tmp_path: Path,
+) -> None:
+    arguments = _fixture(tmp_path)
+    executor = arguments["executor"]
+    tree = executor.frozen_tree  # type: ignore[attr-defined]
+    entries = tuple(
+        replace(item, sha256="4" * 64)
+        if item.logical_name == "python-staging/wrapper.py"
+        else item
+        for item in tree.entries
+    )
+    arguments["executor"] = replace(
+        executor,  # type: ignore[arg-type]
+        frozen_tree=replace(tree, entries=entries),
+    )
+    with pytest.raises(FullC6GateError, match="bytes differ from the build-input closure"):
+        _request(arguments)
+
+
+def test_gate_rejects_unprojected_extra_executor_file(tmp_path: Path) -> None:
+    arguments = _fixture(tmp_path)
+    executor = arguments["executor"]
+    tree = executor.frozen_tree  # type: ignore[attr-defined]
+    extra = FullC6TreeEntry(
+        logical_name="unexpected.txt",
+        kind="file",
+        sha256="4" * 64,
+        size=12,
+        mode=0o644,
+    )
+    arguments["executor"] = replace(
+        executor,  # type: ignore[arg-type]
+        frozen_tree=replace(
+            tree,
+            entries=tuple(sorted((*tree.entries, extra), key=lambda item: item.logical_name)),
+        ),
+    )
+    with pytest.raises(FullC6GateError, match="differs from the generated closure"):
+        _request(arguments)
+
+
+def test_gate_rehashes_private_external_license_payload_bytes(tmp_path: Path) -> None:
+    arguments = _fixture(tmp_path)
+    verification = arguments["source_verification"]
+    context = verification.context  # type: ignore[attr-defined]
+    assert context is not None
+    object.__setattr__(context.wheel, "license_payloads", (b"forged-license",))
+    with pytest.raises(
+        FullC6GateError,
+        match="independent exact-byte license detection",
+    ):
+        _request(arguments)
+
+
+def test_gate_requires_same_transaction_analysis_and_ir_projection(tmp_path: Path) -> None:
+    arguments = _fixture(tmp_path)
+    transaction = arguments["analysis_ir_transaction"]
+    object.__setattr__(transaction, "analysis_sha256", "0" * 64)
+    with pytest.raises(FullC6GateError, match="preauthorization evidence failed closed"):
         _request(arguments)
 
 

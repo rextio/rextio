@@ -162,6 +162,7 @@ def _license(authority_identity: str, partition_sha256: str) -> FullC6LicenseEvi
         subject_authority_identity=authority_identity,
         subject_identity_sha256=authority_identity.rsplit(":", 1)[-1],
         authority_partition_sha256=partition_sha256,
+        source_detector_receipt_sha256="c" * 64,
         detector_payload_sha256="d" * 64,
         license_files=(
             FullC6PolicyFileIdentity(

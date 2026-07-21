@@ -40,6 +40,9 @@ FULL_C6_EXTERNAL_AUTHORITY_PARTITION_DOMAIN = "rextio.full-c6-external-authority
 FULL_C6_EXTERNAL_AUTHORITY_IDENTITY_SCHEME = "urn:rextio:full-c6-external-authority-component:v1"
 FULL_C6_AUTHORITY_PARTITION_DOMAIN = "rextio.full-c6-authority-partition.v1"
 FULL_C6_LICENSE_FILE_SET_DOMAIN = "rextio.full-c6-license-file-set.v1"
+FULL_C6_LICENSE_DETECTOR_PAYLOAD_DOMAIN = (
+    "rextio.full-c6-license-detector-payload.v1"
+)
 FULL_C6_LICENSE_DETECTOR_RECEIPT_DOMAIN = "rextio.full-c6-license-detector-receipt.v1"
 FULL_C6_LICENSE_DETECTOR_RECEIPT_KIND = "full-c6-independent-license-detection"
 FULL_C6_TRANSFORMATION_SOURCE_SET_DOMAIN = "rextio.full-c6-transformation-source-set.v1"
@@ -509,6 +512,47 @@ def _license_file_identity_set_digest(
     )
 
 
+def full_c6_license_detector_payload_digest(
+    detected_spdx: str,
+    files: tuple[FullC6PolicyFileIdentity, ...],
+    *,
+    source_detector_receipt_sha256: str,
+) -> str:
+    """Hash one independently observed SPDX result and exact license bytes.
+
+    The hard gate reconstructs ``files`` from the immutable license payloads
+    retained by the same SourceLock wheel-verification transaction.  Keeping
+    this preimage separate from the row-specific detector receipt lets one
+    exact external license observation be bound to every applicable row
+    without treating an owner-authored digest as detector authority.
+    """
+    parsed = _parse_spdx(detected_spdx, "detected SPDX expression")
+    _require_sha256(
+        source_detector_receipt_sha256,
+        "source license detector receipt sha256",
+    )
+    if type(files) is not tuple or not files:
+        raise FullC6PolicyError("Full C6 license detector files are invalid")
+    if any(type(item) is not FullC6PolicyFileIdentity for item in files):
+        raise TypeError("Full C6 license detector file identity has an invalid type")
+    canonical = tuple(sorted(files, key=lambda item: _identity_alias(item.logical_path)))
+    if files != canonical or any(item.role != "license-file" for item in files):
+        raise FullC6PolicyError("Full C6 license detector files are noncanonical")
+    aliases = tuple(_identity_alias(item.logical_path) for item in files)
+    if len(aliases) != len(set(aliases)):
+        raise FullC6PolicyError("Full C6 license detector files contain an alias")
+    return sha256_hex(
+        canonical_json_bytes(
+            {
+                "domain": FULL_C6_LICENSE_DETECTOR_PAYLOAD_DOMAIN,
+                "source_detector_receipt_sha256": source_detector_receipt_sha256,
+                "detected_spdx_projection": parsed,
+                "license_files": [item.to_dict() for item in files],
+            }
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FullC6LicenseEvidence:
     """Owner declaration plus an independent exact license observation."""
@@ -518,6 +562,7 @@ class FullC6LicenseEvidence:
     subject_authority_identity: str
     subject_identity_sha256: str
     authority_partition_sha256: str
+    source_detector_receipt_sha256: str
     detector_payload_sha256: str
     license_files: tuple[FullC6PolicyFileIdentity, ...]
     detector_receipt_kind: str = FULL_C6_LICENSE_DETECTOR_RECEIPT_KIND
@@ -536,6 +581,10 @@ class FullC6LicenseEvidence:
         )
         _require_sha256(self.subject_identity_sha256, "license subject identity sha256")
         _require_sha256(self.authority_partition_sha256, "license authority partition sha256")
+        _require_sha256(
+            self.source_detector_receipt_sha256,
+            "source license detector receipt sha256",
+        )
         _require_sha256(self.detector_payload_sha256, "license detector payload sha256")
         if (
             type(self.detector_receipt_kind) is not str
@@ -576,6 +625,9 @@ class FullC6LicenseEvidence:
                     "subject_identity_sha256": self.subject_identity_sha256,
                     "authority_partition_sha256": self.authority_partition_sha256,
                     "detected_spdx": self.detected_spdx,
+                    "source_detector_receipt_sha256": (
+                        self.source_detector_receipt_sha256
+                    ),
                     "detector_payload_sha256": self.detector_payload_sha256,
                     "license_file_identity_set_sha256": (self.license_file_identity_set_sha256),
                 }
@@ -591,6 +643,7 @@ class FullC6LicenseEvidence:
             "subject_identity_sha256": self.subject_identity_sha256,
             "authority_partition_sha256": self.authority_partition_sha256,
             "detector_receipt_kind": FULL_C6_LICENSE_DETECTOR_RECEIPT_KIND,
+            "source_detector_receipt_sha256": self.source_detector_receipt_sha256,
             "detector_payload_sha256": self.detector_payload_sha256,
             "detector_receipt_sha256": self.detector_receipt_sha256,
             "license_file_identity_set_sha256": self.license_file_identity_set_sha256,
@@ -1000,6 +1053,7 @@ def _rebuild_license(value: FullC6LicenseEvidence) -> FullC6LicenseEvidence:
         subject_authority_identity=value.subject_authority_identity,
         subject_identity_sha256=value.subject_identity_sha256,
         authority_partition_sha256=value.authority_partition_sha256,
+        source_detector_receipt_sha256=value.source_detector_receipt_sha256,
         detector_payload_sha256=value.detector_payload_sha256,
         license_files=tuple(_rebuild_file(item) for item in value.license_files),
         detector_receipt_kind=value.detector_receipt_kind,
@@ -1553,6 +1607,7 @@ __all__ = [
     "full_c6_external_authority_identity",
     "full_c6_external_authority_identity_set_digest",
     "full_c6_external_authority_partition_digest",
+    "full_c6_license_detector_payload_digest",
     "full_c6_lowered_ir_receipt_digest",
     "full_c6_policy_digest",
     "full_c6_transformation_source_set_digest",

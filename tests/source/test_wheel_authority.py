@@ -15,7 +15,11 @@ import pytest
 from rextio.artifacts import ArtifactProvenance
 from rextio.source.external import AuthorityFile, ExternalSourcePlan
 from rextio.source.models import SourceModule, SourceOrigin
-from rextio.source.wheel_authority import SourceWheelAuthorityError, verify_source_wheel
+from rextio.source.wheel_authority import (
+    SourceWheelAuthorityError,
+    verify_source_wheel,
+    verify_source_wheel_license_detection,
+)
 
 
 PACKAGE = "demo_pkg"
@@ -24,7 +28,25 @@ VERSION = "1.0.0"
 DIST_INFO = "demo_pkg-1.0.0.dist-info"
 SOURCE_NAME = "demo_pkg/__init__.py"
 SOURCE = b"def affine(x: int) -> int:\n    return x + 1\n"
-LICENSE = b"MIT License\n"
+LICENSE = (
+    b"MIT License\n\n"
+    b"Copyright (c) 2026 Demo\n\n"
+    b"Permission is hereby granted, free of charge, to any person obtaining a copy\n"
+    b"of this software and associated documentation files (the \"Software\"), to deal\n"
+    b"in the Software without restriction, including without limitation the rights\n"
+    b"to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n"
+    b"copies of the Software, and to permit persons to whom the Software is\n"
+    b"furnished to do so, subject to the following conditions:\n\n"
+    b"The above copyright notice and this permission notice shall be included in all\n"
+    b"copies or substantial portions of the Software.\n\n"
+    b'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n'
+    b"IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
+    b"FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n"
+    b"AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n"
+    b"LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n"
+    b"OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n"
+    b"SOFTWARE.\n"
+)
 WHEEL = b"Wheel-Version: 1.0\nGenerator: rextio-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
 METADATA = (
     b"Metadata-Version: 2.4\n"
@@ -173,9 +195,73 @@ def test_exact_pure_wheel_produces_immutable_depth_one_snapshot(tmp_path: Path) 
     assert authority.snapshots[0].module.module_name == PACKAGE
     assert authority.authorizes_build is False
     assert authority.authorizes_distribution is False
+    assert authority.license_detection.status == "detected"
+    assert authority.license_detection.detected_spdx == "MIT"
+    assert verify_source_wheel_license_detection(
+        authority.license_detection,
+        authority.license_entry_paths,
+        authority.license_payloads,
+    )
     serialized = repr(authority.to_dict())
     assert SOURCE.decode().strip() not in serialized
     assert str(tmp_path) not in serialized
+
+
+def test_metadata_license_does_not_masquerade_as_independent_detection(
+    tmp_path: Path,
+) -> None:
+    entries = _base_entries()
+    license_path = f"{DIST_INFO}/licenses/LICENSE"
+    entries[license_path] = b"MIT License\n"
+    entries[f"{DIST_INFO}/RECORD"] = _record(
+        {name: data for name, data in entries.items() if name != f"{DIST_INFO}/RECORD"}
+    )
+    payload = _wheel_bytes(entries)
+    path = tmp_path / "demo_pkg-1.0.0-py3-none-any.whl"
+    digest = _write_wheel(path, payload)
+
+    authority = verify_source_wheel(path, expected_sha256=digest, plan=_plan(entries))
+
+    assert authority.license_observed == "MIT"
+    assert authority.license_detection.status == "unsupported"
+    assert authority.license_detection.detected_spdx is None
+
+
+def test_mit_body_with_trailing_dual_license_terms_fails_closed(tmp_path: Path) -> None:
+    entries = _base_entries()
+    license_path = f"{DIST_INFO}/licenses/LICENSE"
+    entries[license_path] = (
+        LICENSE
+        + b"\nAdditional terms: this work is alternatively available under Apache-2.0.\n"
+    )
+    entries[f"{DIST_INFO}/RECORD"] = _record(
+        {name: data for name, data in entries.items() if name != f"{DIST_INFO}/RECORD"}
+    )
+    payload = _wheel_bytes(entries)
+    path = tmp_path / "demo_pkg-1.0.0-py3-none-any.whl"
+    digest = _write_wheel(path, payload)
+
+    authority = verify_source_wheel(path, expected_sha256=digest, plan=_plan(entries))
+
+    assert authority.license_observed == "MIT"
+    assert authority.license_detection.status == "unsupported"
+    assert authority.license_detection.detected_spdx is None
+
+
+def test_license_detector_receipt_tampering_is_rejected(tmp_path: Path) -> None:
+    entries = _base_entries()
+    payload = _wheel_bytes(entries)
+    path = tmp_path / "demo_pkg-1.0.0-py3-none-any.whl"
+    digest = _write_wheel(path, payload)
+    authority = verify_source_wheel(path, expected_sha256=digest, plan=_plan(entries))
+
+    object.__setattr__(authority.license_detection, "detected_spdx", None)
+
+    assert not verify_source_wheel_license_detection(
+        authority.license_detection,
+        authority.license_entry_paths,
+        authority.license_payloads,
+    )
 
 
 def test_archive_hash_and_symlink_are_fail_closed(tmp_path: Path) -> None:

@@ -129,6 +129,7 @@ _LICENSE_EVIDENCE_FIELDS = {
     "subject_identity_sha256",
     "authority_partition_sha256",
     "detector_receipt_kind",
+    "source_detector_receipt_sha256",
     "detector_payload_sha256",
     "detector_receipt_sha256",
     "license_file_identity_set_sha256",
@@ -528,6 +529,10 @@ def _license_evidence(value: object) -> FullC6LicenseEvidence:
         ),
         authority_partition_sha256=_sha256(
             data["authority_partition_sha256"], "license authority partition SHA-256"
+        ),
+        source_detector_receipt_sha256=_sha256(
+            data["source_detector_receipt_sha256"],
+            "source license detector receipt SHA-256",
         ),
         detector_payload_sha256=_sha256(
             data["detector_payload_sha256"], "license detector payload SHA-256"

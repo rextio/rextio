@@ -400,6 +400,24 @@ def test_complete_documents_are_canonical_deterministic_and_non_authorizing() ->
     )
     assert sbom["bomFormat"] == "CycloneDX"
     assert sbom["specVersion"] == "1.6"
+    reproducibility = arguments["reproducibility"]
+    assert isinstance(reproducibility, ReproducibilityReceipt)
+    assert first.reproducible_sbom_input_sha256 == (
+        reproducibility.sbom_canonical_sha256
+    )
+    assert first.reproducible_provenance_input_sha256 == (
+        reproducibility.provenance_input_canonical_sha256
+    )
+    properties = {
+        item["name"]: item["value"]
+        for item in sbom["metadata"]["properties"]  # type: ignore[index]
+    }
+    assert properties["rextio:reproducible_sbom_input_sha256"] == (
+        reproducibility.sbom_canonical_sha256
+    )
+    assert properties["rextio:reproducible_provenance_input_sha256"] == (
+        reproducibility.provenance_input_canonical_sha256
+    )
     assert sbom["compositions"] == [
         {
             "aggregate": "complete",
@@ -413,6 +431,18 @@ def test_complete_documents_are_canonical_deterministic_and_non_authorizing() ->
     assert provenance["_type"] == "https://in-toto.io/Statement/v1"
     assert provenance["predicateType"] == "https://slsa.dev/provenance/v1"
     assert provenance["predicate"]["buildDefinition"]["buildType"] == FULL_C6_BUILD_TYPE  # type: ignore[index]
+    assert provenance["predicate"]["buildDefinition"]["internalParameters"][  # type: ignore[index]
+        "reproducibility_input_projection"
+    ] == {
+        "sbom_canonical_sha256": reproducibility.sbom_canonical_sha256,
+        "provenance_input_canonical_sha256": (
+            reproducibility.provenance_input_canonical_sha256
+        ),
+    }
+    # These are explicit preauthorization/input projections, not hashes of the
+    # final self-referential documents.  Equality is intentionally not claimed.
+    assert first.reproducible_sbom_input_sha256 != first.sbom_sha256
+    assert first.reproducible_provenance_input_sha256 != first.provenance_sha256
     assert provenance["subject"][1]["digest"] == {"sha256": first.sbom_sha256}  # type: ignore[index]
     assert verify_full_c6_supply_chain_receipt(first) == first
 
@@ -589,3 +619,8 @@ def test_forged_public_input_and_output_dataclasses_are_reconstructed() -> None:
     object.__setattr__(clean, "policy_sha256", "0" * 64)
     with pytest.raises(FullC6SupplyChainError, match="provenance"):
         verify_full_c6_supply_chain_receipt(clean)
+
+    projected = build_full_c6_supply_chain_receipt(**_arguments())  # type: ignore[arg-type]
+    object.__setattr__(projected, "reproducible_sbom_input_sha256", "0" * 64)
+    with pytest.raises(FullC6SupplyChainError, match="SBOM"):
+        verify_full_c6_supply_chain_receipt(projected)
