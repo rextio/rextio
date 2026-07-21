@@ -36,6 +36,15 @@ from rextio.artifacts.full_authorization import (
     full_c6_preauthorization_evidence_digest,
 )
 from rextio.build.full_c6_policy import FullC6PolicyReceipt
+from rextio.build.full_c6_executor import (
+    FULL_C6_CALLBACK_LOCK_DRIVER,
+    FULL_C6_NATIVE_EXECUTION_DRIVER,
+    FullC6EnvironmentBinding,
+    FullC6ExecutorReceipt,
+    FullC6FrozenTreeManifest,
+    FullC6InvocationReceipt,
+    FullC6TreeEntry,
+)
 from rextio.build.full_c6_supply_chain import (
     FullC6CargoPathSource,
     FullC6SupplyChainReceipt,
@@ -48,8 +57,11 @@ from rextio.build.input_closure import (
     capture_exact_file,
     capture_exact_file_bytes,
 )
-from rextio.build.reproducibility import ReproducibilityReceipt
-from rextio.build.runtime_authorization import RuntimeAuthorizationReceipt
+from rextio.build.runtime_authorization import (
+    RUNTIME_VERIFICATION_NATIVE_FRESH,
+    RuntimeAuthorizationReceipt,
+    verify_native_runtime_authorization,
+)
 from rextio.build.signing import (
     MAX_SIGNATURE_ENVELOPE_BYTES,
     DetachedSignatureEnvelope,
@@ -65,6 +77,7 @@ from rextio.source.source_lock_v2 import (
     SourceLockV2Manifest,
     SourceLockV2Verification,
     SourceLockV2VerifiedContext,
+    validate_source_lock_v2_verified_context,
 )
 
 
@@ -124,7 +137,7 @@ def prepare_full_c6_preauthorization_evidence(
     toolchain: BuildToolchainIdentity,
     cargo_path_source: FullC6CargoPathSource,
     runtime_authorization: RuntimeAuthorizationReceipt,
-    reproducibility: ReproducibilityReceipt,
+    executor: FullC6ExecutorReceipt,
     supply_chain: FullC6SupplyChainReceipt,
     expected_public_key_sha256: str,
 ) -> FullC6PreauthorizationEvidence:
@@ -139,6 +152,20 @@ def prepare_full_c6_preauthorization_evidence(
             expected_public_key_sha256=expected_public_key_sha256,
         )
         _revalidate_subject(subject_path, subject)
+        trusted_executor = _validate_executor_bindings(
+            executor,
+            toolchain=toolchain,
+            subject=subject,
+        )
+        if (
+            type(runtime_authorization) is not RuntimeAuthorizationReceipt
+            or runtime_authorization.verification_mode
+            != RUNTIME_VERIFICATION_NATIVE_FRESH
+            or not verify_native_runtime_authorization(runtime_authorization)
+        ):
+            raise FullC6GateError(
+                "Full C6 requires a freshly reverified native runtime receipt"
+            )
         fresh_supply_chain = build_full_c6_supply_chain_receipt(
             target_triple=target_triple,
             subject=subject,
@@ -150,7 +177,7 @@ def prepare_full_c6_preauthorization_evidence(
             toolchain=toolchain,
             cargo_path_source=cargo_path_source,
             runtime_authorization=runtime_authorization,
-            reproducibility=reproducibility,
+            reproducibility=trusted_executor.reproducibility,
         )
         trusted_supply_chain = verify_full_c6_supply_chain_receipt(supply_chain)
         if fresh_supply_chain != trusted_supply_chain:
@@ -177,7 +204,7 @@ def prepare_full_c6_preauthorization_evidence(
             build_inputs=build_inputs,
             toolchain=toolchain,
             runtime_authorization=runtime_authorization,
-            reproducibility=reproducibility,
+            executor=trusted_executor,
             supply_chain=trusted_supply_chain,
         )
         return FullC6PreauthorizationEvidence(
@@ -208,7 +235,7 @@ def authorize_full_c6_distribution(
     toolchain: BuildToolchainIdentity,
     cargo_path_source: FullC6CargoPathSource,
     runtime_authorization: RuntimeAuthorizationReceipt,
-    reproducibility: ReproducibilityReceipt,
+    executor: FullC6ExecutorReceipt,
     supply_chain: FullC6SupplyChainReceipt,
     request: FinalAuthorizationRequest,
     signature_envelope_path: Path | str,
@@ -227,7 +254,7 @@ def authorize_full_c6_distribution(
         toolchain=toolchain,
         cargo_path_source=cargo_path_source,
         runtime_authorization=runtime_authorization,
-        reproducibility=reproducibility,
+        executor=executor,
         supply_chain=supply_chain,
         expected_public_key_sha256=expected_public_key_sha256,
     )
@@ -243,7 +270,7 @@ def authorize_full_c6_distribution(
             subject=subject,
             build_inputs=build_inputs,
             policy=policy,
-            reproducibility=reproducibility,
+            executor=executor,
         )
         envelope = _read_signature_envelope(signature_envelope_path)
         public_key = _read_public_key(public_key_path)
@@ -295,7 +322,39 @@ def authorize_full_c6_distribution(
             authorization_request_sha256=trusted_request.manifest_sha256,
             receipts=final_receipts,
         )
-        authorization = _mint_distribution_authorization(evidence)
+        # Mint inline only inside the completed cryptographic transaction.
+        # There is intentionally no module-level evidence-only mint helper:
+        # publication independently re-verifies this signature and chain.
+        trusted_evidence = _reconstruct_full_c6_evidence(evidence)
+        authorization = object.__new__(FullC6DistributionAuthorization)
+        object.__setattr__(
+            authorization,
+            "evidence_sha256",
+            full_c6_evidence_digest(trusted_evidence),
+        )
+        object.__setattr__(
+            authorization,
+            "preauthorization_evidence_sha256",
+            trusted_evidence.preauthorization_evidence_sha256,
+        )
+        object.__setattr__(
+            authorization,
+            "authorization_request_sha256",
+            trusted_evidence.authorization_request_sha256,
+        )
+        object.__setattr__(
+            authorization,
+            "trusted_public_key_sha256",
+            trusted_evidence.trusted_public_key_sha256,
+        )
+        object.__setattr__(
+            authorization,
+            "checks",
+            tuple(
+                FullC6AuthorizationCheck(id=check_id)
+                for check_id in FULL_C6_AUTHORIZATION_CHECK_IDS
+            ),
+        )
         result = FullC6GateResult(
             preauthorization_evidence=preauthorization,
             signature_receipt=signature_receipt,
@@ -325,29 +384,121 @@ def _rebuild_source_verification(
     ):
         raise FullC6GateError("Full C6 requires an admitted SourceLock v2 context")
     context = value.context
-    rebuilt = SourceLockV2VerifiedContext(
-        admission=SourceLockV2Admission(
-            status=context.admission.status,
-            reason=context.admission.reason,
-            manifest_sha256=context.admission.manifest_sha256,
-            public_key_sha256=context.admission.public_key_sha256,
-            signature_sha256=context.admission.signature_sha256,
-            domain=context.admission.domain,
-            prebuild_admitted=context.admission.prebuild_admitted,
-            authorizes_build=context.admission.authorizes_build,
-            authorizes_distribution=context.admission.authorizes_distribution,
-        ),
-        plan=context.plan,
-        wheel=context.wheel,
-        analyses=tuple(context.analyses),
-        manifest=context.manifest,
-    )
+    if not validate_source_lock_v2_verified_context(context):
+        raise FullC6GateError(
+            "Full C6 SourceLock v2 context is not from a valid verification transaction"
+        )
     rebuilt_verification = SourceLockV2Verification(
-        admission=rebuilt.admission,
-        context=rebuilt,
+        admission=value.admission,
+        context=context,
     )
     if rebuilt_verification != value:
         raise FullC6GateError("Full C6 SourceLock v2 context is not canonical")
+    return context
+
+
+def _validate_executor_bindings(
+    value: FullC6ExecutorReceipt,
+    *,
+    toolchain: BuildToolchainIdentity,
+    subject: EvidenceFileRef,
+) -> FullC6ExecutorReceipt:
+    """Rebuild and cross-bind the only executor posture accepted by Full C6."""
+    if type(value) is not FullC6ExecutorReceipt:
+        raise FullC6GateError("Full C6 requires an exact executor receipt")
+    try:
+        tree = FullC6FrozenTreeManifest(
+            entries=tuple(
+                FullC6TreeEntry(
+                    logical_name=item.logical_name,
+                    kind=item.kind,
+                    sha256=item.sha256,
+                    size=item.size,
+                    mode=item.mode,
+                )
+                for item in value.frozen_tree.entries
+                if type(item) is FullC6TreeEntry
+            ),
+            cargo_lock_generated=value.frozen_tree.cargo_lock_generated,
+            complete_for_scope=value.frozen_tree.complete_for_scope,
+        )
+        invocations = tuple(
+            FullC6InvocationReceipt(
+                ordinal=item.ordinal,
+                argv_sha256=item.argv_sha256,
+                argv_count=item.argv_count,
+                environment=tuple(
+                    FullC6EnvironmentBinding(
+                        name=binding.name,
+                        value_sha256=binding.value_sha256,
+                        value_size=binding.value_size,
+                    )
+                    for binding in item.environment
+                    if type(binding) is FullC6EnvironmentBinding
+                ),
+                timeout_seconds=item.timeout_seconds,
+                max_output_bytes=item.max_output_bytes,
+                inherit_env=item.inherit_env,
+            )
+            for item in value.invocations
+            if type(item) is FullC6InvocationReceipt
+        )
+        if len(invocations) != 2:
+            raise ValueError("executor invocation coverage is incomplete")
+        rebuilt = FullC6ExecutorReceipt(
+            frozen_tree=tree,
+            invocations=(invocations[0], invocations[1]),
+            reproducibility=value.reproducibility,
+            execution_driver=value.execution_driver,
+            lock_driver=value.lock_driver,
+            toolchain_sha256=value.toolchain_sha256,
+            cargo_executable_sha256=value.cargo_executable_sha256,
+            domain=value.domain,
+            scope=value.scope,
+            complete_for_scope=value.complete_for_scope,
+            authorizes_distribution=value.authorizes_distribution,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise FullC6GateError("Full C6 executor receipt is not canonical") from exc
+    if rebuilt != value:
+        raise FullC6GateError("Full C6 executor receipt is not canonical")
+    if (
+        rebuilt.execution_driver != FULL_C6_NATIVE_EXECUTION_DRIVER
+        or rebuilt.lock_driver == FULL_C6_CALLBACK_LOCK_DRIVER
+    ):
+        raise FullC6GateError(
+            "Full C6 rejects callback and test-only executor authority"
+        )
+    invocation = rebuilt.invocations[0]
+    cargo_lock = tuple(
+        item
+        for item in rebuilt.frozen_tree.entries
+        if item.kind == "file" and item.logical_name == "Cargo.lock"
+    )
+    expected_lock = toolchain.cargo_sources.lock_file
+    expected = (
+        (rebuilt.toolchain_sha256, toolchain.digest),
+        (rebuilt.cargo_executable_sha256, toolchain.cargo.executable.sha256),
+        (invocation.argv_sha256, toolchain.argv.digest),
+        (rebuilt.invocations[1].argv_sha256, toolchain.argv.digest),
+        (rebuilt.reproducibility.wheel_sha256, subject.sha256),
+    )
+    if (
+        invocation.argv_count != len(toolchain.argv.values)
+        or rebuilt.invocations[1].argv_count != len(toolchain.argv.values)
+        or len(cargo_lock) != 1
+        or cargo_lock[0].sha256 != expected_lock.sha256
+        or cargo_lock[0].size != expected_lock.size
+        or any(
+            type(actual) is not str
+            or type(wanted) is not str
+            or not hmac.compare_digest(actual, wanted)
+            for actual, wanted in expected
+        )
+    ):
+        raise FullC6GateError(
+            "Full C6 executor tree, invocations, or toolchain binding is stale"
+        )
     return rebuilt
 
 
@@ -388,7 +539,7 @@ def _preauthorization_receipts(
     build_inputs: BuildInputClosure,
     toolchain: BuildToolchainIdentity,
     runtime_authorization: RuntimeAuthorizationReceipt,
-    reproducibility: ReproducibilityReceipt,
+    executor: FullC6ExecutorReceipt,
     supply_chain: FullC6SupplyChainReceipt,
 ) -> tuple[FullC6EvidenceReceipt, ...]:
     archive_receipt = _semantic_digest(
@@ -416,7 +567,7 @@ def _preauthorization_receipts(
         runtime_authorization.digest,
         build_inputs.digest,
         toolchain.digest,
-        reproducibility.digest,
+        executor.digest,
         supply_chain.sbom_sha256,
         supply_chain.provenance_sha256,
     )
@@ -455,7 +606,7 @@ def _validate_request_bindings(
     subject: EvidenceFileRef,
     build_inputs: BuildInputClosure,
     policy: FullC6PolicyReceipt,
-    reproducibility: ReproducibilityReceipt,
+    executor: FullC6ExecutorReceipt,
 ) -> None:
     # In this frozen v1 request schema, project_sha256 is the semantic digest
     # of the complete exact build-input closure, not a caller-selected subset.
@@ -465,7 +616,7 @@ def _validate_request_bindings(
         (request.project_sha256, build_inputs.digest),
         (request.artifact_sha256, subject.sha256),
         (request.evidence_sha256, preauthorization_sha256),
-        (request.reproducibility_sha256, reproducibility.digest),
+        (request.reproducibility_sha256, executor.digest),
         (request.policy_sha256, policy.digest),
     )
     if any(
@@ -558,39 +709,6 @@ def _reject_symlink_components(path: Path) -> None:
 
 def _semantic_digest(value: object) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
-
-
-def _mint_distribution_authorization(
-    evidence: FullC6ArtifactEvidence,
-) -> FullC6DistributionAuthorization:
-    """Mint the sole positive model after every hard-gate check has succeeded."""
-    trusted = _reconstruct_full_c6_evidence(evidence)
-    authorization = object.__new__(FullC6DistributionAuthorization)
-    object.__setattr__(authorization, "evidence_sha256", full_c6_evidence_digest(trusted))
-    object.__setattr__(
-        authorization,
-        "preauthorization_evidence_sha256",
-        trusted.preauthorization_evidence_sha256,
-    )
-    object.__setattr__(
-        authorization,
-        "authorization_request_sha256",
-        trusted.authorization_request_sha256,
-    )
-    object.__setattr__(
-        authorization,
-        "trusted_public_key_sha256",
-        trusted.trusted_public_key_sha256,
-    )
-    object.__setattr__(
-        authorization,
-        "checks",
-        tuple(
-            FullC6AuthorizationCheck(id=check_id)
-            for check_id in FULL_C6_AUTHORIZATION_CHECK_IDS
-        ),
-    )
-    return authorization
 
 
 __all__ = [

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import hashlib
 from pathlib import Path
+import sys
 from typing import Any, cast
 
 import pytest
@@ -29,14 +30,17 @@ from rextio.build.runtime_authorization import (
     RUNTIME_AUTHORIZED,
     RUNTIME_DENIED,
     RUNTIME_OUT_OF_SCOPE,
+    RUNTIME_VERIFICATION_INJECTED_TEST_ONLY,
     RuntimeAuthorizationError,
     RuntimeImageSnapshot,
     RuntimeLoadedImage,
     RuntimeLoadCommandInspection,
     _capture_native_runtime_snapshot,
     authorize_native_runtime,
+    authorize_native_runtime_for_testing,
     capture_runtime_image_snapshot,
     capture_runtime_loaded_image,
+    verify_native_runtime_authorization,
 )
 from rextio.build.runtime_closure import NativeRuntimeTransitiveClosureObservation
 from rextio.build.runtime_resolution import (
@@ -264,7 +268,7 @@ def _authorize(
         ),
         commands=tuple(sorted(set(command_tokens))),
     )
-    return authorize_native_runtime(
+    return authorize_native_runtime_for_testing(
         target_triple=case.target_triple,
         expected_python_root=case.root,
         extension_path=case.extension,
@@ -297,6 +301,8 @@ def test_authorizes_exact_root_only_system_runtime(
     assert result.authorized is True
     assert result.receipt is not None
     assert result.receipt.target_triple == target_triple
+    assert result.receipt.verification_mode == RUNTIME_VERIFICATION_INJECTED_TEST_ONLY
+    assert verify_native_runtime_authorization(result.receipt) is False
     assert len(result.receipt.digest) == 64
     assert result.receipt.to_dict()["scope"] == FULL_C6_SCOPE
     assert result.receipt.to_dict()["distribution_authorized"] is False
@@ -320,9 +326,6 @@ def test_unsupported_profile_returns_fixed_result_without_touching_inputs() -> N
         platform_base=cast(Any, None),
         declared_system_images=cast(Any, None),
         import_action=fail,
-        snapshot_collector=cast(Any, fail),
-        load_command_inspector=cast(Any, fail),
-        symbol_inspector=cast(Any, fail),
     )
 
     assert result.status == RUNTIME_OUT_OF_SCOPE
@@ -529,3 +532,46 @@ def test_result_models_do_not_promote_denial_to_authorization(tmp_path: Path) ->
     assert result.status == RUNTIME_DENIED
     assert result.receipt is None
     assert result.to_dict()["authorized"] is False
+
+
+def test_production_entry_point_does_not_accept_injected_inspectors() -> None:
+    with pytest.raises(TypeError, match="snapshot_collector"):
+        authorize_native_runtime(
+            target_triple="x86_64-unknown-linux-gnu",
+            expected_python_root=cast(Any, None),
+            extension_path=cast(Any, None),
+            runtime_inventory=cast(Any, None),
+            path_resolution=cast(Any, None),
+            transitive_closure=cast(Any, None),
+            platform_base=cast(Any, None),
+            declared_system_images=cast(Any, None),
+            import_action=lambda: None,
+            **{"snapshot_collector": lambda: None},
+        )
+
+
+def test_native_entry_point_rejects_loader_affecting_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = (
+        "aarch64-apple-darwin"
+        if sys.platform == "darwin"
+        else "x86_64-unknown-linux-gnu"
+    )
+    environment_name = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_PRELOAD"
+    monkeypatch.setenv(environment_name, "")
+
+    result = authorize_native_runtime(
+        target_triple=target,
+        expected_python_root=cast(Any, None),
+        extension_path=cast(Any, None),
+        runtime_inventory=cast(Any, None),
+        path_resolution=cast(Any, None),
+        transitive_closure=cast(Any, None),
+        platform_base=cast(Any, None),
+        declared_system_images=cast(Any, None),
+        import_action=lambda: None,
+    )
+
+    assert result.status == RUNTIME_DENIED
+    assert result.reason == REASON_STATIC_INVALID

@@ -21,6 +21,14 @@ from rextio.build.full_c6_gate import (
     authorize_full_c6_distribution,
     prepare_full_c6_preauthorization_evidence,
 )
+from rextio.build.full_c6_executor import (
+    FULL_C6_NATIVE_EXECUTION_DRIVER,
+    FULL_C6_PREEXISTING_LOCK_DRIVER,
+    FullC6ExecutorReceipt,
+    FullC6FrozenTreeManifest,
+    FullC6InvocationReceipt,
+    FullC6TreeEntry,
+)
 from rextio.build.full_c6_policy import (
     FULL_C6_EXTERNAL_AUTHORITY_IDENTITY_SCHEME,
     FullC6PolicyReceipt,
@@ -35,6 +43,7 @@ from rextio.build.signing import (
     DetachedSignatureEnvelope,
     FinalAuthorizationRequest,
 )
+from rextio.build.runtime_authorization import RUNTIME_VERIFICATION_NATIVE_FRESH
 from rextio.source.source_lock_v2 import SourceLockV2Verification
 
 
@@ -46,6 +55,15 @@ _SOURCE = runpy.run_path(
     str(_THIS_DIR.parent / "source" / "test_source_lock_v2.py")
 )
 _SIGNING = runpy.run_path(str(_THIS_DIR / "test_signing.py"))
+
+
+@pytest.fixture(autouse=True)
+def _accept_synthetic_native_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model the native fresh recheck for this otherwise synthetic gate graph."""
+    monkeypatch.setattr(
+        "rextio.build.full_c6_gate.verify_native_runtime_authorization",
+        lambda receipt: receipt.verification_mode == RUNTIME_VERIFICATION_NATIVE_FRESH,
+    )
 
 
 def _row(policy: FullC6PolicyReceipt, class_id: str):
@@ -184,6 +202,46 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
     toolchain = _SUPPLY["_toolchain"](policy)  # type: ignore[operator]
     runtime = _SUPPLY["_runtime"](policy)  # type: ignore[operator]
     reproducibility = _SUPPLY["_reproducibility"](policy)  # type: ignore[operator]
+    lock = toolchain.cargo_sources.lock_file
+    frozen_tree = FullC6FrozenTreeManifest(
+        entries=(
+            FullC6TreeEntry(
+                logical_name="Cargo.lock",
+                kind="file",
+                sha256=lock.sha256,
+                size=lock.size,
+                mode=0o644,
+            ),
+            FullC6TreeEntry(
+                logical_name="Cargo.toml",
+                kind="file",
+                sha256="a" * 64,
+                size=64,
+                mode=0o644,
+            ),
+        ),
+        cargo_lock_generated=False,
+    )
+    invocations = tuple(
+        FullC6InvocationReceipt(
+            ordinal=ordinal,
+            argv_sha256=toolchain.argv.digest,
+            argv_count=len(toolchain.argv.values),
+            environment=(),
+            timeout_seconds=60,
+            max_output_bytes=4096,
+        )
+        for ordinal in (1, 2)
+    )
+    executor = FullC6ExecutorReceipt(
+        frozen_tree=frozen_tree,
+        invocations=(invocations[0], invocations[1]),
+        reproducibility=reproducibility,
+        execution_driver=FULL_C6_NATIVE_EXECUTION_DRIVER,
+        lock_driver=FULL_C6_PREEXISTING_LOCK_DRIVER,
+        toolchain_sha256=toolchain.digest,
+        cargo_executable_sha256=toolchain.cargo.executable.sha256,
+    )
     root = _row(policy, "cargo-component:path-root-package")
     cargo_path_source = FullC6CargoPathSource(
         name="rextio-generated",
@@ -215,27 +273,36 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         "cargo_path_source": cargo_path_source,
         "runtime_authorization": runtime,
         "reproducibility": reproducibility,
+        "executor": executor,
         "supply_chain": supply_chain,
         "expected_public_key_sha256": signed.key_hash,
         "public_key": signed.key_path.read_bytes(),
+}
+
+
+def _gate_arguments(arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in arguments.items()
+        if key not in {"public_key", "reproducibility"}
     }
 
 
 def _request(arguments: dict[str, object]):
-    gate_arguments = {key: value for key, value in arguments.items() if key != "public_key"}
+    gate_arguments = _gate_arguments(arguments)
     preauthorization = prepare_full_c6_preauthorization_evidence(  # type: ignore[arg-type]
         **gate_arguments
     )
     build_inputs = arguments["build_inputs"]
     policy = arguments["policy"]
-    reproducibility = arguments["reproducibility"]
+    executor = arguments["executor"]
     subject = arguments["subject"]
     return preauthorization, FinalAuthorizationRequest(
         target_triple=TARGET,
         project_sha256=build_inputs.digest,  # type: ignore[attr-defined]
         artifact_sha256=subject.sha256,  # type: ignore[attr-defined]
         evidence_sha256=full_c6_preauthorization_evidence_digest(preauthorization),
-        reproducibility_sha256=reproducibility.digest,  # type: ignore[attr-defined]
+        reproducibility_sha256=executor.digest,  # type: ignore[attr-defined]
         policy_sha256=policy.digest,  # type: ignore[attr-defined]
     )
 
@@ -271,7 +338,7 @@ def _authorize(tmp_path: Path, arguments: dict[str, object]):
         request=request,
         public_key=arguments["public_key"],  # type: ignore[arg-type]
     )
-    gate_arguments = {key: value for key, value in arguments.items() if key != "public_key"}
+    gate_arguments = _gate_arguments(arguments)
     result = authorize_full_c6_distribution(
         **gate_arguments,  # type: ignore[arg-type]
         request=request,
@@ -300,6 +367,61 @@ def test_hard_gate_signs_only_unsigned_evidence_then_mints_final_authority(
     assert result.authorization.distribution_authorized is True
     assert result.evidence.distribution_authorized is False
     assert result.signature_receipt.authorizes_distribution is False
+    executor = arguments["executor"]
+    assert request.reproducibility_sha256 == executor.digest  # type: ignore[attr-defined]
+    repeat_receipt = next(
+        item
+        for item in preauthorization.receipts
+        if item.id == "repeat-builds-byte-identical"
+    )
+    assert repeat_receipt.sha256 == executor.digest  # type: ignore[attr-defined]
+
+
+def test_gate_rejects_callback_or_unbound_executor_authority(tmp_path: Path) -> None:
+    arguments = _fixture(tmp_path)
+    executor = arguments["executor"]
+    arguments["executor"] = replace(
+        executor,  # type: ignore[arg-type]
+        execution_driver="callback-test-seam",
+        toolchain_sha256=None,
+        cargo_executable_sha256=None,
+    )
+    with pytest.raises(FullC6GateError, match="callback and test-only"):
+        _request(arguments)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("toolchain", "executable", "argv", "tree"),
+)
+def test_gate_cross_binds_executor_tree_invocations_and_toolchain(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    arguments = _fixture(tmp_path)
+    executor = arguments["executor"]
+    if mutation == "toolchain":
+        changed = replace(executor, toolchain_sha256="1" * 64)  # type: ignore[arg-type]
+    elif mutation == "executable":
+        changed = replace(executor, cargo_executable_sha256="2" * 64)  # type: ignore[arg-type]
+    elif mutation == "argv":
+        invocations = tuple(
+            replace(item, argv_sha256="3" * 64)
+            for item in executor.invocations  # type: ignore[attr-defined]
+        )
+        changed = replace(executor, invocations=invocations)  # type: ignore[arg-type]
+    else:
+        tree = executor.frozen_tree  # type: ignore[attr-defined]
+        entries = tuple(
+            replace(item, sha256="4" * 64)
+            if item.logical_name == "Cargo.lock"
+            else item
+            for item in tree.entries
+        )
+        changed = replace(executor, frozen_tree=replace(tree, entries=entries))  # type: ignore[arg-type]
+    arguments["executor"] = changed
+    with pytest.raises(FullC6GateError, match="tree, invocations, or toolchain"):
+        _request(arguments)
 
 
 @pytest.mark.parametrize(
@@ -324,7 +446,7 @@ def test_replayed_or_mutated_request_field_fails_closed(
         request=request,
         public_key=arguments["public_key"],  # type: ignore[arg-type]
     )
-    gate_arguments = {key: value for key, value in arguments.items() if key != "public_key"}
+    gate_arguments = _gate_arguments(arguments)
     with pytest.raises(FullC6GateError, match="stale or replayed"):
         authorize_full_c6_distribution(
             **gate_arguments,  # type: ignore[arg-type]
@@ -364,7 +486,7 @@ def test_wrong_or_changed_owner_key_and_signature_envelope_fail_closed(tmp_path:
         public_key=arguments["public_key"],  # type: ignore[arg-type]
     )
     key_path.write_bytes(b"x" * 32)
-    gate_arguments = {key: value for key, value in arguments.items() if key != "public_key"}
+    gate_arguments = _gate_arguments(arguments)
     with pytest.raises(FullC6GateError):
         authorize_full_c6_distribution(
             **gate_arguments,  # type: ignore[arg-type]
@@ -402,7 +524,7 @@ def test_subject_mutation_before_or_after_signature_verification_fails_closed(
     subject_path = arguments["subject_path"]
     assert isinstance(subject_path, Path)
     subject_path.write_bytes(b"mutated-before-signature-check\n")
-    gate_arguments = {key: value for key, value in arguments.items() if key != "public_key"}
+    gate_arguments = _gate_arguments(arguments)
     with pytest.raises(FullC6GateError, match="subject"):
         authorize_full_c6_distribution(
             **gate_arguments,  # type: ignore[arg-type]
@@ -431,7 +553,7 @@ def test_subject_mutation_before_or_after_signature_verification_fails_closed(
         return original(path, expected)
 
     monkeypatch.setattr(gate_module, "_revalidate_subject", mutate_on_final)
-    gate_arguments = {key: value for key, value in arguments.items() if key != "public_key"}
+    gate_arguments = _gate_arguments(arguments)
     with pytest.raises(FullC6GateError, match="subject"):
         authorize_full_c6_distribution(
             **gate_arguments,  # type: ignore[arg-type]

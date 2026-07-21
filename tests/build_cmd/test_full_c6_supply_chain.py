@@ -27,6 +27,7 @@ from rextio.build.reproducibility import (
     ReproducibilityReceipt,
 )
 from rextio.build.runtime_authorization import (
+    RUNTIME_VERIFICATION_NATIVE_FRESH,
     RuntimeAuthorizationReceipt,
     RuntimeLoadedImage,
 )
@@ -282,6 +283,8 @@ def _runtime(policy: FullC6PolicyReceipt) -> RuntimeAuthorizationReceipt:
         transitive_closure_sha256="3" * 64,
         load_commands_sha256="4" * 64,
         imported_symbols_sha256="5" * 64,
+        final_snapshot_sha256="6" * 64,
+        verification_mode=RUNTIME_VERIFICATION_NATIVE_FRESH,
     )
 
 
@@ -529,6 +532,8 @@ def test_darwin_shared_cache_leaf_uses_bound_platform_identity() -> None:
             transitive_closure_sha256="3" * 64,
             load_commands_sha256="4" * 64,
             imported_symbols_sha256="5" * 64,
+            final_snapshot_sha256="6" * 64,
+            verification_mode=RUNTIME_VERIFICATION_NATIVE_FRESH,
         )
 
     first = build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]

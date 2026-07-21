@@ -38,7 +38,12 @@ from rextio.build.reproducibility import (
 )
 from rextio.build.strict_cargo import StrictCargoCommandError, enforce_strict_cargo_command
 from rextio.build.subprocess_utils import run_build_tool
-from rextio.build.toolchain_identity import STRICT_BUILD_ENV_ALLOWLIST
+from rextio.build.toolchain_identity import (
+    STRICT_BUILD_ENV_ALLOWLIST,
+    BuildToolchainIdentity,
+    ToolchainIdentityError,
+    verify_tool_identity,
+)
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
 
 
@@ -46,6 +51,12 @@ FULL_C6_EXECUTOR_DOMAIN = "rextio.full-c6-two-build-executor.v1"
 FULL_C6_EXECUTOR_SCOPE = (
     "host-extension-wheel-cpython-external-source-depth1-plugin-free-v1"
 )
+FULL_C6_NATIVE_EXECUTION_DRIVER = "native-subprocess"
+FULL_C6_CALLBACK_EXECUTION_DRIVER = "callback-test-seam"
+FULL_C6_UNBOUND_EXECUTION_DRIVER = "native-subprocess-unbound"
+FULL_C6_PREEXISTING_LOCK_DRIVER = "preexisting-lock"
+FULL_C6_NATIVE_LOCK_DRIVER = "native-subprocess"
+FULL_C6_CALLBACK_LOCK_DRIVER = "callback-test-seam"
 MAX_FULL_C6_TREE_ENTRIES = 2048
 MAX_FULL_C6_TREE_FILES = 1024
 MAX_FULL_C6_TREE_BYTES = 256 * 1024 * 1024
@@ -281,6 +292,10 @@ class FullC6ExecutorReceipt:
     frozen_tree: FullC6FrozenTreeManifest
     invocations: tuple[FullC6InvocationReceipt, FullC6InvocationReceipt]
     reproducibility: ReproducibilityReceipt
+    execution_driver: str = FULL_C6_CALLBACK_EXECUTION_DRIVER
+    lock_driver: str = FULL_C6_PREEXISTING_LOCK_DRIVER
+    toolchain_sha256: str | None = None
+    cargo_executable_sha256: str | None = None
     domain: str = FULL_C6_EXECUTOR_DOMAIN
     scope: str = FULL_C6_EXECUTOR_SCOPE
     complete_for_scope: bool = True
@@ -298,6 +313,23 @@ class FullC6ExecutorReceipt:
             raise ValueError("Full C6 executor commands differ between builds")
         if type(self.reproducibility) is not ReproducibilityReceipt:
             raise TypeError("Full C6 executor reproducibility receipt is invalid")
+        if self.execution_driver not in {
+            FULL_C6_NATIVE_EXECUTION_DRIVER,
+            FULL_C6_CALLBACK_EXECUTION_DRIVER,
+            FULL_C6_UNBOUND_EXECUTION_DRIVER,
+        }:
+            raise ValueError("Full C6 executor execution driver is invalid")
+        if self.lock_driver not in {
+            FULL_C6_PREEXISTING_LOCK_DRIVER,
+            FULL_C6_NATIVE_LOCK_DRIVER,
+            FULL_C6_CALLBACK_LOCK_DRIVER,
+        }:
+            raise ValueError("Full C6 executor lock driver is invalid")
+        if self.execution_driver == FULL_C6_NATIVE_EXECUTION_DRIVER:
+            _require_sha256(self.toolchain_sha256, "executor toolchain")
+            _require_sha256(self.cargo_executable_sha256, "executor Cargo executable")
+        elif self.toolchain_sha256 is not None or self.cargo_executable_sha256 is not None:
+            raise ValueError("non-authoritative executor cannot claim toolchain bindings")
         if self.domain != FULL_C6_EXECUTOR_DOMAIN or self.scope != FULL_C6_EXECUTOR_SCOPE:
             raise ValueError("Full C6 executor domain or scope is invalid")
         if self.complete_for_scope is not True or self.authorizes_distribution is not False:
@@ -318,6 +350,10 @@ class FullC6ExecutorReceipt:
             "frozen_tree": self.frozen_tree.to_dict(),
             "invocations": [item.to_dict() for item in self.invocations],
             "reproducibility_sha256": self.reproducibility.digest,
+            "execution_driver": self.execution_driver,
+            "lock_driver": self.lock_driver,
+            "toolchain_sha256": self.toolchain_sha256,
+            "cargo_executable_sha256": self.cargo_executable_sha256,
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -429,6 +465,7 @@ def execute_full_c6_two_build(
     source_date_epoch: int,
     timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     max_output_bytes: int = MAX_FULL_C6_OUTPUT_BYTES,
+    toolchain: BuildToolchainIdentity | None = None,
 ) -> FullC6ExecutorReceipt:
     """Freeze one project and execute exactly two strict isolated builds.
 
@@ -450,6 +487,7 @@ def execute_full_c6_two_build(
         source_date_epoch=source_date_epoch,
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
+        toolchain=toolchain,
     )
     source, _source_stat = _validate_source_root(source_root)
     first = _validate_quarantine_root(first_quarantine_root)
@@ -466,6 +504,7 @@ def execute_full_c6_two_build(
         if lock_generator is not None or lock_command_factory is not None:
             raise FullC6ExecutorError("Cargo.lock already exists; lock generation is ambiguous")
         frozen = without_generated_lock
+        lock_driver = FULL_C6_PREEXISTING_LOCK_DRIVER
     else:
         if (lock_generator is None) == (lock_command_factory is None):
             raise FullC6ExecutorError(
@@ -483,6 +522,11 @@ def execute_full_c6_two_build(
             command_factory=lock_command_factory,
         )
         frozen = _with_generated_lock(without_generated_lock, lock_data)
+        lock_driver = (
+            FULL_C6_CALLBACK_LOCK_DRIVER
+            if lock_generator is not None
+            else FULL_C6_NATIVE_LOCK_DRIVER
+        )
 
     fixed_argv: tuple[str, ...] | None = None
     if build is not None:
@@ -541,6 +585,12 @@ def execute_full_c6_two_build(
                 raise FullC6ExecutorError("Full C6 command factory returned an invalid command")
             argv = _require_prestrict_build_command(spec.argv)
             _reject_private_argv(argv, source=source, roots=(first[0], second[0]))
+            if toolchain is not None:
+                _verify_native_toolchain_invocation(
+                    argv,
+                    environment=environment,
+                    toolchain=toolchain,
+                )
             completed = run_build_tool(
                 list(argv),
                 cwd=project_root,
@@ -552,6 +602,12 @@ def execute_full_c6_two_build(
             if completed.returncode != 0:
                 raise FullC6ExecutorError(
                     f"strict Cargo build failed with exit status {completed.returncode}"
+                )
+            if toolchain is not None:
+                _verify_native_toolchain_invocation(
+                    argv,
+                    environment=environment,
+                    toolchain=toolchain,
                 )
             outputs = ReproducibilityBuildOutputs(
                 unsigned_wheel=build_root / spec.unsigned_wheel,
@@ -618,6 +674,20 @@ def execute_full_c6_two_build(
             frozen_tree=frozen.manifest,
             invocations=(invocation_receipts[0], invocation_receipts[1]),
             reproducibility=reproducibility,
+            execution_driver=(
+                FULL_C6_CALLBACK_EXECUTION_DRIVER
+                if build is not None
+                else (
+                    FULL_C6_NATIVE_EXECUTION_DRIVER
+                    if toolchain is not None
+                    else FULL_C6_UNBOUND_EXECUTION_DRIVER
+                )
+            ),
+            lock_driver=lock_driver,
+            toolchain_sha256=toolchain.digest if toolchain is not None else None,
+            cargo_executable_sha256=(
+                toolchain.cargo.executable.sha256 if toolchain is not None else None
+            ),
         )
     except (TypeError, ValueError) as exc:
         raise FullC6ExecutorError(str(exc)) from exc
@@ -633,6 +703,7 @@ def _validate_executor_arguments(
     source_date_epoch: int,
     timeout_seconds: float,
     max_output_bytes: int,
+    toolchain: BuildToolchainIdentity | None,
 ) -> None:
     if (build is None) == (command_factory is None):
         raise FullC6ExecutorError("choose exactly one build callback or command factory")
@@ -641,6 +712,10 @@ def _validate_executor_arguments(
             raise FullC6ExecutorError("build callback requires one strict Cargo command")
     elif cargo_command is not None:
         raise FullC6ExecutorError("command-factory mode must supply its own Cargo command")
+    if toolchain is not None and type(toolchain) is not BuildToolchainIdentity:
+        raise FullC6ExecutorError("Full C6 executor toolchain identity is invalid")
+    if build is not None and toolchain is not None:
+        raise FullC6ExecutorError("callback executor cannot claim a production toolchain")
     for value, label in (
         (lock_generator, "lock generator"),
         (lock_command_factory, "lock command factory"),
@@ -1324,6 +1399,38 @@ def _invocation_receipt(
         raise FullC6ExecutorError(str(exc)) from exc
 
 
+def _verify_native_toolchain_invocation(
+    argv: tuple[str, ...],
+    *,
+    environment: Mapping[str, str],
+    toolchain: BuildToolchainIdentity,
+) -> None:
+    """Bind the internally launched argv to the captured Cargo executable."""
+    if argv != toolchain.argv.values:
+        raise FullC6ExecutorError("Full C6 executor argv differs from toolchain identity")
+    executable_text = argv[0]
+    if "/" in executable_text or (os.altsep is not None and os.altsep in executable_text):
+        executable = Path(executable_text)
+    else:
+        resolved = shutil.which(executable_text, path=environment.get("PATH"))
+        if resolved is None:
+            raise FullC6ExecutorError("Full C6 Cargo executable cannot be resolved")
+        executable = Path(resolved)
+    try:
+        executable = executable.resolve(strict=True)
+        verify_tool_identity(executable, toolchain.cargo)
+    except (OSError, ToolchainIdentityError) as exc:
+        raise FullC6ExecutorError(
+            "Full C6 Cargo executable differs from toolchain identity"
+        ) from exc
+
+
+def _require_sha256(value: object, label: str) -> str:
+    if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
+        raise ValueError(f"Full C6 {label} digest is invalid")
+    return value
+
+
 def _validate_relative_name(value: str) -> None:
     if type(value) is not str or not value or value != value.strip():
         raise ValueError("Full C6 relative path is invalid")
@@ -1368,8 +1475,14 @@ def _canonical_json(value: object) -> bytes:
 
 
 __all__ = [
+    "FULL_C6_CALLBACK_EXECUTION_DRIVER",
+    "FULL_C6_CALLBACK_LOCK_DRIVER",
     "FULL_C6_EXECUTOR_DOMAIN",
     "FULL_C6_EXECUTOR_SCOPE",
+    "FULL_C6_NATIVE_EXECUTION_DRIVER",
+    "FULL_C6_NATIVE_LOCK_DRIVER",
+    "FULL_C6_PREEXISTING_LOCK_DRIVER",
+    "FULL_C6_UNBOUND_EXECUTION_DRIVER",
     "FullC6BuildCommand",
     "FullC6BuildContext",
     "FullC6BuildRequest",

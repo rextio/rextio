@@ -636,6 +636,8 @@ def _rebuild_runtime(value: RuntimeAuthorizationReceipt) -> RuntimeAuthorization
         transitive_closure_sha256=value.transitive_closure_sha256,
         load_commands_sha256=value.load_commands_sha256,
         imported_symbols_sha256=value.imported_symbols_sha256,
+        final_snapshot_sha256=value.final_snapshot_sha256,
+        verification_mode=value.verification_mode,
     )
     if rebuilt != value:
         raise FullC6SupplyChainError("runtime authorization is not in canonical model form")

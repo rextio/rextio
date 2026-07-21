@@ -17,6 +17,7 @@ import re
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import SupportsIndex
 
 from rextio.artifacts import ArtifactProvenance
 from rextio.build.signing import verify_ed25519_signature
@@ -54,6 +55,7 @@ MAX_SOURCE_LOCK_V2_KEY_BYTES = 32
 SOURCE_LOCK_V2_LICENSE_DETECTION = "pending-final-full-c6-detector"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _OWNER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._@+:/-]{0,254}$")
+_VERIFIED_CONTEXT_KEY = os.urandom(32)
 
 
 class SourceLockV2Error(ValueError):
@@ -340,17 +342,68 @@ class SourceLockV2Admission:
         }
 
 
-@dataclass(frozen=True, slots=True)
 class SourceLockV2VerifiedContext:
-    """Non-serializing exact objects admitted by one verification transaction."""
+    """Sealed, non-copyable objects admitted by one verification transaction.
+
+    This is deliberately not a dataclass: ``dataclasses.asdict`` must never
+    traverse the source bytes and local paths held for immediate codegen.  The
+    transaction seal is process-local and bound to the safe semantic digests;
+    consumers must call :func:`validate_source_lock_v2_verified_context` at an
+    authority boundary instead of reconstructing a context.
+    """
 
     admission: SourceLockV2Admission
-    plan: ExternalSourcePlan = field(repr=False)
-    wheel: VerifiedSourceWheel = field(repr=False)
-    analyses: tuple[ExternalSourceNativePlan, ...] = field(repr=False)
-    manifest: SourceLockV2Manifest = field(repr=False)
+    plan: ExternalSourcePlan
+    wheel: VerifiedSourceWheel
+    analyses: tuple[ExternalSourceNativePlan, ...]
+    manifest: SourceLockV2Manifest
+    _transaction_seal: bytes
+    _frozen: bool
 
-    def __post_init__(self) -> None:
+    __slots__ = (
+        "admission",
+        "plan",
+        "wheel",
+        "analyses",
+        "manifest",
+        "_transaction_seal",
+        "_frozen",
+    )
+
+    def __init__(
+        self,
+        *,
+        admission: SourceLockV2Admission,
+        plan: ExternalSourcePlan,
+        wheel: VerifiedSourceWheel,
+        analyses: tuple[ExternalSourceNativePlan, ...],
+        manifest: SourceLockV2Manifest,
+        _transaction_seal: bytes | None = None,
+    ) -> None:
+        if type(_transaction_seal) is not bytes:
+            raise TypeError("SourceLock v2 context requires a verification transaction")
+        object.__setattr__(self, "admission", admission)
+        object.__setattr__(self, "plan", plan)
+        object.__setattr__(self, "wheel", wheel)
+        object.__setattr__(self, "analyses", analyses)
+        object.__setattr__(self, "manifest", manifest)
+        object.__setattr__(self, "_transaction_seal", _transaction_seal)
+        object.__setattr__(self, "_frozen", True)
+        self._validate_bindings()
+        expected_seal = _source_lock_context_seal(
+            admission=admission,
+            plan=plan,
+            wheel=wheel,
+            analyses=analyses,
+            manifest=manifest,
+        )
+        if not hmac.compare_digest(_transaction_seal, expected_seal):
+            raise ValueError("SourceLock v2 verified context seal is invalid")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise TypeError("SourceLock v2 verified context is immutable")
+
+    def _validate_bindings(self) -> None:
         if (
             type(self.admission) is not SourceLockV2Admission
             or self.admission.status != "admitted"
@@ -380,6 +433,28 @@ class SourceLockV2VerifiedContext:
         ):
             raise ValueError("SourceLock v2 verified context bindings disagree")
 
+    def __repr__(self) -> str:
+        return (
+            "SourceLockV2VerifiedContext("
+            f"manifest_sha256={self.manifest.manifest_sha256!r}, "
+            "source_material=<sealed>)"
+        )
+
+    def __copy__(self) -> object:
+        raise TypeError("SourceLock v2 verified context cannot be copied")
+
+    def __deepcopy__(self, _memo: object) -> object:
+        raise TypeError("SourceLock v2 verified context cannot be copied")
+
+    def __reduce__(self) -> str | tuple[object, ...]:
+        raise TypeError("SourceLock v2 verified context cannot be serialized")
+
+    def __reduce_ex__(self, _protocol: SupportsIndex) -> str | tuple[object, ...]:
+        raise TypeError("SourceLock v2 verified context cannot be serialized")
+
+    def __getstate__(self) -> object:
+        raise TypeError("SourceLock v2 verified context cannot be serialized")
+
     def to_dict(self) -> dict[str, object]:
         """Return only sanitized digests; never serialize source or local paths."""
         return {
@@ -392,6 +467,70 @@ class SourceLockV2VerifiedContext:
             "authorizes_build": False,
             "authorizes_distribution": False,
         }
+
+
+def _source_lock_context_seal(
+    *,
+    admission: SourceLockV2Admission,
+    plan: ExternalSourcePlan,
+    wheel: VerifiedSourceWheel,
+    analyses: tuple[ExternalSourceNativePlan, ...],
+    manifest: SourceLockV2Manifest,
+) -> bytes:
+    """Bind a context to safe semantic identities with a process-local MAC."""
+    payload = {
+        "admission": admission.to_dict(),
+        "plan_snapshot_sha256": plan.plan_snapshot_sha256(),
+        "wheel_authority_sha256": wheel.semantic_sha256,
+        "analysis_semantic_sha256": [item.semantic_sha256 for item in analyses],
+        "manifest_sha256": manifest.manifest_sha256,
+    }
+    return hmac.new(_VERIFIED_CONTEXT_KEY, _canonical_json(payload), hashlib.sha256).digest()
+
+
+def _create_source_lock_v2_verified_context(
+    *,
+    admission: SourceLockV2Admission,
+    plan: ExternalSourcePlan,
+    wheel: VerifiedSourceWheel,
+    analyses: tuple[ExternalSourceNativePlan, ...],
+    manifest: SourceLockV2Manifest,
+) -> SourceLockV2VerifiedContext:
+    seal = _source_lock_context_seal(
+        admission=admission,
+        plan=plan,
+        wheel=wheel,
+        analyses=analyses,
+        manifest=manifest,
+    )
+    return SourceLockV2VerifiedContext(
+        admission=admission,
+        plan=plan,
+        wheel=wheel,
+        analyses=analyses,
+        manifest=manifest,
+        _transaction_seal=seal,
+    )
+
+
+def validate_source_lock_v2_verified_context(
+    value: SourceLockV2VerifiedContext,
+) -> bool:
+    """Return whether a context retains its exact same-transaction bindings."""
+    try:
+        if type(value) is not SourceLockV2VerifiedContext:
+            return False
+        value._validate_bindings()
+        expected = _source_lock_context_seal(
+            admission=value.admission,
+            plan=value.plan,
+            wheel=value.wheel,
+            analyses=value.analyses,
+            manifest=value.manifest,
+        )
+        return hmac.compare_digest(value._transaction_seal, expected)
+    except Exception:
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,6 +547,7 @@ class SourceLockV2Verification:
             if (
                 type(self.context) is not SourceLockV2VerifiedContext
                 or self.context.admission != self.admission
+                or not validate_source_lock_v2_verified_context(self.context)
             ):
                 raise ValueError("admitted SourceLock v2 verification requires context")
         elif self.context is not None:
@@ -776,7 +916,7 @@ def verify_source_lock_v2_with_context(
             signature_sha256=hashlib.sha256(raw_signature).hexdigest(),
             prebuild_admitted=True,
         )
-        context = SourceLockV2VerifiedContext(
+        context = _create_source_lock_v2_verified_context(
             admission=admission,
             plan=trusted_plan,
             wheel=wheel,
@@ -1108,6 +1248,7 @@ __all__ = [
     "build_source_lock_v2_manifest",
     "parse_source_lock_v2_manifest",
     "parse_source_lock_v2_signature",
+    "validate_source_lock_v2_verified_context",
     "verify_source_lock_v2",
     "verify_source_lock_v2_with_context",
 ]

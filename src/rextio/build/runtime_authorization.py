@@ -7,10 +7,11 @@ the loader can be inspected without guessing:
 * ``aarch64-apple-darwin`` / Mach-O
 * ``x86_64-unknown-linux-gnu`` / ELF
 
-Authorization is intentionally dependency-injectable.  Tests and a future
-orchestrator can provide the import action, loaded-image snapshot collector,
-load-command inspector, and imported-symbol inspector.  The native defaults
-use dyld APIs on macOS and ``/proc/self/maps`` on Linux.
+The production entry point always uses fresh native loader and binary
+inspection.  Dependency injection exists only behind an explicitly test-only
+entry point whose receipts are marked ineligible for Full C6 authorization.
+The native implementation uses dyld APIs on macOS and ``/proc/self/maps`` on
+Linux.
 """
 
 from __future__ import annotations
@@ -50,7 +51,10 @@ from rextio.build.runtime_resolution import (
 RUNTIME_AUTHORIZATION_KIND = "native-runtime-authorization"
 RUNTIME_AUTHORIZATION_SCOPE = FULL_C6_SCOPE
 RUNTIME_AUTHORIZATION_AUTHORITY = "verification-receipt-only"
-RUNTIME_AUTHORIZATION_SCHEMA_VERSION = 1
+RUNTIME_AUTHORIZATION_SCHEMA_VERSION = 2
+
+RUNTIME_VERIFICATION_NATIVE_FRESH = "native-fresh"
+RUNTIME_VERIFICATION_INJECTED_TEST_ONLY = "injected-test-only"
 
 RUNTIME_AUTHORIZED = "authorized"
 RUNTIME_DENIED = "denied"
@@ -90,6 +94,36 @@ _FORBIDDEN_ELF_TAGS = frozenset(
 )
 _FORBIDDEN_DYNAMIC_SYMBOL_PARTS = ("dlopen", "dlmopen", "dlsym", "dlvsym")
 _SAFE_DEPENDENCY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,254}$")
+_LINUX_LOADER_ENVIRONMENT = frozenset(
+    {
+        "GLIBC_TUNABLES",
+        "LD_ASSUME_KERNEL",
+        "LD_AUDIT",
+        "LD_BIND_NOW",
+        "LD_CONFIG_FILE",
+        "LD_DEBUG",
+        "LD_DEBUG_OUTPUT",
+        "LD_DYNAMIC_WEAK",
+        "LD_HWCAP_MASK",
+        "LD_LIBRARY_PATH",
+        "LD_LIBRARY_PATH_32",
+        "LD_LIBRARY_PATH_64",
+        "LD_ORIGIN_PATH",
+        "LD_PRELOAD",
+        "LD_PROFILE",
+        "LD_SHOW_AUXV",
+        "LD_USE_LOAD_BIAS",
+    }
+)
+_LINUX_TRUSTED_SYSTEM_ROOTS = (
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/usr/lib",
+    "/usr/lib32",
+    "/usr/lib64",
+)
+_DARWIN_TRUSTED_SYSTEM_ROOTS = ("/usr/lib", "/System/Library")
 
 SnapshotCollector = Callable[[], "RuntimeImageSnapshot"]
 LoadCommandInspector = Callable[[Path, str], "RuntimeLoadCommandInspection"]
@@ -238,10 +272,17 @@ class RuntimeAuthorizationReceipt:
     transitive_closure_sha256: str
     load_commands_sha256: str
     imported_symbols_sha256: str
+    final_snapshot_sha256: str
+    verification_mode: str
 
     def __post_init__(self) -> None:
         if self.target_triple not in _SUPPORTED_PROFILES:
             raise ValueError("runtime authorization receipt target is unsupported")
+        if self.verification_mode not in {
+            RUNTIME_VERIFICATION_NATIVE_FRESH,
+            RUNTIME_VERIFICATION_INJECTED_TEST_ONLY,
+        }:
+            raise ValueError("runtime authorization verification mode is invalid")
         if type(self.extension) is not RuntimeLoadedImage:
             raise TypeError("runtime authorization extension identity is invalid")
         for value in (
@@ -250,6 +291,7 @@ class RuntimeAuthorizationReceipt:
             self.transitive_closure_sha256,
             self.load_commands_sha256,
             self.imported_symbols_sha256,
+            self.final_snapshot_sha256,
         ):
             if type(value) is not str or _SHA256.fullmatch(value) is None:
                 raise ValueError("runtime authorization receipt digest is invalid")
@@ -318,6 +360,8 @@ class RuntimeAuthorizationReceipt:
             "transitive_closure_sha256": self.transitive_closure_sha256,
             "load_commands_sha256": self.load_commands_sha256,
             "imported_symbols_sha256": self.imported_symbols_sha256,
+            "final_snapshot_sha256": self.final_snapshot_sha256,
+            "verification_mode": self.verification_mode,
             "complete_for_scope": True,
             "distribution_authorized": False,
         }
@@ -521,11 +565,94 @@ def authorize_native_runtime(
     declared_system_images: tuple[RuntimeLoadedImage, ...],
     import_action: ImportAction,
     declared_system_platform_images: tuple[str, ...] = (),
-    snapshot_collector: SnapshotCollector | None = None,
-    load_command_inspector: LoadCommandInspector | None = None,
-    symbol_inspector: SymbolInspector | None = None,
 ) -> RuntimeAuthorizationResult:
-    """Authorize one exact extension import or return one fixed denial.
+    """Authorize one exact extension import using only fresh native evidence.
+
+    Production callers cannot inject loader snapshots or binary inspectors.
+    That separation is part of the Full C6 authority boundary, not merely an
+    API convenience.
+    """
+    return _authorize_native_runtime(
+        target_triple=target_triple,
+        expected_python_root=expected_python_root,
+        extension_path=extension_path,
+        runtime_inventory=runtime_inventory,
+        path_resolution=path_resolution,
+        transitive_closure=transitive_closure,
+        platform_base=platform_base,
+        declared_system_images=declared_system_images,
+        import_action=import_action,
+        declared_system_platform_images=declared_system_platform_images,
+        snapshot_collector=lambda: collect_loaded_runtime_images(target_triple),
+        load_command_inspector=_inspect_load_commands,
+        symbol_inspector=_inspect_imported_symbols,
+        verification_mode=RUNTIME_VERIFICATION_NATIVE_FRESH,
+    )
+
+
+def authorize_native_runtime_for_testing(
+    *,
+    target_triple: str,
+    expected_python_root: Path,
+    extension_path: Path,
+    runtime_inventory: NativeRuntimeInventory,
+    path_resolution: NativeRuntimePathResolutionObservation,
+    transitive_closure: NativeRuntimeTransitiveClosureObservation,
+    platform_base: RuntimeImageSnapshot,
+    declared_system_images: tuple[RuntimeLoadedImage, ...],
+    import_action: ImportAction,
+    snapshot_collector: SnapshotCollector,
+    load_command_inspector: LoadCommandInspector,
+    symbol_inspector: SymbolInspector,
+    declared_system_platform_images: tuple[str, ...] = (),
+) -> RuntimeAuthorizationResult:
+    """Exercise the authorization algorithm with explicitly non-native hooks.
+
+    A successful result is stamped ``injected-test-only`` and therefore must
+    never satisfy Full C6.  The function is exported only so deterministic unit
+    tests can cover denial branches without importing arbitrary binaries.
+    """
+    if not all(
+        callable(value)
+        for value in (snapshot_collector, load_command_inspector, symbol_inspector)
+    ):
+        return _result(RUNTIME_DENIED, REASON_STATIC_INVALID)
+    return _authorize_native_runtime(
+        target_triple=target_triple,
+        expected_python_root=expected_python_root,
+        extension_path=extension_path,
+        runtime_inventory=runtime_inventory,
+        path_resolution=path_resolution,
+        transitive_closure=transitive_closure,
+        platform_base=platform_base,
+        declared_system_images=declared_system_images,
+        import_action=import_action,
+        declared_system_platform_images=declared_system_platform_images,
+        snapshot_collector=snapshot_collector,
+        load_command_inspector=load_command_inspector,
+        symbol_inspector=symbol_inspector,
+        verification_mode=RUNTIME_VERIFICATION_INJECTED_TEST_ONLY,
+    )
+
+
+def _authorize_native_runtime(
+    *,
+    target_triple: str,
+    expected_python_root: Path,
+    extension_path: Path,
+    runtime_inventory: NativeRuntimeInventory,
+    path_resolution: NativeRuntimePathResolutionObservation,
+    transitive_closure: NativeRuntimeTransitiveClosureObservation,
+    platform_base: RuntimeImageSnapshot,
+    declared_system_images: tuple[RuntimeLoadedImage, ...],
+    import_action: ImportAction,
+    declared_system_platform_images: tuple[str, ...],
+    snapshot_collector: SnapshotCollector,
+    load_command_inspector: LoadCommandInspector,
+    symbol_inspector: SymbolInspector,
+    verification_mode: str,
+) -> RuntimeAuthorizationResult:
+    """Shared closed algorithm for native and visibly test-only evidence.
 
     Unsupported targets return before touching paths, observations, callbacks,
     or the process loader.  Every supported-target exception is collapsed into
@@ -534,6 +661,14 @@ def authorize_native_runtime(
     if type(target_triple) is not str or target_triple not in _SUPPORTED_PROFILES:
         return _result(RUNTIME_OUT_OF_SCOPE, REASON_OUT_OF_SCOPE)
     try:
+        native_evidence = verification_mode == RUNTIME_VERIFICATION_NATIVE_FRESH
+        if verification_mode not in {
+            RUNTIME_VERIFICATION_NATIVE_FRESH,
+            RUNTIME_VERIFICATION_INJECTED_TEST_ONLY,
+        }:
+            raise RuntimeAuthorizationError("runtime verification mode is invalid")
+        if native_evidence:
+            _require_native_host_and_loader_environment(target_triple)
         profile = _SUPPORTED_PROFILES[target_triple]
         path_inventory, closure_inventory = _validate_static_observations(
             target_triple=target_triple,
@@ -555,14 +690,13 @@ def authorize_native_runtime(
             extension=extension,
             closure=closure_inventory,
             target_triple=target_triple,
+            native_evidence=native_evidence,
         )
     except Exception:
         return _result(RUNTIME_DENIED, REASON_STATIC_INVALID)
 
-    command_inspector = load_command_inspector or _inspect_load_commands
-    imported_symbol_inspector = symbol_inspector or _inspect_imported_symbols
     try:
-        load_inspection = command_inspector(Path(extension.path), target_triple)
+        load_inspection = load_command_inspector(Path(extension.path), target_triple)
         if type(load_inspection) is not RuntimeLoadCommandInspection:
             raise RuntimeAuthorizationError("runtime load inspection model is invalid")
         commands = load_inspection.commands
@@ -582,7 +716,7 @@ def authorize_native_runtime(
 
     try:
         symbols = _canonical_inspector_tokens(
-            imported_symbol_inspector(Path(extension.path), target_triple)
+            symbol_inspector(Path(extension.path), target_triple)
         )
         if any(_is_forbidden_dynamic_symbol(symbol) for symbol in symbols):
             return _result(RUNTIME_DENIED, REASON_IMPORTED_SYMBOL)
@@ -590,13 +724,12 @@ def authorize_native_runtime(
     except Exception:
         return _result(RUNTIME_DENIED, REASON_IMPORTED_SYMBOL)
 
-    collector = snapshot_collector or (lambda: collect_loaded_runtime_images(target_triple))
     try:
-        before = collector()
+        before = snapshot_collector()
         if type(before) is not RuntimeImageSnapshot or before != base:
             return _result(RUNTIME_DENIED, REASON_PLATFORM_BASE)
         import_action()
-        after = collector()
+        after = snapshot_collector()
         if type(after) is not RuntimeImageSnapshot:
             return _result(RUNTIME_DENIED, REASON_PROBE_FAILED)
     except Exception:
@@ -643,6 +776,8 @@ def authorize_native_runtime(
             canonical_json_bytes(load_inspection.to_dict())
         ),
         imported_symbols_sha256=_token_digest(symbols),
+        final_snapshot_sha256=after.digest,
+        verification_mode=verification_mode,
     )
     return RuntimeAuthorizationResult(
         status=RUNTIME_AUTHORIZED,
@@ -783,6 +918,7 @@ def _validate_declared_runtime_set(
     extension: RuntimeLoadedImage,
     closure: NativeRuntimeTransitiveClosureInventory,
     target_triple: str,
+    native_evidence: bool,
 ) -> tuple[RuntimeImageSnapshot, tuple[RuntimeLoadedImage, ...], tuple[str, ...]]:
     if type(platform_base) is not RuntimeImageSnapshot:
         raise TypeError("platform base identity is invalid")
@@ -817,11 +953,17 @@ def _validate_declared_runtime_set(
     system_names = tuple(
         sorted(node.name for node in closure.nodes if node.kind == "system-logical")
     )
-    declared_names = tuple(
-        sorted(
-            [Path(image.path).name for image in canonical]
-            + [Path(path).name for path in platform_canonical]
+    if native_evidence:
+        for image in canonical:
+            if not _is_trusted_system_image_path(image.path, target_triple):
+                raise ValueError("declared system image is outside trusted OS roots")
+        declared_regular_names = tuple(
+            _native_system_image_name(image, target_triple) for image in canonical
         )
+    else:
+        declared_regular_names = tuple(Path(image.path).name for image in canonical)
+    declared_names = tuple(
+        sorted((*declared_regular_names, *(Path(path).name for path in platform_canonical)))
     )
     if declared_names != system_names:
         raise ValueError("declared system images do not bind every logical leaf")
@@ -833,6 +975,61 @@ def _validate_declared_runtime_set(
     if {image.path for image in canonical} & set(platform_canonical):
         raise ValueError("regular and platform system declarations overlap")
     return platform_base, canonical, platform_canonical
+
+
+def verify_native_runtime_authorization(
+    receipt: RuntimeAuthorizationReceipt,
+) -> bool:
+    """Freshly revalidate a native receipt at the Full C6 consumption point.
+
+    This verifier intentionally requires the current loader set to equal the
+    exact post-import snapshot.  Loading any additional image between runtime
+    authorization and the final gate makes the transaction stale and forces a
+    new authorization pass.
+    """
+    try:
+        if (
+            type(receipt) is not RuntimeAuthorizationReceipt
+            or receipt.verification_mode != RUNTIME_VERIFICATION_NATIVE_FRESH
+        ):
+            return False
+        _require_native_host_and_loader_environment(receipt.target_triple)
+        if capture_runtime_loaded_image(receipt.extension.path) != receipt.extension:
+            return False
+        for image in receipt.declared_system_images:
+            if (
+                not _is_trusted_system_image_path(image.path, receipt.target_triple)
+                or capture_runtime_loaded_image(image.path) != image
+            ):
+                return False
+        inspection = _inspect_load_commands(
+            Path(receipt.extension.path), receipt.target_triple
+        )
+        if sha256_hex(canonical_json_bytes(inspection.to_dict())) != (
+            receipt.load_commands_sha256
+        ):
+            return False
+        symbols = _canonical_inspector_tokens(
+            _inspect_imported_symbols(
+                Path(receipt.extension.path), receipt.target_triple
+            )
+        )
+        if _token_digest(symbols) != receipt.imported_symbols_sha256:
+            return False
+        current = collect_loaded_runtime_images(receipt.target_triple)
+        if current.digest != receipt.final_snapshot_sha256:
+            return False
+        current_by_inode = {image.inode_key: image for image in current.images}
+        for image in (receipt.extension, *receipt.declared_system_images):
+            if current_by_inode.get(image.inode_key) != image:
+                return False
+        if not set(receipt.declared_system_platform_images).issubset(
+            current.platform_images
+        ):
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def _merge_exact_images(
@@ -941,6 +1138,26 @@ def _inspect_imported_symbols(path: Path, target_triple: str) -> tuple[str, ...]
     return tuple(symbols)
 
 
+def _native_system_image_name(
+    image: RuntimeLoadedImage, target_triple: str
+) -> str:
+    """Return the loader identity exported by one trusted system image."""
+    if target_triple == "aarch64-apple-darwin":
+        return Path(image.path).name
+    output = _run_inspector(("/usr/bin/readelf", "-W", "-d", image.path))
+    sonames = tuple(
+        match.group(1)
+        for line in output.splitlines()
+        if (match := re.search(r"\(SONAME\).*\[([^\]]+)\]", line))
+    )
+    if (
+        len(sonames) != 1
+        or _SAFE_DEPENDENCY_NAME.fullmatch(sonames[0]) is None
+    ):
+        raise RuntimeAuthorizationError("system ELF SONAME is unavailable")
+    return sonames[0]
+
+
 def _run_inspector(command: tuple[str, ...]) -> str:
     try:
         completed = subprocess.run(
@@ -1011,9 +1228,54 @@ def _linux_loaded_image_paths() -> tuple[str, ...]:
         if len(fields) != 6 or "x" not in fields[1]:
             continue
         path = fields[5]
-        if path.startswith("/") and not path.endswith(" (deleted)"):
-            paths.append(path)
+        if "memfd:" in path or path.endswith(" (deleted)"):
+            raise RuntimeAuthorizationError(
+                "Linux loader contains a deleted or memory-backed image"
+            )
+        if path.startswith("/"):
+            try:
+                resolved = str(Path(path).resolve(strict=True))
+            except (OSError, RuntimeError) as exc:
+                raise RuntimeAuthorizationError(
+                    "Linux loader image cannot be resolved"
+                ) from exc
+            if not _is_canonical_absolute_path(resolved):
+                raise RuntimeAuthorizationError("Linux loader image path is unsafe")
+            paths.append(resolved)
     return tuple(paths)
+
+
+def _require_native_host_and_loader_environment(target_triple: str) -> None:
+    platform_name, _, architecture = _SUPPORTED_PROFILES[target_triple]
+    if platform_name == "darwin":
+        if sys.platform != "darwin" or os.uname().machine not in {"arm64", "aarch64"}:
+            raise RuntimeAuthorizationError("runtime target does not match the native host")
+        if any(name.startswith("DYLD_") for name in os.environ) or any(
+            name in os.environ for name in _LINUX_LOADER_ENVIRONMENT
+        ):
+            raise RuntimeAuthorizationError("loader-affecting environment is present")
+    else:
+        if not sys.platform.startswith("linux") or os.uname().machine not in {
+            "x86_64",
+            "amd64",
+        }:
+            raise RuntimeAuthorizationError("runtime target does not match the native host")
+        if architecture != "x86_64" or any(
+            name in os.environ for name in _LINUX_LOADER_ENVIRONMENT
+        ):
+            raise RuntimeAuthorizationError("loader-affecting environment is present")
+
+
+def _is_trusted_system_image_path(path: str, target_triple: str) -> bool:
+    if not _is_canonical_absolute_path(path):
+        return False
+    roots = (
+        _DARWIN_TRUSTED_SYSTEM_ROOTS
+        if target_triple == "aarch64-apple-darwin"
+        else _LINUX_TRUSTED_SYSTEM_ROOTS
+    )
+    candidate = PurePosixPath(path)
+    return any(candidate.is_relative_to(PurePosixPath(root)) for root in roots)
 
 
 def _token_digest(tokens: tuple[str, ...]) -> str:
@@ -1084,6 +1346,8 @@ __all__ = [
     "RUNTIME_AUTHORIZED",
     "RUNTIME_DENIED",
     "RUNTIME_OUT_OF_SCOPE",
+    "RUNTIME_VERIFICATION_INJECTED_TEST_ONLY",
+    "RUNTIME_VERIFICATION_NATIVE_FRESH",
     "RuntimeAuthorizationError",
     "RuntimeAuthorizationReceipt",
     "RuntimeAuthorizationResult",
@@ -1091,7 +1355,9 @@ __all__ = [
     "RuntimeLoadedImage",
     "RuntimeLoadCommandInspection",
     "authorize_native_runtime",
+    "authorize_native_runtime_for_testing",
     "capture_runtime_image_snapshot",
     "capture_runtime_loaded_image",
     "collect_loaded_runtime_images",
+    "verify_native_runtime_authorization",
 ]

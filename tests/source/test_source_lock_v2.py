@@ -7,8 +7,9 @@ import csv
 import hashlib
 import io
 import json
+import pickle
 import zipfile
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,9 @@ from rextio.source.source_lock_v2 import (
     SOURCE_LOCK_V2_SIGNED_MESSAGE_PREFIX,
     SourceLockV2Manifest,
     SourceLockV2Signature,
+    SourceLockV2VerifiedContext,
     build_source_lock_v2_manifest,
+    validate_source_lock_v2_verified_context,
     verify_source_lock_v2,
     verify_source_lock_v2_with_context,
 )
@@ -530,6 +533,32 @@ def test_verified_context_reuses_exact_objects_and_final_revalidation_catches_sw
     raced_verification = _verify_context(raced)
     assert raced_verification.admission.status == "rejected"
     assert raced_verification.context is None
+
+
+def test_verified_context_is_same_transaction_sealed_and_nonserializing(
+    tmp_path: Path,
+) -> None:
+    fixture = _write_signed(tmp_path)
+    verification = _verify_context(fixture)
+    context = verification.context
+    assert context is not None
+    assert validate_source_lock_v2_verified_context(context) is True
+
+    with pytest.raises(TypeError, match="verification transaction"):
+        SourceLockV2VerifiedContext(
+            admission=context.admission,
+            plan=context.plan,
+            wheel=context.wheel,
+            analyses=context.analyses,
+            manifest=context.manifest,
+        )
+    with pytest.raises(TypeError, match="cannot be serialized"):
+        pickle.dumps(context)
+    with pytest.raises(TypeError, match="cannot be copied"):
+        asdict(verification)
+
+    object.__setattr__(context, "manifest", replace(context.manifest, owner="Other Owner"))
+    assert validate_source_lock_v2_verified_context(context) is False
 
 
 def test_symlinked_lock_signature_or_key_is_rejected(tmp_path: Path) -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import os
 import stat
 import sys
 import sysconfig
@@ -10,6 +12,31 @@ import pytest
 
 import rextio.build.wheel_builder as wheel_builder
 from rextio.build.wheel_builder import build_artifact_wheel
+
+
+def _external_contract() -> wheel_builder.ExternalWheelContract:
+    payloads = {
+        "demo_pkg/__init__.py": b"def affine(x): return x + 1\n",
+        "demo_pkg-1.0.0.dist-info/METADATA": b"metadata",
+        "demo_pkg-1.0.0.dist-info/WHEEL": b"wheel",
+        "demo_pkg-1.0.0.dist-info/licenses/LICENSE": b"license",
+        "demo_pkg-1.0.0.dist-info/RECORD": b"record",
+    }
+    identities = tuple(
+        wheel_builder.ExternalWheelMemberIdentity(
+            path=path,
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size=len(payload),
+        )
+        for path, payload in sorted(payloads.items())
+    )
+    return wheel_builder.ExternalWheelContract(
+        package="demo_pkg",
+        distribution="demo-pkg",
+        version="1.0.0",
+        source_members=("demo_pkg/__init__.py",),
+        external_members=identities,
+    )
 
 
 def test_build_artifact_wheel_is_deterministic_and_records_files(tmp_path: Path) -> None:
@@ -130,12 +157,7 @@ def test_external_wheel_contract_pins_requirement_and_excludes_source(
     python_dir = tmp_path / "python"
     (python_dir / "app").mkdir(parents=True)
     (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
-    contract = contract_type(
-        package="demo_pkg",
-        distribution="demo-pkg",
-        version="1.0.0",
-        source_members=("demo_pkg/__init__.py",),
-    )
+    contract = _external_contract()
 
     result = build_artifact_wheel(
         tmp_path / "project",
@@ -177,14 +199,9 @@ def test_external_wheel_contract_rejects_staged_external_python_source(
         "def affine(x): return x + 1\n",
         encoding="utf-8",
     )
-    contract = contract_type(
-        package="demo_pkg",
-        distribution="demo-pkg",
-        version="1.0.0",
-        source_members=("demo_pkg/__init__.py",),
-    )
+    contract = _external_contract()
 
-    with pytest.raises(error_type, match="external Python source"):
+    with pytest.raises(error_type, match="external package material"):
         build_artifact_wheel(
             tmp_path / "project",
             python_dir,
@@ -195,16 +212,60 @@ def test_external_wheel_contract_rejects_staged_external_python_source(
     assert not list((tmp_path / "dist").glob("*.whl"))
 
 
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "demo_pkg/config.json",
+        "demo_pkg-1.0.0.dist-info/licenses/LICENSE",
+        "demo_pkg-1.0.0.dist-info/RECORD",
+    ),
+)
+def test_external_contract_rejects_non_python_package_and_metadata_material(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    python_dir = tmp_path / "python"
+    path = python_dir / relative
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"external material")
+
+    with pytest.raises(
+        wheel_builder.WheelContractError, match="external package material"
+    ):
+        build_artifact_wheel(
+            tmp_path / "project",
+            python_dir,
+            tmp_path / "dist",
+            external_contract=_external_contract(),
+        )
+
+
+@pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
+def test_wheel_builder_rejects_linked_staging_files(
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    target = tmp_path / "target.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    linked = python_dir / "linked.py"
+    if link_kind == "symlink":
+        linked.symlink_to(target)
+        reason = "symlink"
+    else:
+        os.link(target, linked)
+        reason = "unalias"
+
+    with pytest.raises(wheel_builder.WheelContractError, match=reason):
+        build_artifact_wheel(tmp_path, python_dir, tmp_path / "dist")
+
+
 def _strict_external_wheel(tmp_path: Path):
     python_dir = tmp_path / "python"
     (python_dir / "app").mkdir(parents=True)
     (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
-    contract = wheel_builder.ExternalWheelContract(
-        package="demo_pkg",
-        distribution="demo-pkg",
-        version="1.0.0",
-        source_members=("demo_pkg/__init__.py",),
-    )
+    contract = _external_contract()
     result = build_artifact_wheel(
         tmp_path / "project",
         python_dir,
@@ -219,7 +280,7 @@ def _strict_external_wheel(tmp_path: Path):
     ("member", "mode", "reason"),
     (
         ("../escape.py", stat.S_IFREG | 0o644, "unsafe"),
-        ("DEMO_PKG/hidden.PY", stat.S_IFREG | 0o644, "external Python source"),
+        ("DEMO_PKG/hidden.PY", stat.S_IFREG | 0o644, "external package material"),
         ("APP/__init__.py", stat.S_IFREG | 0o644, "aliased"),
         ("payload-link", stat.S_IFLNK | 0o777, "regular file"),
     ),
