@@ -52,6 +52,8 @@ def _config() -> RextioConfig:
             artifact_cargo_vendor_sha256="2" * 64,
             artifact_cargo_lock="Cargo.lock",
             artifact_cargo_lock_sha256="3" * 64,
+            artifact_toolchain_support_lock="locks/toolchain-support.json",
+            artifact_toolchain_support_lock_sha256="6" * 64,
             artifact_trusted_public_key="keys/owner.pub",
             artifact_trusted_public_key_sha256="4" * 64,
             artifact_signing_request_output="state/request.json",
@@ -185,6 +187,13 @@ def test_equivalent_typed_configs_have_one_canonical_private_identity() -> None:
             value,
             toolchain=replace(value.toolchain, cargo_version="==1.94.0"),
         ),
+        lambda value: replace(
+            value,
+            build=replace(
+                value.build,
+                artifact_toolchain_support_lock_sha256="7" * 64,
+            ),
+        ),
     ),
     ids=(
         "fallback-threshold",
@@ -195,6 +204,7 @@ def test_equivalent_typed_configs_have_one_canonical_private_identity() -> None:
         "target-build-options",
         "import-package-pin",
         "toolchain-pin",
+        "toolchain-support-lock",
     ),
 )
 def test_every_resolved_semantic_change_rebinds_closure_and_request(change) -> None:

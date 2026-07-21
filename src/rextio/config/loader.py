@@ -53,6 +53,8 @@ CONFIG_KEYS = {
         "artifact_cargo_vendor_sha256",
         "artifact_cargo_lock",
         "artifact_cargo_lock_sha256",
+        "artifact_toolchain_support_lock",
+        "artifact_toolchain_support_lock_sha256",
         "artifact_trusted_public_key",
         "artifact_trusted_public_key_sha256",
         "artifact_final_signature",
@@ -322,6 +324,7 @@ def _validate_config_values(
         "artifact_policy_manifest",
         "artifact_cargo_vendor",
         "artifact_cargo_lock",
+        "artifact_toolchain_support_lock",
         "artifact_final_signature",
     ):
         _require_optional_project_relative_path(
@@ -364,6 +367,11 @@ def _validate_config_values(
         "build",
         "artifact_cargo_lock_sha256",
         build["artifact_cargo_lock_sha256"],
+    )
+    _require_optional_sha256(
+        "build",
+        "artifact_toolchain_support_lock_sha256",
+        build["artifact_toolchain_support_lock_sha256"],
     )
     _require_optional_sha256(
         "build",
@@ -469,6 +477,10 @@ def _validate_full_c6_config(
     cargo_vendor_sha256 = build["artifact_cargo_vendor_sha256"]
     cargo_lock = build["artifact_cargo_lock"]
     cargo_lock_sha256 = build["artifact_cargo_lock_sha256"]
+    toolchain_support_lock = build["artifact_toolchain_support_lock"]
+    toolchain_support_lock_sha256 = build[
+        "artifact_toolchain_support_lock_sha256"
+    ]
     trusted_key = build["artifact_trusted_public_key"]
     trusted_key_sha256 = build["artifact_trusted_public_key_sha256"]
     final_signature = build["artifact_final_signature"]
@@ -507,6 +519,13 @@ def _validate_full_c6_config(
             "[build] artifact_cargo_lock and "
             "artifact_cargo_lock_sha256 must be configured together"
         )
+    if (toolchain_support_lock is None) != (
+        toolchain_support_lock_sha256 is None
+    ):
+        raise ConfigError(
+            "[build] artifact_toolchain_support_lock and "
+            "artifact_toolchain_support_lock_sha256 must be configured together"
+        )
     if (trusted_key is None) != (trusted_key_sha256 is None):
         raise ConfigError(
             "[build] artifact_trusted_public_key and "
@@ -542,6 +561,7 @@ def _validate_full_c6_config(
             "artifact_policy_manifest",
             "artifact_cargo_vendor",
             "artifact_cargo_lock",
+            "artifact_toolchain_support_lock",
             "artifact_trusted_public_key",
             "artifact_final_signature",
             "artifact_signing_request_output",
@@ -587,6 +607,8 @@ def _validate_full_c6_config(
         failures.append("one owner-prepared Cargo vendor directory and tree SHA-256")
     if cargo_lock is None or cargo_lock_sha256 is None:
         failures.append("one owner-prepared Cargo.lock path and SHA-256")
+    if toolchain_support_lock is None or toolchain_support_lock_sha256 is None:
+        failures.append("one owner-prepared toolchain support lock and SHA-256")
     if trusted_key is None or trusted_key_sha256 is None:
         failures.append("one trusted public key path and SHA-256")
     if signing_request_output is None:

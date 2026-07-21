@@ -34,6 +34,11 @@ class BuildConfig:
     artifact_cargo_vendor_sha256: str | None = None
     artifact_cargo_lock: str | None = None
     artifact_cargo_lock_sha256: str | None = None
+    # Owner-prepared lock for every non-project toolchain/support input used
+    # by strict Full C6.  The lock is project-relative; its entries keep
+    # private host locators out of public evidence.
+    artifact_toolchain_support_lock: str | None = None
+    artifact_toolchain_support_lock_sha256: str | None = None
     artifact_trusted_public_key: str | None = None
     artifact_trusted_public_key_sha256: str | None = None
     artifact_final_signature: str | None = None

@@ -29,6 +29,8 @@ artifact_cargo_vendor = "vendor/cargo"
 artifact_cargo_vendor_sha256 = "{_SHA_A}"
 artifact_cargo_lock = "locks/Cargo.lock"
 artifact_cargo_lock_sha256 = "{_SHA_B}"
+artifact_toolchain_support_lock = "locks/toolchain-support.json"
+artifact_toolchain_support_lock_sha256 = "{_SHA_A}"
 artifact_trusted_public_key = "keys/release.pub"
 artifact_trusted_public_key_sha256 = "{_SHA_A}"
 artifact_signing_request_output = "build/rextio.full-c6-final-authorization-request.json"
@@ -62,6 +64,8 @@ def test_full_c6_distribution_config_defaults_are_inactive(tmp_path: Path) -> No
     assert config.build.artifact_cargo_vendor_sha256 is None
     assert config.build.artifact_cargo_lock is None
     assert config.build.artifact_cargo_lock_sha256 is None
+    assert config.build.artifact_toolchain_support_lock is None
+    assert config.build.artifact_toolchain_support_lock_sha256 is None
     assert config.build.artifact_trusted_public_key is None
     assert config.build.artifact_trusted_public_key_sha256 is None
     assert config.build.artifact_final_signature is None
@@ -84,6 +88,11 @@ def test_full_c6_distribution_config_accepts_exact_frozen_profile(tmp_path: Path
     assert config.build.artifact_cargo_vendor_sha256 == _SHA_A
     assert config.build.artifact_cargo_lock == "locks/Cargo.lock"
     assert config.build.artifact_cargo_lock_sha256 == _SHA_B
+    assert (
+        config.build.artifact_toolchain_support_lock
+        == "locks/toolchain-support.json"
+    )
+    assert config.build.artifact_toolchain_support_lock_sha256 == _SHA_A
     assert config.build.artifact_trusted_public_key == "keys/release.pub"
     assert config.build.artifact_trusted_public_key_sha256 == _SHA_A
     assert config.build.artifact_final_signature is None
@@ -213,6 +222,16 @@ def test_full_c6_distribution_config_accepts_final_signature(tmp_path: Path) -> 
             "lowercase hexadecimal",
         ),
         (
+            'artifact_toolchain_support_lock = "locks/toolchain-support.json"',
+            'artifact_toolchain_support_lock = "../toolchain-support.json"',
+            "project-relative",
+        ),
+        (
+            f'artifact_toolchain_support_lock_sha256 = "{_SHA_A}"',
+            'artifact_toolchain_support_lock_sha256 = "BAD"',
+            "lowercase hexadecimal",
+        ),
+        (
             'artifact_source_lock_manifest = "locks/source-lock.v2.json"',
             'artifact_source_lock_manifest = "C:source-lock.v2.json"',
             "project-relative",
@@ -328,6 +347,7 @@ def test_full_c6_final_signature_requires_project_relative_path(
         "artifact_policy_manifest",
         "artifact_cargo_vendor",
         "artifact_cargo_lock",
+        "artifact_toolchain_support_lock",
         "artifact_final_signature",
         "artifact_signing_request_output",
     ],
@@ -369,6 +389,11 @@ def test_full_c6_path_fields_reject_non_string_values(
             "full-c6-required",
         ),
         (
+            'artifact_toolchain_support_lock = "locks/toolchain-support.json"\n'
+            f'artifact_toolchain_support_lock_sha256 = "{_SHA_A}"\n',
+            "full-c6-required",
+        ),
+        (
             'artifact_trusted_public_key = "keys/release.pub"\n'
             f'artifact_trusted_public_key_sha256 = "{_SHA_A}"\n',
             "signed Full C6 inputs require",
@@ -406,6 +431,8 @@ artifact_cargo_vendor = "vendor/cargo"
 artifact_cargo_vendor_sha256 = "{_SHA_B}"
 artifact_cargo_lock = "locks/Cargo.lock"
 artifact_cargo_lock_sha256 = "{_SHA_A}"
+artifact_toolchain_support_lock = "locks/toolchain-support.json"
+artifact_toolchain_support_lock_sha256 = "{_SHA_B}"
 artifact_final_signature = "signatures/final.sig.json"
 artifact_signing_request_output = "state/rextio.full-c6-final-authorization-request.json"
 """.strip()
@@ -420,6 +447,11 @@ artifact_signing_request_output = "state/rextio.full-c6-final-authorization-requ
     assert config.build.artifact_cargo_vendor_sha256 == _SHA_B
     assert config.build.artifact_cargo_lock == "locks/Cargo.lock"
     assert config.build.artifact_cargo_lock_sha256 == _SHA_A
+    assert (
+        config.build.artifact_toolchain_support_lock
+        == "locks/toolchain-support.json"
+    )
+    assert config.build.artifact_toolchain_support_lock_sha256 == _SHA_B
     assert config.build.artifact_final_signature == "signatures/final.sig.json"
 
 
@@ -457,6 +489,14 @@ artifact_signing_request_output = "state/rextio.full-c6-final-authorization-requ
         ),
         (
             f'artifact_cargo_lock_sha256 = "{_SHA_A}"',
+            "configured together",
+        ),
+        (
+            'artifact_toolchain_support_lock = "locks/toolchain-support.json"',
+            "configured together",
+        ),
+        (
+            f'artifact_toolchain_support_lock_sha256 = "{_SHA_A}"',
             "configured together",
         ),
         (
@@ -558,6 +598,11 @@ def test_full_c6_config_survives_override_serialization(tmp_path: Path) -> None:
     assert rebuilt.build.artifact_cargo_vendor_sha256 == _SHA_A
     assert rebuilt.build.artifact_cargo_lock == "locks/Cargo.lock"
     assert rebuilt.build.artifact_cargo_lock_sha256 == _SHA_B
+    assert (
+        rebuilt.build.artifact_toolchain_support_lock
+        == "locks/toolchain-support.json"
+    )
+    assert rebuilt.build.artifact_toolchain_support_lock_sha256 == _SHA_A
     assert rebuilt.build.artifact_trusted_public_key == "keys/release.pub"
     assert (
         rebuilt.build.artifact_signing_request_output

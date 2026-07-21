@@ -22,6 +22,8 @@ DEFAULT_CONFIG: dict[str, dict[str, object]] = {
         "artifact_cargo_vendor_sha256": None,
         "artifact_cargo_lock": None,
         "artifact_cargo_lock_sha256": None,
+        "artifact_toolchain_support_lock": None,
+        "artifact_toolchain_support_lock_sha256": None,
         "artifact_trusted_public_key": None,
         "artifact_trusted_public_key_sha256": None,
         "artifact_final_signature": None,
