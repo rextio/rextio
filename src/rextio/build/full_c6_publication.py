@@ -32,15 +32,21 @@ from rextio.artifacts.full_authorization import (
     FullC6AuthorizationCheck,
     FullC6DistributionAuthorization,
     FullC6EvidenceReceipt,
+    FullC6PreauthorizationEvidence,
     full_c6_evidence_digest,
+    full_c6_preauthorization_evidence_digest,
 )
-from rextio.build.full_c6_gate import FULL_C6_FINAL_OUTPUT_RECEIPT_DOMAIN
+from rextio.build.full_c6_gate import (
+    FULL_C6_FINAL_OUTPUT_RECEIPT_DOMAIN,
+    FullC6GateResult,
+)
 from rextio.build.full_c6_supply_chain import validate_full_c6_supply_chain_document
 from rextio.build.signing import (
     MAX_SIGNATURE_ENVELOPE_BYTES,
     FinalAuthorizationRequest,
     SignatureVerificationReceipt,
     parse_detached_signature_envelope,
+    verify_detached_authorization_signature,
 )
 
 
@@ -82,6 +88,7 @@ _ROLE_MAX_BYTES: Final = {
 }
 _MAX_REQUEST_BYTES: Final = 64 * 1024
 _MAX_BUNDLE_NAME_CHARS: Final = 160
+_RAW_ED25519_PUBLIC_KEY_BYTES: Final = 32
 
 
 class FullC6PublicationError(RuntimeError):
@@ -331,8 +338,8 @@ def publish_full_c6_bundle(
     bundle_name: str,
     bundle_files: Mapping[str, Path | str],
     request: FinalAuthorizationRequest,
-    evidence: FullC6ArtifactEvidence,
-    authorization: FullC6DistributionAuthorization,
+    gate_result: FullC6GateResult,
+    public_key_path: Path | str,
 ) -> FullC6PublicationReceipt:
     """Publish one exact six-file Full C6 payload with an atomic directory rename.
 
@@ -341,17 +348,25 @@ def publish_full_c6_bundle(
     the supported unsigned state and creates no distribution output.
     """
     trusted_request = _rebuild_request(request)
-    trusted_evidence = _rebuild_evidence(evidence)
-    trusted_authorization = _rebuild_authorization(authorization)
+    trusted_gate = _rebuild_gate_result(gate_result)
+    trusted_evidence = trusted_gate.evidence
+    trusted_authorization = trusted_gate.authorization
     sources = _normalize_bundle_sources(bundle_files)
     _require_bundle_name(bundle_name)
 
     captured = _capture_sources(sources)
+    public_key_source = Path(public_key_path)
+    public_key = _capture_path(
+        public_key_source,
+        max_bytes=_RAW_ED25519_PUBLIC_KEY_BYTES,
+    )
+    if len(public_key.data) != _RAW_ED25519_PUBLIC_KEY_BYTES:
+        raise FullC6PublicationError("Full C6 public key must be exactly 32 raw bytes")
     published_files = _verify_bundle_semantics(
         captured=captured,
         request=trusted_request,
-        evidence=trusted_evidence,
-        authorization=trusted_authorization,
+        gate_result=trusted_gate,
+        public_key=public_key.data,
     )
     manifest = _publication_manifest(
         target_triple=trusted_evidence.target_triple,
@@ -380,6 +395,7 @@ def publish_full_c6_bundle(
     )
     staging_name = f".rextio-full-c6-stage-{secrets.token_hex(16)}"
     staging_identity: tuple[int, int] | None = None
+    staging_fd: int | None = None
     renamed = False
     try:
         _require_missing_directory_member(root_fd, bundle_name)
@@ -389,43 +405,63 @@ def publish_full_c6_bundle(
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=root_fd,
         )
-        try:
-            observed_stage = os.fstat(staging_fd)
-            if not stat.S_ISDIR(observed_stage.st_mode):
-                raise FullC6PublicationError("Full C6 staging object is not a directory")
-            staging_identity = (observed_stage.st_dev, observed_stage.st_ino)
-            if observed_stage.st_dev != root_stat.st_dev:
-                raise FullC6PublicationError("Full C6 staging crosses filesystem boundary")
-            os.fchmod(staging_fd, 0o700)
-            for item in published_files:
-                _write_exclusive_file(
-                    staging_fd,
-                    item.logical_name,
-                    captured[item.role].data,
-                    mode=0o600,
-                )
+        observed_stage = os.fstat(staging_fd)
+        if not stat.S_ISDIR(observed_stage.st_mode):
+            raise FullC6PublicationError("Full C6 staging object is not a directory")
+        staging_identity = (observed_stage.st_dev, observed_stage.st_ino)
+        if observed_stage.st_dev != root_stat.st_dev:
+            raise FullC6PublicationError("Full C6 staging crosses filesystem boundary")
+        os.fchmod(staging_fd, 0o700)
+        for item in published_files:
             _write_exclusive_file(
                 staging_fd,
-                FULL_C6_PUBLICATION_MANIFEST_FILENAME,
-                manifest_bytes,
+                item.logical_name,
+                captured[item.role].data,
                 mode=0o600,
             )
-            os.fsync(staging_fd)
-            _verify_staging_directory(
-                staging_fd,
-                captured=captured,
-                files=published_files,
-                manifest_bytes=manifest_bytes,
-            )
-        finally:
-            os.close(staging_fd)
+        _write_exclusive_file(
+            staging_fd,
+            FULL_C6_PUBLICATION_MANIFEST_FILENAME,
+            manifest_bytes,
+            mode=0o600,
+        )
+        os.fsync(staging_fd)
+        staged_members = _verify_staging_directory(
+            staging_fd,
+            captured=captured,
+            files=published_files,
+            manifest_bytes=manifest_bytes,
+        )
 
         # Re-read every original immediately before publication.  Identity,
         # metadata, and bytes must all be unchanged since initial capture.
         second_capture = _capture_sources(sources)
         if second_capture != captured:
             raise FullC6PublicationError("Full C6 publication input changed during staging")
+        second_public_key = _capture_path(
+            public_key_source,
+            max_bytes=_RAW_ED25519_PUBLIC_KEY_BYTES,
+        )
+        if second_public_key != public_key:
+            raise FullC6PublicationError("Full C6 public key changed during staging")
         _revalidate_directory(root_path, root_stat, label="publication root")
+        _require_directory_member_identity(
+            root_fd,
+            staging_name,
+            expected_identity=staging_identity,
+            label="staging",
+        )
+        # Same-UID processes can always race owner-writable files.  Keep the
+        # directory descriptor open and revalidate name->inode plus all bytes
+        # at the last possible point; no receipt is returned on any later
+        # mismatch.
+        _verify_staging_directory(
+            staging_fd,
+            captured=captured,
+            files=published_files,
+            manifest_bytes=manifest_bytes,
+            expected_members=staged_members,
+        )
         _require_missing_directory_member(root_fd, bundle_name)
         _atomic_rename_noreplace(
             root_fd,
@@ -433,6 +469,31 @@ def publish_full_c6_bundle(
             destination_name=bundle_name,
         )
         renamed = True
+        destination_fd = _open_directory_member(
+            root_fd,
+            bundle_name,
+            expected_identity=staging_identity,
+            label="published bundle",
+        )
+        try:
+            _verify_staging_directory(
+                destination_fd,
+                captured=captured,
+                files=published_files,
+                manifest_bytes=manifest_bytes,
+                expected_members=staged_members,
+            )
+            destination_stat = os.fstat(destination_fd)
+            staging_stat = os.fstat(staging_fd)
+            if (destination_stat.st_dev, destination_stat.st_ino) != (
+                staging_stat.st_dev,
+                staging_stat.st_ino,
+            ):
+                raise FullC6PublicationError(
+                    "Full C6 published bundle no longer names the staged inode"
+                )
+        finally:
+            os.close(destination_fd)
         os.fsync(root_fd)
         _revalidate_directory(root_path, root_stat, label="publication root")
     except FullC6PublicationError:
@@ -440,6 +501,8 @@ def publish_full_c6_bundle(
     except OSError as exc:
         raise FullC6PublicationError("Full C6 bundle publication failed closed") from exc
     finally:
+        if staging_fd is not None:
+            os.close(staging_fd)
         if not renamed and staging_identity is not None:
             _remove_owned_staging(root_path, staging_name, staging_identity)
         os.close(root_fd)
@@ -473,6 +536,78 @@ def _rebuild_request(value: FinalAuthorizationRequest) -> FinalAuthorizationRequ
         raise FullC6PublicationError("Full C6 signing request invalid") from exc
     if rebuilt != value:
         raise FullC6PublicationError("Full C6 signing request is not canonical")
+    return rebuilt
+
+
+def _rebuild_gate_result(value: FullC6GateResult) -> FullC6GateResult:
+    if type(value) is not FullC6GateResult:
+        raise FullC6PublicationError(
+            "Full C6 publication requires a canonical hard-gate result"
+        )
+    try:
+        raw_pre = value.preauthorization_evidence
+        if type(raw_pre) is not FullC6PreauthorizationEvidence:
+            raise TypeError("preauthorization evidence type invalid")
+        preauthorization = FullC6PreauthorizationEvidence(
+            target_triple=raw_pre.target_triple,
+            subject=raw_pre.subject,
+            external_package=raw_pre.external_package,
+            external_distribution=raw_pre.external_distribution,
+            external_version=raw_pre.external_version,
+            external_source_archive=raw_pre.external_source_archive,
+            trusted_public_key_sha256=raw_pre.trusted_public_key_sha256,
+            receipts=tuple(
+                FullC6EvidenceReceipt(id=item.id, sha256=item.sha256)
+                for item in raw_pre.receipts
+                if type(item) is FullC6EvidenceReceipt
+            ),
+        )
+        raw_signature = value.signature_receipt
+        if type(raw_signature) is not SignatureVerificationReceipt:
+            raise TypeError("signature receipt type invalid")
+        signature = SignatureVerificationReceipt(
+            target_triple=raw_signature.target_triple,
+            scope=raw_signature.scope,
+            manifest_sha256=raw_signature.manifest_sha256,
+            public_key_sha256=raw_signature.public_key_sha256,
+            signature_sha256=raw_signature.signature_sha256,
+            domain=raw_signature.domain,
+            signature_verified=raw_signature.signature_verified,
+            authorizes_distribution=raw_signature.authorizes_distribution,
+        )
+        evidence = _rebuild_evidence(value.evidence)
+        authorization = _rebuild_authorization(value.authorization)
+        rebuilt = FullC6GateResult(
+            preauthorization_evidence=preauthorization,
+            signature_receipt=signature,
+            evidence=evidence,
+            authorization=authorization,
+        )
+    except FullC6PublicationError:
+        raise
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise FullC6PublicationError("Full C6 hard-gate result is not canonical") from exc
+    if rebuilt != value:
+        raise FullC6PublicationError("Full C6 hard-gate result is not canonical")
+    preauthorization_sha256 = full_c6_preauthorization_evidence_digest(
+        preauthorization
+    )
+    if not (
+        evidence.target_triple == preauthorization.target_triple
+        and evidence.subject == preauthorization.subject
+        and evidence.external_package == preauthorization.external_package
+        and evidence.external_distribution == preauthorization.external_distribution
+        and evidence.external_version == preauthorization.external_version
+        and evidence.external_source_archive == preauthorization.external_source_archive
+        and evidence.trusted_public_key_sha256
+        == preauthorization.trusted_public_key_sha256
+        and evidence.preauthorization_evidence_sha256 == preauthorization_sha256
+        and evidence.receipts[: len(preauthorization.receipts)]
+        == preauthorization.receipts
+        and signature.public_key_sha256 == preauthorization.trusted_public_key_sha256
+        and authorization.evidence_sha256 == full_c6_evidence_digest(evidence)
+    ):
+        raise FullC6PublicationError("Full C6 hard-gate evidence chain is inconsistent")
     return rebuilt
 
 
@@ -562,9 +697,11 @@ def _verify_bundle_semantics(
     *,
     captured: dict[str, _CapturedFile],
     request: FinalAuthorizationRequest,
-    evidence: FullC6ArtifactEvidence,
-    authorization: FullC6DistributionAuthorization,
+    gate_result: FullC6GateResult,
+    public_key: bytes,
 ) -> tuple[FullC6PublishedFile, ...]:
+    evidence = gate_result.evidence
+    authorization = gate_result.authorization
     wheel = captured[ROLE_WHEEL]
     if (
         wheel.sha256 != evidence.subject.sha256
@@ -597,21 +734,18 @@ def _verify_bundle_semantics(
 
     try:
         envelope = parse_detached_signature_envelope(captured[ROLE_DETACHED_SIGNATURE].data)
+        signature_receipt = verify_detached_authorization_signature(
+            request=request,
+            envelope=envelope,
+            public_key=public_key,
+            expected_public_key_sha256=evidence.trusted_public_key_sha256,
+        )
     except Exception as exc:
-        raise FullC6PublicationError("Full C6 detached signature envelope invalid") from exc
-    if not (
-        envelope.manifest_sha256 == request.manifest_sha256
-        and envelope.public_key_sha256 == authorization.trusted_public_key_sha256
-    ):
-        raise FullC6PublicationError("Full C6 detached signature envelope binding mismatch")
-
-    signature_receipt = SignatureVerificationReceipt(
-        target_triple=request.target_triple,
-        scope=request.scope,
-        manifest_sha256=request.manifest_sha256,
-        public_key_sha256=envelope.public_key_sha256,
-        signature_sha256=hashlib.sha256(envelope.signature_bytes).hexdigest(),
-    )
+        raise FullC6PublicationError(
+            "Full C6 detached Ed25519 signature verification failed"
+        ) from exc
+    if signature_receipt != gate_result.signature_receipt:
+        raise FullC6PublicationError("Full C6 hard-gate signature receipt is stale")
     receipts = {item.id: item.sha256 for item in evidence.receipts}
     if receipts.get("attestation-signature-verified") != signature_receipt.digest:
         raise FullC6PublicationError("Full C6 signature receipt does not match envelope")
@@ -741,7 +875,12 @@ def _capture_directory_member(
         os.close(descriptor)
     if len(data) != final.st_size:
         raise FullC6PublicationError("Full C6 file changed while reading")
-    return _CapturedFile(data=data, identity=_stat_identity(final))
+    try:
+        named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise FullC6PublicationError("Full C6 file name changed during capture") from exc
+    _require_same_regular(final, named)
+    return _CapturedFile(data=data, identity=_stat_identity(named))
 
 
 def _open_safe_directory(
@@ -774,6 +913,58 @@ def _open_safe_directory(
             os.close(descriptor)
             raise FullC6PublicationError(f"Full C6 {label} changed during open")
         return descriptor, opened
+    except FullC6PublicationError:
+        raise
+    except OSError as exc:
+        raise FullC6PublicationError(f"Full C6 {label} could not be opened safely") from exc
+
+
+def _require_directory_member_identity(
+    directory_fd: int,
+    name: str,
+    *,
+    expected_identity: tuple[int, int],
+    label: str,
+) -> None:
+    try:
+        observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise FullC6PublicationError(f"Full C6 {label} name changed") from exc
+    if (
+        not stat.S_ISDIR(observed.st_mode)
+        or stat.S_ISLNK(observed.st_mode)
+        or (observed.st_dev, observed.st_ino) != expected_identity
+    ):
+        raise FullC6PublicationError(f"Full C6 {label} name-to-inode binding changed")
+
+
+def _open_directory_member(
+    directory_fd: int,
+    name: str,
+    *,
+    expected_identity: tuple[int, int],
+    label: str,
+) -> int:
+    _require_directory_member_identity(
+        directory_fd,
+        name,
+        expected_identity=expected_identity,
+        label=label,
+    )
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_fd,
+        )
+        observed = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(observed.st_mode)
+            or (observed.st_dev, observed.st_ino) != expected_identity
+        ):
+            os.close(descriptor)
+            raise FullC6PublicationError(f"Full C6 {label} changed during open")
+        return descriptor
     except FullC6PublicationError:
         raise
     except OSError as exc:
@@ -818,7 +1009,8 @@ def _verify_staging_directory(
     captured: dict[str, _CapturedFile],
     files: tuple[FullC6PublishedFile, ...],
     manifest_bytes: bytes,
-) -> None:
+    expected_members: dict[str, _CapturedFile] | None = None,
+) -> dict[str, _CapturedFile]:
     expected = {item.logical_name for item in files}
     expected.add(FULL_C6_PUBLICATION_MANIFEST_FILENAME)
     try:
@@ -827,6 +1019,7 @@ def _verify_staging_directory(
         raise FullC6PublicationError("Full C6 staging directory cannot be enumerated") from exc
     if actual != expected:
         raise FullC6PublicationError("Full C6 staging directory contains missing or extra files")
+    observed_members: dict[str, _CapturedFile] = {}
     for item in files:
         staged = _capture_directory_member(
             directory_fd,
@@ -836,6 +1029,7 @@ def _verify_staging_directory(
         )
         if staged is None or not hmac.compare_digest(staged.data, captured[item.role].data):
             raise FullC6PublicationError("Full C6 staged payload changed")
+        observed_members[item.logical_name] = staged
     staged_manifest = _capture_directory_member(
         directory_fd,
         FULL_C6_PUBLICATION_MANIFEST_FILENAME,
@@ -844,6 +1038,10 @@ def _verify_staging_directory(
     )
     if staged_manifest is None or not hmac.compare_digest(staged_manifest.data, manifest_bytes):
         raise FullC6PublicationError("Full C6 staged manifest changed")
+    observed_members[FULL_C6_PUBLICATION_MANIFEST_FILENAME] = staged_manifest
+    if expected_members is not None and observed_members != expected_members:
+        raise FullC6PublicationError("Full C6 staged member identity changed")
+    return observed_members
 
 
 def _remove_owned_staging(

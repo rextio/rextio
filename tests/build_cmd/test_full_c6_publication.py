@@ -26,7 +26,7 @@ from rextio.build.full_c6_publication import (
     materialize_full_c6_signing_request,
     publish_full_c6_bundle,
 )
-from rextio.build.signing import FinalAuthorizationRequest
+from rextio.build.signing import DetachedSignatureEnvelope, FinalAuthorizationRequest
 
 
 _THIS_DIR = Path(__file__).parent
@@ -43,10 +43,17 @@ def _authorized_bundle(
     fixture_root = tmp_path / "gate"
     fixture_root.mkdir()
     arguments = _GATE["_fixture"](fixture_root)
-    _preauthorization, request, result = _GATE["_authorize"](
-        fixture_root,
-        arguments,
-    )
+    import rextio.build.full_c6_gate as gate_module
+
+    original_runtime_verifier = gate_module.verify_native_runtime_authorization
+    gate_module.verify_native_runtime_authorization = lambda _receipt: True
+    try:
+        _preauthorization, request, result = _GATE["_authorize"](
+            fixture_root,
+            arguments,
+        )
+    finally:
+        gate_module.verify_native_runtime_authorization = original_runtime_verifier
     assert isinstance(request, FinalAuthorizationRequest)
     assert isinstance(result, FullC6GateResult)
     supply_chain = arguments["supply_chain"]
@@ -90,8 +97,8 @@ def _publish(
         bundle_name="candidate",
         bundle_files=files,
         request=request,
-        evidence=result.evidence,
-        authorization=result.authorization,
+        gate_result=result,
+        public_key_path=tmp_path / "gate" / "owner.pub",
     )
     return publication_root, receipt
 
@@ -214,6 +221,15 @@ def test_direct_fake_authorization_is_rejected(tmp_path: Path) -> None:
     publication_root = tmp_path / "dist"
     publication_root.mkdir(mode=0o700)
     fake = object.__new__(FullC6DistributionAuthorization)
+    fake_result = object.__new__(FullC6GateResult)
+    object.__setattr__(
+        fake_result,
+        "preauthorization_evidence",
+        result.preauthorization_evidence,
+    )
+    object.__setattr__(fake_result, "signature_receipt", result.signature_receipt)
+    object.__setattr__(fake_result, "evidence", result.evidence)
+    object.__setattr__(fake_result, "authorization", fake)
 
     with pytest.raises(FullC6PublicationError, match="sealed authorization"):
         publish_full_c6_bundle(
@@ -221,8 +237,8 @@ def test_direct_fake_authorization_is_rejected(tmp_path: Path) -> None:
             bundle_name="candidate",
             bundle_files=files,
             request=request,
-            evidence=result.evidence,
-            authorization=fake,
+            gate_result=fake_result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
     assert tuple(publication_root.iterdir()) == ()
 
@@ -239,8 +255,8 @@ def test_missing_bundle_role_is_rejected(tmp_path: Path, omit: str) -> None:
             bundle_name="candidate",
             bundle_files=files,
             request=request,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
 
 
@@ -255,8 +271,8 @@ def test_extra_bundle_role_is_rejected(tmp_path: Path) -> None:
             bundle_name="candidate",
             bundle_files=files,
             request=request,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
 
 
@@ -274,8 +290,8 @@ def test_symlink_hardlink_and_special_bundle_members_are_rejected(tmp_path: Path
             bundle_name="symlink",
             bundle_files=symlink_files,
             request=request,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
 
     hardlink = tmp_path / "authorization-hardlink"
@@ -287,8 +303,8 @@ def test_symlink_hardlink_and_special_bundle_members_are_rejected(tmp_path: Path
             bundle_name="hardlink",
             bundle_files=hardlink_files,
             request=request,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
     hardlink.unlink()
 
@@ -301,8 +317,8 @@ def test_symlink_hardlink_and_special_bundle_members_are_rejected(tmp_path: Path
             bundle_name="fifo",
             bundle_files=fifo_files,
             request=request,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
 
 
@@ -317,8 +333,8 @@ def test_unsafe_or_preexisting_publication_target_is_rejected(tmp_path: Path) ->
             bundle_name="candidate",
             bundle_files=files,
             request=request,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
 
     actual_root = tmp_path / "actual-dist"
@@ -331,8 +347,8 @@ def test_unsafe_or_preexisting_publication_target_is_rejected(tmp_path: Path) ->
             bundle_name="candidate",
             bundle_files=files,
             request=request,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
 
     publication_root = tmp_path / "dist"
@@ -344,8 +360,8 @@ def test_unsafe_or_preexisting_publication_target_is_rejected(tmp_path: Path) ->
             bundle_name="candidate",
             bundle_files=files,
             request=request,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
 
 
@@ -402,8 +418,8 @@ def test_concurrent_target_creation_is_detected_before_rename(
             bundle_name="candidate",
             bundle_files=files,
             request=request,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
     assert not tuple(publication_root.glob(".rextio-full-c6-stage-*"))
 
@@ -441,8 +457,8 @@ def test_target_created_after_last_check_is_never_replaced(
             bundle_name="candidate",
             bundle_files=files,
             request=request,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
     assert (publication_root / "candidate" / "concurrent-owner").read_text(
         encoding="utf-8"
@@ -478,8 +494,8 @@ def test_input_mutation_during_staging_fails_and_cleans_only_staging(
             bundle_name="candidate",
             bundle_files=files,
             request=request,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
     assert sentinel.read_text(encoding="utf-8") == "owned by caller"
     assert not (publication_root / "candidate").exists()
@@ -497,9 +513,72 @@ def test_noncanonical_or_mutated_semantic_files_fail_closed(tmp_path: Path) -> N
             bundle_name="candidate",
             bundle_files=files,
             request=request,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
+
+
+def test_publication_independently_verifies_detached_ed25519_signature(
+    tmp_path: Path,
+) -> None:
+    files, request, result = _authorized_bundle(tmp_path)
+    forged = DetachedSignatureEnvelope.from_signature(
+        public_key_sha256=result.authorization.trusted_public_key_sha256,
+        manifest_sha256=request.manifest_sha256,
+        signature=b"\0" * 64,
+    )
+    files[ROLE_DETACHED_SIGNATURE].write_bytes(forged.canonical_json_bytes)
+    publication_root = tmp_path / "dist"
+    publication_root.mkdir(mode=0o700)
+    with pytest.raises(FullC6PublicationError, match="Ed25519"):
+        publish_full_c6_bundle(
+            publication_root=publication_root,
+            bundle_name="candidate",
+            bundle_files=files,
+            request=request,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
+        )
+    assert tuple(publication_root.iterdir()) == ()
+
+
+def test_tamper_during_rename_fails_without_publication_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files, request, result = _authorized_bundle(tmp_path)
+    publication_root = tmp_path / "dist"
+    publication_root.mkdir(mode=0o700)
+    import rextio.build.full_c6_publication as module
+
+    original = module._atomic_rename_noreplace
+
+    def rename_then_tamper(
+        directory_fd: int,
+        *,
+        source_name: str,
+        destination_name: str,
+    ) -> None:
+        original(
+            directory_fd,
+            source_name=source_name,
+            destination_name=destination_name,
+        )
+        (publication_root / destination_name / "rextio.full-c6-evidence.json").write_bytes(
+            b"tampered-after-rename"
+        )
+
+    monkeypatch.setattr(module, "_atomic_rename_noreplace", rename_then_tamper)
+    with pytest.raises(FullC6PublicationError, match="staged payload changed"):
+        publish_full_c6_bundle(
+            publication_root=publication_root,
+            bundle_name="candidate",
+            bundle_files=files,
+            request=request,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
+        )
+    assert (publication_root / "candidate").is_dir()
 
 
 def test_mutated_request_cannot_replay_authorization(tmp_path: Path) -> None:
@@ -513,6 +592,6 @@ def test_mutated_request_cannot_replay_authorization(tmp_path: Path) -> None:
             bundle_name="candidate",
             bundle_files=files,
             request=replay,
-            evidence=result.evidence,
-            authorization=result.authorization,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
         )
