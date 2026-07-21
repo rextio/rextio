@@ -37,6 +37,10 @@ from rextio.build.full_c6_gate import (
     prepare_full_c6_preauthorization_evidence,
 )
 from rextio.build.full_c6_policy import FullC6PolicyReceipt
+from rextio.build.full_c6_policy_manifest import (
+    FullC6PolicyManifestError,
+    load_full_c6_policy_manifest,
+)
 from rextio.build.full_c6_publication import FullC6PublicationReceipt
 from rextio.build.full_c6_supply_chain import (
     FullC6CargoPathSource,
@@ -525,6 +529,14 @@ def finalize_configured_full_c6_distribution(
         raise FullC6PipelineError(
             "RXT060 configured finalization requires full-c6-required policy"
         )
+    configured_policy = load_configured_full_c6_policy(
+        project_root=project_root,
+        config=config,
+    )
+    if not hmac.compare_digest(materials.policy.digest, configured_policy.digest):
+        raise FullC6PipelineError(
+            "RXT060 Full C6 finalization materials do not match the pinned owner policy"
+        )
     request_output = config.build.artifact_signing_request_output
     public_key = config.build.artifact_trusted_public_key
     public_key_sha256 = config.build.artifact_trusted_public_key_sha256
@@ -548,6 +560,49 @@ def finalize_configured_full_c6_distribution(
         ),
         publication_adapter=publication_adapter,
     )
+
+
+def load_configured_full_c6_policy(
+    *,
+    project_root: Path | str,
+    config: RextioConfig,
+) -> FullC6PolicyReceipt:
+    """Load one exact owner-authored policy pinned by strict build config."""
+    if type(config) is not RextioConfig or (
+        config.build.artifact_distribution_policy != FULL_C6_DISTRIBUTION_POLICY
+    ):
+        raise FullC6PipelineError(
+            "RXT060 configured owner policy requires full-c6-required mode"
+        )
+    policy_path = config.build.artifact_policy_manifest
+    policy_sha256 = config.build.artifact_policy_manifest_sha256
+    trusted_key_sha256 = config.build.artifact_trusted_public_key_sha256
+    if (
+        type(policy_path) is not str
+        or type(policy_sha256) is not str
+        or type(trusted_key_sha256) is not str
+    ):
+        raise FullC6PipelineError(
+            "RXT060 configured Full C6 owner policy path and digest are incomplete"
+        )
+    root = Path(project_root).resolve()
+    try:
+        receipt = load_full_c6_policy_manifest(
+            _project_path(root, policy_path),
+            expected_sha256=policy_sha256,
+        )
+    except (FullC6PolicyManifestError, OSError, TypeError, ValueError) as exc:
+        raise FullC6PipelineError(
+            "RXT060 configured Full C6 owner policy manifest failed closed"
+        ) from exc
+    if not hmac.compare_digest(
+        receipt.trusted_owner_public_key_sha256,
+        trusted_key_sha256,
+    ):
+        raise FullC6PipelineError(
+            "RXT060 Full C6 owner policy and trusted public-key pin disagree"
+        )
+    return receipt
 
 
 @dataclass(frozen=True, slots=True)
@@ -820,6 +875,7 @@ __all__ = [
     "finalize_full_c6_distribution",
     "finalize_configured_full_c6_distribution",
     "full_c6_atomic_publication_adapter",
+    "load_configured_full_c6_policy",
     "prepare_full_c6_external_build",
     "validate_full_c6_external_context",
 ]

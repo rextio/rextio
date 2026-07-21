@@ -11,7 +11,9 @@ import zipfile
 import pytest
 
 from rextio.analyzer.project_scanner import analyze_project
+from rextio.artifacts.evidence import sha256_hex
 from rextio.build.artifact_layout import ArtifactLayout
+from rextio.build.full_c6_policy_manifest import full_c6_policy_manifest_bytes
 from rextio.build.full_c6_pipeline import (
     FULL_C6_SIGNING_REQUEST_FILENAME,
     FullC6FinalizationMaterials,
@@ -19,6 +21,7 @@ from rextio.build.full_c6_pipeline import (
     finalize_configured_full_c6_distribution,
     finalize_full_c6_distribution,
     full_c6_atomic_publication_adapter,
+    load_configured_full_c6_policy,
     prepare_full_c6_external_build,
 )
 from rextio.build.orchestrator import _generate_native_source, build_hybrid_artifact
@@ -196,8 +199,21 @@ def _finalization_materials(tmp_path: Path):
     return arguments, materials
 
 
+def _write_policy_manifest(
+    root: Path,
+    materials: FullC6FinalizationMaterials,
+) -> tuple[str, str]:
+    raw = full_c6_policy_manifest_bytes(materials.policy)
+    relative = "policy/rextio.full-c6-policy.json"
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return relative, sha256_hex(raw)
+
+
 def test_unsigned_pipeline_writes_only_request_and_never_publication(tmp_path: Path) -> None:
     arguments, materials = _finalization_materials(tmp_path)
+    policy_path, policy_sha256 = _write_policy_manifest(tmp_path, materials)
     state = tmp_path / "state"
     state.mkdir(mode=0o700)
     state.chmod(0o700)
@@ -206,6 +222,8 @@ def test_unsigned_pipeline_writes_only_request_and_never_publication(tmp_path: P
     config = RextioConfig(
         build=BuildConfig(
             artifact_distribution_policy="full-c6-required",
+            artifact_policy_manifest=policy_path,
+            artifact_policy_manifest_sha256=policy_sha256,
             artifact_trusted_public_key="owner.pub",
             artifact_trusted_public_key_sha256=arguments[
                 "expected_public_key_sha256"
@@ -224,6 +242,50 @@ def test_unsigned_pipeline_writes_only_request_and_never_publication(tmp_path: P
     assert result.distribution_authorized is False
     assert [path.name for path in state.iterdir()] == [FULL_C6_SIGNING_REQUEST_FILENAME]
     assert not publication.exists()
+
+
+def test_configured_policy_loader_rejects_stale_pin_and_key_mismatch(tmp_path: Path) -> None:
+    arguments, materials = _finalization_materials(tmp_path)
+    policy_path, policy_sha256 = _write_policy_manifest(tmp_path, materials)
+    trusted_key_sha256 = arguments["expected_public_key_sha256"]
+    config = RextioConfig(
+        build=BuildConfig(
+            artifact_distribution_policy="full-c6-required",
+            artifact_policy_manifest=policy_path,
+            artifact_policy_manifest_sha256=policy_sha256,
+            artifact_trusted_public_key="state/owner.pub",
+            artifact_trusted_public_key_sha256=trusted_key_sha256,  # type: ignore[arg-type]
+        )
+    )
+
+    assert load_configured_full_c6_policy(
+        project_root=tmp_path,
+        config=config,
+    ).digest == materials.policy.digest
+
+    stale = RextioConfig(
+        build=BuildConfig(
+            artifact_distribution_policy="full-c6-required",
+            artifact_policy_manifest=policy_path,
+            artifact_policy_manifest_sha256="0" * 64,
+            artifact_trusted_public_key="state/owner.pub",
+            artifact_trusted_public_key_sha256=trusted_key_sha256,  # type: ignore[arg-type]
+        )
+    )
+    with pytest.raises(FullC6PipelineError, match="manifest failed closed"):
+        load_configured_full_c6_policy(project_root=tmp_path, config=stale)
+
+    wrong_key = RextioConfig(
+        build=BuildConfig(
+            artifact_distribution_policy="full-c6-required",
+            artifact_policy_manifest=policy_path,
+            artifact_policy_manifest_sha256=policy_sha256,
+            artifact_trusted_public_key="state/owner.pub",
+            artifact_trusted_public_key_sha256="0" * 64,
+        )
+    )
+    with pytest.raises(FullC6PipelineError, match="public-key pin disagree"):
+        load_configured_full_c6_policy(project_root=tmp_path, config=wrong_key)
 
 
 def test_signed_pipeline_passes_sealed_gate_then_atomically_publishes(tmp_path: Path) -> None:
@@ -286,6 +348,8 @@ artifact_evidence_policy = "required"
 artifact_distribution_policy = "full-c6-required"
 artifact_source_lock_manifest = "locks/source.json"
 artifact_source_lock_signature = "locks/source.sig.json"
+artifact_policy_manifest = "locks/rextio.full-c6-policy.json"
+artifact_policy_manifest_sha256 = "{'3' * 64}"
 artifact_trusted_public_key = "locks/owner.pub"
 artifact_trusted_public_key_sha256 = "{'1' * 64}"
 artifact_signing_request_output = "state/{FULL_C6_SIGNING_REQUEST_FILENAME}"
@@ -315,6 +379,10 @@ source_archive_sha256 = "{'2' * 64}"
     monkeypatch.setattr(
         "rextio.cli.build_cmd.prepare_full_c6_external_build",
         lambda **_kwargs: SimpleNamespace(analysis=analysis),
+    )
+    monkeypatch.setattr(
+        "rextio.cli.build_cmd.load_configured_full_c6_policy",
+        lambda **_kwargs: object(),
     )
 
     exit_code = main(["build", str(tmp_path)])

@@ -40,6 +40,7 @@ from rextio.build.full_c6_pipeline import (
     FULL_C6_DISTRIBUTION_POLICY,
     FullC6PipelineError,
     FullC6TypedPolicyRequiredError,
+    load_configured_full_c6_policy,
     prepare_full_c6_external_build,
 )
 from rextio.plugins.capabilities import (
@@ -545,6 +546,7 @@ def run(args: Namespace) -> int:
                 ),
             )
             analysis = preflight.analysis
+            load_configured_full_c6_policy(project_root=project_root, config=config)
         except FullC6PipelineError as error:
             return _report_full_c6_pipeline_failure(
                 project_root, analysis, fallback, error, reporter
