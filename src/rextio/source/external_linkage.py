@@ -39,6 +39,7 @@ from rextio.source.external_analysis import (
     ExternalSourceNativePlan,
     analyze_external_source_snapshot,
 )
+from rextio.source.graph import resolve_import_from_base
 
 
 class ExternalLinkageError(ValueError):
@@ -54,8 +55,11 @@ _DYNAMIC_NAMESPACE_NAMES = frozenset(
     {
         "__builtins__",
         "__import__",
+        "__loader__",
+        "__spec__",
         "eval",
         "exec",
+        "getattr",
         "globals",
         "locals",
         "vars",
@@ -76,6 +80,7 @@ _DYNAMIC_NAMESPACE_PATHS = frozenset(
         "gc.get_referents",
         "gc.get_referrers",
         "importlib.import_module",
+        "importlib.__import__",
         "importlib.__dict__",
         "importlib.reload",
         "inspect.currentframe",
@@ -102,6 +107,27 @@ _DYNAMIC_NAMESPACE_PATHS = frozenset(
         "traceback.walk_tb",
     }
 )
+_DYNAMIC_NAMESPACE_MEMBERS = {
+    "builtins": frozenset(
+        {"__import__", "__dict__", "eval", "exec", "getattr", "globals", "locals", "vars"}
+    ),
+    "importlib": frozenset({"__import__", "__dict__", "import_module", "reload"}),
+    "pkgutil": frozenset({"resolve_name"}),
+    "pydoc": frozenset({"locate"}),
+    "sys": frozenset(
+        {
+            "__dict__",
+            "_current_exceptions",
+            "_current_frames",
+            "_getframe",
+            "exc_info",
+            "modules",
+            "setprofile",
+            "settrace",
+        }
+    ),
+}
+_DYNAMIC_NAMESPACE_PREFIXES = frozenset({"importlib"})
 _REFLECTIVE_ATTRIBUTE_NAMES = frozenset(
     {
         "__builtins__",
@@ -137,6 +163,21 @@ _MUTATING_METHOD_NAMES = frozenset(
         "update",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceImportOccurrence:
+    """One syntactic import with its exact runtime-visible binding target."""
+
+    bound_name: str | None
+    binding_target: str | None
+    imported_target: str | None
+    line: int
+    column: int
+    alias_node_id: int
+    module_body_unconditional: bool
+    relative: bool
+    star: bool
 
 
 @dataclass(slots=True)
@@ -712,11 +753,18 @@ def _build_project_external_binding_graph(
     imports_by_module: dict[str, dict[str, str]] = {}
     project_functions: set[str] = set()
     for module in analysis.modules:
-        tree = _read_project_tree(module)
-        observed = dict(_top_level_import_aliases(tree))
-        observed.update(module.imports)
-        imports_by_module[module.module_name] = observed
-        project_functions.update(function.qualname for function in module.functions)
+        imports_by_module[module.module_name] = dict(module.imports)
+        if module.module_bindings is None:
+            continue
+        for function in module.functions:
+            final = module.module_bindings.lookup(function.name)
+            if (
+                final.kind is BindingKind.FUNCTION
+                and final.target == function.qualname
+                and final.line == function.line
+                and final.column == function.column
+            ):
+                project_functions.add(function.qualname)
 
     graph = _ProjectExternalBindingGraph(
         package=package,
@@ -758,6 +806,123 @@ def _build_project_external_binding_graph(
     return graph
 
 
+def _source_import_occurrences(
+    module: ModuleAnalysis,
+    tree: ast.Module,
+) -> tuple[_SourceImportOccurrence, ...]:
+    """Collect every import, retaining scope and canonical relative identity."""
+    direct_statement_ids = {
+        id(statement)
+        for statement in tree.body
+        if isinstance(statement, (ast.Import, ast.ImportFrom))
+    }
+    is_package_init = Path(module.file_path).name == "__init__.py"
+    occurrences: list[_SourceImportOccurrence] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for imported in node.names:
+                bound_name = imported.asname or imported.name.split(".", maxsplit=1)[0]
+                binding_target = imported.name if imported.asname else bound_name
+                occurrences.append(
+                    _SourceImportOccurrence(
+                        bound_name=bound_name,
+                        binding_target=binding_target,
+                        imported_target=imported.name,
+                        line=node.lineno,
+                        column=node.col_offset,
+                        alias_node_id=id(imported),
+                        module_body_unconditional=id(node) in direct_statement_ids,
+                        relative=False,
+                        star=False,
+                    )
+                )
+            continue
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        base = resolve_import_from_base(
+            module.module_name,
+            node.module,
+            node.level,
+            is_package_init,
+        )
+        for imported in node.names:
+            star = imported.name == "*"
+            target = (
+                None
+                if base is None
+                else base
+                if star
+                else f"{base}.{imported.name}"
+                if base
+                else imported.name
+            )
+            occurrences.append(
+                _SourceImportOccurrence(
+                    bound_name=None if star else imported.asname or imported.name,
+                    binding_target=None if star else target,
+                    imported_target=target,
+                    line=node.lineno,
+                    column=node.col_offset,
+                    alias_node_id=id(imported),
+                    module_body_unconditional=id(node) in direct_statement_ids,
+                    relative=bool(node.level),
+                    star=star,
+                )
+            )
+    return tuple(
+        sorted(
+            occurrences,
+            key=lambda item: (
+                item.line,
+                item.column,
+                item.bound_name or "",
+                item.imported_target or "",
+            ),
+        )
+    )
+
+
+def _require_safe_sensitive_import_occurrences(
+    module: ModuleAnalysis,
+    *,
+    occurrences: tuple[_SourceImportOccurrence, ...],
+    binding_graph: _ProjectExternalBindingGraph,
+) -> None:
+    """Admit only exact final module-body imports of a sensitive capability."""
+    for occurrence in occurrences:
+        if occurrence.star:
+            raise ExternalLinkageError("external-linkage-target-escaped")
+        if occurrence.relative and occurrence.imported_target is None:
+            raise ExternalLinkageError("external-linkage-target-escaped")
+        paths = tuple(
+            path
+            for path in (occurrence.binding_target, occurrence.imported_target)
+            if path is not None
+        )
+        if not any(binding_graph.is_sensitive_capability(path) for path in paths):
+            continue
+        if any(
+            path.rpartition(".")[2] in _NAMESPACE_CONTAINER_NAMES for path in paths
+        ):
+            raise ExternalLinkageError("external-linkage-target-escaped")
+        if (
+            not occurrence.module_body_unconditional
+            or occurrence.bound_name is None
+            or occurrence.binding_target is None
+            or module.imports.get(occurrence.bound_name) != occurrence.binding_target
+            or module.module_bindings is None
+        ):
+            raise ExternalLinkageError("external-linkage-target-escaped")
+        final = module.module_bindings.lookup(occurrence.bound_name)
+        if (
+            final.kind is not BindingKind.IMPORT
+            or final.target not in {None, occurrence.binding_target}
+            or final.line != occurrence.line
+            or final.column != occurrence.column
+        ):
+            raise ExternalLinkageError("external-linkage-target-escaped")
+
+
 def _require_project_external_binding_integrity(
     analysis: ProjectAnalysis,
     *,
@@ -767,18 +932,31 @@ def _require_project_external_binding_integrity(
     """Reject mutation/escape anywhere in the complete fresh project graph."""
     for module in analysis.modules:
         tree = _read_project_tree(module)
+        occurrences = _source_import_occurrences(module, tree)
+        _require_safe_sensitive_import_occurrences(
+            module,
+            occurrences=occurrences,
+            binding_graph=binding_graph,
+        )
         for target in targets:
             if analysis_target_is_mutated(
                 module,
                 target,
                 binding_graph=binding_graph,
+                tree=tree,
+                import_occurrences=occurrences,
             ):
                 raise ExternalLinkageError("external-linkage-target-mutated")
+        for function in module.functions:
+            positions = [(call.line, call.column) for call in function.calls]
+            if len(positions) != len(set(positions)):
+                raise ExternalLinkageError("external-linkage-call-position-duplicate")
         _require_no_external_value_escape(
             tree,
+            module=module,
             targets=targets,
-            imports=module.imports,
             binding_graph=binding_graph,
+            import_occurrences=occurrences,
         )
 
 
@@ -817,6 +995,8 @@ def analysis_target_is_mutated(
     target: str,
     *,
     binding_graph: _ProjectExternalBindingGraph | None = None,
+    tree: ast.Module | None = None,
+    import_occurrences: tuple[_SourceImportOccurrence, ...] | None = None,
 ) -> bool:
     """Reject project-authority or exact-source mutation of an external target.
 
@@ -828,18 +1008,31 @@ def analysis_target_is_mutated(
     """
     if module.project_mutations.target_is_mutated(target):
         return True
-    tree = _read_project_tree(module)
-    source_imports = dict(_top_level_import_aliases(tree))
+    observed_tree = tree if tree is not None else _read_project_tree(module)
+    occurrences = (
+        import_occurrences
+        if import_occurrences is not None
+        else _source_import_occurrences(module, observed_tree)
+    )
+    source_imports = {
+        occurrence.bound_name: occurrence.binding_target
+        for occurrence in occurrences
+        if occurrence.bound_name is not None and occurrence.binding_target is not None
+    }
     effective_imports = {**source_imports, **module.imports}
-    if _has_dynamic_namespace_access(tree, effective_imports):
+    if _has_dynamic_namespace_access(
+        observed_tree,
+        effective_imports,
+        import_occurrences=occurrences,
+    ):
         return True
     sensitive_aliases = _sensitive_import_aliases(
-        tree=tree,
         targets=frozenset({target}),
         imports=effective_imports,
+        import_occurrences=occurrences,
         binding_graph=binding_graph,
     )
-    for node in ast.walk(tree):
+    for node in ast.walk(observed_tree):
         mutation: str | None = None
         if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
             targets: tuple[ast.expr, ...]
@@ -958,37 +1151,35 @@ def _qualified_paths_overlap(left: str, right: str) -> bool:
 def _require_no_external_value_escape(
     tree: ast.Module,
     *,
+    module: ModuleAnalysis,
     targets: frozenset[str],
-    imports: dict[str, str],
     binding_graph: _ProjectExternalBindingGraph | None = None,
+    import_occurrences: tuple[_SourceImportOccurrence, ...],
 ) -> None:
-    source_imports = dict(_top_level_import_aliases(tree))
-    effective_imports = {**source_imports, **imports}
-    if _has_dynamic_namespace_access(tree, effective_imports):
+    if _has_dynamic_namespace_access(
+        tree,
+        module.imports,
+        import_occurrences=import_occurrences,
+    ):
         raise ExternalLinkageError("external-linkage-dynamic-namespace")
-    for _alias, imported in _top_level_import_aliases(tree):
-        if imported.rpartition(".")[2] in _NAMESPACE_CONTAINER_NAMES and (
-            binding_graph.is_sensitive_capability(imported)
-            if binding_graph is not None
-            else _path_exposes_external_namespace(imported, targets)
-        ):
-            raise ExternalLinkageError("external-linkage-target-escaped")
     sensitive_aliases = _sensitive_import_aliases(
-        tree=tree,
         targets=targets,
-        imports=effective_imports,
+        imports=module.imports,
+        import_occurrences=import_occurrences,
         binding_graph=binding_graph,
     )
     allowed_call_references = _direct_external_call_reference_ids(
         tree,
+        module=module,
         targets=targets,
-        imports=effective_imports,
+        import_occurrences=import_occurrences,
         binding_graph=binding_graph,
     )
     _require_sensitive_imports_are_directly_called(
         tree,
         sensitive_aliases=sensitive_aliases,
         allowed_call_references=allowed_call_references,
+        import_occurrences=import_occurrences,
     )
     _require_no_sensitive_non_name_binders(tree, sensitive_aliases)
     for node in ast.walk(tree):
@@ -1002,17 +1193,35 @@ def _require_no_external_value_escape(
 
 def _sensitive_import_aliases(
     *,
-    tree: ast.Module,
     targets: frozenset[str],
     imports: dict[str, str],
+    import_occurrences: tuple[_SourceImportOccurrence, ...],
     binding_graph: _ProjectExternalBindingGraph | None = None,
 ) -> frozenset[str]:
     """Return aliases owning or directly binding any reachable helper."""
+    candidates: list[tuple[str, tuple[str, ...]]] = [
+        (alias, (imported,)) for alias, imported in imports.items()
+    ]
+    candidates.extend(
+        (
+            occurrence.bound_name,
+            tuple(
+                path
+                for path in (occurrence.binding_target, occurrence.imported_target)
+                if path is not None
+            ),
+        )
+        for occurrence in import_occurrences
+        if occurrence.bound_name is not None
+    )
     return frozenset(
         alias
-        for alias, imported in (*imports.items(), *_top_level_import_aliases(tree))
-        if (binding_graph is not None and binding_graph.is_sensitive_capability(imported))
-        or (binding_graph is None and _path_exposes_external_namespace(imported, targets))
+        for alias, paths in candidates
+        if any(
+            (binding_graph is not None and binding_graph.is_sensitive_capability(path))
+            or (binding_graph is None and _path_exposes_external_namespace(path, targets))
+            for path in paths
+        )
     )
 
 
@@ -1054,6 +1263,8 @@ def _require_no_sensitive_non_name_binders(
             bound = node.asname or node.name.split(".", maxsplit=1)[0]
             if bound in sensitive_aliases and id(node) not in top_level_import_aliases:
                 raise ExternalLinkageError("external-linkage-target-escaped")
+        if isinstance(node, ast.arg) and node.arg in sensitive_aliases:
+            raise ExternalLinkageError("external-linkage-target-escaped")
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if node.name in sensitive_aliases:
                 raise ExternalLinkageError("external-linkage-target-escaped")
@@ -1073,10 +1284,13 @@ def _require_sensitive_imports_are_directly_called(
     *,
     sensitive_aliases: frozenset[str],
     allowed_call_references: frozenset[int],
+    import_occurrences: tuple[_SourceImportOccurrence, ...],
 ) -> None:
     """Do not let an otherwise-unused live capability become a module export."""
     imported_aliases = {
-        alias for alias, _target in _top_level_import_aliases(tree) if alias in sensitive_aliases
+        occurrence.bound_name
+        for occurrence in import_occurrences
+        if occurrence.bound_name in sensitive_aliases
     }
     directly_called_aliases = {
         node.id
@@ -1085,28 +1299,6 @@ def _require_sensitive_imports_are_directly_called(
     }
     if imported_aliases - directly_called_aliases:
         raise ExternalLinkageError("external-linkage-target-escaped")
-
-
-def _top_level_import_aliases(tree: ast.Module) -> tuple[tuple[str, str], ...]:
-    """Recover direct source aliases even after analysis invalidated finality."""
-    aliases: list[tuple[str, str]] = []
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for imported in node.names:
-                bound = imported.asname or imported.name.split(".", maxsplit=1)[0]
-                target = imported.name if imported.asname else bound
-                aliases.append((bound, target))
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module is not None:
-            for imported in node.names:
-                if imported.name == "*":
-                    continue
-                aliases.append(
-                    (
-                        imported.asname or imported.name,
-                        f"{node.module}.{imported.name}",
-                    )
-                )
-    return tuple(aliases)
 
 
 def _expression_references_alias(
@@ -1119,36 +1311,144 @@ def _expression_references_alias(
 def _direct_external_call_reference_ids(
     tree: ast.Module,
     *,
+    module: ModuleAnalysis,
     targets: frozenset[str],
-    imports: dict[str, str],
+    import_occurrences: tuple[_SourceImportOccurrence, ...],
     binding_graph: _ProjectExternalBindingGraph | None = None,
 ) -> frozenset[int]:
-    """Whitelist only exact external or statically known project call targets."""
+    """Whitelist exact calls whose lexical head is the final module import."""
+    if module.module_bindings is None:
+        return frozenset()
+    functions_by_origin: dict[tuple[str, int, int], FunctionAnalysis] = {}
+    duplicate_origins: set[tuple[str, int, int]] = set()
+    for function in module.functions:
+        origin = (function.name, function.line, function.column)
+        if origin in functions_by_origin:
+            duplicate_origins.add(origin)
+        functions_by_origin[origin] = function
+
+    final_import_occurrences = {
+        (
+            occurrence.bound_name,
+            occurrence.binding_target,
+            occurrence.line,
+            occurrence.column,
+        )
+        for occurrence in import_occurrences
+        if occurrence.module_body_unconditional
+        and occurrence.bound_name is not None
+        and occurrence.binding_target is not None
+    }
+
+    class _LexicalCallCollector(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.calls: list[ast.Call] = []
+
+        def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+            self.calls.append(node)
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            del node
+
+        def visit_AsyncFunctionDef(  # noqa: N802
+            self,
+            node: ast.AsyncFunctionDef,
+        ) -> None:
+            del node
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+            del node
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+            del node
+
+        def _skip_comprehension(self, node: ast.expr) -> None:
+            del node
+
+        visit_ListComp = _skip_comprehension
+        visit_SetComp = _skip_comprehension
+        visit_DictComp = _skip_comprehension
+        visit_GeneratorExp = _skip_comprehension
+
     allowed: set[int] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
+    for function_node in tree.body:
+        if not isinstance(function_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        resolved = _external_alias_path(node.func, imports)
-        safe = (
-            binding_graph.is_safe_direct_call(resolved)
-            if binding_graph is not None and resolved is not None
-            else resolved in targets
-        )
-        if not safe or not isinstance(node.func, (ast.Name, ast.Attribute)):
+        origin = (function_node.name, function_node.lineno, function_node.col_offset)
+        observed_function = functions_by_origin.get(origin)
+        if observed_function is None or origin in duplicate_origins:
             continue
-        allowed.update(
-            id(item) for item in ast.walk(node.func) if isinstance(item, (ast.Name, ast.Attribute))
-        )
+        collector = _LexicalCallCollector()
+        for statement in function_node.body:
+            collector.visit(statement)
+        calls_by_position: dict[tuple[int, int], list[CallSite]] = {}
+        for call in observed_function.calls:
+            calls_by_position.setdefault((call.line, call.column), []).append(call)
+        for node in collector.calls:
+            if not isinstance(node.func, (ast.Name, ast.Attribute)):
+                continue
+            head = _call_head_name(node.func)
+            if head is None or head in observed_function.local_binding_names:
+                continue
+            import_target = module.imports.get(head)
+            if import_target is None:
+                continue
+            final = module.module_bindings.lookup(head)
+            if (
+                final.kind is not BindingKind.IMPORT
+                or final.target not in {None, import_target}
+                or (
+                    head,
+                    import_target,
+                    final.line,
+                    final.column,
+                )
+                not in final_import_occurrences
+            ):
+                continue
+            resolved = _external_alias_path(node.func, module.imports)
+            safe = (
+                binding_graph.is_safe_direct_call(resolved)
+                if binding_graph is not None and resolved is not None
+                else resolved in targets
+            )
+            analyzed_calls = calls_by_position.get((node.lineno, node.col_offset), [])
+            if (
+                not safe
+                or resolved is None
+                or len(analyzed_calls) != 1
+                or analyzed_calls[0].target != resolved
+            ):
+                continue
+            allowed.update(
+                id(item) for item in ast.walk(node.func) if isinstance(item, ast.Name)
+            )
     return frozenset(allowed)
+
+
+def _call_head_name(node: ast.expr) -> str | None:
+    current = node
+    while isinstance(current, ast.Attribute):
+        current = current.value
+    return current.id if isinstance(current, ast.Name) else None
 
 
 def _has_dynamic_namespace_access(
     tree: ast.Module,
     imports: dict[str, str],
+    *,
+    import_occurrences: tuple[_SourceImportOccurrence, ...] = (),
 ) -> bool:
     """Detect reflective routes able to recover or rewrite import bindings."""
-    source_imports = dict(_top_level_import_aliases(tree))
-    import_maps = (imports, source_imports)
+    import_maps = (
+        imports,
+        *(
+            {occurrence.bound_name: occurrence.binding_target}
+            for occurrence in import_occurrences
+            if occurrence.bound_name is not None and occurrence.binding_target is not None
+        ),
+    )
     namespace_modules = frozenset({"builtins", "importlib", "sys"})
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in _DYNAMIC_NAMESPACE_NAMES:
@@ -1158,16 +1458,15 @@ def _has_dynamic_namespace_access(
         if isinstance(node, ast.expr):
             for import_map in import_maps:
                 path = _external_alias_path(node, import_map)
-                if path is not None and any(
-                    path == dangerous or path.startswith(f"{dangerous}.")
-                    for dangerous in _DYNAMIC_NAMESPACE_PATHS
-                ):
+                if path is not None and _path_is_dynamic_namespace_access(path):
                     return True
         if (
             isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "getattr"
             and node.args
+            and (
+                (isinstance(node.func, ast.Name) and node.func.id == "getattr")
+                or "builtins.getattr" in _resolved_external_paths(node.func, import_maps)
+            )
         ):
             attribute = node.args[1] if len(node.args) > 1 else None
             if (
@@ -1200,6 +1499,26 @@ def _has_dynamic_namespace_access(
             ):
                 return True
     return False
+
+
+def _path_is_dynamic_namespace_access(path: str) -> bool:
+    """Classify one resolved path by namespace capability, not source spelling."""
+    if any(
+        path == prefix or path.startswith(f"{prefix}.")
+        for prefix in _DYNAMIC_NAMESPACE_PREFIXES
+    ):
+        return True
+    for module, members in _DYNAMIC_NAMESPACE_MEMBERS.items():
+        prefix = f"{module}."
+        if not path.startswith(prefix):
+            continue
+        member = path.removeprefix(prefix).partition(".")[0]
+        if member in members:
+            return True
+    return any(
+        path == dangerous or path.startswith(f"{dangerous}.")
+        for dangerous in _DYNAMIC_NAMESPACE_PATHS
+    )
 
 
 def _resolved_external_paths(
