@@ -18,11 +18,13 @@ from importlib import invalidate_caches, metadata
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
+import re
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -39,6 +41,24 @@ _D = (-121665 * pow(121666, _Q - 2, _Q)) % _Q
 _I = pow(2, (_Q - 1) // 4, _Q)
 
 _SUPPORT_LOCK_OUTPUT = "authority/rextio.toolchain-support.lock.json"
+_XCODE_HARDLINK_ROLE = "xcode-clang-resource"
+_XCODE_HARDLINK_RELATIVE_PATH = "include/__clang_cuda_builtin_vars.h"
+_XCODE_HARDLINK_RELATIVE_PATH_SHA256 = (
+    "3bbf5e13c9400baf7c260dc5eb3590ee369377ad1f2ec92edba0d6802fe2160e"
+)
+_XCODE_HARDLINK_ALIAS_COUNT = 3
+_XCODE_HARDLINK_MAX_ENTRIES = 250_000
+_XCODE_HARDLINK_MAX_DEPTH = 64
+_XCODE_HARDLINK_MAX_PATH_BYTES = 8_192
+_XCODE_HARDLINK_ERROR_RE = re.compile(
+    r"\Atoolchain support regular tree member is a shared hardlink "
+    r"\(logical_role=xcode-clang-resource, "
+    rf"relative_path_sha256={_XCODE_HARDLINK_RELATIVE_PATH_SHA256}, "
+    r"st_uid=(?P<uid>0|[1-9][0-9]{0,9}), "
+    r"st_gid=(?P<gid>0|[1-9][0-9]{0,9}), "
+    r"st_mode=(?P<mode>0|[1-9][0-9]{0,9}), "
+    r"st_nlink=3, in_root_inode_observation_count=1\)\Z"
+)
 _SUPPORT_LOCK_ROLES = {
     "aarch64-apple-darwin": (
         (
@@ -1031,6 +1051,323 @@ def _read_bounded_process_log(
     return payload.decode("utf-8", errors="replace")
 
 
+def _xcode_hardlink_diagnostic_sha256(
+    domain: str,
+    payload: dict[str, object],
+) -> str:
+    canonical = json.dumps(
+        {"domain": domain, **payload},
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _open_xcode_hardlink_target(
+    *,
+    boundary: Path,
+    target_relative_path: PurePosixPath,
+    expected_uid: int,
+    expected_gid: int,
+    expected_mode: int,
+) -> Any:
+    from rextio.build import toolchain_support_lock as support_lock
+
+    if (
+        not boundary.is_absolute()
+        or target_relative_path.is_absolute()
+        or not target_relative_path.parts
+        or any(part in {"", ".", ".."} for part in target_relative_path.parts)
+        or len(target_relative_path.as_posix().encode("utf-8"))
+        > _XCODE_HARDLINK_MAX_PATH_BYTES
+    ):
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode hardlink diagnostic target is invalid"
+        )
+    target = boundary.joinpath(*target_relative_path.parts)
+    chain = support_lock._open_directory_chain(target.parent)
+    file_fd = -1
+    try:
+        parent_fd = chain[-1][0]
+        file_fd = os.open(
+            target.name,
+            os.O_RDONLY
+            | support_lock._require_flag("O_NOFOLLOW")
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=parent_fd,
+        )
+        opened = support_lock._stamp(os.fstat(file_fd))
+        linked = support_lock._stamp(
+            os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False)
+        )
+        if (
+            opened != linked
+            or not stat.S_ISREG(opened.mode)
+            or opened.links != _XCODE_HARDLINK_ALIAS_COUNT
+            or opened.uid != expected_uid
+            or opened.gid != expected_gid
+            or opened.mode != expected_mode
+        ):
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support xcode hardlink diagnostic target changed"
+            )
+        support_lock._verify_directory_chain(chain)
+        return opened
+    except support_lock.ToolchainSupportLockError:
+        raise
+    except OSError as exc:
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode hardlink diagnostic target is unavailable"
+        ) from exc
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        support_lock._close_directory_chain(chain)
+
+
+def _bounded_xcode_hardlink_alias_message(
+    *,
+    boundary: Path,
+    target_relative_path: PurePosixPath,
+    expected_uid: int,
+    expected_gid: int,
+    expected_mode: int,
+) -> str:
+    from rextio.build import toolchain_support_lock as support_lock
+
+    target_stamp = _open_xcode_hardlink_target(
+        boundary=boundary,
+        target_relative_path=target_relative_path,
+        expected_uid=expected_uid,
+        expected_gid=expected_gid,
+        expected_mode=expected_mode,
+    )
+    boundary_chain = support_lock._open_directory_chain(boundary)
+    aliases: list[str] = []
+    entry_count = 0
+
+    def walk(
+        directory_fd: int,
+        *,
+        relative: PurePosixPath,
+    ) -> Any:
+        nonlocal entry_count
+        directory_before = support_lock._stamp(os.fstat(directory_fd))
+        if not stat.S_ISDIR(directory_before.mode):
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support xcode hardlink diagnostic directory is invalid"
+            )
+        names = support_lock._bounded_directory_names(directory_fd)
+        ordered = sorted(names, key=lambda item: (support_lock._alias(item), item))
+        for name in ordered:
+            entry_count += 1
+            if entry_count > _XCODE_HARDLINK_MAX_ENTRIES:
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode hardlink diagnostic entry bound exceeded"
+                )
+            child_relative = relative / name
+            logical = child_relative.as_posix()
+            if (
+                len(child_relative.parts) > _XCODE_HARDLINK_MAX_DEPTH
+                or len(logical.encode("utf-8")) > _XCODE_HARDLINK_MAX_PATH_BYTES
+            ):
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode hardlink diagnostic path bound exceeded"
+                )
+            observed = support_lock._stamp(
+                os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            )
+            if stat.S_ISDIR(observed.mode):
+                child_fd = support_lock._open_child_directory(directory_fd, name)
+                try:
+                    opened = support_lock._stamp(os.fstat(child_fd))
+                    if opened != observed:
+                        raise support_lock.ToolchainSupportLockError(
+                            "toolchain support xcode hardlink diagnostic directory changed"
+                        )
+                    child_final = walk(
+                        child_fd,
+                        relative=child_relative,
+                    )
+                    linked = support_lock._stamp(
+                        os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    )
+                    if linked != child_final:
+                        raise support_lock.ToolchainSupportLockError(
+                            "toolchain support xcode hardlink diagnostic directory changed"
+                        )
+                finally:
+                    os.close(child_fd)
+                continue
+            if not stat.S_ISREG(observed.mode) or (
+                observed.device,
+                observed.inode,
+            ) != (target_stamp.device, target_stamp.inode):
+                continue
+            if len(aliases) >= _XCODE_HARDLINK_ALIAS_COUNT:
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode hardlink diagnostic alias bound exceeded"
+                )
+            file_fd = -1
+            try:
+                file_fd = os.open(
+                    name,
+                    os.O_RDONLY
+                    | support_lock._require_flag("O_NOFOLLOW")
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NONBLOCK", 0),
+                    dir_fd=directory_fd,
+                )
+                opened = support_lock._stamp(os.fstat(file_fd))
+                linked = support_lock._stamp(
+                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                )
+                if opened != observed or linked != opened or opened != target_stamp:
+                    raise support_lock.ToolchainSupportLockError(
+                        "toolchain support xcode hardlink diagnostic alias changed"
+                    )
+            except support_lock.ToolchainSupportLockError:
+                raise
+            except OSError as exc:
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode hardlink diagnostic alias is unavailable"
+                ) from exc
+            finally:
+                if file_fd >= 0:
+                    os.close(file_fd)
+            aliases.append(logical)
+        after_names = support_lock._bounded_directory_names(directory_fd)
+        if sorted(after_names, key=lambda item: (support_lock._alias(item), item)) != (
+            ordered
+        ):
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support xcode hardlink diagnostic inventory changed"
+            )
+        directory_after = support_lock._stamp(os.fstat(directory_fd))
+        if not support_lock._same_stable_stamp(directory_after, directory_before):
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support xcode hardlink diagnostic directory changed"
+            )
+        return directory_after
+
+    try:
+        root_fd = boundary_chain[-1][0]
+        walk(root_fd, relative=PurePosixPath())
+        support_lock._verify_directory_chain(boundary_chain)
+    except support_lock.ToolchainSupportLockError:
+        raise
+    except OSError as exc:
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode hardlink diagnostic scan failed closed"
+        ) from exc
+    finally:
+        support_lock._close_directory_chain(boundary_chain)
+    if (
+        len(aliases) != _XCODE_HARDLINK_ALIAS_COUNT
+        or target_relative_path.as_posix() not in aliases
+    ):
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode hardlink diagnostic alias count differs"
+        )
+    digests = sorted(
+        _xcode_hardlink_diagnostic_sha256(
+            "rextio.full-c6-xcode-hardlink-path-diagnostic.v1",
+            {"root_relative_path": relative_path},
+        )
+        for relative_path in aliases
+    )
+    message = (
+        "toolchain support xcode hardlink aliases "
+        f"(nlink={target_stamp.links},count={len(aliases)},"
+        f"digests={','.join(digests)})"
+    )
+    if (
+        not message.isascii()
+        or len(message) > 278
+        or any(
+            character not in " -_.,()=" and not character.isalnum()
+            for character in message
+        )
+    ):
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode hardlink diagnostic output is invalid"
+        )
+    return message
+
+
+def _diagnose_exact_xcode_hardlink_aliases(
+    plan: object,
+    error: BaseException,
+) -> str | None:
+    from rextio.build import full_c6_toolchain_support as support
+    from rextio.build.toolchain_support_lock import ToolchainSupportLockError
+
+    if (
+        type(plan) is not support.FullC6ToolchainSupportPlan
+        or plan._target_triple != "aarch64-apple-darwin"
+        or support.MACOS_DEVELOPER_DIR
+        != Path("/Applications/Xcode.app/Contents/Developer")
+    ):
+        return None
+    match: re.Match[str] | None = None
+    current: BaseException | None = error
+    seen: set[int] = set()
+    for _ in range(16):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if type(current) is ToolchainSupportLockError:
+            match = _XCODE_HARDLINK_ERROR_RE.fullmatch(str(current))
+            if match is not None:
+                break
+        current = current.__cause__ or current.__context__
+    if match is None:
+        return None
+    expected_uid = int(match.group("uid"))
+    expected_gid = int(match.group("gid"))
+    expected_mode = int(match.group("mode"))
+    if (
+        expected_uid > 2**32 - 1
+        or expected_gid > 2**32 - 1
+        or not stat.S_ISREG(expected_mode)
+    ):
+        return None
+    roots = tuple(
+        locator
+        for locator in plan._root_locators
+        if locator.logical_role == _XCODE_HARDLINK_ROLE
+    )
+    if len(roots) != 1:
+        return None
+    boundary = (
+        support.MACOS_DEVELOPER_DIR
+        / "Toolchains"
+        / "XcodeDefault.xctoolchain"
+    )
+    try:
+        root_relative = roots[0]._absolute_path.relative_to(boundary)
+    except ValueError:
+        return None
+    if (
+        len(root_relative.parts) != 4
+        or root_relative.parts[:3] != ("usr", "lib", "clang")
+        or re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}", root_relative.parts[3]) is None
+    ):
+        return None
+    target_relative = PurePosixPath(*root_relative.parts) / PurePosixPath(
+        _XCODE_HARDLINK_RELATIVE_PATH
+    )
+    return _bounded_xcode_hardlink_alias_message(
+        boundary=boundary,
+        target_relative_path=target_relative,
+        expected_uid=expected_uid,
+        expected_gid=expected_gid,
+        expected_mode=expected_mode,
+    )
+
+
 def _format_support_lock_diagnostic(error: BaseException) -> str:
     from rextio.build.full_c6_toolchain_support import (
         FullC6ToolchainSupportError,
@@ -1132,7 +1469,9 @@ def _diagnose_support_lock_generation(
     inherited_environment: dict[str, str],
 ) -> str:
     from rextio.build import full_c6_toolchain_support as support
+    from rextio.build.toolchain_support_lock import ToolchainSupportLockError
 
+    plan: object | None = None
     try:
         config, _configured_pin = support._load_full_c6_support_bootstrap_config(
             project,
@@ -1146,6 +1485,15 @@ def _diagnose_support_lock_generation(
         )
         support.generate_full_c6_toolchain_support_lock(plan)
     except Exception as exc:
+        if plan is not None:
+            try:
+                hardlink_message = _diagnose_exact_xcode_hardlink_aliases(plan, exc)
+            except Exception:
+                hardlink_message = None
+            if hardlink_message is not None:
+                return _format_support_lock_diagnostic(
+                    ToolchainSupportLockError(hardlink_message)
+                )
         return _format_support_lock_diagnostic(exc)
     return "[full-c6-e2e] support-lock diagnostic: generation-only rerun succeeded"
 

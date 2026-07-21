@@ -11,7 +11,7 @@ from __future__ import annotations
 import errno
 import importlib.util
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import signal
 import subprocess
 import sys
@@ -368,6 +368,222 @@ def test_support_lock_diagnostic_prefers_support_message_to_full_c6_message() ->
     assert f"ToolchainSupportLockError={support_message}" in diagnostic
     assert "OtherErrorType=FullC6ToolchainSupportError" in diagnostic
     assert diagnostic.endswith("OtherErrorMessage=<unavailable>")
+
+
+def _xcode_hardlink_diagnostic_fixture(
+    tmp_path: Path,
+) -> tuple[Path, PurePosixPath, tuple[Path, Path, Path]]:
+    boundary = tmp_path / "XcodeDefault.xctoolchain"
+    relative_paths = tuple(
+        PurePosixPath(value)
+        for value in (
+            "usr/lib/clang/21/include/__clang_cuda_builtin_vars.h",
+            "usr/lib/tapi/21/include/__clang_cuda_builtin_vars.h",
+            "usr/lib/swift/clang/include/__clang_cuda_builtin_vars.h",
+        )
+    )
+    paths = tuple(boundary.joinpath(*value.parts) for value in relative_paths)
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    paths[0].write_bytes(b"fixed xcode hardlink diagnostic fixture")
+    try:
+        os.link(paths[0], paths[1])
+        os.link(paths[0], paths[2])
+    except OSError as exc:
+        pytest.skip(f"hardlink creation unavailable: {exc}")
+    return boundary, relative_paths[0], paths
+
+
+def _xcode_hardlink_alias_message(
+    harness: ModuleType,
+    *,
+    boundary: Path,
+    target_relative_path: PurePosixPath,
+) -> str:
+    target = boundary.joinpath(*target_relative_path.parts)
+    observed = target.stat()
+    return harness._bounded_xcode_hardlink_alias_message(
+        boundary=boundary,
+        target_relative_path=target_relative_path,
+        expected_uid=observed.st_uid,
+        expected_gid=observed.st_gid,
+        expected_mode=observed.st_mode,
+    )
+
+
+def test_xcode_hardlink_alias_diagnostic_is_deterministic_bounded_and_opaque(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness_module()
+    boundary, target_relative_path, paths = _xcode_hardlink_diagnostic_fixture(
+        tmp_path
+    )
+    (boundary / "ignored-symlink").symlink_to(paths[0])
+
+    message = _xcode_hardlink_alias_message(
+        harness,
+        boundary=boundary,
+        target_relative_path=target_relative_path,
+    )
+    repeated = _xcode_hardlink_alias_message(
+        harness,
+        boundary=boundary,
+        target_relative_path=target_relative_path,
+    )
+
+    assert repeated == message
+    assert message.isascii()
+    assert len(message) == 261
+    assert message.startswith(
+        "toolchain support xcode hardlink aliases (nlink=3,count=3,digests="
+    )
+    assert message.endswith(")")
+    digests = message.removesuffix(")").rsplit("digests=", 1)[1].split(",")
+    assert len(digests) == 3
+    assert digests == sorted(digests)
+    expected_digests = sorted(
+        harness._xcode_hardlink_diagnostic_sha256(
+            "rextio.full-c6-xcode-hardlink-path-diagnostic.v1",
+            {
+                "root_relative_path": path.relative_to(boundary).as_posix(),
+            },
+        )
+        for path in paths
+    )
+    assert digests == expected_digests
+    for value in digests:
+        assert len(value) == 64
+        assert value == value.lower()
+        assert all(character in "0123456789abcdef" for character in value)
+    for path in paths:
+        assert path.as_posix() not in message
+        assert path.name not in message
+    diagnostic = harness._format_support_lock_diagnostic(
+        ToolchainSupportLockError(message)
+    )
+    assert f"ToolchainSupportLockError={message}" in diagnostic
+    assert len(diagnostic.encode("ascii")) <= 512
+
+
+@pytest.mark.parametrize(
+    "changed_field",
+    [
+        "logical_role=other-role",
+        "relative_path_sha256=" + "0" * 64,
+        "st_nlink=2",
+        "in_root_inode_observation_count=2",
+    ],
+)
+def test_xcode_hardlink_alias_diagnostic_trigger_is_exact(changed_field: str) -> None:
+    harness = _load_harness_module()
+    exact = (
+        "toolchain support regular tree member is a shared hardlink "
+        "(logical_role=xcode-clang-resource, "
+        f"relative_path_sha256={harness._XCODE_HARDLINK_RELATIVE_PATH_SHA256}, "
+        "st_uid=501, st_gid=20, st_mode=33188, st_nlink=3, "
+        "in_root_inode_observation_count=1)"
+    )
+    assert harness._XCODE_HARDLINK_ERROR_RE.fullmatch(exact) is not None
+    if changed_field.startswith("logical_role="):
+        changed = exact.replace("logical_role=xcode-clang-resource", changed_field)
+    elif changed_field.startswith("relative_path_sha256="):
+        changed = exact.replace(
+            f"relative_path_sha256={harness._XCODE_HARDLINK_RELATIVE_PATH_SHA256}",
+            changed_field,
+        )
+    elif changed_field.startswith("st_nlink="):
+        changed = exact.replace("st_nlink=3", changed_field)
+    else:
+        changed = exact.replace("in_root_inode_observation_count=1", changed_field)
+    assert harness._XCODE_HARDLINK_ERROR_RE.fullmatch(changed) is None
+
+
+@pytest.mark.parametrize("mutation", ["remove", "add"])
+def test_xcode_hardlink_alias_diagnostic_rejects_nonexact_alias_count(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    harness = _load_harness_module()
+    boundary, target_relative_path, paths = _xcode_hardlink_diagnostic_fixture(
+        tmp_path
+    )
+    if mutation == "remove":
+        paths[2].unlink()
+    else:
+        fourth = boundary / "usr/lib/extra/include/__clang_cuda_builtin_vars.h"
+        fourth.parent.mkdir(parents=True)
+        os.link(paths[0], fourth)
+
+    with pytest.raises(ToolchainSupportLockError, match="target changed"):
+        _xcode_hardlink_alias_message(
+            harness,
+            boundary=boundary,
+            target_relative_path=target_relative_path,
+        )
+
+
+def test_xcode_hardlink_alias_diagnostic_fails_closed_on_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+    boundary, target_relative_path, paths = _xcode_hardlink_diagnostic_fixture(
+        tmp_path
+    )
+    from rextio.build import toolchain_support_lock as support_lock
+
+    original = support_lock._bounded_directory_names
+    raced = False
+
+    def race_after_target_capture(directory_fd: int) -> list[str]:
+        nonlocal raced
+        names = original(directory_fd)
+        if not raced:
+            raced = True
+            paths[2].unlink()
+            paths[2].write_bytes(b"replacement")
+        return names
+
+    monkeypatch.setattr(
+        support_lock,
+        "_bounded_directory_names",
+        race_after_target_capture,
+    )
+
+    with pytest.raises(ToolchainSupportLockError, match="changed"):
+        _xcode_hardlink_alias_message(
+            harness,
+            boundary=boundary,
+            target_relative_path=target_relative_path,
+        )
+
+
+@pytest.mark.parametrize(
+    ("constant", "value", "match"),
+    [
+        ("_XCODE_HARDLINK_MAX_ENTRIES", 1, "entry bound"),
+        ("_XCODE_HARDLINK_MAX_DEPTH", 2, "path bound"),
+    ],
+)
+def test_xcode_hardlink_alias_diagnostic_enforces_scan_bounds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    constant: str,
+    value: int,
+    match: str,
+) -> None:
+    harness = _load_harness_module()
+    boundary, target_relative_path, _paths = _xcode_hardlink_diagnostic_fixture(
+        tmp_path
+    )
+    monkeypatch.setattr(harness, constant, value)
+
+    with pytest.raises(ToolchainSupportLockError, match=match):
+        _xcode_hardlink_alias_message(
+            harness,
+            boundary=boundary,
+            target_relative_path=target_relative_path,
+        )
 
 
 @pytest.mark.parametrize(
