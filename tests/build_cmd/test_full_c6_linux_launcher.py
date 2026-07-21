@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import stat
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -130,24 +132,79 @@ def test_isolated_python_runtime_accepts_only_canonical_landmark_layout(
         launcher.validate_isolated_python_runtime()
 
 
-def test_descriptor_boundary_closes_stdin_and_every_extra_fd(
+def test_descriptor_boundary_installs_inheritable_eof_and_closes_extra_fds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     closed: list[int] = []
     ranges: list[tuple[int, int]] = []
-    monkeypatch.setattr(
-        os,
-        "fstat",
-        lambda _fd: os.stat_result((stat.S_IFIFO | 0o600,) + (0,) * 9),
+    duplicated: list[tuple[int, int, bool]] = []
+
+    def fake_fstat(descriptor: int) -> os.stat_result:
+        mode = stat.S_IFIFO | 0o600 if descriptor in {1, 2} else stat.S_IFCHR | 0o666
+        return os.stat_result((mode,) + (0,) * 9)
+
+    fake_os = SimpleNamespace(
+        O_RDONLY=os.O_RDONLY,
+        O_CLOEXEC=getattr(os, "O_CLOEXEC", 0),
+        O_NOFOLLOW=getattr(os, "O_NOFOLLOW", 0),
+        lstat=lambda _path: fake_fstat(0),
+        fstat=fake_fstat,
+        open=lambda _path, _flags: 9,
+        dup2=lambda source, target, *, inheritable: duplicated.append(
+            (source, target, inheritable)
+        ),
+        get_inheritable=lambda _fd: True,
+        close=closed.append,
+        sysconf=lambda _name: 4096,
+        closerange=lambda low, high: ranges.append((low, high)),
     )
-    monkeypatch.setattr(os, "close", closed.append)
-    monkeypatch.setattr(os, "sysconf", lambda _name: 4096)
-    monkeypatch.setattr(os, "closerange", lambda low, high: ranges.append((low, high)))
+    monkeypatch.setattr(launcher, "os", fake_os)
 
     launcher.close_untrusted_file_descriptors()
 
-    assert closed == [0]
+    assert duplicated == [(9, 0, True)]
+    assert closed == [9]
     assert ranges == [(3, 4096)]
+
+
+def test_payload_stdin_reads_eof_and_inheritable_sentinel_is_absent() -> None:
+    sentinel, writer = os.pipe()
+    os.set_inheritable(sentinel, True)
+    script = """
+import errno
+import os
+import sys
+from rextio.build import full_c6_linux_launcher as launcher
+
+launcher.os.sysconf = lambda _name: 256
+launcher.close_untrusted_file_descriptors()
+try:
+    eof = os.read(0, 1) == b""
+except OSError:
+    eof = False
+try:
+    os.fstat(int(sys.argv[1]))
+    sentinel_absent = False
+except OSError as exc:
+    sentinel_absent = exc.errno == errno.EBADF
+print(f"{eof}:{sentinel_absent}")
+"""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", script, str(sentinel)],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            pass_fds=(sentinel,),
+        )
+    finally:
+        os.close(sentinel)
+        os.close(writer)
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "True:True"
 
 
 def test_launcher_revalidates_exact_pyo3_config(

@@ -3,8 +3,9 @@
 This file is executed directly by the support-locked CPython 3.11 mapped at
 ``/rextio/toolchain/bin/python3.11``.  It intentionally imports only the
 standard library, validates the exact isolated interpreter/environment/argv
-contract, closes stdin and every non-output descriptor, installs Landlock in
-the already-created bubblewrap namespace, and replaces itself with Cargo.
+contract, replaces stdin with EOF-only ``/dev/null``, closes every extra
+descriptor, installs Landlock in the already-created bubblewrap namespace,
+and replaces itself with Cargo.
 
 It must never run before bubblewrap: a Landlock-restricted thread cannot call
 ``mount(2)`` or ``pivot_root(2)``, both of which bubblewrap requires.
@@ -256,7 +257,7 @@ def validate_isolated_python_runtime() -> None:
 
 
 def close_untrusted_file_descriptors() -> None:
-    """Close stdin and all descriptors except stdout/stderr."""
+    """Replace stdin with EOF-only /dev/null and close every extra FD."""
     for descriptor in (1, 2):
         try:
             observed = os.fstat(descriptor)
@@ -272,10 +273,56 @@ def close_untrusted_file_descriptors() -> None:
             raise FullC6LinuxLauncherError(
                 "Full C6 Linux output descriptor type is unsafe"
             )
+    null_path = "/dev/null"
     try:
-        os.close(0)
-    except OSError:
-        pass
+        path_observed = os.lstat(null_path)
+    except OSError as exc:
+        raise FullC6LinuxLauncherError(
+            "Full C6 Linux stdin device is unavailable"
+        ) from exc
+    if stat.S_ISLNK(path_observed.st_mode) or not stat.S_ISCHR(
+        path_observed.st_mode
+    ):
+        raise FullC6LinuxLauncherError(
+            "Full C6 Linux stdin device is unsafe"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        null_fd = os.open(null_path, flags)
+        try:
+            opened = os.fstat(null_fd)
+            if (
+                not stat.S_ISCHR(opened.st_mode)
+                or opened.st_dev != path_observed.st_dev
+                or opened.st_ino != path_observed.st_ino
+                or opened.st_rdev != path_observed.st_rdev
+            ):
+                raise FullC6LinuxLauncherError(
+                    "Full C6 Linux stdin device changed while opening"
+                )
+            if null_fd == 0:
+                os.set_inheritable(0, True)
+            else:
+                os.dup2(null_fd, 0, inheritable=True)
+            stdin_observed = os.fstat(0)
+            if (
+                not stat.S_ISCHR(stdin_observed.st_mode)
+                or stdin_observed.st_rdev != opened.st_rdev
+                or not os.get_inheritable(0)
+            ):
+                raise FullC6LinuxLauncherError(
+                    "Full C6 Linux stdin EOF boundary was not installed"
+                )
+        finally:
+            if null_fd != 0:
+                os.close(null_fd)
+    except FullC6LinuxLauncherError:
+        raise
+    except OSError as exc:
+        raise FullC6LinuxLauncherError(
+            "Full C6 Linux stdin EOF boundary could not be installed"
+        ) from exc
     try:
         maximum = os.sysconf("SC_OPEN_MAX")
     except (OSError, ValueError) as exc:
