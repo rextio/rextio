@@ -1056,6 +1056,7 @@ def analysis_target_is_mutated(
         observed_tree,
         effective_imports,
         import_occurrences=occurrences,
+        binding_graph=binding_graph,
     ):
         return True
     sensitive_aliases = _sensitive_import_aliases(
@@ -1192,6 +1193,7 @@ def _require_no_external_value_escape(
         tree,
         module.imports,
         import_occurrences=import_occurrences,
+        binding_graph=binding_graph,
     ):
         raise ExternalLinkageError("external-linkage-dynamic-namespace")
     sensitive_aliases = _sensitive_import_aliases(
@@ -1471,8 +1473,15 @@ def _has_dynamic_namespace_access(
     imports: dict[str, str],
     *,
     import_occurrences: tuple[_SourceImportOccurrence, ...] = (),
+    binding_graph: _ProjectExternalBindingGraph | None = None,
 ) -> bool:
-    """Detect reflective routes able to recover or rewrite import bindings."""
+    """Detect reflective routes able to recover or rewrite import bindings.
+
+    A project import slot can re-export one of these capabilities under an
+    unrelated spelling.  Resolve every observed path through the complete
+    project import graph before classifying it so an intermediate module
+    cannot launder ``globals``, ``sys.modules``, or an import loader.
+    """
     import_maps = (
         imports,
         *(
@@ -1492,7 +1501,9 @@ def _has_dynamic_namespace_access(
         if isinstance(node, ast.expr):
             for import_map in import_maps:
                 path = _external_alias_path(node, import_map)
-                if path is not None and _path_is_dynamic_namespace_access(path):
+                if path is not None and _path_is_dynamic_namespace_access(
+                    _resolved_project_capability(path, binding_graph)
+                ):
                     return True
         if (
             isinstance(node, ast.Call)
@@ -1512,7 +1523,7 @@ def _has_dynamic_namespace_access(
             if not (isinstance(attribute, ast.Constant) and isinstance(attribute.value, str)):
                 return True
             bases = {
-                base
+                _resolved_project_capability(base, binding_graph)
                 for import_map in import_maps
                 if (base := _external_alias_path(node.args[0], import_map)) is not None
             }
@@ -1528,11 +1539,22 @@ def _has_dynamic_namespace_access(
         ):
             reflective_values = (node.func.value, *node.args)
             if any(
-                _resolved_external_paths(value, import_maps).intersection(namespace_modules)
+                _resolved_external_paths(
+                    value,
+                    import_maps,
+                    binding_graph=binding_graph,
+                ).intersection(namespace_modules)
                 for value in reflective_values
             ):
                 return True
     return False
+
+
+def _resolved_project_capability(
+    path: str,
+    binding_graph: _ProjectExternalBindingGraph | None,
+) -> str:
+    return binding_graph.resolve(path) if binding_graph is not None else path
 
 
 def _path_is_dynamic_namespace_access(path: str) -> bool:
@@ -1560,9 +1582,11 @@ def _path_is_dynamic_namespace_access(path: str) -> bool:
 def _resolved_external_paths(
     node: ast.expr,
     import_maps: tuple[dict[str, str], ...],
+    *,
+    binding_graph: _ProjectExternalBindingGraph | None = None,
 ) -> frozenset[str]:
     return frozenset(
-        path
+        _resolved_project_capability(path, binding_graph)
         for import_map in import_maps
         if (path := _external_alias_path(node, import_map)) is not None
     )

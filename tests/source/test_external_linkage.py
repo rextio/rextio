@@ -1676,6 +1676,105 @@ def calculate(x: int) -> int:
         )
 
 
+@pytest.mark.parametrize(
+    ("bridge_source", "mutator_source"),
+    (
+        pytest.param(
+            "from importlib import import_module as recover\n",
+            """\
+from bridge import recover
+
+def mutate() -> None:
+    recover("demo_pkg")
+""",
+            id="importlib-import-module",
+        ),
+        pytest.param(
+            "from builtins import globals as recover\n",
+            """\
+from bridge import recover
+
+def mutate() -> None:
+    recover()
+""",
+            id="builtins-globals",
+        ),
+        pytest.param(
+            "from builtins import vars as recover\n",
+            """\
+from bridge import recover
+
+def mutate() -> None:
+    recover()
+""",
+            id="builtins-vars",
+        ),
+        pytest.param(
+            "from sys import modules as loaded_modules\n",
+            """\
+from bridge import loaded_modules
+
+def mutate() -> None:
+    loaded_modules["demo_pkg"].affine = abs
+""",
+            id="sys-modules",
+        ),
+        pytest.param(
+            "from pkgutil import get_loader as recover\n",
+            """\
+from bridge import recover
+
+def mutate() -> None:
+    recover("demo_pkg")
+""",
+            id="pkgutil-get-loader",
+        ),
+        pytest.param(
+            "from importlib.util import find_spec as recover\n",
+            """\
+from bridge import recover
+
+def mutate() -> None:
+    recover("demo_pkg")
+""",
+            id="importlib-find-spec",
+        ),
+    ),
+)
+def test_registry_rejects_cross_project_dynamic_capability_reexports(
+    tmp_path: Path,
+    bridge_source: str,
+    mutator_source: str,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text(
+        """\
+import demo_pkg as p
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+        encoding="utf-8",
+    )
+    (project / "bridge.py").write_text(bridge_source, encoding="utf-8")
+    (project / "mutator.py").write_text(mutator_source, encoding="utf-8")
+    analysis = analyze_project(project, imports_config=_imports())
+    linkage = importlib.import_module("rextio.source.external_linkage")
+
+    with pytest.raises(
+        linkage.ExternalLinkageError,
+        match="external-linkage-(?:target-mutated|dynamic-namespace)",
+    ):
+        linkage.build_external_native_registry(
+            analysis,
+            (_external_plan(),),
+            package=PACKAGE,
+            distribution=DIST,
+            version=VERSION,
+        )
+
+
 def test_registry_keeps_direct_project_call_through_external_owner_module(
     tmp_path: Path,
 ) -> None:
@@ -2463,6 +2562,60 @@ def calculate(x: int) -> int:
         version=VERSION,
     )
     mutator.write_text(changed_mutator, encoding="utf-8")
+    changed = analyze_project(
+        project,
+        imports_config=_imports(),
+        external_native_registry=registry,
+    )
+
+    with pytest.raises(
+        linkage.ExternalLinkageError,
+        match="external-linkage-project-analysis-stale",
+    ):
+        registry.require_fresh_analysis(changed)
+
+
+def test_registry_fresh_analysis_rechecks_project_reexported_loader_capability(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text(
+        """\
+import demo_pkg as p
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+        encoding="utf-8",
+    )
+    bridge = project / "bridge.py"
+    bridge.write_text("def recover() -> None:\n    return None\n", encoding="utf-8")
+    mutator = project / "mutator.py"
+    mutator.write_text("def untouched() -> int:\n    return 0\n", encoding="utf-8")
+    linkage = importlib.import_module("rextio.source.external_linkage")
+    initial = analyze_project(project, imports_config=_imports())
+    registry = linkage.build_external_native_registry(
+        initial,
+        (_external_plan(),),
+        package=PACKAGE,
+        distribution=DIST,
+        version=VERSION,
+    )
+
+    bridge.write_text(
+        "from importlib import import_module as recover\n",
+        encoding="utf-8",
+    )
+    mutator.write_text(
+        """\
+from bridge import recover
+
+def mutate() -> None:
+    recover("demo_pkg").affine = abs
+""",
+        encoding="utf-8",
+    )
     changed = analyze_project(
         project,
         imports_config=_imports(),
