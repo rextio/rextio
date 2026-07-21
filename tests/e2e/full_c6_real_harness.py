@@ -59,6 +59,14 @@ _XCODE_HARDLINK_ERROR_RE = re.compile(
     r"st_mode=(?P<mode>0|[1-9][0-9]{0,9}), "
     r"st_nlink=3, in_root_inode_observation_count=1\)\Z"
 )
+_PATH_FREE_SUPPORT_LOCK_MESSAGES_WITH_SEMANTIC_SLASH = frozenset(
+    {
+        "toolchain support directory contains an NFC/casefold alias",
+        "toolchain support tree contains an NFC/casefold path alias",
+        "toolchain support lock contains an NFC/casefold role alias",
+        "toolchain support locators contain an NFC/casefold role alias",
+    }
+)
 _SUPPORT_LOCK_ROLES = {
     "aarch64-apple-darwin": (
         (
@@ -1391,9 +1399,13 @@ def _format_support_lock_diagnostic(error: BaseException) -> str:
                 candidate.startswith("toolchain support ")
                 and len(candidate) <= 278
                 and candidate.isascii()
-                and all(
-                    character.isalnum() or character in " -_.,()="
-                    for character in candidate
+                and (
+                    candidate
+                    in _PATH_FREE_SUPPORT_LOCK_MESSAGES_WITH_SEMANTIC_SLASH
+                    or all(
+                        character.isalnum() or character in " -_.,()="
+                        for character in candidate
+                    )
                 )
             ):
                 support_message = candidate

@@ -609,6 +609,33 @@ def test_support_lock_diagnostic_rejects_full_c6_raw_path_message(
 
 
 @pytest.mark.parametrize(
+    "message",
+    [
+        "toolchain support directory contains an NFC/casefold alias",
+        "toolchain support tree contains an NFC/casefold path alias",
+        "toolchain support lock contains an NFC/casefold role alias",
+        "toolchain support locators contain an NFC/casefold role alias",
+    ],
+)
+def test_support_lock_diagnostic_preserves_exact_semantic_slash_messages(
+    message: str,
+) -> None:
+    harness = _load_harness_module()
+
+    diagnostic = harness._format_support_lock_diagnostic(
+        ToolchainSupportLockError(message)
+    )
+
+    assert diagnostic == (
+        "[full-c6-e2e] support-lock diagnostic: "
+        f"ToolchainSupportLockError={message}; "
+        "OSError=<unavailable>; errno=<unavailable>; "
+        "OtherErrorType=<unavailable>; OtherErrorMessage=<unavailable>"
+    )
+    assert len(diagnostic.encode("ascii")) <= 512
+
+
+@pytest.mark.parametrize(
     "raw_path",
     [
         "/private/secret/toolchain/member",
