@@ -21,6 +21,16 @@ from rextio.build.full_c6_license_materials import (
     collect_full_c6_license_materials,
     validate_full_c6_license_materials_transaction,
 )
+from rextio.build.full_c6_output_license import (
+    MAX_OUTPUT_WHEEL_LICENSE_TOTAL_BYTES,
+    FullC6OutputLicenseDerivationError,
+    OutputWheelLicenseContract,
+    OutputWheelLicenseFile,
+    OutputWheelLicenseMemberIdentity,
+    OutputWheelLicenseVerification,
+    derive_full_c6_output_license_contract,
+    validate_full_c6_output_license_contract,
+)
 from rextio.build.full_c6_policy import (
     FullC6PolicyError,
     canonicalize_full_c6_spdx_expression,
@@ -38,6 +48,7 @@ def _write_project(
     *,
     license_value: str = '"MIT"',
     license_files: str = '["LICENSE"]',
+    extra_files: dict[str, bytes] | None = None,
 ) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "pyproject.toml").write_text(
@@ -48,6 +59,10 @@ def _write_project(
         encoding="utf-8",
     )
     (root / "LICENSE").write_text("project MIT license evidence\n", encoding="utf-8")
+    for relative, payload in (extra_files or {}).items():
+        path = root.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
 
 
 def _cargo_workspace(
@@ -56,6 +71,7 @@ def _cargo_workspace(
     license_expression: str | None = "MIT OR Apache-2.0",
     declared_license_file: bool = True,
     conventional_license_file: bool = True,
+    extra_license_files: dict[str, bytes] | None = None,
 ) -> FullC6CargoDependencyWorkspaceReceipt:
     tmp_path.mkdir(parents=True, exist_ok=True)
     lock = tmp_path / "Cargo.lock"
@@ -98,6 +114,7 @@ checksum = "{PACKAGE_CHECKSUM}"
     }
     if conventional_license_file:
         files["LICENSE"] = b"Cargo MIT or Apache license evidence\n"
+    files.update(extra_license_files or {})
     for relative, payload in files.items():
         path = package.joinpath(*relative.split("/"))
         path.write_bytes(payload)
@@ -185,7 +202,7 @@ def test_project_or_cargo_retained_byte_tamper_makes_transaction_stale(
         project_root=project_two,
         cargo_workspace=workspace_two,
     )
-    payloads = list(workspace_two._file_payloads)  # type: ignore[attr-defined]
+    payloads = list(workspace_two._file_payloads)
     payloads[-1] = b"forged Cargo material"
     object.__setattr__(workspace_two, "_file_payloads", tuple(payloads))
     assert not validate_full_c6_license_materials_transaction(transaction_two)
@@ -362,3 +379,288 @@ def test_spdx_helper_uses_the_single_bounded_full_c6_allowlist() -> None:
         canonicalize_full_c6_spdx_expression("MIT or Apache-2.0")
     with pytest.raises(FullC6PolicyError, match="outside the initial allowlist"):
         canonicalize_full_c6_spdx_expression("LicenseRef-Proprietary")
+
+
+@pytest.mark.parametrize(
+    "invalid_shape",
+    (
+        "unsorted",
+        "duplicate",
+        "casefold-alias",
+        "wrong-license-root",
+        "record-root-mismatch",
+        "total-size-overflow",
+    ),
+)
+def test_output_license_verification_rejects_cross_field_mismatch(
+    invalid_shape: str,
+) -> None:
+    dist_info = "demo_project-0.1.0.dist-info"
+    first = OutputWheelLicenseMemberIdentity(
+        path=f"{dist_info}/licenses/LICENSE-A",
+        sha256="a" * 64,
+        size=1,
+    )
+    second = OutputWheelLicenseMemberIdentity(
+        path=f"{dist_info}/licenses/LICENSE-B",
+        sha256="b" * 64,
+        size=1,
+    )
+    members: tuple[OutputWheelLicenseMemberIdentity, ...] = (first, second)
+    record_member = f"{dist_info}/RECORD"
+    if invalid_shape == "unsorted":
+        members = (second, first)
+    elif invalid_shape == "duplicate":
+        members = (first, first)
+    elif invalid_shape == "casefold-alias":
+        members = (
+            OutputWheelLicenseMemberIdentity(
+                path=f"{dist_info}/licenses/LICENSE",
+                sha256="a" * 64,
+                size=1,
+            ),
+            OutputWheelLicenseMemberIdentity(
+                path=f"{dist_info}/licenses/license",
+                sha256="b" * 64,
+                size=1,
+            ),
+        )
+    elif invalid_shape == "wrong-license-root":
+        members = (
+            OutputWheelLicenseMemberIdentity(
+                path="other-1.0.dist-info/licenses/LICENSE",
+                sha256="a" * 64,
+                size=1,
+            ),
+        )
+    elif invalid_shape == "record-root-mismatch":
+        record_member = "other-1.0.dist-info/RECORD"
+    else:
+        members = (
+            OutputWheelLicenseMemberIdentity(
+                path=f"{dist_info}/licenses/LICENSE-A",
+                sha256="a" * 64,
+                size=(MAX_OUTPUT_WHEEL_LICENSE_TOTAL_BYTES // 2) + 1,
+            ),
+            OutputWheelLicenseMemberIdentity(
+                path=f"{dist_info}/licenses/LICENSE-B",
+                sha256="b" * 64,
+                size=(MAX_OUTPUT_WHEEL_LICENSE_TOTAL_BYTES // 2) + 1,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="verification is invalid"):
+        OutputWheelLicenseVerification(
+            expression="MIT",
+            metadata_member=f"{dist_info}/METADATA",
+            metadata_sha256="c" * 64,
+            license_members=members,
+            record_member=record_member,
+            wheel_sha256="d" * 64,
+        )
+
+
+def test_derives_exact_project_and_cargo_pep639_material_deterministically(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    _write_project(
+        project,
+        license_files='["LICENSE", "legal/NOTICE"]',
+        extra_files={"legal/NOTICE": b"project notice bytes\n"},
+    )
+    workspace = _cargo_workspace(
+        tmp_path,
+        extra_license_files={"NOTICE.md": b"Cargo notice bytes\n"},
+    )
+    transaction = collect_full_c6_license_materials(
+        project_root=project,
+        cargo_workspace=workspace,
+    )
+
+    first = derive_full_c6_output_license_contract(transaction)
+    second = derive_full_c6_output_license_contract(transaction)
+
+    assert first == second
+    assert first.expression == "MIT"
+    assert first.paths == (
+        "cargo/demo-dep-1.2.3/LICENSE",
+        "cargo/demo-dep-1.2.3/NOTICE.md",
+        "project/LICENSE",
+        "project/legal/NOTICE",
+    )
+    assert {item.path: item.data for item in first.files} == {
+        "cargo/demo-dep-1.2.3/LICENSE": b"Cargo MIT or Apache license evidence\n",
+        "cargo/demo-dep-1.2.3/NOTICE.md": b"Cargo notice bytes\n",
+        "project/LICENSE": b"project MIT license evidence\n",
+        "project/legal/NOTICE": b"project notice bytes\n",
+    }
+    assert transaction.cargo_packages[0].declared_spdx == "MIT OR Apache-2.0"
+
+    observation = validate_full_c6_output_license_contract(transaction, first)
+    rendered = json.dumps(observation.to_dict(), sort_keys=True)
+    assert observation.license_transaction_sha256 == transaction.digest
+    assert len(observation.output_contract_sha256) == 64
+    assert len(observation.expression_sha256) == 64
+    assert tuple(item.output_path for item in observation.mappings) == first.paths
+    assert observation.complete_coverage is True
+    assert observation.legal_approval_inferred is False
+    assert observation.authorizes_build is False
+    assert observation.authorizes_distribution is False
+    assert str(tmp_path) not in rendered
+    assert "project MIT license evidence" not in rendered
+    assert "Cargo MIT or Apache license evidence" not in rendered
+
+
+def test_derivation_rejects_stale_project_or_cargo_transaction(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    _write_project(project)
+    transaction = collect_full_c6_license_materials(
+        project_root=project,
+        cargo_workspace=_cargo_workspace(tmp_path),
+    )
+    (project / "LICENSE").write_bytes(b"stale project bytes\n")
+    with pytest.raises(FullC6OutputLicenseDerivationError, match="invalid or stale"):
+        derive_full_c6_output_license_contract(transaction)
+
+    project_two = tmp_path / "project-two"
+    _write_project(project_two)
+    workspace_two = _cargo_workspace(tmp_path / "two")
+    transaction_two = collect_full_c6_license_materials(
+        project_root=project_two,
+        cargo_workspace=workspace_two,
+    )
+    payloads = list(workspace_two._file_payloads)
+    payloads[-1] = b"stale Cargo bytes\n"
+    object.__setattr__(workspace_two, "_file_payloads", tuple(payloads))
+    with pytest.raises(FullC6OutputLicenseDerivationError, match="invalid or stale"):
+        derive_full_c6_output_license_contract(transaction_two)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("omitted", "extra", "substituted", "reordered", "aliased"),
+)
+def test_validator_rejects_nonexact_or_noncanonical_contract(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    project = tmp_path / "project"
+    _write_project(project)
+    transaction = collect_full_c6_license_materials(
+        project_root=project,
+        cargo_workspace=_cargo_workspace(tmp_path),
+    )
+    expected = derive_full_c6_output_license_contract(transaction)
+    if mutation == "omitted":
+        candidate = OutputWheelLicenseContract(
+            expression=expected.expression,
+            files=expected.files[:-1],
+        )
+    elif mutation == "extra":
+        candidate = OutputWheelLicenseContract(
+            expression=expected.expression,
+            files=tuple(
+                sorted(
+                    (*expected.files, OutputWheelLicenseFile("z-extra/LICENSE", b"extra")),
+                    key=lambda item: item.path,
+                )
+            ),
+        )
+    elif mutation == "substituted":
+        replacement = OutputWheelLicenseFile(
+            expected.files[0].path,
+            b"substituted bytes",
+        )
+        candidate = OutputWheelLicenseContract(
+            expression=expected.expression,
+            files=(replacement, *expected.files[1:]),
+        )
+    else:
+        candidate = OutputWheelLicenseContract(
+            expression=expected.expression,
+            files=expected.files,
+        )
+        if mutation == "reordered":
+            object.__setattr__(candidate, "files", tuple(reversed(candidate.files)))
+        else:
+            alias = OutputWheelLicenseFile("project/license", b"alias")
+            object.__setattr__(
+                candidate,
+                "files",
+                tuple(sorted((*candidate.files, alias), key=lambda item: item.path)),
+            )
+
+    with pytest.raises(FullC6OutputLicenseDerivationError):
+        validate_full_c6_output_license_contract(transaction, candidate)
+
+
+def test_validator_rejects_wrong_distribution_expression(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    _write_project(project)
+    transaction = collect_full_c6_license_materials(
+        project_root=project,
+        cargo_workspace=_cargo_workspace(tmp_path),
+    )
+    expected = derive_full_c6_output_license_contract(transaction)
+    wrong = OutputWheelLicenseContract(
+        expression="Apache-2.0",
+        files=expected.files,
+    )
+
+    with pytest.raises(FullC6OutputLicenseDerivationError, match="differs"):
+        validate_full_c6_output_license_contract(transaction, wrong)
+
+
+def test_validator_binds_exact_completed_wheel_license_verification(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    _write_project(project)
+    transaction = collect_full_c6_license_materials(
+        project_root=project,
+        cargo_workspace=_cargo_workspace(tmp_path),
+    )
+    contract = derive_full_c6_output_license_contract(transaction)
+    dist_info = "demo_project-0.1.0.dist-info"
+    members = tuple(
+        OutputWheelLicenseMemberIdentity(
+            path=f"{dist_info}/licenses/{item.path}",
+            sha256=hashlib.sha256(item.data).hexdigest(),
+            size=len(item.data),
+        )
+        for item in contract.files
+    )
+    verification = OutputWheelLicenseVerification(
+        expression=contract.expression,
+        metadata_member=f"{dist_info}/METADATA",
+        metadata_sha256="a" * 64,
+        license_members=members,
+        record_member=f"{dist_info}/RECORD",
+        wheel_sha256="b" * 64,
+    )
+    observed = validate_full_c6_output_license_contract(
+        transaction,
+        contract,
+        verification,
+    )
+    assert observed.output_verification_sha256 is not None
+
+    wrong_members = (
+        OutputWheelLicenseMemberIdentity(
+            path=members[0].path,
+            sha256="c" * 64,
+            size=members[0].size,
+        ),
+        *members[1:],
+    )
+    wrong = OutputWheelLicenseVerification(
+        expression=verification.expression,
+        metadata_member=verification.metadata_member,
+        metadata_sha256=verification.metadata_sha256,
+        license_members=wrong_members,
+        record_member=verification.record_member,
+        wheel_sha256=verification.wheel_sha256,
+    )
+    with pytest.raises(FullC6OutputLicenseDerivationError, match="verification differs"):
+        validate_full_c6_output_license_contract(transaction, contract, wrong)
