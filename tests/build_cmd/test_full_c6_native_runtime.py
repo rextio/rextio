@@ -1306,6 +1306,7 @@ def test_resolved_weak_elf_import_still_requires_declared_snapshot_provider(
     "provider",
     [
         "/usr/lib/system/libsystem_platform.dylib",
+        "/usr/lib/system/libcommonCrypto.dylib",
         "/usr/lib/system/libdispatch.dylib",
         "/usr/lib/system/libdyld.dylib",
         "/usr/lib/system/libunwind.dylib",
@@ -1398,6 +1399,7 @@ def test_shared_cache_libsystem_reexport_rejects_unlisted_descendant() -> None:
 @pytest.mark.parametrize(
     "path",
     [
+        "/usr/lib/system/libcommonCrypto.dylib",
         "/usr/lib/system/libdispatch.dylib",
         "/usr/lib/system/libdyld.dylib",
         "/usr/lib/system/libunwind.dylib",

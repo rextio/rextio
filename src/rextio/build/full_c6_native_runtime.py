@@ -91,6 +91,7 @@ _DARWIN_SHARED_CACHE_LIBSYSTEM_PROVIDER = re.compile(
 )
 _DARWIN_SHARED_CACHE_LIBSYSTEM_SINGLETONS = frozenset(
     {
+        "/usr/lib/system/libcommonCrypto.dylib",
         "/usr/lib/system/libdispatch.dylib",
         "/usr/lib/system/libdyld.dylib",
         "/usr/lib/system/libunwind.dylib",
