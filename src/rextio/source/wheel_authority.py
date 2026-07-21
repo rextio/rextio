@@ -437,7 +437,13 @@ def verify_source_wheel(
     expected_sha256: str,
     plan: ExternalSourcePlan,
 ) -> VerifiedSourceWheel:
-    """Verify one exact pure wheel and bind it strictly to a C5.1 plan."""
+    """Verify one exact pure wheel and bind it strictly to a C5.1 plan.
+
+    A normal wheel installer rewrites the installed ``RECORD`` to add its own
+    provenance rows.  The plan therefore binds that installed ``RECORD`` while
+    this authority independently binds the archive ``RECORD``.  Every shared
+    source, METADATA, WHEEL, and license-file identity must still match exactly.
+    """
     if type(plan) is not ExternalSourcePlan:
         raise SourceWheelAuthorityError("plan-invalid")
     if type(expected_sha256) is not str or _SHA256.fullmatch(expected_sha256) is None:
@@ -550,6 +556,9 @@ def _verify_source_wheel_bytes(
     record_name = f"{dist_info}/RECORD"
     if any(name not in raw_entries for name in (metadata_name, wheel_name, record_name)):
         raise SourceWheelAuthorityError("archive-required-metadata-missing")
+    archive_records = tuple(name for name in raw_entries if name == record_name)
+    if len(archive_records) != 1:
+        raise SourceWheelAuthorityError("archive-record-set-invalid")
     _validate_foreign_dist_info(tuple(raw_entries), dist_info)
     metadata = _parse_distribution_metadata(raw_entries[metadata_name])
     if (
@@ -613,9 +622,47 @@ def _verify_source_wheel_bytes(
             key=lambda item: item.path,
         )
     )
+    installed_record_path = authority_prefix + record_name
+    if type(plan.metadata_files) is not tuple or any(
+        type(item) is not AuthorityFile for item in plan.metadata_files
+    ):
+        raise SourceWheelAuthorityError("installed-record-plan-invalid")
+    installed_records = tuple(
+        item for item in plan.metadata_files if item.role == "record"
+    )
+    installed_record = installed_records[0] if len(installed_records) == 1 else None
+    if (
+        installed_record is None
+        or type(installed_record.path) is not str
+        or installed_record.path != installed_record_path
+        or type(installed_record.sha256) is not str
+        or _SHA256.fullmatch(installed_record.sha256) is None
+        or type(installed_record.size) is not int
+        or not 0 <= installed_record.size <= MAX_FILE_BYTES
+        or installed_record.role != "record"
+        or installed_record.module_name is not None
+    ):
+        raise SourceWheelAuthorityError("installed-record-plan-invalid")
+    archive_records_authority = tuple(
+        item for item in metadata_authority if item.role == "record"
+    )
+    if (
+        len(archive_records_authority) != 1
+        or archive_records_authority[0].path != installed_record_path
+    ):
+        raise SourceWheelAuthorityError("archive-record-set-invalid")
     if source_authority != tuple(sorted(plan.source_files, key=lambda item: item.path)):
         raise SourceWheelAuthorityError("archive-source-set-plan-mismatch")
-    if metadata_authority != tuple(sorted(plan.metadata_files, key=lambda item: item.path)):
+    archive_shared_metadata = tuple(
+        item for item in metadata_authority if item.role != "record"
+    )
+    installed_shared_metadata = tuple(
+        sorted(
+            (item for item in plan.metadata_files if item.role != "record"),
+            key=lambda item: item.path,
+        )
+    )
+    if archive_shared_metadata != installed_shared_metadata:
         raise SourceWheelAuthorityError("archive-metadata-set-plan-mismatch")
 
     modules = {module.module_name: module for module in plan.modules}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import csv
+from dataclasses import replace
 import hashlib
 import io
 import stat
@@ -172,6 +173,25 @@ def _write_wheel(path: Path, payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _with_installed_record(
+    plan: ExternalSourcePlan,
+    payload: bytes,
+) -> ExternalSourcePlan:
+    installed_record = AuthorityFile(
+        path=_authority_path(f"{DIST_INFO}/RECORD"),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+        role="record",
+    )
+    return replace(
+        plan,
+        metadata_files=tuple(
+            installed_record if item.role == "record" else item
+            for item in plan.metadata_files
+        ),
+    )
+
+
 def _mark_first_entry_encrypted(payload: bytes) -> bytes:
     changed = bytearray(payload)
     for signature, flag_offset in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
@@ -205,6 +225,183 @@ def test_exact_pure_wheel_produces_immutable_depth_one_snapshot(tmp_path: Path) 
     serialized = repr(authority.to_dict())
     assert SOURCE.decode().strip() not in serialized
     assert str(tmp_path) not in serialized
+
+
+@pytest.mark.parametrize(
+    "installed_record",
+    (
+        # Index-resolved pip install: INSTALLER, REQUESTED, and bytecode are
+        # installer-owned rows, while direct_url.json is absent.
+        b"demo_pkg-1.0.0.dist-info/INSTALLER,sha256=installer,4\n"
+        b"demo_pkg-1.0.0.dist-info/REQUESTED,sha256=empty,0\n"
+        b"demo_pkg/__pycache__/__init__.cpython-311.pyc,,\n"
+        b"demo_pkg-1.0.0.dist-info/RECORD,,\n",
+        # Direct local-wheel pip install additionally records PEP 610 origin.
+        b"demo_pkg-1.0.0.dist-info/INSTALLER,sha256=installer,4\n"
+        b"demo_pkg-1.0.0.dist-info/REQUESTED,sha256=empty,0\n"
+        b"demo_pkg-1.0.0.dist-info/direct_url.json,sha256=origin,200\n"
+        b"demo_pkg/__pycache__/__init__.cpython-311.pyc,,\n"
+        b"demo_pkg-1.0.0.dist-info/RECORD,,\n",
+    ),
+)
+def test_installed_and_archive_record_are_separate_bound_authorities(
+    tmp_path: Path,
+    installed_record: bytes,
+) -> None:
+    entries = _base_entries()
+    payload = _wheel_bytes(entries)
+    path = tmp_path / "demo_pkg-1.0.0-py3-none-any.whl"
+    digest = _write_wheel(path, payload)
+    plan = _with_installed_record(_plan(entries), installed_record)
+
+    authority = verify_source_wheel(path, expected_sha256=digest, plan=plan)
+
+    plan_record = next(item for item in plan.metadata_files if item.role == "record")
+    archive_record = next(
+        item for item in authority.entries if item.path == f"{DIST_INFO}/RECORD"
+    )
+    assert plan_record.sha256 == hashlib.sha256(installed_record).hexdigest()
+    assert archive_record.sha256 == hashlib.sha256(entries[f"{DIST_INFO}/RECORD"]).hexdigest()
+    assert plan_record.sha256 != archive_record.sha256
+
+
+def test_installed_record_role_path_and_cardinality_are_fail_closed(
+    tmp_path: Path,
+) -> None:
+    entries = _base_entries()
+    payload = _wheel_bytes(entries)
+    path = tmp_path / "demo_pkg-1.0.0-py3-none-any.whl"
+    digest = _write_wheel(path, payload)
+    plan = _plan(entries)
+    record = next(item for item in plan.metadata_files if item.role == "record")
+
+    missing = replace(
+        plan,
+        metadata_files=tuple(
+            replace(item, role="metadata") if item is record else item
+            for item in plan.metadata_files
+        ),
+    )
+    with pytest.raises(SourceWheelAuthorityError, match="installed-record-plan-invalid"):
+        verify_source_wheel(path, expected_sha256=digest, plan=missing)
+
+    substituted = replace(
+        plan,
+        metadata_files=tuple(
+            replace(item, role="record")
+            if item.role == "metadata"
+            else replace(item, role="metadata")
+            if item.role == "record"
+            else item
+            for item in plan.metadata_files
+        ),
+    )
+    with pytest.raises(SourceWheelAuthorityError, match="installed-record-plan-invalid"):
+        verify_source_wheel(path, expected_sha256=digest, plan=substituted)
+
+    wrong_path = replace(
+        plan,
+        metadata_files=tuple(
+            replace(record, path=_authority_path(f"{DIST_INFO}/INSTALLER"))
+            if item is record
+            else item
+            for item in plan.metadata_files
+        ),
+    )
+    with pytest.raises(SourceWheelAuthorityError, match="installed-record-plan-invalid"):
+        verify_source_wheel(path, expected_sha256=digest, plan=wrong_path)
+
+    duplicate = replace(
+        plan,
+        metadata_files=(
+            *plan.metadata_files,
+            replace(record, path=_authority_path(f"{DIST_INFO}/installed.RECORD")),
+        ),
+    )
+    with pytest.raises(SourceWheelAuthorityError, match="installed-record-plan-invalid"):
+        verify_source_wheel(path, expected_sha256=digest, plan=duplicate)
+
+    identical_duplicate = replace(
+        plan,
+        metadata_files=(*plan.metadata_files, record),
+    )
+    with pytest.raises(SourceWheelAuthorityError, match="installed-record-plan-invalid"):
+        verify_source_wheel(
+            path,
+            expected_sha256=digest,
+            plan=identical_duplicate,
+        )
+
+    invalid_sha_record = replace(record)
+    object.__setattr__(invalid_sha_record, "sha256", "invalid")
+
+    class AuthorityFileSubtype(AuthorityFile):
+        pass
+
+    subtype_record = AuthorityFileSubtype(
+        path=record.path,
+        sha256=record.sha256,
+        size=record.size,
+        role=record.role,
+    )
+    for invalid_record in (
+        replace(record, role="Record"),
+        replace(record, module_name=PACKAGE),
+        replace(record, size=True),
+        invalid_sha_record,
+        subtype_record,
+    ):
+        invalid_plan = replace(
+            plan,
+            metadata_files=tuple(
+                invalid_record if item is record else item
+                for item in plan.metadata_files
+            ),
+        )
+        with pytest.raises(
+            SourceWheelAuthorityError,
+            match="installed-record-plan-invalid",
+        ):
+            verify_source_wheel(
+                path,
+                expected_sha256=digest,
+                plan=invalid_plan,
+            )
+
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        duplicate_archive_record = _wheel_bytes(
+            entries,
+            duplicate=f"{DIST_INFO}/RECORD",
+        )
+    duplicate_digest = _write_wheel(path, duplicate_archive_record)
+    with pytest.raises(SourceWheelAuthorityError, match="duplicate"):
+        verify_source_wheel(
+            path,
+            expected_sha256=duplicate_digest,
+            plan=plan,
+        )
+
+
+@pytest.mark.parametrize("role", ("metadata", "wheel", "license-file"))
+def test_dual_record_exception_does_not_exclude_shared_metadata_drift(
+    tmp_path: Path,
+    role: str,
+) -> None:
+    entries = _base_entries()
+    payload = _wheel_bytes(entries)
+    path = tmp_path / "demo_pkg-1.0.0-py3-none-any.whl"
+    digest = _write_wheel(path, payload)
+    plan = _with_installed_record(_plan(entries), b"pip-rewritten-record\n")
+    drifted = replace(
+        plan,
+        metadata_files=tuple(
+            replace(item, sha256="0" * 64) if item.role == role else item
+            for item in plan.metadata_files
+        ),
+    )
+
+    with pytest.raises(SourceWheelAuthorityError, match="metadata-set-plan-mismatch"):
+        verify_source_wheel(path, expected_sha256=digest, plan=drifted)
 
 
 def test_metadata_license_does_not_masquerade_as_independent_detection(

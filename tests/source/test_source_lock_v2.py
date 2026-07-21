@@ -162,6 +162,8 @@ def _wheel_bytes(entries: dict[str, bytes]) -> bytes:
 
 def _inputs(
     tmp_path: Path,
+    *,
+    installed_record: bytes | None = None,
 ) -> tuple[
     ExternalSourcePlan,
     VerifiedSourceWheel,
@@ -198,7 +200,13 @@ def _inputs(
     entries[f"{DIST_INFO}/RECORD"] = _record(entries)
     metadata_specs = (
         (f"{DIST_INFO}/METADATA", "metadata", DIST_METADATA),
-        (f"{DIST_INFO}/RECORD", "record", entries[f"{DIST_INFO}/RECORD"]),
+        (
+            f"{DIST_INFO}/RECORD",
+            "record",
+            installed_record
+            if installed_record is not None
+            else entries[f"{DIST_INFO}/RECORD"],
+        ),
         (f"{DIST_INFO}/WHEEL", "wheel", WHEEL_METADATA),
         (f"{DIST_INFO}/licenses/LICENSE", "license-file", LICENSE),
     )
@@ -256,9 +264,17 @@ class _SignedFixture:
     key_path: Path
 
 
-def _write_signed(tmp_path: Path, *, wrong_prefix: bool = False) -> _SignedFixture:
+def _write_signed(
+    tmp_path: Path,
+    *,
+    wrong_prefix: bool = False,
+    installed_record: bytes | None = None,
+) -> _SignedFixture:
     tmp_path.mkdir(parents=True, exist_ok=True)
-    plan, wheel, analyses, wheel_path, wheel_sha256 = _inputs(tmp_path)
+    plan, wheel, analyses, wheel_path, wheel_sha256 = _inputs(
+        tmp_path,
+        installed_record=installed_record,
+    )
     provisional_key, _ = _sign(SIGNING_SEED, b"provisional")
     key_hash = hashlib.sha256(provisional_key).hexdigest()
     manifest = build_source_lock_v2_manifest(
@@ -347,6 +363,45 @@ def test_exact_signed_lock_admits_only_prebuild_and_serializes_digests(tmp_path:
     assert license_document["observed"] == "MIT"
     assert license_document["independent_detection"] == ("pending-final-full-c6-detector")
     assert "detected" not in license_document
+
+
+def test_source_lock_cross_binds_installed_and_archive_record_authorities(
+    tmp_path: Path,
+) -> None:
+    installed_record = (
+        b"demo_pkg-1.0.0.dist-info/INSTALLER,sha256=installer,4\n"
+        b"demo_pkg-1.0.0.dist-info/REQUESTED,sha256=empty,0\n"
+        b"demo_pkg-1.0.0.dist-info/direct_url.json,sha256=origin,200\n"
+        b"demo_pkg/__pycache__/__init__.cpython-311.pyc,,\n"
+        b"demo_pkg-1.0.0.dist-info/RECORD,,\n"
+    )
+    fixture = _write_signed(tmp_path, installed_record=installed_record)
+    installed_identity = next(
+        item for item in fixture.plan.metadata_files if item.role == "record"
+    )
+    archive_identity = next(
+        item for item in fixture.wheel.entries if item.path == f"{DIST_INFO}/RECORD"
+    )
+
+    assert installed_identity.sha256 == hashlib.sha256(installed_record).hexdigest()
+    assert installed_identity.sha256 != archive_identity.sha256
+    assert fixture.manifest.plan_snapshot_sha256 == fixture.plan.plan_snapshot_sha256()
+    assert fixture.manifest.wheel_authority_sha256 == fixture.wheel.semantic_sha256
+    manifest_record = next(
+        item for item in fixture.manifest.entries if item.path == f"{DIST_INFO}/RECORD"
+    )
+    assert manifest_record == archive_identity
+    assert _verify(fixture).status == "admitted"
+
+    changed_installed_identity = replace(installed_identity, sha256="0" * 64)
+    changed_plan = replace(
+        fixture.plan,
+        metadata_files=tuple(
+            changed_installed_identity if item.role == "record" else item
+            for item in fixture.plan.metadata_files
+        ),
+    )
+    assert _verify(replace(fixture, plan=changed_plan)).status == "rejected"
 
 
 def test_analyzer_shaped_legacy_authorization_is_validated_then_stripped(
