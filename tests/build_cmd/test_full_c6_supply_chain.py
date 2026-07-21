@@ -18,10 +18,20 @@ from rextio.build.full_c6_supply_chain import (
     FullC6CargoPathSource,
     FullC6SupplyChainError,
     build_full_c6_supply_chain_receipt,
+    validate_full_c6_cargo_input_aggregates,
     validate_full_c6_supply_chain_document,
     verify_full_c6_supply_chain_receipt,
 )
-from rextio.build.input_closure import BuildInputClosure, ExactFileIdentity
+from rextio.build.full_c6_cargo_workspace import (
+    FullC6CargoDependencyWorkspaceReceipt,
+)
+from rextio.build.input_closure import (
+    FULL_C6_CARGO_INPUT_AGGREGATE_IDS,
+    BuildInputAggregateIdentity,
+    BuildInputClosure,
+    ExactFileIdentity,
+    bind_full_c6_cargo_workspace_aggregates,
+)
 from rextio.build.reproducibility import (
     ReproducibilityBuildReceipt,
     ReproducibilityReceipt,
@@ -52,6 +62,9 @@ from rextio.source.wheel_authority import (
 TARGET = "x86_64-unknown-linux-gnu"
 _POLICY_FIXTURES = runpy.run_path(
     str(Path(__file__).with_name("test_full_c6_policy.py"))
+)
+_INPUT_FIXTURES = runpy.run_path(
+    str(Path(__file__).with_name("test_build_input_closure.py"))
 )
 
 
@@ -95,6 +108,14 @@ def _build_inputs(policy: FullC6PolicyReceipt) -> BuildInputClosure:
         )
     )
     return BuildInputClosure(files=files)
+
+
+def _sealed_cargo_workspace(
+    tmp_path: Path,
+) -> FullC6CargoDependencyWorkspaceReceipt:
+    value = _INPUT_FIXTURES["_sealed_cargo_workspace"](tmp_path)  # type: ignore[operator]
+    assert isinstance(value, FullC6CargoDependencyWorkspaceReceipt)
+    return value
 
 
 def _tool(
@@ -378,6 +399,24 @@ def _arguments(policy: FullC6PolicyReceipt | None = None) -> dict[str, object]:
     }
 
 
+def _aggregate_arguments(
+    tmp_path: Path,
+) -> tuple[dict[str, object], FullC6CargoDependencyWorkspaceReceipt]:
+    arguments = _arguments()
+    build_inputs = arguments["build_inputs"]
+    assert isinstance(build_inputs, BuildInputClosure)
+    workspace = _sealed_cargo_workspace(tmp_path)
+    bound = bind_full_c6_cargo_workspace_aggregates(build_inputs, workspace)
+    return (
+        {
+            **arguments,
+            "build_inputs": bound,
+            "cargo_dependency_workspace": workspace,
+        },
+        workspace,
+    )
+
+
 def test_complete_documents_are_canonical_deterministic_and_non_authorizing() -> None:
     arguments = _arguments()
     first = build_full_c6_supply_chain_receipt(**arguments)  # type: ignore[arg-type]
@@ -445,6 +484,192 @@ def test_complete_documents_are_canonical_deterministic_and_non_authorizing() ->
     assert first.reproducible_provenance_input_sha256 != first.provenance_sha256
     assert provenance["subject"][1]["digest"] == {"sha256": first.sbom_sha256}  # type: ignore[index]
     assert verify_full_c6_supply_chain_receipt(first) == first
+
+
+def test_cargo_aggregate_receipt_round_trip_binds_safe_document_materials(
+    tmp_path: Path,
+) -> None:
+    arguments, workspace = _aggregate_arguments(tmp_path)
+    build_inputs = arguments["build_inputs"]
+    assert isinstance(build_inputs, BuildInputClosure)
+
+    trusted = validate_full_c6_cargo_input_aggregates(build_inputs, workspace)
+    untrusted_arguments = dict(arguments)
+    untrusted_arguments.pop("cargo_dependency_workspace")
+    with pytest.raises(FullC6SupplyChainError, match="process-sealed Cargo workspace"):
+        build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]
+            **untrusted_arguments
+        )
+    receipt = build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]
+        **arguments
+    )
+
+    assert trusted == build_inputs
+    assert receipt.cargo_input_aggregates == build_inputs.aggregates
+    assert tuple(item.aggregate_id for item in receipt.cargo_input_aggregates) == (
+        tuple(sorted(FULL_C6_CARGO_INPUT_AGGREGATE_IDS))
+    )
+    with pytest.raises(FullC6SupplyChainError, match="process-sealed Cargo workspace"):
+        verify_full_c6_supply_chain_receipt(receipt)
+    assert verify_full_c6_supply_chain_receipt(
+        receipt,
+        cargo_dependency_workspace=workspace,
+    ) == receipt
+
+    binding_prefix = "full-c6-cargo-input-aggregate:"
+    public = receipt.to_dict()
+    bindings = public["bindings"]
+    assert isinstance(bindings, dict)
+    aggregate_bindings = {
+        name: digest
+        for name, digest in bindings.items()
+        if name.startswith(binding_prefix)
+    }
+    assert len(aggregate_bindings) == 7
+    assert all(len(digest) == 64 for digest in aggregate_bindings.values())
+    assert str(tmp_path) not in repr(public)
+    assert "MIT aggregate fixture" not in repr(public)
+
+    sbom = json.loads(receipt.sbom_json)
+    components = [
+        item
+        for item in sbom["components"]
+        if item["name"].startswith(binding_prefix)
+    ]
+    assert len(components) == 7
+    for component in components:
+        properties = {
+            item["name"]: item["value"] for item in component["properties"]
+        }
+        assert properties["rextio:role"] == (
+            "process-sealed-cargo-input-aggregate"
+        )
+        assert properties["rextio:aggregate_digest"]
+        assert properties["rextio:member_count"]
+
+    provenance = json.loads(receipt.provenance_json)
+    definition = provenance["predicate"]["buildDefinition"]
+    dependencies = [
+        item
+        for item in definition["resolvedDependencies"]
+        if item["uri"].startswith(
+            "urn:rextio:full-c6-evidence:full-c6-cargo-input-aggregate:"
+        )
+    ]
+    assert len(dependencies) == 7
+    assert {
+        item["uri"].removeprefix("urn:rextio:full-c6-evidence:"): item[
+            "digest"
+        ]["sha256"]
+        for item in dependencies
+    } == aggregate_bindings
+
+
+def test_cargo_aggregate_missing_extra_alias_and_reorder_fail_closed(
+    tmp_path: Path,
+) -> None:
+    arguments, workspace = _aggregate_arguments(tmp_path)
+    bound = arguments["build_inputs"]
+    assert isinstance(bound, BuildInputClosure)
+
+    missing = BuildInputClosure(
+        files=bound.files,
+        aggregates=bound.aggregates[:-1],
+    )
+    extra_row = BuildInputAggregateIdentity(
+        aggregate_id="full-c6-cargo-z-extra",
+        kind="cargo-z-extra",
+        digest="e" * 64,
+        member_count=1,
+    )
+    extra = BuildInputClosure(
+        files=bound.files,
+        aggregates=tuple(
+            sorted(
+                (*bound.aggregates, extra_row),
+                key=lambda item: (item.kind, item.aggregate_id),
+            )
+        ),
+    )
+    aliased_rows = tuple(
+        replace(
+            item,
+            aggregate_id=item.aggregate_id.upper(),
+        )
+        if item.aggregate_id == "full-c6-cargo-workspace"
+        else item
+        for item in bound.aggregates
+    )
+    aliased = BuildInputClosure(files=bound.files, aggregates=aliased_rows)
+    reordered = BuildInputClosure(files=bound.files, aggregates=bound.aggregates)
+    object.__setattr__(reordered, "aggregates", tuple(reversed(reordered.aggregates)))
+
+    for candidate in (missing, extra, aliased, reordered):
+        with pytest.raises(
+            FullC6SupplyChainError,
+            match="missing, extra, aliased, or reordered",
+        ):
+            validate_full_c6_cargo_input_aggregates(candidate, workspace)
+
+
+@pytest.mark.parametrize(
+    ("aggregate_id", "changes"),
+    (
+        ("full-c6-cargo-sources", {"digest": "f" * 64}),
+        ("full-c6-cargo-vendor-tree", {"member_count": 999}),
+        (
+            "full-c6-cargo-package-receipts",
+            {"metadata_digest": "f" * 64},
+        ),
+    ),
+)
+def test_cargo_aggregate_digest_count_and_metadata_tamper_fail_closed(
+    tmp_path: Path,
+    aggregate_id: str,
+    changes: dict[str, object],
+) -> None:
+    arguments, workspace = _aggregate_arguments(tmp_path)
+    bound = arguments["build_inputs"]
+    assert isinstance(bound, BuildInputClosure)
+    tampered_rows = tuple(
+        replace(item, **changes) if item.aggregate_id == aggregate_id else item
+        for item in bound.aggregates
+    )
+    tampered = BuildInputClosure(files=bound.files, aggregates=tampered_rows)
+
+    with pytest.raises(
+        FullC6SupplyChainError,
+        match="do not match the process-sealed workspace",
+    ):
+        validate_full_c6_cargo_input_aggregates(tampered, workspace)
+    with pytest.raises(
+        FullC6SupplyChainError,
+        match="do not match the process-sealed workspace",
+    ):
+        build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]
+            **{**arguments, "build_inputs": tampered}
+        )
+
+
+def test_legacy_empty_aggregate_closure_remains_compatible(tmp_path: Path) -> None:
+    arguments = _arguments()
+    legacy = arguments["build_inputs"]
+    assert isinstance(legacy, BuildInputClosure)
+    assert legacy.aggregates == ()
+    assert supply_chain_module._rebuild_build_inputs(legacy) == legacy
+
+    receipt = build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]
+        **arguments
+    )
+    assert receipt.cargo_input_aggregates == ()
+    assert "cargo_input_aggregates" not in receipt.to_dict()
+    assert verify_full_c6_supply_chain_receipt(receipt) == receipt
+
+    workspace = _sealed_cargo_workspace(tmp_path)
+    with pytest.raises(FullC6SupplyChainError, match="legacy build-input closure"):
+        build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]
+            **{**arguments, "cargo_dependency_workspace": workspace}
+        )
 
 
 def test_exact_partition_supports_an_explicit_zero_class() -> None:
