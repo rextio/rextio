@@ -65,6 +65,12 @@ from rextio.build.toolchain_identity import (
     capture_tool_identity,
     verify_tool_identity,
 )
+from rextio.build.toolchain_support_lock import (
+    MAX_TOOLCHAIN_SUPPORT_LOCK_BYTES,
+    ToolchainSupportLock,
+    ToolchainSupportLockError,
+    parse_toolchain_support_lock,
+)
 from rextio.config.schema import RextioConfig
 
 
@@ -409,6 +415,9 @@ class FullC6HostPrerequisites:
         "_state_binding",
         "_target_triple",
         "_toolchain",
+        "_toolchain_support_lock",
+        "_toolchain_support_lock_binding",
+        "_toolchain_support_lock_path",
         "_seal",
     )
 
@@ -430,6 +439,9 @@ class FullC6HostPrerequisites:
     _state_binding: _DirectoryBinding
     _target_triple: str
     _toolchain: BuildToolchainIdentity
+    _toolchain_support_lock: ToolchainSupportLock
+    _toolchain_support_lock_binding: _FileBinding
+    _toolchain_support_lock_path: Path
     _seal: bytes
 
     def __init__(self) -> None:
@@ -494,6 +506,12 @@ class FullC6HostPrerequisites:
         """Return ephemeral native tool paths for the executor."""
         self._require_active()
         return self._native_tools
+
+    @property
+    def toolchain_support_lock(self) -> ToolchainSupportLock:
+        """Return the exact path-free support closure retained by this lease."""
+        self._require_active()
+        return self._toolchain_support_lock
 
     @property
     def cargo_workspace(self) -> FullC6CargoDependencyWorkspaceReceipt:
@@ -713,6 +731,11 @@ class FullC6HostPrerequisites:
             self._state_directory,
             self._state_binding,
             label="state",
+        )
+        _verify_file_binding(
+            self._toolchain_support_lock_path,
+            self._toolchain_support_lock_binding,
+            label="toolchain support lock",
         )
 
 
@@ -1178,6 +1201,14 @@ def collect_full_c6_host_prerequisites(
     inherited = _validate_inherited_environment(inherited_environment)
     _validate_host_layout(root, config)
 
+    support_lock, support_lock_path, support_lock_binding = (
+        _collect_configured_toolchain_support_lock(
+            root,
+            config,
+            target_triple=target_triple,
+        )
+    )
+
     cargo_workspace = _collect_configured_cargo_workspace(root, config)
     native_tools, toolchain, base_environment = _collect_toolchain(
         root=root,
@@ -1204,6 +1235,17 @@ def collect_full_c6_host_prerequisites(
     object.__setattr__(prerequisites, "_config", config)
     object.__setattr__(prerequisites, "_target_triple", target_triple)
     object.__setattr__(prerequisites, "_toolchain", toolchain)
+    object.__setattr__(prerequisites, "_toolchain_support_lock", support_lock)
+    object.__setattr__(
+        prerequisites,
+        "_toolchain_support_lock_path",
+        support_lock_path,
+    )
+    object.__setattr__(
+        prerequisites,
+        "_toolchain_support_lock_binding",
+        support_lock_binding,
+    )
     object.__setattr__(prerequisites, "_native_tools", native_tools)
     object.__setattr__(prerequisites, "_cargo_workspace", cargo_workspace)
     object.__setattr__(prerequisites, "_first_quarantine_root", first)
@@ -1325,6 +1367,52 @@ def _collect_configured_cargo_workspace(
     return workspace
 
 
+def _collect_configured_toolchain_support_lock(
+    root: Path,
+    config: RextioConfig,
+    *,
+    target_triple: str,
+) -> tuple[ToolchainSupportLock, Path, _FileBinding]:
+    """Securely open, pin, parse, and retain the configured support lock."""
+    relative = config.build.artifact_toolchain_support_lock
+    expected_sha256 = config.build.artifact_toolchain_support_lock_sha256
+    if (
+        type(relative) is not str
+        or not relative
+        or type(expected_sha256) is not str
+        or not expected_sha256
+    ):
+        raise FullC6HostInputsError(
+            "Full C6 toolchain support lock path and SHA-256 are required"
+        )
+    path = _configured_project_path(root, relative)
+    data, observed = _secure_read_regular(
+        path,
+        label="toolchain support lock",
+        max_bytes=MAX_TOOLCHAIN_SUPPORT_LOCK_BYTES,
+        reject_hardlinks=True,
+    )
+    try:
+        support_lock = parse_toolchain_support_lock(
+            data,
+            expected_raw_sha256=expected_sha256,
+        )
+    except ToolchainSupportLockError as exc:
+        raise FullC6HostInputsError(
+            "Full C6 toolchain support lock failed closed"
+        ) from exc
+    if support_lock.scope.target_triple != target_triple:
+        raise FullC6HostInputsError(
+            "Full C6 toolchain support lock target differs from the host"
+        )
+    binding = _file_binding_from_read(data, observed)
+    if not _digest_equal(binding.sha256, expected_sha256):
+        raise FullC6HostInputsError(
+            "Full C6 toolchain support lock SHA-256 differs from bytes"
+        )
+    return support_lock, path, binding
+
+
 def _validated_production_material(authority: object) -> _FullC6ProductionMaterial:
     """Return private material only after the production module's full validator."""
     from rextio.build import full_c6_production as production
@@ -1346,13 +1434,20 @@ def _validate_host_layout(root: Path, config: RextioConfig) -> None:
     request = config.build.artifact_signing_request_output
     vendor = config.build.artifact_cargo_vendor
     lock = config.build.artifact_cargo_lock
-    if type(request) is not str or type(vendor) is not str or type(lock) is not str:
+    support_lock = config.build.artifact_toolchain_support_lock
+    if (
+        type(request) is not str
+        or type(vendor) is not str
+        or type(lock) is not str
+        or type(support_lock) is not str
+    ):
         # The dedicated collectors retain the actionable missing-input errors.
         return
     state = _configured_project_path(root, request).parent
     publication = root / "dist"
     vendor_path = _configured_project_path(root, vendor)
     lock_path = _configured_project_path(root, lock)
+    support_lock_path = _configured_project_path(root, support_lock)
     directories = (state, publication, vendor_path)
     for index, path in enumerate(directories):
         for other in directories[index + 1 :]:
@@ -1363,6 +1458,16 @@ def _validate_host_layout(root: Path, config: RextioConfig) -> None:
     if any(lock_path == path or path in lock_path.parents or lock_path in path.parents for path in directories):
         raise FullC6HostInputsError(
             "Full C6 Cargo.lock must not overlap state, publication, or vendor paths"
+        )
+    if any(
+        support_lock_path == path
+        or path in support_lock_path.parents
+        or support_lock_path in path.parents
+        for path in (*directories, lock_path)
+    ):
+        raise FullC6HostInputsError(
+            "Full C6 toolchain support lock must not overlap state, publication, "
+            "Cargo.lock, or vendor paths"
         )
 
 
@@ -2550,6 +2655,11 @@ def _capture_file_binding(path: Path, *, label: str) -> _FileBinding:
     data, observed = _secure_read_regular(
         path, label=label, reject_hardlinks=True
     )
+    return _file_binding_from_read(data, observed)
+
+
+def _file_binding_from_read(data: bytes, observed: os.stat_result) -> _FileBinding:
+    """Bind bytes to the exact descriptor-stable stat returned by a secure read."""
     return _FileBinding(
         device=observed.st_dev,
         inode=observed.st_ino,
@@ -2787,6 +2897,7 @@ def _host_prerequisites_seal(value: FullC6HostPrerequisites) -> bytes:
             "toolchain": id(value._toolchain),
             "native_tools": id(value._native_tools),
             "cargo_workspace": id(value._cargo_workspace),
+            "toolchain_support_lock": id(value._toolchain_support_lock),
         },
         "lease_state": {
             "active": value._lease.active,
@@ -2802,6 +2913,16 @@ def _host_prerequisites_seal(value: FullC6HostPrerequisites) -> bytes:
             "config": hashlib.sha256(repr(value._config).encode()).hexdigest(),
             "toolchain": getattr(value._toolchain, "digest", None),
             "cargo_workspace": getattr(value._cargo_workspace, "digest", None),
+            "toolchain_support_lock_raw_sha256": getattr(
+                value._toolchain_support_lock,
+                "raw_sha256",
+                None,
+            ),
+            "toolchain_support_lock_merkle_sha256": getattr(
+                value._toolchain_support_lock,
+                "merkle_sha256",
+                None,
+            ),
             "target_triple": value._target_triple,
             "source_date_epoch": FULL_C6_SOURCE_DATE_EPOCH,
             "environment": value._base_environment,
@@ -2815,6 +2936,7 @@ def _host_prerequisites_seal(value: FullC6HostPrerequisites) -> bytes:
                 ("second-quarantine", value._second_quarantine_root),
                 ("state", value._state_directory),
                 ("publication", value._publication_root),
+                ("toolchain-support-lock", value._toolchain_support_lock_path),
             )
         },
         "directories": {
@@ -2829,6 +2951,11 @@ def _host_prerequisites_seal(value: FullC6HostPrerequisites) -> bytes:
                 value._second_quarantine_binding
             ),
             "state": _directory_binding_payload(value._state_binding),
+        },
+        "files": {
+            "toolchain-support-lock": _file_binding_payload(
+                value._toolchain_support_lock_binding
+            ),
         },
     }
     return hmac.new(_SEAL_KEY, _canonical_bytes(payload), hashlib.sha256).digest()

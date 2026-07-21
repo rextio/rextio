@@ -42,6 +42,11 @@ from rextio.build.full_c6_cargo_workspace import (
 from rextio.build.toolchain_identity import capture_argv_identity
 from rextio.build.input_closure import ExactFileIdentity
 from rextio.build.toolchain_identity import ToolIdentity
+from rextio.build.toolchain_support_lock import (
+    ToolchainSupportLock,
+    create_toolchain_support_locator,
+    generate_toolchain_support_lock,
+)
 from rextio.config.schema import BuildConfig, RextioConfig, ToolchainConfig
 
 
@@ -783,6 +788,50 @@ checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     )
 
 
+def _write_toolchain_support_lock(
+    project: Path,
+    fixture_root: Path,
+    *,
+    target_triple: str = "aarch64-apple-darwin",
+) -> tuple[Path, ToolchainSupportLock, dict[str, str]]:
+    support = (fixture_root / "toolchain-support-fixture").resolve()
+    manifest = support / "rustlib-manifest.txt"
+    sysroot = support / "sysroot"
+    sysroot.mkdir(parents=True)
+    manifest.write_text("rustc 1.93.1\n", encoding="utf-8")
+    (sysroot / "libcore.rlib").write_bytes(b"bounded rustlib fixture")
+    lock = generate_toolchain_support_lock(
+        target_triple=target_triple,
+        manifests=(
+            create_toolchain_support_locator(
+                logical_role="rustlib-manifest",
+                path=manifest,
+                kind="file",
+            ),
+        ),
+        roots=(
+            create_toolchain_support_locator(
+                logical_role="rust-sysroot",
+                path=sysroot,
+                kind="tree",
+            ),
+        ),
+    )
+    lock_path = project / "locks" / "toolchain-support.json"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_bytes(lock.canonical_bytes)
+    return (
+        lock_path,
+        lock,
+        {
+            "artifact_toolchain_support_lock": lock_path.relative_to(
+                project
+            ).as_posix(),
+            "artifact_toolchain_support_lock_sha256": lock.raw_sha256,
+        },
+    )
+
+
 def _analysis_scope_fixture(
     tmp_path: Path,
     *,
@@ -1474,12 +1523,105 @@ def test_rustup_which_rejects_multiple_output_paths(
         )
 
 
+def test_configured_toolchain_support_lock_is_securely_pinned_and_typed(
+    tmp_path: Path,
+) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    lock_path, expected, fields = _write_toolchain_support_lock(
+        project,
+        tmp_path,
+    )
+
+    observed, observed_path, binding = (
+        host_inputs._collect_configured_toolchain_support_lock(
+            project,
+            _host_config(**fields),
+            target_triple="aarch64-apple-darwin",
+        )
+    )
+
+    assert type(observed) is ToolchainSupportLock
+    assert observed == expected
+    assert observed_path == lock_path
+    assert binding.sha256 == expected.raw_sha256
+    assert binding.links == 1
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ("wrong-pin", "noncanonical", "symlink", "hardlink", "wrong-target"),
+)
+def test_configured_toolchain_support_lock_fails_closed(
+    tmp_path: Path,
+    attack: str,
+) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    lock_path, lock, fields = _write_toolchain_support_lock(
+        project,
+        tmp_path,
+        target_triple=(
+            "x86_64-unknown-linux-gnu"
+            if attack == "wrong-target"
+            else "aarch64-apple-darwin"
+        ),
+    )
+    if attack == "wrong-pin":
+        fields["artifact_toolchain_support_lock_sha256"] = "0" * 64
+    elif attack == "noncanonical":
+        lock_path.write_bytes(lock.canonical_bytes + b"\n")
+        fields["artifact_toolchain_support_lock_sha256"] = hashlib.sha256(
+            lock_path.read_bytes()
+        ).hexdigest()
+    elif attack == "symlink":
+        replacement = tmp_path / "replacement-lock.json"
+        lock_path.rename(replacement)
+        lock_path.symlink_to(replacement)
+    elif attack == "hardlink":
+        os.link(lock_path, tmp_path / "toolchain-support-alias.json")
+
+    with pytest.raises(FullC6HostInputsError, match="toolchain support lock"):
+        host_inputs._collect_configured_toolchain_support_lock(
+            project,
+            _host_config(**fields),
+            target_triple="aarch64-apple-darwin",
+        )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "state/toolchain-support.json",
+        "dist/toolchain-support.json",
+        "vendor/toolchain-support.json",
+        "Cargo.lock",
+    ),
+)
+def test_toolchain_support_lock_cannot_overlap_mutable_or_cargo_paths(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    project = tmp_path.resolve()
+    config = _host_config(
+        artifact_cargo_vendor="vendor",
+        artifact_cargo_lock="Cargo.lock",
+        artifact_toolchain_support_lock=relative,
+    )
+
+    with pytest.raises(FullC6HostInputsError, match="support lock must not overlap"):
+        host_inputs._validate_host_layout(project, config)
+
+
 def test_context_owns_two_fresh_quarantines_and_cleans_them(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = (tmp_path / "project").resolve()
     project.mkdir()
+    support_lock_path, expected_support_lock, support_fields = (
+        _write_toolchain_support_lock(project, tmp_path)
+    )
     cargo_sources = object()
     workspace = SimpleNamespace(cargo_sources=cargo_sources)
     toolchain = SimpleNamespace(cargo_sources=cargo_sources)
@@ -1498,7 +1640,7 @@ def test_context_owns_two_fresh_quarantines_and_cleans_them(
 
     with collect_full_c6_host_prerequisites(
         project,
-        config=_host_config(),
+        config=_host_config(**support_fields),
         inherited_environment={"PATH": "/ignored", "TOKEN": "secret"},
     ) as prerequisites:
         first = prerequisites.first_quarantine_root
@@ -1511,6 +1653,8 @@ def test_context_owns_two_fresh_quarantines_and_cleans_them(
         assert stat.S_IMODE(first.stat().st_mode) == 0o700
         assert prerequisites.source_date_epoch == FULL_C6_SOURCE_DATE_EPOCH
         assert prerequisites.base_environment == {"PATH": "/tools"}
+        assert prerequisites.toolchain_support_lock == expected_support_lock
+        retained_support_lock = prerequisites.toolchain_support_lock
         assert prerequisites.production_arguments()["cargo_workspace"] is workspace
         assert prerequisites.toolchain.cargo_sources is workspace.cargo_sources
         assert stat.S_IMODE(prerequisites.state_directory.stat().st_mode) == 0o700
@@ -1526,6 +1670,7 @@ def test_context_owns_two_fresh_quarantines_and_cleans_them(
             lambda: prerequisites.source_date_epoch,
             lambda: prerequisites.toolchain,
             lambda: prerequisites.native_tools,
+            lambda: prerequisites.toolchain_support_lock,
             lambda: prerequisites.cargo_workspace,
             lambda: prerequisites.first_quarantine_root,
             lambda: prerequisites.second_quarantine_root,
@@ -1538,6 +1683,18 @@ def test_context_owns_two_fresh_quarantines_and_cleans_them(
                 access()
 
         object.__setattr__(prerequisites, "_toolchain", toolchain)
+        object.__setattr__(
+            prerequisites,
+            "_toolchain_support_lock",
+            expected_support_lock,
+        )
+        with pytest.raises(FullC6HostInputsError, match="seal is invalid"):
+            _ = prerequisites.toolchain_support_lock
+        object.__setattr__(
+            prerequisites,
+            "_toolchain_support_lock",
+            retained_support_lock,
+        )
         object.__setattr__(prerequisites, "_project_root", object())
         with pytest.raises(FullC6HostInputsError, match="seal is invalid"):
             _ = prerequisites.project_root
@@ -1552,6 +1709,10 @@ def test_context_owns_two_fresh_quarantines_and_cleans_them(
         prerequisites._lease.quarantine_cleaned = False
         prerequisites._lease.publication_authority = None
         assert prerequisites.project_root == project
+
+        support_lock_path.write_bytes(b"changed after lease collection")
+        with pytest.raises(FullC6HostInputsError, match="support lock changed"):
+            _ = prerequisites.toolchain_support_lock
 
     assert not first.parent.exists()
     with pytest.raises(FullC6HostInputsError, match="lease has ended"):
@@ -1579,9 +1740,13 @@ def test_publication_plan_requires_valid_final_authority_and_real_wheel(
     project.mkdir()
     (project / "key.bin").write_bytes(b"k" * 32)
     (project / "signature.json").write_text("{}", encoding="utf-8")
+    _support_lock_path, _support_lock, support_fields = (
+        _write_toolchain_support_lock(project, tmp_path)
+    )
     config = _host_config(
         artifact_trusted_public_key="key.bin",
         artifact_final_signature="signature.json",
+        **support_fields,
     )
     cargo_sources = object()
     workspace = SimpleNamespace(cargo_sources=cargo_sources)
@@ -1707,6 +1872,9 @@ def test_publication_plan_rejects_invalid_or_foreign_authority(
 ) -> None:
     project = (tmp_path / "project").resolve()
     project.mkdir()
+    _support_lock_path, _support_lock, support_fields = (
+        _write_toolchain_support_lock(project, tmp_path)
+    )
     cargo_sources = object()
     workspace = SimpleNamespace(cargo_sources=cargo_sources)
     toolchain = SimpleNamespace(cargo_sources=cargo_sources)
@@ -1722,7 +1890,10 @@ def test_publication_plan_rejects_invalid_or_foreign_authority(
         lambda **_kwargs: (object(), toolchain, {}),
     )
 
-    with collect_full_c6_host_prerequisites(project, config=_host_config()) as prerequisites:
+    with collect_full_c6_host_prerequisites(
+        project,
+        config=_host_config(**support_fields),
+    ) as prerequisites:
         with pytest.raises(FullC6HostInputsError, match="valid production authority"):
             prerequisites.complete_prepublication_cleanup(object())
 
@@ -1733,7 +1904,10 @@ def test_post_cleanup_revalidation_failure_is_not_retried_on_context_exit(
 ) -> None:
     project = (tmp_path / "project").resolve()
     project.mkdir()
-    config = _host_config()
+    _support_lock_path, _support_lock, support_fields = (
+        _write_toolchain_support_lock(project, tmp_path)
+    )
+    config = _host_config(**support_fields)
     cargo_sources = object()
     workspace = SimpleNamespace(cargo_sources=cargo_sources)
     toolchain = SimpleNamespace(cargo_sources=cargo_sources)
