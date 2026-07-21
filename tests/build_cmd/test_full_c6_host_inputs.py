@@ -18,6 +18,7 @@ import stat
 import struct
 import sys
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -832,6 +833,28 @@ def _write_toolchain_support_lock(
     )
 
 
+def _mock_support_plan(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    target_triple: str = "aarch64-apple-darwin",
+) -> SimpleNamespace:
+    plan = SimpleNamespace(
+        target_triple=target_triple,
+        digest="d" * 64,
+    )
+    monkeypatch.setattr(
+        host_inputs,
+        "require_full_c6_toolchain_support_plan",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        host_inputs,
+        "verify_full_c6_toolchain_support_lock",
+        lambda value, _lock: value is plan,
+    )
+    return plan
+
+
 def _analysis_scope_fixture(
     tmp_path: Path,
     *,
@@ -1294,11 +1317,8 @@ def test_toolchain_retains_workspace_sources_and_reprobes_exact_tools(
     )
     monkeypatch.setattr(
         host_inputs,
-        "_resolve_executable",
-        lambda path: {
-            Path("/usr/bin/clang"): paths["linker"],
-            Path("/usr/bin/otool"): paths["otool"],
-        }.get(path, path),
+        "resolve_full_c6_linker_and_inspector",
+        lambda **_kwargs: (paths["linker"], paths["otool"]),
     )
     monkeypatch.setattr(
         host_inputs,
@@ -1344,24 +1364,55 @@ def test_toolchain_retains_workspace_sources_and_reprobes_exact_tools(
 
     monkeypatch.setattr(host_inputs, "capture_tool_identity", capture)
     monkeypatch.setattr(host_inputs, "verify_tool_identity", lambda _path, _identity: None)
+    support_plan = SimpleNamespace(
+        base_environment={"PATH": str(tools)},
+        digest="8" * 64,
+    )
+    support_lock = cast(
+        ToolchainSupportLock,
+        SimpleNamespace(
+            raw_sha256="9" * 64,
+            merkle_sha256="a" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        host_inputs,
+        "discover_full_c6_toolchain_support",
+        lambda **_kwargs: support_plan,
+    )
+    monkeypatch.setattr(
+        host_inputs,
+        "verify_full_c6_toolchain_support_lock",
+        lambda plan, lock: plan is support_plan and lock is support_lock,
+    )
     monkeypatch.setattr(host_inputs.sys, "executable", str(paths["python"]))
     config = RextioConfig(
         toolchain=ToolchainConfig(python_version="==3.11.9", cargo_version="1.85")
     )
 
-    native_tools, identity, environment = host_inputs._collect_toolchain(
+    native_tools, identity, environment, retained_plan = host_inputs._collect_toolchain(
         root=project,
         config=config,
         target_triple="aarch64-apple-darwin",
         inherited={},
         cargo_workspace=workspace,
+        support_lock=support_lock,
     )
 
     assert identity.cargo_sources is workspace.cargo_sources
     assert identity.argv.values == ("cargo", *FULL_C6_CARGO_ARGUMENTS)
+    assert identity.support_plan_sha256 == "8" * 64
+    assert identity.support_lock_raw_sha256 == "9" * 64
+    assert identity.support_lock_merkle_sha256 == "a" * 64
     assert native_tools.cargo == paths["cargo"]
     assert environment == {"PATH": str(tools)}
+    assert retained_plan is support_plan
     assert probes == [
+        "python",
+        "cargo",
+        "rustc",
+        "linker",
+        "otool",
         "python",
         "cargo",
         "rustc",
@@ -1626,6 +1677,7 @@ def test_context_owns_two_fresh_quarantines_and_cleans_them(
     workspace = SimpleNamespace(cargo_sources=cargo_sources)
     toolchain = SimpleNamespace(cargo_sources=cargo_sources)
     native_tools = object()
+    support_plan = _mock_support_plan(monkeypatch)
     monkeypatch.setattr(host_inputs, "_require_supported_host", lambda: "aarch64-apple-darwin")
     monkeypatch.setattr(
         host_inputs,
@@ -1635,7 +1687,12 @@ def test_context_owns_two_fresh_quarantines_and_cleans_them(
     monkeypatch.setattr(
         host_inputs,
         "_collect_toolchain",
-        lambda **_kwargs: (native_tools, toolchain, {"PATH": "/tools"}),
+        lambda **_kwargs: (
+            native_tools,
+            toolchain,
+            {"PATH": "/tools"},
+            support_plan,
+        ),
     )
 
     with collect_full_c6_host_prerequisites(
@@ -1654,8 +1711,15 @@ def test_context_owns_two_fresh_quarantines_and_cleans_them(
         assert prerequisites.source_date_epoch == FULL_C6_SOURCE_DATE_EPOCH
         assert prerequisites.base_environment == {"PATH": "/tools"}
         assert prerequisites.toolchain_support_lock == expected_support_lock
+        assert prerequisites.toolchain_support_plan is support_plan
         retained_support_lock = prerequisites.toolchain_support_lock
         assert prerequisites.production_arguments()["cargo_workspace"] is workspace
+        assert prerequisites.production_arguments()[
+            "toolchain_support_plan"
+        ] is support_plan
+        assert prerequisites.production_arguments()[
+            "toolchain_support_lock"
+        ] is retained_support_lock
         assert prerequisites.toolchain.cargo_sources is workspace.cargo_sources
         assert stat.S_IMODE(prerequisites.state_directory.stat().st_mode) == 0o700
         assert prerequisites.state_directory == project / "state"
@@ -1671,6 +1735,7 @@ def test_context_owns_two_fresh_quarantines_and_cleans_them(
             lambda: prerequisites.toolchain,
             lambda: prerequisites.native_tools,
             lambda: prerequisites.toolchain_support_lock,
+            lambda: prerequisites.toolchain_support_plan,
             lambda: prerequisites.cargo_workspace,
             lambda: prerequisites.first_quarantine_root,
             lambda: prerequisites.second_quarantine_root,
@@ -1694,6 +1759,14 @@ def test_context_owns_two_fresh_quarantines_and_cleans_them(
             prerequisites,
             "_toolchain_support_lock",
             retained_support_lock,
+        )
+        object.__setattr__(prerequisites, "_toolchain_support_plan", object())
+        with pytest.raises(FullC6HostInputsError, match="seal is invalid"):
+            _ = prerequisites.toolchain_support_plan
+        object.__setattr__(
+            prerequisites,
+            "_toolchain_support_plan",
+            support_plan,
         )
         object.__setattr__(prerequisites, "_project_root", object())
         with pytest.raises(FullC6HostInputsError, match="seal is invalid"):
@@ -1751,6 +1824,7 @@ def test_publication_plan_requires_valid_final_authority_and_real_wheel(
     cargo_sources = object()
     workspace = SimpleNamespace(cargo_sources=cargo_sources)
     toolchain = SimpleNamespace(cargo_sources=cargo_sources)
+    support_plan = _mock_support_plan(monkeypatch)
     monkeypatch.setattr(host_inputs, "_require_supported_host", lambda: "aarch64-apple-darwin")
     monkeypatch.setattr(
         host_inputs,
@@ -1760,7 +1834,12 @@ def test_publication_plan_requires_valid_final_authority_and_real_wheel(
     monkeypatch.setattr(
         host_inputs,
         "_collect_toolchain",
-        lambda **_kwargs: (object(), toolchain, {"PATH": "/tools"}),
+        lambda **_kwargs: (
+            object(),
+            toolchain,
+            {"PATH": "/tools"},
+            support_plan,
+        ),
     )
     monkeypatch.setattr(
         full_c6_production,
@@ -1878,6 +1957,7 @@ def test_publication_plan_rejects_invalid_or_foreign_authority(
     cargo_sources = object()
     workspace = SimpleNamespace(cargo_sources=cargo_sources)
     toolchain = SimpleNamespace(cargo_sources=cargo_sources)
+    support_plan = _mock_support_plan(monkeypatch)
     monkeypatch.setattr(host_inputs, "_require_supported_host", lambda: "aarch64-apple-darwin")
     monkeypatch.setattr(
         host_inputs,
@@ -1887,7 +1967,7 @@ def test_publication_plan_rejects_invalid_or_foreign_authority(
     monkeypatch.setattr(
         host_inputs,
         "_collect_toolchain",
-        lambda **_kwargs: (object(), toolchain, {}),
+        lambda **_kwargs: (object(), toolchain, {}, support_plan),
     )
 
     with collect_full_c6_host_prerequisites(
@@ -1911,6 +1991,7 @@ def test_post_cleanup_revalidation_failure_is_not_retried_on_context_exit(
     cargo_sources = object()
     workspace = SimpleNamespace(cargo_sources=cargo_sources)
     toolchain = SimpleNamespace(cargo_sources=cargo_sources)
+    support_plan = _mock_support_plan(monkeypatch)
     monkeypatch.setattr(
         host_inputs,
         "_require_supported_host",
@@ -1924,7 +2005,7 @@ def test_post_cleanup_revalidation_failure_is_not_retried_on_context_exit(
     monkeypatch.setattr(
         host_inputs,
         "_collect_toolchain",
-        lambda **_kwargs: (object(), toolchain, {}),
+        lambda **_kwargs: (object(), toolchain, {}, support_plan),
     )
     monkeypatch.setattr(
         full_c6_production,

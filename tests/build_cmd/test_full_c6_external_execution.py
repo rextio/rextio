@@ -292,6 +292,9 @@ def _toolchain(
         argv=ArgvIdentity(_STRICT_BUILD),
         environment=capture_environment_identity(environment),
         cargo_sources=cargo_workspace.cargo_sources,
+        support_plan_sha256="8" * 64,
+        support_lock_raw_sha256="9" * 64,
+        support_lock_merkle_sha256="a" * 64,
     )
     return native_tools, environment, toolchain
 

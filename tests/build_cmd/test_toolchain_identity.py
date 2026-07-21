@@ -40,6 +40,10 @@ def test_environment_identity_filters_unknown_and_hashes_values() -> None:
 
     receipt = capture_environment_identity(
         {
+            "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+            "COMPILER_PATH": "/usr/lib/gcc:/usr/bin",
+            "LD_LIBRARY_PATH": "/usr/lib:/opt/rust/lib",
+            "LIBRARY_PATH": "/usr/lib/gcc:/usr/lib",
             "SOURCE_DATE_EPOCH": "0",
             "PATH": "/usr/bin:/bin",
             "SECRET_TOKEN": "must-not-leak",
@@ -47,6 +51,10 @@ def test_environment_identity_filters_unknown_and_hashes_values() -> None:
         }
     )
     assert tuple(item.name for item in receipt) == (
+        "COMPILER_PATH",
+        "DEVELOPER_DIR",
+        "LD_LIBRARY_PATH",
+        "LIBRARY_PATH",
         "PATH",
         "PYTHONHASHSEED",
         "SOURCE_DATE_EPOCH",
@@ -176,6 +184,9 @@ version = "0.1.0"
             {"SOURCE_DATE_EPOCH": "0", "SECRET": "excluded"}
         ),
         cargo_sources=capture_cargo_sources(lock, root_package="root"),
+        support_plan_sha256="1" * 64,
+        support_lock_raw_sha256="2" * 64,
+        support_lock_merkle_sha256="3" * 64,
     )
 
     from rextio.artifacts.full_authorization import FULL_C6_SCOPE
@@ -190,4 +201,7 @@ version = "0.1.0"
     assert receipt.linker.name == "linker"
     assert [item.name for item in receipt.inspectors] == ["readelf"]
     assert receipt.argv.values[-3:] == ("--locked", "--offline", "--frozen")
+    assert receipt.support_plan_sha256 == "1" * 64
+    assert receipt.support_lock_raw_sha256 == "2" * 64
+    assert receipt.support_lock_merkle_sha256 == "3" * 64
     assert "excluded" not in repr(receipt.to_dict())

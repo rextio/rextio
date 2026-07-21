@@ -201,6 +201,9 @@ def _toolchain(policy: FullC6PolicyReceipt) -> BuildToolchainIdentity:
                 ),
             ),
         ),
+        support_plan_sha256="8" * 64,
+        support_lock_raw_sha256="9" * 64,
+        support_lock_merkle_sha256="a" * 64,
     )
 
 

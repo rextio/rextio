@@ -59,12 +59,16 @@ STRICT_BUILD_ENV_ALLOWLIST = frozenset(
         "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
         "CC",
         "CFLAGS",
+        "COMPILER_PATH",
         "CXX",
         "CXXFLAGS",
+        "DEVELOPER_DIR",
         "LANG",
         "LC_ALL",
         "LD",
+        "LD_LIBRARY_PATH",
         "LDFLAGS",
+        "LIBRARY_PATH",
         "MACOSX_DEPLOYMENT_TARGET",
         "PATH",
         "PKG_CONFIG_PATH",
@@ -292,6 +296,9 @@ class BuildToolchainIdentity:
     argv: ArgvIdentity
     environment: tuple[EnvironmentVariableIdentity, ...]
     cargo_sources: CargoSourcesIdentity
+    support_plan_sha256: str
+    support_lock_raw_sha256: str
+    support_lock_merkle_sha256: str
     domain: str = BUILD_TOOLCHAIN_IDENTITY_DOMAIN
     scope: str = BUILD_TOOLCHAIN_IDENTITY_SCOPE
     complete_for_scope: bool = True
@@ -334,6 +341,16 @@ class BuildToolchainIdentity:
             raise TypeError("toolchain argv identity is invalid")
         if type(self.cargo_sources) is not CargoSourcesIdentity:
             raise TypeError("Cargo source identity is invalid")
+        for digest_value, label in (
+            (self.support_plan_sha256, "support plan SHA-256"),
+            (self.support_lock_raw_sha256, "support lock raw SHA-256"),
+            (self.support_lock_merkle_sha256, "support lock Merkle SHA-256"),
+        ):
+            if (
+                type(digest_value) is not str
+                or _SHA256_RE.fullmatch(digest_value) is None
+            ):
+                raise ValueError(f"build-toolchain {label} is invalid")
         if self.complete_for_scope is not True:
             raise ValueError("build-toolchain identity must be complete for its scope")
         object.__setattr__(self, "inspectors", inspectors)
@@ -358,6 +375,9 @@ class BuildToolchainIdentity:
             "argv": self.argv.to_dict(),
             "environment": [item.to_dict() for item in self.environment],
             "cargo_sources": self.cargo_sources.to_dict(),
+            "support_plan_sha256": self.support_plan_sha256,
+            "support_lock_raw_sha256": self.support_lock_raw_sha256,
+            "support_lock_merkle_sha256": self.support_lock_merkle_sha256,
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -477,6 +497,9 @@ def assemble_build_toolchain_identity(
     argv: ArgvIdentity,
     environment: tuple[EnvironmentVariableIdentity, ...] | list[EnvironmentVariableIdentity],
     cargo_sources: CargoSourcesIdentity,
+    support_plan_sha256: str,
+    support_lock_raw_sha256: str,
+    support_lock_merkle_sha256: str,
 ) -> BuildToolchainIdentity:
     """Assemble the closed receipt while canonicalizing unordered inputs."""
     try:
@@ -492,6 +515,9 @@ def assemble_build_toolchain_identity(
             argv=argv,
             environment=tuple(sorted(environment, key=lambda item: item.name)),
             cargo_sources=cargo_sources,
+            support_plan_sha256=support_plan_sha256,
+            support_lock_raw_sha256=support_lock_raw_sha256,
+            support_lock_merkle_sha256=support_lock_merkle_sha256,
         )
     except (AttributeError, TypeError, ValueError) as exc:
         raise ToolchainIdentityError(str(exc)) from exc

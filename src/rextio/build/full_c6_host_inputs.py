@@ -50,6 +50,14 @@ from rextio.build.full_c6_cargo_workspace import (
     validate_full_c6_cargo_dependency_workspace_receipt,
 )
 from rextio.build.full_c6_executor import FullC6NativeToolPaths
+from rextio.build.full_c6_toolchain_support import (
+    FullC6ToolchainSupportError,
+    FullC6ToolchainSupportPlan,
+    discover_full_c6_toolchain_support,
+    require_full_c6_toolchain_support_plan,
+    resolve_full_c6_linker_and_inspector,
+    verify_full_c6_toolchain_support_lock,
+)
 from rextio.build.input_closure import BuildInputIdentityError
 from rextio.build.subprocess_utils import run_build_tool
 from rextio.build.toolchain import check_version_pin, resolve_python, resolve_tool
@@ -418,6 +426,7 @@ class FullC6HostPrerequisites:
         "_toolchain_support_lock",
         "_toolchain_support_lock_binding",
         "_toolchain_support_lock_path",
+        "_toolchain_support_plan",
         "_seal",
     )
 
@@ -442,6 +451,7 @@ class FullC6HostPrerequisites:
     _toolchain_support_lock: ToolchainSupportLock
     _toolchain_support_lock_binding: _FileBinding
     _toolchain_support_lock_path: Path
+    _toolchain_support_plan: FullC6ToolchainSupportPlan
     _seal: bytes
 
     def __init__(self) -> None:
@@ -514,6 +524,14 @@ class FullC6HostPrerequisites:
         return self._toolchain_support_lock
 
     @property
+    def toolchain_support_plan(self) -> FullC6ToolchainSupportPlan:
+        """Return the exact process-sealed private support plan."""
+        self._require_active()
+        return require_full_c6_toolchain_support_plan(
+            self._toolchain_support_plan
+        )
+
+    @property
     def cargo_workspace(self) -> FullC6CargoDependencyWorkspaceReceipt:
         """Return the process-sealed Cargo vendor workspace."""
         self._require_active()
@@ -552,6 +570,8 @@ class FullC6HostPrerequisites:
             "toolchain": self._toolchain,
             "native_tools": self._native_tools,
             "cargo_workspace": self._cargo_workspace,
+            "toolchain_support_plan": self._toolchain_support_plan,
+            "toolchain_support_lock": self._toolchain_support_lock,
             "first_quarantine_root": self._first_quarantine_root,
             "second_quarantine_root": self._second_quarantine_root,
             "state_directory": self._state_directory,
@@ -737,6 +757,13 @@ class FullC6HostPrerequisites:
             self._toolchain_support_lock_binding,
             label="toolchain support lock",
         )
+        plan = require_full_c6_toolchain_support_plan(
+            self._toolchain_support_plan
+        )
+        if plan.target_triple != self._target_triple:
+            raise FullC6HostInputsError(
+                "Full C6 toolchain support plan target changed"
+            )
 
 
 def collect_full_c6_analysis_scope(
@@ -1210,12 +1237,13 @@ def collect_full_c6_host_prerequisites(
     )
 
     cargo_workspace = _collect_configured_cargo_workspace(root, config)
-    native_tools, toolchain, base_environment = _collect_toolchain(
+    native_tools, toolchain, base_environment, support_plan = _collect_toolchain(
         root=root,
         config=config,
         target_triple=target_triple,
         inherited=inherited,
         cargo_workspace=cargo_workspace,
+        support_lock=support_lock,
     )
     if toolchain.cargo_sources is not cargo_workspace.cargo_sources:
         raise FullC6HostInputsError(
@@ -1236,6 +1264,7 @@ def collect_full_c6_host_prerequisites(
     object.__setattr__(prerequisites, "_target_triple", target_triple)
     object.__setattr__(prerequisites, "_toolchain", toolchain)
     object.__setattr__(prerequisites, "_toolchain_support_lock", support_lock)
+    object.__setattr__(prerequisites, "_toolchain_support_plan", support_plan)
     object.__setattr__(
         prerequisites,
         "_toolchain_support_lock_path",
@@ -1504,7 +1533,13 @@ def _collect_toolchain(
     target_triple: str,
     inherited: Mapping[str, str],
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
-) -> tuple[FullC6NativeToolPaths, BuildToolchainIdentity, dict[str, str]]:
+    support_lock: ToolchainSupportLock,
+) -> tuple[
+    FullC6NativeToolPaths,
+    BuildToolchainIdentity,
+    dict[str, str],
+    FullC6ToolchainSupportPlan,
+]:
     selected_python = _resolve_python(config)
     selected_cargo = _resolve_required_tool("cargo", config.toolchain.cargo)
     python_path = _resolve_executable(selected_python)
@@ -1514,14 +1549,15 @@ def _collect_toolchain(
         config=config,
         inherited=inherited,
     )
-    selected_linker = Path(
-        "/usr/bin/clang" if target_triple.endswith("apple-darwin") else "/usr/bin/cc"
-    )
-    selected_inspector = Path(
-        "/usr/bin/otool" if target_triple.endswith("apple-darwin") else "/usr/bin/readelf"
-    )
-    linker_path = _resolve_executable(selected_linker)
-    inspector_path = _resolve_executable(selected_inspector)
+    try:
+        linker_path, inspector_path = resolve_full_c6_linker_and_inspector(
+            target_triple=target_triple,
+            cwd=root,
+        )
+    except FullC6ToolchainSupportError as exc:
+        raise FullC6HostInputsError(
+            "Full C6 linker or native inspector discovery failed closed"
+        ) from exc
     actual_paths = (
         python_path,
         cargo_path,
@@ -1537,9 +1573,9 @@ def _collect_toolchain(
     except OSError as exc:
         raise FullC6HostInputsError("Full C6 running Python is unavailable") from exc
 
-    base_environment = _minimal_build_environment(cargo_path)
+    preliminary_environment = _minimal_build_environment(cargo_path)
     probe_environment = {
-        **base_environment,
+        **preliminary_environment,
         "LANG": "C",
         "LC_ALL": "C",
         "PYTHONHASHSEED": "0",
@@ -1600,6 +1636,48 @@ def _collect_toolchain(
             )
         for path, identity in zip(actual_paths, identities, strict=True):
             verify_tool_identity(path, identity)
+        support_plan = discover_full_c6_toolchain_support(
+            target_triple=target_triple,
+            cwd=root,
+            python=python_path,
+            cargo=cargo_path,
+            rustc=rustc_path,
+            linker=linker_path,
+            inspector=inspector_path,
+            platform_inspector_identity=(
+                inspector_identity
+                if target_triple.endswith("apple-darwin")
+                else None
+            ),
+        )
+        if not verify_full_c6_toolchain_support_lock(
+            support_plan,
+            support_lock,
+        ):
+            raise FullC6ToolchainSupportError(
+                "Full C6 toolchain support lock verification failed"
+            )
+        base_environment = support_plan.base_environment
+        final_probe_environment = {
+            **base_environment,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PYTHONHASHSEED": "0",
+            "SOURCE_DATE_EPOCH": "0",
+            "TZ": "UTC",
+        }
+        final_versions = tuple(
+            _probe_version(path, root=root, environment=final_probe_environment)
+            for path in actual_paths
+        )
+        if final_versions != versions or _probe_rustc_host(
+            rustc_path,
+            root=root,
+            environment=final_probe_environment,
+        ) != target_triple:
+            raise FullC6HostInputsError(
+                "Full C6 tool identity changed under the fixed support environment"
+            )
         argv = capture_argv_identity(("cargo", *FULL_C6_CARGO_ARGUMENTS))
         environment_identity = capture_environment_identity(base_environment)
         toolchain = assemble_build_toolchain_identity(
@@ -1612,8 +1690,17 @@ def _collect_toolchain(
             argv=argv,
             environment=environment_identity,
             cargo_sources=cargo_workspace.cargo_sources,
+            support_plan_sha256=support_plan.digest,
+            support_lock_raw_sha256=support_lock.raw_sha256,
+            support_lock_merkle_sha256=support_lock.merkle_sha256,
         )
-    except (BuildInputIdentityError, ToolchainIdentityError, TypeError, ValueError) as exc:
+    except (
+        BuildInputIdentityError,
+        FullC6ToolchainSupportError,
+        ToolchainIdentityError,
+        TypeError,
+        ValueError,
+    ) as exc:
         raise FullC6HostInputsError("Full C6 toolchain identity failed closed") from exc
     native_tools = FullC6NativeToolPaths(
         python=python_path,
@@ -1621,7 +1708,7 @@ def _collect_toolchain(
         rustc=rustc_path,
         linker=linker_path,
     )
-    return native_tools, toolchain, base_environment
+    return native_tools, toolchain, base_environment, support_plan
 
 
 def _resolve_python(config: RextioConfig) -> Path:
@@ -2898,6 +2985,7 @@ def _host_prerequisites_seal(value: FullC6HostPrerequisites) -> bytes:
             "native_tools": id(value._native_tools),
             "cargo_workspace": id(value._cargo_workspace),
             "toolchain_support_lock": id(value._toolchain_support_lock),
+            "toolchain_support_plan": id(value._toolchain_support_plan),
         },
         "lease_state": {
             "active": value._lease.active,
@@ -2921,6 +3009,11 @@ def _host_prerequisites_seal(value: FullC6HostPrerequisites) -> bytes:
             "toolchain_support_lock_merkle_sha256": getattr(
                 value._toolchain_support_lock,
                 "merkle_sha256",
+                None,
+            ),
+            "toolchain_support_plan_sha256": getattr(
+                value._toolchain_support_plan,
+                "digest",
                 None,
             ),
             "target_triple": value._target_triple,
