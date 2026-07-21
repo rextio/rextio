@@ -19,6 +19,7 @@ from rextio.build.toolchain_support_lock import (
     TOOLCHAIN_SUPPORT_SCOPE,
     ToolchainSupportLock,
     ToolchainSupportLockError,
+    ToolchainSupportLocator,
     capture_toolchain_support_file,
     capture_toolchain_support_tree,
     create_toolchain_support_locator,
@@ -85,6 +86,106 @@ def _lock(tmp_path: Path) -> tuple[ToolchainSupportLock, object, object]:
     return lock, manifest_locator, root_locator
 
 
+def _macos_projected_inputs(
+    tmp_path: Path,
+) -> tuple[
+    list[ToolchainSupportLocator],
+    list[ToolchainSupportLocator],
+    Path,
+    Path,
+    Path,
+]:
+    python_root = (
+        tmp_path
+        / "prefix"
+        / "a"
+        / "b"
+        / "c"
+        / "d"
+        / "e"
+        / "f"
+        / "g"
+        / "h"
+        / "Frameworks"
+        / "Python.framework"
+        / "Versions"
+        / "3.11"
+        / "lib"
+        / "python3.11"
+    )
+    python_root.mkdir(parents=True)
+    (python_root / "encodings.py").write_bytes(b"# fixed runtime\n")
+    config = python_root / "config-3.11-darwin"
+    config.mkdir()
+    python_library = python_root.parents[1] / "Python"
+    python_library.write_bytes(b"fixed framework runtime")
+    (config / "libpython3.11.a").symlink_to("../../../Python")
+    (config / "libpython3.11.dylib").symlink_to("../../../Python")
+    site_target_text = "../../../../../../../../../lib/python3.11/site-packages"
+    site_target = (python_root / site_target_text).resolve(strict=False)
+    site_target.mkdir(parents=True)
+    (python_root / "site-packages").symlink_to(site_target_text)
+
+    sdk = tmp_path / "MacOSX.sdk"
+    sound = (
+        sdk
+        / "System"
+        / "Library"
+        / "Frameworks"
+        / "SoundAnalysis.framework"
+        / "Versions"
+        / "A"
+        / "SoundAnalysis.tbd"
+    )
+    sound.parent.mkdir(parents=True)
+    sound.write_bytes(b"sound analysis")
+    swift = sdk / "usr" / "lib" / "swift"
+    swift.mkdir(parents=True)
+    sound_target = (
+        "../../..//System/Library/Frameworks/SoundAnalysis.framework/"
+        "Versions/A/SoundAnalysis.tbd"
+    )
+    (swift / "libswiftSoundAnalysis.tbd").symlink_to(sound_target)
+    (swift / "libswiftSoundAnalysis_Private.tbd").symlink_to(sound_target)
+    veclib_target = (
+        sdk
+        / "System"
+        / "Library"
+        / "Frameworks"
+        / "Accelerate.framework"
+        / "Versions"
+        / "A"
+        / "Frameworks"
+        / "vecLib.framework"
+    )
+    veclib_target.mkdir(parents=True)
+    (veclib_target / "module.map").write_bytes(b"veclib")
+    (sdk / "System" / "Library" / "Frameworks" / "vecLib.framework").symlink_to(
+        "Accelerate.framework//Versions/A/Frameworks/vecLib.framework"
+    )
+
+    manifests = [
+        create_toolchain_support_locator(
+            logical_role="python-runtime-library",
+            path=python_library,
+            kind="file",
+        )
+    ]
+    roots = [
+        create_toolchain_support_locator(
+            logical_role="python-runtime",
+            path=python_root,
+            kind="tree",
+        ),
+        create_toolchain_support_locator(
+            logical_role="xcode-sdk",
+            path=sdk,
+            kind="tree",
+        ),
+    ]
+    return manifests, roots, python_root, sdk, sound
+
+
 def test_generation_is_canonical_path_free_aggregate_and_round_trips(
     tmp_path: Path,
 ) -> None:
@@ -131,6 +232,85 @@ def test_generation_is_canonical_path_free_aggregate_and_round_trips(
         manifests=[manifest_locator],
         roots=[root_locator],
     )
+
+
+def test_macos_fixed_symlink_dispositions_are_closed_and_cross_bound(
+    tmp_path: Path,
+) -> None:
+    manifests, roots, python_root, sdk, _sound = _macos_projected_inputs(
+        tmp_path
+    )
+    with pytest.raises(ToolchainSupportLockError, match="escapes"):
+        capture_toolchain_support_tree(roots[0])
+    with pytest.raises(ToolchainSupportLockError, match="noncanonical"):
+        capture_toolchain_support_tree(roots[1])
+
+    lock = generate_toolchain_support_lock(
+        target_triple="aarch64-apple-darwin",
+        manifests=manifests,
+        roots=roots,
+    )
+    by_role = {item.logical_role: item for item in lock.roots}
+    python_dispositions = by_role["python-runtime"].symlink_dispositions
+    sdk_dispositions = by_role["xcode-sdk"].symlink_dispositions
+    assert len(python_dispositions) == 3
+    assert len(sdk_dispositions) == 3
+    assert {
+        item.disposition for item in python_dispositions
+    } == {
+        "bind-external-manifest",
+        "deny-isolated-site-packages",
+    }
+    manifest_merkle = lock.manifests[0].merkle_sha256
+    assert all(
+        item.external_manifest_merkle_sha256 == manifest_merkle
+        for item in python_dispositions
+        if item.disposition == "bind-external-manifest"
+    )
+    assert all(
+        item.resolved_relative_path is not None
+        and "//" not in (item.canonical_link_target or "")
+        for item in sdk_dispositions
+    )
+    assert str(python_root).encode() not in lock.canonical_bytes
+    assert str(sdk).encode() not in lock.canonical_bytes
+    parsed = parse_toolchain_support_lock(
+        lock.canonical_bytes,
+        expected_raw_sha256=lock.raw_sha256,
+    )
+    assert parsed == lock
+    assert verify_toolchain_support_lock(
+        parsed,
+        manifests=manifests,
+        roots=roots,
+    )
+
+
+@pytest.mark.parametrize("attack", ("missing", "target", "resolution", "extra"))
+def test_macos_fixed_symlink_disposition_drift_fails_closed(
+    tmp_path: Path,
+    attack: str,
+) -> None:
+    manifests, roots, python_root, sdk, sound = _macos_projected_inputs(
+        tmp_path
+    )
+    if attack == "missing":
+        (python_root / "site-packages").unlink()
+    elif attack == "target":
+        alias = python_root / "config-3.11-darwin" / "libpython3.11.a"
+        alias.unlink()
+        alias.symlink_to("../../Python")
+    elif attack == "resolution":
+        sound.unlink()
+    else:
+        (sdk / "unexpected-sdk-alias").symlink_to("bad//target")
+
+    with pytest.raises(ToolchainSupportLockError):
+        generate_toolchain_support_lock(
+            target_triple="aarch64-apple-darwin",
+            manifests=manifests,
+            roots=roots,
+        )
 
 
 def test_linux_target_and_locator_order_are_deterministic(tmp_path: Path) -> None:
@@ -355,7 +535,7 @@ def test_parser_rejects_open_schema_and_stale_aggregate(tmp_path: Path) -> None:
         )
 
     stale = lock.to_dict()
-    stale["total_bytes"] = int(stale["total_bytes"]) + 1
+    stale["total_bytes"] = lock.total_bytes + 1
     stale_bytes = _canonical(stale)
     with pytest.raises(ToolchainSupportLockError, match="summary"):
         parse_toolchain_support_lock(

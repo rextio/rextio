@@ -34,8 +34,8 @@ import unicodedata
 
 
 TOOLCHAIN_SUPPORT_LOCK_KIND = "full-c6-toolchain-support-lock"
-TOOLCHAIN_SUPPORT_LOCK_DOMAIN = "rextio.full-c6-toolchain-support-lock.v1"
-TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION = 1
+TOOLCHAIN_SUPPORT_LOCK_DOMAIN = "rextio.full-c6-toolchain-support-lock.v2"
+TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION = 2
 TOOLCHAIN_SUPPORT_SCOPE = "cpython-3.11-pyo3-host-cdylib-v1"
 TOOLCHAIN_SUPPORT_TARGETS = (
     "aarch64-apple-darwin",
@@ -115,6 +115,26 @@ _TREE_FIELDS = {
     "total_bytes",
     "xattr_count",
     "xattr_bytes",
+    "disposition_count",
+    "symlink_dispositions",
+    "merkle_sha256",
+}
+_SYMLINK_DISPOSITION_FIELDS = {
+    "relative_path",
+    "disposition",
+    "raw_link_target",
+    "canonical_link_target",
+    "external_manifest_role",
+    "external_manifest_merkle_sha256",
+    "resolved_relative_path",
+    "resolved_path_sha256",
+    "mode",
+    "metadata_sha256",
+    "xattr_count",
+    "xattr_bytes",
+    "xattrs_sha256",
+    "size",
+    "raw_sha256",
     "merkle_sha256",
 }
 class _RoleReceipt(Protocol):
@@ -346,6 +366,119 @@ class _ToolchainSupportTreeEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolchainSupportSymlinkDispositionReceipt:
+    """One fixed target/role-specific symlink that generic trees reject."""
+
+    relative_path: str
+    disposition: str
+    raw_link_target: str
+    canonical_link_target: str | None
+    external_manifest_role: str | None
+    external_manifest_merkle_sha256: str | None
+    resolved_relative_path: str | None
+    resolved_path_sha256: str
+    mode: int
+    metadata_sha256: str
+    xattr_count: int
+    xattr_bytes: int
+    xattrs_sha256: str
+    size: int
+    raw_sha256: str
+    merkle_sha256: str
+
+    def __post_init__(self) -> None:
+        _validate_relative_path(self.relative_path)
+        if self.disposition not in {
+            "bind-external-manifest",
+            "deny-isolated-site-packages",
+            "normalize-in-root-alias",
+        }:
+            raise ToolchainSupportLockError(
+                "toolchain support symlink disposition is invalid"
+            )
+        if (
+            type(self.raw_link_target) is not str
+            or not self.raw_link_target
+            or len(self.raw_link_target.encode("utf-8"))
+            > MAX_TOOLCHAIN_SUPPORT_SYMLINK_BYTES
+            or "\\" in self.raw_link_target
+            or "\0" in self.raw_link_target
+            or self.raw_link_target
+            != unicodedata.normalize("NFC", self.raw_link_target)
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in self.raw_link_target
+            )
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support disposition raw link target is invalid"
+            )
+        if self.canonical_link_target is not None:
+            _validate_link_target(self.canonical_link_target)
+        if self.external_manifest_role is not None:
+            _validate_role(self.external_manifest_role)
+        if self.external_manifest_merkle_sha256 is not None:
+            _require_sha256(
+                self.external_manifest_merkle_sha256,
+                "support disposition external manifest Merkle SHA-256",
+            )
+        if self.resolved_relative_path is not None:
+            _validate_relative_path(self.resolved_relative_path)
+        _require_sha256(
+            self.resolved_path_sha256,
+            "support disposition resolved path SHA-256",
+        )
+        _validate_mode(self.mode)
+        _require_sha256(
+            self.metadata_sha256,
+            "support disposition metadata SHA-256",
+        )
+        _validate_xattr_summary(self.xattr_count, self.xattr_bytes)
+        _require_sha256(
+            self.xattrs_sha256,
+            "support disposition xattr SHA-256",
+        )
+        _validate_size(self.size, maximum=MAX_TOOLCHAIN_SUPPORT_SYMLINK_BYTES)
+        _require_sha256(self.raw_sha256, "support disposition raw SHA-256")
+        _require_sha256(self.merkle_sha256, "support disposition Merkle SHA-256")
+        if (
+            self.size != len(self.raw_link_target.encode("utf-8"))
+            or not hmac.compare_digest(
+                self.raw_sha256,
+                hashlib.sha256(self.raw_link_target.encode("utf-8")).hexdigest(),
+            )
+            or not hmac.compare_digest(
+                self.merkle_sha256,
+                _symlink_disposition_merkle(self),
+            )
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support symlink disposition receipt is stale"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the complete path-free exceptional symlink receipt."""
+        return {
+            "relative_path": self.relative_path,
+            "disposition": self.disposition,
+            "raw_link_target": self.raw_link_target,
+            "canonical_link_target": self.canonical_link_target,
+            "external_manifest_role": self.external_manifest_role,
+            "external_manifest_merkle_sha256": self.external_manifest_merkle_sha256,
+            "resolved_relative_path": self.resolved_relative_path,
+            "resolved_path_sha256": self.resolved_path_sha256,
+            "mode": self.mode,
+            "metadata_sha256": self.metadata_sha256,
+            "xattr_count": self.xattr_count,
+            "xattr_bytes": self.xattr_bytes,
+            "xattrs_sha256": self.xattrs_sha256,
+            "size": self.size,
+            "raw_sha256": self.raw_sha256,
+            "merkle_sha256": self.merkle_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ToolchainSupportTreeReceipt:
     """Exact bounded Merkle receipt for one explicit support root."""
 
@@ -360,6 +493,8 @@ class ToolchainSupportTreeReceipt:
     total_bytes: int
     xattr_count: int
     xattr_bytes: int
+    disposition_count: int
+    symlink_dispositions: tuple[ToolchainSupportSymlinkDispositionReceipt, ...]
     merkle_sha256: str
 
     def __post_init__(self) -> None:
@@ -367,6 +502,30 @@ class ToolchainSupportTreeReceipt:
         _require_sha256(self.locator_path_sha256, "support locator path SHA-256")
         _require_sha256(self.root_metadata_sha256, "support root metadata SHA-256")
         _validate_mode(self.root_mode)
+        if (
+            type(self.symlink_dispositions) is not tuple
+            or any(
+                type(item) is not ToolchainSupportSymlinkDispositionReceipt
+                for item in self.symlink_dispositions
+            )
+            or self.symlink_dispositions
+            != tuple(
+                sorted(
+                    self.symlink_dispositions,
+                    key=lambda item: (_alias(item.relative_path), item.relative_path),
+                )
+            )
+            or len(
+                {_alias(item.relative_path) for item in self.symlink_dispositions}
+            )
+            != len(self.symlink_dispositions)
+            or type(self.disposition_count) is not int
+            or isinstance(self.disposition_count, bool)
+            or self.disposition_count != len(self.symlink_dispositions)
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support symlink dispositions are noncanonical"
+            )
         if (
             type(self.member_count) is not int
             or isinstance(self.member_count, bool)
@@ -387,6 +546,7 @@ class ToolchainSupportTreeReceipt:
             or self.symlink_count < 0
             or self.file_count + self.directory_count + self.symlink_count
             != self.member_count
+            or self.symlink_count < self.disposition_count
             or type(self.total_bytes) is not int
             or isinstance(self.total_bytes, bool)
             or self.total_bytes < 0
@@ -417,6 +577,10 @@ class ToolchainSupportTreeReceipt:
             "total_bytes": self.total_bytes,
             "xattr_count": self.xattr_count,
             "xattr_bytes": self.xattr_bytes,
+            "disposition_count": self.disposition_count,
+            "symlink_dispositions": [
+                item.to_dict() for item in self.symlink_dispositions
+            ],
             "merkle_sha256": self.merkle_sha256,
         }
 
@@ -473,6 +637,11 @@ class ToolchainSupportLock:
             raise ToolchainSupportLockError(
                 "toolchain support lock contains an NFC/casefold role alias"
             )
+        _validate_lock_symlink_dispositions(
+            scope=self.scope,
+            manifests=self.manifests,
+            roots=self.roots,
+        )
         expected_members = sum(item.member_count for item in self.manifests) + sum(
             item.member_count for item in self.roots
         )
@@ -573,6 +742,99 @@ class _RawTreeEntry:
     size: int
     raw_sha256: str | None
     link_target: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _FixedSymlinkDisposition:
+    relative_path: str
+    raw_link_target: str
+    disposition: str
+    canonical_link_target: str | None = None
+    external_manifest_role: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RawSymlinkDisposition:
+    policy: _FixedSymlinkDisposition
+    mode: int
+    metadata_sha256: str
+    xattr_count: int
+    xattr_bytes: int
+    xattrs_sha256: str
+    size: int
+    raw_sha256: str
+
+
+_MACOS_PYTHON_RUNTIME_DISPOSITIONS = (
+    _FixedSymlinkDisposition(
+        relative_path="config-3.11-darwin/libpython3.11.a",
+        raw_link_target="../../../Python",
+        disposition="bind-external-manifest",
+        canonical_link_target="../../../Python",
+        external_manifest_role="python-runtime-library",
+    ),
+    _FixedSymlinkDisposition(
+        relative_path="config-3.11-darwin/libpython3.11.dylib",
+        raw_link_target="../../../Python",
+        disposition="bind-external-manifest",
+        canonical_link_target="../../../Python",
+        external_manifest_role="python-runtime-library",
+    ),
+    _FixedSymlinkDisposition(
+        relative_path="site-packages",
+        raw_link_target="../../../../../../../../../lib/python3.11/site-packages",
+        disposition="deny-isolated-site-packages",
+    ),
+)
+_MACOS_XCODE_SDK_DISPOSITIONS = (
+    _FixedSymlinkDisposition(
+        relative_path="System/Library/Frameworks/vecLib.framework",
+        raw_link_target=(
+            "Accelerate.framework//Versions/A/Frameworks/vecLib.framework"
+        ),
+        disposition="normalize-in-root-alias",
+        canonical_link_target=(
+            "Accelerate.framework/Versions/A/Frameworks/vecLib.framework"
+        ),
+    ),
+    _FixedSymlinkDisposition(
+        relative_path="usr/lib/swift/libswiftSoundAnalysis.tbd",
+        raw_link_target=(
+            "../../..//System/Library/Frameworks/SoundAnalysis.framework/"
+            "Versions/A/SoundAnalysis.tbd"
+        ),
+        disposition="normalize-in-root-alias",
+        canonical_link_target=(
+            "../../../System/Library/Frameworks/SoundAnalysis.framework/"
+            "Versions/A/SoundAnalysis.tbd"
+        ),
+    ),
+    _FixedSymlinkDisposition(
+        relative_path="usr/lib/swift/libswiftSoundAnalysis_Private.tbd",
+        raw_link_target=(
+            "../../..//System/Library/Frameworks/SoundAnalysis.framework/"
+            "Versions/A/SoundAnalysis.tbd"
+        ),
+        disposition="normalize-in-root-alias",
+        canonical_link_target=(
+            "../../../System/Library/Frameworks/SoundAnalysis.framework/"
+            "Versions/A/SoundAnalysis.tbd"
+        ),
+    ),
+)
+_FIXED_SYMLINK_DISPOSITIONS: dict[
+    tuple[str, str],
+    tuple[_FixedSymlinkDisposition, ...],
+] = {
+    (
+        "aarch64-apple-darwin",
+        "python-runtime",
+    ): _MACOS_PYTHON_RUNTIME_DISPOSITIONS,
+    (
+        "aarch64-apple-darwin",
+        "xcode-sdk",
+    ): _MACOS_XCODE_SDK_DISPOSITIONS,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -767,6 +1029,8 @@ def capture_toolchain_support_tree(
     _require_locator(locator, kind="tree")
     return _capture_stable_tree(
         locator,
+        target_triple=None,
+        manifest_bindings={},
         budget=_XattrBudget(
             remaining_count=MAX_TOOLCHAIN_SUPPORT_TREE_XATTRS,
             remaining_bytes=MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES,
@@ -777,6 +1041,11 @@ def capture_toolchain_support_tree(
 def _capture_stable_tree(
     locator: ToolchainSupportLocator,
     *,
+    target_triple: str | None,
+    manifest_bindings: dict[
+        str,
+        tuple[ToolchainSupportLocator, ToolchainSupportFileReceipt],
+    ],
     budget: _XattrBudget,
 ) -> ToolchainSupportTreeReceipt:
     capture_budget = _XattrBudget(
@@ -792,8 +1061,18 @@ def _capture_stable_tree(
     starting_count = capture_budget.remaining_count
     starting_bytes = capture_budget.remaining_bytes
     replay_budget = capture_budget.clone()
-    first = _capture_tree_once(locator, xattr_budget=capture_budget)
-    second = _capture_tree_once(locator, xattr_budget=replay_budget)
+    first = _capture_tree_once(
+        locator,
+        target_triple=target_triple,
+        manifest_bindings=manifest_bindings,
+        xattr_budget=capture_budget,
+    )
+    second = _capture_tree_once(
+        locator,
+        target_triple=target_triple,
+        manifest_bindings=manifest_bindings,
+        xattr_budget=replay_budget,
+    )
     if first != second or capture_budget != replay_budget:
         raise ToolchainSupportLockError(
             "toolchain support tree changed across stable capture"
@@ -810,6 +1089,7 @@ def _capture_stable_tree(
 
 def _capture_lock_receipts(
     *,
+    target_triple: str,
     manifests: tuple[ToolchainSupportLocator, ...],
     roots: tuple[ToolchainSupportLocator, ...],
 ) -> tuple[
@@ -835,8 +1115,22 @@ def _capture_lock_receipts(
     manifest_receipts = tuple(
         _capture_stable_file(item, budget=budget) for item in ordered_manifests
     )
+    manifest_bindings = {
+        locator.logical_role: (locator, receipt)
+        for locator, receipt in zip(
+            ordered_manifests,
+            manifest_receipts,
+            strict=True,
+        )
+    }
     root_receipts = tuple(
-        _capture_stable_tree(item, budget=budget) for item in ordered_roots
+        _capture_stable_tree(
+            item,
+            target_triple=target_triple,
+            manifest_bindings=manifest_bindings,
+            budget=budget,
+        )
+        for item in ordered_roots
     )
     captured_count = sum(item.xattr_count for item in manifest_receipts) + sum(
         item.xattr_count for item in root_receipts
@@ -887,6 +1181,7 @@ def generate_toolchain_support_lock(
             "toolchain support locators contain an NFC/casefold role alias"
         )
     manifest_receipts, root_receipts = _capture_lock_receipts(
+        target_triple=target_triple,
         manifests=manifest_locators,
         roots=root_locators,
     )
@@ -1027,6 +1322,7 @@ def verify_toolchain_support_lock(
             "toolchain support locator roles or kinds differ from the lock"
         )
     observed_manifests, observed_roots = _capture_lock_receipts(
+        target_triple=lock.scope.target_triple,
         manifests=manifest_locators,
         roots=root_locators,
     )
@@ -1037,9 +1333,285 @@ def verify_toolchain_support_lock(
     return True
 
 
+def _fixed_symlink_disposition_map(
+    target_triple: str | None,
+    logical_role: str,
+) -> dict[str, _FixedSymlinkDisposition]:
+    if target_triple is None:
+        return {}
+    rows = _FIXED_SYMLINK_DISPOSITIONS.get(
+        (target_triple, logical_role),
+        (),
+    )
+    result: dict[str, _FixedSymlinkDisposition] = {}
+    for row in rows:
+        _validate_relative_path(row.relative_path)
+        if (
+            row.relative_path in result
+            or not row.raw_link_target
+            or row.raw_link_target
+            != unicodedata.normalize("NFC", row.raw_link_target)
+            or "\\" in row.raw_link_target
+            or "\0" in row.raw_link_target
+            or len(row.raw_link_target.encode("utf-8"))
+            > MAX_TOOLCHAIN_SUPPORT_SYMLINK_BYTES
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support fixed symlink disposition is invalid"
+            )
+        if row.canonical_link_target is not None:
+            _validate_link_target(row.canonical_link_target)
+        if row.external_manifest_role is not None:
+            _validate_role(row.external_manifest_role)
+        if row.disposition == "bind-external-manifest":
+            valid_shape = (
+                row.canonical_link_target is not None
+                and row.external_manifest_role == "python-runtime-library"
+            )
+        elif row.disposition == "deny-isolated-site-packages":
+            valid_shape = (
+                row.canonical_link_target is None
+                and row.external_manifest_role is None
+            )
+        elif row.disposition == "normalize-in-root-alias":
+            valid_shape = (
+                row.canonical_link_target is not None
+                and row.external_manifest_role is None
+                and "//" in row.raw_link_target
+                and "//" not in row.canonical_link_target
+            )
+        else:
+            valid_shape = False
+        if not valid_shape:
+            raise ToolchainSupportLockError(
+                "toolchain support fixed symlink disposition shape is invalid"
+            )
+        result[row.relative_path] = row
+    return result
+
+
+def _validate_lock_symlink_dispositions(
+    *,
+    scope: ToolchainSupportScope,
+    manifests: tuple[ToolchainSupportFileReceipt, ...],
+    roots: tuple[ToolchainSupportTreeReceipt, ...],
+) -> None:
+    manifests_by_role = {item.logical_role: item for item in manifests}
+    for root in roots:
+        expected = _fixed_symlink_disposition_map(
+            scope.target_triple,
+            root.logical_role,
+        )
+        observed = {
+            item.relative_path: item for item in root.symlink_dispositions
+        }
+        if set(observed) != set(expected):
+            raise ToolchainSupportLockError(
+                "toolchain support lock symlink dispositions are missing or extra"
+            )
+        for relative_path, policy in expected.items():
+            receipt = observed[relative_path]
+            if (
+                receipt.disposition != policy.disposition
+                or receipt.raw_link_target != policy.raw_link_target
+                or receipt.canonical_link_target
+                != policy.canonical_link_target
+                or receipt.external_manifest_role
+                != policy.external_manifest_role
+            ):
+                raise ToolchainSupportLockError(
+                    "toolchain support lock symlink disposition policy changed"
+                )
+            if policy.disposition == "bind-external-manifest":
+                assert policy.external_manifest_role is not None
+                manifest = manifests_by_role.get(policy.external_manifest_role)
+                if (
+                    manifest is None
+                    or receipt.external_manifest_merkle_sha256
+                    != manifest.merkle_sha256
+                    or receipt.resolved_relative_path is not None
+                ):
+                    raise ToolchainSupportLockError(
+                        "toolchain support external symlink manifest binding is stale"
+                    )
+            elif policy.disposition == "deny-isolated-site-packages":
+                if (
+                    receipt.external_manifest_merkle_sha256 is not None
+                    or receipt.resolved_relative_path is not None
+                ):
+                    raise ToolchainSupportLockError(
+                        "toolchain support denied site-packages disposition is stale"
+                    )
+            elif (
+                receipt.external_manifest_merkle_sha256 is not None
+                or receipt.resolved_relative_path is None
+            ):
+                raise ToolchainSupportLockError(
+                    "toolchain support normalized SDK disposition is stale"
+                )
+
+
+def _finalize_symlink_dispositions(
+    *,
+    target_triple: str | None,
+    logical_role: str,
+    root_path: Path,
+    entries: tuple[_ToolchainSupportTreeEntry, ...],
+    raw_dispositions: tuple[_RawSymlinkDisposition, ...],
+    manifest_bindings: dict[
+        str,
+        tuple[ToolchainSupportLocator, ToolchainSupportFileReceipt],
+    ],
+) -> tuple[ToolchainSupportSymlinkDispositionReceipt, ...]:
+    expected = _fixed_symlink_disposition_map(target_triple, logical_role)
+    observed = {
+        item.policy.relative_path: item for item in raw_dispositions
+    }
+    if (
+        len(observed) != len(raw_dispositions)
+        or set(observed) != set(expected)
+    ):
+        raise ToolchainSupportLockError(
+            "toolchain support fixed symlink dispositions are missing or extra"
+        )
+    by_path = {item.relative_path: item for item in entries}
+    receipts: list[ToolchainSupportSymlinkDispositionReceipt] = []
+    for relative_path in sorted(expected, key=lambda value: (_alias(value), value)):
+        raw = observed[relative_path]
+        policy = expected[relative_path]
+        if raw.policy != policy:
+            raise ToolchainSupportLockError(
+                "toolchain support fixed symlink disposition changed"
+            )
+        link_path = root_path / PurePosixPath(relative_path)
+        try:
+            resolved = link_path.resolve(strict=True)
+        except OSError as exc:
+            raise ToolchainSupportLockError(
+                "toolchain support fixed symlink disposition is unresolved"
+            ) from exc
+        resolved_path_sha256 = _locator_path_digest(resolved)
+        external_role: str | None = None
+        external_merkle: str | None = None
+        resolved_relative: str | None = None
+        if policy.disposition == "deny-isolated-site-packages":
+            try:
+                resolved.relative_to(root_path)
+            except ValueError:
+                pass
+            else:
+                raise ToolchainSupportLockError(
+                    "toolchain support denied Python site-packages alias entered the runtime root"
+                )
+        elif policy.disposition == "bind-external-manifest":
+            assert policy.external_manifest_role is not None
+            binding = manifest_bindings.get(policy.external_manifest_role)
+            if binding is None:
+                raise ToolchainSupportLockError(
+                    "toolchain support external symlink manifest is missing"
+                )
+            manifest_locator, manifest_receipt = binding
+            if resolved != manifest_locator._absolute_path:
+                raise ToolchainSupportLockError(
+                    "toolchain support external symlink resolution differs from its manifest"
+                )
+            if not hmac.compare_digest(
+                resolved_path_sha256,
+                manifest_receipt.locator_path_sha256,
+            ):
+                raise ToolchainSupportLockError(
+                    "toolchain support external symlink path binding is stale"
+                )
+            external_role = policy.external_manifest_role
+            external_merkle = manifest_receipt.merkle_sha256
+        else:
+            assert policy.canonical_link_target is not None
+            try:
+                physical_relative = resolved.relative_to(root_path).as_posix()
+            except ValueError as exc:
+                raise ToolchainSupportLockError(
+                    "toolchain support normalized SDK alias escaped its root"
+                ) from exc
+            resolved_relative = _resolve_captured_link(
+                relative_path,
+                policy.canonical_link_target,
+                by_path,
+            )
+            if physical_relative != resolved_relative:
+                raise ToolchainSupportLockError(
+                    "toolchain support normalized SDK alias resolution changed"
+                )
+        receipts.append(
+            _new_symlink_disposition_receipt(
+                raw=raw,
+                resolved_path_sha256=resolved_path_sha256,
+                external_manifest_role=external_role,
+                external_manifest_merkle_sha256=external_merkle,
+                resolved_relative_path=resolved_relative,
+            )
+        )
+    return tuple(receipts)
+
+
+def _new_symlink_disposition_receipt(
+    *,
+    raw: _RawSymlinkDisposition,
+    resolved_path_sha256: str,
+    external_manifest_role: str | None,
+    external_manifest_merkle_sha256: str | None,
+    resolved_relative_path: str | None,
+) -> ToolchainSupportSymlinkDispositionReceipt:
+    provisional = ToolchainSupportSymlinkDispositionReceipt.__new__(
+        ToolchainSupportSymlinkDispositionReceipt
+    )
+    values: dict[str, object] = {
+        "relative_path": raw.policy.relative_path,
+        "disposition": raw.policy.disposition,
+        "raw_link_target": raw.policy.raw_link_target,
+        "canonical_link_target": raw.policy.canonical_link_target,
+        "external_manifest_role": external_manifest_role,
+        "external_manifest_merkle_sha256": external_manifest_merkle_sha256,
+        "resolved_relative_path": resolved_relative_path,
+        "resolved_path_sha256": resolved_path_sha256,
+        "mode": raw.mode,
+        "metadata_sha256": raw.metadata_sha256,
+        "xattr_count": raw.xattr_count,
+        "xattr_bytes": raw.xattr_bytes,
+        "xattrs_sha256": raw.xattrs_sha256,
+        "size": raw.size,
+        "raw_sha256": raw.raw_sha256,
+    }
+    for name, value in values.items():
+        object.__setattr__(provisional, name, value)
+    object.__setattr__(provisional, "merkle_sha256", "")
+    return ToolchainSupportSymlinkDispositionReceipt(
+        relative_path=raw.policy.relative_path,
+        disposition=raw.policy.disposition,
+        raw_link_target=raw.policy.raw_link_target,
+        canonical_link_target=raw.policy.canonical_link_target,
+        external_manifest_role=external_manifest_role,
+        external_manifest_merkle_sha256=external_manifest_merkle_sha256,
+        resolved_relative_path=resolved_relative_path,
+        resolved_path_sha256=resolved_path_sha256,
+        mode=raw.mode,
+        metadata_sha256=raw.metadata_sha256,
+        xattr_count=raw.xattr_count,
+        xattr_bytes=raw.xattr_bytes,
+        xattrs_sha256=raw.xattrs_sha256,
+        size=raw.size,
+        raw_sha256=raw.raw_sha256,
+        merkle_sha256=_symlink_disposition_merkle(provisional),
+    )
+
+
 def _capture_tree_once(
     locator: ToolchainSupportLocator,
     *,
+    target_triple: str | None,
+    manifest_bindings: dict[
+        str,
+        tuple[ToolchainSupportLocator, ToolchainSupportFileReceipt],
+    ],
     xattr_budget: _XattrBudget,
 ) -> ToolchainSupportTreeReceipt:
     starting_xattr_count = xattr_budget.remaining_count
@@ -1054,6 +1626,7 @@ def _capture_tree_once(
             )
         _validate_mode(stat.S_IMODE(opened_root.mode))
         raw_entries: list[_RawTreeEntry] = []
+        raw_dispositions: list[_RawSymlinkDisposition] = []
         aliases: set[str] = set()
         inode_keys: set[tuple[int, int]] = set()
         total_bytes = [0]
@@ -1062,6 +1635,11 @@ def _capture_tree_once(
             root_path=locator._absolute_path,
             relative=PurePosixPath(),
             entries=raw_entries,
+            dispositions=raw_dispositions,
+            disposition_policies=_fixed_symlink_disposition_map(
+                target_triple,
+                locator.logical_role,
+            ),
             aliases=aliases,
             inode_keys=inode_keys,
             total_bytes=total_bytes,
@@ -1099,6 +1677,14 @@ def _capture_tree_once(
         for item in sorted(raw_entries, key=lambda item: (_alias(item.relative_path), item.relative_path))
     )
     _validate_tree_namespace(entries_without_merkle, validate_merkle=False)
+    dispositions = _finalize_symlink_dispositions(
+        target_triple=target_triple,
+        logical_role=locator.logical_role,
+        root_path=locator._absolute_path,
+        entries=entries_without_merkle,
+        raw_dispositions=tuple(raw_dispositions),
+        manifest_bindings=manifest_bindings,
+    )
     entries, merkle = _build_tree_merkle(
         logical_role=locator.logical_role,
         locator_path_sha256=_locator_path_digest(locator._absolute_path),
@@ -1106,9 +1692,18 @@ def _capture_tree_once(
         root_metadata_sha256=_metadata_digest(root_stamp, kind="directory"),
         root_xattrs=root_xattrs,
         entries=entries_without_merkle,
+        dispositions=dispositions,
     )
-    xattr_count = root_xattrs.count + sum(item.xattr_count for item in entries)
-    xattr_bytes = root_xattrs.total_bytes + sum(item.xattr_bytes for item in entries)
+    xattr_count = (
+        root_xattrs.count
+        + sum(item.xattr_count for item in entries)
+        + sum(item.xattr_count for item in dispositions)
+    )
+    xattr_bytes = (
+        root_xattrs.total_bytes
+        + sum(item.xattr_bytes for item in entries)
+        + sum(item.xattr_bytes for item in dispositions)
+    )
     if (
         xattr_count > MAX_TOOLCHAIN_SUPPORT_TREE_XATTRS
         or xattr_bytes > MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES
@@ -1128,13 +1723,16 @@ def _capture_tree_once(
         locator_path_sha256=_locator_path_digest(locator._absolute_path),
         root_metadata_sha256=_metadata_digest(root_stamp, kind="directory"),
         root_mode=stat.S_IMODE(root_stamp.mode),
-        member_count=len(entries),
+        member_count=len(entries) + len(dispositions),
         file_count=sum(item.kind == "file" for item in entries),
         directory_count=sum(item.kind == "directory" for item in entries),
-        symlink_count=sum(item.kind == "symlink" for item in entries),
+        symlink_count=sum(item.kind == "symlink" for item in entries)
+        + len(dispositions),
         total_bytes=sum(item.size for item in entries if item.kind == "file"),
         xattr_count=xattr_count,
         xattr_bytes=xattr_bytes,
+        disposition_count=len(dispositions),
+        symlink_dispositions=dispositions,
         merkle_sha256=merkle,
     )
 
@@ -1145,6 +1743,8 @@ def _walk_tree(
     root_path: Path,
     relative: PurePosixPath,
     entries: list[_RawTreeEntry],
+    dispositions: list[_RawSymlinkDisposition],
+    disposition_policies: dict[str, _FixedSymlinkDisposition],
     aliases: set[str],
     inode_keys: set[tuple[int, int]],
     total_bytes: list[int],
@@ -1179,7 +1779,10 @@ def _walk_tree(
                 "toolchain support tree contains an NFC/casefold path alias"
             )
         aliases.add(logical_alias)
-        if len(entries) >= MAX_TOOLCHAIN_SUPPORT_TREE_MEMBERS:
+        if (
+            len(entries) + len(dispositions)
+            >= MAX_TOOLCHAIN_SUPPORT_TREE_MEMBERS
+        ):
             raise ToolchainSupportLockError(
                 "toolchain support tree member count exceeds the bound"
             )
@@ -1199,6 +1802,8 @@ def _walk_tree(
                     root_path=root_path,
                     relative=child_relative,
                     entries=entries,
+                    dispositions=dispositions,
+                    disposition_policies=disposition_policies,
                     aliases=aliases,
                     inode_keys=inode_keys,
                     total_bytes=total_bytes,
@@ -1289,7 +1894,6 @@ def _walk_tree(
                 raise ToolchainSupportLockError(
                     "toolchain support symlink could not be read safely"
                 ) from exc
-            _validate_link_target(target)
             target_bytes = target.encode("utf-8")
             if len(target_bytes) > MAX_TOOLCHAIN_SUPPORT_SYMLINK_BYTES:
                 raise ToolchainSupportLockError(
@@ -1306,6 +1910,29 @@ def _walk_tree(
                 raise ToolchainSupportLockError(
                     "toolchain support symlink changed during capture"
                 )
+            policy = disposition_policies.get(logical)
+            if policy is not None:
+                if target != policy.raw_link_target:
+                    raise ToolchainSupportLockError(
+                        "toolchain support fixed symlink disposition target changed"
+                    )
+                dispositions.append(
+                    _RawSymlinkDisposition(
+                        policy=policy,
+                        mode=stat.S_IMODE(final_stamp.mode),
+                        metadata_sha256=_metadata_digest(
+                            final_stamp,
+                            kind="symlink",
+                        ),
+                        xattr_count=xattrs.count,
+                        xattr_bytes=xattrs.total_bytes,
+                        xattrs_sha256=xattrs.merkle_sha256,
+                        size=len(target_bytes),
+                        raw_sha256=hashlib.sha256(target_bytes).hexdigest(),
+                    )
+                )
+                continue
+            _validate_link_target(target)
             entries.append(
                 _RawTreeEntry(
                     relative_path=logical,
@@ -1715,6 +2342,7 @@ def _build_tree_merkle(
     root_metadata_sha256: str,
     root_xattrs: _XattrReceipt,
     entries: tuple[_ToolchainSupportTreeEntry, ...],
+    dispositions: tuple[ToolchainSupportSymlinkDispositionReceipt, ...] = (),
 ) -> tuple[tuple[_ToolchainSupportTreeEntry, ...], str]:
     by_path = {item.relative_path: item for item in entries}
     children_by_parent: dict[str, list[str]] = {}
@@ -1774,7 +2402,7 @@ def _build_tree_merkle(
         )
     root_merkle = _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-tree.v1",
+            "domain": "rextio.full-c6-toolchain-support-tree.v2",
             "logical_role": logical_role,
             "locator_path_sha256": locator_path_sha256,
             "root_mode": root_mode,
@@ -1782,17 +2410,28 @@ def _build_tree_merkle(
             "root_xattr_count": root_xattrs.count,
             "root_xattr_bytes": root_xattrs.total_bytes,
             "root_xattrs_sha256": root_xattrs.merkle_sha256,
-            "member_count": len(entries),
+            "member_count": len(entries) + len(dispositions),
             "file_count": sum(item.kind == "file" for item in entries),
             "directory_count": sum(item.kind == "directory" for item in entries),
-            "symlink_count": sum(item.kind == "symlink" for item in entries),
+            "symlink_count": sum(item.kind == "symlink" for item in entries)
+            + len(dispositions),
+            "disposition_count": len(dispositions),
             "total_bytes": sum(
                 item.size for item in entries if item.kind == "file"
             ),
             "xattr_count": root_xattrs.count
-            + sum(item.xattr_count for item in entries),
+            + sum(item.xattr_count for item in entries)
+            + sum(item.xattr_count for item in dispositions),
             "xattr_bytes": root_xattrs.total_bytes
-            + sum(item.xattr_bytes for item in entries),
+            + sum(item.xattr_bytes for item in entries)
+            + sum(item.xattr_bytes for item in dispositions),
+            "symlink_dispositions": [
+                {
+                    "relative_path": item.relative_path,
+                    "merkle_sha256": item.merkle_sha256,
+                }
+                for item in dispositions
+            ],
             "children": [
                 {
                     "name": path,
@@ -1956,6 +2595,33 @@ def _file_merkle(receipt: ToolchainSupportFileReceipt) -> str:
     )
 
 
+def _symlink_disposition_merkle(
+    receipt: ToolchainSupportSymlinkDispositionReceipt,
+) -> str:
+    return _sha256(
+        {
+            "domain": "rextio.full-c6-toolchain-support-symlink-disposition.v1",
+            "relative_path": receipt.relative_path,
+            "disposition": receipt.disposition,
+            "raw_link_target": receipt.raw_link_target,
+            "canonical_link_target": receipt.canonical_link_target,
+            "external_manifest_role": receipt.external_manifest_role,
+            "external_manifest_merkle_sha256": (
+                receipt.external_manifest_merkle_sha256
+            ),
+            "resolved_relative_path": receipt.resolved_relative_path,
+            "resolved_path_sha256": receipt.resolved_path_sha256,
+            "mode": receipt.mode,
+            "metadata_sha256": receipt.metadata_sha256,
+            "xattr_count": receipt.xattr_count,
+            "xattr_bytes": receipt.xattr_bytes,
+            "xattrs_sha256": receipt.xattrs_sha256,
+            "size": receipt.size,
+            "raw_sha256": receipt.raw_sha256,
+        }
+    )
+
+
 def _lock_merkle(lock: ToolchainSupportLock) -> str:
     return _sha256(
         {
@@ -2025,6 +2691,14 @@ def _parse_file(value: object) -> ToolchainSupportFileReceipt:
 
 def _parse_tree(value: object) -> ToolchainSupportTreeReceipt:
     document = _exact_dict(value, _TREE_FIELDS, "tree receipt")
+    disposition_documents = _list(
+        document["symlink_dispositions"],
+        "symlink dispositions",
+    )
+    if len(disposition_documents) > MAX_TOOLCHAIN_SUPPORT_TREE_MEMBERS:
+        raise ToolchainSupportLockError(
+            "toolchain support symlink disposition count exceeds the bound"
+        )
     return ToolchainSupportTreeReceipt(
         logical_role=_string(document["logical_role"], "tree role"),
         locator_path_sha256=_string(
@@ -2041,7 +2715,74 @@ def _parse_tree(value: object) -> ToolchainSupportTreeReceipt:
         total_bytes=_integer(document["total_bytes"], "tree total bytes"),
         xattr_count=_integer(document["xattr_count"], "tree xattr count"),
         xattr_bytes=_integer(document["xattr_bytes"], "tree xattr bytes"),
+        disposition_count=_integer(
+            document["disposition_count"],
+            "tree disposition count",
+        ),
+        symlink_dispositions=tuple(
+            _parse_symlink_disposition(item)
+            for item in disposition_documents
+        ),
         merkle_sha256=_string(document["merkle_sha256"], "tree Merkle SHA-256"),
+    )
+
+
+def _parse_symlink_disposition(
+    value: object,
+) -> ToolchainSupportSymlinkDispositionReceipt:
+    document = _exact_dict(
+        value,
+        _SYMLINK_DISPOSITION_FIELDS,
+        "symlink disposition receipt",
+    )
+
+    def optional_string(name: str) -> str | None:
+        item = document[name]
+        return None if item is None else _string(item, name.replace("_", " "))
+
+    return ToolchainSupportSymlinkDispositionReceipt(
+        relative_path=_string(document["relative_path"], "disposition path"),
+        disposition=_string(document["disposition"], "disposition kind"),
+        raw_link_target=_string(
+            document["raw_link_target"],
+            "disposition raw link target",
+        ),
+        canonical_link_target=optional_string("canonical_link_target"),
+        external_manifest_role=optional_string("external_manifest_role"),
+        external_manifest_merkle_sha256=optional_string(
+            "external_manifest_merkle_sha256"
+        ),
+        resolved_relative_path=optional_string("resolved_relative_path"),
+        resolved_path_sha256=_string(
+            document["resolved_path_sha256"],
+            "disposition resolved path SHA-256",
+        ),
+        mode=_integer(document["mode"], "disposition mode"),
+        metadata_sha256=_string(
+            document["metadata_sha256"],
+            "disposition metadata SHA-256",
+        ),
+        xattr_count=_integer(
+            document["xattr_count"],
+            "disposition xattr count",
+        ),
+        xattr_bytes=_integer(
+            document["xattr_bytes"],
+            "disposition xattr bytes",
+        ),
+        xattrs_sha256=_string(
+            document["xattrs_sha256"],
+            "disposition xattr SHA-256",
+        ),
+        size=_integer(document["size"], "disposition size"),
+        raw_sha256=_string(
+            document["raw_sha256"],
+            "disposition raw SHA-256",
+        ),
+        merkle_sha256=_string(
+            document["merkle_sha256"],
+            "disposition Merkle SHA-256",
+        ),
     )
 
 
@@ -2674,6 +3415,7 @@ __all__ = [
     "ToolchainSupportLock",
     "ToolchainSupportLockError",
     "ToolchainSupportScope",
+    "ToolchainSupportSymlinkDispositionReceipt",
     "ToolchainSupportTreeReceipt",
     "capture_toolchain_support_file",
     "capture_toolchain_support_tree",
