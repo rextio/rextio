@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import platform
 import sys
 
 import pytest
@@ -59,10 +60,23 @@ def test_identity_rejects_noncanonical_or_path_bearing_content() -> None:
         )
 
 
-def test_capture_validates_frozen_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_capture_validates_frozen_runtime() -> None:
+    machine = platform.machine().lower()
+    target = (
+        "aarch64-apple-darwin"
+        if sys.platform == "darwin" and machine in {"arm64", "aarch64"}
+        else "x86_64-unknown-linux-gnu"
+    )
     if sys.implementation.name == "cpython" and sys.version_info[:2] == (3, 11):
-        identity = capture_full_c6_pyo3_config("aarch64-apple-darwin")
-        assert identity == _identity()
+        identity = capture_full_c6_pyo3_config(target)
+        assert identity == _identity(target)
+        other = (
+            "x86_64-unknown-linux-gnu"
+            if target == "aarch64-apple-darwin"
+            else "aarch64-apple-darwin"
+        )
+        with pytest.raises(FullC6Pyo3ConfigError, match="differs"):
+            capture_full_c6_pyo3_config(other)
     with pytest.raises(FullC6Pyo3ConfigError, match="unsupported"):
         capture_full_c6_pyo3_config("aarch64-unknown-linux-gnu")
 
@@ -81,6 +95,11 @@ def test_materialize_verify_and_bind_removes_discovery(tmp_path: Path) -> None:
             "PATH": "/bound/bin",
             "PYO3_PYTHON": "/host/python",
             "PYO3_CROSS": "1",
+            "PYO3_ENVIRONMENT_SIGNATURE": "ambient",
+            "PYO3_USE_ABI3_FORWARD_COMPATIBILITY": "1",
+            "PYO3_USE_STABLE_ABI_FORWARD_COMPATIBILITY": "1",
+            "PYO3_FUTURE_DISCOVERY_CHANNEL": "1",
+            "_PYTHON_SYSCONFIGDATA_NAME": "host_override",
             "CONDA_PREFIX": "/host/conda",
             "VIRTUAL_ENV": "/host/venv",
         },

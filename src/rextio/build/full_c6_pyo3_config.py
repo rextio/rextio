@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import os
 from pathlib import Path
+import platform
 import re
 import stat
 import struct
@@ -36,10 +37,16 @@ _DISCOVERY_ENV = frozenset(
         "PYO3_CROSS_LIB_DIR",
         "PYO3_CROSS_PYTHON_IMPLEMENTATION",
         "PYO3_CROSS_PYTHON_VERSION",
+        "PYO3_BUILD_EXTENSION_MODULE",
+        "PYO3_CONFIG_FILE",
+        "PYO3_ENVIRONMENT_SIGNATURE",
         "PYO3_NO_PYTHON",
         "PYO3_PRINT_CONFIG",
         "PYO3_PYTHON",
+        "PYO3_USE_ABI3_FORWARD_COMPATIBILITY",
+        "PYO3_USE_STABLE_ABI_FORWARD_COMPATIBILITY",
         "VIRTUAL_ENV",
+        "_PYTHON_SYSCONFIGDATA_NAME",
     }
 )
 
@@ -78,6 +85,7 @@ class FullC6Pyo3ConfigIdentity:
 
     @property
     def digest(self) -> str:
+        """Return the semantic identity of the fixed config and target."""
         payload = (
             f"{self.domain}\0{self.scope}\0{self.target_triple}\0"
             f"{self.size}\0{self.sha256}"
@@ -103,6 +111,11 @@ def capture_full_c6_pyo3_config(target_triple: str) -> FullC6Pyo3ConfigIdentity:
     """Validate the running ABI and return the one fixed path-free config."""
     if target_triple not in _SUPPORTED_TARGETS:
         raise FullC6Pyo3ConfigError("Full C6 PyO3 config target is unsupported")
+    host_target = _canonical_host_target()
+    if target_triple != host_target:
+        raise FullC6Pyo3ConfigError(
+            "Full C6 PyO3 config target differs from the running host"
+        )
     if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11):
         raise FullC6Pyo3ConfigError("Full C6 PyO3 config requires CPython 3.11")
     if struct.calcsize("P") * 8 != 64:
@@ -212,14 +225,21 @@ def bind_full_c6_pyo3_environment(
     if not isinstance(environment, Mapping):
         raise FullC6Pyo3ConfigError("Full C6 PyO3 environment is invalid")
     result = dict(environment)
-    for name in _DISCOVERY_ENV:
-        result.pop(name, None)
+    # PyO3 0.29 currently recognizes the explicit names above.  Remove any
+    # other ambient PYO3_* channel too: a future additive variable must fail
+    # inert instead of silently escaping the frozen config contract.
+    for name in tuple(result):
+        if name in _DISCOVERY_ENV or name.startswith("PYO3_"):
+            result.pop(name, None)
     if not config_path.is_absolute():
         raise FullC6Pyo3ConfigError("PYO3_CONFIG_FILE must be an absolute path")
     verify_full_c6_pyo3_config(config_path, identity)
     result["PYO3_CONFIG_FILE"] = os.fspath(config_path)
     result["PYO3_ENVIRONMENT_SIGNATURE"] = identity.digest
-    if _DISCOVERY_ENV.intersection(result):  # pragma: no cover - defensive
+    forbidden_remaining = _DISCOVERY_ENV.difference(
+        {"PYO3_CONFIG_FILE", "PYO3_ENVIRONMENT_SIGNATURE"}
+    )
+    if forbidden_remaining.intersection(result):  # pragma: no cover - defensive
         raise FullC6Pyo3ConfigError("uncontrolled PyO3 discovery environment remains")
     return result
 
@@ -233,6 +253,15 @@ def _canonical_content() -> bytes:
         "build_flags=\n"
         "suppress_build_script_link_lines=true\n"
     ).encode("ascii")
+
+
+def _canonical_host_target() -> str:
+    machine = platform.machine().lower()
+    if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
+        return "aarch64-apple-darwin"
+    if sys.platform.startswith("linux") and machine in {"x86_64", "amd64"}:
+        return "x86_64-unknown-linux-gnu"
+    raise FullC6Pyo3ConfigError("Full C6 PyO3 config host is unsupported")
 
 
 __all__ = [
