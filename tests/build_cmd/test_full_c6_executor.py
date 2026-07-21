@@ -14,6 +14,7 @@ import sys
 import zipfile
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,6 +53,33 @@ def _use_fixed_pyo3_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     import rextio.build.full_c6_executor as executor
 
     monkeypatch.setattr(executor, "capture_full_c6_pyo3_config", _pyo3_identity)
+    support_plan = SimpleNamespace(macos_platform_anchor=None)
+    sandbox_plan = SimpleNamespace(
+        engine="macos-sandbox-exec-v1",
+        digest="7" * 64,
+    )
+    monkeypatch.setattr(
+        executor,
+        "_require_native_toolchain_support",
+        lambda *_args, **_kwargs: support_plan,
+    )
+    monkeypatch.setattr(
+        executor,
+        "_native_read_sandbox_plan",
+        lambda **_kwargs: sandbox_plan,
+    )
+    monkeypatch.setattr(
+        executor,
+        "prepare_full_c6_sandbox_launch",
+        lambda _plan, command, **_kwargs: executor.FullC6SandboxLaunch(
+            command=tuple(command),
+            preexec_fn=None,
+            profile_sha256="8" * 64,
+            pass_fds=(),
+            seccomp_sha256=None,
+            seccomp_lease=None,
+        ),
+    )
 
 
 def _project(tmp_path: Path, *, lock: bool = True) -> Path:
@@ -223,6 +251,9 @@ def _native_inputs(tmp_path: Path, project: Path):
         argv=ArgvIdentity(STRICT_BUILD),
         environment=capture_environment_identity(base_environment),
         cargo_sources=cargo_sources,
+        support_plan_sha256="4" * 64,
+        support_lock_raw_sha256="5" * 64,
+        support_lock_merkle_sha256="6" * 64,
     )
     return native_tools, base_environment, toolchain, cargo_workspace
 
@@ -584,6 +615,7 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
         project = Path(cwd)
         vendor_file = project / "vendor/demo-dep-1.2.3/src/lib.rs"
         config = project / ".cargo/config.toml"
+        config_path = Path(env["PYO3_CONFIG_FILE"])
         runs.append(
             (
                 tuple(command),
@@ -591,6 +623,7 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
                 dict(env),
                 inherit_env,
                 (vendor_file.stat().st_dev, vendor_file.stat().st_ino),
+                (config_path.stat().st_dev, config_path.stat().st_ino),
             )
         )
         assert config.read_text(encoding="utf-8").endswith("offline = true\n")
@@ -605,8 +638,8 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
             "PYO3_CONFIG_FILE",
             "PYO3_ENVIRONMENT_SIGNATURE",
         }
-        config_path = Path(env["PYO3_CONFIG_FILE"])
-        assert config_path.parent == Path(cwd).parent
+        assert config_path.parent != Path(cwd).parent
+        assert not config_path.is_relative_to(Path(cwd).parent)
         assert config_path.read_bytes() == _pyo3_identity().content
         assert env["PYO3_ENVIRONMENT_SIGNATURE"] == _pyo3_identity().digest
         assert env["RUSTC"] == str(native_tools.rustc)
@@ -646,10 +679,9 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
     assert receipt.pyo3_config_size == _pyo3_identity().size
     assert receipt.pyo3_config_profile_sha256 == _pyo3_identity().digest
     assert receipt.invocations[0].environment == receipt.invocations[1].environment
-    assert runs[0][2]["PYO3_CONFIG_FILE"] != runs[1][2]["PYO3_CONFIG_FILE"]
-    assert os.stat(runs[0][2]["PYO3_CONFIG_FILE"]).st_ino != os.stat(
-        runs[1][2]["PYO3_CONFIG_FILE"]
-    ).st_ino
+    assert runs[0][2]["PYO3_CONFIG_FILE"] == runs[1][2]["PYO3_CONFIG_FILE"]
+    assert runs[0][5] == runs[1][5]
+    assert not Path(runs[0][2]["PYO3_CONFIG_FILE"]).exists()
     assert receipt.postprocessor_manifest_sha256 == hashlib.sha256(
         (source / executor.FULL_C6_NATIVE_DRIVER_MANIFEST).read_bytes()
     ).hexdigest()
@@ -707,11 +739,148 @@ def test_native_executor_rejects_pyo3_config_changed_by_cargo(
     _install_successful_native_run(monkeypatch, executor)
 
     def mutate_config(command, *, env, **_kwargs):
-        Path(env["PYO3_CONFIG_FILE"]).write_bytes(b"stale-config")
+        config_path = Path(env["PYO3_CONFIG_FILE"])
+        config_path.chmod(0o600)
+        config_path.write_bytes(b"stale-config")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(executor, "run_build_tool", mutate_config)
     with pytest.raises(executor.FullC6ExecutorError, match="PyO3 config became stale"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tmp_path),
+            base_environment=base_environment,
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
+        )
+
+
+def test_native_executor_normalizes_pyo3_support_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    _install_successful_native_run(monkeypatch, executor)
+    real_temporary_directory = executor.tempfile.TemporaryDirectory
+
+    class CleanupFailure:
+        def __init__(self, *args, **kwargs) -> None:
+            self._directory = real_temporary_directory(*args, **kwargs)
+
+        def __enter__(self):
+            return self._directory.__enter__()
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            self._directory.__exit__(exc_type, exc_value, traceback)
+            raise OSError("simulated cleanup failure")
+
+    monkeypatch.setattr(executor.tempfile, "TemporaryDirectory", CleanupFailure)
+    with pytest.raises(
+        executor.FullC6ExecutorError,
+        match="read-only PyO3 support material failed closed",
+    ):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tmp_path),
+            base_environment=base_environment,
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
+        )
+
+
+def test_native_pyo3_support_root_rejects_identical_inode_replacement(
+    tmp_path: Path,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    support_root = tmp_path / "pyo3-support"
+    support_root.mkdir(mode=0o700)
+    identity = _pyo3_identity()
+    config_path = executor.materialize_full_c6_pyo3_config(
+        support_root,
+        identity,
+    )
+    executor._seal_native_pyo3_config(config_path, identity)
+    root_identity = os.lstat(support_root)
+    config_identity = os.lstat(config_path)
+    executor._verify_native_pyo3_support_root(
+        support_root,
+        root_identity,
+        config_path=config_path,
+        config_identity=config_identity,
+        expected=identity,
+    )
+
+    config_path.unlink()
+    config_path.write_bytes(identity.content)
+    config_path.chmod(0o400)
+    with pytest.raises(executor.FullC6ExecutorError, match="support config changed"):
+        executor._verify_native_pyo3_support_root(
+            support_root,
+            root_identity,
+            config_path=config_path,
+            config_identity=config_identity,
+            expected=identity,
+        )
+
+
+def test_native_linux_seccomp_boundary_hashes_live_descriptor_bytes(
+    tmp_path: Path,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    payload = executor.linux_full_c6_seccomp_program()
+    path = tmp_path / "seccomp.bpf"
+    path.write_bytes(payload)
+    descriptor = os.open(path, os.O_RDWR)
+    lease = SimpleNamespace(fileno=lambda: descriptor)
+    launch = object.__new__(executor.FullC6SandboxLaunch)
+    object.__setattr__(launch, "command", ("sandbox",))
+    object.__setattr__(launch, "preexec_fn", None)
+    object.__setattr__(launch, "profile_sha256", "8" * 64)
+    object.__setattr__(launch, "pass_fds", (descriptor,))
+    object.__setattr__(launch, "seccomp_sha256", hashlib.sha256(payload).hexdigest())
+    object.__setattr__(launch, "seccomp_lease", lease)
+    try:
+        assert executor._verify_native_linux_seccomp_launch(launch) == hashlib.sha256(
+            payload
+        ).hexdigest()
+        os.ftruncate(descriptor, len(payload) - 1)
+        with pytest.raises(executor.FullC6ExecutorError, match="bytes or identity"):
+            executor._verify_native_linux_seccomp_launch(launch)
+    finally:
+        os.close(descriptor)
+
+
+def test_native_executor_normalizes_sandbox_launch_construction_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+
+    def reject_launch(*_args, **_kwargs):
+        raise ValueError("simulated malformed launch")
+
+    monkeypatch.setattr(executor, "prepare_full_c6_sandbox_launch", reject_launch)
+    with pytest.raises(executor.FullC6ExecutorError, match="macOS read sandbox"):
         executor.execute_full_c6_native_two_build(
             source,
             *_roots(tmp_path),

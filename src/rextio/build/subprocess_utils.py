@@ -33,7 +33,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 try:
     import fcntl
@@ -64,6 +64,80 @@ OUTPUT_OVERFLOW_EXIT_CODE = 125
 # build has *already* exceeded its (much larger) timeout by the time we get here.
 _TERM_GRACE_SECONDS = 5  # let SIGTERM land + the tool clean up, then escalate
 _KILL_GRACE_SECONDS = 3  # reap after SIGKILL / drain the pipes, then give up
+_MAX_PASSED_FILE_DESCRIPTORS = 16
+
+
+def _validate_pass_fds(value: object) -> tuple[int, ...]:
+    """Return one canonical POSIX descriptor capability set or reject it."""
+    if type(value) is not tuple:
+        raise ValueError("pass_fds must be an exact tuple")
+    if len(value) > _MAX_PASSED_FILE_DESCRIPTORS:
+        raise ValueError("pass_fds exceeds the bounded descriptor count")
+    if any(type(descriptor) is not int or descriptor < 3 for descriptor in value):
+        raise ValueError("pass_fds must contain only descriptors greater than 2")
+    if value != tuple(sorted(value)) or len(set(value)) != len(value):
+        raise ValueError("pass_fds must be canonical, ascending, and unique")
+    if value and os.name != "posix":
+        raise ValueError("pass_fds is available only on POSIX")
+    for descriptor in value:
+        try:
+            os.fstat(descriptor)
+        except OSError as exc:
+            raise ValueError("pass_fds contains a closed or invalid descriptor") from exc
+    return value
+
+
+def _close_spawned_process(process: subprocess.Popen[Any]) -> None:
+    """Fail closed when a post-spawn capability release callback raises."""
+    _terminate_process_tree(process)
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+
+def _start_process_boundary(
+    command: list[str],
+    cwd: Path | str,
+    env: Mapping[str, str] | None,
+    *,
+    inherit_env: bool,
+    pass_fds: tuple[int, ...],
+    after_spawn: Callable[[], None] | None,
+    binary: bool,
+) -> subprocess.Popen[Any]:
+    """Spawn once and release parent-side descriptor ownership immediately."""
+    try:
+        process = (
+            _start_process_bytes(
+                command,
+                cwd,
+                env,
+                inherit_env=inherit_env,
+                pass_fds=pass_fds,
+            )
+            if binary
+            else _start_process(
+                command,
+                cwd,
+                env,
+                inherit_env=inherit_env,
+                pass_fds=pass_fds,
+            )
+        )
+    except BaseException:
+        if after_spawn is not None:
+            after_spawn()
+        raise
+    if after_spawn is not None:
+        try:
+            after_spawn()
+        except BaseException:
+            _close_spawned_process(process)
+            raise
+    return process
 
 
 def run_build_tool(
@@ -74,6 +148,8 @@ def run_build_tool(
     env: Mapping[str, str] | None = None,
     inherit_env: bool = True,
     max_output_bytes: int | None = None,
+    pass_fds: tuple[int, ...] = (),
+    after_spawn: Callable[[], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an external build tool with no shell, captured output, and a timeout.
 
@@ -88,6 +164,13 @@ def run_build_tool(
     combined byte cap. Crossing the cap terminates the process group immediately
     and returns :data:`OUTPUT_OVERFLOW_EXIT_CODE` with a sanitized stderr note.
     Output is never fully buffered first and then measured.
+
+    ``pass_fds`` is a POSIX-only exact descriptor capability set.  It must be
+    a canonical tuple of unique, ascending live descriptors greater than 2;
+    every other descriptor remains closed.  ``after_spawn`` is invoked exactly
+    once immediately after ``Popen`` either returns or raises, which lets a
+    capability owner release its parent-side lease without retaining it for
+    the duration of the child process.
     """
     # Validate/clamp at this reusable entry point (config/env/CLI already do for
     # real callers; this guards direct callers and tests). The type guard comes
@@ -103,6 +186,9 @@ def run_build_tool(
         timeout = float(MAX_BUILD_TIMEOUT_SECONDS)
     if not isinstance(inherit_env, bool):
         raise ValueError(f"inherit_env must be bool, got {inherit_env!r}")
+    validated_pass_fds = _validate_pass_fds(pass_fds)
+    if after_spawn is not None and not callable(after_spawn):
+        raise ValueError("after_spawn must be callable when set")
     if max_output_bytes is not None:
         if not isinstance(max_output_bytes, int) or isinstance(max_output_bytes, bool):
             raise ValueError(
@@ -119,8 +205,19 @@ def run_build_tool(
             env=env,
             inherit_env=inherit_env,
             max_output_bytes=max_output_bytes,
+            pass_fds=validated_pass_fds,
+            after_spawn=after_spawn,
         )
-    with _start_process(command, cwd, env, inherit_env=inherit_env) as process:
+    process = _start_process_boundary(
+        command,
+        cwd,
+        env,
+        inherit_env=inherit_env,
+        pass_fds=validated_pass_fds,
+        after_spawn=after_spawn,
+        binary=False,
+    )
+    with process:
         try:
             stdout, stderr = process.communicate(timeout=timeout)
             return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
@@ -166,6 +263,8 @@ def _run_build_tool_capped(
     env: Mapping[str, str] | None,
     max_output_bytes: int,
     inherit_env: bool = True,
+    pass_fds: tuple[int, ...] = (),
+    after_spawn: Callable[[], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Stream stdout/stderr with a combined hard byte cap; never buffer-then-size.
 
@@ -180,8 +279,12 @@ def _run_build_tool_capped(
             env=env,
             inherit_env=inherit_env,
             max_output_bytes=max_output_bytes,
+            pass_fds=pass_fds,
+            after_spawn=after_spawn,
         )
     if fcntl is None:  # pragma: no cover - defensive
+        if after_spawn is not None:
+            after_spawn()
         return subprocess.CompletedProcess(
             command,
             returncode=OUTPUT_OVERFLOW_EXIT_CODE,
@@ -198,6 +301,8 @@ def _run_build_tool_capped(
         env=env,
         inherit_env=inherit_env,
         max_output_bytes=max_output_bytes,
+        pass_fds=pass_fds,
+        after_spawn=after_spawn,
     )
 
 
@@ -224,8 +329,19 @@ def _run_build_tool_capped_posix(
     env: Mapping[str, str] | None,
     max_output_bytes: int,
     inherit_env: bool = True,
+    pass_fds: tuple[int, ...] = (),
+    after_spawn: Callable[[], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    with _start_process_bytes(command, cwd, env, inherit_env=inherit_env) as process:
+    process = _start_process_boundary(
+        command,
+        cwd,
+        env,
+        inherit_env=inherit_env,
+        pass_fds=pass_fds,
+        after_spawn=after_spawn,
+        binary=True,
+    )
+    with process:
         assert process.stdout is not None and process.stderr is not None
         _set_nonblocking(process.stdout)
         _set_nonblocking(process.stderr)
@@ -389,6 +505,8 @@ def _run_build_tool_capped_windows(
     env: Mapping[str, str] | None,
     max_output_bytes: int,
     inherit_env: bool = True,
+    pass_fds: tuple[int, ...] = (),
+    after_spawn: Callable[[], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Windows capped capture via bounded reader threads (no blocking hang).
 
@@ -397,7 +515,16 @@ def _run_build_tool_capped_windows(
     full caller timeout. Readers use one-raw-read operations and must report
     completion explicitly; hung readers fail closed promptly.
     """
-    with _start_process_bytes(command, cwd, env, inherit_env=inherit_env) as process:
+    process = _start_process_boundary(
+        command,
+        cwd,
+        env,
+        inherit_env=inherit_env,
+        pass_fds=pass_fds,
+        after_spawn=after_spawn,
+        binary=True,
+    )
+    with process:
         assert process.stdout is not None and process.stderr is not None
         lock = threading.Lock()
         total = [0]
@@ -526,6 +653,7 @@ def _start_process_bytes(
     env: Mapping[str, str] | None = None,
     *,
     inherit_env: bool = True,
+    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.Popen[bytes]:
     """Start with binary pipes and overlay or exactly replace the environment."""
     merged_env = ({**os.environ, **env} if env else None) if inherit_env else dict(env or {})
@@ -550,6 +678,7 @@ def _start_process_bytes(
         stderr=subprocess.PIPE,
         text=False,
         close_fds=True,
+        pass_fds=pass_fds,
         start_new_session=True,
         env=merged_env,
     )
@@ -561,6 +690,7 @@ def _start_process(
     env: Mapping[str, str] | None = None,
     *,
     inherit_env: bool = True,
+    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.Popen[str]:
     """Start the tool in its own process group so the whole tree can be killed.
 
@@ -592,6 +722,7 @@ def _start_process(
         stderr=subprocess.PIPE,
         text=True,
         close_fds=True,
+        pass_fds=pass_fds,
         start_new_session=True,
         env=merged_env,
     )

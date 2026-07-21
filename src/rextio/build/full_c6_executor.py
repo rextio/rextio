@@ -25,6 +25,7 @@ import secrets
 import shutil
 import stat
 import sys
+import tempfile
 import time
 import unicodedata
 from dataclasses import dataclass, field as dataclass_field
@@ -46,13 +47,36 @@ from rextio.build.full_c6_output_license import (
     rebuild_output_wheel_license_contract,
 )
 from rextio.build.full_c6_pyo3_config import (
-    FULL_C6_PYO3_CONFIG_NAME,
     FullC6Pyo3ConfigError,
     FullC6Pyo3ConfigIdentity,
     bind_full_c6_pyo3_environment,
     capture_full_c6_pyo3_config,
     materialize_full_c6_pyo3_config,
     verify_full_c6_pyo3_config,
+)
+from rextio.build.full_c6_linux_launcher import (
+    FULL_C6_LINUX_CARGO,
+    FULL_C6_LINUX_PYO3_CONFIG,
+    FullC6LinuxLauncherError,
+    canonical_linux_payload_environment,
+)
+from rextio.build.full_c6_read_sandbox import (
+    FullC6ReadSandboxError,
+    FullC6ReadSandboxPlan,
+    FullC6SandboxLaunch,
+    SandboxPathRule,
+    build_full_c6_sandbox_plan,
+    create_linux_full_c6_seccomp_lease,
+    linux_full_c6_seccomp_program,
+    prepare_full_c6_sandbox_launch,
+)
+from rextio.build.full_c6_toolchain_support import (
+    FullC6SupportNamespaceMapping,
+    FullC6ToolchainSupportError,
+    FullC6ToolchainSupportPlan,
+    require_full_c6_toolchain_support_plan,
+    revalidate_full_c6_toolchain_support_plan,
+    verify_full_c6_toolchain_support_lock,
 )
 from rextio.build.reproducibility import (
     ReproducibilityBuildOutputs,
@@ -69,6 +93,7 @@ from rextio.build.toolchain_identity import (
     capture_environment_identity,
     verify_tool_identity,
 )
+from rextio.build.toolchain_support_lock import ToolchainSupportLock
 from rextio.build.wheel_builder import (
     ExternalWheelCapture,
     ExternalWheelContract,
@@ -160,6 +185,15 @@ _PROJECT_ROOT_TOKEN = "/rextio/project"
 _CANONICAL_DIRECTORY_MODE = 0o700
 _CANONICAL_FILE_MODE = 0o644
 _CANONICAL_EXECUTABLE_MODE = 0o755
+_PYO3_RECEIPT_TOKEN = FULL_C6_LINUX_PYO3_CONFIG
+_LINUX_NATIVE_PAYLOAD_ROLES = {
+    "AR": "toolchain-ar",
+    "CC": "toolchain-linker",
+    "LD": "toolchain-ld",
+    "RANLIB": "toolchain-ranlib",
+    "RUSTC": "toolchain-rustc",
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": "toolchain-linker",
+}
 _NATIVE_AUTHORITY_SEAL_KEY = secrets.token_bytes(32)
 _NATIVE_AUTHORITY_DOMAIN = "rextio.full-c6-native-execution-authority.v1"
 
@@ -1141,6 +1175,19 @@ class _NativePostprocessResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _NativeSandboxInvocationEvidence:
+    """Private canonical payload evidence; wrapper argv stays unrecorded."""
+
+    ordinal: int
+    engine: str
+    plan_sha256: str
+    profile_sha256: str
+    seccomp_sha256: str | None
+    payload_argv: tuple[str, ...]
+    payload_environment: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _FullC6NativeOutputMaterial:
     """Narrow executor-owned bridge to one validated native output."""
 
@@ -1599,9 +1646,13 @@ def execute_full_c6_two_build(
     native_tools: FullC6NativeToolPaths | None = None,
     native_orchestrator: bool = False,
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt | None = None,
+    toolchain_support_plan: FullC6ToolchainSupportPlan | None = None,
+    toolchain_support_lock: ToolchainSupportLock | None = None,
     _native_results_sink: list[_NativePostprocessResult] | None = None,
+    _native_sandbox_evidence_sink: list[_NativeSandboxInvocationEvidence] | None = None,
     _native_output_license_contract: OutputWheelLicenseContract | None = None,
     _native_pyo3_config_identity: FullC6Pyo3ConfigIdentity | None = None,
+    _native_pyo3_config_path: Path | None = None,
 ) -> FullC6ExecutorReceipt:
     """Freeze one project and execute exactly two strict isolated builds.
 
@@ -1637,10 +1688,35 @@ def execute_full_c6_two_build(
             )
         if type(_native_results_sink) is not list or _native_results_sink:
             raise FullC6ExecutorError("Full C6 native retained-evidence sink is invalid")
+        if (
+            type(_native_sandbox_evidence_sink) is not list
+            or _native_sandbox_evidence_sink
+        ):
+            raise FullC6ExecutorError(
+                "Full C6 native sandbox-evidence sink is invalid"
+            )
         if type(_native_pyo3_config_identity) is not FullC6Pyo3ConfigIdentity:
             raise FullC6ExecutorError(
                 "Full C6 native execution requires one fixed PyO3 config identity"
             )
+        if not isinstance(_native_pyo3_config_path, Path):
+            raise FullC6ExecutorError(
+                "Full C6 native execution requires one external PyO3 config path"
+            )
+        trusted_support_plan = _require_native_toolchain_support(
+            toolchain_support_plan,
+            toolchain_support_lock,
+            target_triple=_native_pyo3_config_identity.target_triple,
+        )
+        try:
+            verify_full_c6_pyo3_config(
+                _native_pyo3_config_path,
+                _native_pyo3_config_identity,
+            )
+        except FullC6Pyo3ConfigError as exc:
+            raise FullC6ExecutorError(
+                "Full C6 external PyO3 config is invalid"
+            ) from exc
         try:
             native_output_license_contract = rebuild_output_wheel_license_contract(
                 _native_output_license_contract  # type: ignore[arg-type]
@@ -1652,8 +1728,12 @@ def execute_full_c6_two_build(
     elif (
         cargo_workspace is not None
         or _native_results_sink is not None
+        or _native_sandbox_evidence_sink is not None
         or _native_output_license_contract is not None
         or _native_pyo3_config_identity is not None
+        or _native_pyo3_config_path is not None
+        or toolchain_support_plan is not None
+        or toolchain_support_lock is not None
     ):
         raise FullC6ExecutorError(
             "Full C6 callback execution cannot claim a native Cargo workspace"
@@ -1664,6 +1744,28 @@ def execute_full_c6_two_build(
     first = _validate_quarantine_root(first_quarantine_root)
     second = _validate_quarantine_root(second_quarantine_root)
     _require_disjoint_roots((source, first[0], second[0]))
+    pyo3_support_root: Path | None = None
+    pyo3_support_root_identity: os.stat_result | None = None
+    pyo3_config_file_identity: os.stat_result | None = None
+    if native_orchestrator:
+        assert _native_pyo3_config_path is not None
+        assert _native_pyo3_config_identity is not None
+        try:
+            pyo3_support_root = _native_pyo3_config_path.parent.resolve(strict=True)
+            pyo3_support_root_identity = os.lstat(pyo3_support_root)
+            pyo3_config_file_identity = os.lstat(_native_pyo3_config_path)
+        except OSError as exc:
+            raise FullC6ExecutorError(
+                "Full C6 PyO3 support root is unavailable"
+            ) from exc
+        _verify_native_pyo3_support_root(
+            pyo3_support_root,
+            pyo3_support_root_identity,
+            config_path=_native_pyo3_config_path,
+            config_identity=pyo3_config_file_identity,
+            expected=_native_pyo3_config_identity,
+        )
+        _require_disjoint_roots((source, first[0], second[0], pyo3_support_root))
     environment_seed = _validate_base_environment(base_environment)
     if native_orchestrator:
         assert toolchain is not None
@@ -1772,6 +1874,7 @@ def execute_full_c6_two_build(
     project_identities: list[os.stat_result] = []
     command_values: list[tuple[str, ...]] = []
     native_results: list[_NativePostprocessResult] = []
+    native_sandbox_evidence: list[_NativeSandboxInvocationEvidence] = []
 
     def isolated_build(build_root: Path) -> ReproducibilityBuildOutputs:
         ordinal = len(invocation_receipts) + 1
@@ -1799,16 +1902,25 @@ def execute_full_c6_two_build(
             assert native_manifest is not None
             assert native_tools is not None
             assert _native_pyo3_config_identity is not None
+            assert pyo3_support_root is not None
+            assert pyo3_support_root_identity is not None
+            assert pyo3_config_file_identity is not None
+            assert _native_pyo3_config_path is not None
+            _verify_native_pyo3_support_root(
+                pyo3_support_root,
+                pyo3_support_root_identity,
+                config_path=_native_pyo3_config_path,
+                config_identity=pyo3_config_file_identity,
+                expected=_native_pyo3_config_identity,
+            )
             _bind_native_environment(
                 environment,
                 native_tools=native_tools,
                 target_triple=native_manifest.target_triple,
             )
             try:
-                pyo3_config_path = materialize_full_c6_pyo3_config(
-                    build_root,
-                    _native_pyo3_config_identity,
-                )
+                assert _native_pyo3_config_path is not None
+                pyo3_config_path = _native_pyo3_config_path
                 environment = bind_full_c6_pyo3_environment(
                     environment,
                     config_path=pyo3_config_path,
@@ -1818,6 +1930,7 @@ def execute_full_c6_two_build(
                 raise FullC6ExecutorError(
                     "Full C6 fixed PyO3 config could not be bound"
                 ) from exc
+        invocation_environment = dict(environment)
         context = FullC6BuildContext(
             ordinal=ordinal,
             build_root=build_root,
@@ -1844,7 +1957,7 @@ def execute_full_c6_two_build(
             assert cargo_workspace is not None
             assert pyo3_config_path is not None
             assert _native_pyo3_config_identity is not None
-            argv = fixed_argv
+            host_argv = fixed_argv
             receipt_bound_config = _ReceiptBoundCargoConfig(
                 location=f"project:{FULL_C6_CARGO_EXECUTOR_CONFIG}",
                 sha256=cargo_workspace.executor_config.sha256 or "",
@@ -1858,7 +1971,7 @@ def execute_full_c6_two_build(
                 receipt_bound_config=receipt_bound_config,
             )
             _verify_native_toolchain_invocation(
-                argv,
+                host_argv,
                 environment=environment,
                 toolchain=toolchain,
                 native_tools=native_tools,
@@ -1872,20 +1985,136 @@ def execute_full_c6_two_build(
                 config_path=pyo3_config_path,
                 identity=_native_pyo3_config_identity,
             )
-            try:
-                completed = run_build_tool(
-                    list(argv),
-                    cwd=project_root,
-                    timeout=float(timeout_seconds),
-                    env=environment,
-                    inherit_env=False,
-                    max_output_bytes=max_output_bytes,
+            _require_native_toolchain_support(
+                trusted_support_plan,
+                toolchain_support_lock,
+                target_triple=native_manifest.target_triple,
+            )
+            sandbox_plan = _native_read_sandbox_plan(
+                target_triple=native_manifest.target_triple,
+                project_root=project_root,
+                build_root=build_root,
+                pyo3_config_path=pyo3_config_path,
+                support_plan=trusted_support_plan,
+            )
+            expected_pass_fds: tuple[int, ...]
+            if native_manifest.target_triple == "x86_64-unknown-linux-gnu":
+                argv = _linux_native_payload_argv(host_argv)
+                invocation_environment = _linux_native_payload_environment(
+                    environment,
+                    support_plan=trusted_support_plan,
                 )
+                try:
+                    seccomp_lease = create_linux_full_c6_seccomp_lease()
+                except FullC6ReadSandboxError as exc:
+                    raise FullC6ExecutorError(
+                        "Full C6 Linux seccomp lease failed closed"
+                    ) from exc
+                try:
+                    launch = prepare_full_c6_sandbox_launch(
+                        sandbox_plan,
+                        argv,
+                        bubblewrap=_native_support_path(
+                            trusted_support_plan,
+                            "support-linux-bwrap",
+                        ),
+                        linux_seccomp_lease=seccomp_lease,
+                        linux_payload_environment=invocation_environment,
+                    )
+                except (FullC6ReadSandboxError, TypeError, ValueError) as exc:
+                    seccomp_lease.close()
+                    raise FullC6ExecutorError(
+                        "Full C6 Linux read sandbox failed closed"
+                    ) from exc
+                except BaseException:
+                    seccomp_lease.close()
+                    raise
+                expected_pass_fds = (seccomp_lease.fileno(),)
+                wrapper_environment: Mapping[str, str] = {}
+                try:
+                    seccomp_sha256 = _verify_native_linux_seccomp_launch(launch)
+                except (FullC6ExecutorError, FullC6ReadSandboxError):
+                    launch.close()
+                    raise
+            else:
+                argv = host_argv
+                invocation_environment = dict(environment)
+                try:
+                    launch = prepare_full_c6_sandbox_launch(
+                        sandbox_plan,
+                        argv,
+                        macos_anchor=trusted_support_plan.macos_platform_anchor,
+                    )
+                except (FullC6ReadSandboxError, TypeError, ValueError) as exc:
+                    raise FullC6ExecutorError(
+                        "Full C6 macOS read sandbox failed closed"
+                    ) from exc
+                expected_pass_fds = ()
+                wrapper_environment = invocation_environment
+                seccomp_sha256 = None
+            if launch.preexec_fn is not None:
+                launch.close()
+                raise FullC6ExecutorError(
+                    "Full C6 sandbox pre-exec callback contract is invalid"
+                )
+            if launch.pass_fds != expected_pass_fds:
+                launch.close()
+                raise FullC6ExecutorError(
+                    "Full C6 sandbox descriptor contract changed before spawn"
+                )
+            if launch.seccomp_sha256 != seccomp_sha256:
+                launch.close()
+                raise FullC6ExecutorError(
+                    "Full C6 sandbox seccomp receipt changed before spawn"
+                )
+            try:
+                try:
+                    if launch.pass_fds:
+                        completed = run_build_tool(
+                            list(launch.command),
+                            cwd=project_root,
+                            timeout=float(timeout_seconds),
+                            env=wrapper_environment,
+                            inherit_env=False,
+                            max_output_bytes=max_output_bytes,
+                            pass_fds=launch.pass_fds,
+                            after_spawn=launch.close,
+                        )
+                    else:
+                        completed = run_build_tool(
+                            list(launch.command),
+                            cwd=project_root,
+                            timeout=float(timeout_seconds),
+                            env=wrapper_environment,
+                            inherit_env=False,
+                            max_output_bytes=max_output_bytes,
+                        )
+                finally:
+                    launch.close()
+            except FullC6ReadSandboxError as exc:
+                raise FullC6ExecutorError(
+                    "Full C6 native read sandbox failed closed"
+                ) from exc
             finally:
+                assert pyo3_support_root is not None
+                assert pyo3_support_root_identity is not None
+                assert pyo3_config_file_identity is not None
+                _require_native_toolchain_support(
+                    trusted_support_plan,
+                    toolchain_support_lock,
+                    target_triple=native_manifest.target_triple,
+                )
                 _verify_native_pyo3_binding(
                     environment,
                     config_path=pyo3_config_path,
                     identity=_native_pyo3_config_identity,
+                )
+                _verify_native_pyo3_support_root(
+                    pyo3_support_root,
+                    pyo3_support_root_identity,
+                    config_path=pyo3_config_path,
+                    config_identity=pyo3_config_file_identity,
+                    expected=_native_pyo3_config_identity,
                 )
                 _verify_native_cargo_config_boundaries(
                     project_root=project_root,
@@ -1900,7 +2129,7 @@ def execute_full_c6_two_build(
                     f"strict Cargo build failed with exit status {completed.returncode}"
                 )
             _verify_native_toolchain_invocation(
-                argv,
+                host_argv,
                 environment=environment,
                 toolchain=toolchain,
                 native_tools=native_tools,
@@ -1908,6 +2137,17 @@ def execute_full_c6_two_build(
                 require_owned_environment=True,
                 pyo3_config_path=pyo3_config_path,
                 pyo3_config_identity=_native_pyo3_config_identity,
+            )
+            native_sandbox_evidence.append(
+                _NativeSandboxInvocationEvidence(
+                    ordinal=ordinal,
+                    engine=sandbox_plan.engine,
+                    plan_sha256=sandbox_plan.digest,
+                    profile_sha256=launch.profile_sha256,
+                    seccomp_sha256=seccomp_sha256,
+                    payload_argv=argv,
+                    payload_environment=tuple(sorted(invocation_environment.items())),
+                )
             )
             native_result = _postprocess_native_build(
                 context=context,
@@ -1976,9 +2216,10 @@ def execute_full_c6_two_build(
             _invocation_receipt(
                 ordinal,
                 argv,
-                environment,
+                dict(invocation_environment),
                 build_root=build_root,
                 project_root=project_root,
+                pyo3_config_path=(pyo3_config_path if native_orchestrator else None),
                 timeout_seconds=float(timeout_seconds),
                 max_output_bytes=max_output_bytes,
             )
@@ -2005,6 +2246,10 @@ def execute_full_c6_two_build(
         raise FullC6ExecutorError("Full C6 executor did not perform exactly two builds")
     if native_orchestrator and len(native_results) != 2:
         raise FullC6ExecutorError("Full C6 native executor did not capture exactly two wheels")
+    if native_orchestrator and len(native_sandbox_evidence) != 2:
+        raise FullC6ExecutorError(
+            "Full C6 native executor did not capture exactly two sandbox launches"
+        )
     if command_values[0] != command_values[1]:
         raise FullC6ExecutorError("strict Cargo commands differ between isolated builds")
     if copied_inodes[0].intersection(copied_inodes[1]):
@@ -2023,6 +2268,18 @@ def execute_full_c6_two_build(
     if native_orchestrator:
         assert native_manifest is not None
         assert cargo_workspace is not None
+        assert pyo3_support_root is not None
+        assert pyo3_support_root_identity is not None
+        assert pyo3_config_file_identity is not None
+        assert _native_pyo3_config_path is not None
+        assert _native_pyo3_config_identity is not None
+        _verify_native_pyo3_support_root(
+            pyo3_support_root,
+            pyo3_support_root_identity,
+            config_path=_native_pyo3_config_path,
+            config_identity=pyo3_config_file_identity,
+            expected=_native_pyo3_config_identity,
+        )
         if not validate_full_c6_cargo_dependency_workspace_receipt(cargo_workspace):
             raise FullC6ExecutorError("Full C6 Cargo workspace receipt became stale")
         for result in native_results:
@@ -2123,7 +2380,9 @@ def execute_full_c6_two_build(
         raise FullC6ExecutorError(str(exc)) from exc
     if native_orchestrator:
         assert _native_results_sink is not None
+        assert _native_sandbox_evidence_sink is not None
         _native_results_sink.extend(native_results)
+        _native_sandbox_evidence_sink.extend(native_sandbox_evidence)
     return receipt
 
 
@@ -2137,6 +2396,8 @@ def execute_full_c6_native_two_build(
     toolchain: BuildToolchainIdentity,
     native_tools: FullC6NativeToolPaths,
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
+    toolchain_support_plan: FullC6ToolchainSupportPlan | None = None,
+    toolchain_support_lock: ToolchainSupportLock | None = None,
     output_license_contract: OutputWheelLicenseContract,
     timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     max_output_bytes: int = MAX_FULL_C6_OUTPUT_BYTES,
@@ -2163,32 +2424,76 @@ def execute_full_c6_native_two_build(
         raise FullC6ExecutorError(
             "Full C6 native execution requires the fixed CPython 3.11 PyO3 profile"
         ) from exc
-    retained_results: list[_NativePostprocessResult] = []
-    receipt = execute_full_c6_two_build(
-        source_root,
-        first_quarantine_root,
-        second_quarantine_root,
-        base_environment=base_environment,
-        source_date_epoch=source_date_epoch,
-        timeout_seconds=timeout_seconds,
-        max_output_bytes=max_output_bytes,
-        toolchain=toolchain,
-        native_tools=native_tools,
-        native_orchestrator=True,
-        cargo_workspace=cargo_workspace,
-        _native_results_sink=retained_results,
-        _native_output_license_contract=output_license_contract,
-        _native_pyo3_config_identity=pyo3_config_identity,
+    trusted_support_plan = _require_native_toolchain_support(
+        toolchain_support_plan,
+        toolchain_support_lock,
+        target_triple=pyo3_config_identity.target_triple,
     )
+    retained_results: list[_NativePostprocessResult] = []
+    retained_sandbox_evidence: list[_NativeSandboxInvocationEvidence] = []
+    support_root: Path | None = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="rextio-full-c6-pyo3-") as raw_support:
+            support_root = Path(raw_support).resolve(strict=True)
+            os.chmod(support_root, _CANONICAL_DIRECTORY_MODE)
+            pyo3_config_path = materialize_full_c6_pyo3_config(
+                support_root,
+                pyo3_config_identity,
+            )
+            _seal_native_pyo3_config(pyo3_config_path, pyo3_config_identity)
+            receipt = execute_full_c6_two_build(
+                source_root,
+                first_quarantine_root,
+                second_quarantine_root,
+                base_environment=base_environment,
+                source_date_epoch=source_date_epoch,
+                timeout_seconds=timeout_seconds,
+                max_output_bytes=max_output_bytes,
+                toolchain=toolchain,
+                native_tools=native_tools,
+                native_orchestrator=True,
+                cargo_workspace=cargo_workspace,
+                toolchain_support_plan=trusted_support_plan,
+                toolchain_support_lock=toolchain_support_lock,
+                _native_results_sink=retained_results,
+                _native_sandbox_evidence_sink=retained_sandbox_evidence,
+                _native_output_license_contract=output_license_contract,
+                _native_pyo3_config_identity=pyo3_config_identity,
+                _native_pyo3_config_path=pyo3_config_path,
+            )
+            verify_full_c6_pyo3_config(pyo3_config_path, pyo3_config_identity)
+    except FullC6ExecutorError:
+        raise
+    except (FullC6Pyo3ConfigError, OSError) as exc:
+        raise FullC6ExecutorError(
+            "Full C6 read-only PyO3 support material failed closed"
+        ) from exc
+    if support_root is None or os.path.lexists(support_root):
+        raise FullC6ExecutorError(
+            "Full C6 read-only PyO3 support material cleanup failed closed"
+        )
     if len(retained_results) != 2:
         raise FullC6ExecutorError("Full C6 native retained evidence is incomplete")
-    return _create_native_execution_authority(
+    if len(retained_sandbox_evidence) != 2:
+        raise FullC6ExecutorError("Full C6 native sandbox evidence is incomplete")
+    _require_native_toolchain_support(
+        trusted_support_plan,
+        toolchain_support_lock,
+        target_triple=pyo3_config_identity.target_triple,
+    )
+    authority = _create_native_execution_authority(
         executor_receipt=receipt,
         cargo_workspace=cargo_workspace,
         toolchain=toolchain,
         pyo3_config_identity=pyo3_config_identity,
         results=(retained_results[0], retained_results[1]),
     )
+    _require_native_toolchain_support(
+        trusted_support_plan,
+        toolchain_support_lock,
+        target_triple=pyo3_config_identity.target_triple,
+    )
+    return authority
 
 
 def _postprocess_native_build(
@@ -2618,7 +2923,7 @@ def _validate_real_directory(value: Path | str, *, label: str) -> tuple[Path, os
         raise FullC6ExecutorError(f"Full C6 {label} root could not be resolved") from exc
 
 
-def _require_disjoint_roots(roots: tuple[Path, Path, Path]) -> None:
+def _require_disjoint_roots(roots: tuple[Path, ...]) -> None:
     if len(set(roots)) != len(roots):
         raise FullC6ExecutorError("Full C6 source and quarantine roots must be distinct")
     for index, root in enumerate(roots):
@@ -3514,6 +3819,7 @@ def _invocation_receipt(
     *,
     build_root: Path,
     project_root: Path,
+    pyo3_config_path: Path | None = None,
     timeout_seconds: float,
     max_output_bytes: int,
 ) -> FullC6InvocationReceipt:
@@ -3521,6 +3827,7 @@ def _invocation_receipt(
         environment,
         build_root=build_root,
         project_root=project_root,
+        pyo3_config_path=pyo3_config_path,
     )
     bindings = tuple(
         FullC6EnvironmentBinding(
@@ -3548,6 +3855,7 @@ def _canonical_invocation_environment(
     *,
     build_root: Path,
     project_root: Path,
+    pyo3_config_path: Path | None,
 ) -> dict[str, str]:
     """Project executor-owned private paths into stable receipt identities.
 
@@ -3570,12 +3878,16 @@ def _canonical_invocation_environment(
         ),
     }
     if "PYO3_CONFIG_FILE" in canonical:
+        if pyo3_config_path is None:
+            raise FullC6ExecutorError(
+                "Full C6 PyO3 receipt path is missing"
+            )
         owned_paths["PYO3_CONFIG_FILE"] = (
-            build_root / FULL_C6_PYO3_CONFIG_NAME,
-            f"{_BUILD_ROOT_TOKEN}/{FULL_C6_PYO3_CONFIG_NAME}",
+            pyo3_config_path,
+            _PYO3_RECEIPT_TOKEN,
         )
     for name, (expected, token) in owned_paths.items():
-        if canonical.get(name) != str(expected):
+        if canonical.get(name) not in {str(expected), token}:
             raise FullC6ExecutorError(
                 "Full C6 executor-owned environment changed before receipt capture"
             )
@@ -3587,11 +3899,19 @@ def _canonical_invocation_environment(
             "Full C6 executor-owned environment changed before receipt capture"
         )
     flags = rustflags.split("\x1f")
-    expected_remaps = [
-        f"--remap-path-prefix={project_root}={_PROJECT_ROOT_TOKEN}",
-        f"--remap-path-prefix={build_root}={_BUILD_ROOT_TOKEN}",
-    ]
-    if flags[:2] != expected_remaps:
+    expected_remaps = (
+        {
+            f"--remap-path-prefix={project_root}={_PROJECT_ROOT_TOKEN}",
+            f"--remap-path-prefix={_PROJECT_ROOT_TOKEN}={_PROJECT_ROOT_TOKEN}",
+        },
+        {
+            f"--remap-path-prefix={build_root}={_BUILD_ROOT_TOKEN}",
+            f"--remap-path-prefix={_BUILD_ROOT_TOKEN}={_BUILD_ROOT_TOKEN}",
+        },
+    )
+    if len(flags) < 2 or any(
+        flags[index] not in expected for index, expected in enumerate(expected_remaps)
+    ):
         raise FullC6ExecutorError(
             "Full C6 executor-owned environment changed before receipt capture"
         )
@@ -3718,6 +4038,267 @@ def _verify_native_base_environment(
         )
 
 
+def _require_native_toolchain_support(
+    plan: FullC6ToolchainSupportPlan | None,
+    lock: ToolchainSupportLock | None,
+    *,
+    target_triple: str,
+) -> FullC6ToolchainSupportPlan:
+    """Rewalk the exact process-sealed support closure at a native stage gate."""
+    try:
+        trusted = require_full_c6_toolchain_support_plan(plan)
+        if trusted.target_triple != target_triple:
+            raise FullC6ToolchainSupportError(
+                "Full C6 support plan target differs from native execution"
+            )
+        revalidate_full_c6_toolchain_support_plan(trusted)
+        if type(lock) is not ToolchainSupportLock or not (
+            verify_full_c6_toolchain_support_lock(trusted, lock)
+        ):
+            raise FullC6ToolchainSupportError(
+                "Full C6 support lock verification failed"
+            )
+        return trusted
+    except FullC6ToolchainSupportError as exc:
+        raise FullC6ExecutorError(
+            "Full C6 toolchain support closure failed closed"
+        ) from exc
+
+
+def _native_support_mapping(
+    plan: FullC6ToolchainSupportPlan,
+    logical_role: str,
+) -> FullC6SupportNamespaceMapping:
+    matches = tuple(
+        item for item in plan.namespace_mappings if item.logical_role == logical_role
+    )
+    if len(matches) != 1:
+        raise FullC6ExecutorError(
+            "Full C6 support namespace role is missing or ambiguous"
+        )
+    mapping = matches[0]
+    if type(mapping) is not FullC6SupportNamespaceMapping:
+        raise FullC6ExecutorError("Full C6 support namespace mapping is invalid")
+    return mapping
+
+
+def _native_support_path(
+    plan: FullC6ToolchainSupportPlan,
+    logical_role: str,
+) -> Path:
+    mapping = _native_support_mapping(plan, logical_role)
+    path = mapping.host_path
+    if not isinstance(path, Path) or not path.is_absolute():
+        raise FullC6ExecutorError("Full C6 support namespace host path is invalid")
+    return path
+
+
+def _native_support_virtual_path(
+    plan: FullC6ToolchainSupportPlan,
+    logical_role: str,
+) -> str:
+    mapping = _native_support_mapping(plan, logical_role)
+    path = mapping.virtual_path
+    if not isinstance(path, PurePosixPath) or not path.is_absolute():
+        raise FullC6ExecutorError("Full C6 support namespace virtual path is invalid")
+    return path.as_posix()
+
+
+def _verify_native_linux_seccomp_launch(
+    launch: FullC6SandboxLaunch,
+) -> str:
+    """Bind the exact live seccomp descriptor bytes at the spawn boundary."""
+    if type(launch) is not FullC6SandboxLaunch or launch.seccomp_lease is None:
+        raise FullC6ExecutorError(
+            "Full C6 Linux seccomp launch capability is invalid"
+        )
+    if (
+        type(launch.pass_fds) is not tuple
+        or len(launch.pass_fds) != 1
+        or type(launch.pass_fds[0]) is not int
+        or launch.pass_fds[0] < 3
+    ):
+        raise FullC6ExecutorError(
+            "Full C6 Linux seccomp descriptor contract is invalid"
+        )
+    descriptor = launch.pass_fds[0]
+    if launch.seccomp_lease.fileno() != descriptor:
+        raise FullC6ExecutorError(
+            "Full C6 Linux seccomp descriptor contract changed"
+        )
+    expected = linux_full_c6_seccomp_program()
+    try:
+        before = os.fstat(descriptor)
+        offset = os.lseek(descriptor, 0, os.SEEK_CUR)
+        payload = os.pread(descriptor, len(expected) + 1, 0)
+        after = os.fstat(descriptor)
+    except OSError as exc:
+        raise FullC6ExecutorError(
+            "Full C6 Linux seccomp descriptor could not be verified"
+        ) from exc
+    observed_sha256 = hashlib.sha256(payload).hexdigest()
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or offset != 0
+        or before.st_dev != after.st_dev
+        or before.st_ino != after.st_ino
+        or before.st_size != after.st_size
+        or before.st_size != len(expected)
+        or payload != expected
+        or launch.seccomp_sha256 != observed_sha256
+    ):
+        raise FullC6ExecutorError(
+            "Full C6 Linux seccomp descriptor bytes or identity changed"
+        )
+    return observed_sha256
+
+
+def _native_read_sandbox_plan(
+    *,
+    target_triple: str,
+    project_root: Path,
+    build_root: Path,
+    pyo3_config_path: Path,
+    support_plan: FullC6ToolchainSupportPlan,
+) -> FullC6ReadSandboxPlan:
+    """Build one exact private-path plan; paths never enter public receipts."""
+    executable_roles = {
+        "runtime-loader-mirror",
+        "support-gcc-toolchain",
+        "toolchain-ar",
+        "toolchain-cargo",
+        "toolchain-ld",
+        "toolchain-linker",
+        "toolchain-python311",
+        "toolchain-ranlib",
+        "toolchain-rustc",
+        "toolchain-rust-sysroot",
+    }
+    rules = [
+        SandboxPathRule(
+            path=project_root,
+            access="read",
+            logical_role="project-root",
+        ),
+        SandboxPathRule(
+            path=build_root,
+            access="read-write",
+            logical_role="build-root",
+        ),
+        SandboxPathRule(
+            path=pyo3_config_path,
+            access="read",
+            logical_role="support-pyo3-config",
+        ),
+    ]
+    for mapping in support_plan.namespace_mappings:
+        rules.append(
+            SandboxPathRule(
+                path=mapping.host_path,
+                access=(
+                    "read-execute"
+                    if mapping.logical_role in executable_roles
+                    else "read"
+                ),
+                logical_role=mapping.logical_role,
+            )
+        )
+    try:
+        return build_full_c6_sandbox_plan(
+            target_triple=target_triple,
+            rules=rules,
+            platform_anchor_sha256=support_plan.platform_anchor_sha256,
+        )
+    except (FullC6ReadSandboxError, TypeError, ValueError) as exc:
+        raise FullC6ExecutorError(
+            "Full C6 native read-sandbox plan failed closed"
+        ) from exc
+
+
+def _linux_native_payload_argv(
+    host_argv: tuple[str, ...],
+) -> tuple[str, ...]:
+    if host_argv[1:] != (
+        "build",
+        "--release",
+        "--locked",
+        "--offline",
+        "--frozen",
+    ):
+        raise FullC6ExecutorError("Full C6 Linux host Cargo argv is invalid")
+    return (FULL_C6_LINUX_CARGO, *host_argv[1:])
+
+
+def _linux_native_payload_environment(
+    host_environment: Mapping[str, str],
+    *,
+    support_plan: FullC6ToolchainSupportPlan,
+) -> dict[str, str]:
+    """Project verified host paths into the closed Linux namespace contract."""
+    result = dict(host_environment)
+    for name, role in _LINUX_NATIVE_PAYLOAD_ROLES.items():
+        host_path = _native_support_path(support_plan, role)
+        if result.get(name) != os.fspath(host_path):
+            raise FullC6ExecutorError(
+                "Full C6 Linux host environment differs from support mapping"
+            )
+        result[name] = _native_support_virtual_path(support_plan, role)
+    owned_paths = {
+        "HOME": "/rextio/build/home",
+        "CARGO_HOME": "/rextio/build/cargo-home",
+        "CARGO_TARGET_DIR": "/rextio/build/target",
+        "PYO3_CONFIG_FILE": FULL_C6_LINUX_PYO3_CONFIG,
+    }
+    for name, virtual_path in owned_paths.items():
+        if name not in result:
+            raise FullC6ExecutorError(
+                "Full C6 Linux owned environment is incomplete"
+            )
+        result[name] = virtual_path
+    rustflags = result.get("CARGO_ENCODED_RUSTFLAGS", "").split("\x1f")
+    host_linker = _native_support_path(support_plan, "toolchain-linker")
+    if (
+        len(rustflags) != 4
+        or not rustflags[0].startswith("--remap-path-prefix=")
+        or not rustflags[1].startswith("--remap-path-prefix=")
+        or rustflags[2:] != ["-C", f"linker={host_linker}"]
+    ):
+        raise FullC6ExecutorError("Full C6 Linux Rust flags are not canonical")
+    result["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(
+        (
+            f"--remap-path-prefix={_PROJECT_ROOT_TOKEN}={_PROJECT_ROOT_TOKEN}",
+            f"--remap-path-prefix={_BUILD_ROOT_TOKEN}={_BUILD_ROOT_TOKEN}",
+            "-C",
+            "linker=/rextio/toolchain/bin/linker",
+        )
+    )
+    result["PATH"] = "/rextio/toolchain/bin:/rextio/toolchain"
+    gcc_support = _native_support_virtual_path(
+        support_plan,
+        "support-gcc-toolchain",
+    )
+    runtime_support = _native_support_virtual_path(
+        support_plan,
+        "support-runtime-libs",
+    )
+    result["COMPILER_PATH"] = f"/rextio/toolchain/bin:{gcc_support}"
+    python_library_support = _native_support_virtual_path(
+        support_plan,
+        "support-python-library-root",
+    )
+    result["LD_LIBRARY_PATH"] = (
+        f"/rextio/toolchain/lib:{python_library_support}:{runtime_support}"
+    )
+    result["LIBRARY_PATH"] = f"{gcc_support}:{runtime_support}"
+    result["TMPDIR"] = "/tmp"
+    try:
+        return dict(canonical_linux_payload_environment(result))
+    except FullC6LinuxLauncherError as exc:
+        raise FullC6ExecutorError(
+            "Full C6 Linux payload environment differs from launcher contract"
+        ) from exc
+
+
 def _bind_native_environment(
     environment: dict[str, str],
     *,
@@ -3772,6 +4353,134 @@ def _verify_native_pyo3_binding(
         verify_full_c6_pyo3_config(config_path, identity)
     except FullC6Pyo3ConfigError as exc:
         raise FullC6ExecutorError("Full C6 fixed PyO3 config became stale") from exc
+
+
+def _seal_native_pyo3_config(
+    path: Path,
+    expected: FullC6Pyo3ConfigIdentity,
+) -> None:
+    """Make the external config read-only and bind the no-follow inode."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size != expected.size
+        ):
+            raise FullC6ExecutorError(
+                "Full C6 external PyO3 config inode is unsafe"
+            )
+        os.fchmod(descriptor, 0o400)
+        after = os.fstat(descriptor)
+    except FullC6ExecutorError:
+        raise
+    except OSError as exc:
+        raise FullC6ExecutorError(
+            "Full C6 external PyO3 config could not be sealed"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    try:
+        linked = os.lstat(path)
+    except OSError as exc:
+        raise FullC6ExecutorError(
+            "Full C6 external PyO3 config changed while sealing"
+        ) from exc
+    if (
+        (before.st_dev, before.st_ino, before.st_size)
+        != (after.st_dev, after.st_ino, after.st_size)
+        or (after.st_dev, after.st_ino, after.st_size)
+        != (linked.st_dev, linked.st_ino, linked.st_size)
+        or stat.S_IMODE(after.st_mode) != 0o400
+        or stat.S_IMODE(linked.st_mode) != 0o400
+    ):
+        raise FullC6ExecutorError(
+            "Full C6 external PyO3 config changed while sealing"
+        )
+    try:
+        verify_full_c6_pyo3_config(path, expected)
+    except FullC6Pyo3ConfigError as exc:
+        raise FullC6ExecutorError(
+            "Full C6 external PyO3 config changed while sealing"
+        ) from exc
+
+
+def _verify_native_pyo3_support_root(
+    root: Path,
+    root_identity: os.stat_result,
+    *,
+    config_path: Path,
+    config_identity: os.stat_result,
+    expected: FullC6Pyo3ConfigIdentity,
+) -> None:
+    """Rewalk the private one-file support root without following links."""
+    if (
+        not isinstance(root, Path)
+        or not root.is_absolute()
+        or not isinstance(config_path, Path)
+        or config_path.parent != root
+        or not isinstance(root_identity, os.stat_result)
+        or not isinstance(config_identity, os.stat_result)
+        or type(expected) is not FullC6Pyo3ConfigIdentity
+    ):
+        raise FullC6ExecutorError("Full C6 PyO3 support root binding is invalid")
+    try:
+        _reject_symlink_components(root)
+        before = os.lstat(root)
+        with os.scandir(root) as iterator:
+            children = list(iterator)
+        after = os.lstat(root)
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 PyO3 support root changed") from exc
+    if (
+        len(children) != 1
+        or children[0].name != config_path.name
+        or not stat.S_ISDIR(before.st_mode)
+        or stat.S_IMODE(before.st_mode) != _CANONICAL_DIRECTORY_MODE
+        or (before.st_dev, before.st_ino) != (
+            root_identity.st_dev,
+            root_identity.st_ino,
+        )
+        or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+        or stat.S_IMODE(after.st_mode) != _CANONICAL_DIRECTORY_MODE
+        or (
+            hasattr(os, "geteuid")
+            and (before.st_uid != os.geteuid() or after.st_uid != os.geteuid())
+        )
+    ):
+        raise FullC6ExecutorError("Full C6 PyO3 support root changed")
+    try:
+        linked = children[0].stat(follow_symlinks=False)
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 PyO3 support config changed") from exc
+    if (
+        not stat.S_ISREG(linked.st_mode)
+        or linked.st_nlink != 1
+        or stat.S_IMODE(linked.st_mode) != 0o400
+        or (linked.st_dev, linked.st_ino, linked.st_size)
+        != (
+            config_identity.st_dev,
+            config_identity.st_ino,
+            config_identity.st_size,
+        )
+        or (
+            hasattr(os, "geteuid")
+            and linked.st_uid != os.geteuid()
+        )
+    ):
+        raise FullC6ExecutorError("Full C6 PyO3 support config changed")
+    try:
+        verify_full_c6_pyo3_config(config_path, expected)
+    except FullC6Pyo3ConfigError as exc:
+        raise FullC6ExecutorError("Full C6 PyO3 support config changed") from exc
 
 
 def _verify_native_cargo_config_boundaries(
