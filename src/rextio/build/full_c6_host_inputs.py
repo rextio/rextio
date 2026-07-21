@@ -93,6 +93,8 @@ _RECORD_MAX_BYTES = 8 * 1024 * 1024
 _RECORD_MAX_ROWS = 4096
 _METADATA_MAX_BYTES = 1024 * 1024
 _DIRECT_URL_MAX_BYTES = 64 * 1024
+_DIRECT_URL_MAX_DEPTH = 16
+_DIRECT_URL_MAX_NODES = 4096
 _DISTRIBUTION_ROOT_MAX_ENTRIES = 16384
 _VERSION_OUTPUT_MAX_BYTES = 64 * 1024
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
@@ -1960,16 +1962,52 @@ def _validate_installed_rextio_direct_url(data: bytes | None) -> None:
     if data is None:
         return
     try:
-        document = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        document = json.loads(
+            data.decode("utf-8"),
+            object_pairs_hook=_direct_url_object,
+            parse_constant=_reject_direct_url_constant,
+        )
+        _validate_direct_url_shape(document)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise FullC6HostInputsError("Rextio direct_url metadata is malformed") from exc
     if not isinstance(document, dict):
         raise FullC6HostInputsError("Rextio direct_url metadata is malformed")
     directory = document.get("dir_info")
     if directory is not None and not isinstance(directory, dict):
         raise FullC6HostInputsError("Rextio direct_url metadata is malformed")
-    if isinstance(directory, dict) and directory.get("editable") is True:
-        raise FullC6HostInputsError("editable Rextio installs are forbidden")
+    if isinstance(directory, dict) and "editable" in directory:
+        editable = directory["editable"]
+        if type(editable) is not bool:
+            raise FullC6HostInputsError("Rextio direct_url metadata is malformed")
+        if editable:
+            raise FullC6HostInputsError("editable Rextio installs are forbidden")
+
+
+def _direct_url_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate direct_url JSON key")
+        result[key] = value
+    return result
+
+
+def _reject_direct_url_constant(value: str) -> object:
+    raise ValueError(f"nonstandard direct_url JSON constant: {value}")
+
+
+def _validate_direct_url_shape(value: object) -> None:
+    stack: list[tuple[object, int]] = [(value, 1)]
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if nodes > _DIRECT_URL_MAX_NODES or depth > _DIRECT_URL_MAX_DEPTH:
+            raise ValueError("direct_url JSON shape exceeds the bound")
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
 
 
 def _validate_installed_dist_info_record(
