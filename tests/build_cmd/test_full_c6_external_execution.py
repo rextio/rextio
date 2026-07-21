@@ -51,7 +51,10 @@ from rextio.build.toolchain_identity import (
     capture_tool_identity,
 )
 from rextio.build.input_closure import ExactFileIdentity
-from rextio.build.toolchain_support_lock import ToolchainSupportLock
+from rextio.build.toolchain_support_lock import (
+    ToolchainSupportLock,
+    ToolchainSupportLockError,
+)
 from rextio.config.schema import (
     BuildConfig,
     ImportPackagePolicy,
@@ -697,6 +700,38 @@ def test_external_support_boundary_revalidates_critical_leaves_without_full_walk
     ) is inputs.toolchain_support_plan
     assert critical_calls == 1
     assert full_walk_calls == 0
+
+
+def test_external_support_boundary_normalizes_mutated_lock_property_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = _inputs(tmp_path, monkeypatch)
+    for error_type in (
+        ToolchainSupportLockError,
+        AttributeError,
+        TypeError,
+        ValueError,
+    ):
+        def fail_raw_digest(_lock: ToolchainSupportLock) -> str:
+            raise error_type("simulated mutated support-lock property")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                ToolchainSupportLock,
+                "raw_sha256",
+                property(fail_raw_digest),
+            )
+            with pytest.raises(
+                FullC6ExternalExecutionError,
+                match="toolchain support authority failed closed",
+            ) as caught:
+                external_execution._require_external_toolchain_support(
+                    inputs.toolchain_support_plan,
+                    inputs.toolchain_support_lock,
+                    toolchain=inputs.toolchain,
+                )
+        assert isinstance(caught.value.__cause__, error_type)
 
 
 @pytest.mark.parametrize("drift", ("marker", "target", "plugin", "package"))

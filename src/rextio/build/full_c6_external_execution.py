@@ -68,7 +68,10 @@ from rextio.build.full_c6_pipeline import (
     validate_full_c6_external_context,
 )
 from rextio.build.toolchain_identity import BuildToolchainIdentity
-from rextio.build.toolchain_support_lock import ToolchainSupportLock
+from rextio.build.toolchain_support_lock import (
+    ToolchainSupportLock,
+    ToolchainSupportLockError,
+)
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.config.schema import ImportPackagePolicy, RextioConfig
 from rextio.codegen.rust.cargo import (
@@ -378,7 +381,13 @@ def _require_external_toolchain_support(
                 "Full C6 toolchain support authority differs from toolchain identity"
             )
         return trusted
-    except FullC6ToolchainSupportError as exc:
+    except (
+        FullC6ToolchainSupportError,
+        ToolchainSupportLockError,
+        AttributeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         raise FullC6ExternalExecutionError(
             "RXT060 external toolchain support authority failed closed"
         ) from exc

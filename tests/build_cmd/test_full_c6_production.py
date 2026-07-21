@@ -21,6 +21,10 @@ from rextio.build.full_c6_policy import (
 )
 from rextio.build.full_c6_policy_completion import finalize_full_c6_policy_manifest
 from rextio.build.full_c6_policy_manifest import parse_full_c6_policy_manifest
+from rextio.build.toolchain_support_lock import (
+    ToolchainSupportLock,
+    ToolchainSupportLockError,
+)
 from rextio.config.schema import RextioConfig
 
 
@@ -422,6 +426,40 @@ def test_production_support_boundary_revalidates_critical_leaves_without_full_wa
     ) is inputs.toolchain_support_plan
     assert critical_calls == 1
     assert full_walk_calls == 0
+
+
+def test_production_support_boundary_normalizes_mutated_lock_property_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    inputs = _EXTERNAL["_inputs"](tmp_path, monkeypatch)
+    for error_type in (
+        ToolchainSupportLockError,
+        AttributeError,
+        TypeError,
+        ValueError,
+    ):
+        def fail_raw_digest(_lock: ToolchainSupportLock) -> str:
+            raise error_type("simulated mutated support-lock property")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                ToolchainSupportLock,
+                "raw_sha256",
+                property(fail_raw_digest),
+            )
+            with pytest.raises(
+                production.FullC6ProductionError,
+                match="toolchain support authority failed closed",
+            ) as caught:
+                production._require_production_toolchain_support(
+                    inputs.toolchain_support_plan,
+                    inputs.toolchain_support_lock,
+                    toolchain=inputs.toolchain,
+                    revalidate_paths=False,
+                )
+        assert isinstance(caught.value.__cause__, error_type)
 
 
 def test_collector_mints_one_sealed_path_free_non_authorizing_authority(
