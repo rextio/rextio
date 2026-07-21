@@ -55,6 +55,10 @@ from rextio.build.runtime_resolution import (
 )
 from rextio.build.toolchain_identity import BuildToolchainIdentity
 
+_REAL_COLLECT_SYMBOL_PROVIDER_OBSERVATION = (
+    native_runtime._collect_symbol_provider_observation
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _Case:
@@ -314,6 +318,17 @@ def test_factory_exposes_only_the_sealed_output_transaction(
     assert authority.digest == projection["digest"]
 
 
+def test_stable_authority_supports_consecutive_fresh_validation(
+    runtime_case: _Case,
+) -> None:
+    authority = create_full_c6_native_runtime_authority(runtime_case.output)
+
+    assert validate_full_c6_native_runtime_authority(authority) is True
+    assert validate_full_c6_native_runtime_authority(authority) is True
+    assert native_runtime._PROCESS_AUTHORITY is authority
+    assert native_runtime._PROCESS_STATE == native_runtime._PROCESS_STATE_AUTHORIZED
+
+
 def test_authority_is_immutable_noncopyable_and_nonserializable(
     runtime_case: _Case,
 ) -> None:
@@ -416,6 +431,154 @@ def test_post_import_loader_mismatch_never_mints_authority(
 
     with pytest.raises(FullC6NativeRuntimeError):
         create_full_c6_native_runtime_authority(runtime_case.output)
+
+
+def test_provider_revalidation_loader_side_effect_never_mints_authority(
+    runtime_case: _Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    late_image = RuntimeLoadedImage(
+        path="/usr/lib/rextio-late-provider-runtime.dylib",
+        device=max(image.device for image in runtime_case.final_snapshot.images) + 1,
+        inode=max(image.inode for image in runtime_case.final_snapshot.images) + 1,
+        sha256=hashlib.sha256(b"late-provider-runtime").hexdigest(),
+        size=len(b"late-provider-runtime"),
+    )
+    late_snapshot = RuntimeImageSnapshot(
+        images=tuple(
+            sorted(
+                (*runtime_case.final_snapshot.images, late_image),
+                key=lambda image: image.path,
+            )
+        )
+    )
+    provider_calls = 0
+    loader_changed = False
+
+    def collect(_target: str) -> RuntimeImageSnapshot:
+        if FULL_C6_NATIVE_RUNTIME_MODULE_NAME not in sys.modules:
+            return runtime_case.platform_base
+        return late_snapshot if loader_changed else runtime_case.final_snapshot
+
+    def collect_providers(**_kwargs: Any) -> native_runtime._SymbolProviderObservation:
+        nonlocal loader_changed, provider_calls
+        provider_calls += 1
+        if provider_calls == 2:
+            loader_changed = True
+        return runtime_case.symbol_providers
+
+    monkeypatch.setattr(native_runtime, "collect_loaded_runtime_images", collect)
+    monkeypatch.setattr(
+        native_runtime,
+        "_collect_symbol_provider_observation",
+        collect_providers,
+    )
+
+    with pytest.raises(FullC6NativeRuntimeError):
+        create_full_c6_native_runtime_authority(runtime_case.output)
+
+    assert provider_calls == 2
+    assert loader_changed is True
+    assert native_runtime._PROCESS_AUTHORITY is None
+    assert native_runtime._PROCESS_STATE == native_runtime._PROCESS_STATE_TAINTED
+
+
+def test_symbol_provider_identity_probe_loader_side_effect_is_rejected(
+    runtime_case: _Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    imported = native_runtime._UndefinedImport(
+        raw_name="_PyLong_FromLong",
+        lookup_name="PyLong_FromLong",
+        mode="macho-flat-python",
+        qualifier="dynamically looked up",
+        macho_library_ordinal=native_runtime._runtime._MACHO_DYNAMIC_LOOKUP_ORDINAL,
+    )
+    python_executable = Path(runtime_case.symbol_providers.python_images[0].path)
+    loader_changed = False
+    late_snapshot = RuntimeImageSnapshot(
+        images=(
+            *runtime_case.final_snapshot.images,
+            RuntimeLoadedImage(
+                path="/usr/lib/rextio-late-identity-runtime.dylib",
+                device=max(
+                    image.device for image in runtime_case.final_snapshot.images
+                )
+                + 1,
+                inode=max(image.inode for image in runtime_case.final_snapshot.images)
+                + 1,
+                sha256=hashlib.sha256(b"late-identity-runtime").hexdigest(),
+                size=len(b"late-identity-runtime"),
+            ),
+        )
+    )
+
+    monkeypatch.setattr(
+        native_runtime, "_verify_runtime_inspector_identity", lambda _context: None
+    )
+    monkeypatch.setattr(
+        native_runtime,
+        "_collect_toolchain_python_images",
+        lambda **_kwargs: (
+            python_executable,
+            runtime_case.symbol_providers.python_abi,
+            runtime_case.symbol_providers.python_images,
+        ),
+    )
+    monkeypatch.setattr(
+        native_runtime,
+        "_inspect_undefined_imports",
+        lambda _path, _target: (imported,),
+    )
+    monkeypatch.setattr(
+        native_runtime._runtime,
+        "_inspect_imported_symbols",
+        lambda _path, _target: (imported.raw_name,),
+    )
+    monkeypatch.setattr(
+        native_runtime._runtime,
+        "_token_digest",
+        lambda _names: runtime_case.runtime_receipt.imported_symbols_sha256,
+    )
+    monkeypatch.setattr(
+        native_runtime,
+        "_bind_symbol_providers",
+        lambda **_kwargs: runtime_case.symbol_providers.bindings,
+    )
+
+    def verify_python_identity(
+        _context: native_runtime._NativeOutputContext,
+    ) -> tuple[Path, Path, native_runtime._PythonAbiIdentity]:
+        nonlocal loader_changed
+        loader_changed = True
+        return (
+            python_executable,
+            python_executable,
+            runtime_case.symbol_providers.python_abi,
+        )
+
+    monkeypatch.setattr(
+        native_runtime,
+        "_verify_toolchain_python_process_identity",
+        verify_python_identity,
+    )
+    monkeypatch.setattr(
+        native_runtime,
+        "collect_loaded_runtime_images",
+        lambda _target: (
+            late_snapshot if loader_changed else runtime_case.final_snapshot
+        ),
+    )
+
+    with pytest.raises(
+        FullC6NativeRuntimeError,
+        match="loader changed during provider collection",
+    ):
+        _REAL_COLLECT_SYMBOL_PROVIDER_OBSERVATION(
+            context=runtime_case.context,
+            runtime_receipt=runtime_case.runtime_receipt,
+            final_snapshot=runtime_case.final_snapshot,
+            declared_system_images=(),
+            declared_system_platform_images=(),
+        )
 
 
 def test_import_failure_collapses_to_the_bounded_factory_error(

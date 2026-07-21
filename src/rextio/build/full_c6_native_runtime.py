@@ -788,7 +788,12 @@ def _validate_authority_bindings(
         )
         if symbol_providers != authority._symbol_providers:
             return False
-        return hmac.compare_digest(authority._transaction_seal, _seal(authority))
+        if not hmac.compare_digest(authority._transaction_seal, _seal(authority)):
+            return False
+        return (
+            collect_loaded_runtime_images(context.target_triple)
+            == authority._final_snapshot
+        )
     except Exception:
         return False
 
@@ -1030,10 +1035,6 @@ def _collect_symbol_provider_observation(
         declared_system_images=declared_system_images,
         declared_system_platform_images=declared_system_platform_images,
     )
-    if collect_loaded_runtime_images(context.target_triple) != final_snapshot:
-        raise FullC6NativeRuntimeError(
-            "Full C6 loader changed during provider collection"
-        )
     _verify_runtime_inspector_identity(context)
     _launcher, fresh_main, fresh_abi = _verify_toolchain_python_process_identity(
         context
@@ -1041,7 +1042,7 @@ def _collect_symbol_provider_observation(
     if (fresh_main, fresh_abi) != (python_executable, python_abi):
         raise FullC6NativeRuntimeError("Full C6 Python ABI identity changed")
     try:
-        return _SymbolProviderObservation(
+        observation = _SymbolProviderObservation(
             toolchain_sha256=toolchain_sha256,
             python_abi=python_abi,
             python_images=python_images,
@@ -1051,6 +1052,11 @@ def _collect_symbol_provider_observation(
         raise FullC6NativeRuntimeError(
             "Full C6 symbol-provider observation is invalid"
         ) from exc
+    if collect_loaded_runtime_images(context.target_triple) != final_snapshot:
+        raise FullC6NativeRuntimeError(
+            "Full C6 loader changed during provider collection"
+        )
+    return observation
 
 
 def _verify_toolchain_python_identity(
