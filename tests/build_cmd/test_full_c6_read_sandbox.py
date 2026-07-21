@@ -1025,6 +1025,43 @@ class _AnchorProvider:
         self.seen = expected
 
 
+def test_macos_profile_rule_lines_separate_executable_mapping_by_access() -> None:
+    path = '"/__rextio_test__/capability"'
+
+    assert sandbox_module._macos_profile_rule_lines(
+        access="read",
+        selector="literal",
+        path=path,
+    ) == (
+        f"(allow file-read* (literal {path}))",
+    )
+    assert sandbox_module._macos_profile_rule_lines(
+        access="read-execute",
+        selector="literal",
+        path=path,
+    ) == (
+        f"(allow file-read* (literal {path}))",
+        f"(allow file-map-executable (literal {path}))",
+        f"(allow process-exec (literal {path}))",
+    )
+    assert sandbox_module._macos_profile_rule_lines(
+        access="read-write",
+        selector="literal",
+        path=path,
+    ) == (
+        f"(allow file-read* file-write* (literal {path}))",
+    )
+    assert sandbox_module._macos_profile_rule_lines(
+        access="read-write",
+        selector="subpath",
+        path=path,
+    ) == (
+        f"(allow file-read* file-write* (subpath {path}))",
+        f"(allow file-map-executable (subpath {path}))",
+        f"(allow process-exec (subpath {path}))",
+    )
+
+
 def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1223,15 +1260,38 @@ def test_real_macos_profile_denies_inherited_mutable_executable_mapping() -> Non
         ("/usr/bin/true",),
         macos_anchor=anchor,
     )
+    trusted_rule = SandboxPathRule(
+        mapped_library,
+        "read-execute",
+        "trusted-map-library",
+    )
+    trusted_plan = build_full_c6_sandbox_plan(
+        target_triple="aarch64-apple-darwin",
+        rules=(rule, trusted_rule),
+        platform_anchor_sha256=anchor.digest,
+    )
+    trusted_launch = prepare_full_c6_sandbox_launch(
+        trusted_plan,
+        ("/usr/bin/true",),
+        macos_anchor=anchor,
+    )
 
     python_executable = Path(sys.executable).resolve(strict=True)
     python_root = Path(sys.base_prefix).resolve(strict=True)
-    probe_profile = launch.command[2] + (
+    ancestor_literals = " ".join(
+        f"(literal {sandbox_module._sandbox_literal(os.fspath(parent))})"
+        for parent in reversed(python_root.parents)
+        if parent != Path("/")
+    )
+    python_allowances = (
+        f"(allow file-read* file-test-existence {ancestor_literals})\n"
         f"(allow file-read* file-test-existence file-map-executable "
         f"(subpath {sandbox_module._sandbox_literal(os.fspath(python_root))}))\n"
         f"(allow process-exec "
-        f"(literal {sandbox_module._sandbox_literal(os.fspath(python_executable))}))\n"
+        f"(subpath {sandbox_module._sandbox_literal(os.fspath(python_root))}))\n"
     )
+    probe_profile = launch.command[2] + python_allowances
+    trusted_profile = trusted_launch.command[2] + python_allowances
     library_deny = (
         '(deny file-read* file-write* file-test-existence file-map-executable '
         '(subpath "/Library")'
@@ -1255,52 +1315,43 @@ def test_real_macos_profile_denies_inherited_mutable_executable_mapping() -> Non
         "else:\n"
         "    region.close()\n"
     )
+
+    def run_profile(profile: str, descriptor: int) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "/usr/bin/sandbox-exec",
+                "-p",
+                profile,
+                "--",
+                os.fspath(python_executable),
+                "-I",
+                "-S",
+                "-c",
+                probe,
+                str(descriptor),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            env={},
+            cwd="/",
+            pass_fds=(descriptor,),
+        )
+
+    trusted_map_allow = (
+        "(allow file-map-executable "
+        f"(literal {sandbox_module._sandbox_literal(os.fspath(mapped_library))}))"
+    )
+    assert trusted_map_allow in trusted_profile
     descriptor = os.open(mapped_library, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
     try:
-        control = subprocess.run(
-            [
-                "/usr/bin/sandbox-exec",
-                "-p",
-                control_profile,
-                "--",
-                os.fspath(python_executable),
-                "-I",
-                "-S",
-                "-c",
-                probe,
-                str(descriptor),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10.0,
-            env={},
-            cwd="/",
-            pass_fds=(descriptor,),
-        )
-        denied = subprocess.run(
-            [
-                "/usr/bin/sandbox-exec",
-                "-p",
-                probe_profile,
-                "--",
-                os.fspath(python_executable),
-                "-I",
-                "-S",
-                "-c",
-                probe,
-                str(descriptor),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10.0,
-            env={},
-            cwd="/",
-            pass_fds=(descriptor,),
-        )
+        control = run_profile(control_profile, descriptor)
+        denied = run_profile(probe_profile, descriptor)
+        trusted = run_profile(trusted_profile, descriptor)
     finally:
         os.close(descriptor)
 
     assert control.returncode == 0, control.stderr
     assert denied.returncode == 23, denied.stderr
+    assert trusted.returncode == 0, trusted.stderr

@@ -1322,10 +1322,12 @@ def _macos_profile_rule_lines(
     if access == "read-execute":
         return (
             f"(allow file-read* ({selector} {path}))",
+            f"(allow file-map-executable ({selector} {path}))",
             f"(allow process-exec ({selector} {path}))",
         )
     lines = [f"(allow file-read* file-write* ({selector} {path}))"]
     if selector == "subpath":
+        lines.append(f"(allow file-map-executable ({selector} {path}))")
         lines.append(f"(allow process-exec ({selector} {path}))")
     return tuple(lines)
 
