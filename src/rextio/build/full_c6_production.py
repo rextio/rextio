@@ -442,6 +442,8 @@ def _collect_full_c6_production_material(
         boundary_fallback_threshold=config.build.fallback_threshold,
         external_native_registry=preflight.context.registry,
         external_runtime_guard=preflight.context.runtime_guard,
+        full_c6_analysis_scope=preflight.context.analysis_scope,
+        full_c6_config=config,
     )
     if replay is None:
         raise FullC6ProductionError("source transformation replay is incomplete")

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 import copy
+import hashlib
+import json
 import pickle
 from pathlib import Path
 
@@ -16,6 +18,13 @@ from rextio.artifacts.evidence import (
     SourceTransformationVerification,
 )
 from rextio.build.artifact_layout import ArtifactLayout
+from rextio.build.full_c6_cargo_workspace import (
+    compute_full_c6_cargo_vendor_tree_sha256,
+)
+from rextio.build.full_c6_host_inputs import (
+    FullC6AnalysisScope,
+    collect_full_c6_analysis_scope,
+)
 from rextio.build.supply_chain import (
     EvidenceInputSnapshot,
     capture_generated_python_inputs,
@@ -38,24 +47,35 @@ from rextio.build.orchestrator import (
 )
 from rextio.codegen.rust.cargo import render_cargo_toml
 from rextio.codegen.rust.generator import generate_rust_module
+from rextio.config.schema import BuildConfig, RextioConfig
 from rextio.ir.lowering import lower_project
 from rextio.partition.build_plan import BuildPlan, create_build_plan
 
 
 def _real_plugin_free_native_closure(
     project_root: Path,
+    *,
+    config: RextioConfig | None = None,
+    analysis_scope: FullC6AnalysisScope | None = None,
 ) -> tuple[BuildPlan, EvidenceInputSnapshot, object]:
     source = project_root / "worker.py"
-    source.write_text(
+    source_text = (
         "def helper(value: int) -> int:\n"
         "    return value + 1\n"
         "\n"
         "def score(value: int) -> int:\n"
-        "    return helper(value) * 2\n",
-        encoding="utf-8",
-        newline="\n",
+        "    return helper(value) * 2\n"
     )
-    analysis = analyze_project(project_root, native_marker="auto")
+    if source.exists():
+        assert source.read_text(encoding="utf-8") == source_text
+    else:
+        source.write_text(source_text, encoding="utf-8", newline="\n")
+    analysis = analyze_project(
+        project_root,
+        native_marker="auto",
+        plugin_config=config,
+        full_c6_analysis_scope=analysis_scope,
+    )
     accepted = tuple(analysis.accepted_native_functions)
     assert tuple(function.qualname for function in accepted) == (
         "worker.helper",
@@ -139,6 +159,102 @@ def _real_plugin_free_native_closure(
     return plan, snapshot, inventory
 
 
+def _strict_plugin_free_native_closure(
+    tmp_path: Path,
+) -> tuple[
+    Path,
+    BuildPlan,
+    EvidenceInputSnapshot,
+    object,
+    RextioConfig,
+    FullC6AnalysisScope,
+    Path,
+]:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    worker = project / "worker.py"
+    worker.write_text(
+        "def helper(value: int) -> int:\n"
+        "    return value + 1\n"
+        "\n"
+        "def score(value: int) -> int:\n"
+        "    return helper(value) * 2\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    lock = project / "Cargo.lock"
+    lock.write_text(
+        """\
+version = 4
+
+[[package]]
+name = "rextio_generated_native"
+version = "0.1.0"
+
+[[package]]
+name = "demo-dep"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+""",
+        encoding="utf-8",
+    )
+    vendor = project / "vendor"
+    package = vendor / "demo-dep-1.2.3"
+    vendor_files = {
+        "Cargo.toml": (
+            b'[package]\nname = "demo-dep"\nversion = "1.2.3"\n'
+            b'license = "MIT"\nlicense-file = "LICENSE"\n'
+        ),
+        "LICENSE": b"MIT license evidence\n",
+        "src/lib.rs": b"pub fn answer() -> u32 { 42 }\n",
+        "python/shadow.py": (
+            b"def vendor_shadow(value: int) -> int:\n    return value - 100\n"
+        ),
+        "python/shadow.pyi": b"def vendor_shadow(value: int) -> int: ...\n",
+    }
+    for relative, payload in vendor_files.items():
+        path = package.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        path.chmod(0o644)
+    (package / ".cargo-checksum.json").write_text(
+        json.dumps(
+            {
+                "files": {
+                    name: hashlib.sha256(payload).hexdigest()
+                    for name, payload in sorted(vendor_files.items())
+                },
+                "package": "a" * 64,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    config = RextioConfig(
+        build=BuildConfig(
+            artifact_distribution_policy="full-c6-required",
+            artifact_cargo_lock=lock.relative_to(project).as_posix(),
+            artifact_cargo_lock_sha256=hashlib.sha256(lock.read_bytes()).hexdigest(),
+            artifact_cargo_vendor=vendor.relative_to(project).as_posix(),
+            artifact_cargo_vendor_sha256=(
+                compute_full_c6_cargo_vendor_tree_sha256(vendor)
+            ),
+            artifact_signing_request_output=(
+                "state/rextio.full-c6-final-authorization-request.json"
+            ),
+        )
+    )
+    scope = collect_full_c6_analysis_scope(project, config=config)
+    plan, snapshot, inventory = _real_plugin_free_native_closure(
+        project,
+        config=config,
+        analysis_scope=scope,
+    )
+    return project, plan, snapshot, inventory, config, scope, vendor
+
+
 def test_scoped_replay_verifies_full_plugin_free_native_closure(
     tmp_path: Path,
 ) -> None:
@@ -199,6 +315,72 @@ def test_scoped_replay_mints_only_process_local_nonserializable_authority(
         copy.deepcopy(authority)
     with pytest.raises(TypeError, match="cannot be serialized"):
         pickle.dumps(authority)
+
+
+def test_strict_scoped_replay_excludes_verified_vendor_python_and_stub(
+    tmp_path: Path,
+) -> None:
+    project, plan, snapshot, inventory, config, scope, _vendor = (
+        _strict_plugin_free_native_closure(tmp_path)
+    )
+    stub_inputs = plan.analysis._stub_inputs
+    assert stub_inputs is not None
+    assert tuple(item.source_path for item in stub_inputs.records) == ("worker.py",)
+
+    authority = collect_scoped_source_transformation_replay_authority(
+        project_root=project,
+        plan=plan,
+        input_snapshot=snapshot,
+        transformation_inventory=inventory,
+        embedding_enabled=False,
+        full_c6_analysis_scope=scope,
+        full_c6_config=config,
+    )
+
+    assert isinstance(authority, SourceTransformationReplayAuthority)
+    assert authority.verification.function_qualnames == (
+        "worker.helper",
+        "worker.score",
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing-scope", "missing-config", "foreign-config", "stale-vendor"),
+)
+def test_strict_scoped_replay_requires_exact_live_scope_and_config(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    project, plan, snapshot, inventory, config, scope, vendor = (
+        _strict_plugin_free_native_closure(tmp_path)
+    )
+    supplied_scope: FullC6AnalysisScope | None = scope
+    supplied_config: RextioConfig | None = config
+    if mutation == "missing-scope":
+        supplied_scope = None
+    elif mutation == "missing-config":
+        supplied_config = None
+    elif mutation == "foreign-config":
+        supplied_config = RextioConfig(build=config.build)
+    else:
+        (vendor / "demo-dep-1.2.3" / "src" / "lib.rs").write_text(
+            "pub fn answer() -> u32 { 7 }\n",
+            encoding="utf-8",
+        )
+
+    assert (
+        collect_scoped_source_transformation_replay_authority(
+            project_root=project,
+            plan=plan,
+            input_snapshot=snapshot,
+            transformation_inventory=inventory,
+            embedding_enabled=False,
+            full_c6_analysis_scope=supplied_scope,
+            full_c6_config=supplied_config,
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("tamper", ["qualname", "range", "semantic"])

@@ -39,6 +39,7 @@ from rextio.build.artifact_layout import ArtifactLayout
 from rextio.codegen.python_wrapper.wrapper_gen import render_wrapper_module
 from rextio.codegen.rust.cargo import render_cargo_toml
 from rextio.codegen.rust.generator import generate_rust_module
+from rextio.config.schema import RextioConfig
 from rextio.fallback.module_copy import (
     fallback_module_path,
     generated_module_path,
@@ -52,6 +53,7 @@ from rextio.source.models import SourceModule, SourceOrigin
 from rextio.source.external_linkage import ExternalNativeRegistry, ExternalRuntimeGuard
 
 if TYPE_CHECKING:
+    from rextio.build.full_c6_host_inputs import FullC6AnalysisScope
     from rextio.build.supply_chain import EvidenceInputSnapshot
 
 _GENERATOR_BACKEND = "rextio-core-rust-pyo3-v1"
@@ -205,6 +207,8 @@ def collect_scoped_source_transformation_verification(
     boundary_fallback_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
     external_native_registry: ExternalNativeRegistry | None = None,
     external_runtime_guard: ExternalRuntimeGuard | None = None,
+    full_c6_analysis_scope: FullC6AnalysisScope | None = None,
+    full_c6_config: RextioConfig | None = None,
 ) -> SourceTransformationVerification | None:
     """Replay one complete plugin-free project-native PyO3 closure, or ``None``."""
     try:
@@ -217,6 +221,8 @@ def collect_scoped_source_transformation_verification(
             boundary_fallback_threshold=boundary_fallback_threshold,
             external_native_registry=external_native_registry,
             external_runtime_guard=external_runtime_guard,
+            full_c6_analysis_scope=full_c6_analysis_scope,
+            full_c6_config=full_c6_config,
         ).verification
     except Exception:
         return None
@@ -232,6 +238,8 @@ def collect_scoped_source_transformation_replay_authority(
     boundary_fallback_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
     external_native_registry: ExternalNativeRegistry | None = None,
     external_runtime_guard: ExternalRuntimeGuard | None = None,
+    full_c6_analysis_scope: FullC6AnalysisScope | None = None,
+    full_c6_config: RextioConfig | None = None,
 ) -> SourceTransformationReplayAuthority | None:
     """Replay exact C6.10 outputs and mint a process-local authority, or ``None``."""
     try:
@@ -244,6 +252,8 @@ def collect_scoped_source_transformation_replay_authority(
             boundary_fallback_threshold=boundary_fallback_threshold,
             external_native_registry=external_native_registry,
             external_runtime_guard=external_runtime_guard,
+            full_c6_analysis_scope=full_c6_analysis_scope,
+            full_c6_config=full_c6_config,
         )
         payload = _replay_authority_payload(
             verification=result.verification,
@@ -270,6 +280,8 @@ def _collect_scoped_source_transformation_replay(
     boundary_fallback_threshold: int,
     external_native_registry: ExternalNativeRegistry | None,
     external_runtime_guard: ExternalRuntimeGuard | None,
+    full_c6_analysis_scope: FullC6AnalysisScope | None,
+    full_c6_config: RextioConfig | None,
 ) -> _ReplayResult:
     from rextio.build.supply_chain import EvidenceInputSnapshot as SnapshotModel
 
@@ -297,6 +309,17 @@ def _collect_scoped_source_transformation_replay(
     analysis_root = Path(os.path.abspath(plan.analysis.project_root))
     if analysis_root != root:
         raise ValueError("source transformation verification project root disagrees")
+    replay_config = _require_replay_analysis_scope(
+        root=root,
+        plan=plan,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+        full_c6_config=full_c6_config,
+    )
+    if replay_config is not None and (
+        replay_config.build.fallback_threshold != boundary_fallback_threshold
+        or replay_config.embedding.enabled is not embedding_enabled
+    ):
+        raise ValueError("source transformation verification config disagrees")
     _require_pyo3_profile(plan)
 
     accepted = _accepted_function_map(plan.analysis)
@@ -377,18 +400,36 @@ def _collect_scoped_source_transformation_replay(
         source_receipts=initial_sources,
     )
 
+    _revalidate_replay_analysis_scope(
+        root=root,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+        full_c6_config=replay_config,
+    )
     replay_analysis = analyze_project(
         root,
-        boundary_warnings=True,
-        native_marker="auto",
+        boundary_warnings=(
+            True if replay_config is None else replay_config.policy.boundary_warnings
+        ),
+        native_marker=(
+            "auto" if replay_config is None else replay_config.policy.native_marker
+        ),
         target_language="rust",
-        native_top_level=False,
+        native_top_level=(
+            False if replay_config is None else replay_config.policy.native_top_level
+        ),
+        imports_config=None if replay_config is None else replay_config.imports,
         active_plugins=(),
         embedding_enabled=False,
         delegate_fallback=False,
         plugin_registry=None,
-        plugin_config=None,
+        plugin_config=replay_config,
         external_native_registry=external_native_registry,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+    )
+    _revalidate_replay_analysis_scope(
+        root=root,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+        full_c6_config=replay_config,
     )
     original_stub_inputs = plan.analysis._stub_inputs
     if original_stub_inputs is not None:
@@ -481,6 +522,11 @@ def _collect_scoped_source_transformation_replay(
         or final_cargo != initial_cargo
     ):
         raise ValueError("source transformation verification inputs changed during replay")
+    _revalidate_replay_analysis_scope(
+        root=root,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+        full_c6_config=replay_config,
+    )
 
     inventory_digest = sha256_hex(canonical_json_bytes(transformation_inventory.to_dict()))
     canonical_source_inputs = tuple(
@@ -505,6 +551,56 @@ def _collect_scoped_source_transformation_replay(
         ),
         generated_python=generated_python,
         generated_cargo_toml=generated_cargo_toml,
+    )
+
+
+def _require_replay_analysis_scope(
+    *,
+    root: Path,
+    plan: BuildPlan,
+    full_c6_analysis_scope: FullC6AnalysisScope | None,
+    full_c6_config: RextioConfig | None,
+) -> RextioConfig | None:
+    """Bind strict replay to the analysis namespace that produced its plan."""
+    plan_scope = plan.analysis._full_c6_analysis_scope
+    if full_c6_analysis_scope is None or full_c6_config is None:
+        if (
+            full_c6_analysis_scope is not None
+            or full_c6_config is not None
+            or plan_scope is not None
+        ):
+            raise ValueError("source transformation verification Full C6 scope is incomplete")
+        return None
+    if type(full_c6_config) is not RextioConfig:
+        raise TypeError("source transformation verification Full C6 config is invalid")
+    if plan_scope is not full_c6_analysis_scope:
+        raise ValueError("source transformation verification Full C6 scope disagrees")
+    _revalidate_replay_analysis_scope(
+        root=root,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+        full_c6_config=full_c6_config,
+    )
+    return full_c6_config
+
+
+def _revalidate_replay_analysis_scope(
+    *,
+    root: Path,
+    full_c6_analysis_scope: FullC6AnalysisScope | None,
+    full_c6_config: RextioConfig | None,
+) -> None:
+    if full_c6_analysis_scope is None:
+        if full_c6_config is not None:
+            raise ValueError("source transformation verification Full C6 scope is incomplete")
+        return
+    if type(full_c6_config) is not RextioConfig:
+        raise TypeError("source transformation verification Full C6 config is invalid")
+    from rextio.build.full_c6_host_inputs import require_full_c6_analysis_scope
+
+    require_full_c6_analysis_scope(
+        full_c6_analysis_scope,
+        project_root=root,
+        config=full_c6_config,
     )
 
 
