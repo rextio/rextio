@@ -195,6 +195,7 @@ class FullC6CargoDependencyWorkspaceReceipt:
     vendor_tree_sha256: str
     executor_config: FullC6CargoWorkspaceEntry
     metadata_files: tuple[str, ...]
+    _cargo_lock_payload: bytes = field(repr=False)
     _file_payloads: tuple[bytes, ...] = field(repr=False)
     _transaction_seal: bytes = field(repr=False)
     domain: str = FULL_C6_CARGO_WORKSPACE_DOMAIN
@@ -313,6 +314,10 @@ def collect_full_c6_cargo_dependency_workspace(
         raise FullC6CargoWorkspaceError("Cargo.lock source identity could not be rebuilt") from exc
     if not hmac.compare_digest(rebuilt_sources.digest, cargo_sources.digest):
         raise FullC6CargoWorkspaceError("Cargo.lock differs from its exact source identity")
+    cargo_lock_payload = _capture_cargo_lock_payload(
+        Path(cargo_lock),
+        rebuilt_sources,
+    )
     if not rebuilt_sources.packages or len(rebuilt_sources.packages) > MAX_FULL_C6_CARGO_PACKAGES:
         raise FullC6CargoWorkspaceError("Cargo dependency package count is outside scope")
     if any(item.source not in _ALLOWED_REGISTRY_SOURCES for item in rebuilt_sources.packages):
@@ -355,6 +360,7 @@ def collect_full_c6_cargo_dependency_workspace(
     object.__setattr__(provisional, "vendor_tree_sha256", vendor_tree_sha256)
     object.__setattr__(provisional, "executor_config", config_entry)
     object.__setattr__(provisional, "metadata_files", metadata_files)
+    object.__setattr__(provisional, "_cargo_lock_payload", cargo_lock_payload)
     object.__setattr__(provisional, "_file_payloads", file_payloads)
     object.__setattr__(provisional, "domain", FULL_C6_CARGO_WORKSPACE_DOMAIN)
     object.__setattr__(
@@ -375,6 +381,7 @@ def collect_full_c6_cargo_dependency_workspace(
         vendor_tree_sha256=vendor_tree_sha256,
         executor_config=config_entry,
         metadata_files=metadata_files,
+        _cargo_lock_payload=cargo_lock_payload,
         _file_payloads=file_payloads,
         _transaction_seal=seal,
     )
@@ -392,6 +399,15 @@ def validate_full_c6_cargo_dependency_workspace_receipt(
     except (TypeError, ValueError, FullC6CargoWorkspaceError):
         return False
     return hmac.compare_digest(receipt._transaction_seal, expected)
+
+
+def _validated_full_c6_cargo_lock_payload(
+    receipt: FullC6CargoDependencyWorkspaceReceipt,
+) -> bytes:
+    """Return a fresh immutable lock payload only after full receipt validation."""
+    if not validate_full_c6_cargo_dependency_workspace_receipt(receipt):
+        raise FullC6CargoWorkspaceError("Cargo dependency workspace receipt is stale")
+    return memoryview(receipt._cargo_lock_payload).tobytes()
 
 
 def materialize_full_c6_cargo_dependency_workspace(
@@ -485,6 +501,49 @@ def _capture_stable_vendor_tree(root: Path) -> _CapturedTree:
     if first != second:
         raise FullC6CargoWorkspaceError("Cargo vendor tree changed during capture")
     return first
+
+
+def _capture_cargo_lock_payload(
+    path: Path,
+    cargo_sources: CargoSourcesIdentity,
+) -> bytes:
+    """Read the exact already-identified Cargo.lock through a no-follow fd."""
+    try:
+        absolute = path.absolute()
+        name = absolute.name
+        _validate_segment(name)
+        parent_fd = _open_directory_path_no_follow(absolute.parent)
+        try:
+            observed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(observed.st_mode)
+                or stat.S_ISLNK(observed.st_mode)
+                or observed.st_nlink != 1
+                or observed.st_uid != os.geteuid()
+                or observed.st_size <= 0
+                or observed.st_size > MAX_FULL_C6_CARGO_MANIFEST_BYTES
+            ):
+                raise FullC6CargoWorkspaceError(
+                    "Cargo.lock is not an owner-owned unaliased regular file"
+                )
+            payload = _read_member_bytes(parent_fd, name, observed)
+        finally:
+            os.close(parent_fd)
+    except FullC6CargoWorkspaceError:
+        raise
+    except OSError as exc:
+        raise FullC6CargoWorkspaceError("Cargo.lock could not be captured safely") from exc
+    expected = cargo_sources.lock_file
+    if (
+        expected.executable
+        or expected.size != len(payload)
+        or not hmac.compare_digest(
+            expected.sha256,
+            hashlib.sha256(payload).hexdigest(),
+        )
+    ):
+        raise FullC6CargoWorkspaceError("Cargo.lock retained bytes differ from identity")
+    return payload
 
 
 def _capture_vendor_tree_once(root: Path) -> _CapturedTree:
@@ -898,6 +957,19 @@ def _validate_receipt_shape(receipt: FullC6CargoDependencyWorkspaceReceipt) -> N
         raise ValueError("Full C6 Cargo workspace authority posture is invalid")
     if type(receipt.cargo_sources) is not CargoSourcesIdentity:
         raise TypeError("Full C6 Cargo source identity is invalid")
+    lock_identity = receipt.cargo_sources.lock_file
+    if (
+        type(receipt._cargo_lock_payload) is not bytes
+        or not receipt._cargo_lock_payload
+        or len(receipt._cargo_lock_payload) > MAX_FULL_C6_CARGO_MANIFEST_BYTES
+        or lock_identity.executable
+        or lock_identity.size != len(receipt._cargo_lock_payload)
+        or not hmac.compare_digest(
+            lock_identity.sha256,
+            hashlib.sha256(receipt._cargo_lock_payload).hexdigest(),
+        )
+    ):
+        raise ValueError("Full C6 Cargo retained Cargo.lock bytes are stale")
     if (
         type(receipt.packages) is not tuple
         or not receipt.packages

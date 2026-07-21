@@ -18,6 +18,7 @@ from rextio.build.full_c6_cargo_workspace import (
     FULL_C6_CARGO_LAYOUT_DEFAULT,
     FULL_C6_CARGO_LAYOUT_VERSIONED,
     FullC6CargoWorkspaceError,
+    _validated_full_c6_cargo_lock_payload,
     collect_full_c6_cargo_dependency_workspace,
     compute_full_c6_cargo_vendor_tree_sha256,
     materialize_full_c6_cargo_dependency_workspace,
@@ -127,7 +128,7 @@ def _checksum_document(vendor: Path) -> tuple[Path, dict[str, object]]:
 def test_collects_sealed_exact_workspace_and_materializes_executor_projection(
     tmp_path: Path,
 ) -> None:
-    _, sources, _, pin, receipt = _collect(tmp_path)
+    lock, sources, _, pin, receipt = _collect(tmp_path)
 
     assert receipt.cargo_sources.digest == sources.digest
     assert receipt.vendor_layout == FULL_C6_CARGO_LAYOUT_VERSIONED
@@ -153,6 +154,10 @@ def test_collects_sealed_exact_workspace_and_materializes_executor_projection(
     assert metadata[f"vendor/{PACKAGE}-{VERSION}/LICENSE"] == b"MIT license evidence\n"
     assert str(tmp_path) not in repr(receipt.to_dict())
     assert "MIT license evidence" not in repr(receipt.to_dict())
+    retained_lock = _validated_full_c6_cargo_lock_payload(receipt)
+    assert retained_lock == lock.read_bytes()
+    assert retained_lock is not receipt._cargo_lock_payload
+    assert lock.read_text(encoding="utf-8") not in repr(receipt.to_dict())
 
     destination = tmp_path / "materialized"
     projection = materialize_full_c6_cargo_dependency_workspace(receipt, destination)
@@ -182,6 +187,27 @@ def test_retained_payload_or_receipt_mutation_fails_seal(tmp_path: Path) -> None
     assert not validate_full_c6_cargo_dependency_workspace_receipt(receipt)
     with pytest.raises(FullC6CargoWorkspaceError, match="stale"):
         materialize_full_c6_cargo_dependency_workspace(receipt, tmp_path / "output")
+
+
+def test_retained_cargo_lock_tamper_and_identity_drift_fail_closed(
+    tmp_path: Path,
+) -> None:
+    payload_root = tmp_path / "payload"
+    payload_root.mkdir()
+    *_, tampered = _collect(payload_root)
+    payload = tampered._cargo_lock_payload
+    object.__setattr__(tampered, "_cargo_lock_payload", b"X" + payload[1:])
+    assert not validate_full_c6_cargo_dependency_workspace_receipt(tampered)
+    with pytest.raises(FullC6CargoWorkspaceError, match="stale"):
+        _validated_full_c6_cargo_lock_payload(tampered)
+
+    identity_root = tmp_path / "identity"
+    identity_root.mkdir()
+    *_, drifted = _collect(identity_root)
+    object.__setattr__(drifted.cargo_sources.lock_file, "sha256", "0" * 64)
+    assert not validate_full_c6_cargo_dependency_workspace_receipt(drifted)
+    with pytest.raises(FullC6CargoWorkspaceError, match="stale"):
+        _validated_full_c6_cargo_lock_payload(drifted)
 
 
 @pytest.mark.parametrize("mutation", ("file", "package-checksum", "missing", "extra"))
