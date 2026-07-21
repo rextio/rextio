@@ -3246,8 +3246,10 @@ def _require_flag(name: str) -> int:
 
 def _stamp(value: os.stat_result) -> _FilesystemStamp:
     birthtime_ns = getattr(value, "st_birthtime_ns", None)
-    if birthtime_ns is None and hasattr(value, "st_birthtime"):
-        birthtime_ns = int(value.st_birthtime * 1_000_000_000)
+    if birthtime_ns is None:
+        birthtime = getattr(value, "st_birthtime", None)
+        if birthtime is not None:
+            birthtime_ns = int(birthtime * 1_000_000_000)
     return _FilesystemStamp(
         device=value.st_dev,
         inode=value.st_ino,
