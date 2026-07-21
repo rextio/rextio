@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import os
@@ -1067,6 +1068,784 @@ def test_registry_rejects_indirect_external_binding_mutation_or_escape(
             distribution=DIST,
             version=VERSION,
         )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        pytest.param(
+            """\
+from demo_pkg import affine as f
+
+def mutate() -> None:
+    global f
+    from builtins import abs as f
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+            id="global-import-from-rebind",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+
+def mutate() -> None:
+    global p
+    import builtins as p
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="global-import-rebind",
+        ),
+        pytest.param(
+            """\
+from demo_pkg import affine as f
+
+def mutate() -> None:
+    global f
+    def f(x: int) -> int:
+        return x
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+            id="global-function-rebind",
+        ),
+        pytest.param(
+            """\
+from demo_pkg import affine as f
+
+def mutate() -> None:
+    global f
+    class f:
+        pass
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+            id="global-class-rebind",
+        ),
+        pytest.param(
+            """\
+from demo_pkg import affine as f
+
+def mutate() -> None:
+    global f
+    try:
+        raise ValueError
+    except Exception as f:
+        pass
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+            id="global-exception-rebind",
+        ),
+        pytest.param(
+            """\
+from demo_pkg import affine as f
+
+def mutate(value: object) -> None:
+    global f
+    match value:
+        case f:
+            pass
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+            id="global-pattern-rebind",
+        ),
+    ),
+)
+def test_registry_rejects_non_name_global_binders_of_external_alias(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    analysis = _analysis(tmp_path, source)
+    linkage = importlib.import_module("rextio.source.external_linkage")
+
+    with pytest.raises(linkage.ExternalLinkageError, match="external-linkage-"):
+        linkage.build_external_native_registry(
+            analysis,
+            (_external_plan(),),
+            package=PACKAGE,
+            distribution=DIST,
+            version=VERSION,
+        )
+
+
+def test_external_binding_binder_gate_rejects_nonlocal_alias() -> None:
+    linkage = importlib.import_module("rextio.source.external_linkage")
+    tree = ast.parse(
+        """\
+def outer() -> object:
+    f = object()
+    def mutate() -> None:
+        nonlocal f
+        from builtins import abs as f
+    return mutate
+"""
+    )
+
+    with pytest.raises(
+        linkage.ExternalLinkageError,
+        match="external-linkage-target-escaped",
+    ):
+        linkage._require_no_sensitive_non_name_binders(tree, frozenset({"f"}))
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        pytest.param(
+            """\
+import sys
+import demo_pkg as p
+
+def mutate() -> None:
+    sys._getframe().f_globals["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="sys-getframe-globals",
+        ),
+        pytest.param(
+            """\
+from inspect import currentframe as frame
+import demo_pkg as p
+
+def mutate() -> None:
+    frame().f_globals.update({"p": object()})
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="inspect-currentframe-globals",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+
+def anchor() -> int:
+    return 0
+
+def mutate() -> None:
+    anchor.__globals__["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="project-callable-globals",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+
+def anchor() -> int:
+    return 0
+
+def mutate() -> None:
+    getattr(anchor, "__globals__")["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="getattr-project-callable-globals",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+
+def anchor() -> int:
+    return 0
+
+def mutate() -> None:
+    object.__getattribute__(anchor, "__globals__")["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="object-getattribute-project-callable-globals",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+
+def mutate() -> None:
+    try:
+        1 / 0
+    except Exception as error:
+        error.__traceback__.tb_frame.f_globals["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="traceback-frame-globals",
+        ),
+        pytest.param(
+            """\
+import inspect
+import demo_pkg as p
+
+def mutate() -> None:
+    inspect.stack()[0].frame.f_globals["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="inspect-stack-frame-globals",
+        ),
+        pytest.param(
+            """\
+import sys
+import demo_pkg as p
+
+def mutate() -> None:
+    next(iter(sys._current_frames().values())).f_globals["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="sys-current-frames-globals",
+        ),
+        pytest.param(
+            """\
+import sys
+import demo_pkg as p
+
+def mutate() -> None:
+    try:
+        1 / 0
+    except Exception:
+        sys.exc_info()[2].tb_frame.f_globals["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="sys-exc-info-traceback-frame",
+        ),
+        pytest.param(
+            """\
+import sys
+import demo_pkg as p
+
+def trace(frame: object, event: str, argument: object) -> object:
+    frame.f_globals["p"] = object()
+    return trace
+
+def mutate() -> None:
+    sys.settrace(trace)
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="sys-settrace-frame-callback",
+        ),
+        pytest.param(
+            """\
+from operator import attrgetter
+import demo_pkg as p
+
+def anchor() -> int:
+    return 0
+
+def mutate() -> None:
+    attrgetter("__globals__")(anchor)["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="operator-attrgetter-callable-globals",
+        ),
+        pytest.param(
+            """\
+import inspect
+import demo_pkg as p
+
+def anchor() -> int:
+    return 0
+
+def mutate() -> None:
+    inspect.getmodule(anchor).p = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="inspect-getmodule-owner",
+        ),
+        pytest.param(
+            """\
+import inspect
+import demo_pkg as p
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+
+def mutate() -> None:
+    inspect.getclosurevars(calculate).globals["p"] = object()
+""",
+            id="inspect-getclosurevars-globals",
+        ),
+        pytest.param(
+            """\
+import inspect
+import demo_pkg as p
+
+def anchor() -> int:
+    return 0
+
+def mutate() -> None:
+    dict(inspect.getmembers(anchor))["__globals__"]["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="inspect-getmembers-callable-globals",
+        ),
+        pytest.param(
+            """\
+import inspect
+import demo_pkg as p
+
+def anchor() -> int:
+    return 0
+
+def mutate() -> None:
+    inspect.getattr_static(anchor, "__globals__")["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="inspect-getattr-static-callable-globals",
+        ),
+        pytest.param(
+            """\
+from operator import methodcaller
+import demo_pkg as p
+
+def anchor() -> int:
+    return 0
+
+def mutate() -> None:
+    methodcaller("__getattribute__", "__globals__")(anchor)["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="operator-methodcaller-callable-globals",
+        ),
+        pytest.param(
+            """\
+import gc
+import demo_pkg as p
+
+def anchor() -> int:
+    return 0
+
+def mutate() -> None:
+    for namespace in gc.get_referrers(anchor):
+        if isinstance(namespace, dict):
+            namespace["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="gc-referrers-module-namespace",
+        ),
+        pytest.param(
+            """\
+import ctypes
+import demo_pkg as p
+
+def mutate() -> object:
+    return ctypes.pythonapi.PyEval_GetFrame
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="ctypes-pythonapi-frame",
+        ),
+    ),
+)
+def test_registry_rejects_indirect_frame_and_callable_namespace_routes(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    analysis = _analysis(tmp_path, source)
+    linkage = importlib.import_module("rextio.source.external_linkage")
+
+    with pytest.raises(
+        linkage.ExternalLinkageError,
+        match="external-linkage-(?:target-mutated|target-escaped|dynamic-namespace)",
+    ):
+        linkage.build_external_native_registry(
+            analysis,
+            (_external_plan(),),
+            package=PACKAGE,
+            distribution=DIST,
+            version=VERSION,
+        )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        pytest.param(
+            """\
+import demo_pkg as p
+from demo_pkg import __dict__ as namespace
+
+def mutate() -> None:
+    namespace["affine"] = abs
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="external-module-dict-mutation",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+from demo_pkg import __dict__ as namespace
+
+def mutate() -> None:
+    namespace.update({"affine": abs})
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="external-module-dict-update",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+from demo_pkg import __dict__ as namespace
+
+def escaped() -> object:
+    return namespace
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="external-module-dict-escape",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+from demo_pkg import __globals__ as namespace
+
+def escaped() -> object:
+    return namespace
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="external-module-globals-escape",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+from demo_pkg import __dict__ as unused_namespace
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="unused-external-module-dict-binding",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+from demo_pkg import __builtins__ as unused_namespace
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="unused-external-builtins-binding",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+from demo_pkg import unused as leaked_callable
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="unused-external-callable-binding",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as unused_module
+from demo_pkg import affine as f
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+            id="unused-external-module-binding",
+        ),
+    ),
+)
+def test_registry_rejects_imported_external_namespace_containers(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    analysis = _analysis(tmp_path, source)
+    linkage = importlib.import_module("rextio.source.external_linkage")
+
+    with pytest.raises(
+        linkage.ExternalLinkageError,
+        match="external-linkage-(?:target-mutated|target-escaped|dynamic-namespace)",
+    ):
+        linkage.build_external_native_registry(
+            analysis,
+            (_external_plan(),),
+            package=PACKAGE,
+            distribution=DIST,
+            version=VERSION,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutator_source",
+    (
+        pytest.param("import app\napp.p = object()\n", id="attribute-assign"),
+        pytest.param(
+            'import app\napp.__dict__["p"] = object()\n',
+            id="module-dict-assign",
+        ),
+        pytest.param(
+            'import app\nsetattr(app, "p", object())\n',
+            id="setattr-assign",
+        ),
+        pytest.param(
+            """\
+from app import p as sibling
+
+def mutate() -> None:
+    sibling.affine = abs
+""",
+            id="imported-sibling-mutation",
+        ),
+        pytest.param("import app\nretained = app\n", id="owner-module-escape"),
+        pytest.param(
+            """\
+from app import __dict__ as namespace
+
+def mutate() -> None:
+    namespace["p"] = object()
+""",
+            id="owner-namespace-mutation",
+        ),
+        pytest.param("import app\n", id="unused-owner-module-binding"),
+    ),
+)
+def test_registry_rejects_cross_project_module_external_binding_mutation_or_escape(
+    tmp_path: Path,
+    mutator_source: str,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text(
+        """\
+import demo_pkg as p
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+        encoding="utf-8",
+    )
+    (project / "mutator.py").write_text(mutator_source, encoding="utf-8")
+    analysis = analyze_project(project, imports_config=_imports())
+    linkage = importlib.import_module("rextio.source.external_linkage")
+
+    with pytest.raises(
+        linkage.ExternalLinkageError,
+        match="external-linkage-(?:target-mutated|target-escaped|dynamic-namespace)",
+    ):
+        linkage.build_external_native_registry(
+            analysis,
+            (_external_plan(),),
+            package=PACKAGE,
+            distribution=DIST,
+            version=VERSION,
+        )
+
+
+def test_registry_keeps_direct_project_call_through_external_owner_module(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text(
+        """\
+import demo_pkg as p
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+        encoding="utf-8",
+    )
+    (project / "consumer.py").write_text(
+        """\
+import app
+
+def run(x: int) -> int:
+    return app.calculate(x)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(project, imports_config=_imports())
+    linkage = importlib.import_module("rextio.source.external_linkage")
+
+    registry = linkage.build_external_native_registry(
+        analysis,
+        (_external_plan(),),
+        package=PACKAGE,
+        distribution=DIST,
+        version=VERSION,
+    )
+
+    assert tuple(call.caller_qualname for call in registry.linked_calls) == ("app.calculate",)
+
+
+@pytest.mark.parametrize(
+    "consumer_body",
+    (
+        pytest.param("retained = pkg.app\n", id="direct-retention"),
+        pytest.param("retained = [pkg.app]\n", id="list-retention"),
+        pytest.param("retained = {'module': pkg.app}\n", id="dict-retention"),
+    ),
+)
+def test_registry_rejects_package_root_escape_of_sensitive_project_module(
+    tmp_path: Path,
+    consumer_body: str,
+) -> None:
+    project = tmp_path / "project"
+    package = project / "pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text(
+        """\
+import demo_pkg as p
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+        encoding="utf-8",
+    )
+    (project / "consumer.py").write_text(
+        f"import pkg.app\n{consumer_body}",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(project, imports_config=_imports())
+    linkage = importlib.import_module("rextio.source.external_linkage")
+
+    with pytest.raises(
+        linkage.ExternalLinkageError,
+        match="external-linkage-(?:target-mutated|target-escaped|dynamic-namespace)",
+    ):
+        linkage.build_external_native_registry(
+            analysis,
+            (_external_plan(),),
+            package=PACKAGE,
+            distribution=DIST,
+            version=VERSION,
+        )
+
+
+def test_registry_keeps_exact_project_call_through_sensitive_package_root(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    package = project / "pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text(
+        """\
+import demo_pkg as p
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+        encoding="utf-8",
+    )
+    (project / "consumer.py").write_text(
+        """\
+import pkg.app
+
+def run(x: int) -> int:
+    return pkg.app.calculate(x)
+""",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(project, imports_config=_imports())
+    linkage = importlib.import_module("rextio.source.external_linkage")
+
+    registry = linkage.build_external_native_registry(
+        analysis,
+        (_external_plan(),),
+        package=PACKAGE,
+        distribution=DIST,
+        version=VERSION,
+    )
+
+    assert tuple(call.caller_qualname for call in registry.linked_calls) == ("pkg.app.calculate",)
+
+
+def test_registry_fresh_analysis_rechecks_cross_project_binding_slots(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text(
+        """\
+import demo_pkg as p
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+        encoding="utf-8",
+    )
+    mutator = project / "mutator.py"
+    mutator.write_text(
+        """\
+def untouched() -> int:
+    return 0
+""",
+        encoding="utf-8",
+    )
+    linkage = importlib.import_module("rextio.source.external_linkage")
+    initial = analyze_project(project, imports_config=_imports())
+    registry = linkage.build_external_native_registry(
+        initial,
+        (_external_plan(),),
+        package=PACKAGE,
+        distribution=DIST,
+        version=VERSION,
+    )
+    mutator.write_text(
+        """\
+import app
+
+def mutate() -> None:
+    app.p = object()
+""",
+        encoding="utf-8",
+    )
+    changed = analyze_project(
+        project,
+        imports_config=_imports(),
+        external_native_registry=registry,
+    )
+
+    with pytest.raises(
+        linkage.ExternalLinkageError,
+        match="external-linkage-project-analysis-stale",
+    ):
+        registry.require_fresh_analysis(changed)
 
 
 def test_registry_keeps_clean_direct_module_and_callable_leaf_calls(

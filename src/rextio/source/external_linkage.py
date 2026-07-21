@@ -70,11 +70,60 @@ _DYNAMIC_NAMESPACE_PATHS = frozenset(
         "builtins.globals",
         "builtins.locals",
         "builtins.vars",
+        "ctypes.PyDLL",
+        "ctypes.pythonapi",
+        "gc.get_objects",
+        "gc.get_referents",
+        "gc.get_referrers",
         "importlib.import_module",
         "importlib.__dict__",
         "importlib.reload",
+        "inspect.currentframe",
+        "inspect.getclosurevars",
+        "inspect.getattr_static",
+        "inspect.getinnerframes",
+        "inspect.getmembers",
+        "inspect.getmembers_static",
+        "inspect.getmodule",
+        "inspect.getouterframes",
+        "inspect.stack",
+        "inspect.trace",
+        "operator.attrgetter",
+        "operator.methodcaller",
         "sys.__dict__",
+        "sys._current_exceptions",
+        "sys._current_frames",
+        "sys._getframe",
+        "sys.exc_info",
         "sys.modules",
+        "sys.setprofile",
+        "sys.settrace",
+        "traceback.walk_stack",
+        "traceback.walk_tb",
+    }
+)
+_REFLECTIVE_ATTRIBUTE_NAMES = frozenset(
+    {
+        "__builtins__",
+        "__dict__",
+        "__getattr__",
+        "__getattribute__",
+        "__globals__",
+        "ag_frame",
+        "cr_frame",
+        "f_builtins",
+        "f_globals",
+        "f_locals",
+        "frame",
+        "gi_frame",
+        "tb_frame",
+    }
+)
+_NAMESPACE_CONTAINER_NAMES = frozenset(
+    {
+        "__builtins__",
+        "__dict__",
+        "__globals__",
     }
 )
 _MUTATING_METHOD_NAMES = frozenset(
@@ -88,6 +137,74 @@ _MUTATING_METHOD_NAMES = frozenset(
         "update",
     }
 )
+
+
+@dataclass(slots=True)
+class _ProjectExternalBindingGraph:
+    """Resolve project import slots that can reach one external namespace.
+
+    A Python import is a mutable module-global slot.  The external target
+    ``demo_pkg.affine`` can therefore also be reached as ``app.p.affine`` when
+    ``app.p`` is ``import demo_pkg as p``.  Keep that project slot distinct from
+    the external callable while resolving both to the same capability.
+    """
+
+    package: str
+    external_targets: frozenset[str]
+    imports_by_module: dict[str, dict[str, str]]
+    project_functions: frozenset[str]
+    sensitive_slots: frozenset[str]
+    sensitive_owner_modules: frozenset[str]
+
+    def resolve(self, path: str) -> str:
+        """Follow final/source import slots without executing project code."""
+        current = path
+        seen: set[str] = set()
+        limit = max(8, sum(len(value) for value in self.imports_by_module.values()) + 1)
+        for _ in range(limit):
+            if current in seen:
+                break
+            seen.add(current)
+            replacement = self._replace_one_project_slot(current)
+            if replacement is None or replacement == current:
+                break
+            current = replacement
+        return current
+
+    def is_sensitive_capability(self, path: str) -> bool:
+        """Return whether ``path`` exposes a live external/project namespace."""
+        resolved = self.resolve(path)
+        if resolved == self.package or resolved.startswith(f"{self.package}."):
+            return True
+        if any(
+            resolved == slot or resolved.startswith(f"{slot}.") or slot.startswith(f"{resolved}.")
+            for slot in self.sensitive_slots
+        ):
+            return True
+        return any(
+            resolved == owner
+            or resolved.startswith(f"{owner}.")
+            or owner.startswith(f"{resolved}.")
+            for owner in self.sensitive_owner_modules
+        )
+
+    def is_safe_direct_call(self, path: str) -> bool:
+        """Allow only an exact external leaf or statically known project call."""
+        resolved = self.resolve(path)
+        return resolved in self.external_targets or resolved in self.project_functions
+
+    def _replace_one_project_slot(self, path: str) -> str | None:
+        for module_name in sorted(self.imports_by_module, key=len, reverse=True):
+            prefix = f"{module_name}."
+            if not path.startswith(prefix):
+                continue
+            remainder = path.removeprefix(prefix)
+            alias, separator, tail = remainder.partition(".")
+            imported = self.imports_by_module[module_name].get(alias)
+            if imported is None:
+                continue
+            return f"{imported}.{tail}" if separator else imported
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,20 +357,26 @@ class ExternalNativeRegistry:
             for module in analysis.modules
             for function in module.functions
         }
+        targets = frozenset(item.target for item in self.linked_calls)
+        try:
+            binding_graph = _build_project_external_binding_graph(
+                analysis,
+                package=self.package,
+                targets=targets,
+            )
+            _require_project_external_binding_integrity(
+                analysis,
+                targets=targets,
+                binding_graph=binding_graph,
+            )
+        except ExternalLinkageError as error:
+            raise ExternalLinkageError("external-linkage-project-analysis-stale") from error
         for linked in self.linked_calls:
             entry = functions.get(linked.caller_qualname)
             if entry is None:
                 raise ExternalLinkageError("external-linkage-project-analysis-stale")
             module, function = entry
-            try:
-                tree = _read_project_tree(module)
-                _require_no_external_value_escape(
-                    tree,
-                    targets=frozenset(item.target for item in self.linked_calls),
-                    imports=module.imports,
-                )
-            except ExternalLinkageError as error:
-                raise ExternalLinkageError("external-linkage-project-analysis-stale") from error
+            tree = _read_project_tree(module)
             function_name_count = sum(
                 1
                 for node in tree.body
@@ -406,6 +529,18 @@ def build_external_native_registry(
                 raise ExternalLinkageError("external-linkage-function-duplicate")
             bindings[binding.qualname] = (plan, binding)
 
+    external_targets = frozenset(bindings)
+    binding_graph = _build_project_external_binding_graph(
+        analysis,
+        package=package,
+        targets=external_targets,
+    )
+    _require_project_external_binding_integrity(
+        analysis,
+        targets=external_targets,
+        binding_graph=binding_graph,
+    )
+
     linked: list[ExternalLinkedCall] = []
     caller_definition_counts: dict[str, int] = {}
     for module in analysis.modules:
@@ -414,15 +549,6 @@ def build_external_native_registry(
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 qualname = f"{module.module_name}.{node.name}"
                 caller_definition_counts[qualname] = caller_definition_counts.get(qualname, 0) + 1
-        external_targets = frozenset(bindings)
-        for target in external_targets:
-            if analysis_target_is_mutated(module, target):
-                raise ExternalLinkageError("external-linkage-target-mutated")
-        _require_no_external_value_escape(
-            tree,
-            targets=external_targets,
-            imports=module.imports,
-        )
         calls_by_position = {
             (node.lineno, node.col_offset): node
             for node in ast.walk(tree)
@@ -575,6 +701,87 @@ def _read_project_tree(module: ModuleAnalysis) -> ast.Module:
         raise ExternalLinkageError("external-linkage-project-source-unavailable") from error
 
 
+def _build_project_external_binding_graph(
+    analysis: ProjectAnalysis,
+    *,
+    package: str,
+    targets: frozenset[str],
+) -> _ProjectExternalBindingGraph:
+    if type(analysis) is not ProjectAnalysis or not targets:
+        raise ExternalLinkageError("external-linkage-binding-graph-input-invalid")
+    imports_by_module: dict[str, dict[str, str]] = {}
+    project_functions: set[str] = set()
+    for module in analysis.modules:
+        tree = _read_project_tree(module)
+        observed = dict(_top_level_import_aliases(tree))
+        observed.update(module.imports)
+        imports_by_module[module.module_name] = observed
+        project_functions.update(function.qualname for function in module.functions)
+
+    graph = _ProjectExternalBindingGraph(
+        package=package,
+        external_targets=targets,
+        imports_by_module=imports_by_module,
+        project_functions=frozenset(project_functions),
+        sensitive_slots=frozenset(),
+        sensitive_owner_modules=frozenset(),
+    )
+    slots: set[str] = set()
+    owners: set[str] = set()
+    while True:
+        graph.sensitive_slots = frozenset(slots)
+        graph.sensitive_owner_modules = frozenset(owners)
+        previous = (len(slots), len(owners))
+        for module_name, imports in imports_by_module.items():
+            for alias, imported in imports.items():
+                resolved = graph.resolve(imported)
+                reaches_external = resolved == package or resolved.startswith(f"{package}.")
+                reaches_owner = any(
+                    resolved == owner
+                    or resolved.startswith(f"{owner}.")
+                    or owner.startswith(f"{resolved}.")
+                    for owner in owners
+                )
+                reaches_slot = any(
+                    resolved == slot
+                    or resolved.startswith(f"{slot}.")
+                    or slot.startswith(f"{resolved}.")
+                    for slot in slots
+                )
+                if reaches_external or reaches_owner or reaches_slot:
+                    slots.add(f"{module_name}.{alias}")
+                    owners.add(module_name)
+        if previous == (len(slots), len(owners)):
+            break
+    graph.sensitive_slots = frozenset(slots)
+    graph.sensitive_owner_modules = frozenset(owners)
+    return graph
+
+
+def _require_project_external_binding_integrity(
+    analysis: ProjectAnalysis,
+    *,
+    targets: frozenset[str],
+    binding_graph: _ProjectExternalBindingGraph,
+) -> None:
+    """Reject mutation/escape anywhere in the complete fresh project graph."""
+    for module in analysis.modules:
+        tree = _read_project_tree(module)
+        for target in targets:
+            if analysis_target_is_mutated(
+                module,
+                target,
+                binding_graph=binding_graph,
+            ):
+                raise ExternalLinkageError("external-linkage-target-mutated")
+        _require_no_external_value_escape(
+            tree,
+            targets=targets,
+            imports=module.imports,
+            binding_graph=binding_graph,
+        )
+
+
 def _direct_external_target(
     node: ast.Call,
     *,
@@ -605,7 +812,12 @@ def _direct_external_target(
     return target, head
 
 
-def analysis_target_is_mutated(module: ModuleAnalysis, target: str) -> bool:
+def analysis_target_is_mutated(
+    module: ModuleAnalysis,
+    target: str,
+    *,
+    binding_graph: _ProjectExternalBindingGraph | None = None,
+) -> bool:
     """Reject project-authority or exact-source mutation of an external target.
 
     The ordinary project mutation index is intentionally rooted in project and
@@ -617,12 +829,15 @@ def analysis_target_is_mutated(module: ModuleAnalysis, target: str) -> bool:
     if module.project_mutations.target_is_mutated(target):
         return True
     tree = _read_project_tree(module)
-    if _has_dynamic_namespace_access(tree, module.imports):
+    source_imports = dict(_top_level_import_aliases(tree))
+    effective_imports = {**source_imports, **module.imports}
+    if _has_dynamic_namespace_access(tree, effective_imports):
         return True
     sensitive_aliases = _sensitive_import_aliases(
         tree=tree,
         targets=frozenset({target}),
-        imports=module.imports,
+        imports=effective_imports,
+        binding_graph=binding_graph,
     )
     for node in ast.walk(tree):
         mutation: str | None = None
@@ -637,13 +852,21 @@ def analysis_target_is_mutated(module: ModuleAnalysis, target: str) -> bool:
             for candidate in targets:
                 if _expression_references_alias(candidate, sensitive_aliases):
                     return True
-                mutation = _external_alias_path(candidate, module.imports)
-                if mutation is not None and _qualified_paths_overlap(mutation, target):
+                mutation = _external_alias_path(candidate, effective_imports)
+                if mutation is not None and _mutation_path_is_sensitive(
+                    mutation,
+                    target=target,
+                    binding_graph=binding_graph,
+                ):
                     return True
         if (
             isinstance(node, ast.NamedExpr)
-            and (mutation := _external_alias_path(node.target, module.imports)) is not None
-            and _qualified_paths_overlap(mutation, target)
+            and (mutation := _external_alias_path(node.target, effective_imports)) is not None
+            and _mutation_path_is_sensitive(
+                mutation,
+                target=target,
+                binding_graph=binding_graph,
+            )
         ):
             return True
         if isinstance(node, ast.NamedExpr) and _expression_references_alias(
@@ -657,7 +880,7 @@ def analysis_target_is_mutated(module: ModuleAnalysis, target: str) -> bool:
             and node.func.id in {"setattr", "delattr"}
             and len(node.args) >= 2
         ):
-            base = _external_alias_path(node.args[0], module.imports)
+            base = _external_alias_path(node.args[0], effective_imports)
             attribute = node.args[1]
             if base is not None:
                 mutation = (
@@ -667,7 +890,11 @@ def analysis_target_is_mutated(module: ModuleAnalysis, target: str) -> bool:
                     and attribute.value
                     else base
                 )
-                if _qualified_paths_overlap(mutation, target):
+                if _mutation_path_is_sensitive(
+                    mutation,
+                    target=target,
+                    binding_graph=binding_graph,
+                ):
                     return True
         if (
             isinstance(node, ast.Call)
@@ -679,6 +906,18 @@ def analysis_target_is_mutated(module: ModuleAnalysis, target: str) -> bool:
     return False
 
 
+def _mutation_path_is_sensitive(
+    path: str,
+    *,
+    target: str,
+    binding_graph: _ProjectExternalBindingGraph | None,
+) -> bool:
+    if binding_graph is not None and binding_graph.is_sensitive_capability(path):
+        return True
+    resolved = binding_graph.resolve(path) if binding_graph is not None else path
+    return _qualified_paths_overlap(resolved, target)
+
+
 def _external_alias_path(
     node: ast.expr,
     imports: dict[str, str],
@@ -688,7 +927,21 @@ def _external_alias_path(
     if isinstance(node, ast.Attribute):
         base = _external_alias_path(node.value, imports)
         return f"{base}.{node.attr}" if base is not None else None
-    if isinstance(node, (ast.Subscript, ast.Starred)):
+    if isinstance(node, ast.Subscript):
+        base = _external_alias_path(node.value, imports)
+        key = node.slice
+        if (
+            base is not None
+            and isinstance(key, ast.Constant)
+            and isinstance(key.value, str)
+            and key.value.isascii()
+            and key.value.isidentifier()
+            and base.rpartition(".")[2] in _NAMESPACE_CONTAINER_NAMES
+        ):
+            owner, _, _namespace = base.rpartition(".")
+            return f"{owner}.{key.value}" if owner else key.value
+        return base
+    if isinstance(node, ast.Starred):
         return _external_alias_path(node.value, imports)
     if isinstance(node, (ast.Tuple, ast.List)):
         paths = {
@@ -707,19 +960,37 @@ def _require_no_external_value_escape(
     *,
     targets: frozenset[str],
     imports: dict[str, str],
+    binding_graph: _ProjectExternalBindingGraph | None = None,
 ) -> None:
-    if _has_dynamic_namespace_access(tree, imports):
+    source_imports = dict(_top_level_import_aliases(tree))
+    effective_imports = {**source_imports, **imports}
+    if _has_dynamic_namespace_access(tree, effective_imports):
         raise ExternalLinkageError("external-linkage-dynamic-namespace")
+    for _alias, imported in _top_level_import_aliases(tree):
+        if imported.rpartition(".")[2] in _NAMESPACE_CONTAINER_NAMES and (
+            binding_graph.is_sensitive_capability(imported)
+            if binding_graph is not None
+            else _path_exposes_external_namespace(imported, targets)
+        ):
+            raise ExternalLinkageError("external-linkage-target-escaped")
     sensitive_aliases = _sensitive_import_aliases(
         tree=tree,
         targets=targets,
-        imports=imports,
+        imports=effective_imports,
+        binding_graph=binding_graph,
     )
     allowed_call_references = _direct_external_call_reference_ids(
         tree,
         targets=targets,
-        imports=imports,
+        imports=effective_imports,
+        binding_graph=binding_graph,
     )
+    _require_sensitive_imports_are_directly_called(
+        tree,
+        sensitive_aliases=sensitive_aliases,
+        allowed_call_references=allowed_call_references,
+    )
+    _require_no_sensitive_non_name_binders(tree, sensitive_aliases)
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Name)
@@ -734,18 +1005,86 @@ def _sensitive_import_aliases(
     tree: ast.Module,
     targets: frozenset[str],
     imports: dict[str, str],
+    binding_graph: _ProjectExternalBindingGraph | None = None,
 ) -> frozenset[str]:
     """Return aliases owning or directly binding any reachable helper."""
     return frozenset(
         alias
         for alias, imported in (*imports.items(), *_top_level_import_aliases(tree))
-        if any(
-            imported == target
-            or target.startswith(f"{imported}.")
-            or imported.startswith(f"{target}.")
-            for target in targets
-        )
+        if (binding_graph is not None and binding_graph.is_sensitive_capability(imported))
+        or (binding_graph is None and _path_exposes_external_namespace(imported, targets))
     )
+
+
+def _path_exposes_external_namespace(
+    path: str,
+    targets: frozenset[str],
+) -> bool:
+    for target in targets:
+        module_name, separator, _name = target.rpartition(".")
+        if (
+            path == target
+            or target.startswith(f"{path}.")
+            or path.startswith(f"{target}.")
+            or (bool(separator) and (path == module_name or path.startswith(f"{module_name}.")))
+        ):
+            return True
+    return False
+
+
+def _require_no_sensitive_non_name_binders(
+    tree: ast.Module,
+    sensitive_aliases: frozenset[str],
+) -> None:
+    """Cover binder spellings whose names are strings/aliases, not ``ast.Name``."""
+    if not sensitive_aliases:
+        return
+    top_level_import_aliases = {
+        id(imported)
+        for statement in tree.body
+        if isinstance(statement, (ast.Import, ast.ImportFrom))
+        for imported in statement.names
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and sensitive_aliases.intersection(
+            node.names
+        ):
+            raise ExternalLinkageError("external-linkage-target-escaped")
+        if isinstance(node, ast.alias):
+            bound = node.asname or node.name.split(".", maxsplit=1)[0]
+            if bound in sensitive_aliases and id(node) not in top_level_import_aliases:
+                raise ExternalLinkageError("external-linkage-target-escaped")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name in sensitive_aliases:
+                raise ExternalLinkageError("external-linkage-target-escaped")
+        if isinstance(node, ast.ExceptHandler):
+            if node.name is not None and node.name in sensitive_aliases:
+                raise ExternalLinkageError("external-linkage-target-escaped")
+        if isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            if node.name is not None and node.name in sensitive_aliases:
+                raise ExternalLinkageError("external-linkage-target-escaped")
+        if isinstance(node, ast.MatchMapping):
+            if node.rest is not None and node.rest in sensitive_aliases:
+                raise ExternalLinkageError("external-linkage-target-escaped")
+
+
+def _require_sensitive_imports_are_directly_called(
+    tree: ast.Module,
+    *,
+    sensitive_aliases: frozenset[str],
+    allowed_call_references: frozenset[int],
+) -> None:
+    """Do not let an otherwise-unused live capability become a module export."""
+    imported_aliases = {
+        alias for alias, _target in _top_level_import_aliases(tree) if alias in sensitive_aliases
+    }
+    directly_called_aliases = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and id(node) in allowed_call_references
+    }
+    if imported_aliases - directly_called_aliases:
+        raise ExternalLinkageError("external-linkage-target-escaped")
 
 
 def _top_level_import_aliases(tree: ast.Module) -> tuple[tuple[str, str], ...]:
@@ -782,19 +1121,23 @@ def _direct_external_call_reference_ids(
     *,
     targets: frozenset[str],
     imports: dict[str, str],
+    binding_graph: _ProjectExternalBindingGraph | None = None,
 ) -> frozenset[int]:
-    """Whitelist only the Name/Attribute chain used as an exact call target."""
+    """Whitelist only exact external or statically known project call targets."""
     allowed: set[int] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         resolved = _external_alias_path(node.func, imports)
-        if resolved not in targets or not isinstance(node.func, (ast.Name, ast.Attribute)):
+        safe = (
+            binding_graph.is_safe_direct_call(resolved)
+            if binding_graph is not None and resolved is not None
+            else resolved in targets
+        )
+        if not safe or not isinstance(node.func, (ast.Name, ast.Attribute)):
             continue
         allowed.update(
-            id(item)
-            for item in ast.walk(node.func)
-            if isinstance(item, (ast.Name, ast.Attribute))
+            id(item) for item in ast.walk(node.func) if isinstance(item, (ast.Name, ast.Attribute))
         )
     return frozenset(allowed)
 
@@ -810,6 +1153,8 @@ def _has_dynamic_namespace_access(
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in _DYNAMIC_NAMESPACE_NAMES:
             return True
+        if isinstance(node, ast.Attribute) and node.attr in _REFLECTIVE_ATTRIBUTE_NAMES:
+            return True
         if isinstance(node, ast.expr):
             for import_map in import_maps:
                 path = _external_alias_path(node, import_map)
@@ -824,6 +1169,15 @@ def _has_dynamic_namespace_access(
             and node.func.id == "getattr"
             and node.args
         ):
+            attribute = node.args[1] if len(node.args) > 1 else None
+            if (
+                isinstance(attribute, ast.Constant)
+                and isinstance(attribute.value, str)
+                and attribute.value in _REFLECTIVE_ATTRIBUTE_NAMES
+            ):
+                return True
+            if not (isinstance(attribute, ast.Constant) and isinstance(attribute.value, str)):
+                return True
             bases = {
                 base
                 for import_map in import_maps
@@ -831,16 +1185,8 @@ def _has_dynamic_namespace_access(
             }
             if not bases.intersection({"builtins", "importlib", "sys"}):
                 continue
-            attribute = node.args[1] if len(node.args) > 1 else None
-            if not (
-                isinstance(attribute, ast.Constant)
-                and isinstance(attribute.value, str)
-            ):
-                return True
-            if any(
-                f"{base}.{attribute.value}" in _DYNAMIC_NAMESPACE_PATHS
-                for base in bases
-            ):
+            assert isinstance(attribute, ast.Constant) and isinstance(attribute.value, str)
+            if any(f"{base}.{attribute.value}" in _DYNAMIC_NAMESPACE_PATHS for base in bases):
                 return True
         if (
             isinstance(node, ast.Call)
@@ -849,9 +1195,7 @@ def _has_dynamic_namespace_access(
         ):
             reflective_values = (node.func.value, *node.args)
             if any(
-                _resolved_external_paths(value, import_maps).intersection(
-                    namespace_modules
-                )
+                _resolved_external_paths(value, import_maps).intersection(namespace_modules)
                 for value in reflective_values
             ):
                 return True
