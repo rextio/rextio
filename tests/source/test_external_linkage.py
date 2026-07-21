@@ -645,6 +645,462 @@ def test_registry_rejects_ambiguous_or_incompatible_external_calls(
         )
 
 
+@pytest.mark.parametrize(
+    "source",
+    (
+        pytest.param(
+            """\
+import demo_pkg as p
+p.__dict__["affine"] = abs
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="module-dict-subscript-assign",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+del p.__dict__["affine"]
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="module-dict-subscript-delete",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+p.__dict__.update({"affine": abs})
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="module-dict-update",
+        ),
+        pytest.param(
+            """\
+import demo_pkg
+demo_pkg.__dict__["affine"] = abs
+
+def calculate(x: int) -> int:
+    return demo_pkg.affine(x)
+""",
+            id="direct-module-dict-subscript-assign",
+        ),
+        pytest.param(
+            """\
+import demo_pkg
+del demo_pkg.__dict__["affine"]
+
+def calculate(x: int) -> int:
+    return demo_pkg.affine(x)
+""",
+            id="direct-module-dict-subscript-delete",
+        ),
+        pytest.param(
+            """\
+import demo_pkg
+demo_pkg.__dict__.update({"affine": abs})
+
+def calculate(x: int) -> int:
+    return demo_pkg.affine(x)
+""",
+            id="direct-module-dict-update",
+        ),
+        pytest.param(
+            """\
+from demo_pkg import affine as f
+f.__globals__["f"] = abs
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+            id="callable-globals-subscript-assign",
+        ),
+        pytest.param(
+            """\
+from demo_pkg import affine as f
+del f.__globals__["f"]
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+            id="callable-globals-subscript-delete",
+        ),
+        pytest.param(
+            """\
+from demo_pkg import affine as f
+f.__globals__.update({"f": abs})
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+            id="callable-globals-update",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+vars(p)["affine"] = abs
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="vars-module-mutation",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+escaped = vars(p)
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="vars-module-escape",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+setattr(p, "affine", abs)
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="setattr-module",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+delattr(p, "affine")
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="delattr-module",
+        ),
+        pytest.param(
+            """\
+import demo_pkg
+setattr(demo_pkg, "affine", abs)
+
+def calculate(x: int) -> int:
+    return demo_pkg.affine(x)
+""",
+            id="setattr-direct-module",
+        ),
+        pytest.param(
+            """\
+import demo_pkg
+delattr(demo_pkg, "affine")
+
+def calculate(x: int) -> int:
+    return demo_pkg.affine(x)
+""",
+            id="delattr-direct-module",
+        ),
+        pytest.param(
+            """\
+import importlib
+import demo_pkg as p
+importlib.reload(p)
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="importlib-reload-module",
+        ),
+        pytest.param(
+            """\
+from importlib import reload as reload_module
+import demo_pkg as p
+reload_module(p)
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="importlib-reload-alias",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+retained = [p]
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="module-container-retention",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+retained = [None]
+retained[0] = p
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="module-subscript-retention",
+        ),
+        pytest.param(
+            """\
+from demo_pkg import affine as f
+retained = {"callable": f}
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+            id="callable-container-retention",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+
+def retain(value: object) -> None:
+    return None
+
+retain(p)
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="module-arbitrary-call-argument",
+        ),
+        pytest.param(
+            """\
+from demo_pkg import affine as f
+
+def retain(value: object) -> None:
+    return None
+
+retain(f)
+
+def calculate(x: int) -> int:
+    return f(x)
+""",
+            id="callable-arbitrary-call-argument",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+globals()["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="globals-subscript-rebind",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+globals().update({"p": object()})
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="globals-update-rebind",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+namespace = locals()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="locals-namespace-escape",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+locals()["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="locals-namespace-mutation",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+namespace = vars()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="vars-namespace-escape",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+vars().update({"p": object()})
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="vars-namespace-mutation",
+        ),
+        pytest.param(
+            """\
+import sys
+import demo_pkg as p
+sys.modules["demo_pkg"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="sys-modules-rebind",
+        ),
+        pytest.param(
+            """\
+import sys
+import demo_pkg as p
+del sys.modules["demo_pkg"]
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="sys-modules-delete",
+        ),
+        pytest.param(
+            """\
+import sys
+import demo_pkg as p
+sys.modules.update({"demo_pkg": object()})
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="sys-modules-update",
+        ),
+        pytest.param(
+            """\
+import builtins
+import demo_pkg as p
+builtins.__dict__["__import__"]("demo_pkg")
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="builtins-dict-import",
+        ),
+        pytest.param(
+            """\
+import sys
+import demo_pkg as p
+sys.__dict__["modules"]["demo_pkg"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="sys-dict-modules-rebind",
+        ),
+        pytest.param(
+            """\
+import importlib
+import demo_pkg as p
+importlib.__dict__["reload"](p)
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="importlib-dict-reload",
+        ),
+        pytest.param(
+            """\
+import builtins
+import demo_pkg as p
+getattr(builtins, "__dict__")["globals"]()["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="getattr-builtins-dict",
+        ),
+        pytest.param(
+            """\
+import builtins
+import demo_pkg as p
+object.__getattribute__(builtins, "__dict__")["globals"]()["p"] = object()
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="object-getattribute-builtins-dict",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+exec("p = object()")
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="exec-rebind",
+        ),
+        pytest.param(
+            """\
+import demo_pkg as p
+eval("globals().__setitem__('p', object())")
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="eval-rebind",
+        ),
+    ),
+)
+def test_registry_rejects_indirect_external_binding_mutation_or_escape(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    analysis = _analysis(tmp_path, source)
+    linkage = importlib.import_module("rextio.source.external_linkage")
+
+    with pytest.raises(
+        linkage.ExternalLinkageError,
+        match="external-linkage-(?:target-mutated|target-escaped|dynamic-namespace)",
+    ):
+        linkage.build_external_native_registry(
+            analysis,
+            (_external_plan(),),
+            package=PACKAGE,
+            distribution=DIST,
+            version=VERSION,
+        )
+
+
+def test_registry_keeps_clean_direct_module_and_callable_leaf_calls(
+    tmp_path: Path,
+) -> None:
+    analysis = _analysis(
+        tmp_path,
+        """\
+import demo_pkg as p
+from demo_pkg import affine as f
+
+def through_module(x: int) -> int:
+    return p.affine(x)
+
+def through_callable(x: int) -> int:
+    return f(x)
+""",
+    )
+    linkage = importlib.import_module("rextio.source.external_linkage")
+
+    registry = linkage.build_external_native_registry(
+        analysis,
+        (_external_plan(),),
+        package=PACKAGE,
+        distribution=DIST,
+        version=VERSION,
+    )
+
+    assert tuple(call.target for call in registry.linked_calls) == (
+        "demo_pkg.affine",
+        "demo_pkg.affine",
+    )
+
+
 def test_registry_rejects_tampered_external_plan(tmp_path: Path) -> None:
     linkage = importlib.import_module("rextio.source.external_linkage")
     plan = _external_plan()

@@ -50,6 +50,44 @@ _SAFE_DISTRIBUTION = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 _SAFE_VERSION = re.compile(r"[A-Za-z0-9]+(?:[._+-][A-Za-z0-9]+)*")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _SCALAR_TYPES = frozenset({"bool", "float", "int", "str"})
+_DYNAMIC_NAMESPACE_NAMES = frozenset(
+    {
+        "__builtins__",
+        "__import__",
+        "eval",
+        "exec",
+        "globals",
+        "locals",
+        "vars",
+    }
+)
+_DYNAMIC_NAMESPACE_PATHS = frozenset(
+    {
+        "builtins.__import__",
+        "builtins.__dict__",
+        "builtins.eval",
+        "builtins.exec",
+        "builtins.globals",
+        "builtins.locals",
+        "builtins.vars",
+        "importlib.import_module",
+        "importlib.__dict__",
+        "importlib.reload",
+        "sys.__dict__",
+        "sys.modules",
+    }
+)
+_MUTATING_METHOD_NAMES = frozenset(
+    {
+        "__delitem__",
+        "__setitem__",
+        "clear",
+        "pop",
+        "popitem",
+        "setdefault",
+        "update",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,7 +280,12 @@ class ExternalNativeRegistry:
 
 @dataclass(frozen=True, slots=True)
 class ExternalRuntimeCallable:
-    """Exact callable identity checked when the generated extension imports."""
+    """Callable identity proven from signed source during analysis/codegen.
+
+    The generated extension never imports or introspects this callable.  The
+    record selects exact signed source for private Rust lowering; runtime checks
+    are limited to installed distribution/version, RECORD, and source bytes.
+    """
 
     name: str
     qualname: str
@@ -468,7 +511,12 @@ def build_external_runtime_guard(
     registry: ExternalNativeRegistry,
     plans: tuple[ExternalSourceNativePlan, ...],
 ) -> ExternalRuntimeGuard:
-    """Bind reached helpers to exact installed source and callable identities."""
+    """Bind signed helper identities to runtime-verifiable source material.
+
+    Callable names and source positions are analysis/codegen authority only.
+    Runtime does not import or introspect the external module or callable; it
+    verifies the installed distribution/version, RECORD, and exact source bytes.
+    """
     if type(registry) is not ExternalNativeRegistry or type(plans) is not tuple:
         raise ExternalLinkageError("external-runtime-guard-input-invalid")
     reachable = {function.qualname for function in registry.private_functions}
@@ -569,6 +617,13 @@ def analysis_target_is_mutated(module: ModuleAnalysis, target: str) -> bool:
     if module.project_mutations.target_is_mutated(target):
         return True
     tree = _read_project_tree(module)
+    if _has_dynamic_namespace_access(tree, module.imports):
+        return True
+    sensitive_aliases = _sensitive_import_aliases(
+        tree=tree,
+        targets=frozenset({target}),
+        imports=module.imports,
+    )
     for node in ast.walk(tree):
         mutation: str | None = None
         if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
@@ -580,6 +635,8 @@ def analysis_target_is_mutated(module: ModuleAnalysis, target: str) -> bool:
             else:
                 targets = (node.target,)
             for candidate in targets:
+                if _expression_references_alias(candidate, sensitive_aliases):
+                    return True
                 mutation = _external_alias_path(candidate, module.imports)
                 if mutation is not None and _qualified_paths_overlap(mutation, target):
                     return True
@@ -587,6 +644,11 @@ def analysis_target_is_mutated(module: ModuleAnalysis, target: str) -> bool:
             isinstance(node, ast.NamedExpr)
             and (mutation := _external_alias_path(node.target, module.imports)) is not None
             and _qualified_paths_overlap(mutation, target)
+        ):
+            return True
+        if isinstance(node, ast.NamedExpr) and _expression_references_alias(
+            node.target,
+            sensitive_aliases,
         ):
             return True
         if (
@@ -607,6 +669,13 @@ def analysis_target_is_mutated(module: ModuleAnalysis, target: str) -> bool:
                 )
                 if _qualified_paths_overlap(mutation, target):
                     return True
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _MUTATING_METHOD_NAMES
+            and _expression_references_alias(node.func.value, sensitive_aliases)
+        ):
+            return True
     return False
 
 
@@ -639,33 +708,165 @@ def _require_no_external_value_escape(
     targets: frozenset[str],
     imports: dict[str, str],
 ) -> None:
-    parents = {
-        id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
-    }
+    if _has_dynamic_namespace_access(tree, imports):
+        raise ExternalLinkageError("external-linkage-dynamic-namespace")
+    sensitive_aliases = _sensitive_import_aliases(
+        tree=tree,
+        targets=targets,
+        imports=imports,
+    )
+    allowed_call_references = _direct_external_call_reference_ids(
+        tree,
+        targets=targets,
+        imports=imports,
+    )
     for node in ast.walk(tree):
-        if isinstance(node, ast.expr):
-            resolved = _external_alias_path(node, imports)
-            if resolved in targets:
-                parent = parents.get(id(node))
-                if isinstance(parent, ast.Call) and parent.func is node:
+        if (
+            isinstance(node, ast.Name)
+            and node.id in sensitive_aliases
+            and id(node) not in allowed_call_references
+        ):
+            raise ExternalLinkageError("external-linkage-target-escaped")
+
+
+def _sensitive_import_aliases(
+    *,
+    tree: ast.Module,
+    targets: frozenset[str],
+    imports: dict[str, str],
+) -> frozenset[str]:
+    """Return aliases owning or directly binding any reachable helper."""
+    return frozenset(
+        alias
+        for alias, imported in (*imports.items(), *_top_level_import_aliases(tree))
+        if any(
+            imported == target
+            or target.startswith(f"{imported}.")
+            or imported.startswith(f"{target}.")
+            for target in targets
+        )
+    )
+
+
+def _top_level_import_aliases(tree: ast.Module) -> tuple[tuple[str, str], ...]:
+    """Recover direct source aliases even after analysis invalidated finality."""
+    aliases: list[tuple[str, str]] = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for imported in node.names:
+                bound = imported.asname or imported.name.split(".", maxsplit=1)[0]
+                target = imported.name if imported.asname else bound
+                aliases.append((bound, target))
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module is not None:
+            for imported in node.names:
+                if imported.name == "*":
                     continue
-                raise ExternalLinkageError("external-linkage-target-escaped")
+                aliases.append(
+                    (
+                        imported.asname or imported.name,
+                        f"{node.module}.{imported.name}",
+                    )
+                )
+    return tuple(aliases)
+
+
+def _expression_references_alias(
+    node: ast.AST,
+    aliases: frozenset[str],
+) -> bool:
+    return any(isinstance(item, ast.Name) and item.id in aliases for item in ast.walk(node))
+
+
+def _direct_external_call_reference_ids(
+    tree: ast.Module,
+    *,
+    targets: frozenset[str],
+    imports: dict[str, str],
+) -> frozenset[int]:
+    """Whitelist only the Name/Attribute chain used as an exact call target."""
+    allowed: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        resolved = _external_alias_path(node.func, imports)
+        if resolved not in targets or not isinstance(node.func, (ast.Name, ast.Attribute)):
+            continue
+        allowed.update(
+            id(item)
+            for item in ast.walk(node.func)
+            if isinstance(item, (ast.Name, ast.Attribute))
+        )
+    return frozenset(allowed)
+
+
+def _has_dynamic_namespace_access(
+    tree: ast.Module,
+    imports: dict[str, str],
+) -> bool:
+    """Detect reflective routes able to recover or rewrite import bindings."""
+    source_imports = dict(_top_level_import_aliases(tree))
+    import_maps = (imports, source_imports)
+    namespace_modules = frozenset({"builtins", "importlib", "sys"})
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in _DYNAMIC_NAMESPACE_NAMES:
+            return True
+        if isinstance(node, ast.expr):
+            for import_map in import_maps:
+                path = _external_alias_path(node, import_map)
+                if path is not None and any(
+                    path == dangerous or path.startswith(f"{dangerous}.")
+                    for dangerous in _DYNAMIC_NAMESPACE_PATHS
+                ):
+                    return True
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
             and node.func.id == "getattr"
             and node.args
         ):
-            base = _external_alias_path(node.args[0], imports)
-            if base is None:
+            bases = {
+                base
+                for import_map in import_maps
+                if (base := _external_alias_path(node.args[0], import_map)) is not None
+            }
+            if not bases.intersection({"builtins", "importlib", "sys"}):
                 continue
             attribute = node.args[1] if len(node.args) > 1 else None
-            if isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
-                resolved = f"{base}.{attribute.value}"
-                if resolved in targets:
-                    raise ExternalLinkageError("external-linkage-target-escaped")
-            elif any(target == base or target.startswith(f"{base}.") for target in targets):
-                raise ExternalLinkageError("external-linkage-target-escaped")
+            if not (
+                isinstance(attribute, ast.Constant)
+                and isinstance(attribute.value, str)
+            ):
+                return True
+            if any(
+                f"{base}.{attribute.value}" in _DYNAMIC_NAMESPACE_PATHS
+                for base in bases
+            ):
+                return True
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"__getattr__", "__getattribute__"}
+        ):
+            reflective_values = (node.func.value, *node.args)
+            if any(
+                _resolved_external_paths(value, import_maps).intersection(
+                    namespace_modules
+                )
+                for value in reflective_values
+            ):
+                return True
+    return False
+
+
+def _resolved_external_paths(
+    node: ast.expr,
+    import_maps: tuple[dict[str, str], ...],
+) -> frozenset[str]:
+    return frozenset(
+        path
+        for import_map in import_maps
+        if (path := _external_alias_path(node, import_map)) is not None
+    )
 
 
 def _require_call_signature(
