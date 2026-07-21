@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import stat
 import subprocess
@@ -35,6 +36,106 @@ def _project(tmp_path: Path, *, lock: bool = True) -> Path:
             encoding="utf-8",
         )
     (source / "lib.rs").write_text("pub fn answer() -> i64 { 42 }\n", encoding="utf-8")
+    return root
+
+
+def _external_contract():
+    from rextio.build.wheel_builder import (
+        ExternalWheelContract,
+        ExternalWheelMemberIdentity,
+    )
+
+    paths = (
+        "vendor-1.0.dist-info/METADATA",
+        "vendor-1.0.dist-info/RECORD",
+        "vendor-1.0.dist-info/WHEEL",
+        "vendor-1.0.dist-info/licenses/LICENSE",
+        "vendor/__init__.py",
+    )
+    return ExternalWheelContract(
+        package="vendor",
+        distribution="vendor",
+        version="1.0",
+        source_members=("vendor/__init__.py",),
+        external_members=tuple(
+            ExternalWheelMemberIdentity(
+                path=path,
+                sha256=hashlib.sha256(path.encode()).hexdigest(),
+                size=len(path),
+            )
+            for path in paths
+        ),
+    )
+
+
+def _native_toolchain(lock_data: bytes):
+    from rextio.build.input_closure import ExactFileIdentity
+    from rextio.build.toolchain_identity import (
+        ArgvIdentity,
+        BuildToolchainIdentity,
+        CargoSourcesIdentity,
+        RextioIdentity,
+        ToolIdentity,
+    )
+
+    def exact(name: str, role: str, digest: str, *, executable: bool = False):
+        return ExactFileIdentity(name, role, digest, 1, executable)
+
+    def tool(name: str, digest: str):
+        return ToolIdentity(
+            name=name,
+            executable=exact(
+                f"toolchain/{name}",
+                "toolchain-executable",
+                digest,
+                executable=True,
+            ),
+            reported_version="1.0.0",
+        )
+
+    rextio_file = exact("rextio/__init__.py", "rextio-python-source", "2" * 64)
+    return BuildToolchainIdentity(
+        python=tool("python", "1" * 64),
+        rextio=RextioIdentity(
+            version="0.1.4",
+            files=(rextio_file,),
+            content_digest="3" * 64,
+        ),
+        cargo=tool("cargo", "4" * 64),
+        rustc=tool("rustc", "5" * 64),
+        linker=tool("linker", "6" * 64),
+        inspectors=(tool("otool", "7" * 64),),
+        argv=ArgvIdentity(STRICT_BUILD),
+        environment=(),
+        cargo_sources=CargoSourcesIdentity(
+            root_package="demo",
+            lock_file=ExactFileIdentity(
+                "cargo/Cargo.lock",
+                "cargo-lockfile",
+                hashlib.sha256(lock_data).hexdigest(),
+                len(lock_data),
+                False,
+            ),
+            packages=(),
+        ),
+    )
+
+
+def _native_project(tmp_path: Path, *, target: str = "aarch64-apple-darwin"):
+    from rextio.build.full_c6_executor import full_c6_native_driver_manifest_bytes
+
+    root = _project(tmp_path)
+    package = root / "python-staging" / "app"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 42\n", encoding="utf-8")
+    (root / "rextio.full-c6-native-driver.json").write_bytes(
+        full_c6_native_driver_manifest_bytes(
+            target_triple=target,
+            distribution_name="demo-artifact",
+            cargo_argv=STRICT_BUILD,
+            external_contract=_external_contract(),
+        )
+    )
     return root
 
 
@@ -213,6 +314,175 @@ def test_command_factory_runs_twice_with_closed_bounded_subprocess(
         assert inherit_env is False
         assert output_bound == 4096
     assert receipt.reproducibility.reproducible is True
+
+
+def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    roots = _roots(tmp_path)
+    toolchain = _native_toolchain((source / "Cargo.lock").read_bytes())
+    runs = []
+
+    monkeypatch.setattr(
+        executor,
+        "detect_host_target_triple",
+        lambda: "aarch64-apple-darwin",
+    )
+    monkeypatch.setattr(
+        executor,
+        "_verify_native_toolchain_invocation",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        executor,
+        "_full_c6_extension_suffix",
+        lambda: ".cpython-311-test.so",
+    )
+
+    def fake_run(command, *, cwd, timeout, env, inherit_env, max_output_bytes):
+        runs.append((tuple(command), Path(cwd), dict(env), inherit_env))
+        artifact = Path(cwd).parent / "target" / "release" / "lib_rextio_native.dylib"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b"deterministic-native-extension")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(executor, "run_build_tool", fake_run)
+    receipt = executor.execute_full_c6_native_two_build(
+        source,
+        *roots,
+        source_date_epoch=1,
+        toolchain=toolchain,
+    )
+
+    assert len(runs) == 2
+    assert all(item[0] == STRICT_BUILD and item[3] is False for item in runs)
+    assert receipt.execution_driver == executor.FULL_C6_NATIVE_EXECUTION_DRIVER
+    assert receipt.execution_driver == "rextio-native-orchestrator-v1"
+    assert receipt.postprocessor == executor.FULL_C6_NATIVE_POSTPROCESSOR
+    assert receipt.target_triple == "aarch64-apple-darwin"
+    assert receipt.postprocessor_manifest_sha256 == hashlib.sha256(
+        (source / executor.FULL_C6_NATIVE_DRIVER_MANIFEST).read_bytes()
+    ).hexdigest()
+    assert receipt.reproducibility.reproducible is True
+
+    wheels = []
+    for root in roots:
+        wheel = next((root / "output").glob("*.whl"))
+        wheels.append(wheel.read_bytes())
+        verified = executor.verify_external_wheel_contract(wheel, _external_contract())
+        assert verified.wheel_sha256 == receipt.reproducibility.wheel_sha256
+        for name in (
+            "rextio.preliminary-sbom.json",
+            "rextio.preliminary-provenance-input.json",
+        ):
+            data = (root / "output" / name).read_bytes()
+            document = json.loads(data)
+            assert data == json.dumps(
+                document,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode()
+            if name.endswith("sbom.json"):
+                posture = document["rextio"]
+            else:
+                posture = document
+            assert posture["authority"] == "non-authorizing"
+            assert posture["distribution_authorized"] is False
+    assert wheels[0] == wheels[1]
+
+
+def test_native_orchestrator_rejects_missing_or_noncanonical_driver_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    monkeypatch.setattr(
+        executor,
+        "detect_host_target_triple",
+        lambda: "aarch64-apple-darwin",
+    )
+    for case in ("missing", "noncanonical"):
+        case_root = tmp_path / case
+        source = _native_project(case_root)
+        manifest = source / executor.FULL_C6_NATIVE_DRIVER_MANIFEST
+        if case == "missing":
+            manifest.unlink()
+        else:
+            manifest.write_bytes(manifest.read_bytes() + b"\n")
+        toolchain = _native_toolchain((source / "Cargo.lock").read_bytes())
+        with pytest.raises(executor.FullC6ExecutorError, match="manifest|missing"):
+            executor.execute_full_c6_native_two_build(
+                source,
+                *_roots(case_root),
+                source_date_epoch=1,
+                toolchain=toolchain,
+            )
+
+
+def test_native_orchestrator_rejects_cargo_or_staging_boundary_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    monkeypatch.setattr(
+        executor,
+        "detect_host_target_triple",
+        lambda: "aarch64-apple-darwin",
+    )
+    monkeypatch.setattr(
+        executor,
+        "_verify_native_toolchain_invocation",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        executor,
+        "_full_c6_extension_suffix",
+        lambda: ".cpython-311-test.so",
+    )
+
+    source = _native_project(tmp_path / "missing-artifact")
+    toolchain = _native_toolchain((source / "Cargo.lock").read_bytes())
+    monkeypatch.setattr(
+        executor,
+        "run_build_tool",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    with pytest.raises(executor.FullC6ExecutorError, match="artifact"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tmp_path / "missing-artifact"),
+            source_date_epoch=1,
+            toolchain=toolchain,
+        )
+
+    source = _native_project(tmp_path / "external-source")
+    external = source / "python-staging" / "vendor"
+    external.mkdir()
+    (external / "__init__.py").write_text("forbidden = True\n", encoding="utf-8")
+    toolchain = _native_toolchain((source / "Cargo.lock").read_bytes())
+
+    def build_artifact(command, *, cwd, **_kwargs):
+        artifact = Path(cwd).parent / "target" / "release" / "lib_rextio_native.dylib"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b"native")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(executor, "run_build_tool", build_artifact)
+    with pytest.raises(executor.FullC6ExecutorError, match="wheel contract|source"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tmp_path / "external-source"),
+            source_date_epoch=1,
+            toolchain=toolchain,
+        )
 
 
 @pytest.mark.parametrize(

@@ -24,12 +24,14 @@ import re
 import shutil
 import stat
 import sys
+import sysconfig
 import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TypeAlias
 
+from rextio.artifacts.profiles import detect_host_target_triple
 from rextio.build.reproducibility import (
     ReproducibilityBuildOutputs,
     ReproducibilityError,
@@ -44,6 +46,13 @@ from rextio.build.toolchain_identity import (
     ToolchainIdentityError,
     verify_tool_identity,
 )
+from rextio.build.wheel_builder import (
+    ExternalWheelContract,
+    ExternalWheelMemberIdentity,
+    WheelContractError,
+    build_artifact_wheel,
+    verify_external_wheel_contract,
+)
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
 
 
@@ -51,9 +60,12 @@ FULL_C6_EXECUTOR_DOMAIN = "rextio.full-c6-two-build-executor.v1"
 FULL_C6_EXECUTOR_SCOPE = (
     "host-extension-wheel-cpython-external-source-depth1-plugin-free-v1"
 )
-FULL_C6_NATIVE_EXECUTION_DRIVER = "native-subprocess"
+FULL_C6_NATIVE_EXECUTION_DRIVER = "rextio-native-orchestrator-v1"
 FULL_C6_CALLBACK_EXECUTION_DRIVER = "callback-test-seam"
 FULL_C6_UNBOUND_EXECUTION_DRIVER = "native-subprocess-unbound"
+FULL_C6_NATIVE_DRIVER_MANIFEST = "rextio.full-c6-native-driver.json"
+FULL_C6_NATIVE_POSTPROCESSOR = "rextio-external-wheel-postprocessor-v1"
+FULL_C6_NATIVE_DRIVER_DOMAIN = "rextio.full-c6-native-driver.v1"
 FULL_C6_PREEXISTING_LOCK_DRIVER = "preexisting-lock"
 FULL_C6_NATIVE_LOCK_DRIVER = "native-subprocess"
 FULL_C6_CALLBACK_LOCK_DRIVER = "callback-test-seam"
@@ -104,6 +116,219 @@ _CANONICAL_EXECUTABLE_MODE = 0o755
 
 class FullC6ExecutorError(ReproducibilityError):
     """The strict Full C6 executor could not establish its bounded receipt."""
+
+
+@dataclass(frozen=True, slots=True)
+class FullC6NativeDriverManifest:
+    """Canonical frozen input for the executor-owned native wheel driver.
+
+    The manifest lives inside the project tree captured by
+    :class:`FullC6FrozenTreeManifest`.  It binds the exact Cargo invocation,
+    host target, output distribution name, and the complete C5.2 source-wheel
+    exclusion contract.  It is configuration, never distribution authority.
+    """
+
+    target_triple: str
+    distribution_name: str
+    cargo_argv: tuple[str, ...]
+    external_contract: ExternalWheelContract
+    domain: str = FULL_C6_NATIVE_DRIVER_DOMAIN
+    execution_driver: str = FULL_C6_NATIVE_EXECUTION_DRIVER
+    postprocessor: str = FULL_C6_NATIVE_POSTPROCESSOR
+    authority: str = "non-authorizing"
+    distribution_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        argv = tuple(self.cargo_argv)
+        if self.domain != FULL_C6_NATIVE_DRIVER_DOMAIN:
+            raise ValueError("Full C6 native driver domain is invalid")
+        if self.execution_driver != FULL_C6_NATIVE_EXECUTION_DRIVER:
+            raise ValueError("Full C6 native execution driver is invalid")
+        if self.postprocessor != FULL_C6_NATIVE_POSTPROCESSOR:
+            raise ValueError("Full C6 native postprocessor is invalid")
+        if self.authority != "non-authorizing" or self.distribution_authorized is not False:
+            raise ValueError("Full C6 native driver has an invalid authority posture")
+        if self.target_triple not in {
+            "aarch64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+        }:
+            raise ValueError("Full C6 native driver target is unsupported")
+        if (
+            type(self.distribution_name) is not str
+            or re.fullmatch(r"[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?", self.distribution_name)
+            is None
+        ):
+            raise ValueError("Full C6 native distribution name is invalid")
+        if type(self.external_contract) is not ExternalWheelContract:
+            raise TypeError("Full C6 native external wheel contract is invalid")
+        _require_exact_native_cargo_command(argv)
+        object.__setattr__(self, "cargo_argv", argv)
+
+    @property
+    def digest(self) -> str:
+        """Return the SHA-256 of the exact canonical manifest bytes."""
+        return hashlib.sha256(self.to_bytes()).hexdigest()
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the complete canonical manifest document."""
+        contract = self.external_contract
+        return {
+            "authority": "non-authorizing",
+            "cargo_argv": list(self.cargo_argv),
+            "distribution_authorized": False,
+            "distribution_name": self.distribution_name,
+            "domain": self.domain,
+            "execution_driver": self.execution_driver,
+            "external_wheel_contract": {
+                "distribution": contract.distribution,
+                "external_members": [
+                    {"path": item.path, "sha256": item.sha256, "size": item.size}
+                    for item in contract.external_members
+                ],
+                "package": contract.package,
+                "source_members": list(contract.source_members),
+                "version": contract.version,
+            },
+            "postprocessor": self.postprocessor,
+            "target_triple": self.target_triple,
+        }
+
+    def to_bytes(self) -> bytes:
+        """Return the only accepted on-disk encoding."""
+        return _canonical_json(self.to_dict())
+
+
+def full_c6_native_driver_manifest_bytes(
+    *,
+    target_triple: str,
+    distribution_name: str,
+    cargo_argv: Sequence[str],
+    external_contract: ExternalWheelContract,
+) -> bytes:
+    """Create canonical bytes for the frozen executor-owned driver manifest."""
+    try:
+        return FullC6NativeDriverManifest(
+            target_triple=target_triple,
+            distribution_name=distribution_name,
+            cargo_argv=tuple(cargo_argv),
+            external_contract=external_contract,
+        ).to_bytes()
+    except (TypeError, ValueError) as exc:
+        raise FullC6ExecutorError(str(exc)) from exc
+
+
+def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverManifest:
+    if type(data) is not bytes or not data or len(data) > 8 * 1024 * 1024:
+        raise FullC6ExecutorError("Full C6 native driver manifest exceeds its byte bound")
+
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise FullC6ExecutorError(
+                    "Full C6 native driver manifest contains a duplicate key"
+                )
+            result[key] = value
+        return result
+
+    try:
+        document = json.loads(data.decode("utf-8"), object_pairs_hook=unique_object)
+    except FullC6ExecutorError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        raise FullC6ExecutorError("Full C6 native driver manifest is invalid JSON") from exc
+    if type(document) is not dict or data != _canonical_json(document):
+        raise FullC6ExecutorError("Full C6 native driver manifest is not canonical JSON")
+    required = {
+        "authority",
+        "cargo_argv",
+        "distribution_authorized",
+        "distribution_name",
+        "domain",
+        "execution_driver",
+        "external_wheel_contract",
+        "postprocessor",
+        "target_triple",
+    }
+    if set(document) != required:
+        raise FullC6ExecutorError("Full C6 native driver manifest fields are invalid")
+    raw_contract = document["external_wheel_contract"]
+    if type(raw_contract) is not dict or set(raw_contract) != {
+        "distribution",
+        "external_members",
+        "package",
+        "source_members",
+        "version",
+    }:
+        raise FullC6ExecutorError("Full C6 native external wheel contract is invalid")
+    raw_members = raw_contract["external_members"]
+    raw_sources = raw_contract["source_members"]
+    raw_argv = document["cargo_argv"]
+    if (
+        type(raw_members) is not list
+        or type(raw_sources) is not list
+        or type(raw_argv) is not list
+        or not all(type(item) is str for item in raw_sources)
+        or not all(type(item) is str for item in raw_argv)
+    ):
+        raise FullC6ExecutorError("Full C6 native driver manifest collections are invalid")
+    members: list[ExternalWheelMemberIdentity] = []
+    try:
+        for raw in raw_members:
+            if type(raw) is not dict or set(raw) != {"path", "sha256", "size"}:
+                raise ValueError("external member fields are invalid")
+            if (
+                type(raw["path"]) is not str
+                or type(raw["sha256"]) is not str
+                or type(raw["size"]) is not int
+                or isinstance(raw["size"], bool)
+            ):
+                raise TypeError("external member values are invalid")
+            members.append(
+                ExternalWheelMemberIdentity(
+                    path=raw["path"],
+                    sha256=raw["sha256"],
+                    size=raw["size"],
+                )
+            )
+        for name in ("package", "distribution", "version"):
+            if type(raw_contract[name]) is not str:
+                raise TypeError("external wheel identity is invalid")
+        contract = ExternalWheelContract(
+            package=raw_contract["package"],
+            distribution=raw_contract["distribution"],
+            version=raw_contract["version"],
+            source_members=tuple(raw_sources),
+            external_members=tuple(members),
+        )
+        for name in (
+            "target_triple",
+            "distribution_name",
+            "domain",
+            "execution_driver",
+            "postprocessor",
+            "authority",
+        ):
+            if type(document[name]) is not str:
+                raise TypeError("native driver identity is invalid")
+        if type(document["distribution_authorized"]) is not bool:
+            raise TypeError("native driver authority flag is invalid")
+        manifest = FullC6NativeDriverManifest(
+            target_triple=document["target_triple"],
+            distribution_name=document["distribution_name"],
+            cargo_argv=tuple(raw_argv),
+            external_contract=contract,
+            domain=document["domain"],
+            execution_driver=document["execution_driver"],
+            postprocessor=document["postprocessor"],
+            authority=document["authority"],
+            distribution_authorized=document["distribution_authorized"],
+        )
+    except (TypeError, ValueError) as exc:
+        raise FullC6ExecutorError("Full C6 native driver manifest is invalid") from exc
+    if manifest.to_bytes() != data:
+        raise FullC6ExecutorError("Full C6 native driver manifest is not canonical")
+    return manifest
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +521,9 @@ class FullC6ExecutorReceipt:
     lock_driver: str = FULL_C6_PREEXISTING_LOCK_DRIVER
     toolchain_sha256: str | None = None
     cargo_executable_sha256: str | None = None
+    postprocessor: str | None = None
+    postprocessor_manifest_sha256: str | None = None
+    target_triple: str | None = None
     domain: str = FULL_C6_EXECUTOR_DOMAIN
     scope: str = FULL_C6_EXECUTOR_SCOPE
     complete_for_scope: bool = True
@@ -328,7 +556,27 @@ class FullC6ExecutorReceipt:
         if self.execution_driver == FULL_C6_NATIVE_EXECUTION_DRIVER:
             _require_sha256(self.toolchain_sha256, "executor toolchain")
             _require_sha256(self.cargo_executable_sha256, "executor Cargo executable")
-        elif self.toolchain_sha256 is not None or self.cargo_executable_sha256 is not None:
+            if self.postprocessor != FULL_C6_NATIVE_POSTPROCESSOR:
+                raise ValueError("Full C6 executor postprocessor is invalid")
+            _require_sha256(
+                self.postprocessor_manifest_sha256,
+                "executor postprocessor manifest",
+            )
+            if self.target_triple not in {
+                "aarch64-apple-darwin",
+                "x86_64-unknown-linux-gnu",
+            }:
+                raise ValueError("Full C6 executor target is unsupported")
+        elif any(
+            item is not None
+            for item in (
+                self.toolchain_sha256,
+                self.cargo_executable_sha256,
+                self.postprocessor,
+                self.postprocessor_manifest_sha256,
+                self.target_triple,
+            )
+        ):
             raise ValueError("non-authoritative executor cannot claim toolchain bindings")
         if self.domain != FULL_C6_EXECUTOR_DOMAIN or self.scope != FULL_C6_EXECUTOR_SCOPE:
             raise ValueError("Full C6 executor domain or scope is invalid")
@@ -354,6 +602,9 @@ class FullC6ExecutorReceipt:
             "lock_driver": self.lock_driver,
             "toolchain_sha256": self.toolchain_sha256,
             "cargo_executable_sha256": self.cargo_executable_sha256,
+            "postprocessor": self.postprocessor,
+            "postprocessor_manifest_sha256": self.postprocessor_manifest_sha256,
+            "target_triple": self.target_triple,
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -466,6 +717,7 @@ def execute_full_c6_two_build(
     timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     max_output_bytes: int = MAX_FULL_C6_OUTPUT_BYTES,
     toolchain: BuildToolchainIdentity | None = None,
+    native_orchestrator: bool = False,
 ) -> FullC6ExecutorReceipt:
     """Freeze one project and execute exactly two strict isolated builds.
 
@@ -488,12 +740,17 @@ def execute_full_c6_two_build(
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
         toolchain=toolchain,
+        native_orchestrator=native_orchestrator,
     )
     source, _source_stat = _validate_source_root(source_root)
     first = _validate_quarantine_root(first_quarantine_root)
     second = _validate_quarantine_root(second_quarantine_root)
     _require_disjoint_roots((source, first[0], second[0]))
     environment_seed = _validate_base_environment(base_environment)
+    if native_orchestrator and "CARGO_BUILD_TARGET" in environment_seed:
+        raise FullC6ExecutorError(
+            "Full C6 native driver owns host target selection"
+        )
 
     without_generated_lock = _capture_stable_tree(source, cargo_lock_generated=False)
     has_lock = any(
@@ -532,6 +789,32 @@ def execute_full_c6_two_build(
     if build is not None:
         assert cargo_command is not None
         fixed_argv = _require_prestrict_build_command(cargo_command)
+        _reject_private_argv(fixed_argv, source=source, roots=(first[0], second[0]))
+    native_manifest: FullC6NativeDriverManifest | None = None
+    if native_orchestrator:
+        assert toolchain is not None
+        if frozen.manifest is None:
+            raise FullC6ExecutorError("Full C6 native driver requires a frozen Cargo.lock")
+        try:
+            manifest_data = _entry_data(frozen, FULL_C6_NATIVE_DRIVER_MANIFEST)
+        except FullC6ExecutorError as exc:
+            raise FullC6ExecutorError(
+                f"Full C6 frozen tree is missing exact {FULL_C6_NATIVE_DRIVER_MANIFEST}"
+            ) from exc
+        native_manifest = _parse_full_c6_native_driver_manifest(manifest_data)
+        fixed_argv = _require_exact_native_cargo_command(native_manifest.cargo_argv)
+        if fixed_argv != toolchain.argv.values:
+            raise FullC6ExecutorError(
+                "Full C6 native driver argv differs from toolchain identity"
+            )
+        try:
+            host_target = detect_host_target_triple()
+        except ValueError as exc:
+            raise FullC6ExecutorError("Full C6 native host target is unsupported") from exc
+        if native_manifest.target_triple != host_target:
+            raise FullC6ExecutorError(
+                "Full C6 native driver target differs from the current host"
+            )
         _reject_private_argv(fixed_argv, source=source, roots=(first[0], second[0]))
 
     invocation_receipts: list[FullC6InvocationReceipt] = []
@@ -575,6 +858,39 @@ def execute_full_c6_two_build(
                 raise
             except Exception as exc:
                 raise FullC6ExecutorError("Full C6 build callback failed") from exc
+        elif native_orchestrator:
+            assert fixed_argv is not None
+            assert native_manifest is not None
+            assert toolchain is not None
+            argv = fixed_argv
+            _verify_native_toolchain_invocation(
+                argv,
+                environment=environment,
+                toolchain=toolchain,
+            )
+            completed = run_build_tool(
+                list(argv),
+                cwd=project_root,
+                timeout=float(timeout_seconds),
+                env=environment,
+                inherit_env=False,
+                max_output_bytes=max_output_bytes,
+            )
+            if completed.returncode != 0:
+                raise FullC6ExecutorError(
+                    f"strict Cargo build failed with exit status {completed.returncode}"
+                )
+            _verify_native_toolchain_invocation(
+                argv,
+                environment=environment,
+                toolchain=toolchain,
+            )
+            outputs = _postprocess_native_build(
+                context=context,
+                frozen=frozen,
+                manifest=native_manifest,
+                toolchain=toolchain,
+            )
         else:
             assert command_factory is not None
             try:
@@ -675,22 +991,307 @@ def execute_full_c6_two_build(
             invocations=(invocation_receipts[0], invocation_receipts[1]),
             reproducibility=reproducibility,
             execution_driver=(
-                FULL_C6_CALLBACK_EXECUTION_DRIVER
-                if build is not None
+                FULL_C6_NATIVE_EXECUTION_DRIVER
+                if native_orchestrator
                 else (
-                    FULL_C6_NATIVE_EXECUTION_DRIVER
-                    if toolchain is not None
+                    FULL_C6_CALLBACK_EXECUTION_DRIVER
+                    if build is not None
                     else FULL_C6_UNBOUND_EXECUTION_DRIVER
                 )
             ),
             lock_driver=lock_driver,
-            toolchain_sha256=toolchain.digest if toolchain is not None else None,
+            toolchain_sha256=(
+                toolchain.digest if native_orchestrator and toolchain is not None else None
+            ),
             cargo_executable_sha256=(
-                toolchain.cargo.executable.sha256 if toolchain is not None else None
+                toolchain.cargo.executable.sha256
+                if native_orchestrator and toolchain is not None
+                else None
+            ),
+            postprocessor=(
+                native_manifest.postprocessor if native_manifest is not None else None
+            ),
+            postprocessor_manifest_sha256=(
+                native_manifest.digest if native_manifest is not None else None
+            ),
+            target_triple=(
+                native_manifest.target_triple if native_manifest is not None else None
             ),
         )
     except (TypeError, ValueError) as exc:
         raise FullC6ExecutorError(str(exc)) from exc
+
+
+def execute_full_c6_native_two_build(
+    source_root: Path | str,
+    first_quarantine_root: Path | str,
+    second_quarantine_root: Path | str,
+    *,
+    base_environment: Mapping[str, str] | None = None,
+    source_date_epoch: int,
+    toolchain: BuildToolchainIdentity,
+    timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    max_output_bytes: int = MAX_FULL_C6_OUTPUT_BYTES,
+) -> FullC6ExecutorReceipt:
+    """Run the sole production Full C6 native build and wheel postprocessor.
+
+    Unlike :func:`execute_full_c6_two_build`'s callback and command-factory
+    seams, this entrypoint owns every output-producing step.  Its canonical
+    manifest and Python staging bytes must already be part of ``source_root``.
+    """
+    return execute_full_c6_two_build(
+        source_root,
+        first_quarantine_root,
+        second_quarantine_root,
+        base_environment=base_environment,
+        source_date_epoch=source_date_epoch,
+        timeout_seconds=timeout_seconds,
+        max_output_bytes=max_output_bytes,
+        toolchain=toolchain,
+        native_orchestrator=True,
+    )
+
+
+def _postprocess_native_build(
+    *,
+    context: FullC6BuildContext,
+    frozen: _FrozenTree,
+    manifest: FullC6NativeDriverManifest,
+    toolchain: BuildToolchainIdentity,
+) -> ReproducibilityBuildOutputs:
+    """Create one wheel and two preliminary non-authorizing documents."""
+    if frozen.manifest is None:
+        raise FullC6ExecutorError("Full C6 native postprocessor lacks a frozen tree")
+    extension_suffix = _full_c6_extension_suffix()
+    artifact = (
+        context.build_root
+        / "target"
+        / "release"
+        / _native_cargo_artifact_name(manifest.target_triple)
+    )
+    try:
+        before = os.lstat(artifact)
+        artifact_data, artifact_stat = _secure_read_regular(artifact, before)
+    except FullC6ExecutorError:
+        raise
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 native Cargo artifact is missing") from exc
+    if (before.st_dev, before.st_ino) != (artifact_stat.st_dev, artifact_stat.st_ino):
+        raise FullC6ExecutorError("Full C6 native Cargo artifact changed")
+
+    staging = context.build_root / "wheel-staging"
+    output = context.build_root / "output"
+    try:
+        staging.mkdir(mode=_CANONICAL_DIRECTORY_MODE)
+        output.mkdir(mode=_CANONICAL_DIRECTORY_MODE)
+        os.chmod(staging, _CANONICAL_DIRECTORY_MODE)
+        os.chmod(output, _CANONICAL_DIRECTORY_MODE)
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 native output staging could not be created") from exc
+    _materialize_frozen_python_staging(frozen, staging)
+    installed = staging / f"_rextio_native{extension_suffix}"
+    _write_exclusive_bytes(installed, artifact_data, mode=_CANONICAL_FILE_MODE)
+
+    try:
+        wheel_result = build_artifact_wheel(
+            Path(manifest.distribution_name),
+            staging,
+            output,
+            external_contract=manifest.external_contract,
+        )
+        if wheel_result.status != "built" or type(wheel_result.path) is not str:
+            raise FullC6ExecutorError("Full C6 native wheel postprocessor failed")
+        wheel = Path(wheel_result.path)
+        verification = verify_external_wheel_contract(
+            wheel,
+            manifest.external_contract,
+        )
+    except FullC6ExecutorError:
+        raise
+    except (OSError, TypeError, ValueError, WheelContractError) as exc:
+        raise FullC6ExecutorError(
+            "Full C6 native wheel contract verification failed"
+        ) from exc
+    try:
+        wheel_stat = os.lstat(wheel)
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 native wheel disappeared") from exc
+    if not stat.S_ISREG(wheel_stat.st_mode) or wheel_stat.st_nlink != 1:
+        raise FullC6ExecutorError("Full C6 native wheel is not an independent file")
+
+    common = {
+        "authority": "non-authorizing",
+        "cargo_argv_sha256": toolchain.argv.digest,
+        "cargo_artifact_sha256": hashlib.sha256(artifact_data).hexdigest(),
+        "distribution_authorized": False,
+        "driver_manifest_sha256": manifest.digest,
+        "execution_driver": FULL_C6_NATIVE_EXECUTION_DRIVER,
+        "frozen_tree_sha256": frozen.manifest.digest,
+        "postprocessor": FULL_C6_NATIVE_POSTPROCESSOR,
+        "target_triple": manifest.target_triple,
+        "toolchain_sha256": toolchain.digest,
+        "wheel_sha256": verification.wheel_sha256,
+        "wheel_size": wheel_stat.st_size,
+    }
+    sbom_document = {
+        "bomFormat": "CycloneDX",
+        "components": [],
+        "metadata": {"properties": _preliminary_properties(common)},
+        "rextio": common,
+        "serialNumber": f"urn:uuid:{verification.wheel_sha256[:32]}",
+        "specVersion": "1.5",
+        "version": 1,
+    }
+    provenance_document = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "authority": "non-authorizing",
+        "distribution_authorized": False,
+        "predicate": {
+            "buildDefinition": {
+                "buildType": "https://rextio.dev/build/full-c6-native-orchestrator/v1",
+                "externalParameters": common,
+                "internalParameters": {
+                    "authority": "non-authorizing",
+                    "distribution_authorized": False,
+                },
+                "resolvedDependencies": [],
+            },
+            "runDetails": {
+                "builder": {"id": FULL_C6_NATIVE_EXECUTION_DRIVER},
+                "metadata": {"invocationId": manifest.digest},
+            },
+        },
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "subject": [
+            {
+                "digest": {"sha256": verification.wheel_sha256},
+                "name": wheel.name,
+            }
+        ],
+    }
+    sbom = output / "rextio.preliminary-sbom.json"
+    provenance = output / "rextio.preliminary-provenance-input.json"
+    _write_exclusive_bytes(sbom, _canonical_json(sbom_document), mode=_CANONICAL_FILE_MODE)
+    _write_exclusive_bytes(
+        provenance,
+        _canonical_json(provenance_document),
+        mode=_CANONICAL_FILE_MODE,
+    )
+    return ReproducibilityBuildOutputs(
+        unsigned_wheel=wheel,
+        sbom_json=sbom,
+        provenance_input_json=provenance,
+    )
+
+
+def _full_c6_extension_suffix() -> str:
+    """Return the exact pinned CPython 3.11 extension suffix."""
+    if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11):
+        raise FullC6ExecutorError(
+            "Full C6 native Alpha postprocessor requires exact CPython 3.11"
+        )
+    extension_suffix = sysconfig.get_config_var("EXT_SUFFIX")
+    if (
+        type(extension_suffix) is not str
+        or not extension_suffix
+        or PurePosixPath(extension_suffix).name != extension_suffix
+        or not extension_suffix.endswith(".so")
+    ):
+        raise FullC6ExecutorError("Full C6 CPython extension suffix is unavailable")
+    return extension_suffix
+
+
+def _native_cargo_artifact_name(target_triple: str) -> str:
+    if target_triple == "aarch64-apple-darwin":
+        return "lib_rextio_native.dylib"
+    if target_triple == "x86_64-unknown-linux-gnu":
+        return "lib_rextio_native.so"
+    raise FullC6ExecutorError("Full C6 native Cargo artifact target is unsupported")
+
+
+def _materialize_frozen_python_staging(tree: _FrozenTree, destination: Path) -> None:
+    prefix = PurePosixPath("python-staging")
+    root = tuple(
+        item
+        for item in tree.entries
+        if item.public.logical_name == prefix.as_posix()
+    )
+    if len(root) != 1 or root[0].public.kind != "directory":
+        raise FullC6ExecutorError(
+            "Full C6 frozen tree is missing exact python-staging directory"
+        )
+    selected = tuple(
+        item
+        for item in tree.entries
+        if PurePosixPath(item.public.logical_name).is_relative_to(prefix)
+        and item.public.logical_name != prefix.as_posix()
+    )
+    files = tuple(item for item in selected if item.public.kind == "file")
+    if not files:
+        raise FullC6ExecutorError("Full C6 frozen Python staging is empty")
+    if any(
+        PurePosixPath(item.public.logical_name).name.startswith("_rextio_native")
+        and PurePosixPath(item.public.logical_name).name.endswith((".so", ".dylib", ".dll", ".pyd"))
+        for item in files
+    ):
+        raise FullC6ExecutorError(
+            "Full C6 frozen Python staging contains a caller-supplied native extension"
+        )
+    directories = sorted(
+        (item for item in selected if item.public.kind == "directory"),
+        key=lambda item: len(PurePosixPath(item.public.logical_name).parts),
+    )
+    try:
+        for item in directories:
+            relative = PurePosixPath(item.public.logical_name).relative_to(prefix)
+            path = destination.joinpath(*relative.parts)
+            path.mkdir(mode=_CANONICAL_DIRECTORY_MODE)
+            os.chmod(path, _CANONICAL_DIRECTORY_MODE)
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 Python staging directory could not be copied") from exc
+    for item in files:
+        relative = PurePosixPath(item.public.logical_name).relative_to(prefix)
+        assert item.data is not None
+        _write_exclusive_bytes(
+            destination.joinpath(*relative.parts),
+            item.data,
+            mode=item.public.mode,
+        )
+
+
+def _write_exclusive_bytes(path: Path, data: bytes, *, mode: int) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, mode)
+    except OSError as exc:
+        raise FullC6ExecutorError("Full C6 output file could not be created safely") from exc
+    try:
+        os.fchmod(descriptor, mode)
+        view = memoryview(data)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise FullC6ExecutorError("Full C6 output file write failed")
+            view = view[written:]
+        os.fsync(descriptor)
+        observed = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed.st_nlink != 1
+            or observed.st_size != len(data)
+        ):
+            raise FullC6ExecutorError("Full C6 output file identity is invalid")
+    finally:
+        os.close(descriptor)
+
+
+def _preliminary_properties(values: Mapping[str, object]) -> list[dict[str, str]]:
+    return [
+        {"name": f"rextio:{name}", "value": str(value).lower() if type(value) is bool else str(value)}
+        for name, value in sorted(values.items())
+    ]
 
 
 def _validate_executor_arguments(
@@ -704,9 +1305,14 @@ def _validate_executor_arguments(
     timeout_seconds: float,
     max_output_bytes: int,
     toolchain: BuildToolchainIdentity | None,
+    native_orchestrator: bool,
 ) -> None:
-    if (build is None) == (command_factory is None):
-        raise FullC6ExecutorError("choose exactly one build callback or command factory")
+    if type(native_orchestrator) is not bool:
+        raise FullC6ExecutorError("Full C6 native orchestrator flag must be boolean")
+    if sum((build is not None, command_factory is not None, native_orchestrator)) != 1:
+        raise FullC6ExecutorError(
+            "choose exactly one build callback, command factory, or native orchestrator"
+        )
     if build is not None:
         if not callable(build) or cargo_command is None:
             raise FullC6ExecutorError("build callback requires one strict Cargo command")
@@ -716,6 +1322,15 @@ def _validate_executor_arguments(
         raise FullC6ExecutorError("Full C6 executor toolchain identity is invalid")
     if build is not None and toolchain is not None:
         raise FullC6ExecutorError("callback executor cannot claim a production toolchain")
+    if native_orchestrator:
+        if type(toolchain) is not BuildToolchainIdentity:
+            raise FullC6ExecutorError(
+                "Full C6 native orchestrator requires an exact toolchain identity"
+            )
+        if lock_generator is not None or lock_command_factory is not None:
+            raise FullC6ExecutorError(
+                "Full C6 native orchestrator requires a pre-generated frozen Cargo.lock"
+            )
     for value, label in (
         (lock_generator, "lock generator"),
         (lock_command_factory, "lock command factory"),
@@ -1350,6 +1965,23 @@ def _require_prestrict_build_command(value: Sequence[str]) -> tuple[str, ...]:
     return argv
 
 
+def _require_exact_native_cargo_command(value: Sequence[str]) -> tuple[str, ...]:
+    """Require the frozen Alpha driver's sole Cargo command shape."""
+    argv = _require_prestrict_build_command(value)
+    if argv[1:] != (
+        "build",
+        "--release",
+        "--locked",
+        "--offline",
+        "--frozen",
+    ):
+        raise FullC6ExecutorError(
+            "Full C6 native driver command must be exactly "
+            "cargo build --release --locked --offline --frozen"
+        )
+    return argv
+
+
 def _require_offline_lock_command(value: Sequence[str]) -> tuple[str, ...]:
     argv = tuple(value)
     if (
@@ -1479,8 +2111,11 @@ __all__ = [
     "FULL_C6_CALLBACK_LOCK_DRIVER",
     "FULL_C6_EXECUTOR_DOMAIN",
     "FULL_C6_EXECUTOR_SCOPE",
+    "FULL_C6_NATIVE_DRIVER_DOMAIN",
+    "FULL_C6_NATIVE_DRIVER_MANIFEST",
     "FULL_C6_NATIVE_EXECUTION_DRIVER",
     "FULL_C6_NATIVE_LOCK_DRIVER",
+    "FULL_C6_NATIVE_POSTPROCESSOR",
     "FULL_C6_PREEXISTING_LOCK_DRIVER",
     "FULL_C6_UNBOUND_EXECUTION_DRIVER",
     "FullC6BuildCommand",
@@ -1494,10 +2129,13 @@ __all__ = [
     "FullC6LockCommand",
     "FullC6LockGenerationRequest",
     "FullC6TreeEntry",
+    "FullC6NativeDriverManifest",
     "MAX_FULL_C6_FILE_BYTES",
     "MAX_FULL_C6_OUTPUT_BYTES",
     "MAX_FULL_C6_PATH_DEPTH",
     "MAX_FULL_C6_TREE_BYTES",
     "MAX_FULL_C6_TREE_ENTRIES",
     "execute_full_c6_two_build",
+    "execute_full_c6_native_two_build",
+    "full_c6_native_driver_manifest_bytes",
 ]
