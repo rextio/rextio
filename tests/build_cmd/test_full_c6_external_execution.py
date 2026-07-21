@@ -32,6 +32,7 @@ from rextio.build.full_c6_external_execution import (
     FullC6ExternalExecutionError,
     execute_full_c6_external_build,
 )
+from rextio.build.full_c6_host_inputs import collect_full_c6_analysis_scope
 from rextio.build.full_c6_pipeline import (
     FullC6ExternalPreflightResult,
     prepare_full_c6_external_build,
@@ -93,6 +94,8 @@ class _ExecutionInputs:
 
 def _project_preflight(
     tmp_path: Path,
+    *,
+    build_overrides: dict[str, object] | None = None,
 ) -> tuple[FullC6ExternalPreflightResult, RextioConfig]:
     project = tmp_path / "project"
     project.mkdir()
@@ -117,15 +120,24 @@ license-files = ["LICENSE"]
     )
     (project / "LICENSE").write_text("MIT project license\n", encoding="utf-8")
     signed = _SOURCE_TESTS["_write_signed"](project / "authority")
+    _scope_lock, scope_workspace = _cargo_workspace(project)
+    build_values: dict[str, object] = {
+        "artifact_evidence_policy": "required",
+        "artifact_distribution_policy": "full-c6-required",
+        "artifact_source_lock_manifest": signed.lock_path.relative_to(project).as_posix(),
+        "artifact_source_lock_signature": signed.signature_path.relative_to(project).as_posix(),
+        "artifact_trusted_public_key": signed.key_path.relative_to(project).as_posix(),
+        "artifact_trusted_public_key_sha256": signed.key_hash,
+        "artifact_signing_request_output": "state/request.json",
+        "artifact_cargo_lock": "Cargo.lock",
+        "artifact_cargo_lock_sha256": scope_workspace.cargo_sources.lock_file.sha256,
+        "artifact_cargo_vendor": "cargo-vendor",
+        "artifact_cargo_vendor_sha256": scope_workspace.vendor_tree_sha256,
+        **(build_overrides or {}),
+    }
     config = RextioConfig(
-        build=BuildConfig(
-            artifact_evidence_policy="required",
-            artifact_distribution_policy="full-c6-required",
-            artifact_source_lock_manifest=signed.lock_path.relative_to(project).as_posix(),
-            artifact_source_lock_signature=signed.signature_path.relative_to(project).as_posix(),
-            artifact_trusted_public_key=signed.key_path.relative_to(project).as_posix(),
-            artifact_trusted_public_key_sha256=signed.key_hash,
-            artifact_signing_request_output="state/request.json",
+        build=BuildConfig(  # type: ignore[arg-type]
+            **build_values,
         ),
         imports=ImportsConfig(
             packages={
@@ -141,6 +153,7 @@ license-files = ["LICENSE"]
         ),
     )
     target_plan = create_target_plan(project, config)
+    analysis_scope = collect_full_c6_analysis_scope(project, config=config)
 
     def analyze(
         registry: ExternalNativeRegistry | None = None,
@@ -157,6 +170,7 @@ license-files = ["LICENSE"]
             plugin_config=config,
             embedding_enabled=config.embedding.enabled,
             external_native_registry=registry,
+            full_c6_analysis_scope=analysis_scope,
         )
         result.external_source_plan = signed.plan
         return result
@@ -166,6 +180,7 @@ license-files = ["LICENSE"]
         project_root=project,
         initial_analysis=initial,
         config=config,
+        analysis_scope=analysis_scope,
         reanalyze=analyze,
     )
     return preflight, config
@@ -287,8 +302,12 @@ def _inputs(
     *,
     root_package: str = "rextio_generated_native",
     omitted_dependency: str | None = None,
+    build_overrides: dict[str, object] | None = None,
 ) -> _ExecutionInputs:
-    preflight, config = _project_preflight(tmp_path)
+    preflight, config = _project_preflight(
+        tmp_path,
+        build_overrides=build_overrides,
+    )
     original_analyze = external_execution.analyze_project
     trusted_plan = preflight.analysis.external_source_plan
 
@@ -363,9 +382,18 @@ def test_external_call_reaches_exact_guarded_rust_and_native_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     inputs = _inputs(tmp_path, monkeypatch)
+    analyzed_scopes: list[object] = []
+    reanalyze = external_execution.analyze_project
+
+    def observe_scope(*args: Any, **kwargs: Any) -> Any:
+        analyzed_scopes.append(kwargs["full_c6_analysis_scope"])
+        return reanalyze(*args, **kwargs)
+
+    monkeypatch.setattr(external_execution, "analyze_project", observe_scope)
 
     authority = _execute(inputs)
 
+    assert analyzed_scopes == [inputs.preflight.context.analysis_scope]
     assert validate_full_c6_native_execution_authority(authority)
     assert authority.authorizes_distribution is False
     source_root = inputs.preflight.analysis.project_root / ".rextio/generated/rust"

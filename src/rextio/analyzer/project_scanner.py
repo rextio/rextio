@@ -43,6 +43,7 @@ from rextio.source.external import resolve_external_source_plan
 from rextio.targets.models import normalize_target_language
 
 if TYPE_CHECKING:
+    from rextio.build.full_c6_host_inputs import FullC6AnalysisScope
     from rextio.source.external_linkage import ExternalNativeRegistry
 
 IGNORED_PARTS = {
@@ -62,17 +63,55 @@ IGNORED_PARTS = {
 }
 
 
-def scan_python_files(project_root: Path) -> list[Path]:
-    """Return the project's Python files, honoring .rextioignore."""
+def scan_python_files(
+    project_root: Path,
+    *,
+    full_c6_analysis_scope: FullC6AnalysisScope | None = None,
+    full_c6_config: RextioConfig | None = None,
+) -> list[Path]:
+    """Return project Python files under ordinary or sealed Full C6 rules."""
     root = project_root.resolve()
-    ignore_patterns = load_rextioignore(root)
+    vendor_root: Path | None = None
+    if full_c6_analysis_scope is None:
+        ignore_patterns = load_rextioignore(root)
+    else:
+        from rextio.build.full_c6_host_inputs import (
+            FullC6HostInputsError,
+            require_full_c6_analysis_scope,
+        )
+
+        if type(full_c6_config) is not RextioConfig:
+            raise FullC6HostInputsError(
+                "Full C6 analysis scope lacks its exact typed config"
+            )
+        vendor_root = require_full_c6_analysis_scope(
+            full_c6_analysis_scope,
+            project_root=root,
+            config=full_c6_config,
+        )
+        # Custom ignore bytes are not part of the bounded Full C6 input
+        # closure.  Scope validation requires absence, and strict discovery
+        # never reads the file even during a create/delete race.
+        ignore_patterns = []
     files: list[Path] = []
     for path in root.rglob("*.py"):
         relative = path.relative_to(root)
+        if vendor_root is not None and path.is_relative_to(vendor_root):
+            continue
         if _is_ignored(relative, ignore_patterns):
             continue
         files.append(path)
-    return sorted(files)
+    result = sorted(files)
+    if full_c6_analysis_scope is not None:
+        assert full_c6_config is not None  # exact type established above
+        final_vendor_root = require_full_c6_analysis_scope(
+            full_c6_analysis_scope,
+            project_root=root,
+            config=full_c6_config,
+        )
+        if final_vendor_root != vendor_root:
+            raise FullC6HostInputsError("Full C6 analysis vendor identity changed")
+    return result
 
 
 def load_rextioignore(project_root: Path) -> list[str]:
@@ -122,6 +161,7 @@ def analyze_project(
     plugin_registry: PluginRegistry | None = None,
     plugin_config: RextioConfig | None = None,
     external_native_registry: ExternalNativeRegistry | None = None,
+    full_c6_analysis_scope: FullC6AnalysisScope | None = None,
 ) -> ProjectAnalysis:
     """Analyze a project directory and return its ProjectAnalysis.
 
@@ -138,7 +178,12 @@ def analyze_project(
     root = Path(project_root).resolve()
     target_language = normalize_target_language(target_language)
     analysis = ProjectAnalysis(project_root=root)
-    files = scan_python_files(root)
+    files = scan_python_files(
+        root,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+        full_c6_config=plugin_config,
+    )
+    analysis._full_c6_analysis_scope = full_c6_analysis_scope
     stub_inputs = capture_sibling_stub_inputs(root, tuple(files))
     analysis._stub_inputs = stub_inputs
     project_modules = _project_module_names(files, root)

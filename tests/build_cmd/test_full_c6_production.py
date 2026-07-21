@@ -32,15 +32,19 @@ def _collect_bounded_production_authority(
     pinned_policy: bool = False,
 ) -> tuple[object, object]:
     production = importlib.import_module("rextio.build.full_c6_production")
-    inputs = _EXTERNAL["_inputs"](tmp_path, monkeypatch)
     _rows, _transformations, coverage, external = _POLICY["_fixture"]()
     policy = _POLICY["_receipt"]()
-    build = replace(
-        inputs.config.build,
-        artifact_policy_manifest="locks/rextio.full-c6-policy.json",
-        artifact_policy_manifest_sha256=(policy.digest if pinned_policy else None),
+    inputs = _EXTERNAL["_inputs"](
+        tmp_path,
+        monkeypatch,
+        build_overrides={
+            "artifact_policy_manifest": "locks/rextio.full-c6-policy.json",
+            "artifact_policy_manifest_sha256": (
+                policy.digest if pinned_policy else None
+            ),
+        },
     )
-    config = replace(inputs.config, build=build)
+    config = inputs.config
     state_directory = tmp_path / "production-state"
     state_directory.mkdir(mode=0o700)
     retained: dict[str, object] = {}

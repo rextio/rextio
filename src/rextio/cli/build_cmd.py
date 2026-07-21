@@ -38,6 +38,7 @@ from rextio.build.orchestrator import (
 )
 from rextio.build.full_c6_host_inputs import (
     FullC6HostInputsError,
+    collect_full_c6_analysis_scope,
     collect_full_c6_host_prerequisites,
 )
 from rextio.build.full_c6_gate import FullC6GateError
@@ -267,6 +268,48 @@ def _report_full_c6_pipeline_failure(
     reporter.error(
         "Suggestion: verify the strict configuration, pinned inputs, current lifecycle "
         "material, and unchanged project sources, then rerun."
+    )
+    return 1
+
+
+def _report_full_c6_preanalysis_failure(
+    project_root: Path,
+    fallback: str,
+    error: FullC6HostInputsError,
+    reporter: Reporter,
+) -> int:
+    """Report deterministic strict failure before any ProjectAnalysis exists."""
+    del error  # Never serialize host paths or attacker-controlled detail.
+    reports_dir = project_root / ".rextio" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    for stale in ("build.json", "generate.json", "check.json"):
+        (reports_dir / stale).unlink(missing_ok=True)
+    public_message = "RXT060 strict Full C6 analysis scope failed closed."
+    (reports_dir / "build.json").write_text(
+        json.dumps(
+            {
+                "contract_version": TOOLING_CONTRACT_VERSION,
+                "distribution_authorized": False,
+                "error": {
+                    "code": "RXT060",
+                    "domain": "FullC6HostInputsError",
+                    "message": public_message,
+                },
+                "fallback": fallback,
+                "lifecycle": "failed",
+                "stage": "analysis-scope",
+                "status": "full-c6-required-failed",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    reporter.error(public_message)
+    reporter.error(
+        "Suggestion: verify the exact project root, absent custom ignore file, "
+        "and unchanged pinned Cargo lock/vendor inputs, then rerun."
     )
     return 1
 
@@ -743,6 +786,9 @@ def run(args: Namespace) -> int:
         reporter.error(f"Cause: {exc}")
         reporter.error(f"Suggestion: fix {project_root / 'rextio.toml'} and rerun rextio build.")
         return 1
+    strict_distribution = (
+        config.build.artifact_distribution_policy == FULL_C6_DISTRIBUTION_POLICY
+    )
     fallback = config.build.fallback_backend
     if fallback not in {"cpython", "nuitka"}:
         reporter.error("RXT060 Build failed while preparing fallback backend.")
@@ -764,6 +810,21 @@ def run(args: Namespace) -> int:
     ):
         return 1
 
+    full_c6_analysis_scope = None
+    if strict_distribution:
+        try:
+            full_c6_analysis_scope = collect_full_c6_analysis_scope(
+                _full_c6_lexical_project_root(raw_project_root),
+                config=config,
+            )
+        except FullC6HostInputsError as error:
+            return _report_full_c6_preanalysis_failure(
+                project_root,
+                fallback,
+                error,
+                reporter,
+            )
+
     try:
         analysis = analyze_project(
             project_root,
@@ -776,22 +837,36 @@ def run(args: Namespace) -> int:
             plugin_registry=target_plan.plugins,
             plugin_config=config,
             embedding_enabled=config.embedding.enabled,
+            full_c6_analysis_scope=full_c6_analysis_scope,
+        )
+    except FullC6HostInputsError as error:
+        return _report_full_c6_preanalysis_failure(
+            project_root,
+            fallback,
+            error,
+            reporter,
         )
     except PluginError as exc:
         # A lowering plugin misbehaved during the claim pass; report the stable
         # RXT060 diagnostic instead of a raw traceback (council round 8).
         reporter.error(f"RXT060 Plugin error: {exc}")
         return 1
-    strict_distribution = (
-        config.build.artifact_distribution_policy == FULL_C6_DISTRIBUTION_POLICY
-    )
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if strict_distribution and not has_parse_error:
+        analysis_scope = full_c6_analysis_scope
+        if analysis_scope is None:
+            return _report_full_c6_preanalysis_failure(
+                project_root,
+                fallback,
+                FullC6HostInputsError("strict analysis scope unavailable"),
+                reporter,
+            )
         try:
             preflight = prepare_full_c6_external_build(
                 project_root=project_root,
                 initial_analysis=analysis,
                 config=config,
+                analysis_scope=analysis_scope,
                 reanalyze=lambda registry: analyze_project(
                     project_root,
                     boundary_warnings=config.policy.boundary_warnings,
@@ -804,6 +879,7 @@ def run(args: Namespace) -> int:
                     plugin_config=config,
                     embedding_enabled=config.embedding.enabled,
                     external_native_registry=registry,
+                    full_c6_analysis_scope=analysis_scope,
                 ),
             )
             analysis = preflight.analysis

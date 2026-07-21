@@ -67,6 +67,7 @@ from rextio.config.schema import RextioConfig
 
 
 FULL_C6_HOST_INPUTS_DOMAIN = "rextio.full-c6-host-prerequisites.v1"
+FULL_C6_ANALYSIS_SCOPE_DOMAIN = "rextio.full-c6-analysis-scope.v1"
 FULL_C6_SOURCE_DATE_EPOCH = 0
 FULL_C6_CARGO_ROOT_PACKAGE = "rextio_generated_native"
 FULL_C6_CARGO_ARGUMENTS = (
@@ -126,6 +127,64 @@ class _FileBinding:
     mtime_ns: int
     ctime_ns: int
     sha256: str
+
+
+class FullC6AnalysisScope:
+    """Sealed authority to exclude one verified Cargo vendor from analysis.
+
+    A config path, ``.rextioignore`` entry, or caller-provided directory is not
+    exclusion authority.  Instances exist only after the exact project root,
+    typed strict config, Cargo.lock, and pinned vendor tree have been verified.
+    The scanner revalidates this scope before and after discovery so a changed
+    or replaced vendor cannot silently hide Python project input.
+    """
+
+    __slots__ = (
+        "_cargo_workspace",
+        "_config",
+        "_project_binding",
+        "_project_root",
+        "_seal",
+        "_vendor_binding",
+        "_vendor_relative",
+        "_vendor_root",
+    )
+
+    _cargo_workspace: FullC6CargoDependencyWorkspaceReceipt
+    _config: RextioConfig
+    _project_binding: _DirectoryBinding
+    _project_root: Path
+    _seal: bytes
+    _vendor_binding: _DirectoryBinding
+    _vendor_relative: str
+    _vendor_root: Path
+
+    def __init__(self) -> None:
+        raise TypeError("Full C6 analysis scopes require verified Cargo authority")
+
+    def __repr__(self) -> str:
+        return "FullC6AnalysisScope(material=<sealed>)"
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise TypeError("Full C6 analysis scopes are immutable")
+
+    def __delattr__(self, _name: str) -> None:
+        raise TypeError("Full C6 analysis scopes are immutable")
+
+    def __copy__(self) -> object:
+        raise TypeError("Full C6 analysis scopes cannot be copied")
+
+    def __deepcopy__(self, _memo: object) -> object:
+        raise TypeError("Full C6 analysis scopes cannot be copied")
+
+    def __reduce__(self) -> str | tuple[object, ...]:
+        raise TypeError("Full C6 analysis scopes cannot be serialized")
+
+    def __reduce_ex__(self, _protocol: SupportsIndex) -> str | tuple[object, ...]:
+        raise TypeError("Full C6 analysis scopes cannot be serialized")
+
+    def __getstate__(self) -> object:
+        raise TypeError("Full C6 analysis scopes cannot be serialized")
 
 
 class FullC6PublicationPlan:
@@ -591,6 +650,126 @@ class FullC6HostPrerequisites:
         )
 
 
+def collect_full_c6_analysis_scope(
+    project_root: Path | str,
+    *,
+    config: RextioConfig,
+) -> FullC6AnalysisScope:
+    """Seal the sole non-project Python root allowed by strict Full C6.
+
+    Collection deliberately performs no toolchain probe and creates no build
+    state.  It does fully verify the configured Cargo.lock and vendor tree,
+    including the owner-pinned vendor-tree integrity checks, before the vendor
+    can be excluded from initial analysis.  This does not authenticate a crate
+    publisher or registry origin.
+    """
+    if (
+        type(config) is not RextioConfig
+        or config.build.artifact_distribution_policy != "full-c6-required"
+    ):
+        raise FullC6HostInputsError(
+            "Full C6 analysis scope requires exact strict typed config"
+        )
+    root, project_binding = _open_raw_project_root(project_root)
+    _verify_directory_binding(root, project_binding, label="project")
+    _validate_host_layout(root, config)
+    cargo_workspace = _collect_configured_cargo_workspace(root, config)
+    vendor_relative = config.build.artifact_cargo_vendor
+    if type(vendor_relative) is not str:
+        raise FullC6HostInputsError("Full C6 analysis vendor path is unavailable")
+    vendor_root = _configured_project_path(root, vendor_relative)
+    vendor_binding = _require_secure_directory(
+        vendor_root,
+        label="analysis Cargo vendor",
+    )
+    scope = object.__new__(FullC6AnalysisScope)
+    object.__setattr__(scope, "_project_root", root)
+    object.__setattr__(scope, "_project_binding", project_binding)
+    object.__setattr__(scope, "_config", config)
+    object.__setattr__(scope, "_cargo_workspace", cargo_workspace)
+    object.__setattr__(scope, "_vendor_relative", vendor_relative)
+    object.__setattr__(scope, "_vendor_root", vendor_root)
+    object.__setattr__(scope, "_vendor_binding", vendor_binding)
+    object.__setattr__(scope, "_seal", _analysis_scope_seal(scope))
+    _require_full_c6_analysis_scope(
+        scope,
+        project_root=root,
+        config=config,
+        revalidate_workspace=False,
+    )
+    return scope
+
+
+def require_full_c6_analysis_scope(
+    value: object,
+    *,
+    project_root: Path | str,
+    config: RextioConfig,
+) -> Path:
+    """Revalidate a scope and return its exact lexical vendor root internally."""
+    return _require_full_c6_analysis_scope(
+        value,
+        project_root=project_root,
+        config=config,
+        revalidate_workspace=True,
+    )
+
+
+def _require_full_c6_analysis_scope(
+    value: object,
+    *,
+    project_root: Path | str,
+    config: RextioConfig,
+    revalidate_workspace: bool,
+) -> Path:
+    if type(value) is not FullC6AnalysisScope or type(config) is not RextioConfig:
+        raise FullC6HostInputsError("Full C6 analysis scope is invalid")
+    try:
+        root = _lexical_absolute_path(project_root, label="analysis project root")
+        seal_valid = type(value._seal) is bytes and hmac.compare_digest(
+            value._seal,
+            _analysis_scope_seal(value),
+        )
+    except Exception as exc:
+        raise FullC6HostInputsError("Full C6 analysis scope is invalid") from exc
+    if (
+        not seal_valid
+        or value._config is not config
+        or config.build.artifact_distribution_policy != "full-c6-required"
+        or value._project_root != root
+        or type(value._cargo_workspace)
+        is not FullC6CargoDependencyWorkspaceReceipt
+        or not validate_full_c6_cargo_dependency_workspace_receipt(
+            value._cargo_workspace
+        )
+    ):
+        raise FullC6HostInputsError("Full C6 analysis scope is stale or foreign")
+    vendor_relative = config.build.artifact_cargo_vendor
+    if (
+        type(vendor_relative) is not str
+        or value._vendor_relative != vendor_relative
+    ):
+        raise FullC6HostInputsError("Full C6 analysis scope is stale or foreign")
+    expected_vendor = _configured_project_path(root, vendor_relative)
+    if value._vendor_root != expected_vendor:
+        raise FullC6HostInputsError("Full C6 analysis scope vendor changed")
+    _verify_directory_binding(root, value._project_binding, label="analysis project")
+    _verify_directory_binding(
+        expected_vendor,
+        value._vendor_binding,
+        label="analysis Cargo vendor",
+    )
+    _require_strict_rextioignore_absent(root)
+    if revalidate_workspace:
+        fresh_workspace = _collect_configured_cargo_workspace(root, config)
+        if not hmac.compare_digest(
+            fresh_workspace.digest,
+            value._cargo_workspace.digest,
+        ):
+            raise FullC6HostInputsError("Full C6 analysis Cargo authority changed")
+    return expected_vendor
+
+
 @contextmanager
 def collect_full_c6_host_prerequisites(
     project_root: Path | str,
@@ -770,6 +949,8 @@ def _validated_production_material(authority: object) -> _FullC6ProductionMateri
 
 def _validate_host_layout(root: Path, config: RextioConfig) -> None:
     """Reject overlap among persistent output state and pinned Cargo inputs."""
+    if config.build.artifact_distribution_policy == "full-c6-required":
+        _require_strict_rextioignore_absent(root)
     request = config.build.artifact_signing_request_output
     vendor = config.build.artifact_cargo_vendor
     lock = config.build.artifact_cargo_lock
@@ -791,6 +972,32 @@ def _validate_host_layout(root: Path, config: RextioConfig) -> None:
         raise FullC6HostInputsError(
             "Full C6 Cargo.lock must not overlap state, publication, or vendor paths"
         )
+
+
+def _require_strict_rextioignore_absent(root: Path) -> None:
+    """Reject the unbound custom ignore channel in strict Full C6 analysis."""
+    descriptor = _open_absolute_directory_no_follow(
+        root,
+        label="strict project root",
+    )
+    try:
+        try:
+            os.stat(
+                ".rextioignore",
+                dir_fd=descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise FullC6HostInputsError(
+                "Full C6 could not verify the custom ignore policy"
+            ) from exc
+        raise FullC6HostInputsError(
+            "Full C6 forbids a custom .rextioignore because it is not build authority"
+        )
+    finally:
+        os.close(descriptor)
 
 
 def _collect_toolchain(
@@ -1876,6 +2083,35 @@ def _host_prerequisites_seal(value: FullC6HostPrerequisites) -> bytes:
     return hmac.new(_SEAL_KEY, _canonical_bytes(payload), hashlib.sha256).digest()
 
 
+def _analysis_scope_seal(value: FullC6AnalysisScope) -> bytes:
+    payload = {
+        "domain": FULL_C6_ANALYSIS_SCOPE_DOMAIN,
+        "objects": {
+            "config": id(value._config),
+            "cargo_workspace": id(value._cargo_workspace),
+        },
+        "semantics": {
+            "config": hashlib.sha256(repr(value._config).encode()).hexdigest(),
+            "cargo_workspace": getattr(value._cargo_workspace, "digest", None),
+            "vendor_relative": value._vendor_relative,
+            "rextioignore_policy": "strict-absent",
+        },
+        "paths": {
+            "project": hashlib.sha256(
+                os.fspath(value._project_root).encode()
+            ).hexdigest(),
+            "vendor": hashlib.sha256(
+                os.fspath(value._vendor_root).encode()
+            ).hexdigest(),
+        },
+        "directories": {
+            "project": _directory_binding_payload(value._project_binding),
+            "vendor": _directory_binding_payload(value._vendor_binding),
+        },
+    }
+    return hmac.new(_SEAL_KEY, _canonical_bytes(payload), hashlib.sha256).digest()
+
+
 def _publication_plan_seal(value: FullC6PublicationPlan) -> bytes:
     payload = {
         "domain": f"{FULL_C6_HOST_INPUTS_DOMAIN}.publication-plan",
@@ -1944,10 +2180,14 @@ def _canonical_bytes(value: object) -> bytes:
 
 
 __all__ = [
+    "FULL_C6_ANALYSIS_SCOPE_DOMAIN",
     "FULL_C6_HOST_INPUTS_DOMAIN",
     "FULL_C6_SOURCE_DATE_EPOCH",
+    "FullC6AnalysisScope",
     "FullC6HostInputsError",
     "FullC6HostPrerequisites",
     "FullC6PublicationPlan",
+    "collect_full_c6_analysis_scope",
     "collect_full_c6_host_prerequisites",
+    "require_full_c6_analysis_scope",
 ]

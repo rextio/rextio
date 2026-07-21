@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import csv
 import hashlib
 import io
@@ -18,13 +19,17 @@ from types import SimpleNamespace
 import pytest
 
 from rextio.__about__ import __version__
+from rextio.analyzer.project_scanner import scan_python_files
 from rextio.build import full_c6_host_inputs as host_inputs
 from rextio.build import full_c6_native_output, full_c6_pipeline, full_c6_production
 from rextio.build.full_c6_host_inputs import (
     FULL_C6_CARGO_ARGUMENTS,
     FULL_C6_SOURCE_DATE_EPOCH,
+    FullC6AnalysisScope,
     FullC6HostInputsError,
+    collect_full_c6_analysis_scope,
     collect_full_c6_host_prerequisites,
+    require_full_c6_analysis_scope,
 )
 from rextio.build.full_c6_cargo_workspace import (
     compute_full_c6_cargo_vendor_tree_sha256,
@@ -228,7 +233,11 @@ def _host_config(**build_overrides: object) -> RextioConfig:
     return RextioConfig(build=BuildConfig(**values))  # type: ignore[arg-type]
 
 
-def _write_cargo_workspace(project: Path) -> tuple[Path, Path, str, str]:
+def _write_cargo_workspace(
+    project: Path,
+    *,
+    extra_files: dict[str, bytes] | None = None,
+) -> tuple[Path, Path, str, str]:
     lock = project / "Cargo.lock"
     lock.write_text(
         """\
@@ -256,9 +265,11 @@ checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ),
         "LICENSE": b"MIT license evidence\n",
         "src/lib.rs": b"pub fn answer() -> u32 { 42 }\n",
+        **(extra_files or {}),
     }
     for relative, data in files.items():
         path = package.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         path.chmod(0o644)
     checksum = {
@@ -278,6 +289,197 @@ checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         hashlib.sha256(lock.read_bytes()).hexdigest(),
         compute_full_c6_cargo_vendor_tree_sha256(vendor),
     )
+
+
+def _analysis_scope_fixture(
+    tmp_path: Path,
+    *,
+    extra_files: dict[str, bytes] | None = None,
+) -> tuple[Path, RextioConfig, FullC6AnalysisScope, Path, Path]:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    (project / "app.py").write_text("VALUE: int = 1\n", encoding="utf-8")
+    lock, vendor, lock_sha256, vendor_sha256 = _write_cargo_workspace(
+        project,
+        extra_files=extra_files,
+    )
+    config = _host_config(
+        artifact_distribution_policy="full-c6-required",
+        artifact_cargo_lock=lock.relative_to(project).as_posix(),
+        artifact_cargo_lock_sha256=lock_sha256,
+        artifact_cargo_vendor=vendor.relative_to(project).as_posix(),
+        artifact_cargo_vendor_sha256=vendor_sha256,
+    )
+    scope = collect_full_c6_analysis_scope(project, config=config)
+    return project, config, scope, lock, vendor
+
+
+def test_analysis_scope_excludes_only_verified_vendor_python(
+    tmp_path: Path,
+) -> None:
+    project, config, scope, _lock, vendor = _analysis_scope_fixture(
+        tmp_path,
+        extra_files={"etc/libc-util.py": b"async = 1\n"},
+    )
+    helper = vendor / "demo-dep-1.2.3" / "etc" / "libc-util.py"
+    adjacent = project / "cargo-vendor-shadow" / "helper.py"
+    adjacent.parent.mkdir()
+    adjacent.write_text("VALUE = 3\n", encoding="utf-8")
+
+    assert helper in scan_python_files(project)
+    strict_files = scan_python_files(
+        project,
+        full_c6_analysis_scope=scope,
+        full_c6_config=config,
+    )
+    assert strict_files == [project / "app.py", adjacent]
+
+    ignored = project / "ignored.py"
+    ignored.write_text("VALUE = 2\n", encoding="utf-8")
+    (project / ".rextioignore").write_text("ignored.py\n", encoding="utf-8")
+    ordinary = scan_python_files(project)
+    assert ignored not in ordinary
+    assert helper in ordinary
+
+
+@pytest.mark.parametrize("kind", ("file", "directory", "symlink"))
+def test_analysis_scope_rejects_every_present_rextioignore(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    lock, vendor, lock_sha256, vendor_sha256 = _write_cargo_workspace(project)
+    config = _host_config(
+        artifact_distribution_policy="full-c6-required",
+        artifact_cargo_lock=lock.relative_to(project).as_posix(),
+        artifact_cargo_lock_sha256=lock_sha256,
+        artifact_cargo_vendor=vendor.relative_to(project).as_posix(),
+        artifact_cargo_vendor_sha256=vendor_sha256,
+    )
+    ignore = project / ".rextioignore"
+    if kind == "file":
+        ignore.write_text("vendor/\n", encoding="utf-8")
+    elif kind == "directory":
+        ignore.mkdir()
+    else:
+        ignore.symlink_to("missing-ignore-target")
+
+    with pytest.raises(FullC6HostInputsError, match="forbids"):
+        collect_full_c6_analysis_scope(project, config=config)
+
+
+def test_analysis_scope_is_exact_typed_root_and_config_authority(
+    tmp_path: Path,
+) -> None:
+    project, config, scope, _lock, vendor = _analysis_scope_fixture(tmp_path)
+
+    assert type(scope) is FullC6AnalysisScope
+    assert require_full_c6_analysis_scope(
+        scope,
+        project_root=project,
+        config=config,
+    ) == vendor
+    with pytest.raises(TypeError, match="verified Cargo authority"):
+        FullC6AnalysisScope()
+    with pytest.raises(TypeError, match="cannot be copied"):
+        copy.copy(scope)
+    with pytest.raises(TypeError, match="cannot be copied"):
+        copy.deepcopy(scope)
+    with pytest.raises(TypeError, match="cannot be serialized"):
+        pickle.dumps(scope)
+    with pytest.raises(FullC6HostInputsError, match="invalid"):
+        require_full_c6_analysis_scope(vendor, project_root=project, config=config)
+    with pytest.raises(FullC6HostInputsError, match="stale or foreign"):
+        require_full_c6_analysis_scope(
+            scope,
+            project_root=project,
+            config=RextioConfig(build=config.build),
+        )
+    other = (tmp_path / "other").resolve()
+    other.mkdir()
+    with pytest.raises(FullC6HostInputsError, match="stale or foreign"):
+        require_full_c6_analysis_scope(scope, project_root=other, config=config)
+
+    object.__setattr__(scope, "_seal", b"forged")
+    with pytest.raises(FullC6HostInputsError, match="stale or foreign"):
+        require_full_c6_analysis_scope(scope, project_root=project, config=config)
+
+
+@pytest.mark.parametrize("mutation", ("vendor-bytes", "lock-bytes", "vendor-replace"))
+def test_analysis_scope_revalidates_cargo_authority(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    project, config, scope, lock, vendor = _analysis_scope_fixture(tmp_path)
+    if mutation == "vendor-bytes":
+        (vendor / "demo-dep-1.2.3" / "src" / "lib.rs").write_text(
+            "pub fn answer() -> u32 { 7 }\n",
+            encoding="utf-8",
+        )
+    elif mutation == "lock-bytes":
+        lock.write_text(lock.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+    else:
+        moved = project / "old-vendor"
+        vendor.rename(moved)
+        vendor.mkdir()
+
+    with pytest.raises(FullC6HostInputsError):
+        require_full_c6_analysis_scope(scope, project_root=project, config=config)
+
+
+@pytest.mark.parametrize("joint_vendor_update", (False, True))
+def test_analysis_scope_rejects_changed_config_pin_even_if_vendor_matches(
+    tmp_path: Path,
+    joint_vendor_update: bool,
+) -> None:
+    project, config, scope, _lock, vendor = _analysis_scope_fixture(tmp_path)
+    new_pin = "0" * 64
+    if joint_vendor_update:
+        source = vendor / "demo-dep-1.2.3" / "src" / "lib.rs"
+        payload = b"pub fn answer() -> u32 { 100 }\n"
+        source.write_bytes(payload)
+        checksum_path = vendor / "demo-dep-1.2.3" / ".cargo-checksum.json"
+        checksum = json.loads(checksum_path.read_text(encoding="utf-8"))
+        checksum["files"]["src/lib.rs"] = hashlib.sha256(payload).hexdigest()
+        checksum_path.write_text(
+            json.dumps(checksum, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        new_pin = compute_full_c6_cargo_vendor_tree_sha256(vendor)
+    object.__setattr__(config.build, "artifact_cargo_vendor_sha256", new_pin)
+
+    with pytest.raises(FullC6HostInputsError, match="stale or foreign"):
+        require_full_c6_analysis_scope(scope, project_root=project, config=config)
+
+
+def test_analysis_scan_fails_when_vendor_changes_between_validations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, config, scope, _lock, vendor = _analysis_scope_fixture(tmp_path)
+    original = host_inputs.require_full_c6_analysis_scope
+    calls = 0
+
+    def race(value: object, *, project_root: Path, config: RextioConfig) -> Path:
+        nonlocal calls
+        result = original(value, project_root=project_root, config=config)
+        calls += 1
+        if calls == 1:
+            (vendor / "demo-dep-1.2.3" / "src" / "lib.rs").write_text(
+                "pub fn answer() -> u32 { 9 }\n",
+                encoding="utf-8",
+            )
+        return result
+
+    monkeypatch.setattr(host_inputs, "require_full_c6_analysis_scope", race)
+    with pytest.raises(FullC6HostInputsError):
+        scan_python_files(
+            project,
+            full_c6_analysis_scope=scope,
+            full_c6_config=config,
+        )
+    assert calls == 1
 
 
 def test_configured_cargo_workspace_requires_exact_lock_and_vendor_pins(

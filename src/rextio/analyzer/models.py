@@ -732,6 +732,13 @@ class ProjectAnalysis:
     _stub_inputs: StubInputSnapshot | None = field(
         default=None, init=False, repr=False, compare=False
     )
+    # Strict Full C6 scanner authority used for this exact analysis.  This is
+    # process-local identity only: reports and equality deliberately omit it.
+    # The analyzer layer keeps the type opaque so ordinary analysis does not
+    # depend on the build layer.
+    _full_c6_analysis_scope: object | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
     modules: list[ModuleAnalysis] = field(default_factory=list)
     # The single project-wide final-binding authority (one ``ModuleBindings`` per
     # module), built once and shared by module parsing, callable indexing, the

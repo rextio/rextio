@@ -40,6 +40,11 @@ from rextio.build.full_c6_gate import (
     authorize_full_c6_distribution,
     prepare_full_c6_preauthorization_evidence,
 )
+from rextio.build.full_c6_host_inputs import (
+    FullC6AnalysisScope,
+    FullC6HostInputsError,
+    require_full_c6_analysis_scope,
+)
 from rextio.build.full_c6_policy import FullC6PolicyReceipt
 from rextio.build.full_c6_policy_manifest import (
     FullC6PolicyManifestError,
@@ -101,6 +106,7 @@ class FullC6ExternalBuildContext:
     """
 
     source_verification: SourceLockV2Verification = field(repr=False)
+    analysis_scope: FullC6AnalysisScope = field(repr=False, compare=False)
     registry: ExternalNativeRegistry = field(repr=False)
     runtime_guard: ExternalRuntimeGuard = field(repr=False)
     wheel_contract: ExternalWheelContract
@@ -111,6 +117,7 @@ class FullC6ExternalBuildContext:
             raise TypeError("Full C6 external context must come from strict preflight")
         if (
             type(self.source_verification) is not SourceLockV2Verification
+            or type(self.analysis_scope) is not FullC6AnalysisScope
             or self.source_verification.context is None
             or self.source_verification.admission.status != "admitted"
             or type(self.registry) is not ExternalNativeRegistry
@@ -173,6 +180,7 @@ def prepare_full_c6_external_build(
     project_root: Path | str,
     initial_analysis: ProjectAnalysis,
     config: RextioConfig,
+    analysis_scope: FullC6AnalysisScope,
     reanalyze: FullC6Reanalyzer,
 ) -> FullC6ExternalPreflightResult:
     """Verify SourceLock v2 and return one freshly reanalyzed C5.2 context.
@@ -183,7 +191,11 @@ def prepare_full_c6_external_build(
     The registry is then supplied to a caller-owned fresh analyzer invocation;
     the result is independently rebuilt before it is sealed.
     """
-    if type(initial_analysis) is not ProjectAnalysis or type(config) is not RextioConfig:
+    if (
+        type(initial_analysis) is not ProjectAnalysis
+        or type(config) is not RextioConfig
+        or type(analysis_scope) is not FullC6AnalysisScope
+    ):
         raise FullC6PipelineError("RXT060 Full C6 preflight input is invalid")
     if config.build.artifact_distribution_policy != FULL_C6_DISTRIBUTION_POLICY:
         raise FullC6PipelineError(
@@ -193,6 +205,20 @@ def prepare_full_c6_external_build(
     root = Path(project_root).resolve()
     if initial_analysis.project_root.resolve() != root:
         raise FullC6PipelineError("RXT060 Full C6 analysis root is stale")
+    try:
+        require_full_c6_analysis_scope(
+            analysis_scope,
+            project_root=root,
+            config=config,
+        )
+    except FullC6HostInputsError as exc:
+        raise FullC6PipelineError(
+            "RXT060 Full C6 analysis scope failed closed"
+        ) from exc
+    if initial_analysis._full_c6_analysis_scope is not analysis_scope:
+        raise FullC6PipelineError(
+            "RXT060 initial analysis does not belong to the sealed Full C6 scope"
+        )
     plan = _require_exact_external_plan(initial_analysis, config)
     package_policy = config.imports.packages[plan.package]
     build = config.build
@@ -234,11 +260,23 @@ def prepare_full_c6_external_build(
             distribution=trusted.plan.distribution,
             version=trusted.plan.requested_version,
         )
+        require_full_c6_analysis_scope(
+            analysis_scope,
+            project_root=root,
+            config=config,
+        )
         fresh_analysis = reanalyze(provisional_registry)
         if type(fresh_analysis) is not ProjectAnalysis:
             raise TypeError("reanalyzer result is invalid")
         if fresh_analysis.project_root.resolve() != root:
             raise ValueError("reanalyzer root changed")
+        if fresh_analysis._full_c6_analysis_scope is not analysis_scope:
+            raise ValueError("reanalyzer changed the sealed analysis scope")
+        require_full_c6_analysis_scope(
+            analysis_scope,
+            project_root=root,
+            config=config,
+        )
         fresh_plan = fresh_analysis.external_source_plan
         if (
             type(fresh_plan) is not ExternalSourcePlan
@@ -264,6 +302,7 @@ def prepare_full_c6_external_build(
         )
         context = FullC6ExternalBuildContext(
             source_verification=verification,
+            analysis_scope=analysis_scope,
             registry=registry,
             runtime_guard=runtime_guard,
             wheel_contract=wheel_contract,
@@ -288,6 +327,10 @@ def validate_full_c6_external_context(
         raise FullC6PipelineError("RXT060 direct orchestrator call lacks strict C5.2 context")
     if type(analysis) is not ProjectAnalysis:
         raise FullC6PipelineError("RXT060 strict project analysis is invalid")
+    if analysis._full_c6_analysis_scope is not value.analysis_scope:
+        raise FullC6PipelineError(
+            "RXT060 strict project analysis scope identity changed"
+        )
     source = value.source_verification.context
     if (
         source is None

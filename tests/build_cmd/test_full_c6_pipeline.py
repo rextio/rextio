@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 from pathlib import Path
 import runpy
@@ -16,6 +17,10 @@ from rextio.analyzer.project_scanner import analyze_project
 from rextio.artifacts.evidence import sha256_hex
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.build.full_c6_policy_manifest import full_c6_policy_manifest_bytes
+from rextio.build.full_c6_cargo_workspace import (
+    compute_full_c6_cargo_vendor_tree_sha256,
+)
+from rextio.build.full_c6_host_inputs import collect_full_c6_analysis_scope
 from rextio.build.full_c6_policy_bootstrap import (
     resolve_full_c6_policy_lifecycle,
 )
@@ -58,6 +63,7 @@ from rextio.targets.plan import default_target_plan
 _THIS_DIR = Path(__file__).parent
 _SOURCE = runpy.run_path(str(_THIS_DIR.parent / "source" / "test_source_lock_v2.py"))
 _GATE = runpy.run_path(str(_THIS_DIR / "test_full_c6_gate.py"))
+_CARGO = runpy.run_path(str(_THIS_DIR / "test_full_c6_cargo_workspace.py"))
 _FINALIZATION_MATERIALS: dict[int, object] = {}
 
 
@@ -131,9 +137,32 @@ def calculate(x: int) -> int:
     project = tmp_path / "project"
     project.mkdir()
     (project / "app.py").write_text(source, encoding="utf-8")
+    lock = project / "Cargo.lock"
+    lock.write_text(
+        """\
+version = 4
+
+[[package]]
+name = "rextio_generated_native"
+version = "0.1.0"
+
+[[package]]
+name = "demo-dep"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+""",
+        encoding="utf-8",
+    )
+    vendor = project / "cargo-vendor"
+    _CARGO["_write_vendor_package"](
+        vendor,
+        name="demo-dep",
+        version="1.2.3",
+        checksum="a" * 64,
+        directory="demo-dep-1.2.3",
+    )
     signed = _SOURCE["_write_signed"](project / "authority")  # type: ignore[operator]
-    initial = analyze_project(project)
-    initial.external_source_plan = signed.plan
     request_path = f"state/{FULL_C6_SIGNING_REQUEST_FILENAME}"
     config = RextioConfig(
         build=BuildConfig(
@@ -144,6 +173,12 @@ def calculate(x: int) -> int:
             artifact_trusted_public_key=signed.key_path.relative_to(project).as_posix(),
             artifact_trusted_public_key_sha256=signed.key_hash,
             artifact_signing_request_output=request_path,
+            artifact_cargo_lock="Cargo.lock",
+            artifact_cargo_lock_sha256=hashlib.sha256(lock.read_bytes()).hexdigest(),
+            artifact_cargo_vendor="cargo-vendor",
+            artifact_cargo_vendor_sha256=(
+                compute_full_c6_cargo_vendor_tree_sha256(vendor)
+            ),
         ),
         imports=ImportsConfig(
             packages={
@@ -158,9 +193,21 @@ def calculate(x: int) -> int:
             }
         ),
     )
+    analysis_scope = collect_full_c6_analysis_scope(project, config=config)
+    initial = analyze_project(
+        project,
+        plugin_config=config,
+        full_c6_analysis_scope=analysis_scope,
+    )
+    initial.external_source_plan = signed.plan
 
     def reanalyze(registry):
-        fresh = analyze_project(project, external_native_registry=registry)
+        fresh = analyze_project(
+            project,
+            plugin_config=config,
+            external_native_registry=registry,
+            full_c6_analysis_scope=analysis_scope,
+        )
         fresh.external_source_plan = signed.plan
         return fresh
 
@@ -168,6 +215,7 @@ def calculate(x: int) -> int:
         project_root=project,
         initial_analysis=initial,
         config=config,
+        analysis_scope=analysis_scope,
         reanalyze=reanalyze,
     )
 

@@ -45,6 +45,10 @@ from rextio.build.full_c6_license_materials import (
     FullC6LicenseMaterialsError,
     collect_full_c6_license_materials,
 )
+from rextio.build.full_c6_host_inputs import (
+    FullC6HostInputsError,
+    require_full_c6_analysis_scope,
+)
 from rextio.build.full_c6_output_license import (
     FullC6OutputLicenseDerivationError,
     derive_full_c6_output_license_contract,
@@ -141,6 +145,11 @@ def execute_full_c6_external_build(
         )
 
     try:
+        require_full_c6_analysis_scope(
+            context.analysis_scope,
+            project_root=analysis.project_root,
+            config=config,
+        )
         validate_full_c6_external_context(context, analysis)
         target_plan = create_target_plan(analysis.project_root, config)
         if target_plan.spec.language != "rust" or target_plan.plugins.active:
@@ -163,6 +172,12 @@ def execute_full_c6_external_build(
             plugin_config=config,
             embedding_enabled=config.embedding.enabled,
             external_native_registry=context.registry,
+            full_c6_analysis_scope=context.analysis_scope,
+        )
+        require_full_c6_analysis_scope(
+            context.analysis_scope,
+            project_root=fresh_analysis.project_root,
+            config=config,
         )
         validate_full_c6_external_context(context, fresh_analysis)
         if fresh_analysis.to_dict() != analysis.to_dict():
@@ -272,6 +287,7 @@ def execute_full_c6_external_build(
     except (
         FullC6CargoWorkspaceError,
         _executor.FullC6ExecutorError,
+        FullC6HostInputsError,
         FullC6LicenseMaterialsError,
         FullC6OutputLicenseDerivationError,
         FullC6PipelineError,

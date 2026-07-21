@@ -581,14 +581,27 @@ def test_run_routes_exact_strict_preflight_and_lexical_root(
         plugins=SimpleNamespace(active=()),
     )
     captured: dict[str, object] = {}
+    scope = object()
+    analysis_scopes: list[object] = []
+    preflight_values: dict[str, object] = {}
     monkeypatch.setattr(build_cmd, "load_config", lambda *_args, **_kwargs: config)
     monkeypatch.setattr(build_cmd, "override_config", lambda value, _overrides: value)
     monkeypatch.setattr(build_cmd, "create_target_plan", lambda *_args: target_plan)
-    monkeypatch.setattr(build_cmd, "analyze_project", lambda *_args, **_kwargs: analysis)
+    monkeypatch.setattr(
+        build_cmd,
+        "collect_full_c6_analysis_scope",
+        lambda *_args, **_kwargs: scope,
+    )
+
+    def analyze(*_args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        analysis_scopes.append(kwargs["full_c6_analysis_scope"])
+        return analysis
+
+    monkeypatch.setattr(build_cmd, "analyze_project", analyze)
     monkeypatch.setattr(
         build_cmd,
         "prepare_full_c6_external_build",
-        lambda **_kwargs: preflight,
+        lambda **kwargs: (preflight_values.update(kwargs), preflight)[1],
     )
 
     def run_lifecycle(**values: object) -> int:
@@ -602,3 +615,62 @@ def test_run_routes_exact_strict_preflight_and_lexical_root(
     assert captured["analysis"] is analysis
     assert captured["raw_project_root"] == os.fspath(tmp_path)
     assert captured["project_root"] == tmp_path
+    assert preflight_values["analysis_scope"] is scope
+    reanalyze = preflight_values["reanalyze"]
+    assert callable(reanalyze)
+    assert reanalyze(object()) is analysis
+    assert analysis_scopes == [scope, scope]
+
+
+def test_scope_collection_failure_is_redacted_before_analysis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = tmp_path.resolve()
+    reports = project / ".rextio" / "reports"
+    reports.mkdir(parents=True)
+    for name in ("build.json", "check.json", "generate.json"):
+        (reports / name).write_text('{"stale": true}\n', encoding="utf-8")
+    config = RextioConfig(
+        build=BuildConfig(
+            artifact_distribution_policy="full-c6-required",
+            artifact_evidence_policy="required",
+        )
+    )
+    target_plan = SimpleNamespace(
+        spec=SimpleNamespace(language="rust", version=None),
+        plugins=SimpleNamespace(active=()),
+    )
+    monkeypatch.setattr(build_cmd, "load_config", lambda *_args, **_kwargs: config)
+    monkeypatch.setattr(build_cmd, "override_config", lambda value, _overrides: value)
+    monkeypatch.setattr(build_cmd, "create_target_plan", lambda *_args: target_plan)
+    monkeypatch.setattr(
+        build_cmd,
+        "collect_full_c6_analysis_scope",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            FullC6HostInputsError("changed /private/owner/cargo-vendor")
+        ),
+    )
+    monkeypatch.setattr(
+        build_cmd,
+        "analyze_project",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("analysis must not run")
+        ),
+    )
+
+    assert main(["build", os.fspath(project)]) == 1
+
+    report = _report(project)
+    assert report["stage"] == "analysis-scope"
+    assert report["lifecycle"] == "failed"
+    assert report["status"] == "full-c6-required-failed"
+    assert report["distribution_authorized"] is False
+    assert "analysis" not in report
+    serialized = json.dumps(report, sort_keys=True)
+    assert "/private/owner" not in serialized
+    assert not (reports / "check.json").exists()
+    assert not (reports / "generate.json").exists()
+    captured = capsys.readouterr()
+    assert "/private/owner" not in captured.err
