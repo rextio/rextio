@@ -1127,26 +1127,44 @@ def _is_safe_member_path(name: str) -> bool:
 
 def _verify_record(payloads: dict[str, bytes], record_name: str) -> None:
     try:
-        rows = list(csv.reader(io.StringIO(payloads[record_name].decode("utf-8"))))
-    except (UnicodeDecodeError, csv.Error) as error:
+        text = payloads[record_name].decode("utf-8")
+    except UnicodeDecodeError as error:
         raise WheelContractError("output wheel RECORD is invalid") from error
-    if len(rows) != len(payloads):
+
+    # Preserve coverage-error precedence without retaining attacker-controlled rows.
+    row_count = 0
+    row_limit = min(len(payloads), _MAX_STRICT_WHEEL_ENTRIES)
+    try:
+        for row_count, _row in enumerate(
+            csv.reader(io.StringIO(text), strict=True),
+            start=1,
+        ):
+            if row_count > row_limit:
+                raise WheelContractError("output wheel RECORD coverage is incomplete")
+    except csv.Error as error:
+        raise WheelContractError("output wheel RECORD is invalid") from error
+    if row_count != len(payloads):
         raise WheelContractError("output wheel RECORD coverage is incomplete")
+
     seen: set[str] = set()
-    for row in rows:
-        if len(row) != 3:
-            raise WheelContractError("output wheel RECORD row is invalid")
-        name, digest, size = row
-        if name in seen or name not in payloads:
-            raise WheelContractError("output wheel RECORD identity is invalid")
-        seen.add(name)
-        if name == record_name:
-            if digest or size:
-                raise WheelContractError("output wheel RECORD self row is invalid")
-            continue
-        data = payloads[name]
-        if digest != _hash_record(data) or size != str(len(data)):
-            raise WheelContractError("output wheel RECORD digest is invalid")
+    try:
+        rows = csv.reader(io.StringIO(text), strict=True)
+        for row in rows:
+            if len(row) != 3:
+                raise WheelContractError("output wheel RECORD row is invalid")
+            name, digest, size = row
+            if name in seen or name not in payloads:
+                raise WheelContractError("output wheel RECORD identity is invalid")
+            seen.add(name)
+            if name == record_name:
+                if digest or size:
+                    raise WheelContractError("output wheel RECORD self row is invalid")
+                continue
+            data = payloads[name]
+            if digest != _hash_record(data) or size != str(len(data)):
+                raise WheelContractError("output wheel RECORD digest is invalid")
+    except csv.Error as error:
+        raise WheelContractError("output wheel RECORD is invalid") from error
     if seen != set(payloads):
         raise WheelContractError("output wheel RECORD coverage is incomplete")
 

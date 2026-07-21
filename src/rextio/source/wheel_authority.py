@@ -832,40 +832,57 @@ def _validate_wheel_metadata(data: bytes) -> None:
 def _validate_record(data: bytes, entries: dict[str, bytes], record_name: str) -> None:
     try:
         text = data.decode("utf-8")
-        rows = list(csv.reader(io.StringIO(text), strict=True))
-    except (UnicodeDecodeError, csv.Error) as exc:
+    except UnicodeDecodeError as exc:
         raise SourceWheelAuthorityError("archive-record-invalid") from exc
-    if len(rows) != len(entries) or len(rows) > MAX_RECORD_ENTRIES:
+
+    # Preserve coverage-error precedence without retaining attacker-controlled rows.
+    row_count = 0
+    row_limit = min(len(entries), MAX_RECORD_ENTRIES)
+    try:
+        for row_count, _row in enumerate(
+            csv.reader(io.StringIO(text), strict=True),
+            start=1,
+        ):
+            if row_count > row_limit:
+                raise SourceWheelAuthorityError("archive-record-coverage-mismatch")
+    except csv.Error as exc:
+        raise SourceWheelAuthorityError("archive-record-invalid") from exc
+    if row_count != len(entries):
         raise SourceWheelAuthorityError("archive-record-coverage-mismatch")
+
     seen: set[str] = set()
-    for row in rows:
-        if len(row) != 3:
-            raise SourceWheelAuthorityError("archive-record-invalid")
-        name, encoded_hash, encoded_size = row
-        _validate_member_name(name)
-        if name in seen or name not in entries:
-            raise SourceWheelAuthorityError("archive-record-coverage-mismatch")
-        seen.add(name)
-        payload = entries[name]
-        if name == record_name:
-            if encoded_hash or encoded_size:
-                raise SourceWheelAuthorityError("archive-record-self-entry-invalid")
-            continue
-        algorithm, separator, digest_text = encoded_hash.partition("=")
-        if separator != "=" or algorithm != "sha256" or not digest_text:
-            raise SourceWheelAuthorityError("archive-record-hash-invalid")
-        try:
-            padded = digest_text + "=" * (-len(digest_text) % 4)
-            digest = base64.urlsafe_b64decode(padded.encode("ascii"))
-        except (UnicodeEncodeError, ValueError, binascii.Error) as exc:
-            raise SourceWheelAuthorityError("archive-record-hash-invalid") from exc
-        canonical = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-        if len(digest) != 32 or canonical != digest_text:
-            raise SourceWheelAuthorityError("archive-record-hash-invalid")
-        if digest != hashlib.sha256(payload).digest():
-            raise SourceWheelAuthorityError("archive-record-hash-mismatch")
-        if not encoded_size.isdigit() or int(encoded_size) != len(payload):
-            raise SourceWheelAuthorityError("archive-record-size-mismatch")
+    try:
+        rows = csv.reader(io.StringIO(text), strict=True)
+        for row in rows:
+            if len(row) != 3:
+                raise SourceWheelAuthorityError("archive-record-invalid")
+            name, encoded_hash, encoded_size = row
+            _validate_member_name(name)
+            if name in seen or name not in entries:
+                raise SourceWheelAuthorityError("archive-record-coverage-mismatch")
+            seen.add(name)
+            payload = entries[name]
+            if name == record_name:
+                if encoded_hash or encoded_size:
+                    raise SourceWheelAuthorityError("archive-record-self-entry-invalid")
+                continue
+            algorithm, separator, digest_text = encoded_hash.partition("=")
+            if separator != "=" or algorithm != "sha256" or not digest_text:
+                raise SourceWheelAuthorityError("archive-record-hash-invalid")
+            try:
+                padded = digest_text + "=" * (-len(digest_text) % 4)
+                digest = base64.urlsafe_b64decode(padded.encode("ascii"))
+            except (UnicodeEncodeError, ValueError, binascii.Error) as exc:
+                raise SourceWheelAuthorityError("archive-record-hash-invalid") from exc
+            canonical = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+            if len(digest) != 32 or canonical != digest_text:
+                raise SourceWheelAuthorityError("archive-record-hash-invalid")
+            if digest != hashlib.sha256(payload).digest():
+                raise SourceWheelAuthorityError("archive-record-hash-mismatch")
+            if not encoded_size.isdigit() or int(encoded_size) != len(payload):
+                raise SourceWheelAuthorityError("archive-record-size-mismatch")
+    except csv.Error as exc:
+        raise SourceWheelAuthorityError("archive-record-invalid") from exc
     if seen != set(entries):
         raise SourceWheelAuthorityError("archive-record-coverage-mismatch")
 

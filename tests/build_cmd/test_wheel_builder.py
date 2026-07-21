@@ -386,6 +386,49 @@ def test_output_license_verifier_rejects_record_tamper(tmp_path: Path) -> None:
         wheel_builder.verify_output_wheel_license_contract(wheel, contract)
 
 
+@pytest.mark.parametrize(
+    "amplification",
+    (
+        b"unlisted.py,sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,0\n" * 10_000,
+        b"\n" * 10_000,
+    ),
+    ids=("excess-rows", "empty-rows"),
+)
+def test_output_record_streams_bounded_rows(
+    amplification: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record_name = "demo-0.1.0.dist-info/RECORD"
+    module_name = "demo.py"
+    module = b"VALUE = 1\n"
+    record = (
+        f"{module_name},{wheel_builder._hash_record(module)},{len(module)}\n{record_name},,\n"
+    ).encode("utf-8")
+    payloads = {module_name: module, record_name: record}
+
+    wheel_builder._verify_record(payloads, record_name)
+
+    real_reader = wheel_builder.csv.reader
+    consumed_rows = 0
+
+    def guarded_reader(*args: object, **kwargs: object):
+        nonlocal consumed_rows
+        for row in real_reader(*args, **kwargs):
+            consumed_rows += 1
+            if consumed_rows > len(payloads) + 1:
+                raise AssertionError("RECORD parser consumed rows beyond its bound")
+            yield row
+
+    monkeypatch.setattr(wheel_builder.csv, "reader", guarded_reader)
+    payloads[record_name] = record + amplification
+    with pytest.raises(
+        wheel_builder.WheelContractError,
+        match="output wheel RECORD coverage is incomplete",
+    ):
+        wheel_builder._verify_record(payloads, record_name)
+    assert consumed_rows == len(payloads) + 1
+
+
 def test_external_wheel_capture_binds_native_member_to_exact_expected_bytes(
     tmp_path: Path,
 ) -> None:

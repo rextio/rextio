@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import rextio.source.wheel_authority as wheel_authority
 from rextio.artifacts import ArtifactProvenance
 from rextio.source.external import AuthorityFile, ExternalSourcePlan
 from rextio.source.models import SourceModule, SourceOrigin
@@ -562,6 +563,47 @@ def test_record_coverage_hash_size_and_plan_drift_are_rejected(tmp_path: Path) -
     digest = _write_wheel(path, payload)
     with pytest.raises(SourceWheelAuthorityError, match="plan-mismatch"):
         verify_source_wheel(path, expected_sha256=digest, plan=_plan(base))
+
+
+@pytest.mark.parametrize(
+    "amplification",
+    (
+        b"unlisted.py,sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,0\n" * 10_000,
+        b"\n" * 10_000,
+    ),
+    ids=("excess-rows", "empty-rows"),
+)
+def test_archive_record_streams_bounded_rows(
+    amplification: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entries = _base_entries()
+    record_name = f"{DIST_INFO}/RECORD"
+
+    wheel_authority._validate_record(entries[record_name], entries, record_name)
+
+    real_reader = wheel_authority.csv.reader
+    consumed_rows = 0
+
+    def guarded_reader(*args: object, **kwargs: object):
+        nonlocal consumed_rows
+        for row in real_reader(*args, **kwargs):
+            consumed_rows += 1
+            if consumed_rows > len(entries) + 1:
+                raise AssertionError("RECORD parser consumed rows beyond its bound")
+            yield row
+
+    monkeypatch.setattr(wheel_authority.csv, "reader", guarded_reader)
+    with pytest.raises(
+        SourceWheelAuthorityError,
+        match="archive-record-coverage-mismatch",
+    ):
+        wheel_authority._validate_record(
+            entries[record_name] + amplification,
+            entries,
+            record_name,
+        )
+    assert consumed_rows == len(entries) + 1
 
 
 def test_platform_tag_foreign_metadata_and_compression_bomb_are_rejected(
