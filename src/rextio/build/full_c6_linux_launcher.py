@@ -73,6 +73,15 @@ _LANDLOCK_READ = _LL_READ_FILE | _LL_READ_DIR
 _LANDLOCK_READ_EXECUTE = _LANDLOCK_READ | _LL_EXECUTE
 _LANDLOCK_READ_WRITE = _LANDLOCK_HANDLED_FS_V3
 
+_CARGO_ENCODED_RUSTFLAGS = "\x1f".join(
+    (
+        "--remap-path-prefix=/rextio/project=/rextio/project",
+        "--remap-path-prefix=/rextio/build=/rextio/build",
+        "-C",
+        "linker=/rextio/toolchain/bin/linker",
+    )
+)
+
 
 def expected_linux_pyo3_environment_signature() -> str:
     """Return the fixed PyO3 identity digest for Linux x86_64 Full C6."""
@@ -86,8 +95,14 @@ def expected_linux_pyo3_environment_signature() -> str:
     return hashlib.sha256(payload).hexdigest()
 
 _FIXED_ENVIRONMENT = {
+    "CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu",
+    "CARGO_ENCODED_RUSTFLAGS": _CARGO_ENCODED_RUSTFLAGS,
+    "CARGO_HOME": "/rextio/build/cargo-home",
     "CARGO_NET_OFFLINE": "true",
     "CARGO_TARGET_DIR": "/rextio/build/target",
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": (
+        "/rextio/toolchain/bin/linker"
+    ),
     "HOME": "/rextio/build/home",
     "LANG": "C",
     "LC_ALL": "C",
@@ -95,6 +110,8 @@ _FIXED_ENVIRONMENT = {
     "PATH": "/rextio/toolchain/bin:/rextio/toolchain",
     "PYO3_CONFIG_FILE": _PYO3_CONFIG_PATH,
     "PYO3_ENVIRONMENT_SIGNATURE": expected_linux_pyo3_environment_signature(),
+    "PYTHONHASHSEED": "0",
+    "RUSTC": "/rextio/toolchain/bin/rustc",
     "TMPDIR": "/tmp",
     "TZ": "UTC",
 }
@@ -155,7 +172,14 @@ def canonical_linux_payload_environment(
             or not value
             or "\0" in name
             or "\0" in value
-            or any(ord(character) < 32 for character in name + value)
+            or any(ord(character) < 32 for character in name)
+            or any(
+                ord(character) < 32
+                and not (
+                    name == "CARGO_ENCODED_RUSTFLAGS" and character == "\x1f"
+                )
+                for character in value
+            )
         ):
             raise FullC6LinuxLauncherError(
                 "Full C6 Linux environment row is malformed"

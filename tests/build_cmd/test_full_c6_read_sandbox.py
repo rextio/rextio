@@ -39,7 +39,9 @@ def _rules(tmp_path: Path) -> tuple[SandboxPathRule, ...]:
     project = tmp_path / "project"
     build = tmp_path / "build"
     cargo = tmp_path / "cargo"
+    linker = tmp_path / "linker"
     python = tmp_path / "python3.11"
+    rustc = tmp_path / "rustc"
     stdlib = tmp_path / "python-stdlib"
     launcher = tmp_path / "full_c6_linux_launcher.py"
     runtime = tmp_path / "runtime-libs"
@@ -50,8 +52,12 @@ def _rules(tmp_path: Path) -> tuple[SandboxPathRule, ...]:
     runtime.mkdir()
     cargo.write_bytes(b"cargo")
     cargo.chmod(0o755)
+    linker.write_bytes(b"linker")
+    linker.chmod(0o755)
     python.write_bytes(b"python")
     python.chmod(0o755)
+    rustc.write_bytes(b"rustc")
+    rustc.chmod(0o755)
     launcher.write_bytes(b"launcher")
     loader.write_bytes(b"loader")
     loader.chmod(0o755)
@@ -59,7 +65,9 @@ def _rules(tmp_path: Path) -> tuple[SandboxPathRule, ...]:
         SandboxPathRule(project, "read", "project-root"),
         SandboxPathRule(build, "read-write", "build-root"),
         SandboxPathRule(cargo, "read-execute", "toolchain-cargo"),
+        SandboxPathRule(linker, "read-execute", "toolchain-linker"),
         SandboxPathRule(python, "read-execute", "toolchain-python311"),
+        SandboxPathRule(rustc, "read-execute", "toolchain-rustc"),
         SandboxPathRule(stdlib, "read", "toolchain-python311-stdlib"),
         SandboxPathRule(launcher, "read", "support-landlock-launcher"),
         SandboxPathRule(runtime, "read", "support-runtime-libs"),
@@ -84,8 +92,21 @@ def _macos_rules(tmp_path: Path) -> tuple[SandboxPathRule, ...]:
 
 def _environment() -> dict[str, str]:
     return {
+        "CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu",
+        "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(
+            (
+                "--remap-path-prefix=/rextio/project=/rextio/project",
+                "--remap-path-prefix=/rextio/build=/rextio/build",
+                "-C",
+                "linker=/rextio/toolchain/bin/linker",
+            )
+        ),
+        "CARGO_HOME": "/rextio/build/cargo-home",
         "CARGO_NET_OFFLINE": "true",
         "CARGO_TARGET_DIR": "/rextio/build/target",
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": (
+            "/rextio/toolchain/bin/linker"
+        ),
         "HOME": "/rextio/build/home",
         "LANG": "C",
         "LC_ALL": "C",
@@ -93,6 +114,8 @@ def _environment() -> dict[str, str]:
         "PATH": "/rextio/toolchain/bin:/rextio/toolchain",
         "PYO3_CONFIG_FILE": "/rextio/build/rextio.pyo3-config.txt",
         "PYO3_ENVIRONMENT_SIGNATURE": expected_linux_pyo3_environment_signature(),
+        "PYTHONHASHSEED": "0",
+        "RUSTC": "/rextio/toolchain/bin/rustc",
         "SOURCE_DATE_EPOCH": "0",
         "TMPDIR": "/tmp",
         "TZ": "UTC",
@@ -289,8 +312,14 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         str(tmp_path / "build"),
         "/rextio/build",
         "--ro-bind",
+        str(tmp_path / "linker"),
+        "/rextio/toolchain/bin/linker",
+        "--ro-bind",
         str(tmp_path / "python3.11"),
         "/rextio/toolchain/bin/python3.11",
+        "--ro-bind",
+        str(tmp_path / "rustc"),
+        "/rextio/toolchain/bin/rustc",
         "--ro-bind",
         str(tmp_path / "cargo"),
         "/rextio/toolchain/cargo",
@@ -310,9 +339,11 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
     mappings_index = dir_index + 14
     assert command[mappings_index : mappings_index + len(expected_mappings)] == expected_mappings
     tail_index = mappings_index + len(expected_mappings)
-    assert command[tail_index : tail_index + 10] == (
+    assert command[tail_index : tail_index + 12] == (
         "--dir",
         "/rextio/build/home",
+        "--dir",
+        "/rextio/build/cargo-home",
         "--dir",
         "/rextio/build/target",
         "--chdir",
@@ -323,6 +354,47 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         FULL_C6_LINUX_PYTHON,
     )
     assert str(launcher) not in command
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "CARGO_BUILD_TARGET",
+        "CARGO_HOME",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
+        "RUSTC",
+        "PYTHONHASHSEED",
+    ),
+)
+def test_linux_production_environment_field_is_required_and_exact_before_launch(
+    name: str, tmp_path: Path, seccomp_fd: int
+) -> None:
+    plan = build_full_c6_sandbox_plan(
+        target_triple="x86_64-unknown-linux-gnu",
+        rules=_rules(tmp_path),
+        platform_anchor_sha256=_SHA,
+    )
+    bwrap = _bwrap(tmp_path)
+    missing = _environment()
+    missing.pop(name)
+    with pytest.raises(FullC6ReadSandboxError):
+        _prepare_linux(
+            plan,
+            bwrap=bwrap,
+            seccomp_fd=seccomp_fd,
+            environment=missing,
+        )
+
+    changed = _environment()
+    changed[name] += "-changed"
+    with pytest.raises(FullC6ReadSandboxError):
+        _prepare_linux(
+            plan,
+            bwrap=bwrap,
+            seccomp_fd=seccomp_fd,
+            environment=changed,
+        )
 
 
 def test_linux_requires_exact_caller_owned_seccomp_filter(

@@ -14,8 +14,21 @@ from rextio.build import full_c6_linux_launcher as launcher
 
 def _environment() -> dict[str, str]:
     return {
+        "CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu",
+        "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(
+            (
+                "--remap-path-prefix=/rextio/project=/rextio/project",
+                "--remap-path-prefix=/rextio/build=/rextio/build",
+                "-C",
+                "linker=/rextio/toolchain/bin/linker",
+            )
+        ),
+        "CARGO_HOME": "/rextio/build/cargo-home",
         "CARGO_NET_OFFLINE": "true",
         "CARGO_TARGET_DIR": "/rextio/build/target",
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": (
+            "/rextio/toolchain/bin/linker"
+        ),
         "HOME": "/rextio/build/home",
         "LANG": "C",
         "LC_ALL": "C",
@@ -25,6 +38,8 @@ def _environment() -> dict[str, str]:
         "PYO3_ENVIRONMENT_SIGNATURE": (
             launcher.expected_linux_pyo3_environment_signature()
         ),
+        "PYTHONHASHSEED": "0",
+        "RUSTC": "/rextio/toolchain/bin/rustc",
         "SOURCE_DATE_EPOCH": "0",
         "TMPDIR": "/tmp",
         "TZ": "UTC",
@@ -48,6 +63,16 @@ def test_payload_environment_is_closed_canonical_and_digest_bound() -> None:
 
     assert rows == tuple(sorted(environment.items()))
     assert len(launcher.linux_payload_environment_digest(environment)) == 64
+    encoded = environment["CARGO_ENCODED_RUSTFLAGS"]
+    assert encoded.split("\x1f") == [
+        "--remap-path-prefix=/rextio/project=/rextio/project",
+        "--remap-path-prefix=/rextio/build=/rextio/build",
+        "-C",
+        "linker=/rextio/toolchain/bin/linker",
+    ]
+    assert {
+        character for character in encoded if ord(character) < 32
+    } == {"\x1f"}
 
     extra = dict(environment, HTTP_PROXY="http://host.invalid")
     with pytest.raises(launcher.FullC6LinuxLauncherError, match="closed contract"):
@@ -56,6 +81,10 @@ def test_payload_environment_is_closed_canonical_and_digest_bound() -> None:
     missing.pop("CARGO_NET_OFFLINE")
     with pytest.raises(launcher.FullC6LinuxLauncherError, match="closed contract"):
         launcher.canonical_linux_payload_environment(missing)
+    changed_flags = dict(environment)
+    changed_flags["CARGO_ENCODED_RUSTFLAGS"] = encoded.replace("\x1f", "\x1e")
+    with pytest.raises(launcher.FullC6LinuxLauncherError, match="fixed"):
+        launcher.canonical_linux_payload_environment(changed_flags)
 
 
 @pytest.mark.parametrize(

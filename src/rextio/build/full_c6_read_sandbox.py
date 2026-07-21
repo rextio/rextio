@@ -490,6 +490,8 @@ def _validate_linux_rules(rules: Sequence[SandboxPathRule]) -> None:
     required_special = {
         "toolchain-python311": "read-execute",
         "toolchain-python311-stdlib": "read",
+        "toolchain-linker": "read-execute",
+        "toolchain-rustc": "read-execute",
         "support-landlock-launcher": "read",
         "support-runtime-libs": "read",
     }
@@ -541,6 +543,8 @@ def _verify_linux_rule_types(rules: Sequence[SandboxPathRule]) -> None:
             )
         if rule.logical_role in {
             "toolchain-python311",
+            "toolchain-linker",
+            "toolchain-rustc",
             "support-landlock-launcher",
         } and not stat.S_ISREG(observed.st_mode):
             raise FullC6ReadSandboxError(
@@ -565,6 +569,10 @@ def _linux_rule_destination(rule: SandboxPathRule) -> str | None:
         return FULL_C6_LINUX_PYTHON
     if rule.logical_role == "toolchain-python311-stdlib":
         return _LINUX_PYTHON_STDLIB_DESTINATION
+    if rule.logical_role == "toolchain-linker":
+        return "/rextio/toolchain/bin/linker"
+    if rule.logical_role == "toolchain-rustc":
+        return "/rextio/toolchain/bin/rustc"
     if rule.logical_role == "support-landlock-launcher":
         return _LINUX_LAUNCHER_DESTINATION
     if rule.logical_role == "support-runtime-libs":
@@ -650,6 +658,7 @@ def _linux_bubblewrap_command(
             f"{rule.logical_role}\0{rule.access}\0pre-namespace-only"
         )
     arguments.extend(("--dir", "/rextio/build/home"))
+    arguments.extend(("--dir", "/rextio/build/cargo-home"))
     arguments.extend(("--dir", "/rextio/build/target"))
     arguments.extend(("--chdir", _LINUX_PROJECT_DESTINATION))
     arguments.extend(("--seccomp", str(seccomp_fd)))
