@@ -1,0 +1,634 @@
+"""Contract tests for the owner-only Full C6 production collector."""
+
+from __future__ import annotations
+
+import copy
+from dataclasses import replace
+import importlib
+import importlib.util
+import inspect
+from pathlib import Path
+import pickle
+import runpy
+from types import SimpleNamespace
+
+import pytest
+
+from rextio.artifacts.evidence import EvidenceFileRef
+
+
+_EXTERNAL = runpy.run_path(
+    str(Path(__file__).with_name("test_full_c6_external_execution.py"))
+)
+_POLICY = runpy.run_path(
+    str(Path(__file__).with_name("test_full_c6_policy.py"))
+)
+
+
+def _collect_bounded_production_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pinned_policy: bool = False,
+) -> tuple[object, object]:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    inputs = _EXTERNAL["_inputs"](tmp_path, monkeypatch)
+    _rows, _transformations, coverage, external = _POLICY["_fixture"]()
+    policy = _POLICY["_receipt"]()
+    build = replace(
+        inputs.config.build,
+        artifact_policy_manifest="locks/rextio.full-c6-policy.json",
+        artifact_policy_manifest_sha256=(policy.digest if pinned_policy else None),
+    )
+    config = replace(inputs.config, build=build)
+    state_directory = tmp_path / "production-state"
+    state_directory.mkdir(mode=0o700)
+    retained: dict[str, object] = {}
+
+    class _RuntimeAuthority:
+        digest = "d" * 64
+
+    def create_runtime(output: object) -> object:
+        execution = getattr(output, "_authority")
+        execution_material = production._executor._validated_full_c6_native_output_material(
+            execution
+        )
+        receipt = SimpleNamespace(
+            digest="e" * 64,
+            target_triple=execution.executor_receipt.target_triple,
+        )
+        authority = _RuntimeAuthority()
+        material = SimpleNamespace(
+            output_transaction=output,
+            toolchain=execution_material.toolchain,
+            runtime_receipt=receipt,
+            runtime_inventory=object(),
+            path_resolution=SimpleNamespace(inventory=object()),
+            transitive_closure=SimpleNamespace(inventory=object()),
+        )
+        retained.update(runtime=authority, runtime_material=material)
+        return authority
+
+    def runtime_material(authority: object) -> object:
+        assert authority is retained["runtime"]
+        return retained["runtime_material"]
+
+    monkeypatch.setattr(
+        production,
+        "create_full_c6_native_runtime_authority",
+        create_runtime,
+    )
+    monkeypatch.setattr(
+        production,
+        "validate_full_c6_native_runtime_authority",
+        lambda value: value is retained.get("runtime"),
+    )
+    monkeypatch.setattr(
+        production._native_runtime,
+        "_validated_full_c6_native_runtime_material",
+        runtime_material,
+    )
+    monkeypatch.setattr(
+        production,
+        "collect_component_license_inventory",
+        lambda _packages: object(),
+    )
+    monkeypatch.setattr(
+        production,
+        "collect_component_license_policy_verification",
+        lambda **_kwargs: SimpleNamespace(
+            lock_file=EvidenceFileRef(
+                "rextio.cargo-license.lock.json",
+                "1" * 64,
+                10,
+                "component-license-policy-lock",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        production,
+        "collect_project_source_license_policy_verification",
+        lambda **_kwargs: SimpleNamespace(
+            lock_file=EvidenceFileRef(
+                "rextio.source-license.lock.json",
+                "2" * 64,
+                10,
+                "project-source-license-policy-lock",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        production,
+        "collect_artifact_policy_coverage_inventory",
+        lambda **_kwargs: coverage,
+    )
+    monkeypatch.setattr(
+        production,
+        "_derive_external_authority",
+        lambda _preflight: external,
+    )
+
+    if pinned_policy:
+        class _SupplyChain:
+            def __init__(self, authority_aggregate: object) -> None:
+                self.authority_aggregate = authority_aggregate
+                self.digest = "f" * 64
+
+        class _Finalization:
+            def __init__(self, **values: object) -> None:
+                self.__dict__.update(values)
+
+        monkeypatch.setattr(production, "FullC6SupplyChainReceipt", _SupplyChain)
+        monkeypatch.setattr(production, "FullC6FinalizationMaterials", _Finalization)
+        monkeypatch.setattr(
+            production,
+            "load_configured_full_c6_policy",
+            lambda **_kwargs: policy,
+        )
+        monkeypatch.setattr(
+            production,
+            "_validate_analysis_transaction",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            production,
+            "build_full_c6_supply_chain_receipt",
+            lambda **kwargs: _SupplyChain(kwargs["authority_aggregate"]),
+        )
+        monkeypatch.setattr(
+            production,
+            "verify_full_c6_supply_chain_receipt",
+            lambda value, **_kwargs: value,
+        )
+
+    authority = production.collect_full_c6_production_authority(
+        inputs.preflight,
+        project_root=inputs.preflight.analysis.project_root,
+        config=config,
+        toolchain=inputs.toolchain,
+        native_tools=inputs.native_tools,
+        cargo_workspace=inputs.cargo_workspace,
+        first_quarantine_root=inputs.roots[0],
+        second_quarantine_root=inputs.roots[1],
+        state_directory=state_directory,
+        base_environment=inputs.base_environment,
+        source_date_epoch=1,
+    )
+    return production, authority
+
+
+def test_production_collector_exposes_only_the_frozen_owner_api() -> None:
+    """The first production seam is explicit, narrow, and injection-resistant."""
+    module_name = "rextio.build.full_c6_production"
+    assert importlib.util.find_spec(module_name) is not None, (
+        "the Full C6 production collector module must exist"
+    )
+    production = importlib.import_module(module_name)
+
+    assert production.__all__ == [
+        "FULL_C6_PRODUCTION_AUTHORITY_DOMAIN",
+        "FullC6ProductionAuthority",
+        "FullC6ProductionError",
+        "collect_full_c6_production_authority",
+        "validate_full_c6_production_authority",
+    ]
+    signature = inspect.signature(
+        production.collect_full_c6_production_authority
+    )
+    assert tuple(signature.parameters) == (
+        "preflight",
+        "project_root",
+        "config",
+        "toolchain",
+        "native_tools",
+        "cargo_workspace",
+        "first_quarantine_root",
+        "second_quarantine_root",
+        "state_directory",
+        "base_environment",
+        "source_date_epoch",
+    )
+    parameters = tuple(signature.parameters.values())
+    assert parameters[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert all(
+        parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        for parameter in parameters[1:]
+    )
+    assert "subject" not in signature.parameters
+    assert "wheel_entries" not in signature.parameters
+    assert "executor_receipt" not in signature.parameters
+    assert "runtime_authorization" not in signature.parameters
+    assert "supply_chain" not in signature.parameters
+
+
+def test_prerequisites_require_the_exact_cargo_source_authority_object(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    inputs = _EXTERNAL["_inputs"](tmp_path, monkeypatch)
+    config = replace(
+        inputs.config,
+        build=replace(
+            inputs.config.build,
+            artifact_policy_manifest="locks/rextio.full-c6-policy.json",
+        ),
+    )
+    cloned_sources = replace(inputs.toolchain.cargo_sources)
+    cloned_toolchain = replace(inputs.toolchain, cargo_sources=cloned_sources)
+    assert cloned_sources == inputs.cargo_workspace.cargo_sources
+    assert cloned_sources.digest == inputs.cargo_workspace.cargo_sources.digest
+    assert cloned_sources is not inputs.cargo_workspace.cargo_sources
+    executed = False
+
+    def forbidden_execution(*_args: object, **_kwargs: object) -> None:
+        nonlocal executed
+        executed = True
+        raise AssertionError("executor must not receive split Cargo authority")
+
+    monkeypatch.setattr(
+        production,
+        "execute_full_c6_external_build",
+        forbidden_execution,
+    )
+    with pytest.raises(production.FullC6ProductionError, match="Cargo workspace differ"):
+        production.collect_full_c6_production_authority(
+            inputs.preflight,
+            project_root=inputs.preflight.analysis.project_root,
+            config=config,
+            toolchain=cloned_toolchain,
+            native_tools=inputs.native_tools,
+            cargo_workspace=inputs.cargo_workspace,
+            first_quarantine_root=inputs.roots[0],
+            second_quarantine_root=inputs.roots[1],
+            state_directory=tmp_path / "unused-state",
+            base_environment=inputs.base_environment,
+            source_date_epoch=1,
+        )
+    assert executed is False
+
+
+def test_production_source_date_epoch_matches_the_executor_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    inputs = _EXTERNAL["_inputs"](tmp_path, monkeypatch)
+    config = replace(
+        inputs.config,
+        build=replace(
+            inputs.config.build,
+            artifact_policy_manifest="locks/rextio.full-c6-policy.json",
+        ),
+    )
+    arguments = {
+        "preflight": inputs.preflight,
+        "project_root": inputs.preflight.analysis.project_root,
+        "config": config,
+        "toolchain": inputs.toolchain,
+        "native_tools": inputs.native_tools,
+        "cargo_workspace": inputs.cargo_workspace,
+    }
+
+    assert production._require_production_inputs(
+        **arguments,
+        source_date_epoch=2_147_483_647,
+    ) == inputs.preflight.analysis.project_root
+    with pytest.raises(production.FullC6ProductionError, match="prerequisites"):
+        production._require_production_inputs(
+            **arguments,
+            source_date_epoch=2_147_483_648,
+        )
+
+
+def test_collector_mints_one_sealed_path_free_non_authorizing_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    digest = "a" * 64
+
+    class _Digest:
+        def __init__(self, value: str = digest) -> None:
+            self.digest = value
+
+    class _Aggregate(_Digest):
+        def to_dict(self) -> dict[str, object]:
+            return {"bindings": {"analysis_ir_transaction_sha256": self.digest}}
+
+    material = production._FullC6ProductionMaterial(
+        preflight=object(),
+        project_root=tmp_path,
+        config=object(),
+        lifecycle=SimpleNamespace(status="signing-required"),
+        analysis_ir_transaction=_Digest(),
+        license_materials_transaction=_Digest(),
+        output_license_contract=object(),
+        cargo_workspace=_Digest(),
+        native_execution_authority=_Digest(),
+        native_output_transaction=_Digest(),
+        subject_wheel_transaction=_Digest(),
+        native_runtime_authority=_Digest(),
+        runtime_authorization=_Digest(),
+        executor_receipt=_Digest(),
+        build_inputs=_Digest(),
+        cargo_path_source=_Digest(),
+        artifact_coverage=_Digest(),
+        external_authority=SimpleNamespace(canonical_partition_sha256=digest),
+        authority_aggregate=_Aggregate(),
+    )
+    monkeypatch.setattr(
+        production,
+        "_collect_full_c6_production_material",
+        lambda *_args, **_kwargs: material,
+    )
+    monkeypatch.setattr(production, "_validate_material", lambda value: value is material)
+    monkeypatch.setattr(
+        production,
+        "artifact_policy_coverage_inventory_digest",
+        lambda _value: digest,
+    )
+
+    authority = production.collect_full_c6_production_authority(
+        object(),
+        project_root=tmp_path,
+        config=object(),
+        toolchain=object(),
+        native_tools=object(),
+        cargo_workspace=object(),
+        first_quarantine_root=tmp_path / "first",
+        second_quarantine_root=tmp_path / "second",
+        state_directory=tmp_path / "state",
+        base_environment=None,
+        source_date_epoch=1,
+    )
+
+    assert type(authority) is production.FullC6ProductionAuthority
+    assert production.validate_full_c6_production_authority(authority)
+    with pytest.raises(TypeError):
+        production.FullC6ProductionAuthority()
+    with pytest.raises(TypeError):
+        copy.copy(authority)
+    with pytest.raises(TypeError):
+        copy.deepcopy(authority)
+    with pytest.raises(TypeError):
+        pickle.dumps(authority)
+
+    projected = authority.to_dict()
+    assert str(tmp_path) not in repr(projected)
+    assert projected["complete_for_scope"] is True
+    assert projected["signed"] is False
+    assert projected["distribution_authorized"] is False
+    assert projected["authorizes_distribution"] is False
+    assert authority.lifecycle.status == "signing-required"
+
+    object.__setattr__(authority, "_material", copy.copy(material))
+    assert not production.validate_full_c6_production_authority(authority)
+    with pytest.raises(production.FullC6ProductionError, match="stale"):
+        authority.to_dict()
+
+
+def test_real_c52_execution_mints_bootstrap_required_production_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production, authority = _collect_bounded_production_authority(
+        tmp_path,
+        monkeypatch,
+    )
+
+    assert production.validate_full_c6_production_authority(authority)
+    assert authority.lifecycle.status == "bootstrap-required"
+    request = authority.bootstrap_request
+    assert request is not None
+    assert request.inputs is authority._material.bootstrap_inputs
+    assert authority.to_dict()["bootstrap_request_sha256"] == request.request_sha256
+    bindings = authority.authority_aggregate.to_dict()["bindings"]
+    assert tuple(bindings) == (
+        "analysis_ir_transaction_sha256",
+        "license_materials_transaction_sha256",
+        "output_license_contract_sha256",
+        "cargo_workspace_sha256",
+        "native_execution_authority_sha256",
+        "native_output_transaction_sha256",
+        "subject_wheel_transaction_sha256",
+        "native_runtime_authority_sha256",
+        "runtime_authorization_sha256",
+        "executor_receipt_sha256",
+    )
+    with pytest.raises(production.FullC6ProductionError, match="must be pinned"):
+        authority.finalization_materials()
+
+
+def test_pinned_policy_authority_adapts_only_to_unsigned_finalization_materials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production, authority = _collect_bounded_production_authority(
+        tmp_path,
+        monkeypatch,
+        pinned_policy=True,
+    )
+
+    assert production.validate_full_c6_production_authority(authority)
+    assert authority.lifecycle.status == "signing-required"
+    assert authority.bootstrap_request is None
+    projected = authority.to_dict()
+    assert projected["policy_sha256"] is not None
+    assert projected["supply_chain_sha256"] == "f" * 64
+    assert projected["signed"] is False
+    assert projected["distribution_authorized"] is False
+
+    finalization = authority.finalization_materials()
+    assert finalization.policy is authority._material.policy
+    assert finalization.supply_chain is authority._material.supply_chain
+    assert finalization.runtime_authorization is authority._material.runtime_authorization
+    assert finalization.executor is authority._material.executor_receipt
+
+
+def test_deep_validator_rejects_equal_retained_receipt_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production, authority = _collect_bounded_production_authority(
+        tmp_path,
+        monkeypatch,
+    )
+    material = authority._material
+    replacement = replace(material.executor_receipt)
+    assert replacement == material.executor_receipt
+    assert replacement is not material.executor_receipt
+    forged_material = replace(material, executor_receipt=replacement)
+    forged = object.__new__(production.FullC6ProductionAuthority)
+    object.__setattr__(forged, "_material", forged_material)
+    object.__setattr__(forged, "_transaction_seal", production._seal(forged))
+
+    assert not production._validate_material(forged_material)
+    assert not production.validate_full_c6_production_authority(forged)
+
+
+def test_deep_validator_requires_execution_and_workspace_cargo_source_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production, authority = _collect_bounded_production_authority(
+        tmp_path,
+        monkeypatch,
+    )
+    material = authority._material
+    original = production._executor._validated_full_c6_native_output_material
+    execution_material = original(material.native_execution_authority)
+    cloned_sources = replace(execution_material.toolchain.cargo_sources)
+    cloned_toolchain = replace(
+        execution_material.toolchain,
+        cargo_sources=cloned_sources,
+    )
+    split_execution_material = replace(
+        execution_material,
+        toolchain=cloned_toolchain,
+    )
+    assert cloned_sources == material.cargo_workspace.cargo_sources
+    assert cloned_sources is not material.cargo_workspace.cargo_sources
+    monkeypatch.setattr(
+        production._executor,
+        "_validated_full_c6_native_output_material",
+        lambda value: (
+            split_execution_material
+            if value is material.native_execution_authority
+            else original(value)
+        ),
+    )
+    runtime_reached = False
+
+    def forbidden_runtime(_value: object) -> object:
+        nonlocal runtime_reached
+        runtime_reached = True
+        raise AssertionError("split Cargo authority must fail before runtime validation")
+
+    monkeypatch.setattr(
+        production._native_runtime,
+        "_validated_full_c6_native_runtime_material",
+        forbidden_runtime,
+    )
+
+    assert not production._validate_material(material)
+    assert runtime_reached is False
+
+
+def test_production_regeneration_rebinds_the_exact_executed_source_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    inputs = _EXTERNAL["_inputs"](tmp_path, monkeypatch)
+    execution = _EXTERNAL["_execute"](inputs)
+
+    generated, snapshot = production._regenerate_production_inputs(
+        root=inputs.preflight.analysis.project_root,
+        preflight=inputs.preflight,
+        config=inputs.config,
+        cargo_workspace=inputs.cargo_workspace,
+        execution=execution,
+    )
+
+    assert generated.plan.analysis is inputs.preflight.analysis
+    assert snapshot.unavailable_reason is None
+    assert snapshot.cargo_lock is not None
+    assert snapshot.cargo_lock.sha256 == inputs.cargo_workspace.cargo_sources.lock_file.sha256
+    assert not any(
+        item.logical_path.endswith("/.cargo/config.toml")
+        for item in snapshot.generated_rust
+    )
+    assert any(
+        item.logical_path.endswith("/src/lib.rs")
+        for item in snapshot.generated_rust
+    )
+
+
+def test_external_partition_is_derived_from_the_exact_sourcelock_universe(
+    tmp_path: Path,
+) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    preflight, _config = _EXTERNAL["_project_preflight"](tmp_path)
+
+    partition = production._derive_external_authority(preflight)
+    context = preflight.context.source_verification.context
+    assert context is not None
+    counts = {item.class_id: item.observed_count for item in partition.classes}
+    assert counts["external-source:wheel-archive"] == 1
+    assert counts["external-source:python-source"] == len(
+        context.wheel.source_entry_paths
+    )
+    assert counts["external-source:license-file"] == len(
+        context.wheel.license_entry_paths
+    )
+    assert partition.observed_component_count == 1 + len(context.manifest.entries)
+
+
+def test_production_root_must_preserve_preflight_lexical_and_resolved_identity(
+    tmp_path: Path,
+) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    preflight, _config = _EXTERNAL["_project_preflight"](tmp_path)
+    root = preflight.analysis.project_root
+    assert production._require_project_root(preflight, root) == root
+
+    with pytest.raises(production.FullC6ProductionError, match="project root"):
+        production._require_project_root(preflight, root / ".." / root.name)
+
+
+@pytest.mark.parametrize(
+    ("captured_generated", "project_path"),
+    (
+        (
+            ".rextio/generated/python/Wrapper.py",
+            "generated/python/wrapper.py",
+        ),
+        (
+            ".rextio/generated/python/caf\N{LATIN SMALL LETTER E WITH ACUTE}.py",
+            "generated/python/cafe\N{COMBINING ACUTE ACCENT}.py",
+        ),
+    ),
+)
+def test_generated_build_input_mapping_rejects_casefold_and_nfc_aliases(
+    captured_generated: str,
+    project_path: str,
+) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    generated = EvidenceFileRef(
+        "generated-python.py",
+        "1" * 64,
+        1,
+        "generated-python-input",
+    )
+    project = EvidenceFileRef(
+        "project.py",
+        "2" * 64,
+        1,
+        "project-python-source",
+    )
+    # Model a forged/noncanonical retained reference to exercise the collector's
+    # own alias barrier before ExactFileIdentity performs its ASCII validation.
+    object.__setattr__(generated, "logical_path", captured_generated)
+    object.__setattr__(project, "logical_path", project_path)
+    cargo_lock = EvidenceFileRef(
+        "rextio.cargo-license.lock.json",
+        "3" * 64,
+        1,
+        "component-license-policy-lock",
+    )
+    source_lock = EvidenceFileRef(
+        "rextio.source-license.lock.json",
+        "4" * 64,
+        1,
+        "project-source-license-policy-lock",
+    )
+
+    with pytest.raises(production.FullC6ProductionError, match="overlap"):
+        production._build_input_closure(
+            input_snapshot=SimpleNamespace(all_inputs=(generated, project)),
+            analysis_inputs=SimpleNamespace(records=()),
+            component_license_policy=SimpleNamespace(lock_file=cargo_lock),
+            source_license_policy=SimpleNamespace(lock_file=source_lock),
+            cargo_workspace=object(),
+        )
