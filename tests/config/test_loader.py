@@ -23,6 +23,8 @@ artifact_evidence_policy = "required"
 artifact_distribution_policy = "full-c6-required"
 artifact_source_lock_manifest = "locks/source-lock.v2.json"
 artifact_source_lock_signature = "locks/source-lock.v2.sig.json"
+artifact_policy_manifest = "locks/rextio.full-c6-policy.json"
+artifact_policy_manifest_sha256 = "{_SHA_B}"
 artifact_trusted_public_key = "keys/release.pub"
 artifact_trusted_public_key_sha256 = "{_SHA_A}"
 artifact_signing_request_output = "build/rextio.full-c6-final-authorization-request.json"
@@ -50,6 +52,8 @@ def test_full_c6_distribution_config_defaults_are_inactive(tmp_path: Path) -> No
     assert config.build.artifact_distribution_policy == "disabled"
     assert config.build.artifact_source_lock_manifest is None
     assert config.build.artifact_source_lock_signature is None
+    assert config.build.artifact_policy_manifest is None
+    assert config.build.artifact_policy_manifest_sha256 is None
     assert config.build.artifact_trusted_public_key is None
     assert config.build.artifact_trusted_public_key_sha256 is None
     assert config.build.artifact_final_signature is None
@@ -66,6 +70,8 @@ def test_full_c6_distribution_config_accepts_exact_frozen_profile(tmp_path: Path
     assert config.build.artifact_distribution_policy == "full-c6-required"
     assert config.build.artifact_source_lock_manifest == "locks/source-lock.v2.json"
     assert config.build.artifact_source_lock_signature == "locks/source-lock.v2.sig.json"
+    assert config.build.artifact_policy_manifest == "locks/rextio.full-c6-policy.json"
+    assert config.build.artifact_policy_manifest_sha256 == _SHA_B
     assert config.build.artifact_trusted_public_key == "keys/release.pub"
     assert config.build.artifact_trusted_public_key_sha256 == _SHA_A
     assert config.build.artifact_final_signature is None
@@ -113,6 +119,21 @@ def test_full_c6_distribution_config_accepts_final_signature(tmp_path: Path) -> 
         (
             'artifact_source_lock_signature = "locks/source-lock.v2.sig.json"',
             'artifact_source_lock_signature = "/tmp/source-lock.sig"',
+            "project-relative",
+        ),
+        (
+            'artifact_policy_manifest = "locks/rextio.full-c6-policy.json"',
+            'artifact_policy_manifest = "../policy.json"',
+            "project-relative",
+        ),
+        (
+            f'artifact_policy_manifest_sha256 = "{_SHA_B}"',
+            'artifact_policy_manifest_sha256 = "bad"',
+            "lowercase hexadecimal",
+        ),
+        (
+            'artifact_source_lock_manifest = "locks/source-lock.v2.json"',
+            'artifact_source_lock_manifest = "C:source-lock.v2.json"',
             "project-relative",
         ),
         (
@@ -189,6 +210,7 @@ def test_full_c6_final_signature_requires_project_relative_path(
     [
         "artifact_source_lock_manifest",
         "artifact_source_lock_signature",
+        "artifact_policy_manifest",
         "artifact_final_signature",
         "artifact_signing_request_output",
     ],
@@ -212,6 +234,11 @@ def test_full_c6_path_fields_reject_non_string_values(
         (
             'artifact_source_lock_manifest = "locks/source-lock.v2.json"\n'
             'artifact_source_lock_signature = "locks/source-lock.v2.sig.json"\n',
+            "full-c6-required",
+        ),
+        (
+            'artifact_policy_manifest = "locks/rextio.full-c6-policy.json"\n'
+            f'artifact_policy_manifest_sha256 = "{_SHA_B}"\n',
             "full-c6-required",
         ),
         (

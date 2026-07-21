@@ -28,6 +28,8 @@ class BuildConfig:
     # project-relative; private signing keys are never accepted by Rextio.
     artifact_source_lock_manifest: str | None = None
     artifact_source_lock_signature: str | None = None
+    artifact_policy_manifest: str | None = None
+    artifact_policy_manifest_sha256: str | None = None
     artifact_trusted_public_key: str | None = None
     artifact_trusted_public_key_sha256: str | None = None
     artifact_final_signature: str | None = None

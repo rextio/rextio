@@ -47,6 +47,8 @@ CONFIG_KEYS = {
         "artifact_distribution_policy",
         "artifact_source_lock_manifest",
         "artifact_source_lock_signature",
+        "artifact_policy_manifest",
+        "artifact_policy_manifest_sha256",
         "artifact_trusted_public_key",
         "artifact_trusted_public_key_sha256",
         "artifact_final_signature",
@@ -313,6 +315,7 @@ def _validate_config_values(
     for artifact_path in (
         "artifact_source_lock_manifest",
         "artifact_source_lock_signature",
+        "artifact_policy_manifest",
         "artifact_final_signature",
     ):
         _require_optional_project_relative_path(
@@ -340,6 +343,11 @@ def _validate_config_values(
         "build",
         "artifact_trusted_public_key",
         build["artifact_trusted_public_key"],
+    )
+    _require_optional_sha256(
+        "build",
+        "artifact_policy_manifest_sha256",
+        build["artifact_policy_manifest_sha256"],
     )
     _require_optional_sha256(
         "build",
@@ -439,6 +447,8 @@ def _validate_full_c6_config(
     """Validate the deliberately frozen first strict Full-C6 build profile."""
     source_lock_manifest = build["artifact_source_lock_manifest"]
     source_lock_signature = build["artifact_source_lock_signature"]
+    policy_manifest = build["artifact_policy_manifest"]
+    policy_manifest_sha256 = build["artifact_policy_manifest_sha256"]
     trusted_key = build["artifact_trusted_public_key"]
     trusted_key_sha256 = build["artifact_trusted_public_key_sha256"]
     final_signature = build["artifact_final_signature"]
@@ -448,6 +458,11 @@ def _validate_full_c6_config(
         raise ConfigError(
             "[build] artifact_source_lock_manifest and "
             "artifact_source_lock_signature must be configured together"
+        )
+    if (policy_manifest is None) != (policy_manifest_sha256 is None):
+        raise ConfigError(
+            "[build] artifact_policy_manifest and "
+            "artifact_policy_manifest_sha256 must be configured together"
         )
     if (trusted_key is None) != (trusted_key_sha256 is None):
         raise ConfigError(
@@ -472,6 +487,7 @@ def _validate_full_c6_config(
         for key in (
             "artifact_source_lock_manifest",
             "artifact_source_lock_signature",
+            "artifact_policy_manifest",
             "artifact_trusted_public_key",
             "artifact_final_signature",
             "artifact_signing_request_output",
@@ -491,6 +507,8 @@ def _validate_full_c6_config(
         failures.append('[build] fallback_backend = "cpython"')
     if source_lock_manifest is None or source_lock_signature is None:
         failures.append("SourceLock v2 manifest and detached signature paths")
+    if policy_manifest is None or policy_manifest_sha256 is None:
+        failures.append("one owner policy manifest path and SHA-256")
     if trusted_key is None or trusted_key_sha256 is None:
         failures.append("one trusted public key path and SHA-256")
     if signing_request_output is None:
@@ -580,6 +598,7 @@ def _require_optional_project_relative_path(
         or any(segment in {"", ".", ".."} for segment in segments)
         or PurePosixPath(value).is_absolute()
         or PureWindowsPath(value).is_absolute()
+        or bool(PureWindowsPath(value).drive)
     ):
         raise ConfigError(f"[{section}].{key} must be a normalized project-relative path")
     if suffix is not None and not value.endswith(suffix):
