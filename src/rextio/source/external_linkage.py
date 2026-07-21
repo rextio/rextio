@@ -127,7 +127,39 @@ _DYNAMIC_NAMESPACE_MEMBERS = {
         }
     ),
 }
-_DYNAMIC_NAMESPACE_PREFIXES = frozenset({"importlib"})
+_DYNAMIC_NAMESPACE_PREFIXES = frozenset(
+    {
+        "_frozen_importlib",
+        "_frozen_importlib_external",
+        "imp",
+        "importlib",
+        "pkgutil",
+        "pydoc",
+        "zipimport",
+    }
+)
+_DYNAMIC_NAMESPACE_TERMINALS = frozenset(
+    {
+        "create_module",
+        "exec_module",
+        "find_loader",
+        "find_module",
+        "find_spec",
+        "get_importer",
+        "get_loader",
+        "import_module",
+        "iter_importers",
+        "load_compiled",
+        "load_module",
+        "load_package",
+        "load_source",
+        "module_from_spec",
+        "modules",
+        "safeimport",
+        "spec_from_file_location",
+        "spec_from_loader",
+    }
+)
 _REFLECTIVE_ATTRIBUTE_NAMES = frozenset(
     {
         "__builtins__",
@@ -1453,6 +1485,8 @@ def _has_dynamic_namespace_access(
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in _DYNAMIC_NAMESPACE_NAMES:
             return True
+        if isinstance(node, ast.Attribute) and node.attr in _DYNAMIC_NAMESPACE_TERMINALS:
+            return True
         if isinstance(node, ast.Attribute) and node.attr in _REFLECTIVE_ATTRIBUTE_NAMES:
             return True
         if isinstance(node, ast.expr):
@@ -1503,6 +1537,8 @@ def _has_dynamic_namespace_access(
 
 def _path_is_dynamic_namespace_access(path: str) -> bool:
     """Classify one resolved path by namespace capability, not source spelling."""
+    if path.rpartition(".")[2] in _DYNAMIC_NAMESPACE_TERMINALS:
+        return True
     if any(
         path == prefix or path.startswith(f"{prefix}.")
         for prefix in _DYNAMIC_NAMESPACE_PREFIXES

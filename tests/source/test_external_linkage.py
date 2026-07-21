@@ -2233,6 +2233,64 @@ def calculate(x: int) -> int:
 """,
             id="pydoc-locate",
         ),
+        pytest.param(
+            """\
+import pkgutil
+import demo_pkg as p
+
+def mutate() -> None:
+    loader = pkgutil.get_loader("demo_pkg")
+    q = loader.load_module("demo_pkg")
+    q.affine = abs
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="pkgutil-get-loader",
+        ),
+        pytest.param(
+            """\
+import _frozen_importlib_external as bootstrap
+import demo_pkg as p
+
+def mutate() -> None:
+    spec = bootstrap.PathFinder.find_spec("demo_pkg")
+    q = spec.loader.load_module("demo_pkg")
+    q.affine = abs
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="frozen-path-finder",
+        ),
+        pytest.param(
+            """\
+import pkgutil
+import demo_pkg as p
+
+def mutate() -> None:
+    q = pkgutil.importlib.import_module("demo_pkg")
+    q.affine = abs
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="pkgutil-importlib-reexport",
+        ),
+        pytest.param(
+            """\
+import os
+import demo_pkg as p
+
+def mutate() -> None:
+    q = os.sys.modules["demo_pkg"]
+    q.affine = abs
+
+def calculate(x: int) -> int:
+    return p.affine(x)
+""",
+            id="os-sys-modules-reexport",
+        ),
     ),
 )
 def test_registry_rejects_capability_aliases_and_broader_import_machinery(
@@ -2333,6 +2391,48 @@ def mutate() -> None:
     q.affine = abs
 """,
             id="resolved-dynamic-import",
+        ),
+        pytest.param(
+            """\
+import pkgutil
+
+def mutate() -> None:
+    loader = pkgutil.get_loader("demo_pkg")
+    q = loader.load_module("demo_pkg")
+    q.affine = abs
+""",
+            id="pkgutil-get-loader",
+        ),
+        pytest.param(
+            """\
+import _frozen_importlib_external as bootstrap
+
+def mutate() -> None:
+    spec = bootstrap.PathFinder.find_spec("demo_pkg")
+    q = spec.loader.load_module("demo_pkg")
+    q.affine = abs
+""",
+            id="frozen-path-finder",
+        ),
+        pytest.param(
+            """\
+import pkgutil
+
+def mutate() -> None:
+    q = pkgutil.importlib.import_module("demo_pkg")
+    q.affine = abs
+""",
+            id="pkgutil-importlib-reexport",
+        ),
+        pytest.param(
+            """\
+import os
+
+def mutate() -> None:
+    q = os.sys.modules["demo_pkg"]
+    q.affine = abs
+""",
+            id="os-sys-modules-reexport",
         ),
     ),
 )
