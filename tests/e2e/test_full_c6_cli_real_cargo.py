@@ -159,6 +159,7 @@ def test_installed_wheel_full_c6_cli_publishes_importable_native_wheel(
         if key not in {"PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"}
     }
     environment["REXTIO_FULL_C6_E2E_CHILD"] = "1"
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     # Inherit the harness streams so flushed stage heartbeats remain visible.
     # A separate POSIX session still lets timeout/error handling contain every
     # descendant, including either of a lifecycle stage's Cargo processes.

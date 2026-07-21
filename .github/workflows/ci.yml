@@ -235,9 +235,11 @@ jobs:
         run: |
           python -m venv "${RUNNER_TEMP}/full-c6-wheel-venv"
           "${RUNNER_TEMP}/full-c6-wheel-venv/bin/python" -m pip install \
+            --no-compile \
             "${REXTIO_FULL_C6_WHEEL}" pytest
       - name: Run the installed-wheel three-pass Full C6 lifecycle
         env:
+          PYTHONDONTWRITEBYTECODE: "1"
           PYTHONNOUSERSITE: "1"
           REXTIO_FULL_C6_E2E: "1"
         run: |

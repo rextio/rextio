@@ -1810,6 +1810,8 @@ def _assert_run_root_isolated(run_root: Path) -> None:
 def main() -> None:
     if os.environ.get("REXTIO_FULL_C6_E2E_CHILD") != "1" or len(sys.argv) != 2:
         raise SystemExit("this helper runs only through the dedicated Full C6 E2E test")
+    if sys.dont_write_bytecode is not True:
+        raise AssertionError("dedicated Full C6 E2E requires a cache-free Python host")
     _assert_record_backed_rextio_install()
     if platform.python_implementation() != "CPython" or sys.version_info[:2] != (3, 11):
         raise AssertionError("dedicated Full C6 E2E requires exact CPython 3.11")

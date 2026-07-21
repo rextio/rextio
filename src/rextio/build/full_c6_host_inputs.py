@@ -93,9 +93,6 @@ _RECORD_MAX_ROWS = 4096
 _VERSION_OUTPUT_MAX_BYTES = 64 * 1024
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
 _WHEEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,254}\.whl$")
-_CPYTHON_311_BYTECODE_NAME_RE = re.compile(
-    r"^(?P<stem>[A-Za-z_][A-Za-z0-9_]*)\.cpython-311(?:\.opt-[12])?\.pyc$"
-)
 _SEAL_KEY = secrets.token_bytes(32)
 
 
@@ -1784,6 +1781,10 @@ def _require_version_pin(display: str, reported: str, pin: str | None) -> None:
 
 
 def _capture_installed_rextio_identity() -> RextioIdentity:
+    if sys.dont_write_bytecode is not True:
+        raise FullC6HostInputsError(
+            "installed Rextio inventory requires a cache-free Python process"
+        )
     try:
         distribution = metadata.distribution("rextio")
         distribution_name = distribution.metadata["Name"]
@@ -1849,7 +1850,6 @@ def _capture_record_backed_rextio_identity(
 
     expected: dict[str, tuple[str, int]] = {}
     aliases: set[str] = set()
-    installer_bytecode_sources: list[str] = []
     for row in rows:
         if len(row) != 3:
             raise FullC6HostInputsError("installed Rextio RECORD row is malformed")
@@ -1861,10 +1861,11 @@ def _capture_record_backed_rextio_identity(
         if alias in aliases:
             raise FullC6HostInputsError("installed Rextio RECORD contains a path alias")
         aliases.add(alias)
-        bytecode_source = _installer_bytecode_source(logical, raw_hash, raw_size)
-        if bytecode_source is not None:
-            installer_bytecode_sources.append(bytecode_source)
-            continue
+        logical_path = PurePosixPath(logical)
+        if "__pycache__" in logical_path.parts or logical_path.suffix == ".pyc":
+            raise FullC6HostInputsError(
+                "installed Rextio RECORD contains a bytecode cache row"
+            )
         digest = _record_sha256(raw_hash)
         try:
             size = int(raw_size)
@@ -1875,13 +1876,17 @@ def _capture_record_backed_rextio_identity(
         expected[logical] = (digest, size)
     if not expected:
         raise FullC6HostInputsError("installed Rextio RECORD has no package inventory")
-    if any(source not in expected for source in installer_bytecode_sources):
-        raise FullC6HostInputsError(
-            "installed Rextio RECORD bytecode lacks its hashed source"
-        )
 
     package_root = root / "rextio"
-    observed = _walk_installed_package(package_root, distribution_root=root)
+    allowed_members = frozenset(expected)
+    allowed_directories = _installed_record_directories(allowed_members)
+    complete_observed = _walk_installed_package(
+        package_root,
+        distribution_root=root,
+        allowed_members=allowed_members,
+        allowed_directories=allowed_directories,
+    )
+    observed = complete_observed
     if set(observed) != set(expected):
         raise FullC6HostInputsError(
             "installed Rextio source is missing, outside RECORD, or unrecorded"
@@ -1916,8 +1921,13 @@ def _capture_record_backed_rextio_identity(
         for name, (digest, size) in expected.items()
     ):
         raise FullC6HostInputsError("installed Rextio identity differs from RECORD")
-    repeated = _walk_installed_package(package_root, distribution_root=root)
-    if _installed_projection(repeated) != _installed_projection(observed):
+    repeated = _walk_installed_package(
+        package_root,
+        distribution_root=root,
+        allowed_members=allowed_members,
+        allowed_directories=allowed_directories,
+    )
+    if _installed_projection(repeated) != _installed_projection(complete_observed):
         raise FullC6HostInputsError("installed Rextio source changed during identity capture")
     return identity
 
@@ -1926,11 +1936,17 @@ def _walk_installed_package(
     package_root: Path,
     *,
     distribution_root: Path,
+    allowed_members: frozenset[str],
+    allowed_directories: frozenset[str],
 ) -> dict[str, tuple[Path, bytes, os.stat_result]]:
     _require_secure_directory(package_root, label="installed Rextio package")
     pending = [package_root]
     result: dict[str, tuple[Path, bytes, os.stat_result]] = {}
     aliases: set[str] = set()
+    observed_entries = 0
+    # One unexpected entry is enough for a precise fail-closed diagnostic;
+    # a flood is stopped before any unrecorded file body is opened.
+    maximum_entries = len(allowed_members) + len(allowed_directories)
     while pending:
         directory = pending.pop()
         descriptor = _open_absolute_directory_no_follow(
@@ -1938,13 +1954,15 @@ def _walk_installed_package(
         )
         try:
             with os.scandir(descriptor) as iterator:
-                children = sorted(
-                    (
-                        (item.name, item.stat(follow_symlinks=False))
-                        for item in iterator
-                    ),
-                    key=lambda item: item[0],
-                )
+                children: list[tuple[str, os.stat_result]] = []
+                for item in iterator:
+                    observed_entries += 1
+                    if observed_entries > maximum_entries:
+                        raise FullC6HostInputsError(
+                            "installed Rextio package exceeds its RECORD bound"
+                        )
+                    children.append((item.name, item.stat(follow_symlinks=False)))
+                children.sort(key=lambda item: item[0])
         except OSError as exc:
             raise FullC6HostInputsError("installed Rextio member changed") from exc
         finally:
@@ -1958,11 +1976,23 @@ def _walk_installed_package(
                 raise FullC6HostInputsError("installed Rextio package contains a path alias")
             local_aliases.add(local_alias)
             path = directory / name
+            if name.casefold() == "__pycache__" or name.casefold().endswith(".pyc"):
+                raise FullC6HostInputsError(
+                    "installed Rextio package contains physical bytecode"
+                )
             if stat.S_ISLNK(observed.st_mode):
                 raise FullC6HostInputsError("installed Rextio package contains a symlink")
             if stat.S_ISDIR(observed.st_mode):
-                if name == "__pycache__":
-                    continue
+                try:
+                    relative_directory = path.relative_to(distribution_root).as_posix()
+                except ValueError as exc:
+                    raise FullC6HostInputsError(
+                        "installed Rextio directory escaped distribution root"
+                    ) from exc
+                if relative_directory not in allowed_directories:
+                    raise FullC6HostInputsError(
+                        "installed Rextio directory is outside RECORD"
+                    )
                 pending.append(path)
                 continue
             if not stat.S_ISREG(observed.st_mode):
@@ -1971,6 +2001,10 @@ def _walk_installed_package(
                 relative = path.relative_to(distribution_root).as_posix()
             except ValueError as exc:
                 raise FullC6HostInputsError("installed Rextio member escaped distribution root") from exc
+            if relative not in allowed_members:
+                raise FullC6HostInputsError(
+                    "installed Rextio member is outside RECORD"
+                )
             alias = unicodedata.normalize("NFC", relative).casefold()
             if alias in aliases:
                 raise FullC6HostInputsError("installed Rextio package contains a path alias")
@@ -1982,6 +2016,20 @@ def _walk_installed_package(
             )
             result[relative] = (path, data, opened)
     return result
+
+
+def _installed_record_directories(members: frozenset[str]) -> frozenset[str]:
+    directories = {"rextio"}
+    for member in members:
+        parent = PurePosixPath(member).parent
+        while parent.parts:
+            directories.add(parent.as_posix())
+            parent = parent.parent
+    if len(directories) > _RECORD_MAX_ROWS:
+        raise FullC6HostInputsError(
+            "installed Rextio RECORD directory count is outside bound"
+        )
+    return frozenset(directories)
 
 
 def _installed_projection(
@@ -2013,7 +2061,7 @@ def _validated_record_member(value: str) -> str:
     path = PurePosixPath(value)
     if path.is_absolute() or not path.parts or path.parts[0] != "rextio" or ".." in path.parts:
         raise FullC6HostInputsError("installed Rextio RECORD path escaped package root")
-    if any(part in {"", ".", ".."} for part in path.parts):
+    if value != path.as_posix() or any(part in {"", ".", ".."} for part in path.parts):
         raise FullC6HostInputsError("installed Rextio RECORD path is not canonical")
     return path.as_posix()
 
@@ -2029,26 +2077,6 @@ def _record_sha256(value: str) -> str:
     if len(data) != 32:
         raise FullC6HostInputsError("installed Rextio RECORD SHA-256 is invalid")
     return data.hex()
-
-
-def _installer_bytecode_source(
-    logical_name: str,
-    raw_hash: str,
-    raw_size: str,
-) -> str | None:
-    """Map one exact pip CPython 3.11 bytecode row to its hashed source."""
-    parts = PurePosixPath(logical_name).parts
-    if (
-        len(parts) < 3
-        or parts[-2] != "__pycache__"
-        or raw_hash != ""
-        or raw_size != ""
-    ):
-        return None
-    match = _CPYTHON_311_BYTECODE_NAME_RE.fullmatch(parts[-1])
-    if match is None:
-        return None
-    return PurePosixPath(*parts[:-2], f"{match.group('stem')}.py").as_posix()
 
 
 def _ensure_state_directory(root: Path, config: RextioConfig) -> Path:
