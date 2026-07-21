@@ -1854,6 +1854,8 @@ def execute_full_c6_two_build(
                 ordinal,
                 argv,
                 environment,
+                build_root=build_root,
+                project_root=project_root,
                 timeout_seconds=float(timeout_seconds),
                 max_output_bytes=max_output_bytes,
             )
@@ -3367,16 +3369,23 @@ def _invocation_receipt(
     argv: tuple[str, ...],
     environment: dict[str, str],
     *,
+    build_root: Path,
+    project_root: Path,
     timeout_seconds: float,
     max_output_bytes: int,
 ) -> FullC6InvocationReceipt:
+    canonical_environment = _canonical_invocation_environment(
+        environment,
+        build_root=build_root,
+        project_root=project_root,
+    )
     bindings = tuple(
         FullC6EnvironmentBinding(
             name=name,
             value_sha256=hashlib.sha256(value.encode("utf-8")).hexdigest(),
             value_size=len(value.encode("utf-8")),
         )
-        for name, value in sorted(environment.items())
+        for name, value in sorted(canonical_environment.items())
     )
     try:
         return FullC6InvocationReceipt(
@@ -3389,6 +3398,63 @@ def _invocation_receipt(
         )
     except (TypeError, ValueError) as exc:
         raise FullC6ExecutorError(str(exc)) from exc
+
+
+def _canonical_invocation_environment(
+    environment: Mapping[str, str],
+    *,
+    build_root: Path,
+    project_root: Path,
+) -> dict[str, str]:
+    """Project executor-owned private paths into stable receipt identities.
+
+    Cargo still receives and is validated against the exact absolute paths.
+    Only the semantic receipt replaces the fresh quarantine roots, which must
+    not make an otherwise identical signing and publication run produce
+    different authorization requests.  Caller-controlled environment values
+    remain byte-for-byte bound.
+    """
+    canonical = dict(environment)
+    owned_paths = {
+        "HOME": (build_root / "home", f"{_BUILD_ROOT_TOKEN}/home"),
+        "CARGO_HOME": (
+            build_root / "cargo-home",
+            f"{_BUILD_ROOT_TOKEN}/cargo-home",
+        ),
+        "CARGO_TARGET_DIR": (
+            build_root / "target",
+            f"{_BUILD_ROOT_TOKEN}/target",
+        ),
+    }
+    for name, (expected, token) in owned_paths.items():
+        if canonical.get(name) != str(expected):
+            raise FullC6ExecutorError(
+                "Full C6 executor-owned environment changed before receipt capture"
+            )
+        canonical[name] = token
+
+    rustflags = canonical.get("CARGO_ENCODED_RUSTFLAGS")
+    if type(rustflags) is not str:
+        raise FullC6ExecutorError(
+            "Full C6 executor-owned environment changed before receipt capture"
+        )
+    flags = rustflags.split("\x1f")
+    expected_remaps = [
+        f"--remap-path-prefix={project_root}={_PROJECT_ROOT_TOKEN}",
+        f"--remap-path-prefix={build_root}={_BUILD_ROOT_TOKEN}",
+    ]
+    if flags[:2] != expected_remaps:
+        raise FullC6ExecutorError(
+            "Full C6 executor-owned environment changed before receipt capture"
+        )
+    canonical["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(
+        (
+            f"--remap-path-prefix={_PROJECT_ROOT_TOKEN}={_PROJECT_ROOT_TOKEN}",
+            f"--remap-path-prefix={_BUILD_ROOT_TOKEN}={_BUILD_ROOT_TOKEN}",
+            *flags[2:],
+        )
+    )
+    return canonical
 
 
 def _verify_native_toolchain_invocation(

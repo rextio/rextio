@@ -513,6 +513,89 @@ def test_unsigned_pipeline_writes_only_request_and_never_publication(tmp_path: P
     assert not publication.exists()
 
 
+def test_configured_signed_publication_reuses_exact_unsigned_request(
+    tmp_path: Path,
+) -> None:
+    arguments = _gate_arguments(tmp_path)
+    policy_path, policy_sha256 = _write_policy_manifest(tmp_path, arguments["policy"])
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    state.chmod(0o700)
+    request_output = f"state/{FULL_C6_SIGNING_REQUEST_FILENAME}"
+    common_build = {
+        "artifact_distribution_policy": "full-c6-required",
+        "artifact_policy_manifest": policy_path,
+        "artifact_policy_manifest_sha256": policy_sha256,
+        "artifact_trusted_public_key": "state/owner.pub",
+        "artifact_trusted_public_key_sha256": arguments[
+            "expected_public_key_sha256"
+        ],
+        "artifact_signing_request_output": request_output,
+    }
+    unsigned_config = RextioConfig(
+        build=BuildConfig(**common_build),  # type: ignore[arg-type]
+    )
+    unsigned_authority = _bind_finalization_authority(
+        arguments,
+        project_root=tmp_path,
+        config=unsigned_config,
+    )
+    unsigned = finalize_configured_full_c6_distribution(
+        project_root=tmp_path,
+        config=unsigned_config,
+        authority=unsigned_authority,
+    )
+    signature_path, key_path = _GATE["_sign_request"](  # type: ignore[operator]
+        state,
+        request=unsigned.request,
+        public_key=arguments["public_key"],
+    )
+
+    signed_config = RextioConfig(
+        build=BuildConfig(
+            **common_build,  # type: ignore[arg-type]
+            artifact_final_signature="state/final.sig.json",
+        ),
+    )
+    signed_authority = object.__new__(FullC6ProductionAuthority)
+    signed_authority = _bind_finalization_authority(
+        arguments,
+        project_root=tmp_path,
+        config=signed_config,
+        authority=signed_authority,
+    )
+    publication_root = tmp_path / "dist"
+    publication_root.mkdir()
+    subject_path = Path(arguments["subject_path"])
+    adapter = _full_c6_atomic_publication_adapter(
+        authority=signed_authority,
+        state_directory=state,
+        publication_root=publication_root,
+        bundle_name=f"{subject_path.name.removesuffix('.whl')}.full-c6",
+        subject_path=subject_path,
+        final_signature_path=signature_path,
+        public_key_path=key_path,
+    )
+
+    published = finalize_configured_full_c6_distribution(
+        project_root=tmp_path,
+        config=signed_config,
+        authority=signed_authority,
+        publication_adapter=adapter,
+    )
+
+    assert published.status == "published"
+    assert published.request == unsigned.request
+    assert published.request.canonical_manifest_bytes == (
+        state / FULL_C6_SIGNING_REQUEST_FILENAME
+    ).read_bytes()
+    assert published.gate is not None
+    assert (
+        published.gate.signature_receipt.manifest_sha256
+        == unsigned.request.manifest_sha256
+    )
+
+
 def test_configured_finalization_rejects_equal_but_distinct_config(
     tmp_path: Path,
 ) -> None:

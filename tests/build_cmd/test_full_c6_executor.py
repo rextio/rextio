@@ -356,6 +356,84 @@ def test_executor_freezes_two_independent_copies_and_returns_path_free_receipt(
     )
 
 
+def test_executor_receipt_is_stable_across_fresh_private_roots(
+    tmp_path: Path,
+) -> None:
+    from rextio.build.full_c6_executor import execute_full_c6_two_build
+
+    source = _project(tmp_path)
+    observed_environments: list[dict[str, str]] = []
+
+    def build(request):
+        observed_environments.append(request.context.environment_dict())
+        return _outputs(request.context.build_root)
+
+    receipts = []
+    for name in ("signing", "publication"):
+        lifecycle_root = tmp_path / name
+        lifecycle_root.mkdir()
+        receipts.append(
+            execute_full_c6_two_build(
+                source,
+                *_roots(lifecycle_root),
+                build=build,
+                cargo_command=STRICT_BUILD,
+                base_environment={"PATH": "/usr/bin:/bin"},
+                source_date_epoch=1,
+            )
+        )
+
+    assert observed_environments[0]["CARGO_HOME"] != observed_environments[2][
+        "CARGO_HOME"
+    ]
+    assert observed_environments[0]["CARGO_ENCODED_RUSTFLAGS"] != (
+        observed_environments[2]["CARGO_ENCODED_RUSTFLAGS"]
+    )
+    assert receipts[0].invocations == receipts[1].invocations
+    assert receipts[0].digest == receipts[1].digest
+
+    changed_root = tmp_path / "changed-caller-environment"
+    changed_root.mkdir()
+    changed = execute_full_c6_two_build(
+        source,
+        *_roots(changed_root),
+        build=build,
+        cargo_command=STRICT_BUILD,
+        base_environment={"PATH": "/usr/local/bin:/usr/bin:/bin"},
+        source_date_epoch=1,
+    )
+    assert changed.digest != receipts[0].digest
+
+
+def test_executor_rejects_owned_environment_tamper_before_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _project(tmp_path)
+    original = executor._build_environment
+
+    def tampered_environment(*args, **kwargs):
+        environment = original(*args, **kwargs)
+        environment["HOME"] = str(tmp_path / "attacker-home")
+        return environment
+
+    monkeypatch.setattr(executor, "_build_environment", tampered_environment)
+
+    with pytest.raises(
+        executor.FullC6ExecutorError,
+        match="executor-owned environment changed",
+    ):
+        executor.execute_full_c6_two_build(
+            source,
+            *_roots(tmp_path),
+            build=lambda request: _outputs(request.context.build_root),
+            cargo_command=STRICT_BUILD,
+            source_date_epoch=1,
+        )
+
+
 def test_missing_lock_is_generated_once_offline_and_frozen_into_both_copies(
     tmp_path: Path,
 ) -> None:
