@@ -90,6 +90,7 @@ def _macos_projected_inputs(
     tmp_path: Path,
     *,
     python_layout: str = "homebrew",
+    xcode_layout: str = "modern",
 ) -> tuple[
     list[ToolchainSupportLocator],
     list[ToolchainSupportLocator],
@@ -156,8 +157,15 @@ def _macos_projected_inputs(
         "../../..//System/Library/Frameworks/SoundAnalysis.framework/"
         "Versions/A/SoundAnalysis.tbd"
     )
-    (swift / "libswiftSoundAnalysis.tbd").symlink_to(sound_target)
-    (swift / "libswiftSoundAnalysis_Private.tbd").symlink_to(sound_target)
+    if xcode_layout == "modern":
+        (swift / "libswiftSoundAnalysis.tbd").symlink_to(sound_target)
+        (swift / "libswiftSoundAnalysis_Private.tbd").symlink_to(sound_target)
+    elif xcode_layout == "xcode-16.4":
+        sound_bytes = b"--- !tapi-tbd\ntbd-version: 4\n"
+        (swift / "libswiftSoundAnalysis.tbd").write_bytes(sound_bytes)
+        (swift / "libswiftSoundAnalysis_Private.tbd").write_bytes(sound_bytes)
+    else:
+        raise AssertionError(f"unsupported Xcode fixture layout: {xcode_layout}")
     veclib_target = (
         sdk
         / "System"
@@ -334,6 +342,80 @@ def test_macos_actions_python_runtime_directory_variant_is_fully_bound(
     with pytest.raises(ToolchainSupportLockError, match="differ"):
         verify_toolchain_support_lock(
             parsed,
+            manifests=manifests,
+            roots=roots,
+        )
+
+
+def test_macos_xcode_16_4_regular_sound_analysis_variant_is_fully_bound(
+    tmp_path: Path,
+) -> None:
+    manifests, roots, _python_root, sdk, _sound = _macos_projected_inputs(
+        tmp_path,
+        xcode_layout="xcode-16.4",
+    )
+
+    lock = generate_toolchain_support_lock(
+        target_triple="aarch64-apple-darwin",
+        manifests=manifests,
+        roots=roots,
+    )
+    sdk_receipt = next(
+        item for item in lock.roots if item.logical_role == "xcode-sdk"
+    )
+    assert {
+        item.relative_path for item in sdk_receipt.symlink_dispositions
+    } == {"System/Library/Frameworks/vecLib.framework"}
+    parsed = parse_toolchain_support_lock(
+        lock.canonical_bytes,
+        expected_raw_sha256=lock.raw_sha256,
+    )
+    assert parsed == lock
+    assert verify_toolchain_support_lock(
+        parsed,
+        manifests=manifests,
+        roots=roots,
+    )
+
+    (sdk / "usr" / "lib" / "swift" / "libswiftSoundAnalysis.tbd").write_bytes(
+        b"changed\n"
+    )
+    with pytest.raises(ToolchainSupportLockError, match="differ"):
+        verify_toolchain_support_lock(
+            parsed,
+            manifests=manifests,
+            roots=roots,
+        )
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ("missing", "directory", "wrong-symlink-target", "extra-disposition"),
+)
+def test_macos_xcode_16_4_sound_analysis_variant_drift_fails_closed(
+    tmp_path: Path,
+    attack: str,
+) -> None:
+    manifests, roots, _python_root, sdk, _sound = _macos_projected_inputs(
+        tmp_path,
+        xcode_layout="xcode-16.4",
+    )
+    swift = sdk / "usr" / "lib" / "swift"
+    sound = swift / "libswiftSoundAnalysis.tbd"
+    sound.unlink()
+    if attack == "directory":
+        sound.mkdir()
+    elif attack == "wrong-symlink-target":
+        sound.symlink_to("../../../System/Library/Frameworks/Unexpected.tbd")
+    elif attack == "extra-disposition":
+        sound.symlink_to(
+            "../../..//System/Library/Frameworks/SoundAnalysis.framework/"
+            "Versions/A/SoundAnalysis.tbd"
+        )
+
+    with pytest.raises(ToolchainSupportLockError):
+        generate_toolchain_support_lock(
+            target_triple="aarch64-apple-darwin",
             manifests=manifests,
             roots=roots,
         )

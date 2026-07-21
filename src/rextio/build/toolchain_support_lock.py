@@ -839,6 +839,24 @@ _MACOS_XCODE_SDK_DISPOSITIONS = (
         ),
     ),
 )
+_MACOS_XCODE_SDK_MODERN_DISPOSITION_PATHS = frozenset(
+    {
+        "System/Library/Frameworks/vecLib.framework",
+        "usr/lib/swift/libswiftSoundAnalysis.tbd",
+        "usr/lib/swift/libswiftSoundAnalysis_Private.tbd",
+    }
+)
+_MACOS_XCODE_SDK_16_4_DISPOSITION_PATHS = frozenset(
+    {"System/Library/Frameworks/vecLib.framework"}
+)
+_MACOS_XCODE_SDK_16_4_REGULAR_FILES = frozenset(
+    {
+        "usr/lib/swift/libswiftSoundAnalysis.tbd",
+        "usr/lib/swift/libswiftSoundAnalysis_Private.tbd",
+    }
+)
+_MACOS_XCODE_SDK_MODERN_VARIANT = "modern"
+_MACOS_XCODE_SDK_16_4_VARIANT = "xcode-16.4"
 _FIXED_SYMLINK_DISPOSITIONS: dict[
     tuple[str, str],
     tuple[_FixedSymlinkDisposition, ...],
@@ -1490,6 +1508,18 @@ def _select_fixed_symlink_disposition_variant(
             return _MACOS_PYTHON_RUNTIME_HOMEBREW_VARIANT
         if observed_paths == _MACOS_PYTHON_RUNTIME_ACTIONS_DISPOSITION_PATHS:
             return _MACOS_PYTHON_RUNTIME_ACTIONS_VARIANT
+    elif (
+        target_triple == "aarch64-apple-darwin"
+        and logical_role == "xcode-sdk"
+    ):
+        if expected_paths != _MACOS_XCODE_SDK_MODERN_DISPOSITION_PATHS:
+            raise ToolchainSupportLockError(
+                "toolchain support macOS Xcode SDK disposition policy is incomplete"
+            )
+        if observed_paths == _MACOS_XCODE_SDK_MODERN_DISPOSITION_PATHS:
+            return _MACOS_XCODE_SDK_MODERN_VARIANT
+        if observed_paths == _MACOS_XCODE_SDK_16_4_DISPOSITION_PATHS:
+            return _MACOS_XCODE_SDK_16_4_VARIANT
     elif observed_paths == expected_paths:
         return _FIXED_SYMLINK_DISPOSITION_VARIANT
     raise ToolchainSupportLockError(
@@ -1529,6 +1559,14 @@ def _finalize_symlink_dispositions(
         if site_packages is None or site_packages.kind != "directory":
             raise ToolchainSupportLockError(
                 "toolchain support Actions Python site-packages is not a regular directory"
+            )
+    elif variant == _MACOS_XCODE_SDK_16_4_VARIANT:
+        if any(
+            (entry := by_path.get(relative_path)) is None or entry.kind != "file"
+            for relative_path in _MACOS_XCODE_SDK_16_4_REGULAR_FILES
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support Xcode 16.4 SoundAnalysis inputs are not regular files"
             )
     receipts: list[ToolchainSupportSymlinkDispositionReceipt] = []
     for relative_path in sorted(observed, key=lambda value: (_alias(value), value)):
