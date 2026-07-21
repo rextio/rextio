@@ -27,6 +27,7 @@ def _authority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         root,
         source,
     )
+    _HELPERS["_use_fixed_pyo3_profile"].__wrapped__(monkeypatch)
     _HELPERS["_install_successful_native_run"](monkeypatch, executor)
     return executor.execute_full_c6_native_two_build(
         source,
