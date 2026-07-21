@@ -86,6 +86,7 @@ _CONTEXT_SEAL = object()
 _PUBLICATION_ADAPTER_SEAL = object()
 _PUBLICATION_ADAPTER_KEY = secrets.token_bytes(32)
 _WHEEL_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,254}\.whl$")
+_HOST_PATH_TYPE = type(Path())
 
 
 class FullC6PipelineError(RuntimeError):
@@ -590,7 +591,7 @@ def _validated_full_c6_finalization_material(
         gate_inputs = _validated_production_gate_inputs(authority)
         if (
             material.lifecycle.status not in {"signing-required", "publication-required"}
-            or type(material.project_root) is not Path
+            or type(material.project_root) is not _HOST_PATH_TYPE
             or material.project_root.resolve() != material.project_root
             or type(material.config) is not RextioConfig
             or type(material.policy) is not FullC6PolicyReceipt

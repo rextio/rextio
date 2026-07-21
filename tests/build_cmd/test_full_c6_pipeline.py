@@ -13,6 +13,7 @@ import pytest
 
 import rextio.build.full_c6_gate as gate_module
 import rextio.build.full_c6_pipeline as pipeline_module
+import rextio.build.full_c6_production as production_module
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.artifacts.evidence import sha256_hex
 from rextio.build.artifact_layout import ArtifactLayout
@@ -65,6 +66,9 @@ _SOURCE = runpy.run_path(str(_THIS_DIR.parent / "source" / "test_source_lock_v2.
 _GATE = runpy.run_path(str(_THIS_DIR / "test_full_c6_gate.py"))
 _CARGO = runpy.run_path(str(_THIS_DIR / "test_full_c6_cargo_workspace.py"))
 _FINALIZATION_MATERIALS: dict[int, object] = {}
+_VALIDATE_FINALIZATION_MATERIAL = (
+    pipeline_module._validated_full_c6_finalization_material
+)
 
 
 def test_finalization_public_api_accepts_only_production_authority_evidence() -> None:
@@ -387,6 +391,88 @@ def _write_policy_manifest(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
     return relative, sha256_hex(raw)
+
+
+def test_finalization_material_accepts_exact_resolved_host_path_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments = _gate_arguments(tmp_path)
+    policy_path, policy_sha256 = _write_policy_manifest(tmp_path, arguments["policy"])
+    config = RextioConfig(
+        build=BuildConfig(
+            artifact_distribution_policy="full-c6-required",
+            artifact_policy_manifest=policy_path,
+            artifact_policy_manifest_sha256=policy_sha256,
+            artifact_trusted_public_key="owner.pub",
+            artifact_trusted_public_key_sha256=arguments[
+                "expected_public_key_sha256"
+            ],  # type: ignore[arg-type]
+            artifact_signing_request_output=(
+                f"state/{FULL_C6_SIGNING_REQUEST_FILENAME}"
+            ),
+        )
+    )
+    authority = _bind_finalization_authority(
+        arguments,
+        project_root=tmp_path,
+        config=config,
+    )
+    material = _FINALIZATION_MATERIALS[id(authority)]
+    monkeypatch.setattr(
+        production_module,
+        "_validated_full_c6_production_material",
+        lambda observed: material if observed is authority else pytest.fail("authority"),
+    )
+
+    assert type(material.project_root) is type(Path())  # type: ignore[attr-defined]
+    assert _VALIDATE_FINALIZATION_MATERIAL(authority) is material
+
+
+def test_finalization_material_rejects_path_subclass_and_noncanonical_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments = _gate_arguments(tmp_path)
+    policy_path, policy_sha256 = _write_policy_manifest(tmp_path, arguments["policy"])
+    config = RextioConfig(
+        build=BuildConfig(
+            artifact_distribution_policy="full-c6-required",
+            artifact_policy_manifest=policy_path,
+            artifact_policy_manifest_sha256=policy_sha256,
+            artifact_trusted_public_key="owner.pub",
+            artifact_trusted_public_key_sha256=arguments[
+                "expected_public_key_sha256"
+            ],  # type: ignore[arg-type]
+            artifact_signing_request_output=(
+                f"state/{FULL_C6_SIGNING_REQUEST_FILENAME}"
+            ),
+        )
+    )
+    authority = _bind_finalization_authority(
+        arguments,
+        project_root=tmp_path,
+        config=config,
+    )
+    material = _FINALIZATION_MATERIALS[id(authority)]
+    monkeypatch.setattr(
+        production_module,
+        "_validated_full_c6_production_material",
+        lambda observed: material if observed is authority else pytest.fail("authority"),
+    )
+    host_path_type = type(Path())
+
+    class PathSubclass(host_path_type):  # type: ignore[valid-type,misc]
+        pass
+
+    material.project_root = PathSubclass(tmp_path.resolve())  # type: ignore[attr-defined]
+    with pytest.raises(FullC6PipelineError, match="split or incomplete"):
+        _VALIDATE_FINALIZATION_MATERIAL(authority)
+
+    material.project_root = tmp_path.resolve() / "nested" / ".."  # type: ignore[attr-defined]
+    assert type(material.project_root) is host_path_type  # type: ignore[attr-defined]
+    with pytest.raises(FullC6PipelineError, match="split or incomplete"):
+        _VALIDATE_FINALIZATION_MATERIAL(authority)
 
 
 def test_unsigned_pipeline_writes_only_request_and_never_publication(tmp_path: Path) -> None:
