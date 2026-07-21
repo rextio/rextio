@@ -648,6 +648,84 @@ def test_native_linker_environment_binds_only_the_active_captured_linker(
     )
 
 
+def test_native_linker_flags_bind_reproducible_macho_identity_only_on_macos(
+    tmp_path: Path,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    linker = (tmp_path / "tool" / "linker").resolve()
+    assert executor._native_linker_rustflags(
+        linker,
+        "aarch64-apple-darwin",
+    ) == (
+        "-C",
+        f"linker={linker}",
+        "-C",
+        "link-arg=-undefined",
+        "-C",
+        "link-arg=dynamic_lookup",
+        "-C",
+        "link-arg=-Wl,-install_name,@rpath/lib_rextio_native.dylib",
+        "-C",
+        "link-arg=-Wl,-no_uuid",
+    )
+    assert executor._native_linker_rustflags(
+        linker,
+        "x86_64-unknown-linux-gnu",
+    ) == ("-C", f"linker={linker}")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing-install-name", "wrong-install-name", "missing-no-uuid", "extra-flag"),
+)
+def test_native_owned_macho_linker_flags_fail_closed(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, _cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    environment = {
+        **base_environment,
+        "CARGO_ENCODED_RUSTFLAGS": "--remap-path-prefix=/one=/rextio/project\x1f"
+        "--remap-path-prefix=/two=/rextio/build",
+    }
+    executor._bind_native_environment(
+        environment,
+        native_tools=native_tools,
+        target_triple="aarch64-apple-darwin",
+    )
+    flags = environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+    install_name = "link-arg=-Wl,-install_name,@rpath/lib_rextio_native.dylib"
+    no_uuid = "link-arg=-Wl,-no_uuid"
+    if mutation == "missing-install-name":
+        flags.remove(install_name)
+    elif mutation == "wrong-install-name":
+        flags[flags.index(install_name)] = (
+            "link-arg=-Wl,-install_name,@rpath/lib_other.dylib"
+        )
+    elif mutation == "missing-no-uuid":
+        flags.remove(no_uuid)
+    else:
+        flags.extend(("-C", "link-arg=-Wl,-headerpad_max_install_names"))
+    environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
+
+    with pytest.raises(executor.FullC6ExecutorError, match="linker selection changed"):
+        executor._verify_native_toolchain_invocation(
+            STRICT_BUILD,
+            environment=environment,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            target_triple="aarch64-apple-darwin",
+            require_owned_environment=True,
+        )
+
+
 @pytest.mark.parametrize(
     "mutation",
     ("missing", "wrong-path", "same-name-shadow", "both-targets"),

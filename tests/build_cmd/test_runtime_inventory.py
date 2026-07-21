@@ -191,6 +191,26 @@ def test_otool_drops_only_first_exact_private_cargo_self_install_name() -> None:
     assert [dependency.origin for dependency in parsed.dependencies] == ["system"]
 
 
+def test_otool_drops_only_first_exact_verified_stable_self_install_name() -> None:
+    identity = "@rpath/lib_rextio_native.dylib"
+    output = (
+        "/generated/_rextio_native.cpython-311-darwin.so:\n"
+        f"\t{identity} "
+        "(compatibility version 0.0.0, current version 0.0.0)\n"
+        "\t/usr/lib/libSystem.B.dylib "
+        "(compatibility version 1.0.0, current version 1336.61.1)\n"
+    )
+
+    parsed = runtime_inventory.parse_otool_l_output(
+        output,
+        expected_self_install_basename="lib_rextio_native.dylib",
+        verified_self_install_names=frozenset({identity}),
+    )
+
+    assert [dependency.name for dependency in parsed.dependencies] == ["libSystem.B.dylib"]
+    assert [dependency.origin for dependency in parsed.dependencies] == ["system"]
+
+
 def test_otool_drops_exact_self_install_name_once_per_architecture_section() -> None:
     output = (
         "/generated/native.so (architecture arm64):\n"
@@ -264,14 +284,33 @@ def test_otool_basename_without_verified_lc_id_does_not_authorize_drop() -> None
     assert raised.value.reason == evidence_mod.REASON_RUNTIME_UNSAFE_PATH
 
 
+def test_otool_stable_self_identity_without_verified_lc_id_fails_closed() -> None:
+    output = (
+        "/generated/_rextio_native.so:\n"
+        "\t@rpath/lib_rextio_native.dylib "
+        "(compatibility version 0.0.0, current version 0.0.0)\n"
+    )
+
+    with pytest.raises(ArtifactEvidenceError) as raised:
+        runtime_inventory.parse_otool_l_output(
+            output,
+            expected_self_install_basename="lib_rextio_native.dylib",
+        )
+
+    assert raised.value.reason == evidence_mod.REASON_RUNTIME_UNSAFE_PATH
+
+
 @pytest.mark.parametrize(
     "identity",
     [
-        "@rpath/lib_rextio_native.dylib",
+        "@rpath/lib_other.dylib",
+        "@rpath/nested/lib_rextio_native.dylib",
+        "@rpath/../lib_rextio_native.dylib",
+        "@loader_path/lib_rextio_native.dylib",
         "/private/build/libother.dylib",
     ],
 )
-def test_otool_d_requires_exact_private_absolute_cargo_identity(identity: str) -> None:
+def test_otool_d_rejects_nonexact_stable_or_private_cargo_identity(identity: str) -> None:
     output = f"/snapshot/native.dylib:\n{identity}\n"
 
     with pytest.raises(ArtifactEvidenceError) as raised:
@@ -291,6 +330,36 @@ def test_otool_d_returns_verified_exact_private_identity() -> None:
         output,
         expected_self_install_basename="lib_rextio_native.dylib",
     ) == frozenset({identity})
+
+
+def test_otool_d_returns_verified_exact_stable_identity() -> None:
+    identity = "@rpath/lib_rextio_native.dylib"
+    output = f"/snapshot/native.dylib:\n{identity}\n"
+
+    assert runtime_inventory.parse_otool_d_output(
+        output,
+        expected_self_install_basename="lib_rextio_native.dylib",
+    ) == frozenset({identity})
+
+
+def test_otool_stable_self_identity_must_be_verified_and_first() -> None:
+    identity = "@rpath/lib_rextio_native.dylib"
+    output = (
+        "/generated/_rextio_native.so:\n"
+        "\t/usr/lib/libSystem.B.dylib "
+        "(compatibility version 1.0.0, current version 1336.61.1)\n"
+        f"\t{identity} "
+        "(compatibility version 0.0.0, current version 0.0.0)\n"
+    )
+
+    with pytest.raises(ArtifactEvidenceError) as raised:
+        runtime_inventory.parse_otool_l_output(
+            output,
+            expected_self_install_basename="lib_rextio_native.dylib",
+            verified_self_install_names=frozenset({identity}),
+        )
+
+    assert raised.value.reason == evidence_mod.REASON_RUNTIME_UNSAFE_PATH
 
 
 def test_macho_inspection_derives_exact_cargo_self_install_basename(

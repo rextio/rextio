@@ -96,6 +96,7 @@ MAX_FULL_C6_PATH_CHARS = 4096
 MAX_FULL_C6_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_FULL_C6_NATIVE_DRIVER_MANIFEST_BYTES = 8 * 1024 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_MACHO_STABLE_SELF_INSTALL_NAME = "@rpath/lib_rextio_native.dylib"
 _NATIVE_LINKER_ENV_NAMES = frozenset(
     {
         "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
@@ -3721,6 +3722,10 @@ def _native_linker_rustflags(linker: Path, target_triple: str) -> tuple[str, ...
             "link-arg=-undefined",
             "-C",
             "link-arg=dynamic_lookup",
+            "-C",
+            f"link-arg=-Wl,-install_name,{_MACHO_STABLE_SELF_INSTALL_NAME}",
+            "-C",
+            "link-arg=-Wl,-no_uuid",
         )
     if target_triple == "x86_64-unknown-linux-gnu":
         return flags

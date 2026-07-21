@@ -262,12 +262,13 @@ def parse_otool_l_output(
 
     Absolute install names under ``/usr/lib`` or ``/System/Library`` and bounded
     ``@loader_path/`` or ``@rpath/`` packaged-candidate forms are accepted and
-    serialized as basenames. The sole private-absolute exception is the first
-    row of each section when it is a Cargo ``LC_ID_DYLIB`` whose basename
-    exactly matches ``expected_self_install_basename`` *and* the full install
-    name was independently verified by bounded ``otool -D`` output; that self
-    row is dropped. Bare names, other ``@``-relative forms, all other private
-    paths, and a matching self name in any later row fail closed.
+    serialized as basenames. The only self-identity exception is the first row
+    of each section when it is either Cargo's private absolute ``LC_ID_DYLIB``
+    or the exact stable ``@rpath/{expected_self_install_basename}`` identity,
+    and the complete name was independently verified by bounded ``otool -D``
+    output; that self row is dropped. Bare names, other ``@``-relative forms,
+    all other private paths, and a matching self name in any later row fail
+    closed.
     """
     if not isinstance(stdout, str):
         raise ArtifactEvidenceError("otool output is malformed", reason=REASON_RUNTIME_MALFORMED)
@@ -288,7 +289,7 @@ def parse_otool_l_output(
             reason=REASON_RUNTIME_MALFORMED,
         )
     for identity in verified_self_install_names:
-        if not _is_safe_private_macho_self_install_name(
+        if not _is_safe_macho_self_install_name(
             identity,
             expected_self_install_basename=expected_self_install_basename,
         ):
@@ -343,6 +344,14 @@ def parse_otool_l_output(
         ):
             consumed_self_names.add(install_path)
             continue
+        if _is_safe_macho_self_install_name(
+            install_path,
+            expected_self_install_basename=expected_self_install_basename,
+        ):
+            raise ArtifactEvidenceError(
+                "Mach-O self identity is unverified or misplaced",
+                reason=REASON_RUNTIME_UNSAFE_PATH,
+            )
         dependency = _sanitize_macho_install_name(install_path)
         existing_install_name = section_install_names.setdefault(current_arch, {}).get(
             dependency.name
@@ -458,7 +467,7 @@ def parse_otool_d_output(
                 reason=REASON_RUNTIME_MALFORMED,
             )
         identity = line.strip()
-        if not _is_safe_private_macho_self_install_name(
+        if not _is_safe_macho_self_install_name(
             identity,
             expected_self_install_basename=expected_self_install_basename,
         ):
@@ -709,19 +718,23 @@ def _is_expected_private_macho_self_install_name(
 ) -> bool:
     """Recognize only an independently verified first-row Cargo LC_ID_DYLIB."""
     return install_path in verified_self_install_names and (
-        _is_safe_private_macho_self_install_name(
+        _is_safe_macho_self_install_name(
             install_path,
             expected_self_install_basename=expected_self_install_basename,
         )
     )
 
 
-def _is_safe_private_macho_self_install_name(
+def _is_safe_macho_self_install_name(
     install_path: str,
     *,
     expected_self_install_basename: str | None,
 ) -> bool:
-    if expected_self_install_basename is None or not install_path.startswith("/"):
+    if expected_self_install_basename is None:
+        return False
+    if install_path == f"@rpath/{expected_self_install_basename}":
+        return True
+    if not install_path.startswith("/"):
         return False
     if install_path.startswith("/usr/lib/") or install_path.startswith("/System/Library/"):
         return False
