@@ -1100,6 +1100,14 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
     assert "(deny network*)" in launch.command[2]
     assert '(import "system.sb")' in launch.command[2]
     assert "(deny mach-lookup)" in launch.command[2]
+    assert (
+        '(deny file-read* file-test-existence file-map-executable '
+        '(subpath "/private/var")'
+    ) in launch.command[2]
+    assert (
+        '(deny file-read* file-write* file-test-existence file-map-executable '
+        '(subpath "/Library")'
+    ) in launch.command[2]
     assert '(subpath "/private/var")' in launch.command[2]
     assert '(subpath "/Library")' in launch.command[2]
     assert '(subpath "/dev")' in launch.command[2]
@@ -1188,3 +1196,111 @@ def test_real_macos_anchor_and_sandbox_exec_enforce_profile() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or os.uname().machine.lower() not in {"arm64", "aarch64"},
+    reason="real sandbox-exec executable-map gate is macOS arm64 only",
+)
+def test_real_macos_profile_denies_inherited_mutable_executable_mapping() -> None:
+    mapped_library = Path("/Library/Apple/usr/lib/libRosettaAot.dylib")
+    try:
+        observed = os.lstat(mapped_library)
+    except OSError:
+        pytest.skip("macOS inherited executable-map fixture is unavailable")
+    if stat.S_ISLNK(observed.st_mode) or not stat.S_ISREG(observed.st_mode):
+        pytest.skip("macOS inherited executable-map fixture is unsafe")
+
+    anchor = capture_active_macos_platform_anchor()
+    rule = SandboxPathRule(Path("/usr/bin/true"), "read-execute", "bound-tool")
+    plan = build_full_c6_sandbox_plan(
+        target_triple="aarch64-apple-darwin",
+        rules=(rule,),
+        platform_anchor_sha256=anchor.digest,
+    )
+    launch = prepare_full_c6_sandbox_launch(
+        plan,
+        ("/usr/bin/true",),
+        macos_anchor=anchor,
+    )
+
+    python_executable = Path(sys.executable).resolve(strict=True)
+    python_root = Path(sys.base_prefix).resolve(strict=True)
+    probe_profile = launch.command[2] + (
+        f"(allow file-read* file-test-existence file-map-executable "
+        f"(subpath {sandbox_module._sandbox_literal(os.fspath(python_root))}))\n"
+        f"(allow process-exec "
+        f"(literal {sandbox_module._sandbox_literal(os.fspath(python_executable))}))\n"
+    )
+    library_deny = (
+        '(deny file-read* file-write* file-test-existence file-map-executable '
+        '(subpath "/Library")'
+    )
+    assert library_deny in probe_profile
+    control_profile = probe_profile.replace(
+        library_deny,
+        '(deny file-read* file-write* file-test-existence (subpath "/Library")',
+        1,
+    )
+    probe = (
+        "import mmap, sys\n"
+        "try:\n"
+        "    region = mmap.mmap(int(sys.argv[1]), 1, flags=mmap.MAP_PRIVATE, "
+        "prot=mmap.PROT_READ | mmap.PROT_EXEC)\n"
+        "except PermissionError:\n"
+        "    raise SystemExit(23)\n"
+        "except OSError as exc:\n"
+        "    print(f'{exc.errno}:{exc}', file=sys.stderr)\n"
+        "    raise SystemExit(24)\n"
+        "else:\n"
+        "    region.close()\n"
+    )
+    descriptor = os.open(mapped_library, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    try:
+        control = subprocess.run(
+            [
+                "/usr/bin/sandbox-exec",
+                "-p",
+                control_profile,
+                "--",
+                os.fspath(python_executable),
+                "-I",
+                "-S",
+                "-c",
+                probe,
+                str(descriptor),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            env={},
+            cwd="/",
+            pass_fds=(descriptor,),
+        )
+        denied = subprocess.run(
+            [
+                "/usr/bin/sandbox-exec",
+                "-p",
+                probe_profile,
+                "--",
+                os.fspath(python_executable),
+                "-I",
+                "-S",
+                "-c",
+                probe,
+                str(descriptor),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            env={},
+            cwd="/",
+            pass_fds=(descriptor,),
+        )
+    finally:
+        os.close(descriptor)
+
+    assert control.returncode == 0, control.stderr
+    assert denied.returncode == 23, denied.stderr

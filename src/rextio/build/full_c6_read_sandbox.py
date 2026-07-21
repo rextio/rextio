@@ -1282,9 +1282,11 @@ _MACOS_PROFILE_BASE_LINES = (
     "(deny default)",
     "(deny network*)",
     # Remove mutable/data-volume allowances inherited from system.sb.
-    '(deny file-read* file-test-existence (subpath "/private/var") '
+    '(deny file-read* file-test-existence file-map-executable '
+    '(subpath "/private/var") '
     '(subpath "/private/etc") (subpath "/Library/Preferences"))',
-    '(deny file-read* file-write* file-test-existence (subpath "/Library") '
+    '(deny file-read* file-write* file-test-existence file-map-executable '
+    '(subpath "/Library") '
     '(subpath "/dev") (subpath "/cores") '
     '(subpath "/System/Volumes/Preboot"))',
     "(deny mach-lookup)",
