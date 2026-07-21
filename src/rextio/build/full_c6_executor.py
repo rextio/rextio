@@ -825,6 +825,7 @@ class FullC6NativeExecutionAuthority:
 
     executor_receipt: FullC6ExecutorReceipt
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt
+    _toolchain: BuildToolchainIdentity = dataclass_field(repr=False)
     _driver_manifest: FullC6NativeDriverManifest = dataclass_field(repr=False)
     _wheel_filename: str = dataclass_field(repr=False)
     _wheel_captures: tuple[ExternalWheelCapture, ExternalWheelCapture] = dataclass_field(
@@ -1041,6 +1042,7 @@ class _FullC6NativeOutputMaterial:
 
     executor_receipt: FullC6ExecutorReceipt
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt
+    toolchain: BuildToolchainIdentity
     wheel_filename: str
     wheel_bytes: bytes
     native_member: ExternalWheelNativeMemberIdentity
@@ -1115,6 +1117,7 @@ def _native_authority_payload(
         "complete_for_scope": True,
         "authorizes_distribution": False,
         "executor_receipt_sha256": authority.executor_receipt.digest,
+        "toolchain_sha256": authority._toolchain.digest,
         "driver_manifest_sha256": manifest.digest,
         "wheel_filename": authority._wheel_filename,
         "external_wheel_contract": _external_wheel_contract_identity(
@@ -1149,6 +1152,15 @@ def _native_authority_payload(
     }
 
 
+def _native_authority_seal_payload(
+    authority: FullC6NativeExecutionAuthority,
+) -> dict[str, object]:
+    return {
+        "semantic": _native_authority_payload(authority),
+        "retained_toolchain_object_id": id(authority._toolchain),
+    }
+
+
 def _validate_retained_canonical_json(data: bytes) -> bool:
     if type(data) is not bytes or not data:
         return False
@@ -1167,6 +1179,11 @@ def _validate_native_authority_shape(
     receipt = authority.executor_receipt
     if receipt.execution_driver != FULL_C6_NATIVE_EXECUTION_DRIVER:
         raise ValueError("Full C6 native authority requires the production driver")
+    if (
+        type(authority._toolchain) is not BuildToolchainIdentity
+        or authority._toolchain.digest != receipt.toolchain_sha256
+    ):
+        raise ValueError("Full C6 native toolchain identity is stale")
     manifest = authority._driver_manifest
     if type(manifest) is not FullC6NativeDriverManifest:
         raise TypeError("Full C6 native driver manifest is invalid")
@@ -1303,7 +1320,7 @@ def validate_full_c6_native_execution_authority(
         _validate_native_authority_shape(authority)
         expected = hmac.new(
             _NATIVE_AUTHORITY_SEAL_KEY,
-            _canonical_json(_native_authority_payload(authority)),
+            _canonical_json(_native_authority_seal_payload(authority)),
             hashlib.sha256,
         ).digest()
     except (AttributeError, TypeError, ValueError, FullC6ExecutorError):
@@ -1333,6 +1350,7 @@ def _validated_full_c6_native_output_material(
     return _FullC6NativeOutputMaterial(
         executor_receipt=authority.executor_receipt,
         cargo_workspace=authority.cargo_workspace,
+        toolchain=authority._toolchain,
         wheel_filename=_require_canonical_wheel_filename(authority._wheel_filename),
         wheel_bytes=capture.wheel_bytes,
         native_member=ExternalWheelNativeMemberIdentity(
@@ -1354,6 +1372,7 @@ def _create_native_execution_authority(
     *,
     executor_receipt: FullC6ExecutorReceipt,
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
+    toolchain: BuildToolchainIdentity,
     results: tuple[_NativePostprocessResult, _NativePostprocessResult],
 ) -> FullC6NativeExecutionAuthority:
     manifests = tuple(item.driver_manifest for item in results)
@@ -1365,6 +1384,7 @@ def _create_native_execution_authority(
     authority = object.__new__(FullC6NativeExecutionAuthority)
     object.__setattr__(authority, "executor_receipt", executor_receipt)
     object.__setattr__(authority, "cargo_workspace", cargo_workspace)
+    object.__setattr__(authority, "_toolchain", toolchain)
     object.__setattr__(authority, "_driver_manifest", manifests[0])
     object.__setattr__(authority, "_wheel_filename", filenames[0])
     object.__setattr__(authority, "_wheel_captures", tuple(item.capture for item in results))
@@ -1391,7 +1411,7 @@ def _create_native_execution_authority(
     _validate_native_authority_shape(authority)
     seal = hmac.new(
         _NATIVE_AUTHORITY_SEAL_KEY,
-        _canonical_json(_native_authority_payload(authority)),
+        _canonical_json(_native_authority_seal_payload(authority)),
         hashlib.sha256,
     ).digest()
     object.__setattr__(authority, "_transaction_seal", seal)
@@ -1967,6 +1987,7 @@ def execute_full_c6_native_two_build(
     return _create_native_execution_authority(
         executor_receipt=receipt,
         cargo_workspace=cargo_workspace,
+        toolchain=toolchain,
         results=(retained_results[0], retained_results[1]),
     )
 

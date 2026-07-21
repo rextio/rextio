@@ -619,6 +619,49 @@ def test_native_authority_is_process_sealed_noncopyable_and_bytes_private(
         authority.to_dict()
 
 
+def test_native_authority_retains_exact_toolchain_object_and_seals_its_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    _install_successful_native_run(monkeypatch, executor)
+    authority = executor.execute_full_c6_native_two_build(
+        source,
+        *_roots(tmp_path),
+        base_environment=base_environment,
+        source_date_epoch=1,
+        toolchain=toolchain,
+        native_tools=native_tools,
+        cargo_workspace=cargo_workspace,
+        output_license_contract=_output_license_contract(),
+    )
+
+    material = executor._validated_full_c6_native_output_material(authority)
+    assert authority._toolchain is toolchain
+    assert material.toolchain is toolchain
+    assert authority.to_dict()["toolchain_sha256"] == toolchain.digest
+    assert "_validated_full_c6_native_output_material" not in executor.__all__
+    assert "_native_authority_seal_payload" not in executor.__all__
+
+    equal_but_distinct = replace(toolchain)
+    assert equal_but_distinct == toolchain
+    assert equal_but_distinct is not toolchain
+    object.__setattr__(authority, "_toolchain", equal_but_distinct)
+    assert not executor.validate_full_c6_native_execution_authority(authority)
+    with pytest.raises(executor.FullC6ExecutorError, match="stale"):
+        executor._validated_full_c6_native_output_material(authority)
+
+    object.__setattr__(authority, "_toolchain", toolchain)
+    assert executor.validate_full_c6_native_execution_authority(authority)
+    assert executor._validated_full_c6_native_output_material(authority).toolchain is toolchain
+
+
 def test_native_executor_rejects_manifest_license_tamper_and_caller_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

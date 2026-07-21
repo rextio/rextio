@@ -48,6 +48,7 @@ from rextio.build.runtime_authorization import (
     RuntimeLoadedImage,
     capture_runtime_loaded_image,
 )
+from rextio.build.toolchain_identity import BuildToolchainIdentity
 from rextio.build.wheel_builder import ExternalWheelNativeMemberIdentity
 
 
@@ -75,6 +76,7 @@ class FullC6NativeOutputTransaction:
         "_subject_wheel",
         "_executor_receipt",
         "_cargo_workspace",
+        "_toolchain",
         "_state_directory",
         "_output_root",
         "_authority_root",
@@ -93,6 +95,7 @@ class FullC6NativeOutputTransaction:
     _subject_wheel: FullC6SubjectWheelTransaction
     _executor_receipt: FullC6ExecutorReceipt
     _cargo_workspace: FullC6CargoDependencyWorkspaceReceipt
+    _toolchain: BuildToolchainIdentity
     _state_directory: Path
     _output_root: Path
     _authority_root: Path
@@ -430,6 +433,10 @@ def validate_full_c6_native_output_transaction(
             prepared.authority_digest != transaction._authority_digest
             or transaction._executor_receipt is not prepared.executor.executor_receipt
             or transaction._cargo_workspace is not prepared.executor.cargo_workspace
+            or transaction._toolchain is not prepared.executor.toolchain
+            or type(transaction._toolchain) is not BuildToolchainIdentity
+            or transaction._toolchain.digest
+            != transaction._executor_receipt.toolchain_sha256
             or transaction._wheel_filename != prepared.executor.wheel_filename
             or transaction._native_member != prepared.executor.native_member
             or type(transaction._subject_wheel) is not FullC6SubjectWheelTransaction
@@ -584,6 +591,14 @@ def full_c6_native_output_cargo_workspace(
     return transaction._cargo_workspace
 
 
+def _full_c6_native_output_toolchain_identity(
+    transaction: FullC6NativeOutputTransaction,
+) -> BuildToolchainIdentity:
+    """Return the exact retained toolchain only to the runtime authority."""
+    _require_valid_transaction(transaction)
+    return transaction._toolchain
+
+
 def full_c6_native_output_wheel_path(
     transaction: FullC6NativeOutputTransaction,
 ) -> Path:
@@ -681,6 +696,7 @@ def _mint_transaction(
     object.__setattr__(transaction, "_subject_wheel", subject_wheel)
     object.__setattr__(transaction, "_executor_receipt", prepared.executor.executor_receipt)
     object.__setattr__(transaction, "_cargo_workspace", prepared.executor.cargo_workspace)
+    object.__setattr__(transaction, "_toolchain", prepared.executor.toolchain)
     object.__setattr__(transaction, "_state_directory", state_path)
     object.__setattr__(transaction, "_output_root", paths["output"])
     object.__setattr__(transaction, "_authority_root", paths["authority"])
@@ -1185,6 +1201,7 @@ def _seal(transaction: FullC6NativeOutputTransaction) -> bytes:
         "semantic": _semantic_payload(transaction),
         "authority_object_id": id(transaction._authority),
         "subject_object_id": id(transaction._subject_wheel),
+        "toolchain_object_id": id(transaction._toolchain),
         "paths": {
             name: hashlib.sha256(os.fsencode(path)).hexdigest()
             for name, path in (

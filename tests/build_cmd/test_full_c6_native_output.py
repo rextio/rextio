@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import pickle
+from dataclasses import replace
 from pathlib import Path
 import runpy
 import stat
@@ -120,6 +121,43 @@ def test_native_output_is_factory_only_path_free_and_exactly_bound(
     assert tuple(item for item in entries if item.name == native.path)[0].sha256 == native.sha256
     assert full_c6_native_output_executor_receipt(transaction) is authority.executor_receipt
     assert full_c6_native_output_cargo_workspace(transaction) is authority.cargo_workspace
+
+
+def test_native_output_transfers_exact_private_toolchain_and_seals_its_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_native_output as native_output
+
+    authority = _authority(tmp_path, monkeypatch)
+    retained_toolchain = authority._toolchain
+    transaction = native_output.materialize_full_c6_native_output(
+        authority,
+        state_directory=_state(tmp_path),
+    )
+
+    assert transaction._toolchain is retained_toolchain
+    assert (
+        native_output._full_c6_native_output_toolchain_identity(transaction)
+        is retained_toolchain
+    )
+    assert transaction.to_dict()["toolchain_sha256"] == retained_toolchain.digest
+    assert "_full_c6_native_output_toolchain_identity" not in native_output.__all__
+
+    equal_but_distinct = replace(retained_toolchain)
+    assert equal_but_distinct == retained_toolchain
+    assert equal_but_distinct is not retained_toolchain
+    object.__setattr__(transaction, "_toolchain", equal_but_distinct)
+    assert not native_output.validate_full_c6_native_output_transaction(transaction)
+    with pytest.raises(native_output.FullC6NativeOutputError, match="stale"):
+        native_output._full_c6_native_output_toolchain_identity(transaction)
+
+    object.__setattr__(transaction, "_toolchain", retained_toolchain)
+    assert native_output.validate_full_c6_native_output_transaction(transaction)
+    assert (
+        native_output._full_c6_native_output_toolchain_identity(transaction)
+        is retained_toolchain
+    )
 
 
 def test_native_output_signed_rerun_reuses_exact_inodes_and_digest(
