@@ -524,6 +524,175 @@ def test_xattr_names_values_and_aggregate_bytes_are_bound(tmp_path: Path) -> Non
         )
 
 
+def test_xattr_count_budget_stops_before_the_late_value_callback() -> None:
+    callbacks: list[tuple[bytes, int]] = []
+    budget = support_lock._XattrBudget(remaining_count=1, remaining_bytes=16)
+
+    def read_value(name: bytes, maximum: int) -> bytes:
+        callbacks.append((name, maximum))
+        return b"value"
+
+    with pytest.raises(ToolchainSupportLockError, match="remaining budget"):
+        support_lock._capture_xattrs(
+            list_names=lambda: (b"first", b"second"),
+            read_value=read_value,
+            budget=budget,
+        )
+
+    assert callbacks == [(b"first", 11)]
+    assert budget.remaining_count == 0
+    assert budget.remaining_bytes == 6
+
+
+def test_xattr_byte_budget_bounds_the_late_value_read() -> None:
+    queries: list[tuple[bytes, int]] = []
+    reads: list[bytes] = []
+    values = {b"a": b"x", b"b": b"xx"}
+    budget = support_lock._XattrBudget(remaining_count=2, remaining_bytes=4)
+
+    def read_value(name: bytes, maximum: int) -> bytes:
+        queries.append((name, maximum))
+        value = values[name]
+        if len(value) > maximum:
+            raise ToolchainSupportLockError(
+                "toolchain support xattr value exceeds the remaining budget"
+            )
+        reads.append(name)
+        return value
+
+    with pytest.raises(ToolchainSupportLockError, match="remaining budget"):
+        support_lock._capture_xattrs(
+            list_names=lambda: (b"a", b"b"),
+            read_value=read_value,
+            budget=budget,
+        )
+
+    assert queries == [(b"a", 3), (b"b", 1)]
+    assert reads == [b"a"]
+    assert budget.remaining_count == 1
+    assert budget.remaining_bytes == 2
+
+
+def test_fd_xattr_rejects_queried_size_before_allocating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    allocations: list[int] = []
+
+    def fake_fgetxattr(*_args: object) -> int:
+        return 8
+
+    def reject_allocation(size: int) -> ctypes.Array[ctypes.c_char]:
+        allocations.append(size)
+        raise AssertionError("xattr value buffer must not be allocated")
+
+    monkeypatch.setattr(
+        support_lock,
+        "_libc_xattr_function",
+        lambda _name: fake_fgetxattr,
+    )
+    monkeypatch.setattr(ctypes, "create_string_buffer", reject_allocation)
+
+    with pytest.raises(ToolchainSupportLockError, match="remaining budget"):
+        support_lock._read_fd_xattr(
+            7,
+            b"bounded",
+            maximum_value_bytes=4,
+        )
+
+    assert allocations == []
+
+
+def test_lock_xattr_count_budget_is_shared_across_multiple_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = tmp_path / "manifest"
+    manifest.write_bytes(b"manifest")
+    root_a = tmp_path / "root-a"
+    root_b = tmp_path / "root-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    member_a = root_a / "member"
+    member_b = root_b / "member"
+    member_a.write_bytes(b"a")
+    member_b.write_bytes(b"b")
+    prefix = b"user.rextio" if sys.platform == "linux" else b"com.rextio"
+    _set_test_xattr(member_a, prefix + b".root-a", b"a")
+    _set_test_xattr(member_b, prefix + b".root-b", b"b")
+    manifest_locator = create_toolchain_support_locator(
+        logical_role="manifest",
+        path=manifest,
+        kind="file",
+    )
+    root_a_locator = create_toolchain_support_locator(
+        logical_role="root-a",
+        path=root_a,
+        kind="tree",
+    )
+    root_b_locator = create_toolchain_support_locator(
+        logical_role="root-b",
+        path=root_b,
+        kind="tree",
+    )
+    manifest_receipt = capture_toolchain_support_file(manifest_locator)
+    root_a_receipt = capture_toolchain_support_tree(root_a_locator)
+    root_b_receipt = capture_toolchain_support_tree(root_b_locator)
+    shared_limit = manifest_receipt.xattr_count + max(
+        root_a_receipt.xattr_count,
+        root_b_receipt.xattr_count,
+    )
+    assert (
+        manifest_receipt.xattr_count
+        + root_a_receipt.xattr_count
+        + root_b_receipt.xattr_count
+        > shared_limit
+    )
+    monkeypatch.setattr(
+        support_lock,
+        "MAX_TOOLCHAIN_SUPPORT_LOCK_XATTRS",
+        shared_limit,
+    )
+
+    with pytest.raises(ToolchainSupportLockError, match="remaining budget"):
+        generate_toolchain_support_lock(
+            target_triple="aarch64-apple-darwin",
+            manifests=[manifest_locator],
+            roots=[root_b_locator, root_a_locator],
+        )
+
+
+@pytest.mark.parametrize(
+    ("constant_name", "field_name"),
+    [
+        ("MAX_TOOLCHAIN_SUPPORT_LOCK_XATTRS", "xattr_count"),
+        ("MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES", "xattr_bytes"),
+    ],
+)
+def test_parser_rejects_xattr_aggregate_over_the_lock_wide_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    constant_name: str,
+    field_name: str,
+) -> None:
+    manifest, _root, manifest_locator, root_locator = _inputs(tmp_path)
+    prefix = b"user.rextio" if sys.platform == "linux" else b"com.rextio"
+    _set_test_xattr(manifest, prefix + b".manifest", b"manifest-xattr")
+    lock = generate_toolchain_support_lock(
+        target_triple="aarch64-apple-darwin",
+        manifests=[manifest_locator],
+        roots=[root_locator],
+    )
+    observed = getattr(lock, field_name)
+    assert type(observed) is int and observed > 0
+    monkeypatch.setattr(support_lock, constant_name, observed - 1)
+
+    with pytest.raises(ToolchainSupportLockError, match="summary"):
+        parse_toolchain_support_lock(
+            lock.canonical_bytes,
+            expected_raw_sha256=lock.raw_sha256,
+        )
+
+
 def test_contained_symlink_is_bound_and_escape_broken_and_cycle_are_rejected(
     tmp_path: Path,
 ) -> None:

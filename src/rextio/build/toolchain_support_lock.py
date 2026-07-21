@@ -59,6 +59,8 @@ MAX_TOOLCHAIN_SUPPORT_XATTR_VALUE_BYTES = 16 * 1024 * 1024
 MAX_TOOLCHAIN_SUPPORT_XATTR_LIST_BYTES = 64 * 1024
 MAX_TOOLCHAIN_SUPPORT_TREE_XATTRS = 131_072
 MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES = 1024 * 1024 * 1024
+MAX_TOOLCHAIN_SUPPORT_LOCK_XATTRS = 131_072
+MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES = 1024 * 1024 * 1024
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ROLE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
@@ -494,6 +496,8 @@ class ToolchainSupportLock:
             or isinstance(self.xattr_bytes, bool)
             or self.xattr_count != expected_xattr_count
             or self.xattr_bytes != expected_xattr_bytes
+            or expected_xattr_count > MAX_TOOLCHAIN_SUPPORT_LOCK_XATTRS
+            or expected_xattr_bytes > MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES
             or self.total_bytes
             > MAX_TOOLCHAIN_SUPPORT_TREE_BYTES * MAX_TOOLCHAIN_SUPPORT_LOCATORS
         ):
@@ -578,6 +582,39 @@ class _XattrReceipt:
     merkle_sha256: str
 
 
+@dataclass(slots=True)
+class _XattrBudget:
+    remaining_count: int
+    remaining_bytes: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.remaining_count) is not int
+            or isinstance(self.remaining_count, bool)
+            or self.remaining_count < 0
+            or type(self.remaining_bytes) is not int
+            or isinstance(self.remaining_bytes, bool)
+            or self.remaining_bytes < 0
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support xattr remaining budget is invalid"
+            )
+
+    def clone(self) -> _XattrBudget:
+        return _XattrBudget(
+            remaining_count=self.remaining_count,
+            remaining_bytes=self.remaining_bytes,
+        )
+
+    def consume(self, *, count: int, total_bytes: int) -> None:
+        if count > self.remaining_count or total_bytes > self.remaining_bytes:
+            raise ToolchainSupportLockError(
+                "toolchain support xattr aggregate exceeds the remaining budget"
+            )
+        self.remaining_count -= count
+        self.remaining_bytes -= total_bytes
+
+
 def create_toolchain_support_locator(
     *,
     logical_role: str,
@@ -593,18 +630,56 @@ def capture_toolchain_support_file(
 ) -> ToolchainSupportFileReceipt:
     """Stream and stably receipt one single-link regular support manifest."""
     _require_locator(locator, kind="file")
-    first = _capture_file_once(locator)
-    second = _capture_file_once(locator)
-    if first != second:
+    return _capture_stable_file(
+        locator,
+        budget=_XattrBudget(
+            remaining_count=MAX_TOOLCHAIN_SUPPORT_XATTRS_PER_MEMBER,
+            remaining_bytes=MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES,
+        ),
+    )
+
+
+def _capture_stable_file(
+    locator: ToolchainSupportLocator,
+    *,
+    budget: _XattrBudget,
+) -> ToolchainSupportFileReceipt:
+    capture_budget = _XattrBudget(
+        remaining_count=min(
+            budget.remaining_count,
+            MAX_TOOLCHAIN_SUPPORT_XATTRS_PER_MEMBER,
+        ),
+        remaining_bytes=min(
+            budget.remaining_bytes,
+            MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES,
+        ),
+    )
+    starting_count = capture_budget.remaining_count
+    starting_bytes = capture_budget.remaining_bytes
+    replay_budget = capture_budget.clone()
+    first = _capture_file_once(locator, xattr_budget=capture_budget)
+    second = _capture_file_once(locator, xattr_budget=replay_budget)
+    if first != second or capture_budget != replay_budget:
         raise ToolchainSupportLockError(
             "toolchain support manifest changed across stable capture"
         )
+    consumed_count = starting_count - capture_budget.remaining_count
+    consumed_bytes = starting_bytes - capture_budget.remaining_bytes
+    if first.xattr_count != consumed_count or first.xattr_bytes != consumed_bytes:
+        raise ToolchainSupportLockError(
+            "toolchain support manifest xattr accounting is inconsistent"
+        )
+    budget.consume(count=consumed_count, total_bytes=consumed_bytes)
     return first
 
 
 def _capture_file_once(
     locator: ToolchainSupportLocator,
+    *,
+    xattr_budget: _XattrBudget,
 ) -> ToolchainSupportFileReceipt:
+    starting_xattr_count = xattr_budget.remaining_count
+    starting_xattr_bytes = xattr_budget.remaining_bytes
     chain = _open_directory_chain(locator._absolute_path.parent)
     file_fd = -1
     try:
@@ -617,7 +692,15 @@ def _capture_file_once(
             raise ToolchainSupportLockError(
                 "toolchain support manifest changed before capture"
             )
-        xattrs = _capture_fd_xattrs(file_fd)
+        xattrs = _capture_fd_xattrs(file_fd, budget=xattr_budget)
+        if (
+            xattrs.count != starting_xattr_count - xattr_budget.remaining_count
+            or xattrs.total_bytes
+            != starting_xattr_bytes - xattr_budget.remaining_bytes
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support manifest xattr accounting is inconsistent"
+            )
         digest, size, final_stamp = _stream_file_digest(
             file_fd,
             expected=opened,
@@ -682,13 +765,95 @@ def capture_toolchain_support_tree(
 ) -> ToolchainSupportTreeReceipt:
     """Capture one deterministic, exact, bounded support-root Merkle tree."""
     _require_locator(locator, kind="tree")
-    first = _capture_tree_once(locator)
-    second = _capture_tree_once(locator)
-    if first != second:
+    return _capture_stable_tree(
+        locator,
+        budget=_XattrBudget(
+            remaining_count=MAX_TOOLCHAIN_SUPPORT_TREE_XATTRS,
+            remaining_bytes=MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES,
+        ),
+    )
+
+
+def _capture_stable_tree(
+    locator: ToolchainSupportLocator,
+    *,
+    budget: _XattrBudget,
+) -> ToolchainSupportTreeReceipt:
+    capture_budget = _XattrBudget(
+        remaining_count=min(
+            budget.remaining_count,
+            MAX_TOOLCHAIN_SUPPORT_TREE_XATTRS,
+        ),
+        remaining_bytes=min(
+            budget.remaining_bytes,
+            MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES,
+        ),
+    )
+    starting_count = capture_budget.remaining_count
+    starting_bytes = capture_budget.remaining_bytes
+    replay_budget = capture_budget.clone()
+    first = _capture_tree_once(locator, xattr_budget=capture_budget)
+    second = _capture_tree_once(locator, xattr_budget=replay_budget)
+    if first != second or capture_budget != replay_budget:
         raise ToolchainSupportLockError(
             "toolchain support tree changed across stable capture"
         )
+    consumed_count = starting_count - capture_budget.remaining_count
+    consumed_bytes = starting_bytes - capture_budget.remaining_bytes
+    if first.xattr_count != consumed_count or first.xattr_bytes != consumed_bytes:
+        raise ToolchainSupportLockError(
+            "toolchain support tree xattr accounting is inconsistent"
+        )
+    budget.consume(count=consumed_count, total_bytes=consumed_bytes)
     return first
+
+
+def _capture_lock_receipts(
+    *,
+    manifests: tuple[ToolchainSupportLocator, ...],
+    roots: tuple[ToolchainSupportLocator, ...],
+) -> tuple[
+    tuple[ToolchainSupportFileReceipt, ...],
+    tuple[ToolchainSupportTreeReceipt, ...],
+]:
+    budget = _XattrBudget(
+        remaining_count=MAX_TOOLCHAIN_SUPPORT_LOCK_XATTRS,
+        remaining_bytes=MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES,
+    )
+    ordered_manifests = tuple(
+        sorted(
+            manifests,
+            key=lambda item: (_alias(item.logical_role), item.logical_role),
+        )
+    )
+    ordered_roots = tuple(
+        sorted(
+            roots,
+            key=lambda item: (_alias(item.logical_role), item.logical_role),
+        )
+    )
+    manifest_receipts = tuple(
+        _capture_stable_file(item, budget=budget) for item in ordered_manifests
+    )
+    root_receipts = tuple(
+        _capture_stable_tree(item, budget=budget) for item in ordered_roots
+    )
+    captured_count = sum(item.xattr_count for item in manifest_receipts) + sum(
+        item.xattr_count for item in root_receipts
+    )
+    captured_bytes = sum(item.xattr_bytes for item in manifest_receipts) + sum(
+        item.xattr_bytes for item in root_receipts
+    )
+    if (
+        captured_count
+        != MAX_TOOLCHAIN_SUPPORT_LOCK_XATTRS - budget.remaining_count
+        or captured_bytes
+        != MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES - budget.remaining_bytes
+    ):
+        raise ToolchainSupportLockError(
+            "toolchain support lock xattr accounting is inconsistent"
+        )
+    return manifest_receipts, root_receipts
 
 
 def generate_toolchain_support_lock(
@@ -721,11 +886,9 @@ def generate_toolchain_support_lock(
         raise ToolchainSupportLockError(
             "toolchain support locators contain an NFC/casefold role alias"
         )
-    manifest_receipts = _canonical_receipts(
-        tuple(capture_toolchain_support_file(item) for item in manifest_locators)
-    )
-    root_receipts = _canonical_receipts(
-        tuple(capture_toolchain_support_tree(item) for item in root_locators)
+    manifest_receipts, root_receipts = _capture_lock_receipts(
+        manifests=manifest_locators,
+        roots=root_locators,
     )
     return _new_lock(
         scope=scope,
@@ -863,11 +1026,9 @@ def verify_toolchain_support_lock(
         raise ToolchainSupportLockError(
             "toolchain support locator roles or kinds differ from the lock"
         )
-    observed_manifests = _canonical_receipts(
-        tuple(capture_toolchain_support_file(item) for item in manifest_locators)
-    )
-    observed_roots = _canonical_receipts(
-        tuple(capture_toolchain_support_tree(item) for item in root_locators)
+    observed_manifests, observed_roots = _capture_lock_receipts(
+        manifests=manifest_locators,
+        roots=root_locators,
     )
     if observed_manifests != lock.manifests or observed_roots != lock.roots:
         raise ToolchainSupportLockError(
@@ -876,7 +1037,13 @@ def verify_toolchain_support_lock(
     return True
 
 
-def _capture_tree_once(locator: ToolchainSupportLocator) -> ToolchainSupportTreeReceipt:
+def _capture_tree_once(
+    locator: ToolchainSupportLocator,
+    *,
+    xattr_budget: _XattrBudget,
+) -> ToolchainSupportTreeReceipt:
+    starting_xattr_count = xattr_budget.remaining_count
+    starting_xattr_bytes = xattr_budget.remaining_bytes
     chain = _open_directory_chain(locator._absolute_path)
     try:
         root_fd = chain[-1][0]
@@ -898,6 +1065,7 @@ def _capture_tree_once(locator: ToolchainSupportLocator) -> ToolchainSupportTree
             aliases=aliases,
             inode_keys=inode_keys,
             total_bytes=total_bytes,
+            xattr_budget=xattr_budget,
         )
         if not raw_entries:
             raise ToolchainSupportLockError("toolchain support root is empty")
@@ -948,6 +1116,13 @@ def _capture_tree_once(locator: ToolchainSupportLocator) -> ToolchainSupportTree
         raise ToolchainSupportLockError(
             "toolchain support tree xattr aggregate exceeds the bound"
         )
+    if (
+        xattr_count != starting_xattr_count - xattr_budget.remaining_count
+        or xattr_bytes != starting_xattr_bytes - xattr_budget.remaining_bytes
+    ):
+        raise ToolchainSupportLockError(
+            "toolchain support tree xattr accounting is inconsistent"
+        )
     return ToolchainSupportTreeReceipt(
         logical_role=locator.logical_role,
         locator_path_sha256=_locator_path_digest(locator._absolute_path),
@@ -973,11 +1148,12 @@ def _walk_tree(
     aliases: set[str],
     inode_keys: set[tuple[int, int]],
     total_bytes: list[int],
+    xattr_budget: _XattrBudget,
 ) -> tuple[_FilesystemStamp, _XattrReceipt]:
     directory_before = _stamp(os.fstat(directory_fd))
     if not stat.S_ISDIR(directory_before.mode):
         raise ToolchainSupportLockError("toolchain support directory identity is invalid")
-    directory_xattrs = _capture_fd_xattrs(directory_fd)
+    directory_xattrs = _capture_fd_xattrs(directory_fd, budget=xattr_budget)
     names = _bounded_directory_names(directory_fd)
     local_aliases: set[str] = set()
     for name in names:
@@ -1026,6 +1202,7 @@ def _walk_tree(
                     aliases=aliases,
                     inode_keys=inode_keys,
                     total_bytes=total_bytes,
+                    xattr_budget=xattr_budget,
                 )
                 linked = _stamp(
                     os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
@@ -1073,7 +1250,7 @@ def _walk_tree(
                     raise ToolchainSupportLockError(
                         "toolchain support file changed before capture"
                     )
-                xattrs = _capture_fd_xattrs(file_fd)
+                xattrs = _capture_fd_xattrs(file_fd, budget=xattr_budget)
                 digest, size, final_stamp = _stream_file_digest(
                     file_fd,
                     expected=opened,
@@ -1118,7 +1295,10 @@ def _walk_tree(
                 raise ToolchainSupportLockError(
                     "toolchain support symlink target exceeds the byte bound"
                 )
-            xattrs = _capture_symlink_xattrs(root_path / child_relative)
+            xattrs = _capture_symlink_xattrs(
+                root_path / child_relative,
+                budget=xattr_budget,
+            )
             final_stamp = _stamp(
                 os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             )
@@ -1178,25 +1358,44 @@ def _bounded_directory_names(directory_fd: int) -> list[str]:
     return names
 
 
-def _capture_fd_xattrs(descriptor: int) -> _XattrReceipt:
+def _capture_fd_xattrs(
+    descriptor: int,
+    *,
+    budget: _XattrBudget,
+) -> _XattrReceipt:
     return _capture_xattrs(
         list_names=lambda: _list_fd_xattr_names(descriptor),
-        read_value=lambda name: _read_fd_xattr(descriptor, name),
+        read_value=lambda name, maximum: _read_fd_xattr(
+            descriptor,
+            name,
+            maximum_value_bytes=maximum,
+        ),
+        budget=budget,
     )
 
 
-def _capture_symlink_xattrs(path: Path) -> _XattrReceipt:
+def _capture_symlink_xattrs(
+    path: Path,
+    *,
+    budget: _XattrBudget,
+) -> _XattrReceipt:
     path_bytes = os.fsencode(path)
     return _capture_xattrs(
         list_names=lambda: _list_symlink_xattr_names(path_bytes),
-        read_value=lambda name: _read_symlink_xattr(path_bytes, name),
+        read_value=lambda name, maximum: _read_symlink_xattr(
+            path_bytes,
+            name,
+            maximum_value_bytes=maximum,
+        ),
+        budget=budget,
     )
 
 
 def _capture_xattrs(
     *,
     list_names: Callable[[], tuple[bytes, ...]],
-    read_value: Callable[[bytes], bytes],
+    read_value: Callable[[bytes, int], bytes],
+    budget: _XattrBudget,
 ) -> _XattrReceipt:
     try:
         names = tuple(sorted(list_names()))
@@ -1223,23 +1422,38 @@ def _capture_xattrs(
     items: list[dict[str, object]] = []
     total_bytes = 0
     for name in names:
+        member_remaining = MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES - total_bytes
+        if (
+            budget.remaining_count <= 0
+            or len(name) > budget.remaining_bytes
+            or len(name) > member_remaining
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support xattr aggregate exceeds the remaining budget"
+            )
+        maximum_value_bytes = min(
+            budget.remaining_bytes - len(name),
+            member_remaining - len(name),
+        )
         try:
-            value = read_value(name)
+            value = read_value(name, maximum_value_bytes)
         except ToolchainSupportLockError:
             raise
         except (OSError, TypeError, ValueError) as exc:
             raise ToolchainSupportLockError(
                 "toolchain support xattr value could not be captured"
             ) from exc
-        if type(value) is not bytes or len(value) > MAX_TOOLCHAIN_SUPPORT_XATTR_VALUE_BYTES:
+        if (
+            type(value) is not bytes
+            or len(value) > MAX_TOOLCHAIN_SUPPORT_XATTR_VALUE_BYTES
+            or len(value) > maximum_value_bytes
+        ):
             raise ToolchainSupportLockError(
-                "toolchain support xattr value exceeds the bound"
+                "toolchain support xattr value exceeds the bound or remaining budget"
             )
-        total_bytes += len(name) + len(value)
-        if total_bytes > MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES:
-            raise ToolchainSupportLockError(
-                "toolchain support xattr bytes exceed the bound"
-            )
+        item_bytes = len(name) + len(value)
+        budget.consume(count=1, total_bytes=item_bytes)
+        total_bytes += item_bytes
         items.append(
             {
                 "name_hex": name.hex(),
@@ -1307,6 +1521,14 @@ def _split_xattr_names(value: bytes) -> tuple[bytes, ...]:
     return names
 
 
+def _validate_xattr_read_budget(value: int) -> int:
+    if type(value) is not int or isinstance(value, bool) or value < 0:
+        raise ToolchainSupportLockError(
+            "toolchain support xattr read budget is invalid"
+        )
+    return value
+
+
 def _list_fd_xattr_names(descriptor: int) -> tuple[bytes, ...]:
     function = _libc_xattr_function("flistxattr")
     ctypes.set_errno(0)
@@ -1349,7 +1571,13 @@ def _list_fd_xattr_names(descriptor: int) -> tuple[bytes, ...]:
     return _split_xattr_names(buffer.raw[:observed])
 
 
-def _read_fd_xattr(descriptor: int, name: bytes) -> bytes:
+def _read_fd_xattr(
+    descriptor: int,
+    name: bytes,
+    *,
+    maximum_value_bytes: int,
+) -> bytes:
+    _validate_xattr_read_budget(maximum_value_bytes)
     function = _libc_xattr_function("fgetxattr")
     name_pointer = ctypes.c_char_p(name)
     ctypes.set_errno(0)
@@ -1365,9 +1593,12 @@ def _read_fd_xattr(descriptor: int, name: bytes) -> bytes:
             label="fd xattr read",
             allow_unsupported=False,
         )
-    if size > MAX_TOOLCHAIN_SUPPORT_XATTR_VALUE_BYTES:
+    if (
+        size > MAX_TOOLCHAIN_SUPPORT_XATTR_VALUE_BYTES
+        or size > maximum_value_bytes
+    ):
         raise ToolchainSupportLockError(
-            "toolchain support xattr value exceeds the bound"
+            "toolchain support xattr value exceeds the bound or remaining budget"
         )
     if size == 0:
         return b""
@@ -1429,7 +1660,13 @@ def _list_symlink_xattr_names(path: bytes) -> tuple[bytes, ...]:
     return _split_xattr_names(buffer.raw[:observed])
 
 
-def _read_symlink_xattr(path: bytes, name: bytes) -> bytes:
+def _read_symlink_xattr(
+    path: bytes,
+    name: bytes,
+    *,
+    maximum_value_bytes: int,
+) -> bytes:
+    _validate_xattr_read_budget(maximum_value_bytes)
     name_pointer = ctypes.c_char_p(name)
     if sys.platform == "darwin":
         function = _libc_xattr_function("getxattr")
@@ -1447,9 +1684,12 @@ def _read_symlink_xattr(path: bytes, name: bytes) -> bytes:
         label="symlink xattr read",
         allow_unsupported=False,
     )
-    if size > MAX_TOOLCHAIN_SUPPORT_XATTR_VALUE_BYTES:
+    if (
+        size > MAX_TOOLCHAIN_SUPPORT_XATTR_VALUE_BYTES
+        or size > maximum_value_bytes
+    ):
         raise ToolchainSupportLockError(
-            "toolchain support xattr value exceeds the bound"
+            "toolchain support xattr value exceeds the bound or remaining budget"
         )
     if size == 0:
         return b""
@@ -2410,6 +2650,8 @@ __all__ = [
     "MAX_TOOLCHAIN_SUPPORT_JSON_DEPTH",
     "MAX_TOOLCHAIN_SUPPORT_LOCATORS",
     "MAX_TOOLCHAIN_SUPPORT_LOCK_BYTES",
+    "MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES",
+    "MAX_TOOLCHAIN_SUPPORT_LOCK_XATTRS",
     "MAX_TOOLCHAIN_SUPPORT_PATH_BYTES",
     "MAX_TOOLCHAIN_SUPPORT_PATH_CHARS",
     "MAX_TOOLCHAIN_SUPPORT_SYMLINK_BYTES",
