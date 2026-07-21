@@ -14,6 +14,9 @@ from rextio.analyzer.project_scanner import analyze_project
 from rextio.artifacts.evidence import sha256_hex
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.build.full_c6_policy_manifest import full_c6_policy_manifest_bytes
+from rextio.build.full_c6_policy_bootstrap import (
+    resolve_full_c6_policy_lifecycle,
+)
 from rextio.build.full_c6_pipeline import (
     FULL_C6_SIGNING_REQUEST_FILENAME,
     FullC6FinalizationMaterials,
@@ -347,6 +350,27 @@ def test_configured_policy_loader_rejects_stale_pin_and_key_mismatch(tmp_path: P
         load_configured_full_c6_policy(project_root=tmp_path, config=wrong_key)
 
 
+def test_policy_bootstrap_does_not_weaken_the_strict_policy_loader(
+    tmp_path: Path,
+) -> None:
+    config = RextioConfig(
+        build=BuildConfig(
+            artifact_distribution_policy="full-c6-required",
+            artifact_policy_manifest="policy/rextio.full-c6-policy.json",
+            artifact_policy_manifest_sha256=None,
+            artifact_trusted_public_key="state/owner.pub",
+            artifact_trusted_public_key_sha256="a" * 64,
+        )
+    )
+
+    lifecycle = resolve_full_c6_policy_lifecycle(config)
+    assert lifecycle.status == "bootstrap-required"
+    assert lifecycle.signing_request_allowed is False
+    assert lifecycle.publication_attempt_allowed is False
+    with pytest.raises(FullC6PipelineError, match="path and digest are incomplete"):
+        load_configured_full_c6_policy(project_root=tmp_path, config=config)
+
+
 def test_signed_pipeline_passes_sealed_gate_then_atomically_publishes(tmp_path: Path) -> None:
     arguments, materials = _finalization_materials(tmp_path)
     state = tmp_path / "state"
@@ -409,6 +433,10 @@ artifact_source_lock_manifest = "locks/source.json"
 artifact_source_lock_signature = "locks/source.sig.json"
 artifact_policy_manifest = "locks/rextio.full-c6-policy.json"
 artifact_policy_manifest_sha256 = "{'3' * 64}"
+artifact_cargo_vendor = "vendor/cargo"
+artifact_cargo_vendor_sha256 = "{'4' * 64}"
+artifact_cargo_lock = "locks/Cargo.lock"
+artifact_cargo_lock_sha256 = "{'5' * 64}"
 artifact_trusted_public_key = "locks/owner.pub"
 artifact_trusted_public_key_sha256 = "{'1' * 64}"
 artifact_signing_request_output = "state/{FULL_C6_SIGNING_REQUEST_FILENAME}"

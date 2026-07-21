@@ -473,16 +473,29 @@ def _validate_full_c6_config(
     trusted_key_sha256 = build["artifact_trusted_public_key_sha256"]
     final_signature = build["artifact_final_signature"]
     signing_request_output = build["artifact_signing_request_output"]
+    strict_distribution = (
+        build["artifact_distribution_policy"] == "full-c6-required"
+    )
 
     if (source_lock_manifest is None) != (source_lock_signature is None):
         raise ConfigError(
             "[build] artifact_source_lock_manifest and "
             "artifact_source_lock_signature must be configured together"
         )
-    if (policy_manifest is None) != (policy_manifest_sha256 is None):
+    if policy_manifest is None and policy_manifest_sha256 is not None:
+        raise ConfigError(
+            "[build] artifact_policy_manifest_sha256 requires "
+            "artifact_policy_manifest"
+        )
+    if (
+        policy_manifest is not None
+        and policy_manifest_sha256 is None
+        and not strict_distribution
+    ):
         raise ConfigError(
             "[build] artifact_policy_manifest and "
-            "artifact_policy_manifest_sha256 must be configured together"
+            "artifact_policy_manifest_sha256 must be configured together outside "
+            "full-c6-required policy bootstrap"
         )
     if (cargo_vendor is None) != (cargo_vendor_sha256 is None):
         raise ConfigError(
@@ -510,6 +523,15 @@ def _validate_full_c6_config(
         raise ConfigError(
             "[build] artifact_final_signature requires "
             "artifact_signing_request_output"
+        )
+    if (
+        strict_distribution
+        and final_signature is not None
+        and policy_manifest_sha256 is None
+    ):
+        raise ConfigError(
+            "[build] artifact_final_signature requires a pinned "
+            "artifact_policy_manifest_sha256"
         )
 
     configured_paths = {
@@ -549,7 +571,7 @@ def _validate_full_c6_config(
                     "[build] artifact_cargo_lock must not overlap another Full C6 path"
                 )
 
-    if build["artifact_distribution_policy"] != "full-c6-required":
+    if not strict_distribution:
         return
 
     failures: list[str] = []
@@ -559,8 +581,8 @@ def _validate_full_c6_config(
         failures.append('[build] fallback_backend = "cpython"')
     if source_lock_manifest is None or source_lock_signature is None:
         failures.append("SourceLock v2 manifest and detached signature paths")
-    if policy_manifest is None or policy_manifest_sha256 is None:
-        failures.append("one owner policy manifest path and SHA-256")
+    if policy_manifest is None:
+        failures.append("one owner policy manifest path")
     if cargo_vendor is None or cargo_vendor_sha256 is None:
         failures.append("one owner-prepared Cargo vendor directory and tree SHA-256")
     if cargo_lock is None or cargo_lock_sha256 is None:

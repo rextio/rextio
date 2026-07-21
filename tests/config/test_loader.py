@@ -96,6 +96,55 @@ def test_full_c6_distribution_config_accepts_exact_frozen_profile(tmp_path: Path
     assert package.source_archive_sha256 == _SHA_B
 
 
+def test_full_c6_distribution_config_accepts_policy_bootstrap_path_without_digest(
+    tmp_path: Path,
+) -> None:
+    configured = _full_c6_toml().replace(
+        f'artifact_policy_manifest_sha256 = "{_SHA_B}"\n',
+        "",
+    )
+    (tmp_path / "rextio.toml").write_text(configured, encoding="utf-8")
+
+    config = load_config(tmp_path)
+
+    assert config.build.artifact_distribution_policy == "full-c6-required"
+    assert config.build.artifact_policy_manifest == "locks/rextio.full-c6-policy.json"
+    assert config.build.artifact_policy_manifest_sha256 is None
+
+
+def test_full_c6_distribution_config_rejects_policy_digest_without_path(
+    tmp_path: Path,
+) -> None:
+    configured = _full_c6_toml().replace(
+        'artifact_policy_manifest = "locks/rextio.full-c6-policy.json"\n',
+        "",
+    )
+    (tmp_path / "rextio.toml").write_text(configured, encoding="utf-8")
+
+    with pytest.raises(
+        ConfigError,
+        match="artifact_policy_manifest_sha256 requires artifact_policy_manifest",
+    ):
+        load_config(tmp_path)
+
+
+def test_full_c6_policy_bootstrap_rejects_final_signature_before_policy_pin(
+    tmp_path: Path,
+) -> None:
+    configured = _full_c6_toml(
+        build_extra=(
+            'artifact_final_signature = "signatures/final-authorization.sig.json"'
+        )
+    ).replace(
+        f'artifact_policy_manifest_sha256 = "{_SHA_B}"\n',
+        "",
+    )
+    (tmp_path / "rextio.toml").write_text(configured, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="requires a pinned"):
+        load_config(tmp_path)
+
+
 def test_full_c6_distribution_config_accepts_final_signature(tmp_path: Path) -> None:
     (tmp_path / "rextio.toml").write_text(
         _full_c6_toml(
