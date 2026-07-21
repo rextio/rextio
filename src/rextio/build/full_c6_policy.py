@@ -31,8 +31,8 @@ from rextio.artifacts.evidence import (
 from rextio.artifacts.full_authorization import FULL_C6_SCOPE
 
 
-FULL_C6_POLICY_RECEIPT_DOMAIN = "rextio.full-c6-license-transformation-policy.v1"
-FULL_C6_POLICY_PAYLOAD_DOMAIN = "rextio.full-c6-policy-owner-declaration-payload.v1"
+FULL_C6_POLICY_RECEIPT_DOMAIN = "rextio.full-c6-license-transformation-policy.v2"
+FULL_C6_POLICY_PAYLOAD_DOMAIN = "rextio.full-c6-policy-owner-declaration-payload.v2"
 FULL_C6_LICENSE_PROJECTION_DOMAIN = "rextio.full-c6-license-policy.v1"
 FULL_C6_TRANSFORMATION_PROJECTION_DOMAIN = "rextio.full-c6-transformation-policy.v1"
 FULL_C6_POLICY_RECEIPT_KIND = "full-c6-license-transformation-policy-receipt"
@@ -676,6 +676,37 @@ def _expected_transformation_disposition(class_id: str) -> str:
     if class_id == "native-runtime:logical-system-leaf":
         return "not-applicable-system-leaf"
     return "not-applicable-nontransformable"
+
+
+def full_c6_policy_identity_mode(class_id: str) -> str:
+    """Return the frozen identity mode for one Full C6 policy class."""
+    if type(class_id) is not str or class_id not in FULL_C6_POLICY_CLASS_IDS:
+        raise FullC6PolicyError("Full C6 policy class is outside the frozen vocabulary")
+    return _IDENTITY_MODES[class_id]
+
+
+def full_c6_policy_license_disposition(class_id: str) -> str:
+    """Return the sole closed license disposition for one policy class."""
+    if type(class_id) is not str or class_id not in FULL_C6_POLICY_CLASS_IDS:
+        raise FullC6PolicyError("Full C6 policy class is outside the frozen vocabulary")
+    return _expected_license_disposition(class_id)
+
+
+def full_c6_policy_transformation_disposition(class_id: str) -> str:
+    """Return the sole closed transformation disposition for one policy class."""
+    if type(class_id) is not str or class_id not in FULL_C6_POLICY_CLASS_IDS:
+        raise FullC6PolicyError("Full C6 policy class is outside the frozen vocabulary")
+    return _expected_transformation_disposition(class_id)
+
+
+def full_c6_artifact_authority_identity(class_id: str, value: object) -> str:
+    """Return the exact C6.14 authority identity for one observed component."""
+    if class_id not in ARTIFACT_POLICY_COVERAGE_CLASS_IDS:
+        raise FullC6PolicyError("Full C6 artifact authority class is invalid")
+    return (
+        f"urn:rextio:artifact-component:{class_id}:"
+        f"{sha256_hex(canonical_json_bytes(value))}"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1372,6 +1403,7 @@ def _policy_payload(
     owner_declaration: FullC6OwnerDeclaration,
     artifact_coverage: ArtifactPolicyCoverageInventory,
     external_authority: FullC6ExternalAuthorityPartition,
+    bootstrap_request_sha256: str | None,
 ) -> dict[str, object]:
     return {
         "domain": FULL_C6_POLICY_PAYLOAD_DOMAIN,
@@ -1385,6 +1417,7 @@ def _policy_payload(
             artifact_coverage,
             external_authority,
         ),
+        "bootstrap_request_sha256": bootstrap_request_sha256,
         "rows": [item.to_dict() for item in rows],
         "transformations": [item.to_dict() for item in transformations],
         "owner_declaration": owner_declaration.to_dict(),
@@ -1404,8 +1437,14 @@ def full_c6_policy_digest(
     owner_declaration: FullC6OwnerDeclaration,
     artifact_coverage: ArtifactPolicyCoverageInventory,
     external_authority: FullC6ExternalAuthorityPartition,
+    bootstrap_request_sha256: str | None = None,
 ) -> str:
     """Return the final-signature policy digest after strict reconstruction."""
+    if bootstrap_request_sha256 is not None:
+        _require_sha256(
+            bootstrap_request_sha256,
+            "Full C6 bootstrap request lineage",
+        )
     (
         trusted_rows,
         trusted_transformations,
@@ -1426,6 +1465,7 @@ def full_c6_policy_digest(
                 trusted_owner,
                 trusted_artifact,
                 trusted_external,
+                bootstrap_request_sha256,
             )
         )
     )
@@ -1440,6 +1480,7 @@ class FullC6PolicyReceipt:
     owner_declaration: FullC6OwnerDeclaration
     artifact_coverage: ArtifactPolicyCoverageInventory
     external_authority: FullC6ExternalAuthorityPartition
+    bootstrap_request_sha256: str | None = None
     kind: str = field(default=FULL_C6_POLICY_RECEIPT_KIND, init=False)
     domain: str = field(default=FULL_C6_POLICY_RECEIPT_DOMAIN, init=False)
     scope: str = field(default=FULL_C6_SCOPE, init=False)
@@ -1454,6 +1495,11 @@ class FullC6PolicyReceipt:
             )
         )
         owner = _rebuild_owner(self.owner_declaration)
+        if self.bootstrap_request_sha256 is not None:
+            _require_sha256(
+                self.bootstrap_request_sha256,
+                "Full C6 bootstrap request lineage",
+            )
         object.__setattr__(self, "rows", rows)
         object.__setattr__(self, "transformations", transformations)
         object.__setattr__(self, "owner_declaration", owner)
@@ -1472,6 +1518,7 @@ class FullC6PolicyReceipt:
                     self.owner_declaration,
                     self.artifact_coverage,
                     self.external_authority,
+                    self.bootstrap_request_sha256,
                 )
             )
         )
@@ -1557,6 +1604,7 @@ class FullC6PolicyReceipt:
             ),
             "external_authority_partition_sha256": (self.external_authority_partition_sha256),
             "authority_partition_sha256": self.authority_partition_sha256,
+            "bootstrap_request_sha256": self.bootstrap_request_sha256,
             "license_policy_sha256": self.license_policy_sha256,
             "transformation_policy_sha256": self.transformation_policy_sha256,
             "rows": [item.to_dict() for item in self.rows],
@@ -1614,6 +1662,7 @@ __all__ = [
     "MAX_FULL_C6_POLICY_SOURCES_PER_TRANSFORMATION",
     "MAX_FULL_C6_POLICY_TRANSFORMATIONS",
     "full_c6_analysis_receipt_digest",
+    "full_c6_artifact_authority_identity",
     "full_c6_authority_partition_digest",
     "canonicalize_full_c6_spdx_expression",
     "full_c6_external_authority_identity",
@@ -1622,5 +1671,8 @@ __all__ = [
     "full_c6_license_detector_payload_digest",
     "full_c6_lowered_ir_receipt_digest",
     "full_c6_policy_digest",
+    "full_c6_policy_identity_mode",
+    "full_c6_policy_license_disposition",
+    "full_c6_policy_transformation_disposition",
     "full_c6_transformation_source_set_digest",
 ]

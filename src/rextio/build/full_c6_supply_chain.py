@@ -765,6 +765,7 @@ def _rebuild_policy(value: FullC6PolicyReceipt) -> FullC6PolicyReceipt:
         owner_declaration=_rebuild_owner(value.owner_declaration),
         artifact_coverage=value.artifact_coverage,
         external_authority=value.external_authority,
+        bootstrap_request_sha256=value.bootstrap_request_sha256,
     )
     if rebuilt != value:
         raise FullC6SupplyChainError("Full C6 policy is not in canonical model form")

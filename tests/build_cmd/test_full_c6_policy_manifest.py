@@ -256,6 +256,7 @@ def _receipt() -> FullC6PolicyReceipt:
         ),
         artifact_coverage=coverage,
         external_authority=external,
+        bootstrap_request_sha256="6" * 64,
     )
 
 
@@ -294,6 +295,7 @@ def test_round_trip_reconstructs_all_nested_models_without_authorizing() -> None
         "rows",
         "transformations",
         "owner_declaration",
+        "bootstrap_request_sha256",
         "policy_sha256",
         "receipt_digest",
     }
@@ -310,8 +312,47 @@ def test_manifest_identity_and_exact_complete_partitions_are_serialized() -> Non
     assert document["schema_version"] == FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION
     assert document["artifact_coverage"] == receipt.artifact_coverage.to_dict()
     assert document["external_authority"] == receipt.external_authority.to_dict()
+    assert document["bootstrap_request_sha256"] == receipt.bootstrap_request_sha256
     assert document["policy_sha256"] == receipt.policy_sha256
     assert document["receipt_digest"] == receipt.digest
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "domain"),
+    [
+        (1, "rextio.full-c6-owner-policy-manifest.v1"),
+        (1, FULL_C6_POLICY_MANIFEST_DOMAIN),
+        (FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION, "rextio.full-c6-owner-policy-manifest.v1"),
+    ],
+)
+def test_legacy_or_mixed_manifest_wire_identity_is_rejected(
+    schema_version: int,
+    domain: str,
+) -> None:
+    document = full_c6_policy_manifest_document(_receipt())
+    document["schema_version"] = schema_version
+    document["domain"] = domain
+
+    with pytest.raises(FullC6PolicyManifestError, match="identity is invalid"):
+        _parse_document(document)
+
+
+def test_manifest_requires_exact_bootstrap_lineage() -> None:
+    receipt = _receipt()
+    without_lineage = FullC6PolicyReceipt(
+        rows=receipt.rows,
+        transformations=receipt.transformations,
+        owner_declaration=receipt.owner_declaration,
+        artifact_coverage=receipt.artifact_coverage,
+        external_authority=receipt.external_authority,
+    )
+    with pytest.raises(FullC6PolicyManifestError, match="requires bootstrap"):
+        full_c6_policy_manifest_bytes(without_lineage)
+
+    document = full_c6_policy_manifest_document(receipt)
+    document["bootstrap_request_sha256"] = None
+    with pytest.raises(FullC6PolicyManifestError, match="must be a string"):
+        _parse_document(document)
 
 
 @pytest.mark.parametrize(

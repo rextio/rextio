@@ -2,8 +2,8 @@
 
 The strict policy parser accepts only a complete, owner-authored manifest.  It
 must not be weakened merely to discover what the owner still has to complete.
-This module therefore writes a separate, digest-only completion request from
-actual observations.  The request contains no source bytes, host paths,
+This module therefore writes a separate exact technical completion template
+from actual observations.  The request contains no source bytes, host paths,
 private transaction authority, signature, or distribution authority.
 
 The bootstrap file is deliberately create-if-absent.  An exact existing file
@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import hmac
+import json
 import os
 from pathlib import Path
 import re
@@ -25,6 +26,7 @@ import unicodedata
 
 from rextio.artifacts.evidence import (
     ARTIFACT_POLICY_COVERAGE_CLASS_IDS,
+    artifact_policy_coverage_inventory_digest,
     canonical_json_bytes,
 )
 from rextio.build.full_c6_policy import (
@@ -32,18 +34,24 @@ from rextio.build.full_c6_policy import (
     MAX_FULL_C6_POLICY_ROWS,
     MAX_FULL_C6_POLICY_TRANSFORMATIONS,
 )
+from rextio.build.full_c6_policy_template import (
+    MAX_FULL_C6_POLICY_TEMPLATE_BYTES,
+    FullC6TechnicalPolicyTemplate,
+    parse_full_c6_technical_policy_template,
+)
 from rextio.config.schema import RextioConfig
 
 
 FULL_C6_POLICY_BOOTSTRAP_FILENAME = "rextio.full-c6-policy.bootstrap.json"
 FULL_C6_POLICY_BOOTSTRAP_KIND = "full-c6-owner-policy-completion-request"
-FULL_C6_POLICY_BOOTSTRAP_DOMAIN = "rextio.full-c6-owner-policy-bootstrap.v1"
-FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION = 1
+FULL_C6_POLICY_BOOTSTRAP_DOMAIN = "rextio.full-c6-owner-policy-bootstrap.v2"
+FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION = 2
 
 _FULL_C6_DISTRIBUTION_POLICY = "full-c6-required"
 _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
-_MAX_BOOTSTRAP_BYTES = 256 * 1024
+_MAX_BOOTSTRAP_BYTES = MAX_FULL_C6_POLICY_TEMPLATE_BYTES + 256 * 1024
+_MAX_BOOTSTRAP_JSON_DEPTH = 40
 _MAX_STATE_DIRECTORY_ENTRIES = 4096
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TARGET_TRIPLES = frozenset(
@@ -269,6 +277,7 @@ class FullC6PolicyBootstrapRequest:
 
     inputs: FullC6PolicyBootstrapInputs
     trusted_owner_public_key_sha256: str
+    technical_template: FullC6TechnicalPolicyTemplate
 
     def __post_init__(self) -> None:
         if type(self.inputs) is not FullC6PolicyBootstrapInputs:
@@ -277,6 +286,34 @@ class FullC6PolicyBootstrapRequest:
             self.trusted_owner_public_key_sha256,
             "trusted owner public key",
         )
+        if type(self.technical_template) is not FullC6TechnicalPolicyTemplate:
+            raise FullC6PolicyBootstrapError(
+                "Full C6 policy bootstrap technical template is invalid"
+            )
+        template = self.technical_template
+        if (
+            template.artifact_coverage.observed_component_count
+            != self.inputs.artifact_observed_component_count
+            or tuple(item.observed_count for item in template.artifact_coverage.classes)
+            != self.inputs.artifact_class_observed_counts
+            or template.external_authority.observed_component_count
+            != self.inputs.external_observed_component_count
+            or tuple(item.observed_count for item in template.external_authority.classes)
+            != self.inputs.external_class_observed_counts
+            or len(template.rows) != self.inputs.required_policy_row_count
+            or len(template.transformations) != self.inputs.required_transformation_count
+            or template.artifact_coverage.canonical_partition_sha256
+            != self.inputs.artifact_authority_partition_sha256
+            or artifact_policy_coverage_inventory_digest(template.artifact_coverage)
+            != self.inputs.artifact_coverage_inventory_sha256
+            or template.external_authority.canonical_partition_sha256
+            != self.inputs.external_authority_partition_sha256
+            or template.authority_partition_sha256
+            != self.inputs.combined_authority_partition_sha256
+        ):
+            raise FullC6PolicyBootstrapError(
+                "Full C6 technical template differs from bootstrap aggregates"
+            )
         if len(self.to_bytes()) > _MAX_BOOTSTRAP_BYTES:
             raise FullC6PolicyBootstrapError("Full C6 policy bootstrap request is too large")
 
@@ -349,6 +386,8 @@ class FullC6PolicyBootstrapRequest:
             "trusted_owner_public_key_sha256": (
                 self.trusted_owner_public_key_sha256
             ),
+            "technical_template_sha256": self.technical_template.template_sha256,
+            "technical_template": self.technical_template.to_dict(),
         }
 
     @property
@@ -357,7 +396,7 @@ class FullC6PolicyBootstrapRequest:
         return _digest(self._payload())
 
     def to_dict(self) -> dict[str, object]:
-        """Return a path-free digest-only request document."""
+        """Return a path-free exact technical completion request."""
         return {**self._payload(), "request_sha256": self.request_sha256}
 
     def to_bytes(self) -> bytes:
@@ -370,10 +409,173 @@ class FullC6PolicyBootstrapRequest:
             ) from exc
 
 
+def parse_full_c6_policy_bootstrap_request(
+    value: bytes,
+    *,
+    expected_request_sha256: str | None = None,
+) -> FullC6PolicyBootstrapRequest:
+    """Parse canonical bounded bootstrap bytes into the exact typed request."""
+    if type(value) is not bytes or not value or len(value) > _MAX_BOOTSTRAP_BYTES:
+        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap bytes are invalid")
+    document = _parse_bootstrap_json(value)
+    if canonical_json_bytes(document) != value:
+        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap JSON is not canonical")
+    fields = {
+        "authority",
+        "completion_requirements",
+        "distribution_authorized",
+        "domain",
+        "input_aggregate_set_sha256",
+        "input_aggregates",
+        "kind",
+        "owner_completion_required",
+        "schema_version",
+        "target",
+        "trusted_owner_public_key_sha256",
+        "technical_template_sha256",
+        "technical_template",
+        "request_sha256",
+    }
+    if set(document) != fields:
+        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap schema is invalid")
+    if (
+        document["kind"] != FULL_C6_POLICY_BOOTSTRAP_KIND
+        or type(document["schema_version"]) is not int
+        or document["schema_version"] != FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION
+        or document["domain"] != FULL_C6_POLICY_BOOTSTRAP_DOMAIN
+        or document["authority"] != "non-authorizing-observation"
+        or document["owner_completion_required"] is not True
+        or document["distribution_authorized"] is not False
+    ):
+        raise FullC6PolicyBootstrapError(
+            "Full C6 policy bootstrap claims invalid authority"
+        )
+    template = parse_full_c6_technical_policy_template(document["technical_template"])
+    aggregates = _bootstrap_dict(
+        document["input_aggregates"],
+        set(_INPUT_DIGEST_FIELDS),
+        "input aggregates",
+    )
+    target = _bootstrap_dict(
+        document["target"],
+        {"build_profile", "target_triple"},
+        "target",
+    )
+    try:
+        inputs = FullC6PolicyBootstrapInputs(
+            **{name: _require_sha256(aggregates[name], name) for name in _INPUT_DIGEST_FIELDS},
+            artifact_class_observed_counts=tuple(
+                item.observed_count for item in template.artifact_coverage.classes
+            ),
+            external_class_observed_counts=tuple(
+                item.observed_count for item in template.external_authority.classes
+            ),
+            artifact_observed_component_count=(
+                template.artifact_coverage.observed_component_count
+            ),
+            external_observed_component_count=(
+                template.external_authority.observed_component_count
+            ),
+            required_transformation_count=len(template.transformations),
+            target_triple=_bootstrap_string(target["target_triple"], "target triple"),
+            build_profile=_bootstrap_string(target["build_profile"], "build profile"),
+        )
+        request = FullC6PolicyBootstrapRequest(
+            inputs=inputs,
+            trusted_owner_public_key_sha256=_require_sha256(
+                document["trusted_owner_public_key_sha256"],
+                "trusted owner public key",
+            ),
+            technical_template=template,
+        )
+    except FullC6PolicyBootstrapError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise FullC6PolicyBootstrapError(
+            "Full C6 policy bootstrap values are invalid"
+        ) from exc
+    declared = _require_sha256(document["request_sha256"], "bootstrap request")
+    if expected_request_sha256 is not None:
+        expected = _require_sha256(expected_request_sha256, "expected bootstrap request")
+        if not hmac.compare_digest(declared, expected):
+            raise FullC6PolicyBootstrapError(
+                "Full C6 policy bootstrap request does not match the expected pin"
+            )
+    if (
+        document["technical_template_sha256"] != template.template_sha256
+        or not hmac.compare_digest(declared, request.request_sha256)
+        or request.to_bytes() != value
+    ):
+        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap request is stale")
+    return request
+
+
+def _parse_bootstrap_json(value: bytes) -> dict[str, object]:
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, item in pairs:
+            if key in result:
+                raise FullC6PolicyBootstrapError(
+                    "Full C6 policy bootstrap contains a duplicate object key"
+                )
+            result[key] = item
+        return result
+
+    def reject_constant(_value: str) -> object:
+        raise FullC6PolicyBootstrapError(
+            "Full C6 policy bootstrap contains non-finite JSON"
+        )
+
+    try:
+        parsed = json.loads(
+            value.decode("utf-8"),
+            object_pairs_hook=reject_duplicates,
+            parse_constant=reject_constant,
+        )
+    except FullC6PolicyBootstrapError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
+        raise FullC6PolicyBootstrapError(
+            "Full C6 policy bootstrap is not valid JSON"
+        ) from exc
+    if type(parsed) is not dict:
+        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap root must be an object")
+    _assert_bootstrap_depth(parsed, depth=0)
+    return parsed
+
+
+def _assert_bootstrap_depth(value: object, *, depth: int) -> None:
+    if depth > _MAX_BOOTSTRAP_JSON_DEPTH:
+        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap nesting is too deep")
+    if type(value) is dict:
+        for child in value.values():
+            _assert_bootstrap_depth(child, depth=depth + 1)
+    elif type(value) is list:
+        for child in value:
+            _assert_bootstrap_depth(child, depth=depth + 1)
+
+
+def _bootstrap_dict(
+    value: object,
+    fields: set[str],
+    label: str,
+) -> dict[str, object]:
+    if type(value) is not dict or set(value) != fields:
+        raise FullC6PolicyBootstrapError(f"Full C6 policy bootstrap {label} is invalid")
+    return value
+
+
+def _bootstrap_string(value: object, label: str) -> str:
+    if type(value) is not str:
+        raise FullC6PolicyBootstrapError(f"Full C6 policy bootstrap {label} is invalid")
+    return value
+
+
 def create_configured_full_c6_policy_bootstrap_request(
     *,
     config: RextioConfig,
     inputs: FullC6PolicyBootstrapInputs,
+    technical_template: FullC6TechnicalPolicyTemplate,
 ) -> FullC6PolicyBootstrapRequest:
     """Create the request only for the strict path-without-digest lifecycle."""
     lifecycle = resolve_full_c6_policy_lifecycle(config)
@@ -386,9 +588,24 @@ def create_configured_full_c6_policy_bootstrap_request(
         raise FullC6PolicyBootstrapError(
             "Full C6 policy bootstrap lacks a trusted public-key digest"
         )
-    return FullC6PolicyBootstrapRequest(
+    return create_full_c6_policy_bootstrap_request(
         inputs=inputs,
         trusted_owner_public_key_sha256=trusted_key_sha256,
+        technical_template=technical_template,
+    )
+
+
+def create_full_c6_policy_bootstrap_request(
+    *,
+    inputs: FullC6PolicyBootstrapInputs,
+    trusted_owner_public_key_sha256: str,
+    technical_template: FullC6TechnicalPolicyTemplate,
+) -> FullC6PolicyBootstrapRequest:
+    """Create the exact request independently of the current lifecycle stage."""
+    return FullC6PolicyBootstrapRequest(
+        inputs=inputs,
+        trusted_owner_public_key_sha256=trusted_owner_public_key_sha256,
+        technical_template=technical_template,
     )
 
 
@@ -529,11 +746,13 @@ def materialize_configured_full_c6_policy_bootstrap(
     state_directory: Path | str,
     config: RextioConfig,
     inputs: FullC6PolicyBootstrapInputs,
+    technical_template: FullC6TechnicalPolicyTemplate,
 ) -> FullC6PolicyBootstrapMaterialization:
     """Create and materialize one configured bootstrap transaction."""
     request = create_configured_full_c6_policy_bootstrap_request(
         config=config,
         inputs=inputs,
+        technical_template=technical_template,
     )
     return materialize_full_c6_policy_bootstrap_request(
         state_directory=state_directory,
@@ -837,7 +1056,9 @@ __all__ = [
     "FullC6PolicyLifecycle",
     "FullC6PolicyLifecycleStatus",
     "create_configured_full_c6_policy_bootstrap_request",
+    "create_full_c6_policy_bootstrap_request",
     "materialize_configured_full_c6_policy_bootstrap",
     "materialize_full_c6_policy_bootstrap_request",
+    "parse_full_c6_policy_bootstrap_request",
     "resolve_full_c6_policy_lifecycle",
 ]

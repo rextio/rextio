@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import stat
 
 import pytest
 
 import rextio.build.full_c6_policy_bootstrap as bootstrap_module
-from rextio.artifacts.evidence import canonical_json_bytes
-from rextio.artifacts.evidence import ARTIFACT_POLICY_COVERAGE_CLASS_IDS
+from rextio.artifacts.evidence import (
+    ARTIFACT_POLICY_COVERAGE_CLASS_IDS,
+    artifact_policy_coverage_inventory_digest,
+    canonical_json_bytes,
+)
 from rextio.build.full_c6_policy import (
     FULL_C6_EXTERNAL_POLICY_CLASS_IDS,
+    full_c6_license_detector_payload_digest,
 )
 from rextio.build.full_c6_policy_bootstrap import (
     FULL_C6_POLICY_BOOTSTRAP_FILENAME,
@@ -21,7 +27,16 @@ from rextio.build.full_c6_policy_bootstrap import (
     create_configured_full_c6_policy_bootstrap_request,
     materialize_configured_full_c6_policy_bootstrap,
     materialize_full_c6_policy_bootstrap_request,
+    parse_full_c6_policy_bootstrap_request,
     resolve_full_c6_policy_lifecycle,
+)
+from rextio.build.full_c6_policy_template import (
+    FullC6ExternalLicenseObservation,
+    FullC6InternalLicenseObservation,
+    FullC6PolicyTemplateError,
+    FullC6TechnicalPolicyRow,
+    FullC6TechnicalPolicyTemplate,
+    parse_full_c6_technical_policy_template,
 )
 from rextio.config.loader import load_config
 
@@ -35,6 +50,8 @@ _SHA_F = "f" * 64
 _SHA_1 = "1" * 64
 _SHA_2 = "2" * 64
 _SHA_3 = "3" * 64
+
+_POLICY = runpy.run_path(str(Path(__file__).with_name("test_full_c6_policy.py")))
 
 
 def _config_text(*, policy_sha256: bool, final_signature: bool = False) -> str:
@@ -125,9 +142,149 @@ def _inputs(**replacements: object) -> FullC6PolicyBootstrapInputs:
 
 
 def _request(tmp_path: Path):
+    template = _technical_template()
     return create_configured_full_c6_policy_bootstrap_request(
         config=_config(tmp_path, policy_sha256=False),
-        inputs=_inputs(),
+        inputs=_coherent_inputs(template),
+        technical_template=template,
+    )
+
+
+def _technical_template() -> FullC6TechnicalPolicyTemplate:
+    receipt = _POLICY["_receipt"]()
+    external_file = _POLICY["_file"](
+        "external/pkg-1.0.dist-info/licenses/LICENSE"
+    )
+    external_receipt = "c" * 64
+    external_observation = FullC6ExternalLicenseObservation(
+        declared_spdx="MIT",
+        detected_spdx="MIT",
+        source_detector_receipt_sha256=external_receipt,
+        detector_payload_sha256=full_c6_license_detector_payload_digest(
+            "MIT",
+            (external_file,),
+            source_detector_receipt_sha256=external_receipt,
+        ),
+        license_files=(external_file,),
+    )
+    project_file = _POLICY["_file"]("licenses/PROJECT-LICENSE")
+    project_receipt = "7" * 64
+    project_observation = FullC6InternalLicenseObservation(
+        subject_kind="project",
+        subject_canonical_identity="project:demo@0.1.0",
+        declared_spdx="MIT",
+        detected_spdx="MIT",
+        source_detector_receipt_sha256=project_receipt,
+        detector_payload_sha256=full_c6_license_detector_payload_digest(
+            "MIT",
+            (project_file,),
+            source_detector_receipt_sha256=project_receipt,
+        ),
+        license_files=(project_file,),
+    )
+    cargo_identity = next(
+        row.canonical_identity
+        for row in receipt.rows
+        if row.class_id == "cargo-component:registry-package"
+    )
+    cargo_file = _POLICY["_file"]("licenses/CARGO-LICENSE")
+    cargo_receipt = "8" * 64
+    cargo_observation = FullC6InternalLicenseObservation(
+        subject_kind="cargo-registry-package",
+        subject_canonical_identity=cargo_identity,
+        declared_spdx="MIT",
+        detected_spdx="MIT",
+        source_detector_receipt_sha256=cargo_receipt,
+        detector_payload_sha256=full_c6_license_detector_payload_digest(
+            "MIT",
+            (cargo_file,),
+            source_detector_receipt_sha256=cargo_receipt,
+        ),
+        license_files=(cargo_file,),
+    )
+    internal_observations = tuple(
+        sorted(
+            (project_observation, cargo_observation),
+            key=lambda item: (
+                item.subject_kind,
+                item.subject_canonical_identity.casefold(),
+                item.observation_sha256,
+            ),
+        )
+    )
+    rows = tuple(
+        FullC6TechnicalPolicyRow(
+            class_id=row.class_id,
+            canonical_identity=row.canonical_identity,
+            authority_identity=row.authority_identity,
+            identity_mode=row.identity_mode,
+            sha256=row.sha256,
+            size=row.size,
+            required_license_disposition=row.license_disposition,
+            transformation_disposition=row.transformation_disposition,
+            license_evidence_origin=(
+                "not-applicable"
+                if row.license_disposition != "owner-approved-allow"
+                else (
+                    "production-external-observation"
+                    if row.class_id in FULL_C6_EXTERNAL_POLICY_CLASS_IDS
+                    else "owner-project-observation"
+                )
+            ),
+            license_observation_sha256=(
+                None
+                if row.license_disposition != "owner-approved-allow"
+                else (
+                    external_observation.observation_sha256
+                    if row.class_id in FULL_C6_EXTERNAL_POLICY_CLASS_IDS
+                    else (
+                        cargo_observation.observation_sha256
+                        if row.class_id == "cargo-component:registry-package"
+                        else project_observation.observation_sha256
+                    )
+                )
+            ),
+        )
+        for row in receipt.rows
+    )
+    return FullC6TechnicalPolicyTemplate(
+        artifact_coverage=receipt.artifact_coverage,
+        external_authority=receipt.external_authority,
+        rows=rows,
+        transformations=receipt.transformations,
+        internal_license_observations=internal_observations,
+        external_license_observation=external_observation,
+        observed_owner_identity=receipt.owner_declaration.owner_identity,
+    )
+
+
+def _coherent_inputs(
+    template: FullC6TechnicalPolicyTemplate,
+) -> FullC6PolicyBootstrapInputs:
+    return _inputs(
+        artifact_coverage_inventory_sha256=(
+            artifact_policy_coverage_inventory_digest(template.artifact_coverage)
+        ),
+        artifact_authority_partition_sha256=(
+            template.artifact_coverage.canonical_partition_sha256
+        ),
+        combined_authority_partition_sha256=template.authority_partition_sha256,
+        external_authority_partition_sha256=(
+            template.external_authority.canonical_partition_sha256
+        ),
+        artifact_class_observed_counts=tuple(
+            item.observed_count for item in template.artifact_coverage.classes
+        ),
+        external_class_observed_counts=tuple(
+            item.observed_count for item in template.external_authority.classes
+        ),
+        artifact_observed_component_count=(
+            template.artifact_coverage.observed_component_count
+        ),
+        external_observed_component_count=(
+            template.external_authority.observed_component_count
+        ),
+        required_transformation_count=len(template.transformations),
     )
 
 
@@ -178,7 +335,7 @@ def test_policy_lifecycle_is_disabled_for_ordinary_config(tmp_path: Path) -> Non
     assert lifecycle.published is False
 
 
-def test_bootstrap_request_is_deterministic_digest_only_and_non_authorizing(
+def test_bootstrap_request_is_deterministic_exact_and_non_authorizing(
     tmp_path: Path,
 ) -> None:
     request = _request(tmp_path)
@@ -197,6 +354,10 @@ def test_bootstrap_request_is_deterministic_digest_only_and_non_authorizing(
     assert document["distribution_authorized"] is False
     assert document["owner_completion_required"] is True
     assert document["trusted_owner_public_key_sha256"] == _SHA_A
+    assert document["technical_template"] == request.technical_template.to_dict()
+    assert document["technical_template_sha256"] == (
+        request.technical_template.template_sha256
+    )
     assert document["target"] == {
         "build_profile": "release",
         "target_triple": "aarch64-apple-darwin",
@@ -247,10 +408,12 @@ def test_bootstrap_inputs_fail_closed(
 
 
 def test_bootstrap_factory_refuses_a_pinned_owner_policy(tmp_path: Path) -> None:
+    template = _technical_template()
     with pytest.raises(FullC6PolicyBootstrapError, match="not required"):
         create_configured_full_c6_policy_bootstrap_request(
             config=_config(tmp_path, policy_sha256=True),
-            inputs=_inputs(),
+            inputs=_coherent_inputs(template),
+            technical_template=template,
         )
 
 
@@ -288,11 +451,13 @@ def test_configured_materialization_uses_only_bootstrap_lifecycle(
     tmp_path: Path,
 ) -> None:
     state = _private_state(tmp_path)
+    template = _technical_template()
 
     result = materialize_configured_full_c6_policy_bootstrap(
         state_directory=state,
         config=_config(tmp_path, policy_sha256=False),
-        inputs=_inputs(),
+        inputs=_coherent_inputs(template),
+        technical_template=template,
     )
 
     assert result.created is True
@@ -501,3 +666,48 @@ def test_request_bytes_are_canonical_json_without_duplicate_keys(tmp_path: Path)
     parsed = json.loads(payload)
 
     assert canonical_json_bytes(parsed) == payload
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", 2.0),
+        ("owner_completion_required", 1),
+        ("distribution_authorized", 0),
+    ],
+)
+def test_bootstrap_parser_rejects_json_scalar_type_aliases(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    document = _request(tmp_path).to_dict()
+    document[field] = value
+
+    with pytest.raises(FullC6PolicyBootstrapError, match="invalid authority"):
+        parse_full_c6_policy_bootstrap_request(canonical_json_bytes(document))
+
+
+def test_template_parser_rejects_boolean_schema_alias(tmp_path: Path) -> None:
+    document = _request(tmp_path).technical_template.to_dict()
+    document["schema_version"] = True
+
+    with pytest.raises(FullC6PolicyTemplateError, match="invalid authority"):
+        parse_full_c6_technical_policy_template(document)
+
+
+def test_bootstrap_rejects_semantically_different_coverage_digest(
+    tmp_path: Path,
+) -> None:
+    template = _technical_template()
+    inputs = replace(
+        _coherent_inputs(template),
+        artifact_coverage_inventory_sha256="0" * 64,
+    )
+
+    with pytest.raises(FullC6PolicyBootstrapError, match="differs from bootstrap"):
+        create_configured_full_c6_policy_bootstrap_request(
+            config=_config(tmp_path, policy_sha256=False),
+            inputs=inputs,
+            technical_template=template,
+        )

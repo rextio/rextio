@@ -433,6 +433,7 @@ def _receipt() -> FullC6PolicyReceipt:
         owner_declaration=_owner(),
         artifact_coverage=coverage,
         external_authority=external,
+        bootstrap_request_sha256="d" * 64,
     )
 
 

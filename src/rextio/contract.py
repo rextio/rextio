@@ -88,12 +88,15 @@ from __future__ import annotations
 # Contract 2.21.0 adds the separate immutable strict Full-C6 final-evidence /
 # distribution-authorization contract and its opt-in frozen-profile config
 # shape. Preview C6.2-C6.15 evidence remains incomplete and non-authorizing.
-# Contract 2.22.0 adds the bounded C5.2 external-source linkage and Full-C6
-# coordinator contracts: one same-transaction verified external context, a
-# non-authorizing digest-only owner-policy completion bootstrap, a pinned-policy
-# signing request, and detached-signature atomic publication. Rextio neither
+# Contract 2.22.0 adds the bounded C5.2 external-source linkage and initial
+# Full-C6 coordinator contracts. Contract 2.23.0 replaces the digest-only
+# policy bootstrap with an exact, canonical technical template and adds the
+# separately supplied owner completion/finalization handoff. The finalized
+# policy is pinned back to that bootstrap and fresh production recollection;
+# it remains unsigned and non-authorizing until the existing signing and
+# detached-signature publication stages succeed. Rextio neither
 # invents owner policy nor accepts, creates, or retains private signing keys.
 # The strict surface deliberately excludes the general external-source, plugin,
 # executable, rust-crate, top-level, embedding, and Windows cases.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.22.0"
+TOOLING_CONTRACT_VERSION = "2.23.0"

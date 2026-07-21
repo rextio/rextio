@@ -45,8 +45,8 @@ from rextio.build.owner_policy_lock import read_strict_owner_policy_lock
 
 
 FULL_C6_POLICY_MANIFEST_KIND = "full-c6-owner-policy-manifest"
-FULL_C6_POLICY_MANIFEST_DOMAIN = "rextio.full-c6-owner-policy-manifest.v1"
-FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION = 1
+FULL_C6_POLICY_MANIFEST_DOMAIN = "rextio.full-c6-owner-policy-manifest.v2"
+FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION = 2
 FULL_C6_POLICY_MANIFEST_FILENAME = "rextio.full-c6-policy.json"
 
 # A valid policy receipt is already bounded to four MiB.  The manifest repeats
@@ -65,6 +65,7 @@ _TOP_LEVEL_FIELDS = {
     "rows",
     "transformations",
     "owner_declaration",
+    "bootstrap_request_sha256",
     "policy_sha256",
     "receipt_digest",
 }
@@ -175,6 +176,10 @@ def full_c6_policy_manifest_document(
 ) -> dict[str, object]:
     """Return the closed, non-authorizing manifest document for ``receipt``."""
     trusted = _reconstruct_receipt(receipt)
+    if trusted.bootstrap_request_sha256 is None:
+        raise FullC6PolicyManifestError(
+            "Full C6 policy manifest requires bootstrap request lineage"
+        )
     return {
         "kind": FULL_C6_POLICY_MANIFEST_KIND,
         "schema_version": FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION,
@@ -184,6 +189,7 @@ def full_c6_policy_manifest_document(
         "rows": [item.to_dict() for item in trusted.rows],
         "transformations": [item.to_dict() for item in trusted.transformations],
         "owner_declaration": trusted.owner_declaration.to_dict(),
+        "bootstrap_request_sha256": trusted.bootstrap_request_sha256,
         "policy_sha256": trusted.policy_sha256,
         "receipt_digest": trusted.digest,
     }
@@ -193,6 +199,8 @@ def full_c6_policy_manifest_bytes(receipt: FullC6PolicyReceipt) -> bytes:
     """Serialize one policy receipt as bounded canonical UTF-8 JSON."""
     try:
         value = canonical_json_bytes(full_c6_policy_manifest_document(receipt))
+    except FullC6PolicyManifestError:
+        raise
     except (TypeError, ValueError, RecursionError) as exc:
         raise FullC6PolicyManifestError("Full C6 policy manifest cannot be serialized") from exc
     if not value or len(value) > MAX_FULL_C6_POLICY_MANIFEST_BYTES:
@@ -237,6 +245,10 @@ def parse_full_c6_policy_manifest(
             owner_declaration=_owner(root["owner_declaration"]),
             artifact_coverage=_artifact_coverage(root["artifact_coverage"]),
             external_authority=_external_authority(root["external_authority"]),
+            bootstrap_request_sha256=_sha256(
+                root["bootstrap_request_sha256"],
+                "bootstrap request SHA-256",
+            ),
         )
     except FullC6PolicyManifestError:
         raise
@@ -376,6 +388,12 @@ def _sha256(value: object, label: str) -> str:
     return result
 
 
+def _optional_digest(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return _sha256(value, label)
+
+
 def _artifact_coverage(value: object) -> ArtifactPolicyCoverageInventory:
     data = _exact_dict(value, _ARTIFACT_COVERAGE_FIELDS, "artifact coverage")
     raw_classes = _exact_list(data["classes"], "artifact coverage classes")
@@ -443,12 +461,6 @@ def _artifact_coverage_class(value: object) -> ArtifactPolicyCoverageClass:
             "artifact coverage transformation receipt SHA-256",
         ),
     )
-
-
-def _optional_digest(value: object, label: str) -> str | None:
-    if value is None:
-        return None
-    return _sha256(value, label)
 
 
 def _external_authority(value: object) -> FullC6ExternalAuthorityPartition:
@@ -632,6 +644,34 @@ def _owner(value: object) -> FullC6OwnerDeclaration:
     )
 
 
+def parse_full_c6_artifact_coverage_document(
+    value: object,
+) -> ArtifactPolicyCoverageInventory:
+    """Parse one exact public C6.14 coverage document."""
+    return _artifact_coverage(value)
+
+
+def parse_full_c6_external_authority_document(
+    value: object,
+) -> FullC6ExternalAuthorityPartition:
+    """Parse one exact public C5.2 authority-partition document."""
+    return _external_authority(value)
+
+
+def parse_full_c6_transformation_document(
+    value: object,
+) -> FullC6TransformationRecord:
+    """Parse one exact public technical transformation record."""
+    return _transformation(value)
+
+
+def parse_full_c6_owner_declaration_document(
+    value: object,
+) -> FullC6OwnerDeclaration:
+    """Parse one exact explicit owner declaration document."""
+    return _owner(value)
+
+
 def _reconstruct_receipt(receipt: FullC6PolicyReceipt) -> FullC6PolicyReceipt:
     if type(receipt) is not FullC6PolicyReceipt:
         raise TypeError("Full C6 policy receipt has an invalid type")
@@ -642,6 +682,7 @@ def _reconstruct_receipt(receipt: FullC6PolicyReceipt) -> FullC6PolicyReceipt:
             owner_declaration=receipt.owner_declaration,
             artifact_coverage=receipt.artifact_coverage,
             external_authority=receipt.external_authority,
+            bootstrap_request_sha256=receipt.bootstrap_request_sha256,
         )
     except (TypeError, ValueError) as exc:
         raise FullC6PolicyManifestError("Full C6 policy receipt cannot be reconstructed") from exc
@@ -658,4 +699,8 @@ __all__ = [
     "full_c6_policy_manifest_document",
     "load_full_c6_policy_manifest",
     "parse_full_c6_policy_manifest",
+    "parse_full_c6_artifact_coverage_document",
+    "parse_full_c6_external_authority_document",
+    "parse_full_c6_owner_declaration_document",
+    "parse_full_c6_transformation_document",
 ]

@@ -332,6 +332,7 @@ def _policy_for(
         owner_declaration=owner,
         artifact_coverage=coverage,
         external_authority=external,
+        bootstrap_request_sha256="b" * 64,
     )
 
 
@@ -431,6 +432,7 @@ def _bind_policy_to_transaction(
         owner_declaration=policy.owner_declaration,
         artifact_coverage=policy.artifact_coverage,
         external_authority=policy.external_authority,
+        bootstrap_request_sha256=policy.bootstrap_request_sha256,
     )
 
 
