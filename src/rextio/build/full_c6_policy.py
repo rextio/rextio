@@ -303,6 +303,17 @@ def _require_spdx(value: object, label: str) -> str:
     return value
 
 
+def canonicalize_full_c6_spdx_expression(value: object) -> str:
+    """Validate and return one canonical expression from the bounded SPDX set.
+
+    Full C6 intentionally recognizes only the initial allowlist owned by this
+    module.  Callers must not grow a second parser or silently normalize an
+    otherwise noncanonical declaration before it is bound into evidence.
+    """
+    parsed = _parse_spdx(value, "Full C6 SPDX expression")
+    return _render_spdx(parsed)
+
+
 def _require_artifact_authority_identity(class_id: str, value: object) -> str:
     identity = _require_bounded_string(
         value,
@@ -1604,6 +1615,7 @@ __all__ = [
     "MAX_FULL_C6_POLICY_TRANSFORMATIONS",
     "full_c6_analysis_receipt_digest",
     "full_c6_authority_partition_digest",
+    "canonicalize_full_c6_spdx_expression",
     "full_c6_external_authority_identity",
     "full_c6_external_authority_identity_set_digest",
     "full_c6_external_authority_partition_digest",
