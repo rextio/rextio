@@ -190,6 +190,8 @@ def _collect_bounded_production_authority(
         toolchain=inputs.toolchain,
         native_tools=inputs.native_tools,
         cargo_workspace=inputs.cargo_workspace,
+        toolchain_support_plan=inputs.toolchain_support_plan,
+        toolchain_support_lock=inputs.toolchain_support_lock,
         first_quarantine_root=inputs.roots[0],
         second_quarantine_root=inputs.roots[1],
         state_directory=state_directory,
@@ -224,6 +226,8 @@ def test_production_collector_exposes_only_the_frozen_owner_api() -> None:
         "toolchain",
         "native_tools",
         "cargo_workspace",
+        "toolchain_support_plan",
+        "toolchain_support_lock",
         "first_quarantine_root",
         "second_quarantine_root",
         "state_directory",
@@ -283,6 +287,8 @@ def test_prerequisites_require_the_exact_cargo_source_authority_object(
             toolchain=cloned_toolchain,
             native_tools=inputs.native_tools,
             cargo_workspace=inputs.cargo_workspace,
+            toolchain_support_plan=inputs.toolchain_support_plan,
+            toolchain_support_lock=inputs.toolchain_support_lock,
             first_quarantine_root=inputs.roots[0],
             second_quarantine_root=inputs.roots[1],
             state_directory=tmp_path / "unused-state",
@@ -290,6 +296,53 @@ def test_prerequisites_require_the_exact_cargo_source_authority_object(
             source_date_epoch=1,
         )
     assert executed is False
+
+
+def test_production_forwards_exact_support_objects_to_external_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    inputs = _EXTERNAL["_inputs"](tmp_path, monkeypatch)
+    config = replace(
+        inputs.config,
+        build=replace(
+            inputs.config.build,
+            artifact_policy_manifest="locks/rextio.full-c6-policy.json",
+        ),
+    )
+    observed = False
+
+    def stop_after_boundary(*_args: object, **kwargs: object) -> None:
+        nonlocal observed
+        assert kwargs["toolchain_support_plan"] is inputs.toolchain_support_plan
+        assert kwargs["toolchain_support_lock"] is inputs.toolchain_support_lock
+        observed = True
+        raise RuntimeError("stop after exact support propagation")
+
+    monkeypatch.setattr(
+        production,
+        "execute_full_c6_external_build",
+        stop_after_boundary,
+    )
+
+    with pytest.raises(production.FullC6ProductionError):
+        production.collect_full_c6_production_authority(
+            inputs.preflight,
+            project_root=inputs.preflight.analysis.project_root,
+            config=config,
+            toolchain=inputs.toolchain,
+            native_tools=inputs.native_tools,
+            cargo_workspace=inputs.cargo_workspace,
+            toolchain_support_plan=inputs.toolchain_support_plan,
+            toolchain_support_lock=inputs.toolchain_support_lock,
+            first_quarantine_root=inputs.roots[0],
+            second_quarantine_root=inputs.roots[1],
+            state_directory=tmp_path / "unused-state",
+            base_environment=inputs.base_environment,
+            source_date_epoch=1,
+        )
+    assert observed is True
 
 
 def test_production_source_date_epoch_matches_the_executor_bound(
@@ -312,6 +365,8 @@ def test_production_source_date_epoch_matches_the_executor_bound(
         "toolchain": inputs.toolchain,
         "native_tools": inputs.native_tools,
         "cargo_workspace": inputs.cargo_workspace,
+        "toolchain_support_plan": inputs.toolchain_support_plan,
+        "toolchain_support_lock": inputs.toolchain_support_lock,
     }
 
     assert production._require_production_inputs(
@@ -323,6 +378,50 @@ def test_production_source_date_epoch_matches_the_executor_bound(
             **arguments,
             source_date_epoch=2_147_483_648,
         )
+
+
+def test_production_support_boundary_revalidates_critical_leaves_without_full_walk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    support_closure = importlib.import_module(
+        "rextio.build.full_c6_toolchain_support"
+    )
+    inputs = _EXTERNAL["_inputs"](tmp_path, monkeypatch)
+    critical_calls = 0
+    full_walk_calls = 0
+    revalidate = production.revalidate_full_c6_toolchain_support_plan
+
+    def observe_critical(plan: object) -> object:
+        nonlocal critical_calls
+        critical_calls += 1
+        return revalidate(plan)
+
+    def forbidden_full_walk(*_args: object, **_kwargs: object) -> bool:
+        nonlocal full_walk_calls
+        full_walk_calls += 1
+        raise AssertionError("production boundary must not repeat the full support walk")
+
+    monkeypatch.setattr(
+        production,
+        "revalidate_full_c6_toolchain_support_plan",
+        observe_critical,
+    )
+    monkeypatch.setattr(
+        support_closure,
+        "verify_full_c6_toolchain_support_lock",
+        forbidden_full_walk,
+    )
+
+    assert production._require_production_toolchain_support(
+        inputs.toolchain_support_plan,
+        inputs.toolchain_support_lock,
+        toolchain=inputs.toolchain,
+        revalidate_paths=True,
+    ) is inputs.toolchain_support_plan
+    assert critical_calls == 1
+    assert full_walk_calls == 0
 
 
 def test_collector_mints_one_sealed_path_free_non_authorizing_authority(
@@ -351,6 +450,11 @@ def test_collector_mints_one_sealed_path_free_non_authorizing_authority(
         license_materials_transaction=_Digest(),
         output_license_contract=object(),
         cargo_workspace=_Digest(),
+        toolchain_support_plan=SimpleNamespace(digest=digest),
+        toolchain_support_lock=SimpleNamespace(
+            raw_sha256=digest,
+            merkle_sha256=digest,
+        ),
         native_execution_authority=_Digest(),
         native_output_transaction=_Digest(),
         subject_wheel_transaction=_Digest(),
@@ -385,6 +489,8 @@ def test_collector_mints_one_sealed_path_free_non_authorizing_authority(
         toolchain=object(),
         native_tools=object(),
         cargo_workspace=object(),
+        toolchain_support_plan=object(),
+        toolchain_support_lock=object(),
         first_quarantine_root=tmp_path / "first",
         second_quarantine_root=tmp_path / "second",
         state_directory=tmp_path / "state",

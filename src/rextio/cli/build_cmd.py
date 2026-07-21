@@ -8,6 +8,7 @@ import os
 import sys
 from argparse import Namespace
 from pathlib import Path
+from typing import Any, cast
 
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
@@ -594,16 +595,7 @@ def _run_full_c6_cli_lifecycle(
             stage = "production-authority"
             authority = collect_full_c6_production_authority(
                 preflight,
-                project_root=prerequisites.project_root,
-                config=prerequisites.config,
-                toolchain=prerequisites.toolchain,
-                native_tools=prerequisites.native_tools,
-                cargo_workspace=prerequisites.cargo_workspace,
-                first_quarantine_root=prerequisites.first_quarantine_root,
-                second_quarantine_root=prerequisites.second_quarantine_root,
-                state_directory=prerequisites.state_directory,
-                base_environment=prerequisites.base_environment,
-                source_date_epoch=prerequisites.source_date_epoch,
+                **cast(dict[str, Any], prerequisites.production_arguments()),
             )
             lifecycle = authority.lifecycle.status
             authority_report = authority.to_dict()

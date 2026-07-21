@@ -181,6 +181,7 @@ def _prerequisites(
     state = project / "state"
     state.mkdir(mode=0o700, exist_ok=True)
     cleanup_complete = False
+    production_arguments_calls = 0
 
     def complete_prepublication_cleanup(_authority: object) -> None:
         nonlocal cleanup_complete
@@ -198,17 +199,40 @@ def _prerequisites(
 
         return SimpleNamespace(atomic_adapter=atomic_adapter)
 
+    def production_arguments() -> dict[str, object]:
+        nonlocal production_arguments_calls
+        production_arguments_calls += 1
+        prerequisites.production_arguments_calls = production_arguments_calls
+        return {
+            "project_root": prerequisites.project_root,
+            "config": prerequisites.config,
+            "toolchain": prerequisites.toolchain,
+            "native_tools": prerequisites.native_tools,
+            "cargo_workspace": prerequisites.cargo_workspace,
+            "toolchain_support_plan": prerequisites.toolchain_support_plan,
+            "toolchain_support_lock": prerequisites.toolchain_support_lock,
+            "first_quarantine_root": prerequisites.first_quarantine_root,
+            "second_quarantine_root": prerequisites.second_quarantine_root,
+            "state_directory": prerequisites.state_directory,
+            "base_environment": dict(prerequisites.base_environment),
+            "source_date_epoch": prerequisites.source_date_epoch,
+        }
+
     prerequisites = SimpleNamespace(
         project_root=project,
         config=config,
         toolchain=object(),
         native_tools=object(),
         cargo_workspace=object(),
+        toolchain_support_plan=object(),
+        toolchain_support_lock=object(),
         first_quarantine_root=project / "quarantine-one",
         second_quarantine_root=project / "quarantine-two",
         state_directory=state,
         base_environment={"PATH": "/actual-cargo"},
         source_date_epoch=0,
+        production_arguments=production_arguments,
+        production_arguments_calls=0,
         complete_prepublication_cleanup=complete_prepublication_cleanup,
         derive_publication_plan=derive_plan,
     )
@@ -250,6 +274,7 @@ def _install_authority_mocks(
 
     def collect_production(observed_preflight: object, **values: object) -> _Authority:
         assert observed_preflight is preflight
+        assert prerequisites.production_arguments_calls == events.count("host-enter")
         assert values == {
             "base_environment": prerequisites.base_environment,
             "cargo_workspace": prerequisites.cargo_workspace,
@@ -261,6 +286,8 @@ def _install_authority_mocks(
             "source_date_epoch": 0,
             "state_directory": prerequisites.state_directory,
             "toolchain": prerequisites.toolchain,
+            "toolchain_support_lock": prerequisites.toolchain_support_lock,
+            "toolchain_support_plan": prerequisites.toolchain_support_plan,
         }
         events.append("production-authority")
         return authority

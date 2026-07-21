@@ -55,6 +55,12 @@ from rextio.build.full_c6_executor import (
     validate_full_c6_native_execution_authority,
 )
 from rextio.build.full_c6_external_execution import execute_full_c6_external_build
+from rextio.build.full_c6_toolchain_support import (
+    FullC6ToolchainSupportError,
+    FullC6ToolchainSupportPlan,
+    require_full_c6_toolchain_support_plan,
+    revalidate_full_c6_toolchain_support_plan,
+)
 from rextio.build.full_c6_input_identity import (
     canonical_full_c6_build_input_name,
 )
@@ -150,6 +156,7 @@ from rextio.build.supply_chain import (
     capture_project_source_snapshot,
 )
 from rextio.build.toolchain_identity import BuildToolchainIdentity
+from rextio.build.toolchain_support_lock import ToolchainSupportLock
 from rextio.build.transformation_inventory import (
     collect_source_transformation_inventory,
 )
@@ -182,6 +189,8 @@ class _FullC6ProductionMaterial:
     license_materials_transaction: FullC6LicenseMaterialsTransaction = field(repr=False)
     output_license_contract: OutputWheelLicenseContract = field(repr=False)
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt = field(repr=False)
+    toolchain_support_plan: FullC6ToolchainSupportPlan = field(repr=False)
+    toolchain_support_lock: ToolchainSupportLock = field(repr=False)
     native_execution_authority: FullC6NativeExecutionAuthority = field(repr=False)
     native_output_transaction: FullC6NativeOutputTransaction = field(repr=False)
     subject_wheel_transaction: FullC6SubjectWheelTransaction = field(repr=False)
@@ -278,6 +287,8 @@ def collect_full_c6_production_authority(
     toolchain: BuildToolchainIdentity,
     native_tools: FullC6NativeToolPaths,
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
+    toolchain_support_plan: FullC6ToolchainSupportPlan,
+    toolchain_support_lock: ToolchainSupportLock,
     first_quarantine_root: Path | str,
     second_quarantine_root: Path | str,
     state_directory: Path | str,
@@ -293,6 +304,8 @@ def collect_full_c6_production_authority(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            toolchain_support_plan=toolchain_support_plan,
+            toolchain_support_lock=toolchain_support_lock,
             first_quarantine_root=first_quarantine_root,
             second_quarantine_root=second_quarantine_root,
             state_directory=state_directory,
@@ -352,6 +365,8 @@ def _collect_full_c6_production_material(
     toolchain: BuildToolchainIdentity,
     native_tools: FullC6NativeToolPaths,
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
+    toolchain_support_plan: FullC6ToolchainSupportPlan,
+    toolchain_support_lock: ToolchainSupportLock,
     first_quarantine_root: Path | str,
     second_quarantine_root: Path | str,
     state_directory: Path | str,
@@ -366,6 +381,8 @@ def _collect_full_c6_production_material(
         toolchain=toolchain,
         native_tools=native_tools,
         cargo_workspace=cargo_workspace,
+        toolchain_support_plan=toolchain_support_plan,
+        toolchain_support_lock=toolchain_support_lock,
         source_date_epoch=source_date_epoch,
     )
     lifecycle = resolve_full_c6_policy_lifecycle(config)
@@ -379,6 +396,8 @@ def _collect_full_c6_production_material(
         toolchain=toolchain,
         native_tools=native_tools,
         cargo_workspace=cargo_workspace,
+        toolchain_support_plan=toolchain_support_plan,
+        toolchain_support_lock=toolchain_support_lock,
     )
     if not validate_full_c6_native_execution_authority(execution):
         raise FullC6ProductionError("native execution authority is stale")
@@ -390,6 +409,18 @@ def _collect_full_c6_production_material(
         or execution_material.cargo_workspace is not cargo_workspace
     ):
         raise FullC6ProductionError("native execution replaced prerequisite authority")
+    if (
+        _require_production_toolchain_support(
+            toolchain_support_plan,
+            toolchain_support_lock,
+            toolchain=toolchain,
+            revalidate_paths=True,
+        )
+        is not toolchain_support_plan
+    ):
+        raise FullC6ProductionError(
+            "native execution replaced toolchain support authority"
+        )
 
     license_materials = collect_full_c6_license_materials(
         project_root=root,
@@ -624,6 +655,8 @@ def _collect_full_c6_production_material(
         license_materials_transaction=license_materials,
         output_license_contract=output_license,
         cargo_workspace=cargo_workspace,
+        toolchain_support_plan=toolchain_support_plan,
+        toolchain_support_lock=toolchain_support_lock,
         native_execution_authority=execution,
         native_output_transaction=native_output,
         subject_wheel_transaction=subject_wheel,
@@ -699,7 +732,20 @@ def _validate_material(material: _FullC6ProductionMaterial) -> bool:
             material.native_execution_authority
         )
         if (
-            execution_material.output_license_contract
+            _require_production_toolchain_support(
+                material.toolchain_support_plan,
+                material.toolchain_support_lock,
+                toolchain=execution_material.toolchain,
+                revalidate_paths=False,
+            )
+            is not material.toolchain_support_plan
+            or execution_material.toolchain.support_plan_sha256
+            != material.toolchain_support_plan.digest
+            or execution_material.toolchain.support_lock_raw_sha256
+            != material.toolchain_support_lock.raw_sha256
+            or execution_material.toolchain.support_lock_merkle_sha256
+            != material.toolchain_support_lock.merkle_sha256
+            or execution_material.output_license_contract
             != material.output_license_contract
             or execution_material.cargo_workspace is not material.cargo_workspace
             or execution_material.toolchain.cargo_sources
@@ -846,6 +892,51 @@ def _validate_material(material: _FullC6ProductionMaterial) -> bool:
         return False
 
 
+def _require_production_toolchain_support(
+    plan: object,
+    lock: object,
+    *,
+    toolchain: BuildToolchainIdentity,
+    revalidate_paths: bool,
+) -> FullC6ToolchainSupportPlan:
+    """Require one exact support graph and its path-free toolchain binding."""
+    if (
+        type(toolchain) is not BuildToolchainIdentity
+        or type(plan) is not FullC6ToolchainSupportPlan
+        or type(lock) is not ToolchainSupportLock
+        or type(revalidate_paths) is not bool
+    ):
+        raise FullC6ProductionError(
+            "Full C6 production toolchain support authority is invalid"
+        )
+    try:
+        trusted = require_full_c6_toolchain_support_plan(plan)
+        if revalidate_paths:
+            revalidate_full_c6_toolchain_support_plan(trusted)
+        if (
+            not hmac.compare_digest(
+                trusted.digest,
+                toolchain.support_plan_sha256,
+            )
+            or not hmac.compare_digest(
+                lock.raw_sha256,
+                toolchain.support_lock_raw_sha256,
+            )
+            or not hmac.compare_digest(
+                lock.merkle_sha256,
+                toolchain.support_lock_merkle_sha256,
+            )
+        ):
+            raise FullC6ToolchainSupportError(
+                "Full C6 toolchain support authority differs from toolchain identity"
+            )
+        return trusted
+    except FullC6ToolchainSupportError as exc:
+        raise FullC6ProductionError(
+            "Full C6 production toolchain support authority failed closed"
+        ) from exc
+
+
 def _require_production_inputs(
     *,
     preflight: FullC6ExternalPreflightResult,
@@ -854,6 +945,8 @@ def _require_production_inputs(
     toolchain: BuildToolchainIdentity,
     native_tools: FullC6NativeToolPaths,
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
+    toolchain_support_plan: FullC6ToolchainSupportPlan,
+    toolchain_support_lock: ToolchainSupportLock,
     source_date_epoch: int,
 ) -> Path:
     if (
@@ -870,6 +963,18 @@ def _require_production_inputs(
         raise FullC6ProductionError("Full C6 production prerequisites are invalid")
     if toolchain.cargo_sources is not cargo_workspace.cargo_sources:
         raise FullC6ProductionError("toolchain and Cargo workspace differ")
+    if (
+        _require_production_toolchain_support(
+            toolchain_support_plan,
+            toolchain_support_lock,
+            toolchain=toolchain,
+            revalidate_paths=True,
+        )
+        is not toolchain_support_plan
+    ):
+        raise FullC6ProductionError(
+            "Full C6 production toolchain support authority was replaced"
+        )
     try:
         capture_effective_full_c6_config_identity(config)
     except FullC6ConfigIdentityError as exc:
@@ -1829,6 +1934,13 @@ def _material_projection(material: _FullC6ProductionMaterial) -> dict[str, objec
         "technical_policy_template_sha256": (
             material.technical_policy_template.template_sha256
         ),
+        "toolchain_support_plan_sha256": material.toolchain_support_plan.digest,
+        "toolchain_support_lock_raw_sha256": (
+            material.toolchain_support_lock.raw_sha256
+        ),
+        "toolchain_support_lock_merkle_sha256": (
+            material.toolchain_support_lock.merkle_sha256
+        ),
         "executor_invocation_count": len(material.executor_receipt.invocations),
         "complete_for_scope": True,
         "signed": False,
@@ -1852,6 +1964,8 @@ def _seal(authority: FullC6ProductionAuthority) -> bytes:
                 "license_materials_transaction",
                 "output_license_contract",
                 "cargo_workspace",
+                "toolchain_support_plan",
+                "toolchain_support_lock",
                 "native_execution_authority",
                 "native_output_transaction",
                 "subject_wheel_transaction",

@@ -52,6 +52,12 @@ from rextio.build.full_c6_host_inputs import (
     FullC6HostInputsError,
     require_full_c6_analysis_scope,
 )
+from rextio.build.full_c6_toolchain_support import (
+    FullC6ToolchainSupportError,
+    FullC6ToolchainSupportPlan,
+    require_full_c6_toolchain_support_plan,
+    revalidate_full_c6_toolchain_support_plan,
+)
 from rextio.build.full_c6_output_license import (
     FullC6OutputLicenseDerivationError,
     derive_full_c6_output_license_contract,
@@ -62,6 +68,7 @@ from rextio.build.full_c6_pipeline import (
     validate_full_c6_external_context,
 )
 from rextio.build.toolchain_identity import BuildToolchainIdentity
+from rextio.build.toolchain_support_lock import ToolchainSupportLock
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.config.schema import ImportPackagePolicy, RextioConfig
 from rextio.codegen.rust.cargo import (
@@ -115,6 +122,8 @@ def execute_full_c6_external_build(
     toolchain: BuildToolchainIdentity,
     native_tools: FullC6NativeToolPaths,
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
+    toolchain_support_plan: FullC6ToolchainSupportPlan,
+    toolchain_support_lock: ToolchainSupportLock,
 ) -> FullC6NativeExecutionAuthority:
     """Generate and execute one exact linked external native vertical slice.
 
@@ -146,6 +155,11 @@ def execute_full_c6_external_build(
         raise FullC6ExternalExecutionError(
             "RXT060 external execution requires the exact strict Cargo command"
         )
+    trusted_support_plan = _require_external_toolchain_support(
+        toolchain_support_plan,
+        toolchain_support_lock,
+        toolchain=toolchain,
+    )
 
     try:
         require_full_c6_analysis_scope(
@@ -277,6 +291,8 @@ def execute_full_c6_external_build(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            toolchain_support_plan=trusted_support_plan,
+            toolchain_support_lock=toolchain_support_lock,
             output_license_contract=output_license,
         )
         if not validate_full_c6_native_execution_authority(authority):
@@ -287,6 +303,17 @@ def execute_full_c6_external_build(
             authority,
             expected_entries=expected_entries,
         )
+        if (
+            _require_external_toolchain_support(
+                trusted_support_plan,
+                toolchain_support_lock,
+                toolchain=toolchain,
+            )
+            is not toolchain_support_plan
+        ):
+            raise FullC6ExternalExecutionError(
+                "RXT060 native execution replaced toolchain support authority"
+            )
         validate_full_c6_external_context(context, analysis)
         if _require_strict_external_config(config, transaction) != config_profile:
             raise FullC6ExternalExecutionError(
@@ -312,6 +339,48 @@ def execute_full_c6_external_build(
     ) as exc:
         raise FullC6ExternalExecutionError(
             "RXT060 strict external native execution failed closed"
+        ) from exc
+
+
+def _require_external_toolchain_support(
+    plan: object,
+    lock: object,
+    *,
+    toolchain: BuildToolchainIdentity,
+) -> FullC6ToolchainSupportPlan:
+    """Revalidate the exact path-private support authority at this boundary."""
+    if (
+        type(toolchain) is not BuildToolchainIdentity
+        or type(plan) is not FullC6ToolchainSupportPlan
+        or type(lock) is not ToolchainSupportLock
+    ):
+        raise FullC6ExternalExecutionError(
+            "RXT060 external execution requires exact toolchain support authority"
+        )
+    try:
+        trusted = require_full_c6_toolchain_support_plan(plan)
+        revalidate_full_c6_toolchain_support_plan(trusted)
+        if (
+            not hmac.compare_digest(
+                trusted.digest,
+                toolchain.support_plan_sha256,
+            )
+            or not hmac.compare_digest(
+                lock.raw_sha256,
+                toolchain.support_lock_raw_sha256,
+            )
+            or not hmac.compare_digest(
+                lock.merkle_sha256,
+                toolchain.support_lock_merkle_sha256,
+            )
+        ):
+            raise FullC6ToolchainSupportError(
+                "Full C6 toolchain support authority differs from toolchain identity"
+            )
+        return trusted
+    except FullC6ToolchainSupportError as exc:
+        raise FullC6ExternalExecutionError(
+            "RXT060 external toolchain support authority failed closed"
         ) from exc
 
 

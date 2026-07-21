@@ -17,6 +17,7 @@ from rextio.analyzer.project_scanner import analyze_project
 from rextio.analyzer.models import ProjectAnalysis
 from rextio.build import full_c6_executor as executor
 from rextio.build import full_c6_external_execution as external_execution
+from rextio.build import full_c6_toolchain_support as support_closure
 from rextio.build.full_c6_cargo_workspace import (
     FullC6CargoDependencyWorkspaceReceipt,
     collect_full_c6_cargo_dependency_workspace,
@@ -37,6 +38,10 @@ from rextio.build.full_c6_pipeline import (
     FullC6ExternalPreflightResult,
     prepare_full_c6_external_build,
 )
+from rextio.build.full_c6_toolchain_support import (
+    FullC6ToolchainSupportPlan,
+    generate_full_c6_toolchain_support_lock,
+)
 from rextio.build.toolchain_identity import (
     ArgvIdentity,
     BuildToolchainIdentity,
@@ -46,6 +51,7 @@ from rextio.build.toolchain_identity import (
     capture_tool_identity,
 )
 from rextio.build.input_closure import ExactFileIdentity
+from rextio.build.toolchain_support_lock import ToolchainSupportLock
 from rextio.config.schema import (
     BuildConfig,
     ImportPackagePolicy,
@@ -63,6 +69,9 @@ _SOURCE_TESTS = runpy.run_path(
 )
 _EXECUTOR_TESTS = runpy.run_path(str(_THIS_DIR / "test_full_c6_executor.py"))
 _CARGO_TESTS = runpy.run_path(str(_THIS_DIR / "test_full_c6_cargo_workspace.py"))
+_SUPPORT_TESTS = runpy.run_path(
+    str(_THIS_DIR / "test_full_c6_toolchain_support_discovery.py")
+)
 _STRICT_BUILD = (
     "cargo",
     "build",
@@ -89,6 +98,8 @@ class _ExecutionInputs:
     toolchain: BuildToolchainIdentity
     native_tools: FullC6NativeToolPaths
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt
+    toolchain_support_plan: FullC6ToolchainSupportPlan
+    toolchain_support_lock: ToolchainSupportLock
     cargo_lock: bytes
 
 
@@ -245,6 +256,8 @@ def _cargo_workspace(
 def _toolchain(
     tmp_path: Path,
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
+    toolchain_support_plan: FullC6ToolchainSupportPlan,
+    toolchain_support_lock: ToolchainSupportLock,
 ) -> tuple[FullC6NativeToolPaths, dict[str, str], BuildToolchainIdentity]:
     tool_dir = tmp_path / "native-tools"
     tool_dir.mkdir()
@@ -292,9 +305,9 @@ def _toolchain(
         argv=ArgvIdentity(_STRICT_BUILD),
         environment=capture_environment_identity(environment),
         cargo_sources=cargo_workspace.cargo_sources,
-        support_plan_sha256="8" * 64,
-        support_lock_raw_sha256="9" * 64,
-        support_lock_merkle_sha256="a" * 64,
+        support_plan_sha256=toolchain_support_plan.digest,
+        support_lock_raw_sha256=toolchain_support_lock.raw_sha256,
+        support_lock_merkle_sha256=toolchain_support_lock.merkle_sha256,
     )
     return native_tools, environment, toolchain
 
@@ -331,7 +344,31 @@ def _inputs(
         root_package=root_package,
         omitted_dependency=omitted_dependency,
     )
-    native_tools, environment, toolchain = _toolchain(tmp_path, workspace)
+    support_plan = _SUPPORT_TESTS["_fixed_plan"](
+        tmp_path / "toolchain-support",
+    )
+    support_lock = generate_full_c6_toolchain_support_lock(support_plan)
+    native_tools, environment, toolchain = _toolchain(
+        tmp_path,
+        workspace,
+        support_plan,
+        support_lock,
+    )
+    _EXECUTOR_TESTS["_use_fixed_pyo3_profile"].__wrapped__(monkeypatch)
+
+    def retain_support_plan(plan: object, *_args: object, **_kwargs: object) -> object:
+        return plan
+
+    monkeypatch.setattr(
+        executor,
+        "_require_native_toolchain_support",
+        retain_support_plan,
+    )
+    monkeypatch.setattr(
+        executor,
+        "_require_native_toolchain_support_critical",
+        retain_support_plan,
+    )
     _EXECUTOR_TESTS["_install_successful_native_run"](
         monkeypatch,
         executor,
@@ -345,6 +382,8 @@ def _inputs(
         toolchain=toolchain,
         native_tools=native_tools,
         cargo_workspace=workspace,
+        toolchain_support_plan=support_plan,
+        toolchain_support_lock=support_lock,
         cargo_lock=lock.read_bytes(),
     )
 
@@ -360,6 +399,8 @@ def _execute(inputs: _ExecutionInputs) -> FullC6NativeExecutionAuthority:
         toolchain=inputs.toolchain,
         native_tools=inputs.native_tools,
         cargo_workspace=inputs.cargo_workspace,
+        toolchain_support_plan=inputs.toolchain_support_plan,
+        toolchain_support_lock=inputs.toolchain_support_lock,
     )
 
 
@@ -393,10 +434,26 @@ def test_external_call_reaches_exact_guarded_rust_and_native_authority(
         return reanalyze(*args, **kwargs)
 
     monkeypatch.setattr(external_execution, "analyze_project", observe_scope)
+    native_execute = executor.execute_full_c6_native_two_build
+    support_calls = 0
+
+    def observe_support(*args: Any, **kwargs: Any) -> Any:
+        nonlocal support_calls
+        support_calls += 1
+        assert kwargs["toolchain_support_plan"] is inputs.toolchain_support_plan
+        assert kwargs["toolchain_support_lock"] is inputs.toolchain_support_lock
+        return native_execute(*args, **kwargs)
+
+    monkeypatch.setattr(
+        executor,
+        "execute_full_c6_native_two_build",
+        observe_support,
+    )
 
     authority = _execute(inputs)
 
     assert analyzed_scopes == [inputs.preflight.context.analysis_scope]
+    assert support_calls == 1
     assert validate_full_c6_native_execution_authority(authority)
     assert authority.authorizes_distribution is False
     source_root = inputs.preflight.analysis.project_root / ".rextio/generated/rust"
@@ -437,6 +494,8 @@ def test_public_factory_has_no_raw_generation_or_execution_override() -> None:
         "toolchain",
         "native_tools",
         "cargo_workspace",
+        "toolchain_support_plan",
+        "toolchain_support_lock",
     }
     assert not {
         "registry",
@@ -566,7 +625,12 @@ def test_toolchain_and_workspace_lock_mismatch_fails_before_executor(
     other_root = tmp_path / "other"
     other_root.mkdir()
     _, other_workspace = _cargo_workspace(other_root, omitted_dependency="sha2")
-    native_tools, environment, mismatched = _toolchain(other_root, other_workspace)
+    native_tools, environment, mismatched = _toolchain(
+        other_root,
+        other_workspace,
+        inputs.toolchain_support_plan,
+        inputs.toolchain_support_lock,
+    )
     inputs = _ExecutionInputs(
         preflight=inputs.preflight,
         config=inputs.config,
@@ -575,10 +639,64 @@ def test_toolchain_and_workspace_lock_mismatch_fails_before_executor(
         toolchain=mismatched,
         native_tools=native_tools,
         cargo_workspace=inputs.cargo_workspace,
+        toolchain_support_plan=inputs.toolchain_support_plan,
+        toolchain_support_lock=inputs.toolchain_support_lock,
         cargo_lock=inputs.cargo_lock,
     )
 
     _fail_before_executor(inputs, monkeypatch)
+
+
+def test_toolchain_support_digest_mismatch_fails_before_executor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = _inputs(tmp_path, monkeypatch)
+    inputs = replace(
+        inputs,
+        toolchain=replace(inputs.toolchain, support_plan_sha256="f" * 64),
+    )
+
+    _fail_before_executor(inputs, monkeypatch)
+
+
+def test_external_support_boundary_revalidates_critical_leaves_without_full_walk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = _inputs(tmp_path, monkeypatch)
+    critical_calls = 0
+    full_walk_calls = 0
+    revalidate = external_execution.revalidate_full_c6_toolchain_support_plan
+
+    def observe_critical(plan: object) -> object:
+        nonlocal critical_calls
+        critical_calls += 1
+        return revalidate(plan)
+
+    def forbidden_full_walk(*_args: object, **_kwargs: object) -> bool:
+        nonlocal full_walk_calls
+        full_walk_calls += 1
+        raise AssertionError("external boundary must not repeat the full support walk")
+
+    monkeypatch.setattr(
+        external_execution,
+        "revalidate_full_c6_toolchain_support_plan",
+        observe_critical,
+    )
+    monkeypatch.setattr(
+        support_closure,
+        "verify_full_c6_toolchain_support_lock",
+        forbidden_full_walk,
+    )
+
+    assert external_execution._require_external_toolchain_support(
+        inputs.toolchain_support_plan,
+        inputs.toolchain_support_lock,
+        toolchain=inputs.toolchain,
+    ) is inputs.toolchain_support_plan
+    assert critical_calls == 1
+    assert full_walk_calls == 0
 
 
 @pytest.mark.parametrize("drift", ("marker", "target", "plugin", "package"))
