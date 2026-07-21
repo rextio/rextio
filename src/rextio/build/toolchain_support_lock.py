@@ -1280,7 +1280,24 @@ def _capture_file_once(
         parent_fd = chain[-1][0]
         name = locator._absolute_path.name
         expected = _stamp(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
-        file_fd = _open_regular_file(parent_fd, name)
+        locator_path_sha256 = _locator_path_digest(locator._absolute_path)
+        _validate_generated_mode(
+            stat.S_IMODE(expected.mode),
+            origin="manifest-observation",
+            target_triple=None,
+            logical_role=locator.logical_role,
+            kind="regular",
+            path_digest_label="locator_path_sha256",
+            path_sha256=locator_path_sha256,
+        )
+        file_fd = _open_regular_file(
+            parent_fd,
+            name,
+            mode_origin="manifest-open",
+            mode_logical_role=locator.logical_role,
+            mode_path_digest_label="locator_path_sha256",
+            mode_path_sha256=locator_path_sha256,
+        )
         opened = _stamp(os.fstat(file_fd))
         if opened != expected:
             raise ToolchainSupportLockError(
@@ -1311,7 +1328,7 @@ def _capture_file_once(
         object.__setattr__(
             provisional,
             "locator_path_sha256",
-            _locator_path_digest(locator._absolute_path),
+            locator_path_sha256,
         )
         object.__setattr__(
             provisional,
@@ -1328,13 +1345,22 @@ def _capture_file_once(
         object.__setattr__(provisional, "total_bytes", size)
         object.__setattr__(provisional, "merkle_sha256", "")
         merkle = _file_merkle(provisional)
+        receipt_mode = _validate_generated_mode(
+            stat.S_IMODE(final_stamp.mode),
+            origin="manifest-receipt",
+            target_triple=None,
+            logical_role=locator.logical_role,
+            kind="regular",
+            path_digest_label="locator_path_sha256",
+            path_sha256=locator_path_sha256,
+        )
         return ToolchainSupportFileReceipt(
             logical_role=locator.logical_role,
-            locator_path_sha256=_locator_path_digest(locator._absolute_path),
+            locator_path_sha256=locator_path_sha256,
             metadata_sha256=_metadata_digest(final_stamp, kind="file"),
             raw_sha256=digest,
             size=size,
-            mode=stat.S_IMODE(final_stamp.mode),
+            mode=receipt_mode,
             xattr_count=xattrs.count,
             xattr_bytes=xattrs.total_bytes,
             xattrs_sha256=xattrs.merkle_sha256,
@@ -2068,6 +2094,8 @@ def _finalize_symlink_dispositions(
         receipts.append(
             _new_symlink_disposition_receipt(
                 raw=raw,
+                target_triple=target_triple,
+                logical_role=logical_role,
                 resolved_path_sha256=resolved_path_sha256,
                 external_manifest_role=external_role,
                 external_manifest_merkle_sha256=external_merkle,
@@ -2080,6 +2108,8 @@ def _finalize_symlink_dispositions(
 def _new_symlink_disposition_receipt(
     *,
     raw: _RawSymlinkDisposition,
+    target_triple: str | None,
+    logical_role: str,
     resolved_path_sha256: str,
     external_manifest_role: str | None,
     external_manifest_merkle_sha256: str | None,
@@ -2087,6 +2117,15 @@ def _new_symlink_disposition_receipt(
     external_support_root_role: str | None = None,
     external_support_root_merkle_sha256: str | None = None,
 ) -> ToolchainSupportSymlinkDispositionReceipt:
+    receipt_mode = _validate_generated_mode(
+        raw.mode,
+        origin="symlink-disposition-receipt",
+        target_triple=target_triple,
+        logical_role=logical_role,
+        kind="symlink",
+        path_digest_label="relative_path_sha256",
+        path_sha256=_relative_mode_path_digest(raw.policy.relative_path),
+    )
     provisional = ToolchainSupportSymlinkDispositionReceipt.__new__(
         ToolchainSupportSymlinkDispositionReceipt
     )
@@ -2103,7 +2142,7 @@ def _new_symlink_disposition_receipt(
         ),
         "resolved_relative_path": resolved_relative_path,
         "resolved_path_sha256": resolved_path_sha256,
-        "mode": raw.mode,
+        "mode": receipt_mode,
         "metadata_sha256": raw.metadata_sha256,
         "xattr_count": raw.xattr_count,
         "xattr_bytes": raw.xattr_bytes,
@@ -2127,7 +2166,7 @@ def _new_symlink_disposition_receipt(
         ),
         resolved_relative_path=resolved_relative_path,
         resolved_path_sha256=resolved_path_sha256,
-        mode=raw.mode,
+        mode=receipt_mode,
         metadata_sha256=raw.metadata_sha256,
         xattr_count=raw.xattr_count,
         xattr_bytes=raw.xattr_bytes,
@@ -2210,6 +2249,8 @@ def _finalize_casefold_dispositions(
 
 def _extract_external_support_root_dispositions(
     *,
+    target_triple: str | None,
+    logical_role: str,
     root_path: Path,
     entries: tuple[_ToolchainSupportTreeEntry, ...],
     binding: _ExternalSupportRootBinding | None,
@@ -2273,6 +2314,8 @@ def _extract_external_support_root_dispositions(
         dispositions.append(
             _new_symlink_disposition_receipt(
                 raw=raw,
+                target_triple=target_triple,
+                logical_role=logical_role,
                 resolved_path_sha256=_locator_path_digest(resolved_path),
                 external_manifest_role=None,
                 external_manifest_merkle_sha256=None,
@@ -2449,7 +2492,15 @@ def _capture_tree_once(
         _ToolchainSupportTreeEntry(
             relative_path=item.relative_path,
             kind=item.kind,
-            mode=item.mode,
+            mode=_validate_generated_mode(
+                item.mode,
+                origin="tree-member-receipt",
+                target_triple=target_triple,
+                logical_role=locator.logical_role,
+                kind=item.kind,
+                path_digest_label="relative_path_sha256",
+                path_sha256=_relative_mode_path_digest(item.relative_path),
+            ),
             metadata_sha256=item.metadata_sha256,
             xattr_count=item.xattr_count,
             xattr_bytes=item.xattr_bytes,
@@ -2463,6 +2514,8 @@ def _capture_tree_once(
     )
     entries_without_merkle, external_dispositions = (
         _extract_external_support_root_dispositions(
+            target_triple=target_triple,
+            logical_role=locator.logical_role,
             root_path=locator._absolute_path,
             entries=entries_without_merkle,
             binding=external_support_root_binding,
@@ -2529,11 +2582,20 @@ def _capture_tree_once(
         raise ToolchainSupportLockError(
             "toolchain support tree xattr accounting is inconsistent"
         )
+    receipt_root_mode = _validate_generated_mode(
+        stat.S_IMODE(root_stamp.mode),
+        origin="tree-root-receipt",
+        target_triple=target_triple,
+        logical_role=locator.logical_role,
+        kind="root",
+        path_digest_label="locator_path_sha256",
+        path_sha256=_locator_path_digest(locator._absolute_path),
+    )
     return ToolchainSupportTreeReceipt(
         logical_role=locator.logical_role,
         locator_path_sha256=_locator_path_digest(locator._absolute_path),
         root_metadata_sha256=_metadata_digest(root_stamp, kind="directory"),
-        root_mode=stat.S_IMODE(root_stamp.mode),
+        root_mode=receipt_root_mode,
         member_count=len(entries) + len(dispositions),
         file_count=sum(item.kind == "file" for item in entries),
         directory_count=sum(item.kind == "directory" for item in entries),
@@ -2721,6 +2783,11 @@ def _walk_tree(
                 directory_fd,
                 name,
                 expected_links=observed.links,
+                mode_origin="tree-member-open",
+                mode_target_triple=target_triple,
+                mode_logical_role=logical_role,
+                mode_path_digest_label="relative_path_sha256",
+                mode_path_sha256=_relative_mode_path_digest(logical),
             )
             try:
                 opened = _stamp(os.fstat(file_fd))
@@ -3936,6 +4003,11 @@ def _open_regular_file(
     name: str,
     *,
     expected_links: int = 1,
+    mode_origin: str | None = None,
+    mode_target_triple: str | None = None,
+    mode_logical_role: str | None = None,
+    mode_path_digest_label: str | None = None,
+    mode_path_sha256: str | None = None,
 ) -> int:
     flags = (
         os.O_RDONLY
@@ -3956,7 +4028,31 @@ def _open_regular_file(
         raise ToolchainSupportLockError(
             "toolchain support file must be a single-link regular file"
         )
-    _validate_mode(stat.S_IMODE(opened.mode))
+    mode = stat.S_IMODE(opened.mode)
+    try:
+        if mode_origin is None:
+            _validate_mode(mode)
+        else:
+            if (
+                mode_logical_role is None
+                or mode_path_digest_label is None
+                or mode_path_sha256 is None
+            ):
+                raise ToolchainSupportLockError(
+                    "toolchain support mode diagnostic context is incomplete"
+                )
+            _validate_generated_mode(
+                mode,
+                origin=mode_origin,
+                target_triple=mode_target_triple,
+                logical_role=mode_logical_role,
+                kind="regular",
+                path_digest_label=mode_path_digest_label,
+                path_sha256=mode_path_sha256,
+            )
+    except ToolchainSupportLockError:
+        os.close(descriptor)
+        raise
     return descriptor
 
 
@@ -4208,6 +4304,76 @@ def _validate_mode(value: object) -> int:
     return value
 
 
+def _validate_generated_mode(
+    value: object,
+    *,
+    origin: str,
+    target_triple: str | None,
+    logical_role: str,
+    kind: str,
+    path_digest_label: str,
+    path_sha256: str,
+) -> int:
+    """Add bounded, path-opaque context only to generated receipt failures."""
+    try:
+        return _validate_mode(value)
+    except ToolchainSupportLockError:
+        if origin not in {
+            "manifest-observation",
+            "manifest-open",
+            "manifest-receipt",
+            "tree-member-observation",
+            "tree-member-open",
+            "tree-member-receipt",
+            "tree-merkle-receipt",
+            "tree-root-observation",
+            "tree-root-receipt",
+            "symlink-disposition-receipt",
+        }:
+            raise ToolchainSupportLockError(
+                "toolchain support mode diagnostic origin is invalid"
+            ) from None
+        if kind not in {"directory", "file", "regular", "root", "special", "symlink"}:
+            raise ToolchainSupportLockError(
+                "toolchain support mode diagnostic kind is invalid"
+            ) from None
+        if path_digest_label not in {
+            "locator_path_sha256",
+            "relative_path_sha256",
+        }:
+            raise ToolchainSupportLockError(
+                "toolchain support mode diagnostic path label is invalid"
+            ) from None
+        validated_target = (
+            "unscoped"
+            if target_triple is None
+            else ToolchainSupportScope(target_triple=target_triple).target_triple
+        )
+        _require_sha256(path_sha256, "support mode diagnostic path SHA-256")
+        mode_text = (
+            f"{value:04o}"
+            if type(value) is int
+            and not isinstance(value, bool)
+            and 0 <= value <= 0o7777
+            else "non-posix"
+        )
+        raise ToolchainSupportLockError(
+            "toolchain support permission mode is invalid "
+            f"(origin={origin}, target_triple={validated_target}, "
+            f"logical_role={_validate_role(logical_role)}, kind={kind}, "
+            f"{path_digest_label}={path_sha256}, mode={mode_text})"
+        ) from None
+
+
+def _relative_mode_path_digest(relative_path: str) -> str:
+    return _sha256(
+        {
+            "domain": "rextio.full-c6-toolchain-support-mode-diagnostic-path.v1",
+            "relative_path": _validate_relative_path(relative_path),
+        }
+    )
+
+
 def _validate_tree_member_mode(
     *,
     target_triple: str | None,
@@ -4232,21 +4398,13 @@ def _validate_tree_member_mode(
             if target_triple is None
             else ToolchainSupportScope(target_triple=target_triple).target_triple
         )
-        path_sha256 = _sha256(
-            {
-                "domain": (
-                    "rextio.full-c6-toolchain-support-"
-                    "mode-diagnostic-path.v1"
-                ),
-                "relative_path": _validate_relative_path(relative_path),
-            }
-        )
         raise ToolchainSupportLockError(
             "toolchain support permission mode is invalid "
             f"(target_triple={validated_target}, "
             f"logical_role={_validate_role(logical_role)}, "
             f"kind={kind}, "
-            f"relative_path_sha256={path_sha256}, "
+            "relative_path_sha256="
+            f"{_relative_mode_path_digest(relative_path)}, "
             f"mode={mode:04o})"
         ) from None
 

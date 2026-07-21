@@ -1640,6 +1640,55 @@ def test_tree_member_mode_diagnostic_leaves_ordinary_mode_validation_unchanged()
         support_lock._validate_mode(0o4755)
 
 
+def test_manifest_mode_diagnostic_is_exact_bounded_and_path_opaque(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "absolute-secret-manifest"
+    manifest.write_bytes(b"mode diagnostic")
+    manifest.chmod(0o4755)
+    if stat.S_IMODE(manifest.lstat().st_mode) != 0o4755:
+        pytest.skip("test filesystem did not preserve the set-user-ID mode bit")
+    locator = create_toolchain_support_locator(
+        logical_role="secret-manifest-role",
+        path=manifest,
+        kind="file",
+    )
+
+    with pytest.raises(ToolchainSupportLockError) as captured:
+        capture_toolchain_support_file(locator)
+
+    expected_path_sha256 = support_lock._locator_path_digest(manifest)
+    message = str(captured.value)
+    assert message == (
+        "toolchain support permission mode is invalid "
+        "(origin=manifest-observation, target_triple=unscoped, "
+        "logical_role=secret-manifest-role, kind=regular, "
+        f"locator_path_sha256={expected_path_sha256}, mode=4755)"
+    )
+    assert len(message.encode("utf-8")) <= 512
+    assert manifest.name not in message
+    assert str(manifest) not in message
+    assert str(tmp_path) not in message
+
+
+def test_generated_mode_context_leaves_parsed_receipt_error_generic(
+    tmp_path: Path,
+) -> None:
+    lock, _manifest_locator, _root_locator = _lock(tmp_path)
+    document = json.loads(lock.canonical_bytes)
+    document["manifests"][0]["mode"] = 0o4755
+    raw = _canonical(document)
+
+    with pytest.raises(
+        ToolchainSupportLockError,
+        match="^toolchain support permission mode is invalid$",
+    ):
+        parse_toolchain_support_lock(
+            raw,
+            expected_raw_sha256=hashlib.sha256(raw).hexdigest(),
+        )
+
+
 def test_tree_root_mode_diagnostic_is_exact_bounded_and_path_opaque(
     tmp_path: Path,
 ) -> None:
