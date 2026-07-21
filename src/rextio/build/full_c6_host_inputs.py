@@ -1850,6 +1850,7 @@ def _capture_record_backed_rextio_identity(
 
     expected: dict[str, tuple[str, int]] = {}
     aliases: set[str] = set()
+    declared_bytes = 0
     for row in rows:
         if len(row) != 3:
             raise FullC6HostInputsError("installed Rextio RECORD row is malformed")
@@ -1873,6 +1874,11 @@ def _capture_record_backed_rextio_identity(
             raise FullC6HostInputsError("installed Rextio RECORD size is invalid") from exc
         if size < 0:
             raise FullC6HostInputsError("installed Rextio RECORD size is invalid")
+        declared_bytes += size
+        if declared_bytes > MAX_FULL_C6_ANALYSIS_SOURCE_BYTES:
+            raise FullC6HostInputsError(
+                "installed Rextio RECORD exceeds the cumulative byte bound"
+            )
         expected[logical] = (digest, size)
     if not expected:
         raise FullC6HostInputsError("installed Rextio RECORD has no package inventory")
@@ -1944,6 +1950,7 @@ def _walk_installed_package(
     result: dict[str, tuple[Path, bytes, os.stat_result]] = {}
     aliases: set[str] = set()
     observed_entries = 0
+    observed_bytes = 0
     # One unexpected entry is enough for a precise fail-closed diagnostic;
     # a flood is stopped before any unrecorded file body is opened.
     maximum_entries = len(allowed_members) + len(allowed_directories)
@@ -2005,6 +2012,10 @@ def _walk_installed_package(
                 raise FullC6HostInputsError(
                     "installed Rextio member is outside RECORD"
                 )
+            if observed.st_size > MAX_FULL_C6_ANALYSIS_SOURCE_BYTES - observed_bytes:
+                raise FullC6HostInputsError(
+                    "installed Rextio package exceeds the cumulative byte bound"
+                )
             alias = unicodedata.normalize("NFC", relative).casefold()
             if alias in aliases:
                 raise FullC6HostInputsError("installed Rextio package contains a path alias")
@@ -2014,6 +2025,11 @@ def _walk_installed_package(
                 label="installed Rextio source",
                 reject_hardlinks=True,
             )
+            if len(data) > MAX_FULL_C6_ANALYSIS_SOURCE_BYTES - observed_bytes:
+                raise FullC6HostInputsError(
+                    "installed Rextio package exceeds the cumulative byte bound"
+                )
+            observed_bytes += len(data)
             result[relative] = (path, data, opened)
     return result
 

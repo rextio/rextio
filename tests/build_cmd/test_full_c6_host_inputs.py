@@ -182,6 +182,108 @@ def test_record_inventory_bounds_unrecorded_entry_flood(tmp_path: Path) -> None:
         )
 
 
+def test_record_inventory_rejects_declared_aggregate_oversize_before_walk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, record, module = _write_record_install(tmp_path)
+    declared_bytes = sum(
+        int(row[2])
+        for row in csv.reader(io.StringIO(record.read_text(encoding="utf-8")))
+        if row[0].startswith("rextio/")
+    )
+    monkeypatch.setattr(
+        host_inputs, "MAX_FULL_C6_ANALYSIS_SOURCE_BYTES", declared_bytes - 1
+    )
+    walked = False
+
+    def reject_walk(*args: object, **kwargs: object) -> object:
+        nonlocal walked
+        walked = True
+        raise AssertionError("installed package walk must not start")
+
+    monkeypatch.setattr(host_inputs, "_walk_installed_package", reject_walk)
+
+    with pytest.raises(FullC6HostInputsError, match="RECORD.*cumulative byte bound"):
+        host_inputs._capture_record_backed_rextio_identity(
+            distribution_root=root,
+            record_path=record,
+            module_file=module,
+            version=__version__,
+        )
+    assert not walked
+
+
+def test_record_inventory_rejects_actual_aggregate_oversize_while_walking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, record, module = _write_record_install(tmp_path)
+    rows = tuple(csv.reader(io.StringIO(record.read_text(encoding="utf-8"))))
+    declared_bytes = sum(
+        int(row[2]) for row in rows if row[0].startswith("rextio/")
+    )
+    source = root / "rextio" / "build.py"
+    source.write_bytes(source.read_bytes() + b"x")
+    monkeypatch.setattr(
+        host_inputs, "MAX_FULL_C6_ANALYSIS_SOURCE_BYTES", declared_bytes
+    )
+
+    with pytest.raises(FullC6HostInputsError, match="package.*cumulative byte bound"):
+        host_inputs._capture_record_backed_rextio_identity(
+            distribution_root=root,
+            record_path=record,
+            module_file=module,
+            version=__version__,
+        )
+
+
+def test_record_inventory_rejects_aggregate_growth_after_directory_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, record, module = _write_record_install(tmp_path)
+    rows = tuple(csv.reader(io.StringIO(record.read_text(encoding="utf-8"))))
+    declared_bytes = sum(
+        int(row[2]) for row in rows if row[0].startswith("rextio/")
+    )
+    source = root / "rextio" / "build.py"
+    original_read = host_inputs._secure_read_regular
+    mutated = False
+
+    def grow_then_read(
+        path: Path,
+        *,
+        label: str,
+        max_bytes: int = 64 * 1024 * 1024,
+        reject_hardlinks: bool,
+    ) -> tuple[bytes, os.stat_result]:
+        nonlocal mutated
+        if path == source:
+            source.write_bytes(source.read_bytes() + b"x")
+            mutated = True
+        return original_read(
+            path,
+            label=label,
+            max_bytes=max_bytes,
+            reject_hardlinks=reject_hardlinks,
+        )
+
+    monkeypatch.setattr(
+        host_inputs, "MAX_FULL_C6_ANALYSIS_SOURCE_BYTES", declared_bytes
+    )
+    monkeypatch.setattr(host_inputs, "_secure_read_regular", grow_then_read)
+
+    with pytest.raises(FullC6HostInputsError, match="package.*cumulative byte bound"):
+        host_inputs._capture_record_backed_rextio_identity(
+            distribution_root=root,
+            record_path=record,
+            module_file=module,
+            version=__version__,
+        )
+    assert mutated
+
+
 def test_record_inventory_rejects_cache_created_between_complete_walks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
