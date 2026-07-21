@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import pickle
 import ctypes
+from dataclasses import fields, replace
 import sys
 import unicodedata
 
@@ -1435,6 +1436,55 @@ def test_tree_hardlink_diagnostic_is_bounded_and_path_opaque(tmp_path: Path) -> 
     assert original.name not in message
     assert str(secret_root) not in message
     assert str(tmp_path) not in message
+
+
+def test_exact_xcode_hardlink_observation_binds_complete_stamp(
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "__clang_cuda_builtin_vars.h"
+    original.write_bytes(b"fixed xcode hardlink observation")
+    try:
+        os.link(original, tmp_path / "alias-one")
+        os.link(original, tmp_path / "alias-two")
+    except OSError as exc:
+        pytest.skip(f"hardlink creation unavailable: {exc}")
+    observed = support_lock._stamp(original.stat())
+    expected_stamp_sha256 = support_lock._xcode_hardlink_full_stamp_sha256(
+        observed
+    )
+
+    with pytest.raises(ToolchainSupportLockError) as captured:
+        support_lock._require_unaliased_regular_tree_inode(
+            observed,
+            set(),
+            target_triple="aarch64-apple-darwin",
+            root_path=Path(
+                "/Applications/Xcode.app/Contents/Developer/Toolchains/"
+                "XcodeDefault.xctoolchain/usr/lib/clang/21"
+            ),
+            logical_role="xcode-clang-resource",
+            relative_path="include/__clang_cuda_builtin_vars.h",
+        )
+
+    message = str(captured.value)
+    assert message == (
+        "toolchain support xcode hardlink observation "
+        "(path=3bbf5e13c9400baf7c260dc5eb3590ee369377ad1f2ec92edba0d6802fe2160e,"
+        f"stamp={expected_stamp_sha256},nlink=3,count=1)"
+    )
+    assert message.isascii()
+    assert len(message) <= 278
+    assert str(tmp_path) not in message
+    assert original.name not in message
+
+    for stamp_field in fields(observed):
+        value = getattr(observed, stamp_field.name)
+        changed_value = 1 if value is None else value + 1
+        changed = replace(observed, **{stamp_field.name: changed_value})
+        assert (
+            support_lock._xcode_hardlink_full_stamp_sha256(changed)
+            != expected_stamp_sha256
+        )
 
 
 def test_manifest_rejects_symlink_and_hardlink(tmp_path: Path) -> None:

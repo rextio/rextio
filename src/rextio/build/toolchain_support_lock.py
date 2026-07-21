@@ -66,6 +66,12 @@ MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES = 1024 * 1024 * 1024
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ROLE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_XCODE_DEFAULT_TOOLCHAIN = Path(
+    "/Applications/Xcode.app/Contents/Developer/Toolchains/"
+    "XcodeDefault.xctoolchain"
+)
+_XCODE_HARDLINK_ROLE = "xcode-clang-resource"
+_XCODE_HARDLINK_RELATIVE_PATH = "include/__clang_cuda_builtin_vars.h"
 _LOCK_FIELDS = {
     "kind",
     "schema_version",
@@ -2053,6 +2059,7 @@ def _capture_tree_once(
         total_bytes = [0]
         root_stamp, root_xattrs = _walk_tree(
             root_fd,
+            target_triple=target_triple,
             root_path=locator._absolute_path,
             logical_role=locator.logical_role,
             relative=PurePosixPath(),
@@ -2175,6 +2182,7 @@ def _capture_tree_once(
 def _walk_tree(
     directory_fd: int,
     *,
+    target_triple: str | None,
     root_path: Path,
     logical_role: str,
     relative: PurePosixPath,
@@ -2235,6 +2243,7 @@ def _walk_tree(
                     )
                 child_final, child_xattrs = _walk_tree(
                     child_fd,
+                    target_triple=target_triple,
                     root_path=root_path,
                     logical_role=logical_role,
                     relative=child_relative,
@@ -2279,6 +2288,8 @@ def _walk_tree(
             _require_unaliased_regular_tree_inode(
                 observed,
                 inode_keys,
+                target_triple=target_triple,
+                root_path=root_path,
                 logical_role=logical_role,
                 relative_path=logical,
             )
@@ -3642,10 +3653,67 @@ def _require_unaliased_inode(
     inode_keys.add(key)
 
 
+def _xcode_hardlink_full_stamp_sha256(value: _FilesystemStamp) -> str:
+    if type(value) is not _FilesystemStamp:
+        raise ToolchainSupportLockError(
+            "toolchain support xcode hardlink stamp is invalid"
+        )
+    return _sha256(
+        {
+            "domain": "rextio.full-c6-xcode-hardlink-full-stamp.v1",
+            "device": value.device,
+            "inode": value.inode,
+            "mode": value.mode,
+            "uid": value.uid,
+            "gid": value.gid,
+            "links": value.links,
+            "size": value.size,
+            "ctime_ns": value.ctime_ns,
+            "mtime_ns": value.mtime_ns,
+            "flags": value.flags,
+            "birthtime_ns": value.birthtime_ns,
+            "blocks": value.blocks,
+            "block_size": value.block_size,
+        }
+    )
+
+
+def _is_exact_xcode_hardlink_observation(
+    *,
+    target_triple: str | None,
+    root_path: Path,
+    logical_role: str,
+    relative_path: str,
+    value: _FilesystemStamp,
+    observation_count: int,
+) -> bool:
+    if (
+        target_triple != "aarch64-apple-darwin"
+        or logical_role != _XCODE_HARDLINK_ROLE
+        or relative_path != _XCODE_HARDLINK_RELATIVE_PATH
+        or value.links != 3
+        or observation_count != 1
+        or not stat.S_ISREG(value.mode)
+    ):
+        return False
+    try:
+        root_relative = root_path.relative_to(_XCODE_DEFAULT_TOOLCHAIN)
+    except ValueError:
+        return False
+    return (
+        len(root_relative.parts) == 4
+        and root_relative.parts[:3] == ("usr", "lib", "clang")
+        and re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}", root_relative.parts[3])
+        is not None
+    )
+
+
 def _require_unaliased_regular_tree_inode(
     value: _FilesystemStamp,
     inode_keys: set[tuple[int, int]],
     *,
+    target_triple: str | None,
+    root_path: Path,
     logical_role: str,
     relative_path: str,
 ) -> None:
@@ -3661,6 +3729,20 @@ def _require_unaliased_regular_tree_inode(
                 "relative_path": _validate_relative_path(relative_path),
             }
         )
+        if _is_exact_xcode_hardlink_observation(
+            target_triple=target_triple,
+            root_path=root_path,
+            logical_role=logical_role,
+            relative_path=relative_path,
+            value=value,
+            observation_count=observation_count,
+        ):
+            stamp_sha256 = _xcode_hardlink_full_stamp_sha256(value)
+            raise ToolchainSupportLockError(
+                "toolchain support xcode hardlink observation "
+                f"(path={path_sha256},stamp={stamp_sha256},"
+                f"nlink={value.links},count={observation_count})"
+            )
         raise ToolchainSupportLockError(
             "toolchain support regular tree member is a shared hardlink "
             f"(logical_role={_validate_role(logical_role)}, "

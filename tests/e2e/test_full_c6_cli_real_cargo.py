@@ -400,14 +400,16 @@ def _xcode_hardlink_alias_message(
     boundary: Path,
     target_relative_path: PurePosixPath,
 ) -> str:
+    from rextio.build import toolchain_support_lock as support_lock
+
     target = boundary.joinpath(*target_relative_path.parts)
-    observed = target.stat()
+    observed = support_lock._stamp(target.stat())
     return harness._bounded_xcode_hardlink_alias_message(
         boundary=boundary,
         target_relative_path=target_relative_path,
-        expected_uid=observed.st_uid,
-        expected_gid=observed.st_gid,
-        expected_mode=observed.st_mode,
+        expected_stamp_sha256=support_lock._xcode_hardlink_full_stamp_sha256(
+            observed
+        ),
     )
 
 
@@ -477,24 +479,33 @@ def test_xcode_hardlink_alias_diagnostic_is_deterministic_bounded_and_opaque(
 def test_xcode_hardlink_alias_diagnostic_trigger_is_exact(changed_field: str) -> None:
     harness = _load_harness_module()
     exact = (
-        "toolchain support regular tree member is a shared hardlink "
-        "(logical_role=xcode-clang-resource, "
-        f"relative_path_sha256={harness._XCODE_HARDLINK_RELATIVE_PATH_SHA256}, "
-        "st_uid=501, st_gid=20, st_mode=33188, st_nlink=3, "
-        "in_root_inode_observation_count=1)"
+        "toolchain support xcode hardlink observation "
+        f"(path={harness._XCODE_HARDLINK_RELATIVE_PATH_SHA256},"
+        f"stamp={'a' * 64},nlink=3,count=1)"
     )
     assert harness._XCODE_HARDLINK_ERROR_RE.fullmatch(exact) is not None
+    diagnostic = harness._format_support_lock_diagnostic(
+        ToolchainSupportLockError(exact)
+    )
+    assert f"ToolchainSupportLockError={exact}" in diagnostic
+    assert len(diagnostic.encode("ascii")) <= 512
     if changed_field.startswith("logical_role="):
-        changed = exact.replace("logical_role=xcode-clang-resource", changed_field)
+        changed = exact.replace(
+            "toolchain support xcode hardlink observation",
+            f"toolchain support xcode hardlink observation {changed_field}",
+        )
     elif changed_field.startswith("relative_path_sha256="):
         changed = exact.replace(
-            f"relative_path_sha256={harness._XCODE_HARDLINK_RELATIVE_PATH_SHA256}",
-            changed_field,
+            f"path={harness._XCODE_HARDLINK_RELATIVE_PATH_SHA256}",
+            changed_field.replace("relative_path_sha256", "path"),
         )
     elif changed_field.startswith("st_nlink="):
-        changed = exact.replace("st_nlink=3", changed_field)
+        changed = exact.replace("nlink=3", changed_field.replace("st_nlink", "nlink"))
     else:
-        changed = exact.replace("in_root_inode_observation_count=1", changed_field)
+        changed = exact.replace(
+            "count=1",
+            changed_field.replace("in_root_inode_observation_count", "count"),
+        )
     assert harness._XCODE_HARDLINK_ERROR_RE.fullmatch(changed) is None
 
 
@@ -556,6 +567,70 @@ def test_xcode_hardlink_alias_diagnostic_fails_closed_on_race(
             boundary=boundary,
             target_relative_path=target_relative_path,
         )
+
+
+def test_xcode_hardlink_alias_diagnostic_rejects_target_replacement_after_error(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness_module()
+    boundary, target_relative_path, paths = _xcode_hardlink_diagnostic_fixture(
+        tmp_path
+    )
+    from rextio.build import toolchain_support_lock as support_lock
+
+    observed = support_lock._stamp(paths[0].stat())
+    expected_stamp_sha256 = support_lock._xcode_hardlink_full_stamp_sha256(
+        observed
+    )
+    paths[0].unlink()
+    paths[0].write_bytes(b"replacement after production observation")
+
+    with pytest.raises(ToolchainSupportLockError, match="target changed"):
+        harness._bounded_xcode_hardlink_alias_message(
+            boundary=boundary,
+            target_relative_path=target_relative_path,
+            expected_stamp_sha256=expected_stamp_sha256,
+        )
+
+
+def test_xcode_hardlink_alias_diagnostic_rechecks_completed_second_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+    boundary, target_relative_path, paths = _xcode_hardlink_diagnostic_fixture(
+        tmp_path
+    )
+    from rextio.build import toolchain_support_lock as support_lock
+
+    observed = support_lock._stamp(paths[0].stat())
+    expected_stamp_sha256 = support_lock._xcode_hardlink_full_stamp_sha256(
+        observed
+    )
+    original = harness._open_xcode_hardlink_target
+    target_open_count = 0
+
+    def mutate_after_second_scan(**kwargs: object) -> object:
+        nonlocal target_open_count
+        target_open_count += 1
+        if target_open_count == 3:
+            paths[2].unlink()
+            paths[2].write_bytes(b"replacement after completed second scan")
+        return original(**kwargs)
+
+    monkeypatch.setattr(
+        harness,
+        "_open_xcode_hardlink_target",
+        mutate_after_second_scan,
+    )
+
+    with pytest.raises(ToolchainSupportLockError, match="target changed"):
+        harness._bounded_xcode_hardlink_alias_message(
+            boundary=boundary,
+            target_relative_path=target_relative_path,
+            expected_stamp_sha256=expected_stamp_sha256,
+        )
+    assert target_open_count == 3
 
 
 @pytest.mark.parametrize(
