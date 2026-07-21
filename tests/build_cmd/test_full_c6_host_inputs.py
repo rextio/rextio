@@ -18,8 +18,9 @@ from types import SimpleNamespace
 
 import pytest
 
+import rextio.analyzer.project_scanner as project_scanner
 from rextio.__about__ import __version__
-from rextio.analyzer.project_scanner import scan_python_files
+from rextio.analyzer.project_scanner import analyze_project, scan_python_files
 from rextio.build import full_c6_host_inputs as host_inputs
 from rextio.build import full_c6_native_output, full_c6_pipeline, full_c6_production
 from rextio.build.full_c6_host_inputs import (
@@ -295,10 +296,30 @@ def _analysis_scope_fixture(
     tmp_path: Path,
     *,
     extra_files: dict[str, bytes] | None = None,
+    project_files: dict[str, bytes] | None = None,
 ) -> tuple[Path, RextioConfig, FullC6AnalysisScope, Path, Path]:
+    project, config, lock, vendor = _analysis_scope_inputs(
+        tmp_path,
+        extra_files=extra_files,
+        project_files=project_files,
+    )
+    scope = collect_full_c6_analysis_scope(project, config=config)
+    return project, config, scope, lock, vendor
+
+
+def _analysis_scope_inputs(
+    tmp_path: Path,
+    *,
+    extra_files: dict[str, bytes] | None = None,
+    project_files: dict[str, bytes] | None = None,
+) -> tuple[Path, RextioConfig, Path, Path]:
     project = (tmp_path / "project").resolve()
     project.mkdir()
     (project / "app.py").write_text("VALUE: int = 1\n", encoding="utf-8")
+    for relative, payload in (project_files or {}).items():
+        path = project.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
     lock, vendor, lock_sha256, vendor_sha256 = _write_cargo_workspace(
         project,
         extra_files=extra_files,
@@ -310,8 +331,7 @@ def _analysis_scope_fixture(
         artifact_cargo_vendor=vendor.relative_to(project).as_posix(),
         artifact_cargo_vendor_sha256=vendor_sha256,
     )
-    scope = collect_full_c6_analysis_scope(project, config=config)
-    return project, config, scope, lock, vendor
+    return project, config, lock, vendor
 
 
 def test_analysis_scope_excludes_only_verified_vendor_python(
@@ -320,11 +340,10 @@ def test_analysis_scope_excludes_only_verified_vendor_python(
     project, config, scope, _lock, vendor = _analysis_scope_fixture(
         tmp_path,
         extra_files={"etc/libc-util.py": b"async = 1\n"},
+        project_files={"cargo-vendor-shadow/helper.py": b"VALUE = 3\n"},
     )
     helper = vendor / "demo-dep-1.2.3" / "etc" / "libc-util.py"
     adjacent = project / "cargo-vendor-shadow" / "helper.py"
-    adjacent.parent.mkdir()
-    adjacent.write_text("VALUE = 3\n", encoding="utf-8")
 
     assert helper in scan_python_files(project)
     strict_files = scan_python_files(
@@ -458,10 +477,12 @@ def test_analysis_scan_fails_when_vendor_changes_between_validations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project, config, scope, _lock, vendor = _analysis_scope_fixture(tmp_path)
-    original = host_inputs.require_full_c6_analysis_scope
+    original = host_inputs.require_full_c6_analysis_files
     calls = 0
 
-    def race(value: object, *, project_root: Path, config: RextioConfig) -> Path:
+    def race(
+        value: object, *, project_root: Path, config: RextioConfig
+    ) -> tuple[Path, ...]:
         nonlocal calls
         result = original(value, project_root=project_root, config=config)
         calls += 1
@@ -472,7 +493,7 @@ def test_analysis_scan_fails_when_vendor_changes_between_validations(
             )
         return result
 
-    monkeypatch.setattr(host_inputs, "require_full_c6_analysis_scope", race)
+    monkeypatch.setattr(host_inputs, "require_full_c6_analysis_files", race)
     with pytest.raises(FullC6HostInputsError):
         scan_python_files(
             project,
@@ -480,6 +501,179 @@ def test_analysis_scan_fails_when_vendor_changes_between_validations(
             full_c6_config=config,
         )
     assert calls == 1
+
+
+def test_analysis_scope_rejects_new_project_python_but_ignores_builtin_output(
+    tmp_path: Path,
+) -> None:
+    project, config, scope, _lock, _vendor = _analysis_scope_fixture(tmp_path)
+    generated = project / ".rextio" / "generated" / "helper.py"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("VALUE = 2\n", encoding="utf-8")
+
+    assert scan_python_files(
+        project,
+        full_c6_analysis_scope=scope,
+        full_c6_config=config,
+    ) == [project / "app.py"]
+
+    (project / "new_source.py").write_text("VALUE = 3\n", encoding="utf-8")
+    with pytest.raises(FullC6HostInputsError, match="namespace changed"):
+        scan_python_files(
+            project,
+            full_c6_analysis_scope=scope,
+            full_c6_config=config,
+        )
+
+
+def test_strict_scanner_uses_sealed_paths_not_caller_rglob(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, config, scope, _lock, _vendor = _analysis_scope_fixture(tmp_path)
+    monkeypatch.setattr(
+        Path,
+        "rglob",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("strict scanner must not rediscover caller paths")
+        ),
+    )
+
+    assert scan_python_files(
+        project,
+        full_c6_analysis_scope=scope,
+        full_c6_config=config,
+    ) == [project / "app.py"]
+
+
+def test_analysis_end_rejects_transient_project_file_move_into_vendor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, config, scope, _lock, vendor = _analysis_scope_fixture(tmp_path)
+    source = project / "app.py"
+    hidden = vendor / "demo-dep-1.2.3" / "temporarily-hidden.py"
+    original = project_scanner._note_plugin_lowerable_accelerated
+
+    def transient_move(analysis: object, plugins: object) -> None:
+        original(analysis, plugins)  # type: ignore[arg-type]
+        source.rename(hidden)
+        hidden.rename(source)
+
+    monkeypatch.setattr(
+        project_scanner,
+        "_note_plugin_lowerable_accelerated",
+        transient_move,
+    )
+
+    with pytest.raises(FullC6HostInputsError, match="Python source changed"):
+        analyze_project(
+            project,
+            plugin_config=config,
+            full_c6_analysis_scope=scope,
+        )
+
+
+def test_strict_namespace_rejects_nonignored_symlink_directory(
+    tmp_path: Path,
+) -> None:
+    project, config, scope, _lock, _vendor = _analysis_scope_fixture(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "hidden.py").write_text("VALUE = 4\n", encoding="utf-8")
+    (project / "alias").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(FullC6HostInputsError, match="path alias"):
+        scan_python_files(
+            project,
+            full_c6_analysis_scope=scope,
+            full_c6_config=config,
+        )
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ("directory-roundtrip", "extra-file-roundtrip", "root-extra-roundtrip"),
+)
+def test_analysis_end_rejects_transient_source_directory_namespace_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attack: str,
+) -> None:
+    project, config, scope, _lock, vendor = _analysis_scope_fixture(
+        tmp_path,
+        project_files={"pkg/module.py": b"VALUE: int = 2\n"},
+    )
+    package = project / "pkg"
+    original = project_scanner._note_plugin_lowerable_accelerated
+
+    def transient_change(analysis: object, plugins: object) -> None:
+        original(analysis, plugins)  # type: ignore[arg-type]
+        if attack == "directory-roundtrip":
+            hidden = vendor / "temporarily-hidden-package"
+            package.rename(hidden)
+            hidden.rename(package)
+        elif attack == "extra-file-roundtrip":
+            extra = package / "temporary.py"
+            extra.write_text("VALUE = 5\n", encoding="utf-8")
+            extra.unlink()
+        else:
+            extra = project / "temporary.py"
+            extra.write_text("VALUE = 6\n", encoding="utf-8")
+            extra.unlink()
+
+    monkeypatch.setattr(
+        project_scanner,
+        "_note_plugin_lowerable_accelerated",
+        transient_change,
+    )
+
+    with pytest.raises(FullC6HostInputsError, match="directory changed"):
+        analyze_project(
+            project,
+            plugin_config=config,
+            full_c6_analysis_scope=scope,
+        )
+
+
+def test_analysis_namespace_public_bounds_are_fixed() -> None:
+    assert host_inputs.MAX_FULL_C6_ANALYSIS_PYTHON_FILES == 1024
+    assert host_inputs.MAX_FULL_C6_ANALYSIS_DIRECTORIES == 4096
+    assert host_inputs.MAX_FULL_C6_ANALYSIS_ENTRIES == 16384
+    assert host_inputs.MAX_FULL_C6_ANALYSIS_SOURCE_BYTES == 256 * 1024 * 1024
+    assert host_inputs.MAX_FULL_C6_ANALYSIS_RELATIVE_CHARS == 512
+    assert host_inputs.MAX_FULL_C6_ANALYSIS_RELATIVE_BYTES == 2048
+    assert host_inputs.MAX_FULL_C6_ANALYSIS_DEPTH == 32
+
+
+@pytest.mark.parametrize(
+    ("constant", "limit", "extra_path", "payload"),
+    (
+        ("MAX_FULL_C6_ANALYSIS_PYTHON_FILES", 1, "extra.py", b"VALUE = 2\n"),
+        ("MAX_FULL_C6_ANALYSIS_DIRECTORIES", 1, "wide/marker.txt", b"x"),
+        ("MAX_FULL_C6_ANALYSIS_ENTRIES", 1, None, None),
+        ("MAX_FULL_C6_ANALYSIS_SOURCE_BYTES", 1, None, None),
+        ("MAX_FULL_C6_ANALYSIS_RELATIVE_CHARS", 5, None, None),
+        ("MAX_FULL_C6_ANALYSIS_DEPTH", 1, "pkg/deep.py", b"VALUE = 3\n"),
+    ),
+)
+def test_analysis_namespace_bounds_fail_closed_before_analysis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    constant: str,
+    limit: int,
+    extra_path: str | None,
+    payload: bytes | None,
+) -> None:
+    project, config, _lock, _vendor = _analysis_scope_inputs(tmp_path)
+    if extra_path is not None and payload is not None:
+        path = project.joinpath(*extra_path.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    monkeypatch.setattr(host_inputs, constant, limit)
+
+    with pytest.raises(FullC6HostInputsError, match="bounded limit"):
+        collect_full_c6_analysis_scope(project, config=config)
 
 
 def test_configured_cargo_workspace_requires_exact_lock_and_vendor_pins(

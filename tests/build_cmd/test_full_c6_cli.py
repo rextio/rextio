@@ -630,8 +630,10 @@ def test_scope_collection_failure_is_redacted_before_analysis(
     project = tmp_path.resolve()
     reports = project / ".rextio" / "reports"
     reports.mkdir(parents=True)
+    stale_payloads: dict[str, bytes] = {}
     for name in ("build.json", "check.json", "generate.json"):
         (reports / name).write_text('{"stale": true}\n', encoding="utf-8")
+        stale_payloads[name] = (reports / name).read_bytes()
     config = RextioConfig(
         build=BuildConfig(
             artifact_distribution_policy="full-c6-required",
@@ -662,15 +664,32 @@ def test_scope_collection_failure_is_redacted_before_analysis(
 
     assert main(["build", os.fspath(project)]) == 1
 
-    report = _report(project)
-    assert report["stage"] == "analysis-scope"
-    assert report["lifecycle"] == "failed"
-    assert report["status"] == "full-c6-required-failed"
-    assert report["distribution_authorized"] is False
-    assert "analysis" not in report
-    serialized = json.dumps(report, sort_keys=True)
-    assert "/private/owner" not in serialized
-    assert not (reports / "check.json").exists()
-    assert not (reports / "generate.json").exists()
+    for name, payload in stale_payloads.items():
+        assert (reports / name).read_bytes() == payload
     captured = capsys.readouterr()
     assert "/private/owner" not in captured.err
+
+
+def test_preanalysis_failure_never_follows_rextio_symlink(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    external = tmp_path / "external"
+    reports = external / "reports"
+    reports.mkdir(parents=True)
+    sentinel = reports / "build.json"
+    sentinel.write_bytes(b"external-owner-data\n")
+    (project / ".rextio").symlink_to(external, target_is_directory=True)
+    reporter, _stdout, stderr = _reporter()
+
+    assert build_cmd._report_full_c6_preanalysis_failure(
+        project,
+        "cpython",
+        FullC6HostInputsError("attacker detail /private/path"),
+        reporter,
+    ) == 1
+
+    assert sentinel.read_bytes() == b"external-owner-data\n"
+    assert tuple(reports.iterdir()) == (sentinel,)
+    assert "/private/path" not in stderr.getvalue()

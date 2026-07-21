@@ -35,6 +35,10 @@ from rextio.analyzer.stub_inputs import (
     capture_sibling_stub_inputs,
 )
 from rextio.analyzer.plugin_claims import ClaimEngine
+from rextio.analyzer.project_namespace import (
+    BUILTIN_IGNORED_PARTS,
+    has_builtin_ignored_part,
+)
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.config.schema import ImportsConfig, RextioConfig
 from rextio.plugins.models import PluginRegistry, RextioPlugin
@@ -46,21 +50,9 @@ if TYPE_CHECKING:
     from rextio.build.full_c6_host_inputs import FullC6AnalysisScope
     from rextio.source.external_linkage import ExternalNativeRegistry
 
-IGNORED_PARTS = {
-    ".git",
-    ".hg",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".rextio",
-    ".ruff_cache",
-    ".tox",
-    ".venv",
-    "__pycache__",
-    "build",
-    "dist",
-    "node_modules",
-    "venv",
-}
+
+# Backward-compatible module constant used by existing analyzer callers/tests.
+IGNORED_PARTS = BUILTIN_IGNORED_PARTS
 
 
 def scan_python_files(
@@ -71,46 +63,52 @@ def scan_python_files(
 ) -> list[Path]:
     """Return project Python files under ordinary or sealed Full C6 rules."""
     root = project_root.resolve()
-    vendor_root: Path | None = None
     if full_c6_analysis_scope is None:
         ignore_patterns = load_rextioignore(root)
+        files = []
+        for path in root.rglob("*.py"):
+            relative = path.relative_to(root)
+            if _is_ignored(relative, ignore_patterns):
+                continue
+            files.append(path)
     else:
         from rextio.build.full_c6_host_inputs import (
             FullC6HostInputsError,
-            require_full_c6_analysis_scope,
+            begin_full_c6_analysis_namespace,
+            finish_full_c6_analysis_namespace,
+            require_full_c6_analysis_files,
         )
 
         if type(full_c6_config) is not RextioConfig:
             raise FullC6HostInputsError(
                 "Full C6 analysis scope lacks its exact typed config"
             )
-        vendor_root = require_full_c6_analysis_scope(
+        observation = begin_full_c6_analysis_namespace(
             full_c6_analysis_scope,
             project_root=root,
             config=full_c6_config,
         )
-        # Custom ignore bytes are not part of the bounded Full C6 input
-        # closure.  Scope validation requires absence, and strict discovery
-        # never reads the file even during a create/delete race.
-        ignore_patterns = []
-    files: list[Path] = []
-    for path in root.rglob("*.py"):
-        relative = path.relative_to(root)
-        if vendor_root is not None and path.is_relative_to(vendor_root):
-            continue
-        if _is_ignored(relative, ignore_patterns):
-            continue
-        files.append(path)
+        files = list(
+            require_full_c6_analysis_files(
+                full_c6_analysis_scope,
+                project_root=root,
+                config=full_c6_config,
+            )
+        )
     result = sorted(files)
     if full_c6_analysis_scope is not None:
         assert full_c6_config is not None  # exact type established above
-        final_vendor_root = require_full_c6_analysis_scope(
+        final_files = require_full_c6_analysis_files(
+            full_c6_analysis_scope, project_root=root, config=full_c6_config
+        )
+        if tuple(result) != final_files:
+            raise FullC6HostInputsError("Full C6 analysis namespace changed")
+        finish_full_c6_analysis_namespace(
             full_c6_analysis_scope,
+            observation,
             project_root=root,
             config=full_c6_config,
         )
-        if final_vendor_root != vendor_root:
-            raise FullC6HostInputsError("Full C6 analysis vendor identity changed")
     return result
 
 
@@ -130,7 +128,7 @@ def load_rextioignore(project_root: Path) -> list[str]:
 
 def _is_ignored(relative: Path, ignore_patterns: list[str]) -> bool:
     parts = relative.parts
-    if any(part in IGNORED_PARTS for part in parts):
+    if has_builtin_ignored_part(relative):
         return True
     relative_text = relative.as_posix()
     for pattern in ignore_patterns:
@@ -178,6 +176,22 @@ def analyze_project(
     root = Path(project_root).resolve()
     target_language = normalize_target_language(target_language)
     analysis = ProjectAnalysis(project_root=root)
+    full_c6_observation: object | None = None
+    if full_c6_analysis_scope is not None:
+        from rextio.build.full_c6_host_inputs import (
+            FullC6HostInputsError,
+            begin_full_c6_analysis_namespace,
+        )
+
+        if type(plugin_config) is not RextioConfig:
+            raise FullC6HostInputsError(
+                "Full C6 analysis scope lacks its exact typed config"
+            )
+        full_c6_observation = begin_full_c6_analysis_namespace(
+            full_c6_analysis_scope,
+            project_root=root,
+            config=plugin_config,
+        )
     files = scan_python_files(
         root,
         full_c6_analysis_scope=full_c6_analysis_scope,
@@ -261,6 +275,28 @@ def analyze_project(
         if plan is not None:
             authorization = verify_external_source_authorization(root, plan)
             analysis.external_source_plan = replace(plan, authorization=authorization)
+    if full_c6_analysis_scope is not None:
+        from rextio.build.full_c6_host_inputs import (
+            FullC6HostInputsError,
+            finish_full_c6_analysis_namespace,
+            require_full_c6_analysis_files,
+        )
+
+        assert plugin_config is not None  # exact type established by strict scan
+        final_files = require_full_c6_analysis_files(
+            full_c6_analysis_scope,
+            project_root=root,
+            config=plugin_config,
+        )
+        if tuple(files) != final_files:
+            raise FullC6HostInputsError("Full C6 analysis namespace changed")
+        assert full_c6_observation is not None
+        finish_full_c6_analysis_namespace(
+            full_c6_analysis_scope,
+            full_c6_observation,
+            project_root=root,
+            config=plugin_config,
+        )
     return analysis
 
 

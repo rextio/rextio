@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     )
 
 from rextio.__about__ import __version__
+from rextio.analyzer.project_namespace import has_builtin_ignored_part
 from rextio.artifacts.profiles import detect_host_target_triple
 from rextio.build.full_c6_cargo_workspace import (
     FullC6CargoDependencyWorkspaceReceipt,
@@ -77,6 +78,13 @@ FULL_C6_CARGO_ARGUMENTS = (
     "--offline",
     "--frozen",
 )
+MAX_FULL_C6_ANALYSIS_PYTHON_FILES = 1024
+MAX_FULL_C6_ANALYSIS_DIRECTORIES = 4096
+MAX_FULL_C6_ANALYSIS_ENTRIES = 16384
+MAX_FULL_C6_ANALYSIS_SOURCE_BYTES = 256 * 1024 * 1024
+MAX_FULL_C6_ANALYSIS_RELATIVE_CHARS = 512
+MAX_FULL_C6_ANALYSIS_RELATIVE_BYTES = 2048
+MAX_FULL_C6_ANALYSIS_DEPTH = 32
 _SUPPORTED_TARGETS = frozenset(
     {"aarch64-apple-darwin", "x86_64-unknown-linux-gnu"}
 )
@@ -129,6 +137,35 @@ class _FileBinding:
     sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class _NamespaceDirectoryBinding:
+    device: int
+    inode: int
+    uid: int
+    mode: int
+    mtime_ns: int
+    ctime_ns: int
+
+    @classmethod
+    def from_stat(cls, value: os.stat_result) -> _NamespaceDirectoryBinding:
+        return cls(
+            device=value.st_dev,
+            inode=value.st_ino,
+            uid=value.st_uid,
+            mode=stat.S_IMODE(value.st_mode),
+            mtime_ns=getattr(
+                value, "st_mtime_ns", int(value.st_mtime * 1_000_000_000)
+            ),
+            ctime_ns=getattr(
+                value, "st_ctime_ns", int(value.st_ctime * 1_000_000_000)
+            ),
+        )
+
+    @property
+    def stable_identity(self) -> tuple[int, int, int, int]:
+        return self.device, self.inode, self.uid, self.mode
+
+
 class FullC6AnalysisScope:
     """Sealed authority to exclude one verified Cargo vendor from analysis.
 
@@ -144,6 +181,8 @@ class FullC6AnalysisScope:
         "_config",
         "_project_binding",
         "_project_root",
+        "_python_directories",
+        "_python_files",
         "_seal",
         "_vendor_binding",
         "_vendor_relative",
@@ -154,6 +193,8 @@ class FullC6AnalysisScope:
     _config: RextioConfig
     _project_binding: _DirectoryBinding
     _project_root: Path
+    _python_directories: tuple[tuple[str, _NamespaceDirectoryBinding], ...]
+    _python_files: tuple[tuple[str, _FileBinding], ...]
     _seal: bytes
     _vendor_binding: _DirectoryBinding
     _vendor_relative: str
@@ -185,6 +226,25 @@ class FullC6AnalysisScope:
 
     def __getstate__(self) -> object:
         raise TypeError("Full C6 analysis scopes cannot be serialized")
+
+
+class _FullC6AnalysisNamespaceObservation:
+    """Process-sealed temporal directory snapshot for one analysis call."""
+
+    __slots__ = ("_directories", "_scope", "_seal")
+
+    _directories: tuple[tuple[str, _NamespaceDirectoryBinding], ...]
+    _scope: FullC6AnalysisScope
+    _seal: bytes
+
+    def __init__(self) -> None:
+        raise TypeError("Full C6 analysis observations require sealed scope")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise TypeError("Full C6 analysis observations are immutable")
+
+    def __reduce__(self) -> str | tuple[object, ...]:
+        raise TypeError("Full C6 analysis observations cannot be serialized")
 
 
 class FullC6PublicationPlan:
@@ -682,9 +742,15 @@ def collect_full_c6_analysis_scope(
         vendor_root,
         label="analysis Cargo vendor",
     )
+    python_files, python_directories = _collect_full_c6_project_python_namespace(
+        root,
+        vendor_root=vendor_root,
+    )
     scope = object.__new__(FullC6AnalysisScope)
     object.__setattr__(scope, "_project_root", root)
     object.__setattr__(scope, "_project_binding", project_binding)
+    object.__setattr__(scope, "_python_directories", python_directories)
+    object.__setattr__(scope, "_python_files", python_files)
     object.__setattr__(scope, "_config", config)
     object.__setattr__(scope, "_cargo_workspace", cargo_workspace)
     object.__setattr__(scope, "_vendor_relative", vendor_relative)
@@ -712,6 +778,94 @@ def require_full_c6_analysis_scope(
         project_root=project_root,
         config=config,
         revalidate_workspace=True,
+    )
+
+
+def require_full_c6_analysis_files(
+    value: object,
+    *,
+    project_root: Path | str,
+    config: RextioConfig,
+) -> tuple[Path, ...]:
+    """Return only the exact sealed Python path set after full revalidation."""
+    _require_full_c6_analysis_scope(
+        value,
+        project_root=project_root,
+        config=config,
+        revalidate_workspace=True,
+    )
+    assert type(value) is FullC6AnalysisScope
+    return tuple(
+        value._project_root.joinpath(*PurePosixPath(relative).parts)
+        for relative, _binding in value._python_files
+    )
+
+
+def begin_full_c6_analysis_namespace(
+    value: object,
+    *,
+    project_root: Path | str,
+    config: RextioConfig,
+) -> object:
+    """Open a temporal namespace observation around one strict analysis."""
+    _require_full_c6_analysis_scope(
+        value,
+        project_root=project_root,
+        config=config,
+        revalidate_workspace=True,
+    )
+    assert type(value) is FullC6AnalysisScope
+    directories = _capture_analysis_scope_directories(value)
+    observation = object.__new__(_FullC6AnalysisNamespaceObservation)
+    object.__setattr__(observation, "_scope", value)
+    object.__setattr__(observation, "_directories", directories)
+    object.__setattr__(observation, "_seal", _analysis_observation_seal(observation))
+    return observation
+
+
+def finish_full_c6_analysis_namespace(
+    value: object,
+    observation: object,
+    *,
+    project_root: Path | str,
+    config: RextioConfig,
+) -> None:
+    """Close one observation and reject any transient directory mutation."""
+    if (
+        type(value) is not FullC6AnalysisScope
+        or type(observation) is not _FullC6AnalysisNamespaceObservation
+        or observation._scope is not value
+        or type(observation._seal) is not bytes
+        or not hmac.compare_digest(
+            observation._seal,
+            _analysis_observation_seal(observation),
+        )
+    ):
+        raise FullC6HostInputsError("Full C6 analysis observation is invalid")
+    _require_full_c6_analysis_scope(
+        value,
+        project_root=project_root,
+        config=config,
+        revalidate_workspace=True,
+    )
+    if _capture_analysis_scope_directories(value) != observation._directories:
+        raise FullC6HostInputsError(
+            "Full C6 project Python directory changed during analysis"
+        )
+
+
+def _capture_analysis_scope_directories(
+    scope: FullC6AnalysisScope,
+) -> tuple[tuple[str, _NamespaceDirectoryBinding], ...]:
+    return tuple(
+        (
+            relative,
+            _capture_namespace_directory_binding(
+                _namespace_directory_path(scope._project_root, relative),
+                label="analysis project Python directory",
+            ),
+        )
+        for relative, _binding in scope._python_directories
     )
 
 
@@ -760,6 +914,12 @@ def _require_full_c6_analysis_scope(
         label="analysis Cargo vendor",
     )
     _require_strict_rextioignore_absent(root)
+    _verify_full_c6_project_python_namespace(
+        root,
+        vendor_root=expected_vendor,
+        expected_files=value._python_files,
+        expected_directories=value._python_directories,
+    )
     if revalidate_workspace:
         fresh_workspace = _collect_configured_cargo_workspace(root, config)
         if not hmac.compare_digest(
@@ -768,6 +928,232 @@ def _require_full_c6_analysis_scope(
         ):
             raise FullC6HostInputsError("Full C6 analysis Cargo authority changed")
     return expected_vendor
+
+
+def _collect_full_c6_project_python_namespace(
+    root: Path,
+    *,
+    vendor_root: Path,
+) -> tuple[
+    tuple[tuple[str, _FileBinding], ...],
+    tuple[tuple[str, _NamespaceDirectoryBinding], ...],
+]:
+    """Capture the exact built-in-filtered project Python namespace."""
+    relative_paths = _discover_full_c6_project_python_paths(
+        root,
+        vendor_root=vendor_root,
+    )
+    bound_files: list[tuple[str, _FileBinding]] = []
+    aggregate_bytes = 0
+    for relative in relative_paths:
+        binding = _capture_file_binding(
+            root.joinpath(*PurePosixPath(relative).parts),
+            label="analysis project Python source",
+        )
+        aggregate_bytes += binding.size
+        if aggregate_bytes > MAX_FULL_C6_ANALYSIS_SOURCE_BYTES:
+            raise FullC6HostInputsError(
+                "Full C6 project Python source bytes exceed the bounded limit"
+            )
+        bound_files.append((relative, binding))
+    bindings = tuple(bound_files)
+    directory_bindings = tuple(
+        (
+            relative,
+            _capture_namespace_directory_binding(
+                _namespace_directory_path(root, relative),
+                label="analysis project Python directory",
+            ),
+        )
+        for relative in _python_namespace_directory_paths(relative_paths)
+    )
+    _verify_full_c6_project_python_namespace(
+        root,
+        vendor_root=vendor_root,
+        expected_files=bindings,
+        expected_directories=directory_bindings,
+    )
+    return bindings, directory_bindings
+
+
+def _verify_full_c6_project_python_namespace(
+    root: Path,
+    *,
+    vendor_root: Path,
+    expected_files: tuple[tuple[str, _FileBinding], ...],
+    expected_directories: tuple[tuple[str, _NamespaceDirectoryBinding], ...],
+) -> None:
+    observed_paths = _discover_full_c6_project_python_paths(
+        root,
+        vendor_root=vendor_root,
+    )
+    expected_paths = tuple(relative for relative, _binding in expected_files)
+    if observed_paths != expected_paths:
+        raise FullC6HostInputsError("Full C6 project Python namespace changed")
+    observed_directory_paths = _python_namespace_directory_paths(observed_paths)
+    expected_directory_paths = tuple(
+        relative for relative, _binding in expected_directories
+    )
+    if observed_directory_paths != expected_directory_paths:
+        raise FullC6HostInputsError("Full C6 project Python directory set changed")
+    for relative, directory_binding in expected_directories:
+        observed = _capture_namespace_directory_binding(
+            _namespace_directory_path(root, relative),
+            label="analysis project Python directory",
+        )
+        # Full C6 itself may create fixed built-in-ignored roots (``.rextio``
+        # and ``dist``) between analyses, which legitimately changes only the
+        # project root timestamps.  Root replacement is still blocked by the
+        # stable identity; exact source-file ctime/inode bindings catch a
+        # transient root-level Python move.  Every nested source directory is
+        # held to the complete temporal binding.
+        if relative == "":
+            if observed.stable_identity != directory_binding.stable_identity:
+                raise FullC6HostInputsError(
+                    "Full C6 project Python root directory changed"
+                )
+        elif observed != directory_binding:
+            raise FullC6HostInputsError(
+                "Full C6 project Python directory changed"
+            )
+    for relative, file_binding in expected_files:
+        _verify_file_binding(
+            root.joinpath(*PurePosixPath(relative).parts),
+            file_binding,
+            label="analysis project Python source",
+        )
+
+
+def _python_namespace_directory_paths(
+    python_paths: tuple[str, ...],
+) -> tuple[str, ...]:
+    directories = {""}
+    for relative in python_paths:
+        parent = PurePosixPath(relative).parent
+        while parent != PurePosixPath("."):
+            directories.add(parent.as_posix())
+            parent = parent.parent
+    return tuple(sorted(directories))
+
+
+def _namespace_directory_path(root: Path, relative: str) -> Path:
+    if relative == "":
+        return root
+    return root.joinpath(*PurePosixPath(relative).parts)
+
+
+def _discover_full_c6_project_python_paths(
+    root: Path,
+    *,
+    vendor_root: Path,
+) -> tuple[str, ...]:
+    """Discover names for collection/validation, never for scanner authority."""
+    discovered: list[str] = []
+    traversed_directories = 1
+    observed_entries = 0
+    pending = [root]
+    try:
+        while pending:
+            current = pending.pop()
+            descriptor = _open_absolute_directory_no_follow(
+                current,
+                label="analysis project Python namespace",
+            )
+            try:
+                with os.scandir(descriptor) as iterator:
+                    entries = iterator
+                    for entry in entries:
+                        observed_entries += 1
+                        if observed_entries > MAX_FULL_C6_ANALYSIS_ENTRIES:
+                            raise FullC6HostInputsError(
+                                "Full C6 project namespace entries exceed the bounded limit"
+                            )
+                        name = entry.name
+                        if (
+                            not name
+                            or name in {".", ".."}
+                            or name != unicodedata.normalize("NFC", name)
+                            or "/" in name
+                            or "\\" in name
+                        ):
+                            raise FullC6HostInputsError(
+                                "Full C6 project namespace entry is invalid"
+                            )
+                        candidate = current / name
+                        relative = candidate.relative_to(root)
+                        if has_builtin_ignored_part(relative):
+                            continue
+                        if candidate == vendor_root or candidate.is_relative_to(
+                            vendor_root
+                        ):
+                            continue
+                        try:
+                            observed = entry.stat(follow_symlinks=False)
+                        except OSError as exc:
+                            raise FullC6HostInputsError(
+                                "Full C6 project namespace changed during discovery"
+                            ) from exc
+                        if stat.S_ISLNK(observed.st_mode):
+                            raise FullC6HostInputsError(
+                                "Full C6 project Python namespace contains a path alias"
+                            )
+                        if stat.S_ISDIR(observed.st_mode):
+                            traversed_directories += 1
+                            if (
+                                traversed_directories
+                                > MAX_FULL_C6_ANALYSIS_DIRECTORIES
+                            ):
+                                raise FullC6HostInputsError(
+                                    "Full C6 project Python directories exceed the bounded limit"
+                                )
+                            pending.append(candidate)
+                            continue
+                        if not stat.S_ISREG(observed.st_mode):
+                            raise FullC6HostInputsError(
+                                "Full C6 project Python namespace contains a special entry"
+                            )
+                        if not name.endswith(".py"):
+                            continue
+                        logical = relative.as_posix()
+                        if (
+                            not logical
+                            or logical != unicodedata.normalize("NFC", logical)
+                            or "\\" in logical
+                            or any(
+                                part in {"", ".", ".."}
+                                for part in PurePosixPath(logical).parts
+                            )
+                        ):
+                            raise FullC6HostInputsError(
+                                "Full C6 project Python namespace path is invalid"
+                            )
+                        if (
+                            len(logical) > MAX_FULL_C6_ANALYSIS_RELATIVE_CHARS
+                            or len(logical.encode("utf-8"))
+                            > MAX_FULL_C6_ANALYSIS_RELATIVE_BYTES
+                            or len(PurePosixPath(logical).parts)
+                            > MAX_FULL_C6_ANALYSIS_DEPTH
+                        ):
+                            raise FullC6HostInputsError(
+                                "Full C6 project Python path exceeds the bounded limit"
+                            )
+                        discovered.append(logical)
+                        if len(discovered) > MAX_FULL_C6_ANALYSIS_PYTHON_FILES:
+                            raise FullC6HostInputsError(
+                                "Full C6 project Python files exceed the bounded limit"
+                            )
+            finally:
+                os.close(descriptor)
+    except FullC6HostInputsError:
+        raise
+    except OSError as exc:
+        raise FullC6HostInputsError(
+            "Full C6 project Python namespace could not be discovered"
+        ) from exc
+    ordered = tuple(sorted(discovered))
+    if len(ordered) != len(set(ordered)):
+        raise FullC6HostInputsError("Full C6 project Python namespace is ambiguous")
+    return ordered
 
 
 @contextmanager
@@ -1830,6 +2216,21 @@ def _capture_file_binding(path: Path, *, label: str) -> _FileBinding:
     )
 
 
+def _capture_namespace_directory_binding(
+    path: Path,
+    *,
+    label: str,
+) -> _NamespaceDirectoryBinding:
+    descriptor = _open_absolute_directory_no_follow(path, label=label)
+    try:
+        observed = os.fstat(descriptor)
+        if not stat.S_ISDIR(observed.st_mode):
+            raise FullC6HostInputsError(f"Full C6 {label} is not a directory")
+        return _NamespaceDirectoryBinding.from_stat(observed)
+    finally:
+        os.close(descriptor)
+
+
 def _verify_file_binding(path: Path, expected: _FileBinding, *, label: str) -> None:
     observed = _capture_file_binding(path, label=label)
     if observed != expected:
@@ -2095,6 +2496,15 @@ def _analysis_scope_seal(value: FullC6AnalysisScope) -> bytes:
             "cargo_workspace": getattr(value._cargo_workspace, "digest", None),
             "vendor_relative": value._vendor_relative,
             "rextioignore_policy": "strict-absent",
+            "python_namespace_bounds": {
+                "files": MAX_FULL_C6_ANALYSIS_PYTHON_FILES,
+                "directories": MAX_FULL_C6_ANALYSIS_DIRECTORIES,
+                "entries": MAX_FULL_C6_ANALYSIS_ENTRIES,
+                "source_bytes": MAX_FULL_C6_ANALYSIS_SOURCE_BYTES,
+                "relative_chars": MAX_FULL_C6_ANALYSIS_RELATIVE_CHARS,
+                "relative_bytes": MAX_FULL_C6_ANALYSIS_RELATIVE_BYTES,
+                "depth": MAX_FULL_C6_ANALYSIS_DEPTH,
+            },
         },
         "paths": {
             "project": hashlib.sha256(
@@ -2108,6 +2518,28 @@ def _analysis_scope_seal(value: FullC6AnalysisScope) -> bytes:
             "project": _directory_binding_payload(value._project_binding),
             "vendor": _directory_binding_payload(value._vendor_binding),
         },
+        "python_namespace": [
+            (relative, _file_binding_payload(binding))
+            for relative, binding in value._python_files
+        ],
+        "python_directories": [
+            (relative, _namespace_directory_binding_payload(binding))
+            for relative, binding in value._python_directories
+        ],
+    }
+    return hmac.new(_SEAL_KEY, _canonical_bytes(payload), hashlib.sha256).digest()
+
+
+def _analysis_observation_seal(
+    value: _FullC6AnalysisNamespaceObservation,
+) -> bytes:
+    payload = {
+        "domain": f"{FULL_C6_ANALYSIS_SCOPE_DOMAIN}.observation",
+        "scope": id(value._scope),
+        "directories": [
+            (relative, _namespace_directory_binding_payload(binding))
+            for relative, binding in value._directories
+        ],
     }
     return hmac.new(_SEAL_KEY, _canonical_bytes(payload), hashlib.sha256).digest()
 
@@ -2169,6 +2601,19 @@ def _file_binding_payload(value: _FileBinding) -> tuple[object, ...]:
     )
 
 
+def _namespace_directory_binding_payload(
+    value: _NamespaceDirectoryBinding,
+) -> tuple[int, int, int, int, int, int]:
+    return (
+        value.device,
+        value.inode,
+        value.uid,
+        value.mode,
+        value.mtime_ns,
+        value.ctime_ns,
+    )
+
+
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(
         value,
@@ -2183,11 +2628,21 @@ __all__ = [
     "FULL_C6_ANALYSIS_SCOPE_DOMAIN",
     "FULL_C6_HOST_INPUTS_DOMAIN",
     "FULL_C6_SOURCE_DATE_EPOCH",
+    "MAX_FULL_C6_ANALYSIS_DEPTH",
+    "MAX_FULL_C6_ANALYSIS_DIRECTORIES",
+    "MAX_FULL_C6_ANALYSIS_ENTRIES",
+    "MAX_FULL_C6_ANALYSIS_PYTHON_FILES",
+    "MAX_FULL_C6_ANALYSIS_RELATIVE_BYTES",
+    "MAX_FULL_C6_ANALYSIS_RELATIVE_CHARS",
+    "MAX_FULL_C6_ANALYSIS_SOURCE_BYTES",
     "FullC6AnalysisScope",
     "FullC6HostInputsError",
     "FullC6HostPrerequisites",
     "FullC6PublicationPlan",
+    "begin_full_c6_analysis_namespace",
     "collect_full_c6_analysis_scope",
     "collect_full_c6_host_prerequisites",
+    "require_full_c6_analysis_files",
     "require_full_c6_analysis_scope",
+    "finish_full_c6_analysis_namespace",
 ]

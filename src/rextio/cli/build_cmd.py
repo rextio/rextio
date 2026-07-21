@@ -278,34 +278,12 @@ def _report_full_c6_preanalysis_failure(
     error: FullC6HostInputsError,
     reporter: Reporter,
 ) -> int:
-    """Report deterministic strict failure before any ProjectAnalysis exists."""
-    del error  # Never serialize host paths or attacker-controlled detail.
-    reports_dir = project_root / ".rextio" / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    for stale in ("build.json", "generate.json", "check.json"):
-        (reports_dir / stale).unlink(missing_ok=True)
+    """Report strict pre-analysis failure without touching untrusted paths."""
+    # No project-relative file transaction is safe yet: in particular,
+    # ``.rextio`` may be an attacker-controlled symlink.  Keep this stage
+    # stderr-only and never serialize host paths or attacker detail.
+    del project_root, fallback, error
     public_message = "RXT060 strict Full C6 analysis scope failed closed."
-    (reports_dir / "build.json").write_text(
-        json.dumps(
-            {
-                "contract_version": TOOLING_CONTRACT_VERSION,
-                "distribution_authorized": False,
-                "error": {
-                    "code": "RXT060",
-                    "domain": "FullC6HostInputsError",
-                    "message": public_message,
-                },
-                "fallback": fallback,
-                "lifecycle": "failed",
-                "stage": "analysis-scope",
-                "status": "full-c6-required-failed",
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
     reporter.error(public_message)
     reporter.error(
         "Suggestion: verify the exact project root, absent custom ignore file, "
