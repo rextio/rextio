@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+from rextio.build import runtime_authorization as runtime_authorization_module
 from rextio.artifacts.evidence import (
     NativeRuntimeDependency,
     NativeRuntimeInventory,
@@ -454,6 +455,109 @@ def test_rejects_dynamic_loader_symbol_family(tmp_path: Path, symbol: str) -> No
     result = _authorize(_case(tmp_path), symbols=(symbol,))
 
     assert result.reason == REASON_IMPORTED_SYMBOL
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "dlsym@GLIBC_2.2.5 (2)",
+        "__dlopen@@GLIBC_2.34 (17)",
+        "__libc_dlvsym_private@GLIBC_PRIVATE (65535)",
+    ],
+)
+def test_rejects_versioned_dynamic_loader_symbol_with_index(
+    tmp_path: Path, symbol: str
+) -> None:
+    result = _authorize(_case(tmp_path), symbols=(symbol,))
+
+    assert result.reason == REASON_IMPORTED_SYMBOL
+
+
+def test_elf_import_parser_preserves_symbol_version_and_index() -> None:
+    output = """
+Symbol table '.dynsym' contains 4 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND
+     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND PyLong_FromLong
+     2: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND memcpy@GLIBC_2.14 (2)
+     3: 0000000000000000     0 FUNC    GLOBAL DEFAULT    7 local_definition
+"""
+
+    records = runtime_authorization_module._parse_elf_imported_symbols(output)
+
+    assert tuple(record.symbol for record in records) == (
+        "PyLong_FromLong",
+        "memcpy@GLIBC_2.14",
+    )
+    assert tuple(record.version_index for record in records) == (None, 2)
+    assert tuple(record.canonical_token for record in records) == (
+        "PyLong_FromLong",
+        "memcpy@GLIBC_2.14 (2)",
+    )
+
+
+@pytest.mark.parametrize(
+    "blank_row",
+    [
+        "1: 0000000000000000 0 NOTYPE LOCAL DEFAULT UND",
+        "0: 0000000000000001 0 NOTYPE LOCAL DEFAULT UND",
+        "0: 0000000000000000 1 NOTYPE LOCAL DEFAULT UND",
+        "0: 0000000000000000 0 FUNC LOCAL DEFAULT UND",
+        "0: 0000000000000000 0 NOTYPE GLOBAL DEFAULT UND",
+        "0: 0000000000000000 0 NOTYPE LOCAL HIDDEN UND",
+    ],
+)
+def test_elf_import_parser_rejects_noncanonical_blank_numbered_rows(
+    blank_row: str,
+) -> None:
+    with pytest.raises(RuntimeAuthorizationError):
+        runtime_authorization_module._parse_elf_imported_symbols(blank_row)
+
+
+def test_linux_symbol_inspection_keeps_gnu_version_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extension = tmp_path / "native.so"
+    extension.write_bytes(b"native")
+    output = (
+        "  4: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND "
+        "memcpy@GLIBC_2.14 (2)\n"
+    )
+    monkeypatch.setattr(
+        runtime_authorization_module,
+        "_run_inspector",
+        lambda command: output
+        if command == ("/usr/bin/readelf", "-Ws", str(extension))
+        else "",
+    )
+
+    assert runtime_authorization_module._inspect_imported_symbols(
+        extension, "x86_64-unknown-linux-gnu"
+    ) == ("memcpy@GLIBC_2.14 (2)",)
+
+
+@pytest.mark.parametrize(
+    "raw_name",
+    [
+        "memcpy (2)",
+        "memcpy@GLIBC_2.14 (0)",
+        "memcpy@GLIBC_2.14 (02)",
+        "memcpy@GLIBC_2.14 (65536)",
+        "memcpy@GLIBC_2.14 (two)",
+        "memcpy@GLIBC_2.14 (2) trailing",
+        "memcpy@GLIBC_2.14@OTHER (2)",
+    ],
+)
+def test_elf_import_parser_rejects_noncanonical_version_records(
+    raw_name: str,
+) -> None:
+    output = (
+        "  4: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND "
+        f"{raw_name}\n"
+    )
+
+    with pytest.raises(RuntimeAuthorizationError):
+        runtime_authorization_module._parse_elf_imported_symbols(output)
 
 
 def test_rejects_platform_base_mismatch(tmp_path: Path) -> None:

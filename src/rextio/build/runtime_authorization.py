@@ -94,6 +94,9 @@ _FORBIDDEN_ELF_TAGS = frozenset(
 )
 _FORBIDDEN_DYNAMIC_SYMBOL_PARTS = ("dlopen", "dlmopen", "dlsym", "dlvsym")
 _SAFE_DEPENDENCY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,254}$")
+_SAFE_ELF_IMPORTED_SYMBOL = re.compile(
+    r"^[^@()\s]{1,512}(?:@@?[A-Za-z0-9_][A-Za-z0-9_.+-]{0,254})?$"
+)
 _LINUX_LOADER_ENVIRONMENT = frozenset(
     {
         "GLIBC_TUNABLES",
@@ -133,6 +136,37 @@ ImportAction = Callable[[], object]
 
 class RuntimeAuthorizationError(RuntimeError):
     """A low-level runtime identity or inspection operation failed closed."""
+
+
+@dataclass(frozen=True, slots=True)
+class _ElfImportedSymbol:
+    """One GNU readelf undefined-symbol record with its version index."""
+
+    symbol: str
+    version_index: int | None
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.symbol) is not str
+            or _SAFE_ELF_IMPORTED_SYMBOL.fullmatch(self.symbol) is None
+            or (
+                self.version_index is not None
+                and (
+                    type(self.version_index) is not int
+                    or isinstance(self.version_index, bool)
+                    or not 1 <= self.version_index <= 0xFFFF
+                    or "@" not in self.symbol
+                )
+            )
+        ):
+            raise ValueError("ELF imported-symbol record is invalid")
+
+    @property
+    def canonical_token(self) -> str:
+        """Preserve the symbol version and GNU version-table index."""
+        if self.version_index is None:
+            return self.symbol
+        return f"{self.symbol} ({self.version_index})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1084,7 +1118,11 @@ def _has_forbidden_load_construct(commands: tuple[str, ...], format_name: str) -
 
 
 def _is_forbidden_dynamic_symbol(symbol: str) -> bool:
-    normalized = symbol.split("@", 1)[0].lstrip("_").casefold()
+    # GNU readelf appends a separate version-table index, for example
+    # ``dlsym@GLIBC_2.34 (2)``.  Inspect the lookup name rather than the
+    # suffix so a version or index cannot hide a forbidden loader primitive.
+    raw_symbol = symbol.split(" ", 1)[0]
+    normalized = raw_symbol.split("@", 1)[0].lstrip("_").casefold()
     return any(part in normalized for part in _FORBIDDEN_DYNAMIC_SYMBOL_PARTS)
 
 
@@ -1130,11 +1168,60 @@ def _inspect_imported_symbols(path: Path, target_triple: str) -> tuple[str, ...]
         output = _run_inspector(("/usr/bin/nm", "-u", str(path)))
         return tuple(line.split()[-1] for line in output.splitlines() if line.split())
     output = _run_inspector(("/usr/bin/readelf", "-Ws", str(path)))
-    symbols: list[str] = []
+    return tuple(
+        record.canonical_token for record in _parse_elf_imported_symbols(output)
+    )
+
+
+def _parse_elf_imported_symbols(output: str) -> tuple[_ElfImportedSymbol, ...]:
+    """Parse only GNU readelf ``UND`` rows without losing version indexes."""
+    if type(output) is not str:
+        raise RuntimeAuthorizationError("ELF imported-symbol output is invalid")
+    symbols: list[_ElfImportedSymbol] = []
     for line in output.splitlines():
-        fields = line.split()
-        if "UND" in fields and fields:
-            symbols.append(fields[-1])
+        stripped = line.strip()
+        if re.match(r"^\d+:\s", stripped) is None:
+            continue
+        fields = stripped.split(maxsplit=7)
+        if fields == [
+            "0:",
+            "0000000000000000",
+            "0",
+            "NOTYPE",
+            "LOCAL",
+            "DEFAULT",
+            "UND",
+        ]:
+            # GNU readelf renders the mandatory ELF null symbol as a blank
+            # undefined row.  It is structural metadata, not an import.
+            continue
+        if len(fields) != 8:
+            raise RuntimeAuthorizationError("ELF imported-symbol row is invalid")
+        if fields[6] != "UND":
+            continue
+        raw_name = fields[7]
+        match = re.fullmatch(
+            r"(?P<symbol>\S+?)(?:\s+\((?P<version_index>[1-9][0-9]{0,4})\))?",
+            raw_name,
+        )
+        if match is None:
+            raise RuntimeAuthorizationError("ELF imported-symbol name is invalid")
+        version_index_text = match.group("version_index")
+        try:
+            symbols.append(
+                _ElfImportedSymbol(
+                    symbol=match.group("symbol"),
+                    version_index=(
+                        None
+                        if version_index_text is None
+                        else int(version_index_text, 10)
+                    ),
+                )
+            )
+        except ValueError as exc:
+            raise RuntimeAuthorizationError(
+                "ELF imported-symbol name is invalid"
+            ) from exc
     return tuple(symbols)
 
 
