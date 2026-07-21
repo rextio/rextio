@@ -720,6 +720,323 @@ def test_xcode_hardlink_alias_diagnostic_enforces_scan_bounds(
         )
 
 
+def _xcode_hardlink_topology_fixture(
+    tmp_path: Path,
+) -> tuple[Path, Path, tuple[Path, ...]]:
+    app_boundary = tmp_path / "secret-Xcode.app"
+    support_root = (
+        app_boundary
+        / "Contents/Developer/Toolchains/XcodeDefault.xctoolchain"
+        / "usr/lib/clang/21"
+    )
+    first_group = (
+        support_root / "include/secret-first-member.h",
+        support_root / "share/secret-first-copy.h",
+        app_boundary / "Contents/Shared/secret-first-third.h",
+    )
+    second_group = (
+        support_root / "lib/secret-second-member.a",
+        app_boundary / "Contents/Other/secret-second-copy.a",
+    )
+    paths = (*first_group, *second_group)
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    first_group[0].write_bytes(b"first opaque hardlink topology group")
+    second_group[0].write_bytes(b"second opaque hardlink topology group")
+    try:
+        for path in first_group[1:]:
+            os.link(first_group[0], path)
+        os.link(second_group[0], second_group[1])
+        (support_root / "secret-file-symlink").symlink_to(first_group[0])
+        (support_root / "secret-directory-symlink").symlink_to(
+            first_group[0].parent,
+            target_is_directory=True,
+        )
+    except OSError as exc:
+        pytest.skip(f"hardlink or symlink creation unavailable: {exc}")
+    return support_root, app_boundary, paths
+
+
+def test_xcode_hardlink_topology_is_deterministic_opaque_and_nofollow(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness_module()
+    support_root, app_boundary, paths = _xcode_hardlink_topology_fixture(
+        tmp_path
+    )
+
+    message = harness._bounded_xcode_hardlink_topology_message(
+        support_root=support_root,
+        app_boundary=app_boundary,
+    )
+    repeated = harness._bounded_xcode_hardlink_topology_message(
+        support_root=support_root,
+        app_boundary=app_boundary,
+    )
+
+    assert repeated == message
+    assert message.startswith(
+        "toolchain support xcode hardlink topology "
+        "(groups=2,support_members=3,aliases=5,policy_merkle="
+    )
+    assert message.endswith(")")
+    policy_merkle, observation_merkle = (
+        message.removesuffix(")")
+        .rsplit("policy_merkle=", 1)[1]
+        .split(",observation_merkle=", 1)
+    )
+    for merkle in (policy_merkle, observation_merkle):
+        assert len(merkle) == 64
+        assert all(character in "0123456789abcdef" for character in merkle)
+    assert message.isascii()
+    assert len(message) <= 278
+    assert str(app_boundary) not in message
+    assert str(support_root) not in message
+    for path in paths:
+        assert path.name not in message
+    assert "secret-file-symlink" not in message
+    assert "secret-directory-symlink" not in message
+    diagnostic = harness._format_support_lock_diagnostic(
+        ToolchainSupportLockError(message)
+    )
+    assert f"ToolchainSupportLockError={message}" in diagnostic
+    assert len(diagnostic.encode("ascii")) <= 512
+
+
+def test_xcode_hardlink_topology_merkle_binds_group_stamp(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness_module()
+    support_root, app_boundary, paths = _xcode_hardlink_topology_fixture(
+        tmp_path
+    )
+    before = harness._bounded_xcode_hardlink_topology_message(
+        support_root=support_root,
+        app_boundary=app_boundary,
+    )
+
+    with paths[0].open("ab") as stream:
+        stream.write(b" changed")
+
+    after = harness._bounded_xcode_hardlink_topology_message(
+        support_root=support_root,
+        app_boundary=app_boundary,
+    )
+    before_policy, before_observation = (
+        before.removesuffix(")")
+        .rsplit("policy_merkle=", 1)[1]
+        .split(",observation_merkle=", 1)
+    )
+    after_policy, after_observation = (
+        after.removesuffix(")")
+        .rsplit("policy_merkle=", 1)[1]
+        .split(",observation_merkle=", 1)
+    )
+    assert after_policy == before_policy
+    assert after_observation != before_observation
+    assert "groups=2,support_members=3,aliases=5" in after
+
+
+@pytest.mark.parametrize(
+    ("constant", "value", "match"),
+    [
+        ("_XCODE_HARDLINK_MAX_ENTRIES", 1, "entry bound"),
+        ("_XCODE_HARDLINK_APP_MAX_ENTRIES", 1, "entry bound"),
+        ("_XCODE_HARDLINK_MAX_DEPTH", 2, "path bound"),
+        ("_XCODE_HARDLINK_MAX_PATH_BYTES", 10, "path bound"),
+        ("_XCODE_HARDLINK_TOPOLOGY_MAX_GROUPS", 1, "group bound"),
+        ("_XCODE_HARDLINK_TOPOLOGY_MAX_MEMBERS", 2, "alias bound"),
+    ],
+)
+def test_xcode_hardlink_topology_enforces_bounds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    constant: str,
+    value: int,
+    match: str,
+) -> None:
+    harness = _load_harness_module()
+    support_root, app_boundary, _paths = _xcode_hardlink_topology_fixture(
+        tmp_path
+    )
+    monkeypatch.setattr(harness, constant, value)
+
+    with pytest.raises(ToolchainSupportLockError, match=match):
+        harness._bounded_xcode_hardlink_topology_message(
+            support_root=support_root,
+            app_boundary=app_boundary,
+        )
+
+
+def test_xcode_hardlink_topology_rejects_drift_after_scans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+    support_root, app_boundary, paths = _xcode_hardlink_topology_fixture(
+        tmp_path
+    )
+    original = harness._open_xcode_topology_regular
+    mutated = False
+
+    def mutate_before_final_stamp(**kwargs: object) -> None:
+        nonlocal mutated
+        if not mutated:
+            mutated = True
+            paths[2].unlink()
+            paths[2].write_bytes(b"replacement after completed scans")
+        original(**kwargs)
+
+    monkeypatch.setattr(
+        harness,
+        "_open_xcode_topology_regular",
+        mutate_before_final_stamp,
+    )
+
+    with pytest.raises(ToolchainSupportLockError, match="final stamp changed"):
+        harness._bounded_xcode_hardlink_topology_message(
+            support_root=support_root,
+            app_boundary=app_boundary,
+        )
+    assert mutated
+
+
+def test_xcode_generic_hardlink_trigger_is_exact_and_wire_safe() -> None:
+    harness = _load_harness_module()
+    message = (
+        "toolchain support regular tree member is a shared hardlink "
+        "(logical_role=xcode-clang-resource, "
+        f"relative_path_sha256={'b' * 64}, st_uid=0, st_gid=0, "
+        "st_mode=33188, st_nlink=3, "
+        "in_root_inode_observation_count=1)"
+    )
+
+    assert harness._XCODE_GENERIC_HARDLINK_ERROR_RE.fullmatch(message) is not None
+    assert (
+        harness._XCODE_GENERIC_HARDLINK_ERROR_RE.fullmatch(
+            message.replace("xcode-clang-resource", "xcode-sdk")
+        )
+        is None
+    )
+    topology = (
+        "toolchain support xcode hardlink topology "
+        f"(groups=999,support_members=9999,aliases=9999,"
+        f"policy_merkle={'e' * 64},observation_merkle={'f' * 64})"
+    )
+    diagnostic = harness._format_support_lock_diagnostic(
+        ToolchainSupportLockError(topology)
+    )
+    assert f"ToolchainSupportLockError={topology}" in diagnostic
+    assert len(diagnostic.encode("ascii")) <= 512
+
+
+def _xcode_topology_diagnostic_plan(
+    *,
+    target: str = "aarch64-apple-darwin",
+    role: str = "xcode-clang-resource",
+    root: Path | None = None,
+    duplicate_root: bool = False,
+) -> object:
+    from rextio.build import full_c6_toolchain_support as support
+
+    class Locator:
+        pass
+
+    locator = Locator()
+    locator.logical_role = role
+    locator._absolute_path = root or Path(
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/"
+        "XcodeDefault.xctoolchain/usr/lib/clang/21"
+    )
+    plan = object.__new__(support.FullC6ToolchainSupportPlan)
+    object.__setattr__(plan, "_target_triple", target)
+    object.__setattr__(
+        plan,
+        "_root_locators",
+        (locator, locator) if duplicate_root else (locator,),
+    )
+    return plan
+
+
+def test_xcode_topology_diagnostic_accepts_only_exact_fixed_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+    plan = _xcode_topology_diagnostic_plan()
+    error = ToolchainSupportLockError(
+        "toolchain support regular tree member is a shared hardlink "
+        "(logical_role=xcode-clang-resource, "
+        f"relative_path_sha256={'b' * 64}, st_uid=0, st_gid=0, "
+        "st_mode=33188, st_nlink=3, "
+        "in_root_inode_observation_count=1)"
+    )
+    observed: list[tuple[Path, Path]] = []
+
+    def topology(*, support_root: Path, app_boundary: Path) -> str:
+        observed.append((support_root, app_boundary))
+        return "exact topology"
+
+    monkeypatch.setattr(
+        harness,
+        "_bounded_xcode_hardlink_topology_message",
+        topology,
+    )
+
+    assert harness._diagnose_xcode_hardlink_topology(plan, error) == (
+        "exact topology"
+    )
+    assert observed == [
+        (
+            Path(
+                "/Applications/Xcode.app/Contents/Developer/Toolchains/"
+                "XcodeDefault.xctoolchain/usr/lib/clang/21"
+            ),
+            Path("/Applications/Xcode.app"),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        object(),
+        _xcode_topology_diagnostic_plan(target="x86_64-unknown-linux-gnu"),
+        _xcode_topology_diagnostic_plan(role="xcode-sdk"),
+        _xcode_topology_diagnostic_plan(duplicate_root=True),
+        _xcode_topology_diagnostic_plan(root=Path("/private/secret/clang/21")),
+        _xcode_topology_diagnostic_plan(
+            root=Path(
+                "/Applications/Xcode.app/Contents/Developer/Toolchains/"
+                "XcodeDefault.xctoolchain/usr/lib/clang/not-a-version"
+            )
+        ),
+    ],
+)
+def test_xcode_topology_diagnostic_rejects_near_miss_plan(
+    monkeypatch: pytest.MonkeyPatch,
+    plan: object,
+) -> None:
+    harness = _load_harness_module()
+    error = ToolchainSupportLockError(
+        "toolchain support regular tree member is a shared hardlink "
+        "(logical_role=xcode-clang-resource, "
+        f"relative_path_sha256={'b' * 64}, st_uid=0, st_gid=0, "
+        "st_mode=33188, st_nlink=3, "
+        "in_root_inode_observation_count=1)"
+    )
+
+    def forbidden(**_kwargs: object) -> str:
+        raise AssertionError("near-miss plan reached Xcode app scan")
+
+    monkeypatch.setattr(
+        harness,
+        "_bounded_xcode_hardlink_topology_message",
+        forbidden,
+    )
+
+    assert harness._diagnose_xcode_hardlink_topology(plan, error) is None
+
+
 def _install_test_folded_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     from rextio.build import toolchain_support_lock as support_lock
 
@@ -1032,6 +1349,48 @@ def test_support_lock_diagnostic_rerun_is_generation_only(
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("failure_stage", ["load", "discover"])
+def test_support_lock_diagnostic_preserves_preplan_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    harness = _load_harness_module()
+    from rextio.build import full_c6_toolchain_support as support
+
+    original = ToolchainSupportLockError(
+        "toolchain support bootstrap configuration is invalid"
+    )
+    config = object()
+
+    def load(*_args: object, **_kwargs: object) -> tuple[object, None]:
+        if failure_stage == "load":
+            raise original
+        return config, None
+
+    def discover(*_args: object, **_kwargs: object) -> object:
+        raise original
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("pre-plan failure continued into generation")
+
+    monkeypatch.setattr(support, "_load_full_c6_support_bootstrap_config", load)
+    monkeypatch.setattr(support, "_discover_full_c6_bootstrap_plan", discover)
+    monkeypatch.setattr(support, "generate_full_c6_toolchain_support_lock", forbidden)
+    monkeypatch.setattr(harness, "_diagnose_xcode_hardlink_topology", forbidden)
+
+    diagnostic = harness._diagnose_support_lock_generation(
+        tmp_path,
+        inherited_environment={},
+    )
+
+    assert diagnostic.endswith(
+        "ToolchainSupportLockError=toolchain support bootstrap configuration "
+        "is invalid; OSError=<unavailable>; errno=<unavailable>; "
+        "OtherErrorType=<unavailable>; OtherErrorMessage=<unavailable>"
+    )
+
+
 def test_support_lock_diagnostic_does_not_repeat_production_topology_scans(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1070,6 +1429,60 @@ def test_support_lock_diagnostic_does_not_repeat_production_topology_scans(
         "OtherErrorType=RuntimeError; OtherErrorMessage=<unavailable>"
     )
     assert "original private failure" not in diagnostic
+
+
+def test_support_lock_diagnostic_prefers_generic_xcode_topology(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+    from rextio.build import full_c6_toolchain_support as support
+
+    plan = object()
+    original = ToolchainSupportLockError(
+        "toolchain support regular tree member is a shared hardlink "
+        "(logical_role=xcode-clang-resource, "
+        f"relative_path_sha256={'b' * 64}, st_uid=0, st_gid=0, "
+        "st_mode=33188, st_nlink=3, "
+        "in_root_inode_observation_count=1)"
+    )
+    topology = (
+        "toolchain support xcode hardlink topology "
+        f"(groups=2,support_members=3,aliases=5,"
+        f"policy_merkle={'e' * 64},observation_merkle={'f' * 64})"
+    )
+    observed: list[tuple[object, BaseException]] = []
+
+    monkeypatch.setattr(
+        support,
+        "_load_full_c6_support_bootstrap_config",
+        lambda *_args, **_kwargs: (object(), None),
+    )
+    monkeypatch.setattr(
+        support,
+        "_discover_full_c6_bootstrap_plan",
+        lambda **_kwargs: plan,
+    )
+
+    def generate(_plan: object) -> None:
+        raise original
+
+    def diagnose(candidate: object, error: BaseException) -> str:
+        observed.append((candidate, error))
+        return topology
+
+    monkeypatch.setattr(support, "generate_full_c6_toolchain_support_lock", generate)
+    monkeypatch.setattr(harness, "_diagnose_xcode_hardlink_topology", diagnose)
+
+    diagnostic = harness._diagnose_support_lock_generation(
+        tmp_path,
+        inherited_environment={},
+    )
+
+    assert observed == [(plan, original)]
+    assert f"ToolchainSupportLockError={topology}" in diagnostic
+    assert "regular tree member is a shared hardlink" not in diagnostic
+    assert len(diagnostic.encode("ascii")) <= 512
 
 
 def test_fresh_rextio_failure_runs_requested_support_lock_diagnostic(

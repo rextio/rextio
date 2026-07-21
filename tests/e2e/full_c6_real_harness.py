@@ -51,10 +51,20 @@ _XCODE_HARDLINK_MAX_ENTRIES = 250_000
 _XCODE_HARDLINK_APP_MAX_ENTRIES = 1_000_000
 _XCODE_HARDLINK_MAX_DEPTH = 64
 _XCODE_HARDLINK_MAX_PATH_BYTES = 8_192
+_XCODE_HARDLINK_TOPOLOGY_MAX_GROUPS = 1_024
+_XCODE_HARDLINK_TOPOLOGY_MAX_MEMBERS = 64
 _XCODE_HARDLINK_ERROR_RE = re.compile(
     r"\Atoolchain support xcode hardlink observation "
     rf"\(path={_XCODE_HARDLINK_RELATIVE_PATH_SHA256},"
     r"stamp=(?P<stamp>[0-9a-f]{64}),nlink=3,count=1\)\Z"
+)
+_XCODE_GENERIC_HARDLINK_ERROR_RE = re.compile(
+    r"\Atoolchain support regular tree member is a shared hardlink "
+    r"\(logical_role=xcode-clang-resource,"
+    r" relative_path_sha256=[0-9a-f]{64},"
+    r" st_uid=[0-9]{1,20}, st_gid=[0-9]{1,20},"
+    r" st_mode=[0-9]{1,20}, st_nlink=[2-9][0-9]{0,19},"
+    r" in_root_inode_observation_count=[1-9][0-9]{0,19}\)\Z"
 )
 _PATH_FREE_SUPPORT_LOCK_MESSAGES_WITH_SEMANTIC_SLASH = frozenset(
     {
@@ -1473,6 +1483,551 @@ def _diagnose_exact_xcode_hardlink_aliases(
     )
 
 
+def _open_xcode_topology_regular(
+    *,
+    boundary: Path,
+    relative_path: PurePosixPath,
+    expected: Any,
+) -> None:
+    from rextio.build import toolchain_support_lock as support_lock
+
+    logical = relative_path.as_posix()
+    if (
+        not boundary.is_absolute()
+        or relative_path.is_absolute()
+        or not relative_path.parts
+        or any(part in {"", ".", ".."} for part in relative_path.parts)
+        or len(relative_path.parts) > _XCODE_HARDLINK_MAX_DEPTH
+        or len(logical.encode("utf-8")) > _XCODE_HARDLINK_MAX_PATH_BYTES
+    ):
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode topology final path is invalid"
+        )
+    target = boundary.joinpath(*relative_path.parts)
+    chain = support_lock._open_directory_chain(target.parent)
+    descriptor = -1
+    try:
+        parent_fd = chain[-1][0]
+        descriptor = os.open(
+            target.name,
+            os.O_RDONLY
+            | support_lock._require_flag("O_NOFOLLOW")
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=parent_fd,
+        )
+        opened = support_lock._stamp(os.fstat(descriptor))
+        linked = support_lock._stamp(
+            os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False)
+        )
+        if opened != expected or linked != opened or not stat.S_ISREG(opened.mode):
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support xcode topology final stamp changed"
+            )
+        support_lock._verify_directory_chain(chain)
+    except support_lock.ToolchainSupportLockError:
+        raise
+    except OSError as exc:
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode topology final entry is unavailable"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        support_lock._close_directory_chain(chain)
+
+
+def _bounded_xcode_hardlink_topology_message(
+    *,
+    support_root: Path,
+    app_boundary: Path,
+) -> str:
+    """Fingerprint every shared regular-file inode in one Xcode support root."""
+
+    from rextio.build import toolchain_support_lock as support_lock
+
+    try:
+        support_root.relative_to(app_boundary)
+    except ValueError:
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode topology scope is invalid"
+        ) from None
+    if not support_root.is_absolute() or not app_boundary.is_absolute():
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode topology scope is invalid"
+        )
+
+    def scan_tree(
+        *,
+        boundary: Path,
+        max_entries: int,
+        visit: Any,
+    ) -> None:
+        chain = support_lock._open_directory_chain(boundary)
+        entry_count = 0
+
+        def walk(
+            directory_fd: int,
+            *,
+            relative: PurePosixPath,
+            parent_chain: tuple[dict[str, str], ...],
+        ) -> Any:
+            nonlocal entry_count
+            directory_before = support_lock._stamp(os.fstat(directory_fd))
+            if not stat.S_ISDIR(directory_before.mode):
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode topology directory is invalid"
+                )
+            current_relative = relative.as_posix() if relative.parts else ""
+            current_chain = (
+                *parent_chain,
+                {
+                    "relative_path_sha256": _xcode_hardlink_diagnostic_sha256(
+                        "rextio.full-c6-xcode-hardlink-topology-parent-path.v1",
+                        {"relative_path": current_relative},
+                    ),
+                    "full_stamp_sha256": (
+                        support_lock._xcode_hardlink_full_stamp_sha256(
+                            directory_before
+                        )
+                    ),
+                },
+            )
+            names = support_lock._bounded_directory_names(directory_fd)
+            ordered = sorted(names, key=lambda item: (support_lock._alias(item), item))
+            for name in ordered:
+                entry_count += 1
+                if entry_count > max_entries:
+                    raise support_lock.ToolchainSupportLockError(
+                        "toolchain support xcode topology entry bound exceeded"
+                    )
+                child_relative = relative / name
+                logical = child_relative.as_posix()
+                if (
+                    len(child_relative.parts) > _XCODE_HARDLINK_MAX_DEPTH
+                    or len(logical.encode("utf-8"))
+                    > _XCODE_HARDLINK_MAX_PATH_BYTES
+                ):
+                    raise support_lock.ToolchainSupportLockError(
+                        "toolchain support xcode topology path bound exceeded"
+                    )
+                observed = support_lock._stamp(
+                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                )
+                if stat.S_ISDIR(observed.mode):
+                    child_fd = support_lock._open_child_directory(directory_fd, name)
+                    try:
+                        if support_lock._stamp(os.fstat(child_fd)) != observed:
+                            raise support_lock.ToolchainSupportLockError(
+                                "toolchain support xcode topology directory changed"
+                            )
+                        child_final = walk(
+                            child_fd,
+                            relative=child_relative,
+                            parent_chain=current_chain,
+                        )
+                        linked = support_lock._stamp(
+                            os.stat(
+                                name,
+                                dir_fd=directory_fd,
+                                follow_symlinks=False,
+                            )
+                        )
+                        if child_final != observed or linked != child_final:
+                            raise support_lock.ToolchainSupportLockError(
+                                "toolchain support xcode topology directory changed"
+                            )
+                    finally:
+                        os.close(child_fd)
+                    continue
+                if stat.S_ISREG(observed.mode):
+                    visit(
+                        directory_fd=directory_fd,
+                        name=name,
+                        relative_path=child_relative,
+                        observed=observed,
+                        parent_chain=current_chain,
+                    )
+            after_names = support_lock._bounded_directory_names(directory_fd)
+            if sorted(
+                after_names,
+                key=lambda item: (support_lock._alias(item), item),
+            ) != ordered:
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode topology inventory changed"
+                )
+            directory_after = support_lock._stamp(os.fstat(directory_fd))
+            if not support_lock._same_stable_stamp(
+                directory_after,
+                directory_before,
+            ):
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode topology directory changed"
+                )
+            return directory_after
+
+        try:
+            walk(chain[-1][0], relative=PurePosixPath(), parent_chain=())
+            support_lock._verify_directory_chain(chain)
+        except support_lock.ToolchainSupportLockError:
+            raise
+        except OSError as exc:
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support xcode topology scan failed closed"
+            ) from exc
+        finally:
+            support_lock._close_directory_chain(chain)
+
+    def open_observed_regular(
+        *,
+        directory_fd: int,
+        name: str,
+        observed: Any,
+    ) -> Any:
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | support_lock._require_flag("O_NOFOLLOW")
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+                dir_fd=directory_fd,
+            )
+            opened = support_lock._stamp(os.fstat(descriptor))
+            linked = support_lock._stamp(
+                os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            )
+            if opened != observed or linked != opened:
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode topology regular entry changed"
+                )
+            return opened
+        except support_lock.ToolchainSupportLockError:
+            raise
+        except OSError as exc:
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support xcode topology regular entry is unavailable"
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def scan_once() -> tuple[
+        tuple[tuple[str, str, Any, tuple[str, ...], tuple[str, ...]], ...],
+        int,
+        int,
+    ]:
+        support_groups: dict[tuple[int, int], dict[str, object]] = {}
+
+        def visit_support(
+            *,
+            directory_fd: int,
+            name: str,
+            relative_path: PurePosixPath,
+            observed: Any,
+            parent_chain: tuple[dict[str, str], ...],
+        ) -> None:
+            del parent_chain
+            if observed.links <= 1:
+                return
+            opened = open_observed_regular(
+                directory_fd=directory_fd,
+                name=name,
+                observed=observed,
+            )
+            key = opened.device, opened.inode
+            group = support_groups.get(key)
+            if group is None:
+                if len(support_groups) >= _XCODE_HARDLINK_TOPOLOGY_MAX_GROUPS:
+                    raise support_lock.ToolchainSupportLockError(
+                        "toolchain support xcode topology group bound exceeded"
+                    )
+                group = {"stamp": opened, "paths": []}
+                support_groups[key] = group
+            elif group["stamp"] != opened:
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode topology inode stamp changed"
+                )
+            paths = cast(list[str], group["paths"])
+            if len(paths) >= _XCODE_HARDLINK_TOPOLOGY_MAX_MEMBERS:
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode topology member bound exceeded"
+                )
+            paths.append(relative_path.as_posix())
+
+        scan_tree(
+            boundary=support_root,
+            max_entries=_XCODE_HARDLINK_MAX_ENTRIES,
+            visit=visit_support,
+        )
+        if not support_groups:
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support xcode topology contains no shared files"
+            )
+
+        aliases: dict[tuple[int, int], list[tuple[str, str, str]]] = {
+            key: [] for key in support_groups
+        }
+
+        def visit_app(
+            *,
+            directory_fd: int,
+            name: str,
+            relative_path: PurePosixPath,
+            observed: Any,
+            parent_chain: tuple[dict[str, str], ...],
+        ) -> None:
+            key = observed.device, observed.inode
+            group = support_groups.get(key)
+            if group is None:
+                return
+            opened = open_observed_regular(
+                directory_fd=directory_fd,
+                name=name,
+                observed=observed,
+            )
+            if group["stamp"] != opened:
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode topology alias stamp differs"
+                )
+            members = aliases[key]
+            if len(members) >= _XCODE_HARDLINK_TOPOLOGY_MAX_MEMBERS:
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode topology alias bound exceeded"
+                )
+            logical = relative_path.as_posix()
+            members.append(
+                (
+                    logical,
+                    _xcode_hardlink_diagnostic_sha256(
+                        "rextio.full-c6-xcode-hardlink-topology-alias-path.v1",
+                        {"app_relative_path": logical},
+                    ),
+                    _xcode_hardlink_diagnostic_sha256(
+                        "rextio.full-c6-xcode-hardlink-topology-parent-chain.v1",
+                        {"directories": list(parent_chain)},
+                    ),
+                )
+            )
+
+        scan_tree(
+            boundary=app_boundary,
+            max_entries=_XCODE_HARDLINK_APP_MAX_ENTRIES,
+            visit=visit_app,
+        )
+
+        records: list[
+            tuple[str, str, Any, tuple[str, ...], tuple[str, ...]]
+        ] = []
+        support_member_count = 0
+        alias_count = 0
+        for key, group in support_groups.items():
+            del key
+            stamp = group["stamp"]
+            support_paths = tuple(sorted(cast(list[str], group["paths"])))
+            ordered_aliases = tuple(
+                sorted(
+                    aliases[(stamp.device, stamp.inode)],
+                    key=lambda item: (item[1], item[0]),
+                )
+            )
+            if (
+                len(ordered_aliases) != stamp.links
+                or len({item[1] for item in ordered_aliases})
+                != len(ordered_aliases)
+            ):
+                raise support_lock.ToolchainSupportLockError(
+                    "toolchain support xcode topology alias count differs"
+                )
+            support_path_sha256s = tuple(
+                sorted(
+                    _xcode_hardlink_diagnostic_sha256(
+                        (
+                            "rextio.full-c6-xcode-hardlink-topology-"
+                            "support-path.v1"
+                        ),
+                        {"support_relative_path": path},
+                    )
+                    for path in support_paths
+                )
+            )
+            alias_parent_chain_merkle = _xcode_hardlink_diagnostic_sha256(
+                "rextio.full-c6-xcode-hardlink-topology-alias-parents.v1",
+                {
+                    "aliases": [
+                        {
+                            "alias_path_sha256": path_sha256,
+                            "parent_chain_sha256": parent_sha256,
+                        }
+                        for _path, path_sha256, parent_sha256 in ordered_aliases
+                    ]
+                },
+            )
+            policy_group_sha256 = _xcode_hardlink_diagnostic_sha256(
+                "rextio.full-c6-xcode-hardlink-topology-policy-group.v1",
+                {
+                    "support_relative_path_sha256s": list(
+                        support_path_sha256s
+                    ),
+                    "link_count": stamp.links,
+                    "alias_count": len(ordered_aliases),
+                    "alias_path_sha256s": [
+                        item[1] for item in ordered_aliases
+                    ],
+                },
+            )
+            observation_group_sha256 = _xcode_hardlink_diagnostic_sha256(
+                "rextio.full-c6-xcode-hardlink-topology-observation-group.v1",
+                {
+                    "policy_group_sha256": policy_group_sha256,
+                    "full_stamp_sha256": (
+                        support_lock._xcode_hardlink_full_stamp_sha256(stamp)
+                    ),
+                    "alias_parent_chain_merkle_sha256": (
+                        alias_parent_chain_merkle
+                    ),
+                },
+            )
+            records.append(
+                (
+                    policy_group_sha256,
+                    observation_group_sha256,
+                    stamp,
+                    support_paths,
+                    tuple(item[0] for item in ordered_aliases),
+                )
+            )
+            support_member_count += len(support_paths)
+            alias_count += len(ordered_aliases)
+        ordered_records = tuple(sorted(records, key=lambda item: item[0]))
+        if len({item[0] for item in ordered_records}) != len(ordered_records):
+            raise support_lock.ToolchainSupportLockError(
+                "toolchain support xcode topology groups are ambiguous"
+            )
+        return ordered_records, support_member_count, alias_count
+
+    first = scan_once()
+    second = scan_once()
+    if first != second:
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode topology changed across scans"
+        )
+    for (
+        _policy_group_sha256,
+        _observation_group_sha256,
+        stamp,
+        support_paths,
+        app_paths,
+    ) in first[0]:
+        for path in support_paths:
+            _open_xcode_topology_regular(
+                boundary=support_root,
+                relative_path=PurePosixPath(path),
+                expected=stamp,
+            )
+        for path in app_paths:
+            _open_xcode_topology_regular(
+                boundary=app_boundary,
+                relative_path=PurePosixPath(path),
+                expected=stamp,
+            )
+    policy_merkle = _xcode_hardlink_diagnostic_sha256(
+        "rextio.full-c6-xcode-hardlink-topology-policy.v1",
+        {"policy_group_sha256s": [item[0] for item in first[0]]},
+    )
+    observation_merkle = _xcode_hardlink_diagnostic_sha256(
+        "rextio.full-c6-xcode-hardlink-topology-observation.v1",
+        {
+            "groups": [
+                {
+                    "policy_group_sha256": item[0],
+                    "observation_group_sha256": item[1],
+                }
+                for item in first[0]
+            ]
+        },
+    )
+    message = (
+        "toolchain support xcode hardlink topology "
+        f"(groups={len(first[0])},support_members={first[1]},"
+        f"aliases={first[2]},policy_merkle={policy_merkle},"
+        f"observation_merkle={observation_merkle})"
+    )
+    if (
+        not message.isascii()
+        or len(message) > 278
+        or any(
+            character not in " -_.,()=" and not character.isalnum()
+            for character in message
+        )
+    ):
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode topology output is invalid"
+        )
+    return message
+
+
+def _diagnose_xcode_hardlink_topology(
+    plan: object,
+    error: BaseException,
+) -> str | None:
+    from rextio.build import full_c6_toolchain_support as support
+    from rextio.build.toolchain_support_lock import ToolchainSupportLockError
+
+    if (
+        type(plan) is not support.FullC6ToolchainSupportPlan
+        or plan._target_triple != "aarch64-apple-darwin"
+        or support.MACOS_DEVELOPER_DIR
+        != Path("/Applications/Xcode.app/Contents/Developer")
+    ):
+        return None
+    current: BaseException | None = error
+    seen: set[int] = set()
+    matched = False
+    for _ in range(16):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if (
+            type(current) is ToolchainSupportLockError
+            and _XCODE_GENERIC_HARDLINK_ERROR_RE.fullmatch(str(current))
+            is not None
+        ):
+            matched = True
+            break
+        current = current.__cause__ or current.__context__
+    if not matched:
+        return None
+    roots = tuple(
+        locator
+        for locator in plan._root_locators
+        if locator.logical_role == _XCODE_HARDLINK_ROLE
+    )
+    if len(roots) != 1:
+        return None
+    toolchain_boundary = (
+        support.MACOS_DEVELOPER_DIR
+        / "Toolchains"
+        / "XcodeDefault.xctoolchain"
+    )
+    try:
+        root_relative = roots[0]._absolute_path.relative_to(toolchain_boundary)
+    except ValueError:
+        return None
+    if (
+        len(root_relative.parts) != 4
+        or root_relative.parts[:3] != ("usr", "lib", "clang")
+        or re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}", root_relative.parts[3])
+        is None
+    ):
+        return None
+    return _bounded_xcode_hardlink_topology_message(
+        support_root=roots[0]._absolute_path,
+        app_boundary=Path("/Applications/Xcode.app"),
+    )
+
+
 def _bounded_linux_folded_name_topology_message(root: Path) -> str:
     from rextio.build import toolchain_support_lock as support_lock
 
@@ -1787,6 +2342,7 @@ def _diagnose_support_lock_generation(
 ) -> str:
     from rextio.build import full_c6_toolchain_support as support
 
+    plan: object | None = None
     try:
         config, _configured_pin = support._load_full_c6_support_bootstrap_config(
             project,
@@ -1800,9 +2356,24 @@ def _diagnose_support_lock_generation(
         )
         support.generate_full_c6_toolchain_support_lock(plan)
     except Exception as exc:
-        # Schema v4 handles the two fixed OS topologies in production.  Keep
-        # failure reporting bounded and path-free without rescanning Xcode or
-        # the Linux runtime from this test-only harness.
+        # A generic Xcode hardlink rejection cannot safely expose its source
+        # path.  For that exact failure only, replace it with a bounded,
+        # path-opaque inventory of every shared inode in the fixed support
+        # root.  Ordinary failures remain single-pass diagnostics.
+        xcode_topology: str | None = None
+        if plan is not None:
+            try:
+                xcode_topology = _diagnose_xcode_hardlink_topology(plan, exc)
+            except Exception as diagnostic_exc:
+                return _format_support_lock_diagnostic(diagnostic_exc)
+        if xcode_topology is not None:
+            from rextio.build.toolchain_support_lock import (
+                ToolchainSupportLockError,
+            )
+
+            return _format_support_lock_diagnostic(
+                ToolchainSupportLockError(xcode_topology)
+            )
         return _format_support_lock_diagnostic(exc)
     return "[full-c6-e2e] support-lock diagnostic: generation-only rerun succeeded"
 
