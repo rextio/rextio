@@ -36,8 +36,12 @@ import sys
 from typing import Literal, Protocol
 
 from rextio.build.full_c6_linux_launcher import (
+    FULL_C6_LINUX_CARGO,
     FULL_C6_LINUX_LAUNCHER,
     FULL_C6_LINUX_PYTHON,
+    FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY,
+    FULL_C6_LINUX_PYO3_CONFIG,
+    FULL_C6_LINUX_TOOLCHAIN_ROOT,
     FullC6LinuxLauncherError,
     canonical_linux_payload_environment,
     linux_payload_environment_digest,
@@ -138,7 +142,7 @@ _LINUX_BWRAP_FLAGS = (
 )
 _LINUX_PROJECT_DESTINATION = "/rextio/project"
 _LINUX_BUILD_DESTINATION = "/rextio/build"
-_LINUX_TOOLCHAIN_DESTINATION = "/rextio/toolchain"
+_LINUX_TOOLCHAIN_DESTINATION = FULL_C6_LINUX_TOOLCHAIN_ROOT
 _LINUX_SUPPORT_DESTINATION = "/rextio/support"
 _LINUX_RUNTIME_LOADER_DESTINATION = "/lib64/ld-linux-x86-64.so.2"
 _LINUX_PYTHON_STDLIB_DESTINATION = "/rextio/toolchain/lib/python3.11"
@@ -656,11 +660,20 @@ def _validate_linux_rules(rules: Sequence[SandboxPathRule]) -> None:
             "Full C6 Linux sandbox requires toolchain and support leaves"
         )
     required_special = {
+        "toolchain-ar": "read-execute",
+        "toolchain-cargo": "read-execute",
+        "toolchain-ld": "read-execute",
         "toolchain-python311": "read-execute",
+        "toolchain-python311-runtime-library": "read",
         "toolchain-python311-stdlib": "read",
         "toolchain-linker": "read-execute",
+        "toolchain-ranlib": "read-execute",
         "toolchain-rustc": "read-execute",
+        "toolchain-rust-sysroot": "read-execute",
         "support-landlock-launcher": "read",
+        "support-gcc-toolchain": "read-execute",
+        "support-pyo3-config": "read",
+        "support-python-library-root": "read",
         "support-runtime-libs": "read",
     }
     by_role = {rule.logical_role: rule for rule in rules}
@@ -670,6 +683,24 @@ def _validate_linux_rules(rules: Sequence[SandboxPathRule]) -> None:
             raise ValueError(
                 "Full C6 Linux sandbox is missing a fixed launcher input"
             )
+    rust_sysroot = by_role["toolchain-rust-sysroot"].path
+    if (
+        by_role["toolchain-cargo"].path != rust_sysroot / "bin" / "cargo"
+        or by_role["toolchain-rustc"].path != rust_sysroot / "bin" / "rustc"
+    ):
+        raise ValueError(
+            "Full C6 Linux Cargo or rustc differs from the exact Rust sysroot leaf"
+        )
+    python_library_root = by_role["support-python-library-root"].path
+    if (
+        by_role["toolchain-python311-stdlib"].path
+        != python_library_root / "python3.11"
+        or by_role["toolchain-python311-runtime-library"].path
+        != python_library_root / "libpython3.11.so.1.0"
+    ):
+        raise ValueError(
+            "Full C6 Linux Python runtime differs from the exact library root leaves"
+        )
     for rule, prefix in (
         *((rule, "toolchain-") for rule in toolchain),
         *((rule, "support-") for rule in support),
@@ -682,6 +713,22 @@ def _validate_linux_rules(rules: Sequence[SandboxPathRule]) -> None:
             raise ValueError(
                 "Full C6 Linux toolchain/support inputs must be read-only"
             )
+    fixed_toolchain_roles = {
+        "toolchain-ar",
+        "toolchain-cargo",
+        "toolchain-ld",
+        "toolchain-linker",
+        "toolchain-python311",
+        "toolchain-python311-runtime-library",
+        "toolchain-python311-stdlib",
+        "toolchain-ranlib",
+        "toolchain-rustc",
+        "toolchain-rust-sysroot",
+    }
+    if {rule.logical_role for rule in toolchain} != fixed_toolchain_roles:
+        raise ValueError(
+            "Full C6 Linux sandbox toolchain role set differs from the fixed contract"
+        )
     destinations = tuple(_linux_rule_destination(rule) for rule in rules)
     exposed = tuple(destination for destination in destinations if destination is not None)
     if len(set(exposed)) != len(exposed):
@@ -704,6 +751,9 @@ def _verify_linux_rule_types(rules: Sequence[SandboxPathRule]) -> None:
             )
         if rule.logical_role in {
             "toolchain-python311-stdlib",
+            "toolchain-rust-sysroot",
+            "support-gcc-toolchain",
+            "support-python-library-root",
             "support-runtime-libs",
         } and not stat.S_ISDIR(observed.st_mode):
             raise FullC6ReadSandboxError(
@@ -711,9 +761,15 @@ def _verify_linux_rule_types(rules: Sequence[SandboxPathRule]) -> None:
             )
         if rule.logical_role in {
             "toolchain-python311",
+            "toolchain-python311-runtime-library",
+            "toolchain-ar",
+            "toolchain-cargo",
+            "toolchain-ld",
             "toolchain-linker",
+            "toolchain-ranlib",
             "toolchain-rustc",
             "support-landlock-launcher",
+            "support-pyo3-config",
         } and not stat.S_ISREG(observed.st_mode):
             raise FullC6ReadSandboxError(
                 "Full C6 Linux launcher mapping must be a regular file"
@@ -737,14 +793,28 @@ def _linux_rule_destination(rule: SandboxPathRule) -> str | None:
         return FULL_C6_LINUX_PYTHON
     if rule.logical_role == "toolchain-python311-stdlib":
         return _LINUX_PYTHON_STDLIB_DESTINATION
+    if rule.logical_role == "toolchain-python311-runtime-library":
+        return FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY
+    if rule.logical_role == "toolchain-rust-sysroot":
+        return _LINUX_TOOLCHAIN_DESTINATION
+    if rule.logical_role == "toolchain-cargo":
+        return FULL_C6_LINUX_CARGO
+    if rule.logical_role == "toolchain-ar":
+        return "/rextio/toolchain/bin/ar"
+    if rule.logical_role == "toolchain-ld":
+        return "/rextio/toolchain/bin/ld"
     if rule.logical_role == "toolchain-linker":
         return "/rextio/toolchain/bin/linker"
     if rule.logical_role == "toolchain-rustc":
         return "/rextio/toolchain/bin/rustc"
+    if rule.logical_role == "toolchain-ranlib":
+        return "/rextio/toolchain/bin/ranlib"
     if rule.logical_role == "support-landlock-launcher":
         return _LINUX_LAUNCHER_DESTINATION
     if rule.logical_role == "support-runtime-libs":
         return "/rextio/support/runtime-libs"
+    if rule.logical_role == "support-pyo3-config":
+        return FULL_C6_LINUX_PYO3_CONFIG
     if rule.logical_role.startswith("toolchain-"):
         leaf = rule.logical_role.removeprefix("toolchain-")
         return f"{_LINUX_TOOLCHAIN_DESTINATION}/{leaf}"
@@ -778,17 +848,12 @@ def _linux_bubblewrap_command(
         key=lambda item: (_linux_mapping_rank(item[1]), item[0]),
     )
     executable = _canonical_linux_payload_executable(payload[0])
-    executable_allowed = False
-    for destination, rule in mappings:
-        if rule.access != "read-execute" or not (
-            rule.logical_role.startswith("toolchain-")
-            or rule.logical_role.startswith("support-")
-        ):
-            continue
-        if executable == destination or executable.startswith(destination + "/"):
-            executable_allowed = True
-            break
-    if not executable_allowed:
+    if not any(
+        destination == executable
+        and rule.logical_role == "toolchain-cargo"
+        and rule.access == "read-execute"
+        for destination, rule in mappings
+    ):
         raise FullC6ReadSandboxError(
             "Full C6 Linux payload executable is not a mapped executable input"
         )
@@ -863,12 +928,11 @@ def _linux_mapping_rank(rule: SandboxPathRule) -> int:
 
 def _canonical_linux_payload_executable(value: str) -> str:
     if (
-        not value.startswith("/")
-        or value != os.path.normpath(value)
+        value != FULL_C6_LINUX_CARGO
         or len(os.fsencode(value)) > _MAX_PATH_BYTES
     ):
         raise FullC6ReadSandboxError(
-            "Full C6 Linux payload executable must be a canonical absolute path"
+            "Full C6 Linux payload executable must be the fixed Cargo binary"
         )
     return value
 

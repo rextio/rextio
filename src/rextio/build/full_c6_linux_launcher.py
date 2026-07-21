@@ -24,9 +24,15 @@ import sys
 
 
 FULL_C6_LINUX_LAUNCHER_DOMAIN = "rextio.full-c6-linux-launcher.v1"
+FULL_C6_LINUX_TOOLCHAIN_ROOT = "/rextio/toolchain"
+FULL_C6_LINUX_CARGO = "/rextio/toolchain/bin/cargo"
 FULL_C6_LINUX_PYTHON = "/rextio/toolchain/bin/python3.11"
-FULL_C6_LINUX_PYTHON_PREFIX = "/rextio/toolchain"
+FULL_C6_LINUX_PYTHON_PREFIX = FULL_C6_LINUX_TOOLCHAIN_ROOT
+FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY = (
+    "/rextio/toolchain/lib/libpython3.11.so.1.0"
+)
 FULL_C6_LINUX_PYTHON_STDLIB = "/rextio/toolchain/lib/python3.11"
+FULL_C6_LINUX_PYO3_CONFIG = "/rextio/support/pyo3-config"
 FULL_C6_LINUX_LAUNCHER = (
     "/rextio/support/rextio/full_c6_linux_launcher.py"
 )
@@ -36,7 +42,7 @@ _SOURCE_DATE_EPOCH_RE = re.compile(r"^(0|[1-9][0-9]{0,19})$")
 _MAX_ARGUMENTS = 512
 _MAX_ARGUMENT_BYTES = 16 * 1024
 _MAX_OPEN_FILES = 1024 * 1024
-_PYO3_CONFIG_PATH = "/rextio/build/rextio.pyo3-config.txt"
+_PYO3_CONFIG_PATH = FULL_C6_LINUX_PYO3_CONFIG
 _PYO3_CONFIG_CONTENT = (
     "implementation=CPython\n"
     "version=3.11\n"
@@ -95,6 +101,8 @@ def expected_linux_pyo3_environment_signature() -> str:
     return hashlib.sha256(payload).hexdigest()
 
 _FIXED_ENVIRONMENT = {
+    "AR": "/rextio/toolchain/bin/ar",
+    "CC": "/rextio/toolchain/bin/linker",
     "CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu",
     "CARGO_ENCODED_RUSTFLAGS": _CARGO_ENCODED_RUSTFLAGS,
     "CARGO_HOME": "/rextio/build/cargo-home",
@@ -103,14 +111,25 @@ _FIXED_ENVIRONMENT = {
     "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": (
         "/rextio/toolchain/bin/linker"
     ),
+    "COMPILER_PATH": (
+        "/rextio/toolchain/bin:/rextio/support/gcc-toolchain"
+    ),
     "HOME": "/rextio/build/home",
     "LANG": "C",
     "LC_ALL": "C",
-    "LD_LIBRARY_PATH": "/rextio/support/runtime-libs",
+    "LD": "/rextio/toolchain/bin/ld",
+    "LD_LIBRARY_PATH": (
+        "/rextio/toolchain/lib:/rextio/support/python-library-root:"
+        "/rextio/support/runtime-libs"
+    ),
+    "LIBRARY_PATH": (
+        "/rextio/support/gcc-toolchain:/rextio/support/runtime-libs"
+    ),
     "PATH": "/rextio/toolchain/bin:/rextio/toolchain",
     "PYO3_CONFIG_FILE": _PYO3_CONFIG_PATH,
     "PYO3_ENVIRONMENT_SIGNATURE": expected_linux_pyo3_environment_signature(),
     "PYTHONHASHSEED": "0",
+    "RANLIB": "/rextio/toolchain/bin/ranlib",
     "RUSTC": "/rextio/toolchain/bin/rustc",
     "TMPDIR": "/tmp",
     "TZ": "UTC",
@@ -231,13 +250,9 @@ def validate_linux_launcher_argv(
             )
     payload = values[4:]
     executable = payload[0]
-    if (
-        not executable.startswith("/rextio/toolchain/")
-        or executable != os.path.normpath(executable)
-        or executable == FULL_C6_LINUX_PYTHON
-    ):
+    if executable != FULL_C6_LINUX_CARGO:
         raise FullC6LinuxLauncherError(
-            "Full C6 Linux payload executable is outside the toolchain"
+            "Full C6 Linux payload executable is not the fixed Cargo binary"
         )
     return payload
 
@@ -568,11 +583,15 @@ if __name__ == "__main__":  # pragma: no cover - exercised by Linux E2E
 
 
 __all__ = [
+    "FULL_C6_LINUX_CARGO",
     "FULL_C6_LINUX_LAUNCHER",
     "FULL_C6_LINUX_LAUNCHER_DOMAIN",
     "FULL_C6_LINUX_PYTHON",
     "FULL_C6_LINUX_PYTHON_PREFIX",
+    "FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY",
     "FULL_C6_LINUX_PYTHON_STDLIB",
+    "FULL_C6_LINUX_PYO3_CONFIG",
+    "FULL_C6_LINUX_TOOLCHAIN_ROOT",
     "FullC6LinuxLauncherError",
     "apply_full_c6_landlock",
     "canonical_linux_payload_environment",

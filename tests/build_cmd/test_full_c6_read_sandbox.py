@@ -28,8 +28,11 @@ from rextio.build.full_c6_read_sandbox import (
     prepare_full_c6_sandbox_launch,
 )
 from rextio.build.full_c6_linux_launcher import (
+    FULL_C6_LINUX_CARGO,
     FULL_C6_LINUX_LAUNCHER,
     FULL_C6_LINUX_PYTHON,
+    FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY,
+    FULL_C6_LINUX_PYO3_CONFIG,
     expected_linux_pyo3_environment_signature,
 )
 from rextio.build import full_c6_read_sandbox as sandbox_module
@@ -42,38 +45,81 @@ def _rules(tmp_path: Path) -> tuple[SandboxPathRule, ...]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     project = tmp_path / "project"
     build = tmp_path / "build"
-    cargo = tmp_path / "cargo"
+    ar = tmp_path / "ar"
+    ld = tmp_path / "ld"
     linker = tmp_path / "linker"
     python = tmp_path / "python3.11"
-    rustc = tmp_path / "rustc"
-    stdlib = tmp_path / "python-stdlib"
+    python_library_root = tmp_path / "python-library-root"
+    python_runtime_library = python_library_root / "libpython3.11.so.1.0"
+    ranlib = tmp_path / "ranlib"
+    rust_sysroot = tmp_path / "rust-sysroot"
+    cargo = rust_sysroot / "bin" / "cargo"
+    rustc = rust_sysroot / "bin" / "rustc"
+    stdlib = python_library_root / "python3.11"
     launcher = tmp_path / "full_c6_linux_launcher.py"
+    gcc_support = tmp_path / "gcc-toolchain"
     runtime = tmp_path / "runtime-libs"
+    pyo3_config = tmp_path / "pyo3-config"
     loader = tmp_path / "ld-linux-x86-64.so.2"
     project.mkdir()
     build.mkdir()
+    (rust_sysroot / "bin").mkdir(parents=True)
+    (rust_sysroot / "lib").mkdir()
     (stdlib / "lib-dynload").mkdir(parents=True)
+    gcc_support.mkdir()
     runtime.mkdir()
+    ar.write_bytes(b"ar")
+    ar.chmod(0o755)
     cargo.write_bytes(b"cargo")
     cargo.chmod(0o755)
+    ld.write_bytes(b"ld")
+    ld.chmod(0o755)
     linker.write_bytes(b"linker")
     linker.chmod(0o755)
     python.write_bytes(b"python")
     python.chmod(0o755)
+    python_runtime_library.write_bytes(b"libpython")
+    ranlib.write_bytes(b"ranlib")
+    ranlib.chmod(0o755)
     rustc.write_bytes(b"rustc")
     rustc.chmod(0o755)
+    pyo3_config.write_bytes(b"pyo3-config")
     launcher.write_bytes(b"launcher")
     loader.write_bytes(b"loader")
     loader.chmod(0o755)
     return (
         SandboxPathRule(project, "read", "project-root"),
         SandboxPathRule(build, "read-write", "build-root"),
+        SandboxPathRule(ar, "read-execute", "toolchain-ar"),
         SandboxPathRule(cargo, "read-execute", "toolchain-cargo"),
+        SandboxPathRule(ld, "read-execute", "toolchain-ld"),
         SandboxPathRule(linker, "read-execute", "toolchain-linker"),
         SandboxPathRule(python, "read-execute", "toolchain-python311"),
+        SandboxPathRule(
+            python_runtime_library,
+            "read",
+            "toolchain-python311-runtime-library",
+        ),
+        SandboxPathRule(ranlib, "read-execute", "toolchain-ranlib"),
         SandboxPathRule(rustc, "read-execute", "toolchain-rustc"),
+        SandboxPathRule(
+            rust_sysroot,
+            "read-execute",
+            "toolchain-rust-sysroot",
+        ),
         SandboxPathRule(stdlib, "read", "toolchain-python311-stdlib"),
         SandboxPathRule(launcher, "read", "support-landlock-launcher"),
+        SandboxPathRule(
+            gcc_support,
+            "read-execute",
+            "support-gcc-toolchain",
+        ),
+        SandboxPathRule(pyo3_config, "read", "support-pyo3-config"),
+        SandboxPathRule(
+            python_library_root,
+            "read",
+            "support-python-library-root",
+        ),
         SandboxPathRule(runtime, "read", "support-runtime-libs"),
         SandboxPathRule(loader, "read-execute", "runtime-loader-mirror"),
     )
@@ -96,6 +142,8 @@ def _macos_rules(tmp_path: Path) -> tuple[SandboxPathRule, ...]:
 
 def _environment() -> dict[str, str]:
     return {
+        "AR": "/rextio/toolchain/bin/ar",
+        "CC": "/rextio/toolchain/bin/linker",
         "CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu",
         "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(
             (
@@ -111,14 +159,25 @@ def _environment() -> dict[str, str]:
         "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": (
             "/rextio/toolchain/bin/linker"
         ),
+        "COMPILER_PATH": (
+            "/rextio/toolchain/bin:/rextio/support/gcc-toolchain"
+        ),
         "HOME": "/rextio/build/home",
         "LANG": "C",
         "LC_ALL": "C",
-        "LD_LIBRARY_PATH": "/rextio/support/runtime-libs",
+        "LD": "/rextio/toolchain/bin/ld",
+        "LD_LIBRARY_PATH": (
+            "/rextio/toolchain/lib:/rextio/support/python-library-root:"
+            "/rextio/support/runtime-libs"
+        ),
+        "LIBRARY_PATH": (
+            "/rextio/support/gcc-toolchain:/rextio/support/runtime-libs"
+        ),
         "PATH": "/rextio/toolchain/bin:/rextio/toolchain",
-        "PYO3_CONFIG_FILE": "/rextio/build/rextio.pyo3-config.txt",
+        "PYO3_CONFIG_FILE": FULL_C6_LINUX_PYO3_CONFIG,
         "PYO3_ENVIRONMENT_SIGNATURE": expected_linux_pyo3_environment_signature(),
         "PYTHONHASHSEED": "0",
+        "RANLIB": "/rextio/toolchain/bin/ranlib",
         "RUSTC": "/rextio/toolchain/bin/rustc",
         "SOURCE_DATE_EPOCH": "0",
         "TMPDIR": "/tmp",
@@ -242,7 +301,7 @@ def _prepare_linux(
 ) -> FullC6SandboxLaunch:
     return prepare_full_c6_sandbox_launch(
         plan,
-        ("/rextio/toolchain/cargo", "build"),
+        (FULL_C6_LINUX_CARGO, "build"),
         bubblewrap=bwrap,
         bubblewrap_verifier=lambda _path: bwrap_digest,
         linux_seccomp_lease=seccomp_lease,
@@ -287,7 +346,7 @@ def test_linux_launch_uses_bwrap_then_isolated_post_namespace_launcher(
         "--environment-sha256",
         launch.command[-4],
         "--",
-        "/rextio/toolchain/cargo",
+        FULL_C6_LINUX_CARGO,
         "build",
     )
     assert launch.command[-13:-11] == ("--seccomp", str(seccomp_fd))
@@ -319,7 +378,7 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
     bwrap = _bwrap(tmp_path)
     launch = prepare_full_c6_sandbox_launch(
         plan,
-        ("/rextio/toolchain/cargo", "build"),
+        (FULL_C6_LINUX_CARGO, "build"),
         bubblewrap=bwrap,
         bubblewrap_verifier=lambda _path: "b" * 64,
         linux_seccomp_lease=seccomp_lease,
@@ -368,20 +427,44 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         str(tmp_path / "build"),
         "/rextio/build",
         "--ro-bind",
+        str(tmp_path / "rust-sysroot"),
+        "/rextio/toolchain",
+        "--ro-bind",
+        str(tmp_path / "ar"),
+        "/rextio/toolchain/bin/ar",
+        "--ro-bind",
+        str(tmp_path / "rust-sysroot" / "bin" / "cargo"),
+        FULL_C6_LINUX_CARGO,
+        "--ro-bind",
+        str(tmp_path / "ld"),
+        "/rextio/toolchain/bin/ld",
+        "--ro-bind",
         str(tmp_path / "linker"),
         "/rextio/toolchain/bin/linker",
         "--ro-bind",
         str(tmp_path / "python3.11"),
         "/rextio/toolchain/bin/python3.11",
         "--ro-bind",
-        str(tmp_path / "rustc"),
+        str(tmp_path / "ranlib"),
+        "/rextio/toolchain/bin/ranlib",
+        "--ro-bind",
+        str(tmp_path / "rust-sysroot" / "bin" / "rustc"),
         "/rextio/toolchain/bin/rustc",
         "--ro-bind",
-        str(tmp_path / "cargo"),
-        "/rextio/toolchain/cargo",
+        str(tmp_path / "python-library-root" / "libpython3.11.so.1.0"),
+        FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY,
         "--ro-bind",
-        str(tmp_path / "python-stdlib"),
+        str(tmp_path / "python-library-root" / "python3.11"),
         "/rextio/toolchain/lib/python3.11",
+        "--ro-bind",
+        str(tmp_path / "gcc-toolchain"),
+        "/rextio/support/gcc-toolchain",
+        "--ro-bind",
+        str(tmp_path / "pyo3-config"),
+        FULL_C6_LINUX_PYO3_CONFIG,
+        "--ro-bind",
+        str(tmp_path / "python-library-root"),
+        "/rextio/support/python-library-root",
         "--ro-bind",
         str(tmp_path / "full_c6_linux_launcher.py"),
         "/rextio/support/rextio/full_c6_linux_launcher.py",
@@ -412,13 +495,42 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
     assert str(launcher) not in command
 
 
+def test_linux_payload_is_exactly_fixed_cargo_not_another_mapped_tool(
+    tmp_path: Path,
+    seccomp_lease: LinuxSeccompLease,
+) -> None:
+    plan = build_full_c6_sandbox_plan(
+        target_triple="x86_64-unknown-linux-gnu",
+        rules=_rules(tmp_path),
+        platform_anchor_sha256=_SHA,
+    )
+
+    with pytest.raises(FullC6ReadSandboxError, match="fixed Cargo"):
+        prepare_full_c6_sandbox_launch(
+            plan,
+            ("/rextio/toolchain/bin/rustc", "--version"),
+            bubblewrap=_bwrap(tmp_path),
+            bubblewrap_verifier=lambda _path: "b" * 64,
+            linux_seccomp_lease=seccomp_lease,
+            linux_payload_environment=_environment(),
+        )
+
+
 @pytest.mark.parametrize(
     "name",
     (
+        "AR",
+        "CC",
         "CARGO_BUILD_TARGET",
         "CARGO_HOME",
         "CARGO_ENCODED_RUSTFLAGS",
         "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
+        "COMPILER_PATH",
+        "LD",
+        "LD_LIBRARY_PATH",
+        "LIBRARY_PATH",
+        "PYO3_CONFIG_FILE",
+        "RANLIB",
         "RUSTC",
         "PYTHONHASHSEED",
     ),
@@ -465,7 +577,7 @@ def test_linux_rejects_missing_or_caller_owned_seccomp_descriptor(
     with pytest.raises(FullC6ReadSandboxError, match="typed sealed"):
         prepare_full_c6_sandbox_launch(
             plan,
-            ("/rextio/toolchain/cargo",),
+            (FULL_C6_LINUX_CARGO,),
             bubblewrap=bwrap,
             bubblewrap_verifier=lambda _path: "b" * 64,
             linux_payload_environment=_environment(),
@@ -478,7 +590,7 @@ def test_linux_rejects_missing_or_caller_owned_seccomp_descriptor(
         with pytest.raises(FullC6ReadSandboxError, match="typed sealed"):
             prepare_full_c6_sandbox_launch(
                 plan,
-                ("/rextio/toolchain/cargo",),
+                (FULL_C6_LINUX_CARGO,),
                 bubblewrap=bwrap,
                 bubblewrap_verifier=lambda _path: "b" * 64,
                 linux_seccomp_lease=cast(LinuxSeccompLease, descriptor),
@@ -757,7 +869,7 @@ def test_linux_rejects_nonzero_seccomp_offset(
         with pytest.raises(FullC6ReadSandboxError, match="exact filter"):
             prepare_full_c6_sandbox_launch(
                 plan,
-                ("/rextio/toolchain/cargo",),
+                (FULL_C6_LINUX_CARGO,),
                 bubblewrap=_bwrap(tmp_path),
                 bubblewrap_verifier=lambda _path: "b" * 64,
                 linux_seccomp_lease=seccomp_lease,
@@ -831,6 +943,52 @@ def test_linux_rejects_unknown_roles_and_unmapped_payload(tmp_path: Path) -> Non
         build_full_c6_sandbox_plan(
             target_triple="x86_64-unknown-linux-gnu",
             rules=rules,
+            platform_anchor_sha256=_SHA,
+        )
+
+
+def test_linux_rejects_rust_and_python_leaves_outside_fixed_parent_roots(
+    tmp_path: Path,
+) -> None:
+    rules = list(_rules(tmp_path))
+    cargo_index = next(
+        index
+        for index, rule in enumerate(rules)
+        if rule.logical_role == "toolchain-cargo"
+    )
+    outside_cargo = tmp_path / "outside-cargo"
+    outside_cargo.write_bytes(b"cargo")
+    outside_cargo.chmod(0o755)
+    changed = list(rules)
+    changed[cargo_index] = SandboxPathRule(
+        outside_cargo,
+        "read-execute",
+        "toolchain-cargo",
+    )
+    with pytest.raises(FullC6ReadSandboxError, match="exact Rust sysroot leaf"):
+        build_full_c6_sandbox_plan(
+            target_triple="x86_64-unknown-linux-gnu",
+            rules=changed,
+            platform_anchor_sha256=_SHA,
+        )
+
+    python_index = next(
+        index
+        for index, rule in enumerate(rules)
+        if rule.logical_role == "toolchain-python311-runtime-library"
+    )
+    outside_python = tmp_path / "outside-libpython3.11.so.1.0"
+    outside_python.write_bytes(b"libpython")
+    changed = list(rules)
+    changed[python_index] = SandboxPathRule(
+        outside_python,
+        "read",
+        "toolchain-python311-runtime-library",
+    )
+    with pytest.raises(FullC6ReadSandboxError, match="exact library root leaves"):
+        build_full_c6_sandbox_plan(
+            target_triple="x86_64-unknown-linux-gnu",
+            rules=changed,
             platform_anchor_sha256=_SHA,
         )
 

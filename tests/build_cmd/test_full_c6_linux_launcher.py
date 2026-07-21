@@ -14,6 +14,8 @@ from rextio.build import full_c6_linux_launcher as launcher
 
 def _environment() -> dict[str, str]:
     return {
+        "AR": "/rextio/toolchain/bin/ar",
+        "CC": "/rextio/toolchain/bin/linker",
         "CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu",
         "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(
             (
@@ -29,16 +31,27 @@ def _environment() -> dict[str, str]:
         "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": (
             "/rextio/toolchain/bin/linker"
         ),
+        "COMPILER_PATH": (
+            "/rextio/toolchain/bin:/rextio/support/gcc-toolchain"
+        ),
         "HOME": "/rextio/build/home",
         "LANG": "C",
         "LC_ALL": "C",
-        "LD_LIBRARY_PATH": "/rextio/support/runtime-libs",
+        "LD": "/rextio/toolchain/bin/ld",
+        "LD_LIBRARY_PATH": (
+            "/rextio/toolchain/lib:/rextio/support/python-library-root:"
+            "/rextio/support/runtime-libs"
+        ),
+        "LIBRARY_PATH": (
+            "/rextio/support/gcc-toolchain:/rextio/support/runtime-libs"
+        ),
         "PATH": "/rextio/toolchain/bin:/rextio/toolchain",
-        "PYO3_CONFIG_FILE": "/rextio/build/rextio.pyo3-config.txt",
+        "PYO3_CONFIG_FILE": "/rextio/support/pyo3-config",
         "PYO3_ENVIRONMENT_SIGNATURE": (
             launcher.expected_linux_pyo3_environment_signature()
         ),
         "PYTHONHASHSEED": "0",
+        "RANLIB": "/rextio/toolchain/bin/ranlib",
         "RUSTC": "/rextio/toolchain/bin/rustc",
         "SOURCE_DATE_EPOCH": "0",
         "TMPDIR": "/tmp",
@@ -52,7 +65,7 @@ def _argv(environment: dict[str, str]) -> tuple[str, ...]:
         "--environment-sha256",
         launcher.linux_payload_environment_digest(environment),
         "--",
-        "/rextio/toolchain/cargo",
+        launcher.FULL_C6_LINUX_CARGO,
         "build",
     )
 
@@ -73,6 +86,19 @@ def test_payload_environment_is_closed_canonical_and_digest_bound() -> None:
     assert {
         character for character in encoded if ord(character) < 32
     } == {"\x1f"}
+    assert environment["COMPILER_PATH"].split(":") == [
+        "/rextio/toolchain/bin",
+        "/rextio/support/gcc-toolchain",
+    ]
+    assert environment["LIBRARY_PATH"].split(":") == [
+        "/rextio/support/gcc-toolchain",
+        "/rextio/support/runtime-libs",
+    ]
+    assert environment["LD_LIBRARY_PATH"].split(":") == [
+        "/rextio/toolchain/lib",
+        "/rextio/support/python-library-root",
+        "/rextio/support/runtime-libs",
+    ]
 
     extra = dict(environment, HTTP_PROXY="http://host.invalid")
     with pytest.raises(launcher.FullC6LinuxLauncherError, match="closed contract"):
@@ -90,8 +116,15 @@ def test_payload_environment_is_closed_canonical_and_digest_bound() -> None:
 @pytest.mark.parametrize(
     ("name", "value"),
     (
+        ("AR", "/host/ar"),
+        ("CC", "/host/cc"),
+        ("COMPILER_PATH", "/host/compiler"),
         ("HOME", "/private/host"),
+        ("LD", "/host/ld"),
+        ("LD_LIBRARY_PATH", "/host/lib"),
+        ("LIBRARY_PATH", "/host/lib"),
         ("PYO3_ENVIRONMENT_SIGNATURE", "not-a-digest"),
+        ("RANLIB", "/host/ranlib"),
         ("SOURCE_DATE_EPOCH", "-1"),
     ),
 )
@@ -110,15 +143,15 @@ def test_launcher_argv_requires_digest_and_mapped_toolchain_payload() -> None:
 
     assert launcher.validate_linux_launcher_argv(
         _argv(environment), environment
-    ) == ("/rextio/toolchain/cargo", "build")
+    ) == (launcher.FULL_C6_LINUX_CARGO, "build")
 
     changed = list(_argv(environment))
     changed[2] = "e" * 64
     with pytest.raises(launcher.FullC6LinuxLauncherError, match="digest differs"):
         launcher.validate_linux_launcher_argv(changed, environment)
     changed = list(_argv(environment))
-    changed[4] = "/usr/bin/cargo"
-    with pytest.raises(launcher.FullC6LinuxLauncherError, match="outside"):
+    changed[4] = "/rextio/toolchain/bin/rustc"
+    with pytest.raises(launcher.FullC6LinuxLauncherError, match="fixed Cargo"):
         launcher.validate_linux_launcher_argv(changed, environment)
     changed = list(_argv(environment))
     changed.append("bad\nargument")
@@ -239,7 +272,7 @@ print(f"{eof}:{sentinel_absent}")
 def test_launcher_revalidates_exact_pyo3_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = tmp_path / "rextio.pyo3-config.txt"
+    path = tmp_path / "pyo3-config"
     path.write_bytes(launcher._PYO3_CONFIG_CONTENT)
     monkeypatch.setattr(launcher, "_PYO3_CONFIG_PATH", str(path))
 
@@ -360,8 +393,8 @@ def test_launcher_orders_validation_fd_close_landlock_then_exec(
     assert calls[:4] == ["runtime", "pyo3", "fds", "landlock"]
     assert calls[4] == (
         "execve",
-        "/rextio/toolchain/cargo",
-        ("/rextio/toolchain/cargo", "build"),
+        launcher.FULL_C6_LINUX_CARGO,
+        (launcher.FULL_C6_LINUX_CARGO, "build"),
         environment,
     )
 
