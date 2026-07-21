@@ -40,6 +40,12 @@ from rextio.build.full_c6_cargo_workspace import (
     materialize_full_c6_cargo_dependency_workspace,
     validate_full_c6_cargo_dependency_workspace_receipt,
 )
+from rextio.build.full_c6_output_license import (
+    OutputWheelLicenseContract,
+    OutputWheelLicenseFile,
+    OutputWheelLicenseVerification,
+    rebuild_output_wheel_license_contract,
+)
 from rextio.build.reproducibility import (
     ReproducibilityBuildOutputs,
     ReproducibilityError,
@@ -62,6 +68,7 @@ from rextio.build.wheel_builder import (
     WheelContractError,
     build_artifact_wheel,
     capture_external_wheel_contract,
+    verify_output_wheel_license_bytes,
 )
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
 
@@ -86,6 +93,7 @@ MAX_FULL_C6_FILE_BYTES = 64 * 1024 * 1024
 MAX_FULL_C6_PATH_DEPTH = 32
 MAX_FULL_C6_PATH_CHARS = 4096
 MAX_FULL_C6_OUTPUT_BYTES = 16 * 1024 * 1024
+MAX_FULL_C6_NATIVE_DRIVER_MANIFEST_BYTES = 8 * 1024 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RESERVED_ENV = frozenset(
     {
@@ -133,6 +141,108 @@ class FullC6ExecutorError(ReproducibilityError):
     """The strict Full C6 executor could not establish its bounded receipt."""
 
 
+def _rebuild_external_wheel_contract(
+    value: ExternalWheelContract,
+) -> ExternalWheelContract:
+    if (
+        type(value) is not ExternalWheelContract
+        or type(value.external_members) is not tuple
+    ):
+        raise TypeError("Full C6 native external wheel contract is invalid")
+    if type(value.source_members) is not tuple:
+        raise TypeError("Full C6 native external wheel source members are invalid")
+    members: list[ExternalWheelMemberIdentity] = []
+    for item in value.external_members:
+        if type(item) is not ExternalWheelMemberIdentity:
+            raise TypeError("Full C6 native external wheel member is invalid")
+        members.append(
+            ExternalWheelMemberIdentity(
+                path=item.path,
+                sha256=item.sha256,
+                size=item.size,
+            )
+        )
+    return ExternalWheelContract(
+        package=value.package,
+        distribution=value.distribution,
+        version=value.version,
+        source_members=tuple(value.source_members),
+        external_members=tuple(members),
+    )
+
+
+def _external_wheel_contract_document(
+    contract: ExternalWheelContract,
+) -> dict[str, object]:
+    return {
+        "distribution": contract.distribution,
+        "external_members": [
+            {"path": item.path, "sha256": item.sha256, "size": item.size}
+            for item in contract.external_members
+        ],
+        "package": contract.package,
+        "source_members": list(contract.source_members),
+        "version": contract.version,
+    }
+
+
+def _output_license_manifest_document(
+    contract: OutputWheelLicenseContract,
+) -> dict[str, object]:
+    return {
+        "expression": contract.expression,
+        "files": [
+            {
+                "data_hex": item.data.hex(),
+                "path": item.path,
+                "sha256": hashlib.sha256(item.data).hexdigest(),
+                "size": len(item.data),
+            }
+            for item in contract.files
+        ],
+    }
+
+
+def _external_wheel_contract_identity(
+    contract: ExternalWheelContract,
+) -> dict[str, object]:
+    document = _external_wheel_contract_document(contract)
+    return {
+        "contract_sha256": hashlib.sha256(_canonical_json(document)).hexdigest(),
+        "requirement": contract.requirement,
+        "external_member_set_sha256": hashlib.sha256(
+            _canonical_json(document["external_members"])
+        ).hexdigest(),
+        "source_member_set_sha256": hashlib.sha256(
+            _canonical_json(document["source_members"])
+        ).hexdigest(),
+    }
+
+
+def _output_license_contract_identity(
+    contract: OutputWheelLicenseContract,
+) -> dict[str, object]:
+    document = _output_license_manifest_document(contract)
+    file_identities = [
+        {
+            "path": item.path,
+            "sha256": hashlib.sha256(item.data).hexdigest(),
+            "size": len(item.data),
+        }
+        for item in contract.files
+    ]
+    return {
+        "contract_sha256": hashlib.sha256(_canonical_json(document)).hexdigest(),
+        "expression_sha256": hashlib.sha256(
+            contract.expression.encode("utf-8")
+        ).hexdigest(),
+        "file_set_sha256": hashlib.sha256(
+            _canonical_json(file_identities)
+        ).hexdigest(),
+        "file_count": len(file_identities),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class FullC6NativeToolPaths:
     """Ephemeral exact tool paths used by the native executor.
@@ -168,6 +278,7 @@ class FullC6NativeDriverManifest:
     distribution_name: str
     cargo_argv: tuple[str, ...]
     external_contract: ExternalWheelContract
+    output_license_contract: OutputWheelLicenseContract
     domain: str = FULL_C6_NATIVE_DRIVER_DOMAIN
     execution_driver: str = FULL_C6_NATIVE_EXECUTION_DRIVER
     postprocessor: str = FULL_C6_NATIVE_POSTPROCESSOR
@@ -195,10 +306,14 @@ class FullC6NativeDriverManifest:
             is None
         ):
             raise ValueError("Full C6 native distribution name is invalid")
-        if type(self.external_contract) is not ExternalWheelContract:
-            raise TypeError("Full C6 native external wheel contract is invalid")
+        external_contract = _rebuild_external_wheel_contract(self.external_contract)
+        output_license_contract = rebuild_output_wheel_license_contract(
+            self.output_license_contract
+        )
         _require_exact_native_cargo_command(argv)
         object.__setattr__(self, "cargo_argv", argv)
+        object.__setattr__(self, "external_contract", external_contract)
+        object.__setattr__(self, "output_license_contract", output_license_contract)
 
     @property
     def digest(self) -> str:
@@ -207,7 +322,6 @@ class FullC6NativeDriverManifest:
 
     def to_dict(self) -> dict[str, object]:
         """Return the complete canonical manifest document."""
-        contract = self.external_contract
         return {
             "authority": "non-authorizing",
             "cargo_argv": list(self.cargo_argv),
@@ -215,23 +329,22 @@ class FullC6NativeDriverManifest:
             "distribution_name": self.distribution_name,
             "domain": self.domain,
             "execution_driver": self.execution_driver,
-            "external_wheel_contract": {
-                "distribution": contract.distribution,
-                "external_members": [
-                    {"path": item.path, "sha256": item.sha256, "size": item.size}
-                    for item in contract.external_members
-                ],
-                "package": contract.package,
-                "source_members": list(contract.source_members),
-                "version": contract.version,
-            },
+            "external_wheel_contract": _external_wheel_contract_document(
+                self.external_contract
+            ),
+            "output_wheel_license_contract": _output_license_manifest_document(
+                self.output_license_contract
+            ),
             "postprocessor": self.postprocessor,
             "target_triple": self.target_triple,
         }
 
     def to_bytes(self) -> bytes:
         """Return the only accepted on-disk encoding."""
-        return _canonical_json(self.to_dict())
+        data = _canonical_json(self.to_dict())
+        if len(data) > MAX_FULL_C6_NATIVE_DRIVER_MANIFEST_BYTES:
+            raise ValueError("Full C6 native driver manifest exceeds its byte bound")
+        return data
 
 
 def full_c6_native_driver_manifest_bytes(
@@ -240,6 +353,7 @@ def full_c6_native_driver_manifest_bytes(
     distribution_name: str,
     cargo_argv: Sequence[str],
     external_contract: ExternalWheelContract,
+    output_license_contract: OutputWheelLicenseContract,
 ) -> bytes:
     """Create canonical bytes for the frozen executor-owned driver manifest."""
     try:
@@ -248,13 +362,18 @@ def full_c6_native_driver_manifest_bytes(
             distribution_name=distribution_name,
             cargo_argv=tuple(cargo_argv),
             external_contract=external_contract,
+            output_license_contract=output_license_contract,
         ).to_bytes()
     except (TypeError, ValueError) as exc:
         raise FullC6ExecutorError(str(exc)) from exc
 
 
 def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverManifest:
-    if type(data) is not bytes or not data or len(data) > 8 * 1024 * 1024:
+    if (
+        type(data) is not bytes
+        or not data
+        or len(data) > MAX_FULL_C6_NATIVE_DRIVER_MANIFEST_BYTES
+    ):
         raise FullC6ExecutorError("Full C6 native driver manifest exceeds its byte bound")
 
     def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -283,6 +402,7 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
         "domain",
         "execution_driver",
         "external_wheel_contract",
+        "output_wheel_license_contract",
         "postprocessor",
         "target_triple",
     }
@@ -297,6 +417,12 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
         "version",
     }:
         raise FullC6ExecutorError("Full C6 native external wheel contract is invalid")
+    raw_license_contract = document["output_wheel_license_contract"]
+    if type(raw_license_contract) is not dict or set(raw_license_contract) != {
+        "expression",
+        "files",
+    }:
+        raise FullC6ExecutorError("Full C6 native output license contract is invalid")
     raw_members = raw_contract["external_members"]
     raw_sources = raw_contract["source_members"]
     raw_argv = document["cargo_argv"]
@@ -337,6 +463,44 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
             source_members=tuple(raw_sources),
             external_members=tuple(members),
         )
+        raw_license_files = raw_license_contract["files"]
+        if (
+            type(raw_license_contract["expression"]) is not str
+            or type(raw_license_files) is not list
+        ):
+            raise TypeError("output license contract values are invalid")
+        license_files: list[OutputWheelLicenseFile] = []
+        for raw in raw_license_files:
+            if type(raw) is not dict or set(raw) != {
+                "data_hex",
+                "path",
+                "sha256",
+                "size",
+            }:
+                raise ValueError("output license file fields are invalid")
+            if (
+                type(raw["data_hex"]) is not str
+                or type(raw["path"]) is not str
+                or type(raw["sha256"]) is not str
+                or type(raw["size"]) is not int
+                or isinstance(raw["size"], bool)
+                or re.fullmatch(r"(?:[0-9a-f]{2})+", raw["data_hex"]) is None
+            ):
+                raise TypeError("output license file values are invalid")
+            payload = bytes.fromhex(raw["data_hex"])
+            if (
+                payload.hex() != raw["data_hex"]
+                or len(payload) != raw["size"]
+                or hashlib.sha256(payload).hexdigest() != raw["sha256"]
+            ):
+                raise ValueError("output license file identity is invalid")
+            license_files.append(
+                OutputWheelLicenseFile(path=raw["path"], data=payload)
+            )
+        output_license_contract = OutputWheelLicenseContract(
+            expression=raw_license_contract["expression"],
+            files=tuple(license_files),
+        )
         for name in (
             "target_triple",
             "distribution_name",
@@ -354,6 +518,7 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
             distribution_name=document["distribution_name"],
             cargo_argv=tuple(raw_argv),
             external_contract=contract,
+            output_license_contract=output_license_contract,
             domain=document["domain"],
             execution_driver=document["execution_driver"],
             postprocessor=document["postprocessor"],
@@ -659,9 +824,15 @@ class FullC6NativeExecutionAuthority:
 
     executor_receipt: FullC6ExecutorReceipt
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt
+    _driver_manifest: FullC6NativeDriverManifest = dataclass_field(repr=False)
+    _wheel_filename: str = dataclass_field(repr=False)
     _wheel_captures: tuple[ExternalWheelCapture, ExternalWheelCapture] = dataclass_field(
         repr=False
     )
+    _output_license_verifications: tuple[
+        OutputWheelLicenseVerification,
+        OutputWheelLicenseVerification,
+    ] = dataclass_field(repr=False)
     _native_artifact_payloads: tuple[bytes, bytes] = dataclass_field(repr=False)
     _sbom_payloads: tuple[bytes, bytes] = dataclass_field(repr=False)
     _provenance_input_payloads: tuple[bytes, bytes] = dataclass_field(repr=False)
@@ -752,6 +923,13 @@ class FullC6NativeExecutionAuthority:
     def target_triple(self) -> str | None:
         """Return the exact native host target triple."""
         return self.executor_receipt.target_triple
+
+    @property
+    def wheel_filename(self) -> str:
+        """Return the exact canonical wheel filename shared by both builds."""
+        if not validate_full_c6_native_execution_authority(self):
+            raise FullC6ExecutorError("Full C6 native execution authority is stale")
+        return self._wheel_filename
 
 
 @dataclass(frozen=True, slots=True)
@@ -847,7 +1025,10 @@ class _FrozenTree:
 @dataclass(frozen=True, slots=True)
 class _NativePostprocessResult:
     outputs: ReproducibilityBuildOutputs
+    driver_manifest: FullC6NativeDriverManifest
+    wheel_filename: str
     capture: ExternalWheelCapture
+    output_license_verification: OutputWheelLicenseVerification
     native_artifact_bytes: bytes
     sbom_bytes: bytes
     provenance_input_bytes: bytes
@@ -870,19 +1051,63 @@ def _native_capture_identity(capture: ExternalWheelCapture) -> dict[str, object]
     }
 
 
+def _output_license_verification_identity(
+    verification: OutputWheelLicenseVerification,
+) -> dict[str, object]:
+    members = [
+        {"path": item.path, "sha256": item.sha256, "size": item.size}
+        for item in verification.license_members
+    ]
+    return {
+        "expression_sha256": hashlib.sha256(
+            verification.expression.encode("utf-8")
+        ).hexdigest(),
+        "metadata_member": verification.metadata_member,
+        "metadata_sha256": verification.metadata_sha256,
+        "license_member_set_sha256": hashlib.sha256(
+            _canonical_json(members)
+        ).hexdigest(),
+        "record_member": verification.record_member,
+        "wheel_sha256": verification.wheel_sha256,
+    }
+
+
 def _retained_payload_identity(data: bytes) -> dict[str, object]:
     return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+
+
+def _require_canonical_wheel_filename(value: object) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > 512
+        or value != unicodedata.normalize("NFC", value)
+        or PurePosixPath(value).name != value
+        or PureWindowsPath(value).name != value
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*\.whl", value) is None
+    ):
+        raise ValueError("Full C6 native wheel filename is not canonical")
+    return value
 
 
 def _native_authority_payload(
     authority: FullC6NativeExecutionAuthority,
 ) -> dict[str, object]:
     cargo = authority.cargo_workspace
+    manifest = authority._driver_manifest
     return {
         "domain": _NATIVE_AUTHORITY_DOMAIN,
         "complete_for_scope": True,
         "authorizes_distribution": False,
         "executor_receipt_sha256": authority.executor_receipt.digest,
+        "driver_manifest_sha256": manifest.digest,
+        "wheel_filename": authority._wheel_filename,
+        "external_wheel_contract": _external_wheel_contract_identity(
+            manifest.external_contract
+        ),
+        "output_license_contract": _output_license_contract_identity(
+            manifest.output_license_contract
+        ),
         "cargo_workspace_sha256": cargo.digest,
         "cargo_sources_sha256": cargo.cargo_sources.digest,
         "cargo_vendor_layout": cargo.vendor_layout,
@@ -890,6 +1115,10 @@ def _native_authority_payload(
         "cargo_executor_config": cargo.executor_config.to_dict(),
         "wheel_captures": [
             _native_capture_identity(item) for item in authority._wheel_captures
+        ],
+        "output_license_verifications": [
+            _output_license_verification_identity(item)
+            for item in authority._output_license_verifications
         ],
         "native_artifacts": [
             _retained_payload_identity(item)
@@ -923,6 +1152,45 @@ def _validate_native_authority_shape(
     receipt = authority.executor_receipt
     if receipt.execution_driver != FULL_C6_NATIVE_EXECUTION_DRIVER:
         raise ValueError("Full C6 native authority requires the production driver")
+    manifest = authority._driver_manifest
+    if type(manifest) is not FullC6NativeDriverManifest:
+        raise TypeError("Full C6 native driver manifest is invalid")
+    try:
+        rebuilt_manifest = _parse_full_c6_native_driver_manifest(manifest.to_bytes())
+    except (TypeError, ValueError, FullC6ExecutorError) as exc:
+        raise ValueError("Full C6 native driver manifest is stale") from exc
+    if rebuilt_manifest != manifest:
+        raise ValueError("Full C6 native driver manifest is stale")
+    if (
+        manifest.digest != receipt.postprocessor_manifest_sha256
+        or receipt.postprocessor != manifest.postprocessor
+        or receipt.target_triple != manifest.target_triple
+    ):
+        raise ValueError("Full C6 native driver differs from executor receipt")
+    manifest_entry = next(
+        (
+            item
+            for item in receipt.frozen_tree.entries
+            if item.logical_name == FULL_C6_NATIVE_DRIVER_MANIFEST
+            and item.kind == "file"
+        ),
+        None,
+    )
+    if (
+        manifest_entry is None
+        or manifest_entry.sha256 != manifest.digest
+        or manifest_entry.size != len(manifest.to_bytes())
+    ):
+        raise ValueError("Full C6 native driver differs from frozen source")
+    expected_argv_sha256 = hashlib.sha256(
+        _canonical_json(list(manifest.cargo_argv))
+    ).hexdigest()
+    if any(
+        item.argv_sha256 != expected_argv_sha256
+        or item.argv_count != len(manifest.cargo_argv)
+        for item in receipt.invocations
+    ):
+        raise ValueError("Full C6 native argv differs from driver manifest")
     cargo = authority.cargo_workspace
     if not validate_full_c6_cargo_dependency_workspace_receipt(cargo):
         raise ValueError("Full C6 native Cargo workspace receipt is stale")
@@ -932,6 +1200,7 @@ def _validate_native_authority_shape(
         raise ValueError("Full C6 native authority posture is invalid")
     collections = (
         authority._wheel_captures,
+        authority._output_license_verifications,
         authority._native_artifact_payloads,
         authority._sbom_payloads,
         authority._provenance_input_payloads,
@@ -940,20 +1209,29 @@ def _validate_native_authority_shape(
         raise TypeError("Full C6 native authority requires two retained outputs")
     if any(type(item) is not ExternalWheelCapture for item in authority._wheel_captures):
         raise TypeError("Full C6 native wheel captures are invalid")
-    for values in collections[1:]:
+    if any(
+        type(item) is not OutputWheelLicenseVerification
+        for item in authority._output_license_verifications
+    ):
+        raise TypeError("Full C6 native output license verifications are invalid")
+    for values in collections[2:]:
         if any(type(item) is not bytes or not item for item in values):
             raise TypeError("Full C6 native retained payload is invalid")
     if authority._wheel_captures[0] != authority._wheel_captures[1]:
         raise ValueError("Full C6 native wheel captures differ")
     if authority._native_artifact_payloads[0] != authority._native_artifact_payloads[1]:
         raise ValueError("Full C6 native artifact payloads differ")
+    if authority._output_license_verifications[0] != authority._output_license_verifications[1]:
+        raise ValueError("Full C6 native output license verifications differ")
     if authority._sbom_payloads[0] != authority._sbom_payloads[1]:
         raise ValueError("Full C6 native preliminary SBOM payloads differ")
     if authority._provenance_input_payloads[0] != authority._provenance_input_payloads[1]:
         raise ValueError("Full C6 native preliminary provenance payloads differ")
-    for ordinal, (capture, artifact, sbom, provenance) in enumerate(
+    wheel_filename = _require_canonical_wheel_filename(authority._wheel_filename)
+    for ordinal, (capture, output_license, artifact, sbom, provenance) in enumerate(
         zip(
             authority._wheel_captures,
+            authority._output_license_verifications,
             authority._native_artifact_payloads,
             authority._sbom_payloads,
             authority._provenance_input_payloads,
@@ -961,6 +1239,14 @@ def _validate_native_authority_shape(
         )
     ):
         build = receipt.reproducibility.builds[ordinal]
+        try:
+            rebuilt_output_license = verify_output_wheel_license_bytes(
+                capture.wheel_bytes,
+                manifest.output_license_contract,
+                wheel_filename=wheel_filename,
+            )
+        except WheelContractError as exc:
+            raise ValueError("Full C6 native output license bytes are stale") from exc
         if (
             hashlib.sha256(capture.wheel_bytes).hexdigest() != build.unsigned_wheel.sha256
             or len(capture.wheel_bytes) != build.unsigned_wheel.size
@@ -973,6 +1259,11 @@ def _validate_native_authority_shape(
             or len(provenance) != build.provenance_input_json.size
             or not _validate_retained_canonical_json(sbom)
             or not _validate_retained_canonical_json(provenance)
+            or rebuilt_output_license != output_license
+            or output_license.wheel_sha256 != capture.verification.wheel_sha256
+            or output_license.metadata_member != capture.verification.metadata_member
+            or output_license.record_member != capture.verification.record_member
+            or capture.verification.requirement != manifest.external_contract.requirement
         ):
             raise ValueError("Full C6 native retained evidence differs from reproducibility")
     lock = next(
@@ -1014,10 +1305,23 @@ def _create_native_execution_authority(
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
     results: tuple[_NativePostprocessResult, _NativePostprocessResult],
 ) -> FullC6NativeExecutionAuthority:
+    manifests = tuple(item.driver_manifest for item in results)
+    filenames = tuple(item.wheel_filename for item in results)
+    if manifests[0] != manifests[1] or filenames[0] != filenames[1]:
+        raise FullC6ExecutorError(
+            "Full C6 native retained contracts differ between builds"
+        )
     authority = object.__new__(FullC6NativeExecutionAuthority)
     object.__setattr__(authority, "executor_receipt", executor_receipt)
     object.__setattr__(authority, "cargo_workspace", cargo_workspace)
+    object.__setattr__(authority, "_driver_manifest", manifests[0])
+    object.__setattr__(authority, "_wheel_filename", filenames[0])
     object.__setattr__(authority, "_wheel_captures", tuple(item.capture for item in results))
+    object.__setattr__(
+        authority,
+        "_output_license_verifications",
+        tuple(item.output_license_verification for item in results),
+    )
     object.__setattr__(
         authority,
         "_native_artifact_payloads",
@@ -1096,6 +1400,7 @@ def execute_full_c6_two_build(
     native_orchestrator: bool = False,
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt | None = None,
     _native_results_sink: list[_NativePostprocessResult] | None = None,
+    _native_output_license_contract: OutputWheelLicenseContract | None = None,
 ) -> FullC6ExecutorReceipt:
     """Freeze one project and execute exactly two strict isolated builds.
 
@@ -1131,10 +1436,24 @@ def execute_full_c6_two_build(
             )
         if type(_native_results_sink) is not list or _native_results_sink:
             raise FullC6ExecutorError("Full C6 native retained-evidence sink is invalid")
-    elif cargo_workspace is not None or _native_results_sink is not None:
+        try:
+            native_output_license_contract = rebuild_output_wheel_license_contract(
+                _native_output_license_contract  # type: ignore[arg-type]
+            )
+        except (TypeError, ValueError) as exc:
+            raise FullC6ExecutorError(
+                "Full C6 native execution requires an exact output license contract"
+            ) from exc
+    elif (
+        cargo_workspace is not None
+        or _native_results_sink is not None
+        or _native_output_license_contract is not None
+    ):
         raise FullC6ExecutorError(
             "Full C6 callback execution cannot claim a native Cargo workspace"
         )
+    else:
+        native_output_license_contract = None
     source, _source_stat = _validate_source_root(source_root)
     first = _validate_quarantine_root(first_quarantine_root)
     second = _validate_quarantine_root(second_quarantine_root)
@@ -1209,6 +1528,10 @@ def execute_full_c6_two_build(
                 f"Full C6 frozen tree is missing exact {FULL_C6_NATIVE_DRIVER_MANIFEST}"
             ) from exc
         native_manifest = _parse_full_c6_native_driver_manifest(manifest_data)
+        if native_manifest.output_license_contract != native_output_license_contract:
+            raise FullC6ExecutorError(
+                "Full C6 output license contract differs from the frozen native driver"
+            )
         fixed_argv = _require_exact_native_cargo_command(native_manifest.cargo_argv)
         if fixed_argv != toolchain.argv.values:
             raise FullC6ExecutorError(
@@ -1463,6 +1786,20 @@ def execute_full_c6_two_build(
                 raise FullC6ExecutorError(
                     "Full C6 verified native wheel changed before receipt capture"
                 )
+            try:
+                refreshed_output_license = verify_output_wheel_license_bytes(
+                    refreshed.wheel_bytes,
+                    native_manifest.output_license_contract,
+                    wheel_filename=result.wheel_filename,
+                )
+            except WheelContractError as exc:
+                raise FullC6ExecutorError(
+                    "Full C6 verified output license changed before receipt capture"
+                ) from exc
+            if refreshed_output_license != result.output_license_verification:
+                raise FullC6ExecutorError(
+                    "Full C6 verified output license changed before receipt capture"
+                )
             if refreshed.verification.wheel_sha256 != reproducibility.wheel_sha256:
                 raise FullC6ExecutorError(
                     "Full C6 verified wheel differs from reproducibility evidence"
@@ -1540,6 +1877,7 @@ def execute_full_c6_native_two_build(
     toolchain: BuildToolchainIdentity,
     native_tools: FullC6NativeToolPaths,
     cargo_workspace: FullC6CargoDependencyWorkspaceReceipt,
+    output_license_contract: OutputWheelLicenseContract,
     timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     max_output_bytes: int = MAX_FULL_C6_OUTPUT_BYTES,
 ) -> FullC6NativeExecutionAuthority:
@@ -1549,6 +1887,14 @@ def execute_full_c6_native_two_build(
     seams, this entrypoint owns every output-producing step.  Its canonical
     manifest and Python staging bytes must already be part of ``source_root``.
     """
+    try:
+        output_license_contract = rebuild_output_wheel_license_contract(
+            output_license_contract
+        )
+    except (TypeError, ValueError) as exc:
+        raise FullC6ExecutorError(
+            "Full C6 native execution requires an exact output license contract"
+        ) from exc
     retained_results: list[_NativePostprocessResult] = []
     receipt = execute_full_c6_two_build(
         source_root,
@@ -1563,6 +1909,7 @@ def execute_full_c6_native_two_build(
         native_orchestrator=True,
         cargo_workspace=cargo_workspace,
         _native_results_sink=retained_results,
+        _native_output_license_contract=output_license_contract,
     )
     if len(retained_results) != 2:
         raise FullC6ExecutorError("Full C6 native retained evidence is incomplete")
@@ -1628,15 +1975,22 @@ def _postprocess_native_build(
             staging,
             output,
             external_contract=manifest.external_contract,
+            output_license_contract=manifest.output_license_contract,
         )
         if wheel_result.status != "built" or type(wheel_result.path) is not str:
             raise FullC6ExecutorError("Full C6 native wheel postprocessor failed")
         wheel = Path(wheel_result.path)
+        wheel_filename = _require_canonical_wheel_filename(wheel.name)
         capture = capture_external_wheel_contract(
             wheel,
             manifest.external_contract,
             native_member_path=f"_rextio_native{extension_suffix}",
             native_member_bytes=artifact_data,
+        )
+        output_license_verification = verify_output_wheel_license_bytes(
+            capture.wheel_bytes,
+            manifest.output_license_contract,
+            wheel_filename=wheel_filename,
         )
     except FullC6ExecutorError:
         raise
@@ -1657,10 +2011,19 @@ def _postprocess_native_build(
             native_member_path=f"_rextio_native{extension_suffix}",
             native_member_bytes=artifact_data,
         )
+        reverified_output_license = verify_output_wheel_license_bytes(
+            capture.wheel_bytes,
+            manifest.output_license_contract,
+            wheel_filename=wheel_filename,
+        )
     except (OSError, TypeError, ValueError, WheelContractError) as exc:
         raise FullC6ExecutorError(
             "Full C6 verified wheel materialization failed"
         ) from exc
+    if reverified_output_license != output_license_verification:
+        raise FullC6ExecutorError(
+            "Full C6 output license verification changed after materialization"
+        )
 
     common = {
         "authority": "non-authorizing",
@@ -1726,7 +2089,10 @@ def _postprocess_native_build(
             sbom_json=sbom,
             provenance_input_json=provenance,
         ),
+        driver_manifest=manifest,
+        wheel_filename=wheel_filename,
         capture=capture,
+        output_license_verification=output_license_verification,
         native_artifact_bytes=artifact_data,
         sbom_bytes=_canonical_json(sbom_document),
         provenance_input_bytes=_canonical_json(provenance_document),

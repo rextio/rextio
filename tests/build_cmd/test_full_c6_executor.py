@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import hashlib
 import os
@@ -10,6 +11,7 @@ import pickle
 import stat
 import subprocess
 import sys
+import zipfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -48,7 +50,6 @@ def _external_contract():
         ExternalWheelContract,
         ExternalWheelMemberIdentity,
     )
-
     paths = (
         "vendor-1.0.dist-info/METADATA",
         "vendor-1.0.dist-info/RECORD",
@@ -68,6 +69,23 @@ def _external_contract():
                 size=len(path),
             )
             for path in paths
+        ),
+    )
+
+
+def _output_license_contract():
+    from rextio.build.full_c6_output_license import (
+        OutputWheelLicenseContract,
+        OutputWheelLicenseFile,
+    )
+
+    return OutputWheelLicenseContract(
+        expression="MIT",
+        files=(
+            OutputWheelLicenseFile(
+                path="LICENSE",
+                data=b"MIT license for the generated output\n",
+            ),
         ),
     )
 
@@ -210,6 +228,7 @@ def _native_project(tmp_path: Path, *, target: str = "aarch64-apple-darwin"):
             distribution_name="demo-artifact",
             cargo_argv=STRICT_BUILD,
             external_contract=_external_contract(),
+            output_license_contract=_output_license_contract(),
         )
     )
     return root
@@ -488,6 +507,7 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
         toolchain=toolchain,
         native_tools=native_tools,
         cargo_workspace=cargo_workspace,
+        output_license_contract=_output_license_contract(),
     )
 
     assert len(runs) == 2
@@ -556,6 +576,7 @@ def test_native_authority_is_process_sealed_noncopyable_and_bytes_private(
         toolchain=toolchain,
         native_tools=native_tools,
         cargo_workspace=cargo_workspace,
+        output_license_contract=_output_license_contract(),
     )
 
     assert type(authority) is executor.FullC6NativeExecutionAuthority
@@ -566,8 +587,15 @@ def test_native_authority_is_process_sealed_noncopyable_and_bytes_private(
     assert public["wheel_captures"][0]["wheel_sha256"] == (
         authority.reproducibility.wheel_sha256
     )
+    assert public["driver_manifest_sha256"] == authority.postprocessor_manifest_sha256
+    assert public["wheel_filename"] == authority.wheel_filename
+    assert public["external_wheel_contract"]["requirement"] == "vendor==1.0"
+    assert public["output_license_contract"]["file_count"] == 1
+    assert len(public["output_license_verifications"]) == 2
     serialized = json.dumps(public, sort_keys=True)
     assert "sealed-native-extension" not in serialized
+    assert "MIT license for the generated output" not in serialized
+    assert "data_hex" not in serialized
     assert "wheel_bytes" not in serialized
     with pytest.raises(TypeError):
         executor.FullC6NativeExecutionAuthority()
@@ -578,11 +606,150 @@ def test_native_authority_is_process_sealed_noncopyable_and_bytes_private(
     with pytest.raises(TypeError):
         pickle.dumps(authority)
 
+    filename = authority._wheel_filename  # type: ignore[attr-defined]
+    object.__setattr__(authority, "_wheel_filename", "../substituted.whl")
+    assert not executor.validate_full_c6_native_execution_authority(authority)
+    object.__setattr__(authority, "_wheel_filename", filename)
+    assert executor.validate_full_c6_native_execution_authority(authority)
+
     retained = authority._sbom_payloads  # type: ignore[attr-defined]
     object.__setattr__(authority, "_sbom_payloads", (b"{}", retained[1]))
     assert not executor.validate_full_c6_native_execution_authority(authority)
     with pytest.raises(executor.FullC6ExecutorError, match="stale"):
         authority.to_dict()
+
+
+def test_native_executor_rejects_manifest_license_tamper_and_caller_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+    from rextio.build.full_c6_output_license import OutputWheelLicenseContract
+
+    tamper_root = tmp_path / "manifest-tamper"
+    source = _native_project(tamper_root)
+    manifest_path = source / executor.FULL_C6_NATIVE_DRIVER_MANIFEST
+    manifest = json.loads(manifest_path.read_bytes())
+    license_file = manifest["output_wheel_license_contract"]["files"][0]
+    license_file["data_hex"] = "00" + license_file["data_hex"][2:]
+    manifest_path.write_bytes(
+        json.dumps(
+            manifest,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tamper_root,
+        source,
+    )
+    monkeypatch.setattr(
+        executor,
+        "detect_host_target_triple",
+        lambda: "aarch64-apple-darwin",
+    )
+    with pytest.raises(executor.FullC6ExecutorError, match="manifest|license"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tamper_root),
+            base_environment=base_environment,
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
+        )
+
+    mismatch_root = tmp_path / "caller-mismatch"
+    source = _native_project(mismatch_root)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        mismatch_root,
+        source,
+    )
+    roots = _roots(mismatch_root)
+    with pytest.raises(executor.FullC6ExecutorError, match="exact output license"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *roots,
+            base_environment=base_environment,
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
+            output_license_contract=object(),  # type: ignore[arg-type]
+        )
+    mismatched = OutputWheelLicenseContract(
+        expression="Apache-2.0",
+        files=_output_license_contract().files,
+    )
+    with pytest.raises(executor.FullC6ExecutorError, match="differs from the frozen"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *roots,
+            base_environment=base_environment,
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
+            output_license_contract=mismatched,
+        )
+
+
+def test_native_executor_rejects_output_license_byte_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+    from rextio.build.wheel_builder import ExternalWheelCapture
+
+    source = _native_project(tmp_path)
+    native_tools, base_environment, toolchain, cargo_workspace = _native_inputs(
+        tmp_path,
+        source,
+    )
+    _install_successful_native_run(monkeypatch, executor)
+    real_capture = executor.capture_external_wheel_contract
+
+    def capture_with_stale_license(wheel_path, contract, **kwargs):
+        capture = real_capture(wheel_path, contract, **kwargs)
+        if Path(wheel_path).parent.name != "output":
+            return capture
+        changed = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(capture.wheel_bytes), "r") as source_archive:
+            with zipfile.ZipFile(changed, "w") as changed_archive:
+                for info in source_archive.infolist():
+                    payload = source_archive.read(info)
+                    if info.filename.endswith(".dist-info/licenses/LICENSE"):
+                        payload = b"stale substituted license payload\n"
+                    changed_archive.writestr(info, payload)
+        wheel_bytes = changed.getvalue()
+        return ExternalWheelCapture(
+            verification=replace(
+                capture.verification,
+                wheel_sha256=hashlib.sha256(wheel_bytes).hexdigest(),
+            ),
+            wheel_bytes=wheel_bytes,
+            native_member=capture.native_member,
+        )
+
+    monkeypatch.setattr(
+        executor,
+        "capture_external_wheel_contract",
+        capture_with_stale_license,
+    )
+    with pytest.raises(executor.FullC6ExecutorError, match="wheel contract"):
+        executor.execute_full_c6_native_two_build(
+            source,
+            *_roots(tmp_path),
+            base_environment=base_environment,
+            source_date_epoch=1,
+            toolchain=toolchain,
+            native_tools=native_tools,
+            cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
+        )
 
 
 def test_native_executor_rejects_stale_or_nonreceipt_cargo_workspace(
@@ -606,6 +773,7 @@ def test_native_executor_rejects_stale_or_nonreceipt_cargo_workspace(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=object(),  # type: ignore[arg-type]
+            output_license_contract=_output_license_contract(),
         )
 
     source = _native_project(tmp_path / "stale")
@@ -623,6 +791,7 @@ def test_native_executor_rejects_stale_or_nonreceipt_cargo_workspace(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
 
 
@@ -668,6 +837,7 @@ def test_native_executor_rejects_vendor_mutation_after_cargo(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
 
 
@@ -703,6 +873,7 @@ def test_native_orchestrator_rejects_missing_or_noncanonical_driver_manifest(
                 toolchain=toolchain,
                 native_tools=native_tools,
                 cargo_workspace=cargo_workspace,
+                output_license_contract=_output_license_contract(),
             )
 
 
@@ -742,6 +913,7 @@ def test_native_orchestrator_rejects_cargo_or_staging_boundary_changes(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
 
     source = _native_project(tmp_path / "external-source")
@@ -775,6 +947,7 @@ def test_native_orchestrator_rejects_cargo_or_staging_boundary_changes(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
 
 
@@ -810,6 +983,7 @@ def test_native_orchestrator_rejects_mismatched_concrete_tool_paths(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
 
 
@@ -845,6 +1019,7 @@ def test_native_orchestrator_binds_current_python_and_base_environment(
             toolchain=replace(toolchain, python=fake_python_identity),
             native_tools=replace(native_tools, python=fake_python),
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
 
     source = _native_project(tmp_path / "environment")
@@ -864,6 +1039,7 @@ def test_native_orchestrator_binds_current_python_and_base_environment(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
 
 
@@ -895,6 +1071,7 @@ def test_native_orchestrator_rejects_frozen_cargo_selector_config(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
 
 
@@ -943,6 +1120,7 @@ def test_native_orchestrator_rejects_symlinked_artifact_ancestor(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
 
 
@@ -1018,6 +1196,7 @@ def test_native_orchestrator_rejects_concurrent_artifact_ancestor_swap(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
     assert swapped
 
@@ -1067,6 +1246,7 @@ def test_native_orchestrator_rechecks_cargo_config_discovery_boundaries(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
 
 
@@ -1122,6 +1302,7 @@ def test_native_orchestrator_rejects_cargo_config_directory_swap(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
     assert swapped
 
@@ -1162,6 +1343,7 @@ def test_native_orchestrator_requires_empty_cargo_home_before_launch(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
 
 
@@ -1218,6 +1400,7 @@ def test_native_orchestrator_rejects_wheel_member_different_from_cargo_artifact(
             toolchain=toolchain,
             native_tools=native_tools,
             cargo_workspace=cargo_workspace,
+            output_license_contract=_output_license_contract(),
         )
 
 
@@ -1279,6 +1462,7 @@ def test_native_orchestrator_materializes_the_exact_captured_wheel_bytes(
         toolchain=toolchain,
         native_tools=native_tools,
         cargo_workspace=cargo_workspace,
+        output_license_contract=_output_license_contract(),
     )
 
     for root in roots:

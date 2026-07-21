@@ -407,6 +407,26 @@ def verify_output_wheel_license_contract(
     ).verification
 
 
+def verify_output_wheel_license_bytes(
+    wheel_bytes: bytes,
+    contract: OutputWheelLicenseContract,
+    *,
+    wheel_filename: str,
+) -> OutputWheelLicenseVerification:
+    """Verify exact PEP 639 material from already-retained wheel bytes."""
+    payloads, _metadata_member, record_member = _parse_strict_wheel_bytes(
+        wheel_bytes,
+        wheel_filename=wheel_filename,
+    )
+    verified = _verify_output_wheel_license_payloads(
+        wheel_bytes=wheel_bytes,
+        payloads=payloads,
+        contract=contract,
+    )
+    _verify_record(payloads, record_member)
+    return verified.verification
+
+
 def capture_external_wheel_contract(
     wheel_path: Path,
     contract: ExternalWheelContract,
@@ -582,6 +602,46 @@ def _capture_strict_wheel_snapshot(wheel_path: Path) -> _StrictWheelSnapshot:
     path = Path(wheel_path)
     try:
         wheel_bytes, pinned_identity = _read_pinned_wheel(path)
+        payloads, metadata_member, record_member = _parse_strict_wheel_bytes(
+            wheel_bytes,
+            wheel_filename=path.name,
+        )
+    except WheelContractError:
+        raise
+    except OSError as error:
+        raise WheelContractError("output wheel could not be verified") from error
+    return _StrictWheelSnapshot(
+        path=path,
+        pinned_identity=pinned_identity,
+        wheel_bytes=wheel_bytes,
+        payloads=payloads,
+        metadata_member=metadata_member,
+        record_member=record_member,
+    )
+
+
+def _parse_strict_wheel_bytes(
+    wheel_bytes: bytes,
+    *,
+    wheel_filename: str,
+) -> tuple[dict[str, bytes], str, str]:
+    if (
+        type(wheel_bytes) is not bytes
+        or not wheel_bytes
+        or len(wheel_bytes) > _MAX_STRICT_WHEEL_BYTES
+        or type(wheel_filename) is not str
+        or len(wheel_filename) > _MAX_STRICT_MEMBER_NAME
+        or wheel_filename != unicodedata.normalize("NFC", wheel_filename)
+        or PurePosixPath(wheel_filename).name != wheel_filename
+        or PureWindowsPath(wheel_filename).name != wheel_filename
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in wheel_filename
+        )
+        or not wheel_filename.endswith(".whl")
+    ):
+        raise WheelContractError("output wheel identity is invalid")
+    try:
         with zipfile.ZipFile(io.BytesIO(wheel_bytes), "r") as archive:
             infos = archive.infolist()
             if not infos or len(infos) > _MAX_STRICT_WHEEL_ENTRIES:
@@ -622,19 +682,12 @@ def _capture_strict_wheel_snapshot(wheel_path: Path) -> _StrictWheelSnapshot:
     if (
         wheel_metadata not in payloads
         or dist_info_roots != {metadata_root}
-        or not path.name.endswith(".whl")
-        or path.name[:-4].rsplit("-", 3)[0] != metadata_root.removesuffix(".dist-info")
+        or wheel_filename[:-4].rsplit("-", 3)[0]
+        != metadata_root.removesuffix(".dist-info")
     ):
         raise WheelContractError("output wheel dist-info identity is inconsistent")
     _parse_metadata(payloads[metadata[0]])
-    return _StrictWheelSnapshot(
-        path=path,
-        pinned_identity=pinned_identity,
-        wheel_bytes=wheel_bytes,
-        payloads=payloads,
-        metadata_member=metadata[0],
-        record_member=records[0],
-    )
+    return payloads, metadata[0], records[0]
 
 
 def _parse_metadata(payload: bytes) -> Message:
