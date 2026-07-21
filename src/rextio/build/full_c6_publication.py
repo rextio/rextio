@@ -332,7 +332,7 @@ def materialize_full_c6_signing_request(
         os.close(directory_fd)
 
 
-def publish_full_c6_bundle(
+def _publish_full_c6_bundle(
     *,
     publication_root: Path | str,
     bundle_name: str,
@@ -1266,5 +1266,4 @@ __all__ = [
     "FullC6PublishedFile",
     "FullC6SigningRequestReceipt",
     "materialize_full_c6_signing_request",
-    "publish_full_c6_bundle",
 ]

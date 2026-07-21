@@ -58,7 +58,6 @@ from rextio.build.full_c6_native_output import (
     full_c6_native_output_executor_receipt,
     full_c6_native_output_subject,
     full_c6_native_output_wheel_entries,
-    full_c6_native_output_wheel_path,
     materialize_full_c6_native_output,
     validate_full_c6_native_output_transaction,
 )
@@ -74,7 +73,6 @@ from rextio.build.full_c6_output_license import (
 )
 from rextio.build.full_c6_pipeline import (
     FullC6ExternalPreflightResult,
-    FullC6FinalizationMaterials,
     load_configured_full_c6_policy,
     validate_full_c6_external_context,
 )
@@ -231,39 +229,6 @@ class FullC6ProductionAuthority:
         _require_valid_authority(self)
         return self._material.bootstrap_request
 
-    def finalization_materials(self) -> FullC6FinalizationMaterials:
-        """Adapt a pinned-policy bundle for the later signing/gate coordinator."""
-        _require_valid_authority(self)
-        material = self._material
-        if material.policy is None or material.supply_chain is None:
-            raise FullC6ProductionError(
-                "Full C6 owner policy must be pinned before finalization"
-            )
-        execution = _executor._validated_full_c6_native_output_material(
-            material.native_execution_authority
-        )
-        return FullC6FinalizationMaterials(
-            target_triple=material.runtime_authorization.target_triple,
-            subject_path=full_c6_native_output_wheel_path(
-                material.native_output_transaction
-            ),
-            subject=full_c6_native_output_subject(
-                material.native_output_transaction
-            ),
-            build_inputs=material.build_inputs,
-            wheel_entries=full_c6_native_output_wheel_entries(
-                material.native_output_transaction
-            ),
-            policy=material.policy,
-            source_verification=material.preflight.context.source_verification,
-            analysis_ir_transaction=material.analysis_ir_transaction,
-            toolchain=execution.toolchain,
-            cargo_path_source=material.cargo_path_source,
-            runtime_authorization=material.runtime_authorization,
-            supply_chain=material.supply_chain,
-            executor=material.executor_receipt,
-        )
-
     def to_dict(self) -> dict[str, object]:
         """Return only path-free digests and an explicit non-authorizing posture."""
         _require_valid_authority(self)
@@ -335,6 +300,14 @@ def validate_full_c6_production_authority(
 def _require_valid_authority(value: FullC6ProductionAuthority) -> None:
     if not validate_full_c6_production_authority(value):
         raise FullC6ProductionError("Full C6 production authority is stale")
+
+
+def _validated_full_c6_production_material(
+    value: FullC6ProductionAuthority,
+) -> _FullC6ProductionMaterial:
+    """Return the exact retained graph only to internal hard-gate consumers."""
+    _require_valid_authority(value)
+    return value._material
 
 
 def _collect_full_c6_production_material(

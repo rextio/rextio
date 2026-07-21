@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+import inspect
 from pathlib import Path
 import runpy
+from types import SimpleNamespace
 
 import pytest
 
+import rextio.build.full_c6_gate as gate_module
+import rextio.build.full_c6_production as production_module
 import rextio.build.full_c6_supply_chain as supply_chain_module
 from rextio.artifacts.evidence import (
     EvidenceFileRef,
@@ -55,10 +59,12 @@ from rextio.build.full_c6_policy import (
     full_c6_authority_partition_digest,
     full_c6_license_detector_payload_digest,
 )
+from rextio.build.full_c6_production import FullC6ProductionAuthority
 from rextio.build.full_c6_supply_chain import (
     FullC6CargoPathSource,
     build_full_c6_supply_chain_receipt,
 )
+from rextio.build.input_closure import bind_full_c6_cargo_workspace_aggregates
 from rextio.build.signing import (
     SIGNED_MESSAGE_PREFIX,
     DetachedSignatureEnvelope,
@@ -76,15 +82,67 @@ _SOURCE = runpy.run_path(
     str(_THIS_DIR.parent / "source" / "test_source_lock_v2.py")
 )
 _SIGNING = runpy.run_path(str(_THIS_DIR / "test_signing.py"))
+_REAL_VALIDATE_GATE_INPUTS = gate_module._validated_production_gate_inputs
+_TEST_GATE_INPUTS: dict[int, object] = {}
+
+
+def test_hard_gate_public_api_accepts_only_production_authority_evidence() -> None:
+    prepare = inspect.signature(prepare_full_c6_preauthorization_evidence)
+    authorize = inspect.signature(authorize_full_c6_distribution)
+
+    assert tuple(prepare.parameters) == ("authority",)
+    assert tuple(authorize.parameters) == (
+        "authority",
+        "request",
+        "signature_envelope_path",
+        "public_key_path",
+    )
+    assert prepare.parameters["authority"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert authorize.parameters["authority"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert all(
+        authorize.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+        for name in (
+            "request",
+            "signature_envelope_path",
+            "public_key_path",
+        )
+    )
+    raw_evidence = {
+        "target_triple",
+        "subject_path",
+        "subject",
+        "build_inputs",
+        "wheel_entries",
+        "policy",
+        "source_verification",
+        "analysis_ir_transaction",
+        "toolchain",
+        "cargo_path_source",
+        "runtime_authorization",
+        "executor",
+        "supply_chain",
+        "cargo_dependency_workspace",
+        "expected_public_key_sha256",
+    }
+    assert raw_evidence.isdisjoint(prepare.parameters)
+    assert raw_evidence.isdisjoint(authorize.parameters)
 
 
 @pytest.fixture(autouse=True)
-def _accept_synthetic_native_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+def _accept_synthetic_native_runtime(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
     """Model the native fresh recheck for this otherwise synthetic gate graph."""
+    _TEST_GATE_INPUTS.clear()
     monkeypatch.setattr(
         "rextio.build.full_c6_gate.verify_native_runtime_authorization",
         lambda receipt: receipt.verification_mode == RUNTIME_VERIFICATION_NATIVE_FRESH,
     )
+    monkeypatch.setattr(
+        gate_module,
+        "_validated_production_gate_inputs",
+        lambda authority: _TEST_GATE_INPUTS[id(authority)],
+    )
+    yield
+    _TEST_GATE_INPUTS.clear()
 
 
 def _row(policy: FullC6PolicyReceipt, class_id: str):
@@ -98,6 +156,7 @@ def _policy_for(
     verification: SourceLockV2Verification,
     subject_bytes: bytes,
     key_hash: str,
+    cargo_workspace: object,
 ) -> FullC6PolicyReceipt:
     assert verification.context is not None
     manifest = verification.context.manifest
@@ -231,6 +290,33 @@ def _policy_for(
                 sha256="a" * 64,
                 size=64,
             )
+        elif row.class_id == "file-input:generated-cargo-lock":
+            lock = cargo_workspace.cargo_sources.lock_file
+            row = replace(
+                row,
+                canonical_identity=lock.logical_name,
+                sha256=lock.sha256,
+                size=lock.size,
+            )
+        elif row.class_id == "cargo-component:registry-package":
+            packages = cargo_workspace.cargo_sources.packages
+            assert len(packages) == 1
+            package = packages[0]
+            row = replace(
+                row,
+                canonical_identity=(
+                    f"cargo:{package.name}@{package.version}#registry"
+                ),
+                sha256=package.checksum,
+            )
+        elif row.class_id == "cargo-component:path-root-package":
+            row = replace(
+                row,
+                canonical_identity=(
+                    f"cargo:{cargo_workspace.cargo_sources.root_package}"
+                    "@0.1.4#path-root"
+                ),
+            )
         rebuilt_rows.append(row)
     trusted_rows = tuple(rebuilt_rows)
     transformations = _POLICY["_transformations"](  # type: ignore[operator]
@@ -356,12 +442,19 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
     subject_bytes = b"full-c6-test-wheel\n"
     subject_path = tmp_path / "subject.whl"
     subject_path.write_bytes(subject_bytes)
+    cargo_root = tmp_path / "cargo-workspace"
+    cargo_root.mkdir()
+    cargo_workspace = _SUPPLY["_sealed_cargo_workspace"](cargo_root)
     policy = _policy_for(
         verification=verification,
         subject_bytes=subject_bytes,
         key_hash=signed.key_hash,
+        cargo_workspace=cargo_workspace,
     )
-    build_inputs = _SUPPLY["_build_inputs"](policy)  # type: ignore[operator]
+    build_inputs = bind_full_c6_cargo_workspace_aggregates(
+        _SUPPLY["_build_inputs"](policy),  # type: ignore[operator]
+        cargo_workspace,
+    )
     transaction = create_full_c6_analysis_ir_transaction(
         project_replay_authority=_project_replay_authority(policy),
         source_verification=verification,
@@ -375,9 +468,12 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         size=subject_row.size or 0,
         role="host-extension-wheel",
     )
-    assert build_inputs == _SUPPLY["_build_inputs"](policy)  # type: ignore[operator]
+    assert build_inputs.files == _SUPPLY["_build_inputs"](policy).files  # type: ignore[operator]
     wheel_entries = _SUPPLY["_wheel_entries"](policy)  # type: ignore[operator]
-    toolchain = _SUPPLY["_toolchain"](policy)  # type: ignore[operator]
+    toolchain = replace(
+        _SUPPLY["_toolchain"](policy),  # type: ignore[operator]
+        cargo_sources=cargo_workspace.cargo_sources,
+    )
     runtime = _SUPPLY["_runtime"](policy)  # type: ignore[operator]
     reproducibility = _SUPPLY["_reproducibility"](policy)  # type: ignore[operator]
     lock = toolchain.cargo_sources.lock_file
@@ -456,12 +552,13 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
     )
     root = _row(policy, "cargo-component:path-root-package")
     cargo_path_source = FullC6CargoPathSource(
-        name="rextio-generated",
+        name=cargo_workspace.cargo_sources.root_package,
         version="0.1.4",
         source_tree_sha256=root.sha256 or "",
     )
     authority_aggregate = _SUPPLY["_authority_aggregate"](  # type: ignore[operator]
         analysis_ir_transaction_sha256=transaction.digest,
+        cargo_workspace_sha256=cargo_workspace.digest,
         runtime_authorization_sha256=runtime.digest,
         executor_receipt_sha256=executor.digest,
     )
@@ -482,8 +579,29 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         runtime_authorization=runtime,
         reproducibility=reproducibility,
         authority_aggregate=authority_aggregate,
+        cargo_dependency_workspace=cargo_workspace,
+    )
+    authority = object.__new__(FullC6ProductionAuthority)
+    _TEST_GATE_INPUTS[id(authority)] = gate_module._FullC6GateInputs(
+        target_triple=TARGET,
+        subject_path=subject_path,
+        subject=subject,
+        build_inputs=build_inputs,
+        wheel_entries=wheel_entries,
+        policy=policy,
+        source_verification=verification,
+        analysis_ir_transaction=transaction,
+        toolchain=toolchain,
+        cargo_path_source=cargo_path_source,
+        runtime_authorization=runtime,
+        executor=executor,
+        supply_chain=supply_chain,
+        cargo_dependency_workspace=cargo_workspace,
+        authority_aggregate=authority_aggregate,
+        expected_public_key_sha256=signed.key_hash,
     )
     return {
+        "authority": authority,
         "target_triple": TARGET,
         "subject_path": subject_path,
         "subject": subject,
@@ -498,17 +616,36 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
         "reproducibility": reproducibility,
         "executor": executor,
         "supply_chain": supply_chain,
+        "cargo_dependency_workspace": cargo_workspace,
+        "authority_aggregate": authority_aggregate,
         "expected_public_key_sha256": signed.key_hash,
         "public_key": signed.key_path.read_bytes(),
 }
 
 
 def _gate_arguments(arguments: dict[str, object]) -> dict[str, object]:
-    return {
-        key: value
-        for key, value in arguments.items()
-        if key not in {"public_key", "reproducibility"}
-    }
+    authority = arguments["authority"]
+    current = _TEST_GATE_INPUTS[id(authority)]
+    _TEST_GATE_INPUTS[id(authority)] = replace(
+        current,
+        target_triple=arguments["target_triple"],
+        subject_path=arguments["subject_path"],
+        subject=arguments["subject"],
+        build_inputs=arguments["build_inputs"],
+        wheel_entries=arguments["wheel_entries"],
+        policy=arguments["policy"],
+        source_verification=arguments["source_verification"],
+        analysis_ir_transaction=arguments["analysis_ir_transaction"],
+        toolchain=arguments["toolchain"],
+        cargo_path_source=arguments["cargo_path_source"],
+        runtime_authorization=arguments["runtime_authorization"],
+        executor=arguments["executor"],
+        supply_chain=arguments["supply_chain"],
+        cargo_dependency_workspace=arguments["cargo_dependency_workspace"],
+        authority_aggregate=arguments["authority_aggregate"],
+        expected_public_key_sha256=arguments["expected_public_key_sha256"],
+    )
+    return {"authority": authority}
 
 
 def _request(arguments: dict[str, object]):
@@ -569,6 +706,111 @@ def _authorize(tmp_path: Path, arguments: dict[str, object]):
         public_key_path=key_path,
     )
     return preauthorization, request, result
+
+
+def test_gate_extracts_exact_retained_graph_and_rejects_split_cargo_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(FullC6GateError, match="exact production authority"):
+        _REAL_VALIDATE_GATE_INPUTS(object())  # type: ignore[arg-type]
+    arguments = _fixture(tmp_path)
+    authority = arguments["authority"]
+    aggregate = arguments["authority_aggregate"]
+    native_output = SimpleNamespace(
+        digest=aggregate.native_output_transaction_sha256
+    )
+    material = SimpleNamespace(
+        lifecycle=SimpleNamespace(status="signing-required"),
+        policy=arguments["policy"],
+        supply_chain=arguments["supply_chain"],
+        cargo_workspace=arguments["cargo_dependency_workspace"],
+        build_inputs=arguments["build_inputs"],
+        analysis_ir_transaction=arguments["analysis_ir_transaction"],
+        runtime_authorization=arguments["runtime_authorization"],
+        executor_receipt=arguments["executor"],
+        cargo_path_source=arguments["cargo_path_source"],
+        preflight=SimpleNamespace(
+            context=SimpleNamespace(
+                source_verification=arguments["source_verification"]
+            )
+        ),
+        native_execution_authority=SimpleNamespace(
+            digest=aggregate.native_execution_authority_sha256
+        ),
+        native_output_transaction=native_output,
+        subject_wheel_transaction=SimpleNamespace(
+            digest=aggregate.subject_wheel_transaction_sha256
+        ),
+        native_runtime_authority=SimpleNamespace(
+            digest=aggregate.native_runtime_authority_sha256
+        ),
+        license_materials_transaction=SimpleNamespace(
+            digest=aggregate.license_materials_transaction_sha256
+        ),
+        output_license_contract=object(),
+        authority_aggregate=aggregate,
+    )
+    execution = SimpleNamespace(
+        toolchain=arguments["toolchain"],
+        cargo_workspace=arguments["cargo_dependency_workspace"],
+    )
+    monkeypatch.setattr(
+        production_module,
+        "_validated_full_c6_production_material",
+        lambda value: material if value is authority else None,
+    )
+    monkeypatch.setattr(
+        gate_module._executor,
+        "_validated_full_c6_native_output_material",
+        lambda _value: execution,
+    )
+    monkeypatch.setattr(
+        gate_module,
+        "full_c6_native_output_subject",
+        lambda value: arguments["subject"] if value is native_output else None,
+    )
+    monkeypatch.setattr(
+        gate_module,
+        "full_c6_native_output_wheel_entries",
+        lambda value: arguments["wheel_entries"] if value is native_output else (),
+    )
+    monkeypatch.setattr(
+        gate_module,
+        "full_c6_native_output_wheel_path",
+        lambda value: arguments["subject_path"] if value is native_output else None,
+    )
+    monkeypatch.setattr(
+        gate_module,
+        "validate_full_c6_output_license_contract",
+        lambda _materials, _contract: SimpleNamespace(
+            output_contract_sha256=aggregate.output_license_contract_sha256
+        ),
+    )
+
+    inputs = _REAL_VALIDATE_GATE_INPUTS(authority)
+    assert inputs.cargo_dependency_workspace is arguments["cargo_dependency_workspace"]
+    assert inputs.authority_aggregate == aggregate
+
+    cloned_sources = replace(arguments["toolchain"].cargo_sources)
+    execution.toolchain = replace(  # type: ignore[misc]
+        arguments["toolchain"],
+        cargo_sources=cloned_sources,
+    )
+    assert cloned_sources == arguments["cargo_dependency_workspace"].cargo_sources
+    assert cloned_sources is not arguments["cargo_dependency_workspace"].cargo_sources
+    with pytest.raises(FullC6GateError, match="Cargo authority is split"):
+        _REAL_VALIDATE_GATE_INPUTS(authority)
+
+    execution.toolchain = arguments["toolchain"]
+    equal_root = tmp_path / "equal-cargo-workspace"
+    equal_root.mkdir()
+    equal_workspace = _SUPPLY["_sealed_cargo_workspace"](equal_root)
+    assert equal_workspace.digest == arguments["cargo_dependency_workspace"].digest
+    assert equal_workspace is not arguments["cargo_dependency_workspace"]
+    material.cargo_workspace = equal_workspace
+    with pytest.raises(FullC6GateError, match="Cargo authority is split"):
+        _REAL_VALIDATE_GATE_INPUTS(authority)
 
 
 def test_hard_gate_signs_only_unsigned_evidence_then_mints_final_authority(
@@ -763,9 +1005,10 @@ def test_gate_rejects_authority_aggregate_source_drift(
         toolchain=arguments["toolchain"],  # type: ignore[arg-type]
         cargo_path_source=arguments["cargo_path_source"],  # type: ignore[arg-type]
         runtime_authorization=arguments["runtime_authorization"],  # type: ignore[arg-type]
-        reproducibility=arguments["reproducibility"],  # type: ignore[arg-type]
-        authority_aggregate=changed,
-    )
+            reproducibility=arguments["reproducibility"],  # type: ignore[arg-type]
+            authority_aggregate=changed,
+            cargo_dependency_workspace=arguments["cargo_dependency_workspace"],  # type: ignore[arg-type]
+        )
 
     with pytest.raises(FullC6GateError, match="authority aggregate"):
         _request(arguments)

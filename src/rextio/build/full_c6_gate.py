@@ -20,6 +20,7 @@ import hmac
 import os
 from pathlib import Path, PurePosixPath
 import stat
+from typing import TYPE_CHECKING
 
 from rextio.artifacts.evidence import EvidenceFileRef, WheelEntryRef, canonical_json_bytes
 from rextio.artifacts.full_authorization import (
@@ -40,6 +41,10 @@ from rextio.build.full_c6_analysis_transaction import (
     FullC6AnalysisTransactionError,
     validate_full_c6_analysis_ir_transaction,
 )
+from rextio.build import full_c6_executor as _executor
+from rextio.build.full_c6_cargo_workspace import (
+    FullC6CargoDependencyWorkspaceReceipt,
+)
 from rextio.build.full_c6_policy import (
     FullC6PolicyFileIdentity,
     FullC6PolicyReceipt,
@@ -56,7 +61,16 @@ from rextio.build.full_c6_executor import (
     FullC6InvocationReceipt,
     FullC6TreeEntry,
 )
+from rextio.build.full_c6_native_output import (
+    full_c6_native_output_subject,
+    full_c6_native_output_wheel_entries,
+    full_c6_native_output_wheel_path,
+)
+from rextio.build.full_c6_output_license import (
+    validate_full_c6_output_license_contract,
+)
 from rextio.build.full_c6_supply_chain import (
+    FullC6AuthorityAggregateBinding,
     FullC6CargoPathSource,
     FullC6SupplyChainReceipt,
     build_full_c6_supply_chain_receipt,
@@ -92,6 +106,9 @@ from rextio.source.source_lock_v2 import (
     validate_source_lock_v2_verified_context,
 )
 from rextio.source.wheel_authority import verify_source_wheel_license_detection
+
+if TYPE_CHECKING:
+    from rextio.build.full_c6_production import FullC6ProductionAuthority
 
 
 FULL_C6_EXTERNAL_ARCHIVE_RECEIPT_DOMAIN = (
@@ -138,25 +155,170 @@ class FullC6GateResult:
             raise ValueError("Full C6 gate result bindings are inconsistent")
 
 
+@dataclass(frozen=True, slots=True)
+class _FullC6GateInputs:
+    target_triple: str
+    subject_path: Path
+    subject: EvidenceFileRef
+    build_inputs: BuildInputClosure
+    wheel_entries: tuple[WheelEntryRef, ...]
+    policy: FullC6PolicyReceipt
+    source_verification: SourceLockV2Verification
+    analysis_ir_transaction: FullC6AnalysisIRTransaction
+    toolchain: BuildToolchainIdentity
+    cargo_path_source: FullC6CargoPathSource
+    runtime_authorization: RuntimeAuthorizationReceipt
+    executor: FullC6ExecutorReceipt
+    supply_chain: FullC6SupplyChainReceipt
+    cargo_dependency_workspace: FullC6CargoDependencyWorkspaceReceipt
+    authority_aggregate: FullC6AuthorityAggregateBinding
+    expected_public_key_sha256: str
+
+
+def _validated_production_gate_inputs(
+    authority: FullC6ProductionAuthority,
+) -> _FullC6GateInputs:
+    """Extract only the complete, process-validated production graph."""
+    try:
+        from rextio.build.full_c6_production import (
+            FullC6ProductionAuthority,
+            _validated_full_c6_production_material,
+        )
+
+        if type(authority) is not FullC6ProductionAuthority:
+            raise FullC6GateError(
+                "Full C6 hard gate requires exact production authority"
+            )
+        material = _validated_full_c6_production_material(authority)
+        if material.lifecycle.status not in {
+            "signing-required",
+            "publication-required",
+        }:
+            raise FullC6GateError(
+                "Full C6 hard gate requires pinned owner policy"
+            )
+        if (
+            type(material.policy) is not FullC6PolicyReceipt
+            or type(material.supply_chain) is not FullC6SupplyChainReceipt
+            or type(material.cargo_workspace)
+            is not FullC6CargoDependencyWorkspaceReceipt
+            or type(material.build_inputs) is not BuildInputClosure
+            or type(material.analysis_ir_transaction)
+            is not FullC6AnalysisIRTransaction
+            or type(material.runtime_authorization)
+            is not RuntimeAuthorizationReceipt
+            or type(material.executor_receipt) is not FullC6ExecutorReceipt
+            or type(material.cargo_path_source) is not FullC6CargoPathSource
+        ):
+            raise FullC6GateError("Full C6 production material is incomplete")
+        execution = _executor._validated_full_c6_native_output_material(
+            material.native_execution_authority
+        )
+        if (
+            type(execution.toolchain) is not BuildToolchainIdentity
+            or execution.cargo_workspace is not material.cargo_workspace
+            or execution.toolchain.cargo_sources
+            is not material.cargo_workspace.cargo_sources
+        ):
+            raise FullC6GateError("Full C6 retained Cargo authority is split")
+        source_verification = material.preflight.context.source_verification
+        if type(source_verification) is not SourceLockV2Verification:
+            raise FullC6GateError("Full C6 retained SourceLock authority is invalid")
+        subject = full_c6_native_output_subject(
+            material.native_output_transaction
+        )
+        wheel_entries = full_c6_native_output_wheel_entries(
+            material.native_output_transaction
+        )
+        subject_path = full_c6_native_output_wheel_path(
+            material.native_output_transaction
+        )
+        output_license = validate_full_c6_output_license_contract(
+            material.license_materials_transaction,
+            material.output_license_contract,
+        )
+        aggregate = FullC6AuthorityAggregateBinding(
+            analysis_ir_transaction_sha256=(
+                material.analysis_ir_transaction.digest
+            ),
+            license_materials_transaction_sha256=(
+                material.license_materials_transaction.digest
+            ),
+            output_license_contract_sha256=(
+                output_license.output_contract_sha256
+            ),
+            cargo_workspace_sha256=material.cargo_workspace.digest,
+            native_execution_authority_sha256=(
+                material.native_execution_authority.digest
+            ),
+            native_output_transaction_sha256=(
+                material.native_output_transaction.digest
+            ),
+            subject_wheel_transaction_sha256=(
+                material.subject_wheel_transaction.digest
+            ),
+            native_runtime_authority_sha256=(
+                material.native_runtime_authority.digest
+            ),
+            runtime_authorization_sha256=material.runtime_authorization.digest,
+            executor_receipt_sha256=material.executor_receipt.digest,
+        )
+        if (
+            aggregate != material.authority_aggregate
+            or material.supply_chain.authority_aggregate != aggregate
+        ):
+            raise FullC6GateError(
+                "Full C6 production authority aggregate is stale"
+            )
+        return _FullC6GateInputs(
+            target_triple=material.runtime_authorization.target_triple,
+            subject_path=subject_path,
+            subject=subject,
+            build_inputs=material.build_inputs,
+            wheel_entries=wheel_entries,
+            policy=material.policy,
+            source_verification=source_verification,
+            analysis_ir_transaction=material.analysis_ir_transaction,
+            toolchain=execution.toolchain,
+            cargo_path_source=material.cargo_path_source,
+            runtime_authorization=material.runtime_authorization,
+            executor=material.executor_receipt,
+            supply_chain=material.supply_chain,
+            cargo_dependency_workspace=material.cargo_workspace,
+            authority_aggregate=aggregate,
+            expected_public_key_sha256=(
+                material.policy.trusted_owner_public_key_sha256
+            ),
+        )
+    except FullC6GateError:
+        raise
+    except Exception as exc:
+        raise FullC6GateError(
+            "Full C6 production authority failed deep validation"
+        ) from exc
+
+
 def prepare_full_c6_preauthorization_evidence(
-    *,
-    target_triple: str,
-    subject_path: Path | str,
-    subject: EvidenceFileRef,
-    build_inputs: BuildInputClosure,
-    wheel_entries: tuple[WheelEntryRef, ...],
-    policy: FullC6PolicyReceipt,
-    source_verification: SourceLockV2Verification,
-    analysis_ir_transaction: FullC6AnalysisIRTransaction,
-    toolchain: BuildToolchainIdentity,
-    cargo_path_source: FullC6CargoPathSource,
-    runtime_authorization: RuntimeAuthorizationReceipt,
-    executor: FullC6ExecutorReceipt,
-    supply_chain: FullC6SupplyChainReceipt,
-    expected_public_key_sha256: str,
+    authority: FullC6ProductionAuthority,
 ) -> FullC6PreauthorizationEvidence:
     """Rebuild the exact pre-signing graph and return its safe-to-sign record."""
     try:
+        inputs = _validated_production_gate_inputs(authority)
+        target_triple = inputs.target_triple
+        subject_path = inputs.subject_path
+        subject = inputs.subject
+        build_inputs = inputs.build_inputs
+        wheel_entries = inputs.wheel_entries
+        policy = inputs.policy
+        source_verification = inputs.source_verification
+        analysis_ir_transaction = inputs.analysis_ir_transaction
+        toolchain = inputs.toolchain
+        cargo_path_source = inputs.cargo_path_source
+        runtime_authorization = inputs.runtime_authorization
+        executor = inputs.executor
+        supply_chain = inputs.supply_chain
+        cargo_dependency_workspace = inputs.cargo_dependency_workspace
+        expected_public_key_sha256 = inputs.expected_public_key_sha256
         trusted_context = _rebuild_source_verification(source_verification)
         source_lock = trusted_context.manifest
         source_admission = trusted_context.admission
@@ -193,16 +355,12 @@ def prepare_full_c6_preauthorization_evidence(
             raise FullC6GateError(
                 "Full C6 requires a freshly reverified native runtime receipt"
             )
-        trusted_supply_chain = verify_full_c6_supply_chain_receipt(supply_chain)
+        trusted_supply_chain = verify_full_c6_supply_chain_receipt(
+            supply_chain,
+            cargo_dependency_workspace=cargo_dependency_workspace,
+        )
         authority_aggregate = trusted_supply_chain.authority_aggregate
-        if (
-            authority_aggregate.analysis_ir_transaction_sha256
-            != analysis_ir_transaction.digest
-            or authority_aggregate.runtime_authorization_sha256
-            != runtime_authorization.digest
-            or authority_aggregate.executor_receipt_sha256
-            != trusted_executor.digest
-        ):
+        if authority_aggregate != inputs.authority_aggregate:
             raise FullC6GateError(
                 "Full C6 authority aggregate does not bind the gate inputs"
             )
@@ -219,6 +377,7 @@ def prepare_full_c6_preauthorization_evidence(
             runtime_authorization=runtime_authorization,
             reproducibility=trusted_executor.reproducibility,
             authority_aggregate=authority_aggregate,
+            cargo_dependency_workspace=cargo_dependency_workspace,
         )
         if fresh_supply_chain != trusted_supply_chain:
             raise FullC6GateError("Full C6 supply-chain receipt is stale or replayed")
@@ -264,43 +423,23 @@ def prepare_full_c6_preauthorization_evidence(
 
 
 def authorize_full_c6_distribution(
+    authority: FullC6ProductionAuthority,
     *,
-    target_triple: str,
-    subject_path: Path | str,
-    subject: EvidenceFileRef,
-    build_inputs: BuildInputClosure,
-    wheel_entries: tuple[WheelEntryRef, ...],
-    policy: FullC6PolicyReceipt,
-    source_verification: SourceLockV2Verification,
-    analysis_ir_transaction: FullC6AnalysisIRTransaction,
-    toolchain: BuildToolchainIdentity,
-    cargo_path_source: FullC6CargoPathSource,
-    runtime_authorization: RuntimeAuthorizationReceipt,
-    executor: FullC6ExecutorReceipt,
-    supply_chain: FullC6SupplyChainReceipt,
     request: FinalAuthorizationRequest,
     signature_envelope_path: Path | str,
     public_key_path: Path | str,
-    expected_public_key_sha256: str,
 ) -> FullC6GateResult:
     """Verify and mint one final Full C6 authorization, or fail closed."""
-    preauthorization = prepare_full_c6_preauthorization_evidence(
-        target_triple=target_triple,
-        subject_path=subject_path,
-        subject=subject,
-        build_inputs=build_inputs,
-        wheel_entries=wheel_entries,
-        policy=policy,
-        source_verification=source_verification,
-        analysis_ir_transaction=analysis_ir_transaction,
-        toolchain=toolchain,
-        cargo_path_source=cargo_path_source,
-        runtime_authorization=runtime_authorization,
-        executor=executor,
-        supply_chain=supply_chain,
-        expected_public_key_sha256=expected_public_key_sha256,
-    )
+    preauthorization = prepare_full_c6_preauthorization_evidence(authority)
     try:
+        inputs = _validated_production_gate_inputs(authority)
+        target_triple = inputs.target_triple
+        subject_path = inputs.subject_path
+        subject = inputs.subject
+        build_inputs = inputs.build_inputs
+        policy = inputs.policy
+        executor = inputs.executor
+        expected_public_key_sha256 = inputs.expected_public_key_sha256
         trusted_request = _rebuild_request(request)
         preauthorization_sha256 = full_c6_preauthorization_evidence_digest(
             preauthorization
@@ -680,9 +819,13 @@ def _require_executor_build_input_projection(
     projected: dict[str, ExactFileIdentity] = {}
     for row in generated_rows:
         generated_kind = generated_classes[row.class_id]
-        relative = _full_c6_generated_executor_path(
-            row.canonical_identity,
-            generated_kind=generated_kind,
+        relative = (
+            "Cargo.lock"
+            if row.class_id == "file-input:generated-cargo-lock"
+            else _full_c6_generated_executor_path(
+                row.canonical_identity,
+                generated_kind=generated_kind,
+            )
         )
         if row.class_id == "file-input:generated-rust-lib" and relative != "src/lib.rs":
             raise FullC6GateError("Full C6 generated Rust lib path is invalid")

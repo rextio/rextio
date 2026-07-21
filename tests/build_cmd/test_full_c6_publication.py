@@ -9,6 +9,7 @@ import runpy
 
 import pytest
 
+import rextio.build.full_c6_gate as gate_module
 from rextio.artifacts.evidence import canonical_json_bytes
 from rextio.artifacts.full_authorization import FullC6DistributionAuthorization
 from rextio.build.full_c6_gate import FullC6GateResult
@@ -24,13 +25,26 @@ from rextio.build.full_c6_publication import (
     ROLE_WHEEL,
     FullC6PublicationError,
     materialize_full_c6_signing_request,
-    publish_full_c6_bundle,
+    _publish_full_c6_bundle,
 )
 from rextio.build.signing import DetachedSignatureEnvelope, FinalAuthorizationRequest
 
 
 _THIS_DIR = Path(__file__).parent
 _GATE = runpy.run_path(str(_THIS_DIR / "test_full_c6_gate.py"))
+
+
+@pytest.fixture(autouse=True)
+def _accept_synthetic_production_authority(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    gate_inputs = _GATE["_TEST_GATE_INPUTS"]
+    gate_inputs.clear()  # type: ignore[union-attr]
+    monkeypatch.setattr(
+        gate_module,
+        "_validated_production_gate_inputs",
+        lambda authority: gate_inputs[id(authority)],  # type: ignore[index]
+    )
+    yield
+    gate_inputs.clear()  # type: ignore[union-attr]
 
 
 def _authorized_bundle(
@@ -92,7 +106,7 @@ def _publish(
 ):
     publication_root = tmp_path / "dist"
     publication_root.mkdir(mode=0o700)
-    receipt = publish_full_c6_bundle(
+    receipt = _publish_full_c6_bundle(
         publication_root=publication_root,
         bundle_name="candidate",
         bundle_files=files,
@@ -232,7 +246,7 @@ def test_direct_fake_authorization_is_rejected(tmp_path: Path) -> None:
     object.__setattr__(fake_result, "authorization", fake)
 
     with pytest.raises(FullC6PublicationError, match="sealed authorization"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="candidate",
             bundle_files=files,
@@ -250,7 +264,7 @@ def test_missing_bundle_role_is_rejected(tmp_path: Path, omit: str) -> None:
     publication_root = tmp_path / "dist"
     publication_root.mkdir(mode=0o700)
     with pytest.raises(FullC6PublicationError, match="closed six-file set"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="candidate",
             bundle_files=files,
@@ -266,7 +280,7 @@ def test_extra_bundle_role_is_rejected(tmp_path: Path) -> None:
     publication_root = tmp_path / "dist"
     publication_root.mkdir(mode=0o700)
     with pytest.raises(FullC6PublicationError, match="closed six-file set"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="candidate",
             bundle_files=files,
@@ -285,7 +299,7 @@ def test_symlink_hardlink_and_special_bundle_members_are_rejected(tmp_path: Path
     symlink.symlink_to(files[ROLE_DETACHED_SIGNATURE])
     symlink_files = {**files, ROLE_DETACHED_SIGNATURE: symlink}
     with pytest.raises(FullC6PublicationError, match="symlink"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="symlink",
             bundle_files=symlink_files,
@@ -298,7 +312,7 @@ def test_symlink_hardlink_and_special_bundle_members_are_rejected(tmp_path: Path
     os.link(files[ROLE_DISTRIBUTION_AUTHORIZATION], hardlink)
     hardlink_files = {**files, ROLE_DISTRIBUTION_AUTHORIZATION: hardlink}
     with pytest.raises(FullC6PublicationError, match="single-linked"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="hardlink",
             bundle_files=hardlink_files,
@@ -312,7 +326,7 @@ def test_symlink_hardlink_and_special_bundle_members_are_rejected(tmp_path: Path
     os.mkfifo(fifo)
     fifo_files = {**files, ROLE_DETACHED_SIGNATURE: fifo}
     with pytest.raises(FullC6PublicationError, match="regular"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="fifo",
             bundle_files=fifo_files,
@@ -328,7 +342,7 @@ def test_unsafe_or_preexisting_publication_target_is_rejected(tmp_path: Path) ->
     unsafe.mkdir(mode=0o777)
     unsafe.chmod(0o777)
     with pytest.raises(FullC6PublicationError, match="group/world writable"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=unsafe,
             bundle_name="candidate",
             bundle_files=files,
@@ -342,7 +356,7 @@ def test_unsafe_or_preexisting_publication_target_is_rejected(tmp_path: Path) ->
     linked_root = tmp_path / "linked-dist"
     linked_root.symlink_to(actual_root, target_is_directory=True)
     with pytest.raises(FullC6PublicationError, match="symlink"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=linked_root,
             bundle_name="candidate",
             bundle_files=files,
@@ -355,7 +369,7 @@ def test_unsafe_or_preexisting_publication_target_is_rejected(tmp_path: Path) ->
     publication_root.mkdir(mode=0o700)
     (publication_root / "candidate").mkdir()
     with pytest.raises(FullC6PublicationError, match="already exists"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="candidate",
             bundle_files=files,
@@ -413,7 +427,7 @@ def test_concurrent_target_creation_is_detected_before_rename(
 
     monkeypatch.setattr(module, "_capture_sources", capture_with_race)
     with pytest.raises(FullC6PublicationError, match="already exists"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="candidate",
             bundle_files=files,
@@ -452,7 +466,7 @@ def test_target_created_after_last_check_is_never_replaced(
 
     monkeypatch.setattr(module, "_atomic_rename_noreplace", rename_after_race)
     with pytest.raises(FullC6PublicationError, match="already exists"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="candidate",
             bundle_files=files,
@@ -489,7 +503,7 @@ def test_input_mutation_during_staging_fails_and_cleans_only_staging(
 
     monkeypatch.setattr(module, "_capture_sources", capture_with_mutation)
     with pytest.raises(FullC6PublicationError, match="changed during staging"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="candidate",
             bundle_files=files,
@@ -508,7 +522,7 @@ def test_noncanonical_or_mutated_semantic_files_fail_closed(tmp_path: Path) -> N
     publication_root.mkdir(mode=0o700)
     files[ROLE_FINAL_EVIDENCE].write_bytes(b" " + files[ROLE_FINAL_EVIDENCE].read_bytes())
     with pytest.raises(FullC6PublicationError, match="canonical bytes"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="candidate",
             bundle_files=files,
@@ -531,7 +545,7 @@ def test_publication_independently_verifies_detached_ed25519_signature(
     publication_root = tmp_path / "dist"
     publication_root.mkdir(mode=0o700)
     with pytest.raises(FullC6PublicationError, match="Ed25519"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="candidate",
             bundle_files=files,
@@ -570,7 +584,7 @@ def test_tamper_during_rename_fails_without_publication_receipt(
 
     monkeypatch.setattr(module, "_atomic_rename_noreplace", rename_then_tamper)
     with pytest.raises(FullC6PublicationError, match="staged payload changed"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="candidate",
             bundle_files=files,
@@ -587,7 +601,7 @@ def test_mutated_request_cannot_replay_authorization(tmp_path: Path) -> None:
     publication_root.mkdir(mode=0o700)
     replay = replace(request, project_sha256="f" * 64)
     with pytest.raises(FullC6PublicationError, match="bindings"):
-        publish_full_c6_bundle(
+        _publish_full_c6_bundle(
             publication_root=publication_root,
             bundle_name="candidate",
             bundle_files=files,

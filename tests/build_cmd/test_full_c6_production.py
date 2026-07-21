@@ -134,12 +134,7 @@ def _collect_bounded_production_authority(
                 self.authority_aggregate = authority_aggregate
                 self.digest = "f" * 64
 
-        class _Finalization:
-            def __init__(self, **values: object) -> None:
-                self.__dict__.update(values)
-
         monkeypatch.setattr(production, "FullC6SupplyChainReceipt", _SupplyChain)
-        monkeypatch.setattr(production, "FullC6FinalizationMaterials", _Finalization)
         monkeypatch.setattr(
             production,
             "load_configured_full_c6_policy",
@@ -219,6 +214,8 @@ def test_production_collector_exposes_only_the_frozen_owner_api() -> None:
     assert "executor_receipt" not in signature.parameters
     assert "runtime_authorization" not in signature.parameters
     assert "supply_chain" not in signature.parameters
+    assert not hasattr(production.FullC6ProductionAuthority, "finalization_materials")
+    assert "_validated_full_c6_production_material" not in production.__all__
 
 
 def test_prerequisites_require_the_exact_cargo_source_authority_object(
@@ -416,11 +413,10 @@ def test_real_c52_execution_mints_bootstrap_required_production_authority(
         "runtime_authorization_sha256",
         "executor_receipt_sha256",
     )
-    with pytest.raises(production.FullC6ProductionError, match="must be pinned"):
-        authority.finalization_materials()
+    assert production._validated_full_c6_production_material(authority) is authority._material
 
 
-def test_pinned_policy_authority_adapts_only_to_unsigned_finalization_materials(
+def test_pinned_policy_authority_exposes_only_private_validated_material(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -439,11 +435,12 @@ def test_pinned_policy_authority_adapts_only_to_unsigned_finalization_materials(
     assert projected["signed"] is False
     assert projected["distribution_authorized"] is False
 
-    finalization = authority.finalization_materials()
-    assert finalization.policy is authority._material.policy
-    assert finalization.supply_chain is authority._material.supply_chain
-    assert finalization.runtime_authorization is authority._material.runtime_authorization
-    assert finalization.executor is authority._material.executor_receipt
+    material = production._validated_full_c6_production_material(authority)
+    assert material is authority._material
+    assert material.policy is authority._material.policy
+    assert material.supply_chain is authority._material.supply_chain
+    assert material.runtime_authorization is authority._material.runtime_authorization
+    assert material.executor_receipt is authority._material.executor_receipt
 
 
 def test_deep_validator_rejects_equal_retained_receipt_replacement(

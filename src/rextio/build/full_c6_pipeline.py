@@ -21,19 +21,22 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+import hashlib
 import hmac
 import os
 from pathlib import Path, PurePosixPath
+import re
+import secrets
 import stat
-from typing import TypeAlias, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
+import unicodedata
 
 from rextio.analyzer.models import ProjectAnalysis
-from rextio.artifacts.evidence import EvidenceFileRef, WheelEntryRef, canonical_json_bytes
+from rextio.artifacts.evidence import canonical_json_bytes
 from rextio.artifacts.full_authorization import full_c6_preauthorization_evidence_digest
-from rextio.build.full_c6_executor import FullC6ExecutorReceipt
-from rextio.build.full_c6_analysis_transaction import FullC6AnalysisIRTransaction
 from rextio.build.full_c6_gate import (
     FullC6GateResult,
+    _validated_production_gate_inputs,
     authorize_full_c6_distribution,
     prepare_full_c6_preauthorization_evidence,
 )
@@ -43,14 +46,7 @@ from rextio.build.full_c6_policy_manifest import (
     load_full_c6_policy_manifest,
 )
 from rextio.build.full_c6_publication import FullC6PublicationReceipt
-from rextio.build.full_c6_supply_chain import (
-    FullC6CargoPathSource,
-    FullC6SupplyChainReceipt,
-)
-from rextio.build.input_closure import BuildInputClosure
-from rextio.build.runtime_authorization import RuntimeAuthorizationReceipt
 from rextio.build.signing import FinalAuthorizationRequest
-from rextio.build.toolchain_identity import BuildToolchainIdentity
 from rextio.build.wheel_builder import (
     ExternalWheelContract,
     ExternalWheelMemberIdentity,
@@ -71,11 +67,20 @@ from rextio.source.source_lock_v2 import (
 from rextio.source.wheel_authority import SourceWheelEntryIdentity
 
 
+if TYPE_CHECKING:
+    from rextio.build.full_c6_production import (
+        FullC6ProductionAuthority,
+        _FullC6ProductionMaterial,
+    )
+
+
 FULL_C6_DISTRIBUTION_POLICY = "full-c6-required"
 FULL_C6_SIGNING_REQUEST_FILENAME = "rextio.full-c6-final-authorization-request.json"
 _MAX_PRIVATE_MATERIAL_BYTES = 16 * 1024 * 1024
 _CONTEXT_SEAL = object()
 _PUBLICATION_ADAPTER_SEAL = object()
+_PUBLICATION_ADAPTER_KEY = secrets.token_bytes(32)
+_WHEEL_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,254}\.whl$")
 
 
 class FullC6PipelineError(RuntimeError):
@@ -329,64 +334,6 @@ def validate_full_c6_external_context(
 
 
 @dataclass(frozen=True, slots=True)
-class FullC6FinalizationMaterials:
-    """Complete exact inputs required after one strict two-build execution."""
-
-    target_triple: str
-    subject_path: Path
-    subject: EvidenceFileRef
-    build_inputs: BuildInputClosure
-    wheel_entries: tuple[WheelEntryRef, ...]
-    policy: FullC6PolicyReceipt
-    source_verification: SourceLockV2Verification = field(repr=False)
-    analysis_ir_transaction: FullC6AnalysisIRTransaction = field(repr=False)
-    toolchain: BuildToolchainIdentity
-    cargo_path_source: FullC6CargoPathSource
-    runtime_authorization: RuntimeAuthorizationReceipt
-    supply_chain: FullC6SupplyChainReceipt
-    executor: FullC6ExecutorReceipt
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.target_triple) is not str
-            or not isinstance(self.subject_path, Path)
-            or type(self.subject) is not EvidenceFileRef
-            or type(self.build_inputs) is not BuildInputClosure
-            or type(self.wheel_entries) is not tuple
-            or any(type(item) is not WheelEntryRef for item in self.wheel_entries)
-            or type(self.source_verification) is not SourceLockV2Verification
-            or type(self.analysis_ir_transaction) is not FullC6AnalysisIRTransaction
-            or type(self.toolchain) is not BuildToolchainIdentity
-            or type(self.cargo_path_source) is not FullC6CargoPathSource
-            or type(self.runtime_authorization) is not RuntimeAuthorizationReceipt
-            or type(self.supply_chain) is not FullC6SupplyChainReceipt
-        ):
-            raise TypeError("Full C6 finalization material type is invalid")
-        if type(self.policy) is not FullC6PolicyReceipt:
-            raise FullC6TypedPolicyRequiredError(
-                "RXT060 Full C6 finalization requires an explicit typed FullC6PolicyReceipt"
-            )
-        if type(self.executor) is not FullC6ExecutorReceipt:
-            raise TypeError("Full C6 executor receipt is invalid")
-        if self.executor.reproducibility != self.supply_chain_reproducibility:
-            raise ValueError("Full C6 supply-chain reproducibility is not the executor receipt")
-        if self.executor.reproducibility.wheel_sha256 != self.subject.sha256:
-            raise ValueError("Full C6 subject is not the reproducible executor wheel")
-        if self.toolchain.argv.digest != self.executor.invocations[0].argv_sha256:
-            raise ValueError("Full C6 toolchain argv is not the executor argv")
-
-    @property
-    def supply_chain_reproducibility(self):
-        """Return the exact reproducibility object bound by the supply-chain receipt."""
-        # The receipt stores its digest.  The executor retains the typed object;
-        # checking both here avoids accepting an unrelated same-shaped object.
-        value = self.executor.reproducibility
-        if self.supply_chain.reproducibility_sha256 != value.digest:
-            raise ValueError("Full C6 supply chain is stale against the executor")
-        return value
-
-
-@dataclass(frozen=True, slots=True)
 class FullC6PipelineResult:
     """Outcome of one finalization call; unsigned and published states are disjoint."""
 
@@ -417,10 +364,9 @@ class FullC6PipelineResult:
 
 def finalize_full_c6_distribution(
     *,
-    materials: FullC6FinalizationMaterials,
+    authority: FullC6ProductionAuthority,
     signing_request_path: Path | str,
     public_key_path: Path | str,
-    expected_public_key_sha256: str,
     final_signature_path: Path | str | None,
     publication_adapter: FullC6PublicationAdapter | None = None,
 ) -> FullC6PipelineResult:
@@ -430,36 +376,16 @@ def finalize_full_c6_distribution(
     mandatory in the signed state and is invoked only after the sole sealed
     gate has minted ``FullC6DistributionAuthorization``.
     """
-    if type(materials) is not FullC6FinalizationMaterials:
-        raise FullC6PipelineError(
-            "RXT060 Full C6 finalization requires complete typed materials"
+    material = _validated_full_c6_finalization_material(authority)
+    request_path, trusted_public_key_path, trusted_signature_path = (
+        _require_configured_finalization_paths(
+            material,
+            signing_request_path=signing_request_path,
+            public_key_path=public_key_path,
+            final_signature_path=final_signature_path,
         )
-    materials.supply_chain_reproducibility
-    preauthorization = prepare_full_c6_preauthorization_evidence(
-        target_triple=materials.target_triple,
-        subject_path=materials.subject_path,
-        subject=materials.subject,
-        build_inputs=materials.build_inputs,
-        wheel_entries=materials.wheel_entries,
-        policy=materials.policy,
-        source_verification=materials.source_verification,
-        analysis_ir_transaction=materials.analysis_ir_transaction,
-        toolchain=materials.toolchain,
-        cargo_path_source=materials.cargo_path_source,
-        runtime_authorization=materials.runtime_authorization,
-        executor=materials.executor,
-        supply_chain=materials.supply_chain,
-        expected_public_key_sha256=expected_public_key_sha256,
     )
-    request = FinalAuthorizationRequest(
-        target_triple=materials.target_triple,
-        project_sha256=materials.build_inputs.digest,
-        artifact_sha256=materials.subject.sha256,
-        evidence_sha256=full_c6_preauthorization_evidence_digest(preauthorization),
-        reproducibility_sha256=materials.executor.digest,
-        policy_sha256=materials.policy.digest,
-    )
-    request_path = Path(signing_request_path)
+    request = _full_c6_finalization_request(authority)
     if request_path.name != FULL_C6_SIGNING_REQUEST_FILENAME:
         raise FullC6PipelineError(
             f"RXT060 signing-request output must end with {FULL_C6_SIGNING_REQUEST_FILENAME}"
@@ -476,33 +402,22 @@ def finalize_full_c6_distribution(
             request=request,
             signing_request_receipt=signing_receipt,
         )
-    signature_path = Path(final_signature_path)
+    if trusted_signature_path is None:
+        raise FullC6PipelineError("RXT060 configured final detached signature is missing")
+    signature_path = trusted_signature_path
     if not signature_path.exists():
         raise FullC6PipelineError("RXT060 configured final detached signature is missing")
     gate = authorize_full_c6_distribution(
-        target_triple=materials.target_triple,
-        subject_path=materials.subject_path,
-        subject=materials.subject,
-        build_inputs=materials.build_inputs,
-        wheel_entries=materials.wheel_entries,
-        policy=materials.policy,
-        source_verification=materials.source_verification,
-        analysis_ir_transaction=materials.analysis_ir_transaction,
-        toolchain=materials.toolchain,
-        cargo_path_source=materials.cargo_path_source,
-        runtime_authorization=materials.runtime_authorization,
-        executor=materials.executor,
-        supply_chain=materials.supply_chain,
+        authority,
         request=request,
         signature_envelope_path=signature_path,
-        public_key_path=public_key_path,
-        expected_public_key_sha256=expected_public_key_sha256,
+        public_key_path=trusted_public_key_path,
     )
     if type(publication_adapter) is not FullC6PublicationAdapter:
         raise FullC6PipelineError(
             "RXT060 a signed Full C6 run requires the sealed atomic publication adapter"
         )
-    publication_receipt = publication_adapter(request, gate, materials.supply_chain)
+    publication_receipt = publication_adapter(authority, request, gate)
     if type(publication_receipt) is not FullC6PublicationReceipt:
         raise FullC6PipelineError("RXT060 Full C6 publication returned an invalid receipt")
     return FullC6PipelineResult(
@@ -518,15 +433,15 @@ def finalize_configured_full_c6_distribution(
     *,
     project_root: Path | str,
     config: RextioConfig,
-    materials: FullC6FinalizationMaterials,
+    authority: FullC6ProductionAuthority,
     publication_adapter: FullC6PublicationAdapter | None = None,
 ) -> FullC6PipelineResult:
     """Resolve the explicit project-relative signing paths and finalize.
 
     This is the configuration-facing programmatic entrypoint.  The typed
-    policy remains part of ``materials``; no file or preview report is parsed
-    into policy authority.  An omitted configured final signature selects the
-    request-only state.
+    policy remains inside ``authority``; no file or preview report is parsed
+    into evidence authority.  An omitted configured final signature selects
+    the request-only state.
     """
     if type(config) is not RextioConfig or (
         config.build.artifact_distribution_policy != FULL_C6_DISTRIBUTION_POLICY
@@ -534,13 +449,19 @@ def finalize_configured_full_c6_distribution(
         raise FullC6PipelineError(
             "RXT060 configured finalization requires full-c6-required policy"
         )
+    material = _validated_full_c6_finalization_material(authority)
+    root = Path(project_root).resolve()
+    if root != material.project_root or config is not material.config:
+        raise FullC6PipelineError(
+            "RXT060 configured finalization does not match retained production inputs"
+        )
     configured_policy = load_configured_full_c6_policy(
         project_root=project_root,
         config=config,
     )
-    if not hmac.compare_digest(materials.policy.digest, configured_policy.digest):
+    if material.policy is None or configured_policy != material.policy:
         raise FullC6PipelineError(
-            "RXT060 Full C6 finalization materials do not match the pinned owner policy"
+            "RXT060 Full C6 production authority does not match the pinned owner policy"
         )
     request_output = config.build.artifact_signing_request_output
     public_key = config.build.artifact_trusted_public_key
@@ -551,13 +472,11 @@ def finalize_configured_full_c6_distribution(
         or type(public_key_sha256) is not str
     ):
         raise FullC6PipelineError("RXT060 configured Full C6 signing paths are incomplete")
-    root = Path(project_root).resolve()
     final_signature = config.build.artifact_final_signature
     return finalize_full_c6_distribution(
-        materials=materials,
+        authority=authority,
         signing_request_path=_project_path(root, request_output),
         public_key_path=_project_path(root, public_key),
-        expected_public_key_sha256=public_key_sha256,
         final_signature_path=(
             _project_path(root, final_signature)
             if type(final_signature) is str
@@ -610,10 +529,98 @@ def load_configured_full_c6_policy(
     return receipt
 
 
+def _validated_full_c6_finalization_material(
+    authority: FullC6ProductionAuthority,
+) -> _FullC6ProductionMaterial:
+    """Return the one retained production graph accepted by finalization."""
+    try:
+        from rextio.build.full_c6_production import (
+            FullC6ProductionAuthority,
+            _validated_full_c6_production_material,
+        )
+
+        if type(authority) is not FullC6ProductionAuthority:
+            raise FullC6PipelineError(
+                "RXT060 Full C6 finalization requires exact production authority"
+            )
+        material = _validated_full_c6_production_material(authority)
+        gate_inputs = _validated_production_gate_inputs(authority)
+        if (
+            material.lifecycle.status not in {"signing-required", "publication-required"}
+            or type(material.project_root) is not Path
+            or material.project_root.resolve() != material.project_root
+            or type(material.config) is not RextioConfig
+            or type(material.policy) is not FullC6PolicyReceipt
+            or material.policy is not gate_inputs.policy
+            or material.supply_chain is not gate_inputs.supply_chain
+            or material.build_inputs is not gate_inputs.build_inputs
+            or material.analysis_ir_transaction is not gate_inputs.analysis_ir_transaction
+            or material.runtime_authorization is not gate_inputs.runtime_authorization
+            or material.executor_receipt is not gate_inputs.executor
+            or material.cargo_path_source is not gate_inputs.cargo_path_source
+            or material.cargo_workspace is not gate_inputs.cargo_dependency_workspace
+            or material.runtime_authorization.target_triple != gate_inputs.target_triple
+            or material.policy.trusted_owner_public_key_sha256
+            != gate_inputs.expected_public_key_sha256
+            or material.config.build.artifact_trusted_public_key_sha256
+            != gate_inputs.expected_public_key_sha256
+        ):
+            raise FullC6PipelineError(
+                "RXT060 Full C6 production authority is split or incomplete"
+            )
+        return material
+    except FullC6PipelineError:
+        raise
+    except Exception as exc:
+        raise FullC6PipelineError(
+            "RXT060 Full C6 production authority failed finalization validation"
+        ) from exc
+
+
+def _require_configured_finalization_paths(
+    material: _FullC6ProductionMaterial,
+    *,
+    signing_request_path: Path | str,
+    public_key_path: Path | str,
+    final_signature_path: Path | str | None,
+) -> tuple[Path, Path, Path | None]:
+    """Reject any path injection outside the retained production config."""
+    build = material.config.build
+    request_value = build.artifact_signing_request_output
+    public_key_value = build.artifact_trusted_public_key
+    signature_value = build.artifact_final_signature
+    if (
+        type(request_value) is not str
+        or type(public_key_value) is not str
+        or (signature_value is not None and type(signature_value) is not str)
+    ):
+        raise FullC6PipelineError("RXT060 configured Full C6 signing paths are incomplete")
+    expected_request = _project_path(material.project_root, request_value)
+    expected_public_key = _project_path(material.project_root, public_key_value)
+    expected_signature = (
+        _project_path(material.project_root, signature_value)
+        if type(signature_value) is str
+        else None
+    )
+    observed_signature = (
+        Path(final_signature_path) if final_signature_path is not None else None
+    )
+    if (
+        Path(signing_request_path) != expected_request
+        or Path(public_key_path) != expected_public_key
+        or observed_signature != expected_signature
+    ):
+        raise FullC6PipelineError(
+            "RXT060 finalization paths do not match retained production config"
+        )
+    return expected_request, expected_public_key, expected_signature
+
+
 @dataclass(frozen=True, slots=True)
 class FullC6PublicationAdapter:
     """Sealed production adapter for the sole atomic publication sink."""
 
+    authority: FullC6ProductionAuthority = field(repr=False, compare=False)
     state_directory: Path
     publication_root: Path
     bundle_name: str
@@ -621,6 +628,7 @@ class FullC6PublicationAdapter:
     final_signature_path: Path
     public_key_path: Path
     _seal: object = field(repr=False, compare=False)
+    _binding: bytes = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self._seal is not _PUBLICATION_ADAPTER_SEAL:
@@ -640,12 +648,14 @@ class FullC6PublicationAdapter:
             or not self.bundle_name
         ):
             raise TypeError("Full C6 publication adapter configuration is invalid")
+        _validated_full_c6_finalization_material(self.authority)
+        object.__setattr__(self, "_binding", _publication_adapter_binding(self))
 
     def __call__(
         self,
+        authority: FullC6ProductionAuthority,
         request: FinalAuthorizationRequest,
         gate: FullC6GateResult,
-        supply_chain: FullC6SupplyChainReceipt,
     ) -> FullC6PublicationReceipt:
         """Materialize signed evidence and enter the hardened publication sink."""
         from rextio.build.full_c6_publication import (
@@ -655,22 +665,48 @@ class FullC6PublicationAdapter:
             ROLE_FINAL_EVIDENCE,
             ROLE_SLSA_PROVENANCE,
             ROLE_WHEEL,
-            publish_full_c6_bundle,
+            _publish_full_c6_bundle,
+            _rebuild_gate_result,
+            _rebuild_request,
         )
 
+        _require_valid_publication_adapter(self)
+        if authority is not self.authority:
+            raise FullC6PipelineError(
+                "RXT060 Full C6 publication authority is not the retained authority"
+            )
+        material = _validated_full_c6_finalization_material(authority)
+        gate_inputs = _validated_production_gate_inputs(authority)
+        _require_publication_adapter_paths(self, material, gate_inputs.subject_path)
+        if material.supply_chain is not gate_inputs.supply_chain:
+            raise FullC6PipelineError("RXT060 Full C6 publication authority is split")
+        trusted_request = _rebuild_request(request)
+        trusted_gate = _rebuild_gate_result(gate)
+        expected_request = _full_c6_finalization_request(authority)
+        expected_preauthorization = prepare_full_c6_preauthorization_evidence(authority)
+        if (
+            trusted_request != expected_request
+            or trusted_gate.preauthorization_evidence != expected_preauthorization
+        ):
+            raise FullC6PipelineError(
+                "RXT060 Full C6 publication request or gate replaced retained authority"
+            )
+        supply_chain = gate_inputs.supply_chain
         payloads = {
             "rextio.cyclonedx.json": supply_chain.sbom_json,
             "rextio.slsa-provenance.json": supply_chain.provenance_json,
-            "rextio.full-c6-evidence.json": canonical_json_bytes(gate.evidence.to_dict()),
+            "rextio.full-c6-evidence.json": canonical_json_bytes(
+                trusted_gate.evidence.to_dict()
+            ),
             "rextio.full-c6-authorization.json": canonical_json_bytes(
-                gate.authorization.to_dict()
+                trusted_gate.authorization.to_dict()
             ),
         }
         materialized = {
             name: _materialize_private_bytes(self.state_directory, name, data)
             for name, data in payloads.items()
         }
-        return publish_full_c6_bundle(
+        return _publish_full_c6_bundle(
             publication_root=self.publication_root,
             bundle_name=self.bundle_name,
             bundle_files={
@@ -683,14 +719,15 @@ class FullC6PublicationAdapter:
                     "rextio.full-c6-authorization.json"
                 ],
             },
-            request=request,
-            gate_result=gate,
+            request=trusted_request,
+            gate_result=trusted_gate,
             public_key_path=self.public_key_path,
         )
 
 
-def full_c6_atomic_publication_adapter(
+def _full_c6_atomic_publication_adapter(
     *,
+    authority: FullC6ProductionAuthority,
     state_directory: Path | str,
     publication_root: Path | str,
     bundle_name: str,
@@ -700,6 +737,7 @@ def full_c6_atomic_publication_adapter(
 ) -> FullC6PublicationAdapter:
     """Return the sealed production adapter for atomic signed publication."""
     return FullC6PublicationAdapter(
+        authority=authority,
         state_directory=Path(state_directory),
         publication_root=Path(publication_root),
         bundle_name=bundle_name,
@@ -707,6 +745,96 @@ def full_c6_atomic_publication_adapter(
         final_signature_path=Path(final_signature_path),
         public_key_path=Path(public_key_path),
         _seal=_PUBLICATION_ADAPTER_SEAL,
+    )
+
+
+def _require_publication_adapter_paths(
+    adapter: FullC6PublicationAdapter,
+    material: _FullC6ProductionMaterial,
+    retained_subject_path: Path,
+) -> None:
+    """Bind injected publication paths back to the exact retained graph."""
+    build = material.config.build
+    request_value = build.artifact_signing_request_output
+    public_key_value = build.artifact_trusted_public_key
+    signature_value = build.artifact_final_signature
+    if (
+        material.lifecycle.status != "publication-required"
+        or type(request_value) is not str
+        or type(public_key_value) is not str
+        or type(signature_value) is not str
+    ):
+        raise FullC6PipelineError(
+            "RXT060 Full C6 publication requires retained publication config"
+        )
+    expected_request = _project_path(material.project_root, request_value)
+    expected_public_key = _project_path(material.project_root, public_key_value)
+    expected_signature = _project_path(material.project_root, signature_value)
+    wheel_name = retained_subject_path.name
+    expected_publication_root = material.project_root / "dist"
+    expected_bundle_name = f"{wheel_name.removesuffix('.whl')}.full-c6"
+    if (
+        not retained_subject_path.is_absolute()
+        or _WHEEL_FILENAME_RE.fullmatch(wheel_name) is None
+        or unicodedata.normalize("NFC", wheel_name) != wheel_name
+        or adapter.state_directory != expected_request.parent
+        or adapter.publication_root != expected_publication_root
+        or adapter.bundle_name != expected_bundle_name
+        or adapter.subject_path != retained_subject_path
+        or adapter.final_signature_path != expected_signature
+        or adapter.public_key_path != expected_public_key
+    ):
+        raise FullC6PipelineError(
+            "RXT060 publication paths do not match retained production authority"
+        )
+
+
+def _publication_adapter_binding(adapter: FullC6PublicationAdapter) -> bytes:
+    payload = {
+        "authority_identity": id(adapter.authority),
+        "state_directory": adapter.state_directory.as_posix(),
+        "publication_root": adapter.publication_root.as_posix(),
+        "bundle_name": adapter.bundle_name,
+        "subject_path": adapter.subject_path.as_posix(),
+        "final_signature_path": adapter.final_signature_path.as_posix(),
+        "public_key_path": adapter.public_key_path.as_posix(),
+    }
+    return hmac.new(
+        _PUBLICATION_ADAPTER_KEY,
+        canonical_json_bytes(payload),
+        hashlib.sha256,
+    ).digest()
+
+
+def _require_valid_publication_adapter(value: FullC6PublicationAdapter) -> None:
+    try:
+        valid = (
+            type(value) is FullC6PublicationAdapter
+            and value._seal is _PUBLICATION_ADAPTER_SEAL
+            and type(value._binding) is bytes
+            and hmac.compare_digest(value._binding, _publication_adapter_binding(value))
+        )
+    except Exception as exc:
+        raise FullC6PipelineError(
+            "RXT060 Full C6 publication adapter seal is invalid"
+        ) from exc
+    if not valid:
+        raise FullC6PipelineError("RXT060 Full C6 publication adapter seal is invalid")
+
+
+def _full_c6_finalization_request(
+    authority: FullC6ProductionAuthority,
+) -> FinalAuthorizationRequest:
+    """Derive the sole signing request from validated retained authority."""
+    inputs = _validated_production_gate_inputs(authority)
+    preauthorization = prepare_full_c6_preauthorization_evidence(authority)
+    return FinalAuthorizationRequest(
+        target_triple=inputs.target_triple,
+        project_sha256=inputs.build_inputs.digest,
+        artifact_sha256=inputs.subject.sha256,
+        evidence_sha256=full_c6_preauthorization_evidence_digest(preauthorization),
+        reproducibility_sha256=inputs.executor.digest,
+        policy_sha256=inputs.policy.digest,
     )
 
 
@@ -872,14 +1000,12 @@ __all__ = [
     "FULL_C6_SIGNING_REQUEST_FILENAME",
     "FullC6ExternalBuildContext",
     "FullC6ExternalPreflightResult",
-    "FullC6FinalizationMaterials",
     "FullC6PipelineError",
     "FullC6PipelineResult",
     "FullC6PublicationAdapter",
     "FullC6TypedPolicyRequiredError",
     "finalize_full_c6_distribution",
     "finalize_configured_full_c6_distribution",
-    "full_c6_atomic_publication_adapter",
     "load_configured_full_c6_policy",
     "prepare_full_c6_external_build",
     "validate_full_c6_external_context",

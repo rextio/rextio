@@ -203,9 +203,9 @@ class FullC6PublicationPlan:
     def atomic_adapter(self) -> object:
         """Create the sealed publication adapter without serializing local paths."""
         self._require_active()
-        from rextio.build.full_c6_pipeline import full_c6_atomic_publication_adapter
+        from rextio.build.full_c6_pipeline import _full_c6_atomic_publication_adapter
 
-        return full_c6_atomic_publication_adapter(
+        return _full_c6_atomic_publication_adapter(
             authority=cast("FullC6ProductionAuthority", self._authority),
             state_directory=self._state_directory,
             publication_root=self._publication_root,

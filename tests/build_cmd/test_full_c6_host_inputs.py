@@ -743,7 +743,7 @@ def test_publication_plan_requires_valid_final_authority_and_real_wheel(
 
         monkeypatch.setattr(
             full_c6_pipeline,
-            "full_c6_atomic_publication_adapter",
+            "_full_c6_atomic_publication_adapter",
             adapter_factory,
         )
         assert plan.atomic_adapter() is adapter
