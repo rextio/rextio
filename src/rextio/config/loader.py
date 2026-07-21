@@ -49,6 +49,8 @@ CONFIG_KEYS = {
         "artifact_source_lock_signature",
         "artifact_policy_manifest",
         "artifact_policy_manifest_sha256",
+        "artifact_cargo_vendor",
+        "artifact_cargo_vendor_sha256",
         "artifact_trusted_public_key",
         "artifact_trusted_public_key_sha256",
         "artifact_final_signature",
@@ -316,6 +318,7 @@ def _validate_config_values(
         "artifact_source_lock_manifest",
         "artifact_source_lock_signature",
         "artifact_policy_manifest",
+        "artifact_cargo_vendor",
         "artifact_final_signature",
     ):
         _require_optional_project_relative_path(
@@ -348,6 +351,11 @@ def _validate_config_values(
         "build",
         "artifact_policy_manifest_sha256",
         build["artifact_policy_manifest_sha256"],
+    )
+    _require_optional_sha256(
+        "build",
+        "artifact_cargo_vendor_sha256",
+        build["artifact_cargo_vendor_sha256"],
     )
     _require_optional_sha256(
         "build",
@@ -449,6 +457,8 @@ def _validate_full_c6_config(
     source_lock_signature = build["artifact_source_lock_signature"]
     policy_manifest = build["artifact_policy_manifest"]
     policy_manifest_sha256 = build["artifact_policy_manifest_sha256"]
+    cargo_vendor = build["artifact_cargo_vendor"]
+    cargo_vendor_sha256 = build["artifact_cargo_vendor_sha256"]
     trusted_key = build["artifact_trusted_public_key"]
     trusted_key_sha256 = build["artifact_trusted_public_key_sha256"]
     final_signature = build["artifact_final_signature"]
@@ -463,6 +473,11 @@ def _validate_full_c6_config(
         raise ConfigError(
             "[build] artifact_policy_manifest and "
             "artifact_policy_manifest_sha256 must be configured together"
+        )
+    if (cargo_vendor is None) != (cargo_vendor_sha256 is None):
+        raise ConfigError(
+            "[build] artifact_cargo_vendor and "
+            "artifact_cargo_vendor_sha256 must be configured together"
         )
     if (trusted_key is None) != (trusted_key_sha256 is None):
         raise ConfigError(
@@ -488,6 +503,7 @@ def _validate_full_c6_config(
             "artifact_source_lock_manifest",
             "artifact_source_lock_signature",
             "artifact_policy_manifest",
+            "artifact_cargo_vendor",
             "artifact_trusted_public_key",
             "artifact_final_signature",
             "artifact_signing_request_output",
@@ -496,6 +512,16 @@ def _validate_full_c6_config(
     }
     if len(set(configured_paths.values())) != len(configured_paths):
         raise ConfigError("[build] Full C6 artifact paths must be distinct")
+    if cargo_vendor is not None:
+        vendor_path = PurePosixPath(cargo_vendor)
+        for key, configured in configured_paths.items():
+            if key == "artifact_cargo_vendor":
+                continue
+            configured_path = PurePosixPath(configured)
+            if vendor_path in configured_path.parents or configured_path in vendor_path.parents:
+                raise ConfigError(
+                    "[build] artifact_cargo_vendor must not overlap another Full C6 path"
+                )
 
     if build["artifact_distribution_policy"] != "full-c6-required":
         return
@@ -509,6 +535,8 @@ def _validate_full_c6_config(
         failures.append("SourceLock v2 manifest and detached signature paths")
     if policy_manifest is None or policy_manifest_sha256 is None:
         failures.append("one owner policy manifest path and SHA-256")
+    if cargo_vendor is None or cargo_vendor_sha256 is None:
+        failures.append("one owner-prepared Cargo vendor directory and tree SHA-256")
     if trusted_key is None or trusted_key_sha256 is None:
         failures.append("one trusted public key path and SHA-256")
     if signing_request_output is None:

@@ -18,6 +18,8 @@ DEFAULT_CONFIG: dict[str, dict[str, object]] = {
         "artifact_source_lock_signature": None,
         "artifact_policy_manifest": None,
         "artifact_policy_manifest_sha256": None,
+        "artifact_cargo_vendor": None,
+        "artifact_cargo_vendor_sha256": None,
         "artifact_trusted_public_key": None,
         "artifact_trusted_public_key_sha256": None,
         "artifact_final_signature": None,

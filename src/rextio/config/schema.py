@@ -30,6 +30,8 @@ class BuildConfig:
     artifact_source_lock_signature: str | None = None
     artifact_policy_manifest: str | None = None
     artifact_policy_manifest_sha256: str | None = None
+    artifact_cargo_vendor: str | None = None
+    artifact_cargo_vendor_sha256: str | None = None
     artifact_trusted_public_key: str | None = None
     artifact_trusted_public_key_sha256: str | None = None
     artifact_final_signature: str | None = None

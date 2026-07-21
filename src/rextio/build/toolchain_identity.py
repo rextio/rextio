@@ -499,6 +499,7 @@ def capture_cargo_sources(
     cargo_lock: Path | str,
     *,
     root_package: str,
+    logical_name: str = "cargo/Cargo.lock",
 ) -> CargoSourcesIdentity:
     """Parse one securely-read lockfile into a complete registry source receipt."""
     if _NAME_RE.fullmatch(root_package) is None:
@@ -506,7 +507,7 @@ def capture_cargo_sources(
     try:
         lock_identity, data = capture_exact_file_bytes(
             cargo_lock,
-            logical_name="cargo/Cargo.lock",
+            logical_name=logical_name,
             role="cargo-lockfile",
             max_bytes=8 * 1024 * 1024,
         )
