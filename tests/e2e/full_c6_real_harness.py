@@ -1032,12 +1032,16 @@ def _read_bounded_process_log(
 
 
 def _format_support_lock_diagnostic(error: BaseException) -> str:
+    from rextio.build.full_c6_toolchain_support import (
+        FullC6ToolchainSupportError,
+    )
     from rextio.build.toolchain_support_lock import ToolchainSupportLockError
 
     support_message = "<unavailable>"
     os_error_name = "<unavailable>"
     os_error_errno = "<unavailable>"
     other_error_type = "<unavailable>"
+    other_error_message = "<unavailable>"
     current: BaseException | None = error
     seen: set[int] = set()
     for _ in range(16):
@@ -1048,7 +1052,7 @@ def _format_support_lock_diagnostic(error: BaseException) -> str:
             candidate = str(current)
             if (
                 candidate.startswith("toolchain support ")
-                and len(candidate) <= 280
+                and len(candidate) <= 278
                 and candidate.isascii()
                 and all(
                     character.isalnum() or character in " -_.,()="
@@ -1056,6 +1060,21 @@ def _format_support_lock_diagnostic(error: BaseException) -> str:
                 )
             ):
                 support_message = candidate
+        elif type(current) is FullC6ToolchainSupportError:
+            candidate = str(current)
+            if (
+                other_error_message == "<unavailable>"
+                and candidate.startswith("Full C6 ")
+                and len(candidate) <= 278
+                and candidate.isascii()
+                and all(
+                    character.isalnum() or character in " -_.,()="
+                    for character in candidate
+                )
+            ):
+                other_error_message = candidate
+            if other_error_type == "<unavailable>":
+                other_error_type = "FullC6ToolchainSupportError"
         elif (
             isinstance(current, OSError)
             and type(current).__module__ == "builtins"
@@ -1090,14 +1109,18 @@ def _format_support_lock_diagnostic(error: BaseException) -> str:
             ):
                 other_error_type = candidate_name
         current = current.__cause__ or current.__context__
+    if support_message != "<unavailable>":
+        other_error_message = "<unavailable>"
     diagnostic = (
         "[full-c6-e2e] support-lock diagnostic: "
         f"ToolchainSupportLockError={support_message}; "
         f"OSError={os_error_name}; errno={os_error_errno}; "
-        f"OtherErrorType={other_error_type}"
+        f"OtherErrorType={other_error_type}; "
+        f"OtherErrorMessage={other_error_message}"
     )
-    # Worst case: 100 fixed ASCII bytes + 280 support-message bytes +
-    # 64 OSError-name bytes + 5 errno bytes + 32 other-type bytes = 481.
+    # Worst case: 120 fixed ASCII bytes + 278 support/other-message bytes +
+    # 13 bytes for the mutually exclusive unavailable message +
+    # 64 OSError-name bytes + 5 errno bytes + 32 other-type bytes = 512.
     assert diagnostic.isascii()
     assert len(diagnostic.encode("ascii")) <= 512
     return diagnostic

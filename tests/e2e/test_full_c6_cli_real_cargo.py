@@ -20,6 +20,7 @@ from types import ModuleType
 
 import pytest
 
+from rextio.build.full_c6_toolchain_support import FullC6ToolchainSupportError
 from rextio.build.toolchain_support_lock import ToolchainSupportLockError
 
 
@@ -231,7 +232,7 @@ def test_support_lock_diagnostic_exposes_only_bounded_static_causes() -> None:
         "[full-c6-e2e] support-lock diagnostic: "
         "ToolchainSupportLockError=toolchain support locator requires a "
         "symlink-free directory walk; OSError=NotADirectoryError; errno=20; "
-        "OtherErrorType=RuntimeError"
+        "OtherErrorType=RuntimeError; OtherErrorMessage=<unavailable>"
     )
     assert "/private/secret" not in diagnostic
     assert "private detail" not in diagnostic
@@ -250,7 +251,7 @@ def test_support_lock_diagnostic_preserves_bounded_hardlink_fields() -> None:
         "st_mode=33188, "
         "st_nlink=2, in_root_inode_observation_count=1)"
     )
-    assert 240 < len(support_message) <= 280
+    assert 240 < len(support_message) <= 278
 
     diagnostic = harness._format_support_lock_diagnostic(
         ToolchainSupportLockError(support_message)
@@ -260,7 +261,7 @@ def test_support_lock_diagnostic_preserves_bounded_hardlink_fields() -> None:
         "[full-c6-e2e] support-lock diagnostic: "
         f"ToolchainSupportLockError={support_message}; "
         "OSError=<unavailable>; errno=<unavailable>; "
-        "OtherErrorType=<unavailable>"
+        "OtherErrorType=<unavailable>; OtherErrorMessage=<unavailable>"
     )
     assert len(diagnostic.encode("utf-8")) <= 512
 
@@ -278,7 +279,7 @@ def test_support_lock_diagnostic_worst_case_stays_within_wire_bound() -> None:
         {"__module__": "builtins"},
     )
     operating_system_error = operating_system_error_type(-4096, "private detail")
-    support_message = "toolchain support " + "a" * (280 - len("toolchain support "))
+    support_message = "toolchain support " + "a" * (278 - len("toolchain support "))
     support_error = ToolchainSupportLockError(support_message)
     support_error.__cause__ = operating_system_error
     outer_error = other_error_type("outer private detail")
@@ -286,9 +287,10 @@ def test_support_lock_diagnostic_worst_case_stays_within_wire_bound() -> None:
 
     diagnostic = harness._format_support_lock_diagnostic(outer_error)
 
-    assert len(support_message) == 280
-    assert diagnostic.endswith(f"OtherErrorType={'E' * 32}")
-    assert len(diagnostic.encode("utf-8")) == 481
+    assert len(support_message) == 278
+    assert diagnostic.endswith("OtherErrorMessage=<unavailable>")
+    assert f"OtherErrorType={'E' * 32}" in diagnostic
+    assert len(diagnostic.encode("utf-8")) == 512
     assert len(diagnostic.encode("utf-8")) <= 512
 
 
@@ -303,9 +305,91 @@ def test_support_lock_diagnostic_classifies_non_support_error_without_message() 
         "[full-c6-e2e] support-lock diagnostic: "
         "ToolchainSupportLockError=<unavailable>; "
         "OSError=<unavailable>; errno=<unavailable>; "
-        "OtherErrorType=ValueError"
+        "OtherErrorType=ValueError; OtherErrorMessage=<unavailable>"
     )
     assert "private non-support detail" not in diagnostic
+
+
+def test_support_lock_diagnostic_exposes_bounded_full_c6_static_message() -> None:
+    harness = _load_harness_module()
+    message = "Full C6 Linux runtime support mapping is invalid"
+
+    diagnostic = harness._format_support_lock_diagnostic(
+        FullC6ToolchainSupportError(message)
+    )
+
+    assert diagnostic == (
+        "[full-c6-e2e] support-lock diagnostic: "
+        "ToolchainSupportLockError=<unavailable>; "
+        "OSError=<unavailable>; errno=<unavailable>; "
+        "OtherErrorType=FullC6ToolchainSupportError; "
+        f"OtherErrorMessage={message}"
+    )
+
+
+def test_support_lock_diagnostic_message_worst_case_stays_within_wire_bound() -> None:
+    harness = _load_harness_module()
+    operating_system_error_type = type(
+        "O" * 64,
+        (OSError,),
+        {"__module__": "builtins"},
+    )
+    other_error_type = type(
+        "E" * 32,
+        (Exception,),
+        {"__module__": "builtins"},
+    )
+    operating_system_error = operating_system_error_type(-4096, "private detail")
+    message = "Full C6 " + "a" * (278 - len("Full C6 "))
+    full_c6_error = FullC6ToolchainSupportError(message)
+    full_c6_error.__cause__ = operating_system_error
+    outer_error = other_error_type("outer private detail")
+    outer_error.__cause__ = full_c6_error
+
+    diagnostic = harness._format_support_lock_diagnostic(outer_error)
+
+    assert len(message) == 278
+    assert diagnostic.endswith(f"OtherErrorMessage={message}")
+    assert f"OtherErrorType={'E' * 32}" in diagnostic
+    assert len(diagnostic.encode("utf-8")) == 512
+
+
+def test_support_lock_diagnostic_prefers_support_message_to_full_c6_message() -> None:
+    harness = _load_harness_module()
+    support_message = "toolchain support root mapping is invalid"
+    support_error = ToolchainSupportLockError(support_message)
+    full_c6_error = FullC6ToolchainSupportError(
+        "Full C6 support lock generation failed closed"
+    )
+    full_c6_error.__cause__ = support_error
+
+    diagnostic = harness._format_support_lock_diagnostic(full_c6_error)
+
+    assert f"ToolchainSupportLockError={support_message}" in diagnostic
+    assert "OtherErrorType=FullC6ToolchainSupportError" in diagnostic
+    assert diagnostic.endswith("OtherErrorMessage=<unavailable>")
+
+
+@pytest.mark.parametrize(
+    "raw_path",
+    [
+        "/private/secret/toolchain/member",
+        "private:secret",
+        r"private\secret",
+    ],
+)
+def test_support_lock_diagnostic_rejects_full_c6_raw_path_message(
+    raw_path: str,
+) -> None:
+    harness = _load_harness_module()
+
+    diagnostic = harness._format_support_lock_diagnostic(
+        FullC6ToolchainSupportError(f"Full C6 support root is {raw_path}")
+    )
+
+    assert diagnostic.endswith("OtherErrorMessage=<unavailable>")
+    assert raw_path not in diagnostic
+    assert "secret" not in diagnostic
 
 
 @pytest.mark.parametrize(
@@ -332,7 +416,7 @@ def test_support_lock_diagnostic_rejects_raw_path_fields(raw_path: str) -> None:
         "[full-c6-e2e] support-lock diagnostic: "
         "ToolchainSupportLockError=<unavailable>; "
         "OSError=<unavailable>; errno=<unavailable>; "
-        "OtherErrorType=<unavailable>"
+        "OtherErrorType=<unavailable>; OtherErrorMessage=<unavailable>"
     )
     assert raw_path not in diagnostic
     assert "private" not in diagnostic
@@ -402,7 +486,7 @@ def test_support_lock_diagnostic_rerun_is_generation_only(
     assert diagnostic.endswith(
         "ToolchainSupportLockError=toolchain support locator requires a "
         "symlink-free directory walk; OSError=NotADirectoryError; errno=20; "
-        "OtherErrorType=<unavailable>"
+        "OtherErrorType=<unavailable>; OtherErrorMessage=<unavailable>"
     )
     assert observed == {
         "load": (tmp_path, harness._SUPPORT_LOCK_OUTPUT, inherited_environment),
