@@ -809,16 +809,24 @@ def test_xcode_hardlink_topology_is_deterministic_opaque_and_nofollow(
         tmp_path
     )
 
-    message = harness._bounded_xcode_hardlink_topology_message(
+    topology = harness._bounded_xcode_hardlink_topology_message(
         support_root=support_root,
         app_boundary=app_boundary,
+        structured=True,
     )
+    assert type(topology) is harness._XcodeHardlinkTopology
+    message = harness._format_xcode_hardlink_topology_message(topology)
     repeated = harness._bounded_xcode_hardlink_topology_message(
         support_root=support_root,
         app_boundary=app_boundary,
     )
 
     assert repeated == message
+    assert topology.group_count == 2
+    assert topology.support_member_count == 3
+    assert topology.alias_count == 5
+    assert len(topology.policy_merkle) == 64
+    assert len(topology.observation_merkle) == 64
     assert message.startswith(
         "toolchain support xcode hardlink topology "
         "(groups=2,support_members=3,aliases=5,policy_merkle="
@@ -945,6 +953,42 @@ def test_xcode_hardlink_topology_rejects_drift_after_scans(
     assert mutated
 
 
+def test_xcode_hardlink_topology_rejects_drift_between_scans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rextio.build import toolchain_support_lock as support_lock
+
+    harness = _load_harness_module()
+    support_root, app_boundary, paths = _xcode_hardlink_topology_fixture(
+        tmp_path
+    )
+    original = support_lock._open_directory_chain
+    support_scan_count = 0
+
+    def mutate_before_second_support_scan(path: Path) -> object:
+        nonlocal support_scan_count
+        if path == support_root:
+            support_scan_count += 1
+            if support_scan_count == 2:
+                with paths[0].open("ab") as stream:
+                    stream.write(b" changed between scans")
+        return original(path)
+
+    monkeypatch.setattr(
+        support_lock,
+        "_open_directory_chain",
+        mutate_before_second_support_scan,
+    )
+
+    with pytest.raises(ToolchainSupportLockError, match="changed across scans"):
+        harness._bounded_xcode_hardlink_topology_message(
+            support_root=support_root,
+            app_boundary=app_boundary,
+        )
+    assert support_scan_count == 2
+
+
 def test_xcode_generic_hardlink_trigger_is_exact_and_wire_safe() -> None:
     harness = _load_harness_module()
     message = (
@@ -980,6 +1024,10 @@ def _xcode_topology_diagnostic_plan(
     role: str = "xcode-clang-resource",
     root: Path | None = None,
     duplicate_root: bool = False,
+    manifest_role: str = "xcode-version-plist",
+    manifest_path: Path = Path("/Applications/Xcode.app/Contents/version.plist"),
+    duplicate_manifest: bool = False,
+    omit_manifest: bool = False,
 ) -> object:
     from rextio.build import full_c6_toolchain_support as support
 
@@ -999,6 +1047,16 @@ def _xcode_topology_diagnostic_plan(
         "_root_locators",
         (locator, locator) if duplicate_root else (locator,),
     )
+    manifest = Locator()
+    manifest.logical_role = manifest_role
+    manifest._absolute_path = manifest_path
+    object.__setattr__(
+        plan,
+        "_manifest_locators",
+        ()
+        if omit_manifest
+        else ((manifest, manifest) if duplicate_manifest else (manifest,)),
+    )
     return plan
 
 
@@ -1014,20 +1072,47 @@ def test_xcode_topology_diagnostic_accepts_only_exact_fixed_plan(
         "st_mode=33188, st_nlink=3, "
         "in_root_inode_observation_count=1)"
     )
-    observed: list[tuple[Path, Path]] = []
+    observed: list[tuple[Path, Path, bool]] = []
+    captured: list[object] = []
 
-    def topology(*, support_root: Path, app_boundary: Path) -> str:
-        observed.append((support_root, app_boundary))
-        return "exact topology"
+    def topology(
+        *,
+        support_root: Path,
+        app_boundary: Path,
+        structured: bool = False,
+    ) -> object:
+        observed.append((support_root, app_boundary, structured))
+        return harness._XcodeHardlinkTopology(
+            group_count=121,
+            support_member_count=121,
+            alias_count=361,
+            policy_merkle=harness._XCODE_HARDLINK_POLICY_MERKLE,
+            observation_merkle="f" * 64,
+        )
+
+    class Receipt:
+        raw_sha256 = "a" * 64
+
+    def capture(locator: object) -> Receipt:
+        captured.append(locator)
+        return Receipt()
 
     monkeypatch.setattr(
         harness,
         "_bounded_xcode_hardlink_topology_message",
         topology,
     )
+    monkeypatch.setattr(
+        "rextio.build.toolchain_support_lock.capture_toolchain_support_file",
+        capture,
+    )
 
-    assert harness._diagnose_xcode_hardlink_topology(plan, error) == (
-        "exact topology"
+    message = harness._diagnose_xcode_hardlink_topology(plan, error)
+    assert message == (
+        "toolchain support xcode topology identity "
+        "(groups=121,members=121,aliases=361,"
+        f"policy={harness._XCODE_HARDLINK_POLICY_MERKLE},clang=21,"
+        f"version_raw={'a' * 64})"
     )
     assert observed == [
         (
@@ -1036,8 +1121,14 @@ def test_xcode_topology_diagnostic_accepts_only_exact_fixed_plan(
                 "XcodeDefault.xctoolchain/usr/lib/clang/21"
             ),
             Path("/Applications/Xcode.app"),
+            True,
         )
     ]
+    assert captured == [plan._manifest_locators[0]]
+    assert message.isascii()
+    assert len(message) <= 278
+    assert "observation" not in message
+    assert "/Applications" not in message
 
 
 @pytest.mark.parametrize(
@@ -1047,6 +1138,12 @@ def test_xcode_topology_diagnostic_accepts_only_exact_fixed_plan(
         _xcode_topology_diagnostic_plan(target="x86_64-unknown-linux-gnu"),
         _xcode_topology_diagnostic_plan(role="xcode-sdk"),
         _xcode_topology_diagnostic_plan(duplicate_root=True),
+        _xcode_topology_diagnostic_plan(omit_manifest=True),
+        _xcode_topology_diagnostic_plan(manifest_role="xcode-sdk-settings"),
+        _xcode_topology_diagnostic_plan(duplicate_manifest=True),
+        _xcode_topology_diagnostic_plan(
+            manifest_path=Path("/private/secret/version.plist")
+        ),
         _xcode_topology_diagnostic_plan(root=Path("/private/secret/clang/21")),
         _xcode_topology_diagnostic_plan(
             root=Path(
@@ -1069,7 +1166,7 @@ def test_xcode_topology_diagnostic_rejects_near_miss_plan(
         "in_root_inode_observation_count=1)"
     )
 
-    def forbidden(**_kwargs: object) -> str:
+    def forbidden(**_kwargs: object) -> object:
         raise AssertionError("near-miss plan reached Xcode app scan")
 
     monkeypatch.setattr(

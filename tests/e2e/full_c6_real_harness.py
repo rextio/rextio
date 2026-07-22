@@ -29,7 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, BinaryIO, Literal, cast
+from typing import Any, BinaryIO, Literal, NamedTuple, cast
 from urllib.parse import unquote, urlparse
 import venv
 import zipfile
@@ -53,6 +53,17 @@ _XCODE_HARDLINK_MAX_DEPTH = 64
 _XCODE_HARDLINK_MAX_PATH_BYTES = 8_192
 _XCODE_HARDLINK_TOPOLOGY_MAX_GROUPS = 1_024
 _XCODE_HARDLINK_TOPOLOGY_MAX_MEMBERS = 64
+_XCODE_HARDLINK_POLICY_GROUP_COUNT = 121
+_XCODE_HARDLINK_POLICY_SUPPORT_MEMBER_COUNT = 121
+_XCODE_HARDLINK_POLICY_ALIAS_COUNT = 361
+_XCODE_HARDLINK_POLICY_MERKLE = (
+    "46dfe178bd85f3df653adbda460c674045acbc370c96e1a756564011e2a01e46"
+)
+_XCODE_VERSION_PLIST_ROLE = "xcode-version-plist"
+_XCODE_VERSION_PLIST = Path("/Applications/Xcode.app/Contents/version.plist")
+_XCODE_CLANG_RESOURCE_VERSION_RE = re.compile(
+    r"\A[0-9]{1,3}(?:\.[0-9]{1,3}){0,2}\Z"
+)
 _XCODE_HARDLINK_ERROR_RE = re.compile(
     r"\Atoolchain support xcode hardlink observation "
     rf"\(path={_XCODE_HARDLINK_RELATIVE_PATH_SHA256},"
@@ -66,6 +77,16 @@ _XCODE_GENERIC_HARDLINK_ERROR_RE = re.compile(
     r" st_mode=[0-9]{1,20}, st_nlink=[2-9][0-9]{0,19},"
     r" in_root_inode_observation_count=[1-9][0-9]{0,19}\)\Z"
 )
+
+
+class _XcodeHardlinkTopology(NamedTuple):
+    group_count: int
+    support_member_count: int
+    alias_count: int
+    policy_merkle: str
+    observation_merkle: str
+
+
 _PATH_FREE_SUPPORT_LOCK_MESSAGES_WITH_SEMANTIC_SLASH = frozenset(
     {
         "toolchain support directory contains an NFC/casefold alias",
@@ -1542,7 +1563,8 @@ def _bounded_xcode_hardlink_topology_message(
     *,
     support_root: Path,
     app_boundary: Path,
-) -> str:
+    structured: bool = False,
+) -> str | _XcodeHardlinkTopology:
     """Fingerprint every shared regular-file inode in one Xcode support root."""
 
     from rextio.build import toolchain_support_lock as support_lock
@@ -1949,11 +1971,34 @@ def _bounded_xcode_hardlink_topology_message(
             ]
         },
     )
+    topology = _XcodeHardlinkTopology(
+        group_count=len(first[0]),
+        support_member_count=first[1],
+        alias_count=first[2],
+        policy_merkle=policy_merkle,
+        observation_merkle=observation_merkle,
+    )
+    if structured:
+        return topology
+    return _format_xcode_hardlink_topology_message(topology)
+
+
+def _format_xcode_hardlink_topology_message(
+    topology: _XcodeHardlinkTopology,
+) -> str:
+    from rextio.build import toolchain_support_lock as support_lock
+
+    if type(topology) is not _XcodeHardlinkTopology:
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode topology result is invalid"
+        )
     message = (
         "toolchain support xcode hardlink topology "
-        f"(groups={len(first[0])},support_members={first[1]},"
-        f"aliases={first[2]},policy_merkle={policy_merkle},"
-        f"observation_merkle={observation_merkle})"
+        f"(groups={topology.group_count},"
+        f"support_members={topology.support_member_count},"
+        f"aliases={topology.alias_count},"
+        f"policy_merkle={topology.policy_merkle},"
+        f"observation_merkle={topology.observation_merkle})"
     )
     if (
         not message.isascii()
@@ -1969,11 +2014,58 @@ def _bounded_xcode_hardlink_topology_message(
     return message
 
 
+def _format_xcode_topology_identity(
+    *,
+    topology: _XcodeHardlinkTopology,
+    clang_version: str,
+    version_raw_sha256: str,
+) -> str:
+    from rextio.build import toolchain_support_lock as support_lock
+
+    if (
+        type(topology) is not _XcodeHardlinkTopology
+        or topology.group_count != _XCODE_HARDLINK_POLICY_GROUP_COUNT
+        or topology.support_member_count
+        != _XCODE_HARDLINK_POLICY_SUPPORT_MEMBER_COUNT
+        or topology.alias_count != _XCODE_HARDLINK_POLICY_ALIAS_COUNT
+        or not secrets.compare_digest(
+            topology.policy_merkle,
+            _XCODE_HARDLINK_POLICY_MERKLE,
+        )
+        or _XCODE_CLANG_RESOURCE_VERSION_RE.fullmatch(clang_version) is None
+        or re.fullmatch(r"[0-9a-f]{64}", version_raw_sha256) is None
+    ):
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode topology identity differs"
+        )
+    message = (
+        "toolchain support xcode topology identity "
+        f"(groups={topology.group_count},"
+        f"members={topology.support_member_count},"
+        f"aliases={topology.alias_count},"
+        f"policy={topology.policy_merkle},clang={clang_version},"
+        f"version_raw={version_raw_sha256})"
+    )
+    if (
+        not message.isascii()
+        or len(message) > 278
+        or any(
+            character not in " -_.,()=" and not character.isalnum()
+            for character in message
+        )
+    ):
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode topology identity output is invalid"
+        )
+    return message
+
+
 def _diagnose_xcode_hardlink_topology(
     plan: object,
     error: BaseException,
 ) -> str | None:
     from rextio.build import full_c6_toolchain_support as support
+    from rextio.build import toolchain_support_lock as support_lock
     from rextio.build.toolchain_support_lock import ToolchainSupportLockError
 
     if (
@@ -2007,6 +2099,16 @@ def _diagnose_xcode_hardlink_topology(
     )
     if len(roots) != 1:
         return None
+    version_manifests = tuple(
+        locator
+        for locator in plan._manifest_locators
+        if locator.logical_role == _XCODE_VERSION_PLIST_ROLE
+    )
+    if (
+        len(version_manifests) != 1
+        or version_manifests[0]._absolute_path != _XCODE_VERSION_PLIST
+    ):
+        return None
     toolchain_boundary = (
         support.MACOS_DEVELOPER_DIR
         / "Toolchains"
@@ -2019,13 +2121,26 @@ def _diagnose_xcode_hardlink_topology(
     if (
         len(root_relative.parts) != 4
         or root_relative.parts[:3] != ("usr", "lib", "clang")
-        or re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}", root_relative.parts[3])
+        or _XCODE_CLANG_RESOURCE_VERSION_RE.fullmatch(root_relative.parts[3])
         is None
     ):
         return None
-    return _bounded_xcode_hardlink_topology_message(
+    topology = _bounded_xcode_hardlink_topology_message(
         support_root=roots[0]._absolute_path,
         app_boundary=Path("/Applications/Xcode.app"),
+        structured=True,
+    )
+    if type(topology) is not _XcodeHardlinkTopology:
+        raise support_lock.ToolchainSupportLockError(
+            "toolchain support xcode topology result is invalid"
+        )
+    version_receipt = support_lock.capture_toolchain_support_file(
+        version_manifests[0]
+    )
+    return _format_xcode_topology_identity(
+        topology=topology,
+        clang_version=root_relative.parts[3],
+        version_raw_sha256=version_receipt.raw_sha256,
     )
 
 
