@@ -207,6 +207,10 @@ _NATIVE_AUTHORITY_DOMAIN = "rextio.full-c6-native-execution-authority.v1"
 _MAX_MACOS_SANDBOX_DIAGNOSTIC_BYTES = 64 * 1024
 _MACOS_SANDBOX_TARGET = "aarch64-apple-darwin"
 _MACOS_SANDBOX_ENGINE = "macos-sandbox-exec-v1"
+_MAX_LINUX_SANDBOX_DIAGNOSTIC_BYTES = 64 * 1024
+_LINUX_SANDBOX_TARGET = "x86_64-unknown-linux-gnu"
+_LINUX_SANDBOX_ENGINE = "linux-bwrap-landlock-v1"
+_LINUX_RUSTC_VIRTUAL_PATH = Path("/rextio/toolchain/bin/rustc")
 _CARGO_MACOS_CPU_COUNT_FAILURE = (
     "failed to determine the amount of parallelism available"
 )
@@ -229,6 +233,13 @@ FULL_C6_MACOS_SANDBOX_PERMISSION_REASONS = (
     "native-macos-permission-denied-library",
     "native-macos-permission-denied-preboot",
     "native-macos-permission-unmatched",
+)
+FULL_C6_LINUX_SANDBOX_PERMISSION_REASONS = (
+    "native-linux-cargo-parallelism",
+    "native-linux-rustc-exec-permission",
+    "native-linux-cargo-cache-lock",
+    "native-linux-permission-build-root",
+    "native-linux-permission-project-root",
 )
 
 
@@ -259,6 +270,7 @@ _NATIVE_SANDBOX_STDERR_MESSAGES = {
         "native-missing-path",
         "native-compile",
         *FULL_C6_MACOS_SANDBOX_PERMISSION_REASONS,
+        *FULL_C6_LINUX_SANDBOX_PERMISSION_REASONS,
         *tuple(_LINUX_LAUNCHER_STDERR_REASONS.values()),
     )
 }
@@ -275,6 +287,46 @@ def _is_exact_macos_sandbox_diagnostic_context(
         and sandbox_plan.target_triple == target_triple
         and sandbox_plan.engine == _MACOS_SANDBOX_ENGINE
     )
+
+
+def _is_exact_linux_sandbox_diagnostic_context(
+    sandbox_plan: object,
+    target_triple: object,
+) -> bool:
+    return (
+        type(target_triple) is str
+        and target_triple == _LINUX_SANDBOX_TARGET
+        and type(sandbox_plan) is FullC6ReadSandboxPlan
+        and sandbox_plan.target_triple == target_triple
+        and sandbox_plan.engine == _LINUX_SANDBOX_ENGINE
+    )
+
+
+def _linux_permission_context(stderr: str) -> str | None:
+    if len(stderr) > _MAX_LINUX_SANDBOX_DIAGNOSTIC_BYTES:
+        return None
+    encoded = stderr.encode("utf-8", errors="replace")
+    if len(encoded) > _MAX_LINUX_SANDBOX_DIAGNOSTIC_BYTES:
+        return None
+    lines = stderr.splitlines()
+    permission_indexes = {
+        index
+        for index, line in enumerate(lines)
+        if any(
+            marker in line.casefold()
+            for marker in (
+                "permission denied",
+                "operation not permitted",
+                "read-only file system",
+            )
+        )
+    }
+    if not permission_indexes:
+        return None
+    nearby_indexes: set[int] = set()
+    for index in permission_indexes:
+        nearby_indexes.update(range(max(0, index - 3), min(len(lines), index + 2)))
+    return "\n".join(lines[index] for index in sorted(nearby_indexes))
 
 
 def _macos_sandbox_denial_context(stderr: str) -> str | None:
@@ -335,6 +387,43 @@ def _context_mentions_exact_path(context: str, path: Path) -> bool:
         )
         is not None
     )
+
+
+def _context_mentions_exact_virtual_prefix(context: str, prefix: str) -> bool:
+    return re.search(rf"(?<![\w./-]){re.escape(prefix)}", context) is not None
+
+
+def _classify_linux_sandbox_permission(stderr: str) -> str | None:
+    context = _linux_permission_context(stderr)
+    if context is None:
+        return None
+    lines = context.splitlines()
+    candidates: set[str] = set()
+    if "error: failed to determine the amount of parallelism available" in lines:
+        candidates.add("native-linux-cargo-parallelism")
+    lowered = context.casefold()
+    if "could not execute process" in lowered and _context_mentions_exact_path(
+        context, _LINUX_RUSTC_VIRTUAL_PATH
+    ):
+        candidates.add("native-linux-rustc-exec-permission")
+    if any(
+        line.strip()
+        in {
+            "failed to acquire package cache lock",
+            "error: failed to acquire package cache lock",
+        }
+        for line in lines
+    ):
+        candidates.add("native-linux-cargo-cache-lock")
+    for prefix, reason in (
+        (f"{_BUILD_ROOT_TOKEN}/", "native-linux-permission-build-root"),
+        (f"{_PROJECT_ROOT_TOKEN}/", "native-linux-permission-project-root"),
+    ):
+        if _context_mentions_exact_virtual_prefix(context, prefix):
+            candidates.add(reason)
+    if len(candidates) == 1:
+        return candidates.pop()
+    return None
 
 
 def _classify_macos_sandbox_permission(
@@ -511,6 +600,11 @@ def _classify_native_sandbox_stderr(
         )
     ):
         return "native-linker"
+    if _is_exact_linux_sandbox_diagnostic_context(sandbox_plan, target_triple):
+        assert type(sandbox_plan) is FullC6ReadSandboxPlan
+        linux_reason = _classify_linux_sandbox_permission(stderr)
+        if linux_reason is not None:
+            return linux_reason
     if any(
         marker in lowered
         for marker in (

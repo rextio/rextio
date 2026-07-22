@@ -46,6 +46,7 @@ from rextio.build.full_c6_host_inputs import (
 from rextio.build.full_c6_gate import FullC6GateError
 from rextio.build.full_c6_external_execution import FullC6ExternalExecutionError
 from rextio.build.full_c6_executor import (
+    FULL_C6_LINUX_SANDBOX_PERMISSION_REASONS,
     FULL_C6_MACOS_SANDBOX_PERMISSION_REASONS,
     FullC6ExecutorError,
 )
@@ -286,6 +287,15 @@ _FULL_C6_FAILURE_REASON_CODES.update(
             f"strict native sandbox build failed: {reason}",
         ): reason
         for reason in FULL_C6_MACOS_SANDBOX_PERMISSION_REASONS
+    }
+)
+_FULL_C6_FAILURE_REASON_CODES.update(
+    {
+        (
+            FullC6ExecutorError,
+            f"strict native sandbox build failed: {reason}",
+        ): reason
+        for reason in FULL_C6_LINUX_SANDBOX_PERMISSION_REASONS
     }
 )
 _FULL_C6_FAILURE_REASON_CODES.update(

@@ -158,6 +158,13 @@ def _macos_diagnostic_plan():
     )
 
 
+def _linux_diagnostic_plan():
+    plan, _paths = _macos_diagnostic_plan()
+    object.__setattr__(plan, "target_triple", "x86_64-unknown-linux-gnu")
+    object.__setattr__(plan, "engine", "linux-bwrap-landlock-v1")
+    return plan
+
+
 @pytest.mark.parametrize(
     ("stderr", "expected"),
     [
@@ -371,6 +378,71 @@ def test_native_sandbox_stderr_macos_cargo_cpu_count_phrase_is_exact_and_bounded
         sandbox_plan=plan,
         target_triple="aarch64-apple-darwin",
     ) == "native-permission"
+
+
+def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact() -> None:
+    import rextio.build.full_c6_executor as executor
+
+    plan = _linux_diagnostic_plan()
+
+    def classify(stderr: str, *, active_plan: object = plan) -> str | None:
+        return executor._classify_native_sandbox_stderr(
+            stderr,
+            sandbox_plan=active_plan,
+            target_triple="x86_64-unknown-linux-gnu",
+        )
+
+    assert executor.FULL_C6_LINUX_SANDBOX_PERMISSION_REASONS == (
+        "native-linux-cargo-parallelism",
+        "native-linux-rustc-exec-permission",
+        "native-linux-cargo-cache-lock",
+        "native-linux-permission-build-root",
+        "native-linux-permission-project-root",
+    )
+    parallelism = "error: failed to determine the amount of parallelism available"
+    assert classify(f"{parallelism}\nOperation not permitted") == (
+        "native-linux-cargo-parallelism"
+    )
+    assert classify(f"{parallelism}: private\nOperation not permitted") == (
+        "native-permission"
+    )
+    assert classify("error: parallelism unavailable\nOperation not permitted") == (
+        "native-permission"
+    )
+    assert classify(
+        "error: could not execute process '/rextio/toolchain/bin/rustc --crate-name x'\n"
+        "Permission denied"
+    ) == "native-linux-rustc-exec-permission"
+    assert classify(
+        "error: could not execute process '/rextio/toolchain/bin/rustc-private'\n"
+        "Permission denied"
+    ) == "native-permission"
+    assert classify("  failed to acquire package cache lock\nPermission denied") == (
+        "native-linux-cargo-cache-lock"
+    )
+    assert classify(
+        "failed to acquire package cache lock: private\nPermission denied"
+    ) == "native-permission"
+    assert classify("/rextio/build/target/output: Permission denied") == (
+        "native-linux-permission-build-root"
+    )
+    assert classify("/rextio/project/src/lib.rs: Permission denied") == (
+        "native-linux-permission-project-root"
+    )
+    assert classify(
+        "/rextio/build/target and /rextio/project/src: Permission denied"
+    ) == "native-permission"
+    assert classify(f"{'x' * (64 * 1024)}\n{parallelism}\nPermission denied") == (
+        "native-permission"
+    )
+    forged = SimpleNamespace(
+        target_triple="x86_64-unknown-linux-gnu",
+        engine="linux-bwrap-landlock-v1",
+        rules=plan.rules,
+    )
+    assert classify(f"{parallelism}\nPermission denied", active_plan=forged) == (
+        "native-permission"
+    )
 
 
 def test_native_sandbox_stderr_macos_classifier_is_bounded_and_path_exact() -> None:
