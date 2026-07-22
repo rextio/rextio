@@ -69,6 +69,19 @@ FULL_C6_TOOLCHAIN_SUPPORT_TARGETS = (
 
 MACOS_XCODE_APP = Path("/Applications/Xcode.app")
 MACOS_DEVELOPER_DIR = MACOS_XCODE_APP / "Contents" / "Developer"
+MACOS_XCODE_DEFAULT_TOOLCHAIN = (
+    MACOS_DEVELOPER_DIR / "Toolchains" / "XcodeDefault.xctoolchain"
+)
+MACOS_XCODE_TOOL_BIN = MACOS_XCODE_DEFAULT_TOOLCHAIN / "usr" / "bin"
+MACOS_XCODE_CLANG_RESOURCE_VERSION = "17"
+MACOS_XCODE_CLANG_RESOURCE = (
+    MACOS_XCODE_DEFAULT_TOOLCHAIN
+    / "usr"
+    / "lib"
+    / "clang"
+    / MACOS_XCODE_CLANG_RESOURCE_VERSION
+)
+MACOS_XCODE_VERSION_PLIST = MACOS_XCODE_APP / "Contents" / "version.plist"
 MACOS_XCODE_SELECT = Path("/usr/bin/xcode-select")
 MACOS_XCRUN = Path("/usr/bin/xcrun")
 MACOS_OTOOL = Path("/usr/bin/otool")
@@ -463,14 +476,7 @@ def resolve_full_c6_linker_and_inspector(
             cwd=cwd,
             environment=environment,
         )
-        expected = (
-            MACOS_DEVELOPER_DIR
-            / "Toolchains"
-            / "XcodeDefault.xctoolchain"
-            / "usr"
-            / "bin"
-            / "clang"
-        )
+        expected = MACOS_XCODE_TOOL_BIN / "clang"
         if clang != expected:
             raise FullC6ToolchainSupportError(
                 "Full C6 macOS Xcode clang selection is not canonical"
@@ -1200,13 +1206,7 @@ def _discover_macos_support(
         environment=environment,
     )
     xcode_bin = linker.parent
-    expected_bin = (
-        MACOS_DEVELOPER_DIR
-        / "Toolchains"
-        / "XcodeDefault.xctoolchain"
-        / "usr"
-        / "bin"
-    )
+    expected_bin = MACOS_XCODE_TOOL_BIN
     if xcode_bin != expected_bin:
         raise FullC6ToolchainSupportError("Full C6 Xcode tool bin root changed")
     ld = _xcrun_tool("ld", cwd=cwd, environment=environment, root=xcode_bin)
@@ -1247,20 +1247,9 @@ def _discover_macos_support(
         cwd=cwd,
         environment=environment,
     )
+    resource = _require_fixed_macos_clang_resource(resource)
     resource = _require_real_directory(resource)
-    expected_resource_parent = (
-        MACOS_DEVELOPER_DIR
-        / "Toolchains"
-        / "XcodeDefault.xctoolchain"
-        / "usr"
-        / "lib"
-        / "clang"
-    )
-    if resource.parent != expected_resource_parent:
-        raise FullC6ToolchainSupportError(
-            "Full C6 Xcode clang resource root is not canonical"
-        )
-    version_plist = _require_real_file(MACOS_XCODE_APP / "Contents" / "version.plist")
+    version_plist = _require_real_file(MACOS_XCODE_VERSION_PLIST)
     system_profile = _require_real_file(MACOS_SANDBOX_SYSTEM_PROFILE)
     dyld_profile = _require_real_file(MACOS_SANDBOX_DYLD_PROFILE)
     if _sandbox_imports(system_profile) != ("dyld-support.sb",):
@@ -1873,6 +1862,15 @@ def _xcrun_tool(
         _require_real_file(_resolve_inside(path, root), executable=True)
         return path
     return _require_real_file(path, executable=True)
+
+
+def _require_fixed_macos_clang_resource(path: Path) -> Path:
+    """Admit only clang 17 from the fixed XcodeDefault toolchain layout."""
+    if path != MACOS_XCODE_CLANG_RESOURCE:
+        raise FullC6ToolchainSupportError(
+            "Full C6 Xcode clang resource differs from the fixed version profile"
+        )
+    return path
 
 
 def _macos_discovery_environment() -> dict[str, str]:

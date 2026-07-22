@@ -951,6 +951,64 @@ def test_macos_rejects_command_line_tools_and_usr_bin_clang_wrapper(
         )
 
 
+def test_macos_fixed_xcode_layout_pins_clang_17_and_version_plist() -> None:
+    assert support.MACOS_XCODE_DEFAULT_TOOLCHAIN == Path(
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/"
+        "XcodeDefault.xctoolchain"
+    )
+    assert support.MACOS_XCODE_TOOL_BIN == Path(
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/"
+        "XcodeDefault.xctoolchain/usr/bin"
+    )
+    assert support.MACOS_XCODE_CLANG_RESOURCE_VERSION == "17"
+    assert support.MACOS_XCODE_CLANG_RESOURCE == Path(
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/"
+        "XcodeDefault.xctoolchain/usr/lib/clang/17"
+    )
+    assert support.MACOS_XCODE_VERSION_PLIST == Path(
+        "/Applications/Xcode.app/Contents/version.plist"
+    )
+    assert support._require_fixed_macos_clang_resource(
+        support.MACOS_XCODE_CLANG_RESOURCE
+    ) == support.MACOS_XCODE_CLANG_RESOURCE
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    (
+        Path(
+            "/Applications/Xcode.app/Contents/Developer/Toolchains/"
+            "XcodeDefault.xctoolchain/usr/lib/clang/18"
+        ),
+        Path(
+            "/Applications/Xcode-Beta.app/Contents/Developer/Toolchains/"
+            "XcodeDefault.xctoolchain/usr/lib/clang/17"
+        ),
+        Path(
+            "/Applications/Xcode.app/Contents/Developer/Toolchains/"
+            "Alternate.xctoolchain/usr/lib/clang/17"
+        ),
+        Path(
+            "/private/secret/XcodeDefault.xctoolchain/usr/lib/clang/17"
+        ),
+    ),
+    ids=("version", "app-root", "toolchain", "untrusted-root"),
+)
+def test_macos_fixed_xcode_layout_rejects_resource_near_misses_path_privately(
+    candidate: Path,
+) -> None:
+    with pytest.raises(support.FullC6ToolchainSupportError) as captured:
+        support._require_fixed_macos_clang_resource(candidate)
+
+    message = str(captured.value)
+    assert message == (
+        "Full C6 Xcode clang resource differs from the fixed version profile"
+    )
+    assert os.fspath(candidate) not in message
+    assert "/Applications" not in message
+    assert "/private" not in message
+
+
 def test_macos_platform_tool_keeps_hardlink_out_of_generic_support_capture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
