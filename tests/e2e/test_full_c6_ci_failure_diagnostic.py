@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 from types import ModuleType
 
@@ -30,6 +31,37 @@ DIAGNOSTIC = _load_diagnostic()
 
 def _zero_counts(names: tuple[str, ...]) -> dict[str, int]:
     return {name: 0 for name in names}
+
+
+def _substitute_macos_log_process(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    script: str,
+    ignore_sigterm: bool = False,
+) -> tuple[dict[str, object], list[object]]:
+    original_popen = DIAGNOSTIC.subprocess.Popen
+    seen: dict[str, object] = {}
+    children: list[object] = []
+
+    def fake_popen(command: list[str], **kwargs: object) -> object:
+        seen["command"] = command
+        seen.update(kwargs)
+        launch_kwargs = dict(kwargs)
+        if ignore_sigterm:
+
+            def ignore_termination() -> None:
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+            launch_kwargs["preexec_fn"] = ignore_termination
+        child = original_popen(
+            [sys.executable, "-c", script],
+            **launch_kwargs,
+        )
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(DIAGNOSTIC.subprocess, "Popen", fake_popen)
+    return seen, children
 
 
 def test_macos_sandbox_log_parser_emits_only_closed_count_families() -> None:
@@ -95,7 +127,6 @@ def test_macos_sandbox_log_parser_emits_only_closed_count_families() -> None:
 def test_macos_sandbox_log_query_uses_fixed_bounded_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen: dict[str, object] = {}
     payload = json.dumps(
         [
             {
@@ -104,13 +135,10 @@ def test_macos_sandbox_log_query_uses_fixed_bounded_command(
             }
         ]
     ).encode("utf-8")
-
-    def fake_run(command: list[str], **kwargs: object) -> object:
-        seen["command"] = command
-        seen.update(kwargs)
-        return type("Completed", (), {"returncode": 0, "stdout": payload})()
-
-    monkeypatch.setattr(DIAGNOSTIC.subprocess, "run", fake_run)
+    seen, children = _substitute_macos_log_process(
+        monkeypatch,
+        script=f"import os; os.write(1, {payload!r})",
+    )
     summary = DIAGNOSTIC._query_macos_sandbox_log()
 
     assert seen["command"] == [
@@ -126,28 +154,23 @@ def test_macos_sandbox_log_query_uses_fixed_bounded_command(
             'eventMessage BEGINSWITH "Sandbox:"'
         ),
     ]
-    assert seen["timeout"] == DIAGNOSTIC.MACOS_SANDBOX_LOG_TIMEOUT_SECONDS
+    assert seen["stdin"] == DIAGNOSTIC.subprocess.DEVNULL
     assert seen["stdout"] == DIAGNOSTIC.subprocess.PIPE
     assert seen["stderr"] == DIAGNOSTIC.subprocess.DEVNULL
+    assert seen["env"] == {"LANG": "C", "LC_ALL": "C"}
+    assert len(children) == 1
+    assert children[0].poll() == 0
     assert summary["status"] == "ok"
     assert summary["root_counts"]["Library"] == 1
 
 
-@pytest.mark.parametrize("failure", ("malformed", "oversized"))
 def test_macos_sandbox_log_query_fails_closed_with_static_zero_summary(
     monkeypatch: pytest.MonkeyPatch,
-    failure: str,
 ) -> None:
-    payload = (
-        b"not-json-private-owner-data"
-        if failure == "malformed"
-        else b"x" * (DIAGNOSTIC.MAX_MACOS_SANDBOX_LOG_BYTES + 1)
+    _seen, children = _substitute_macos_log_process(
+        monkeypatch,
+        script="import os; os.write(1, b'not-json-private-owner-data')",
     )
-
-    def fake_run(command: list[str], **kwargs: object) -> object:
-        return type("Completed", (), {"returncode": 0, "stdout": payload})()
-
-    monkeypatch.setattr(DIAGNOSTIC.subprocess, "run", fake_run)
     summary = DIAGNOSTIC._query_macos_sandbox_log()
 
     assert summary == {
@@ -156,7 +179,61 @@ def test_macos_sandbox_log_query_fails_closed_with_static_zero_summary(
         "operation_counts": _zero_counts(DIAGNOSTIC.MACOS_SANDBOX_OPERATION_FAMILIES),
         "root_counts": _zero_counts(DIAGNOSTIC.MACOS_SANDBOX_ROOT_FAMILIES),
     }
+    assert children[0].poll() == 0
     assert "private-owner-data" not in json.dumps(summary)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="macOS diagnostic uses POSIX pipes")
+def test_macos_sandbox_log_capture_reads_only_bound_plus_one_and_reaps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seen, children = _substitute_macos_log_process(
+        monkeypatch,
+        script=(
+            "import os\n"
+            "chunk = b'x' * 65536\n"
+            "while True:\n"
+            "    os.write(1, chunk)\n"
+        ),
+    )
+    original_read = DIAGNOSTIC.os.read
+    captured_bytes = 0
+
+    def tracked_read(descriptor: int, size: int) -> bytes:
+        nonlocal captured_bytes
+        if not children or descriptor != children[0].stdout.fileno():
+            return original_read(descriptor, size)
+        assert size == DIAGNOSTIC.MAX_MACOS_SANDBOX_LOG_BYTES + 1 - captured_bytes
+        chunk = original_read(descriptor, size)
+        captured_bytes += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(DIAGNOSTIC.os, "read", tracked_read)
+    summary = DIAGNOSTIC._query_macos_sandbox_log()
+
+    assert summary["status"] == "failed-closed"
+    assert captured_bytes == DIAGNOSTIC.MAX_MACOS_SANDBOX_LOG_BYTES + 1
+    assert len(children) == 1
+    assert children[0].poll() == -signal.SIGTERM
+
+
+@pytest.mark.skipif(os.name != "posix", reason="macOS diagnostic uses POSIX signals")
+def test_macos_sandbox_log_timeout_kills_and_reaps_stubborn_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(DIAGNOSTIC, "MACOS_SANDBOX_LOG_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(DIAGNOSTIC, "MACOS_SANDBOX_LOG_REAP_TIMEOUT_SECONDS", 0.05)
+    _seen, children = _substitute_macos_log_process(
+        monkeypatch,
+        script="import time; time.sleep(60)",
+        ignore_sigterm=True,
+    )
+
+    summary = DIAGNOSTIC._query_macos_sandbox_log()
+
+    assert summary["status"] == "failed-closed"
+    assert len(children) == 1
+    assert children[0].poll() == -signal.SIGKILL
 
 
 def _canonical_sha256(domain: str, fields: dict[str, object]) -> str:

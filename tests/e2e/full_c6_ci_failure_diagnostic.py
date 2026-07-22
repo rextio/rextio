@@ -12,9 +12,11 @@ import json
 import os
 import posixpath
 import re
+import select
 import stat
 import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -49,6 +51,7 @@ MAX_MACOS_SANDBOX_LOG_BYTES = 512 * 1_024
 MAX_MACOS_SANDBOX_LOG_RECORDS = 4_096
 MAX_MACOS_SANDBOX_MESSAGE_BYTES = 8_192
 MACOS_SANDBOX_LOG_TIMEOUT_SECONDS = 20.0
+MACOS_SANDBOX_LOG_REAP_TIMEOUT_SECONDS = 1.0
 
 MACOS_SANDBOX_OPERATION_FAMILIES = (
     "file-read",
@@ -282,29 +285,110 @@ def _parse_macos_sandbox_log_json(payload: bytes) -> dict[str, object]:
     return summary
 
 
+def _terminate_and_reap_macos_sandbox_log(
+    process: subprocess.Popen[bytes],
+) -> None:
+    if process.poll() is not None:
+        process.wait()
+        return
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=MACOS_SANDBOX_LOG_REAP_TIMEOUT_SECONDS)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=MACOS_SANDBOX_LOG_REAP_TIMEOUT_SECONDS)
+
+
+def _read_macos_sandbox_log_stdout(
+    process: subprocess.Popen[bytes],
+    *,
+    deadline: float,
+) -> bytes:
+    stdout = process.stdout
+    if stdout is None:
+        raise RuntimeError("macos-sandbox-log-stdout")
+    descriptor = stdout.fileno()
+    os.set_blocking(descriptor, False)
+    payload = bytearray()
+    capture_bound = MAX_MACOS_SANDBOX_LOG_BYTES + 1
+    while True:
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise subprocess.TimeoutExpired(
+                process.args,
+                MACOS_SANDBOX_LOG_TIMEOUT_SECONDS,
+            )
+        readable, _, _ = select.select(
+            (descriptor,),
+            (),
+            (),
+            remaining_seconds,
+        )
+        if not readable:
+            raise subprocess.TimeoutExpired(
+                process.args,
+                MACOS_SANDBOX_LOG_TIMEOUT_SECONDS,
+            )
+        try:
+            chunk = os.read(descriptor, capture_bound - len(payload))
+        except (BlockingIOError, InterruptedError):
+            continue
+        if not chunk:
+            return bytes(payload)
+        payload.extend(chunk)
+        if len(payload) == capture_bound:
+            raise _ScanBoundExceeded("macos-sandbox-log-byte-bound")
+
+
+def _capture_macos_sandbox_log() -> bytes:
+    process = subprocess.Popen(
+        [
+            "/usr/bin/log",
+            "show",
+            "--last",
+            "15m",
+            "--style",
+            "json",
+            "--predicate",
+            _MACOS_SANDBOX_LOG_PREDICATE,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env={"LANG": "C", "LC_ALL": "C"},
+    )
+    deadline = time.monotonic() + MACOS_SANDBOX_LOG_TIMEOUT_SECONDS
+    try:
+        payload = _read_macos_sandbox_log_stdout(process, deadline=deadline)
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0 and process.poll() is None:
+            raise subprocess.TimeoutExpired(
+                process.args,
+                MACOS_SANDBOX_LOG_TIMEOUT_SECONDS,
+            )
+        returncode = process.wait(timeout=max(0.0, remaining_seconds))
+        if returncode != 0:
+            raise RuntimeError("macos-sandbox-log-command")
+        return payload
+    except BaseException:
+        _terminate_and_reap_macos_sandbox_log(process)
+        raise
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+
+
 def _query_macos_sandbox_log() -> dict[str, object]:
     try:
-        completed = subprocess.run(
-            [
-                "/usr/bin/log",
-                "show",
-                "--last",
-                "15m",
-                "--style",
-                "json",
-                "--predicate",
-                _MACOS_SANDBOX_LOG_PREDICATE,
-            ],
-            check=False,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=MACOS_SANDBOX_LOG_TIMEOUT_SECONDS,
-            env={"LANG": "C", "LC_ALL": "C"},
-        )
-        if completed.returncode != 0 or type(completed.stdout) is not bytes:
-            raise RuntimeError("macos-sandbox-log-command")
-        return _parse_macos_sandbox_log_json(completed.stdout)
+        return _parse_macos_sandbox_log_json(_capture_macos_sandbox_log())
     except (
         OSError,
         RuntimeError,
