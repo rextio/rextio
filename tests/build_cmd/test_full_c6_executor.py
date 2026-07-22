@@ -338,10 +338,11 @@ def test_native_sandbox_stderr_macos_classifier_is_bounded_and_path_exact() -> N
         )
 
     assert classify("x" * (64 * 1024) + "\nPermission denied") == (
-        "native-macos-permission-unmatched"
+        "native-permission"
     )
-    assert classify("😀" * 20_000 + "\nPermission denied") == (
-        "native-macos-permission-unmatched"
+    assert classify("😀" * 20_000 + "\nPermission denied") == "native-permission"
+    assert classify("x" * (64 * 1024) + "\nerror[E0308]: mismatched types") == (
+        "native-compile"
     )
     assert classify(
         "Permission denied\nnearby detail\noutside context\n"
@@ -350,6 +351,27 @@ def test_native_sandbox_stderr_macos_classifier_is_bounded_and_path_exact() -> N
     assert classify(
         f"Sandbox: cargo(42) deny(1) file-write {paths['build']}-evil/target"
     ) == "native-macos-permission-denied-private-var"
+
+
+def test_native_sandbox_stderr_macos_context_has_strict_preceding_line_bound() -> None:
+    import rextio.build.full_c6_executor as executor
+
+    plan, paths = _macos_diagnostic_plan()
+
+    def classify(stderr: str) -> str | None:
+        return executor._classify_native_sandbox_stderr(
+            stderr,
+            sandbox_plan=plan,
+            target_triple="aarch64-apple-darwin",
+        )
+
+    path_line = f"error: failed to open {paths['build']}/target"
+    assert classify(f"{path_line}\n\nCaused by:\nPermission denied") == (
+        "native-macos-permission-build-root"
+    )
+    assert classify(
+        f"{path_line}\n\nwhile compiling dependency\nCaused by:\nPermission denied"
+    ) == "native-macos-permission-unmatched"
 
 
 def test_native_sandbox_stderr_macos_error_contains_only_static_category() -> None:

@@ -267,10 +267,10 @@ def _is_exact_macos_sandbox_diagnostic_context(
 def _macos_sandbox_denial_context(stderr: str) -> str | None:
     """Return only bounded lines adjacent to an explicit denial marker."""
     if len(stderr) > _MAX_MACOS_SANDBOX_DIAGNOSTIC_BYTES:
-        return ""
+        return None
     encoded = stderr.encode("utf-8", errors="replace")
     if len(encoded) > _MAX_MACOS_SANDBOX_DIAGNOSTIC_BYTES:
-        return ""
+        return None
     lines = stderr.splitlines()
     denial_indexes: set[int] = set()
     for index, line in enumerate(lines):
@@ -306,7 +306,7 @@ def _macos_sandbox_denial_context(stderr: str) -> str | None:
     nearby_indexes: set[int] = set()
     for index in denial_indexes:
         nearby_indexes.update(
-            range(max(0, index - 1), min(len(lines), index + 2))
+            range(max(0, index - 3), min(len(lines), index + 2))
         )
     return "\n".join(lines[index] for index in sorted(nearby_indexes))
 
