@@ -12,6 +12,9 @@ from rextio.build.full_c6_toolchain_support import (
     FullC6ToolchainSupportBootstrapResult,
     FullC6ToolchainSupportError,
 )
+from rextio.build.toolchain_support_lock import (
+    ToolchainSupportVerificationDriftError,
+)
 from rextio.cli import policy_cmd
 from rextio.cli.main import build_parser, main
 
@@ -318,3 +321,100 @@ def test_policy_bootstrap_support_lock_failure_is_stderr_only(
     assert captured.out == ""
     assert "RXT060 Full C6 support-lock bootstrap failed" in captured.err
     assert "unsupported Full C6 host" in captured.err
+
+
+def test_policy_bootstrap_support_lock_emits_only_exact_typed_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    drift = ToolchainSupportVerificationDriftError(
+        manifest_difference_count=0,
+        root_difference_count=1,
+        first_difference_kind="root",
+        first_logical_role="xcode-sdk",
+        before_merkle_sha256="a" * 64,
+        after_merkle_sha256="b" * 64,
+        hardlink_before_observation_sha256="c" * 64,
+        hardlink_after_observation_sha256="d" * 64,
+    )
+
+    def reject(**_kwargs: object) -> object:
+        try:
+            raise drift
+        except ToolchainSupportVerificationDriftError as exc:
+            raise FullC6ToolchainSupportError(
+                "Full C6 support bytes differ from the exact configured lock"
+            ) from exc
+
+    monkeypatch.setattr(
+        policy_cmd,
+        "bootstrap_full_c6_toolchain_support_lock",
+        reject,
+    )
+
+    assert main(
+        [
+            "policy",
+            "bootstrap-support-lock",
+            "--project-root",
+            str(tmp_path),
+            "--output",
+            "authority/support.json",
+            "--format",
+            "json",
+        ]
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"Diagnostic: {drift.diagnostic}\n" in captured.err
+    assert str(tmp_path) not in captured.err
+
+
+def test_policy_bootstrap_support_lock_rejects_forged_typed_drift_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    forged_role = "private-host-secret"
+    drift = ToolchainSupportVerificationDriftError(
+        manifest_difference_count=0,
+        root_difference_count=1,
+        first_difference_kind="root",
+        first_logical_role=forged_role,
+        before_merkle_sha256="a" * 64,
+        after_merkle_sha256="b" * 64,
+        hardlink_before_observation_sha256=None,
+        hardlink_after_observation_sha256=None,
+    )
+
+    def reject(**_kwargs: object) -> object:
+        try:
+            raise drift
+        except ToolchainSupportVerificationDriftError as exc:
+            raise FullC6ToolchainSupportError(
+                "Full C6 support bytes differ from the exact configured lock"
+            ) from exc
+
+    monkeypatch.setattr(
+        policy_cmd,
+        "bootstrap_full_c6_toolchain_support_lock",
+        reject,
+    )
+
+    assert main(
+        [
+            "policy",
+            "bootstrap-support-lock",
+            "--project-root",
+            str(tmp_path),
+            "--output",
+            "authority/support.json",
+            "--format",
+            "json",
+        ]
+    ) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Diagnostic:" not in captured.err
+    assert forged_role not in captured.err

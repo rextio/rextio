@@ -22,6 +22,7 @@ from rextio.build.toolchain_support_lock import (
     TOOLCHAIN_SUPPORT_SCOPE,
     ToolchainSupportLock,
     ToolchainSupportLockError,
+    ToolchainSupportVerificationDriftError,
     ToolchainSupportLocator,
     capture_toolchain_support_file,
     capture_toolchain_support_tree,
@@ -560,6 +561,55 @@ def test_generation_is_canonical_path_free_aggregate_and_round_trips(
         manifests=[manifest_locator],
         roots=[root_locator],
     )
+
+
+def test_verification_drift_records_only_bounded_path_free_receipt_fields(
+    tmp_path: Path,
+) -> None:
+    manifest, root, manifest_locator, root_locator = _inputs(tmp_path)
+    lock = generate_toolchain_support_lock(
+        target_triple="aarch64-apple-darwin",
+        manifests=[manifest_locator],
+        roots=[root_locator],
+    )
+    (root / "include" / "Python.h").write_bytes(b"/* changed */\n")
+
+    with pytest.raises(ToolchainSupportVerificationDriftError) as caught:
+        verify_toolchain_support_lock(
+            lock,
+            manifests=[manifest_locator],
+            roots=[root_locator],
+        )
+
+    drift = caught.value
+    assert drift.manifest_difference_count == 0
+    assert drift.root_difference_count == 1
+    assert drift.first_difference_kind == "root"
+    assert drift.first_logical_role == "python-support-root"
+    assert drift.before_merkle_sha256 == lock.roots[0].merkle_sha256
+    assert drift.after_merkle_sha256 != drift.before_merkle_sha256
+    assert drift.hardlink_before_observation_sha256 is None
+    assert drift.hardlink_after_observation_sha256 is None
+    assert str(drift) == drift.diagnostic
+    assert "hbefore=none,hafter=none" in drift.diagnostic
+    assert str(tmp_path) not in drift.diagnostic
+    assert str(manifest) not in drift.diagnostic
+    assert len(drift.diagnostic.encode("ascii")) <= 512
+
+
+def test_verification_drift_diagnostic_worst_case_stays_bounded() -> None:
+    drift = ToolchainSupportVerificationDriftError(
+        manifest_difference_count=64,
+        root_difference_count=64,
+        first_difference_kind="manifest",
+        first_logical_role="r" * 128,
+        before_merkle_sha256="a" * 64,
+        after_merkle_sha256="b" * 64,
+        hardlink_before_observation_sha256="c" * 64,
+        hardlink_after_observation_sha256="d" * 64,
+    )
+
+    assert len(drift.diagnostic.encode("ascii")) == 498
 
 
 def test_macos_fixed_symlink_dispositions_are_closed_and_cross_bound(

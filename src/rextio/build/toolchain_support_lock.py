@@ -260,6 +260,95 @@ class ToolchainSupportLockError(ValueError):
     """A toolchain support locator, tree, or lock is unsafe or noncanonical."""
 
 
+class ToolchainSupportVerificationDriftError(ToolchainSupportLockError):
+    """One bounded, path-free expected/observed receipt difference."""
+
+    __slots__ = (
+        "after_merkle_sha256",
+        "before_merkle_sha256",
+        "diagnostic",
+        "first_difference_kind",
+        "first_logical_role",
+        "hardlink_after_observation_sha256",
+        "hardlink_before_observation_sha256",
+        "manifest_difference_count",
+        "root_difference_count",
+    )
+
+    def __init__(
+        self,
+        *,
+        manifest_difference_count: int,
+        root_difference_count: int,
+        first_difference_kind: str,
+        first_logical_role: str,
+        before_merkle_sha256: str,
+        after_merkle_sha256: str,
+        hardlink_before_observation_sha256: str | None,
+        hardlink_after_observation_sha256: str | None,
+    ) -> None:
+        if (
+            type(manifest_difference_count) is not int
+            or isinstance(manifest_difference_count, bool)
+            or not 0
+            <= manifest_difference_count
+            <= MAX_TOOLCHAIN_SUPPORT_LOCATORS
+            or type(root_difference_count) is not int
+            or isinstance(root_difference_count, bool)
+            or not 0 <= root_difference_count <= MAX_TOOLCHAIN_SUPPORT_LOCATORS
+            or manifest_difference_count + root_difference_count == 0
+            or first_difference_kind not in {"manifest", "root"}
+            or (
+                first_difference_kind == "manifest"
+                and manifest_difference_count == 0
+            )
+            or first_difference_kind == "root"
+            and root_difference_count == 0
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support verification drift shape is invalid"
+            )
+        role = _validate_role(first_logical_role)
+        before = _require_sha256(
+            before_merkle_sha256,
+            "support verification before Merkle SHA-256",
+        )
+        after = _require_sha256(
+            after_merkle_sha256,
+            "support verification after Merkle SHA-256",
+        )
+        hardlink_before = _optional_verification_sha256(
+            hardlink_before_observation_sha256,
+            label="support verification hardlink-before observation SHA-256",
+        )
+        hardlink_after = _optional_verification_sha256(
+            hardlink_after_observation_sha256,
+            label="support verification hardlink-after observation SHA-256",
+        )
+        diagnostic = (
+            "toolchain support verification differs "
+            f"(manifests={manifest_difference_count},"
+            f"roots={root_difference_count},kind={first_difference_kind},"
+            f"role={role},before={before},after={after},"
+            f"hbefore={hardlink_before or 'none'},"
+            f"hafter={hardlink_after or 'none'})"
+        )
+        if not diagnostic.isascii() or len(diagnostic.encode("ascii")) > 512:
+            raise ToolchainSupportLockError(
+                "toolchain support verification drift diagnostic exceeds the bound"
+            )
+        self.manifest_difference_count = manifest_difference_count
+        self.root_difference_count = root_difference_count
+        self.first_difference_kind = first_difference_kind
+        self.first_logical_role = role
+        self.before_merkle_sha256 = before
+        self.after_merkle_sha256 = after
+        self.hardlink_before_observation_sha256 = hardlink_before
+        self.hardlink_after_observation_sha256 = hardlink_after
+        self.diagnostic = diagnostic
+        super().__init__(diagnostic)
+
+
 class ToolchainSupportLocator:
     """Validated path-bearing locator whose machine path remains private.
 
@@ -2256,10 +2345,83 @@ def verify_toolchain_support_lock(
         roots=root_locators,
     )
     if observed_manifests != lock.manifests or observed_roots != lock.roots:
-        raise ToolchainSupportLockError(
-            "toolchain support files or trees differ from the exact lock"
+        raise _verification_drift_error(
+            before_manifests=lock.manifests,
+            after_manifests=observed_manifests,
+            before_roots=lock.roots,
+            after_roots=observed_roots,
         )
     return True
+
+
+def _optional_verification_sha256(value: str | None, *, label: str) -> str | None:
+    if value is None:
+        return None
+    return _require_sha256(value, label)
+
+
+def _verification_hardlink_observation(
+    receipt: ToolchainSupportTreeReceipt,
+) -> str | None:
+    dispositions = receipt.hardlink_dispositions
+    if not dispositions:
+        return None
+    if len(dispositions) != 1:
+        raise ToolchainSupportLockError(
+            "toolchain support verification hardlink disposition count is invalid"
+        )
+    return dispositions[0].observation_merkle_sha256
+
+
+def _verification_drift_error(
+    *,
+    before_manifests: tuple[ToolchainSupportFileReceipt, ...],
+    after_manifests: tuple[ToolchainSupportFileReceipt, ...],
+    before_roots: tuple[ToolchainSupportTreeReceipt, ...],
+    after_roots: tuple[ToolchainSupportTreeReceipt, ...],
+) -> ToolchainSupportVerificationDriftError:
+    manifest_differences = tuple(
+        (before, after)
+        for before, after in zip(
+            before_manifests,
+            after_manifests,
+            strict=True,
+        )
+        if before != after
+    )
+    root_differences = tuple(
+        (before, after)
+        for before, after in zip(before_roots, after_roots, strict=True)
+        if before != after
+    )
+    if manifest_differences:
+        before, after = manifest_differences[0]
+        kind = "manifest"
+        hardlink_before = None
+        hardlink_after = None
+    elif root_differences:
+        before, after = root_differences[0]
+        kind = "root"
+        hardlink_before = _verification_hardlink_observation(before)
+        hardlink_after = _verification_hardlink_observation(after)
+    else:
+        raise ToolchainSupportLockError(
+            "toolchain support verification drift accounting is inconsistent"
+        )
+    if before.logical_role != after.logical_role:
+        raise ToolchainSupportLockError(
+            "toolchain support verification receipt roles are inconsistent"
+        )
+    return ToolchainSupportVerificationDriftError(
+        manifest_difference_count=len(manifest_differences),
+        root_difference_count=len(root_differences),
+        first_difference_kind=kind,
+        first_logical_role=before.logical_role,
+        before_merkle_sha256=before.merkle_sha256,
+        after_merkle_sha256=after.merkle_sha256,
+        hardlink_before_observation_sha256=hardlink_before,
+        hardlink_after_observation_sha256=hardlink_after,
+    )
 
 
 def _fixed_symlink_disposition_map(
@@ -6314,6 +6476,7 @@ __all__ = [
     "ToolchainSupportLocator",
     "ToolchainSupportLock",
     "ToolchainSupportLockError",
+    "ToolchainSupportVerificationDriftError",
     "ToolchainSupportModeDispositionReceipt",
     "ToolchainSupportScope",
     "ToolchainSupportCasefoldDispositionReceipt",

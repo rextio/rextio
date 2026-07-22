@@ -1902,6 +1902,96 @@ def test_fresh_rextio_failure_runs_requested_support_lock_diagnostic(
     )
 
 
+def test_fresh_rextio_reuses_valid_initial_support_lock_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = _load_harness_module()
+    diagnostic = (
+        "toolchain support verification differs "
+        "(manifests=0,roots=1,kind=root,role=rust-sysroot,"
+        f"before={'a' * 64},after={'b' * 64},hbefore=none,hafter=none)"
+    )
+
+    def forbidden(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("valid initial diagnostic triggered a rerun")
+
+    monkeypatch.setattr(
+        harness,
+        "_diagnose_support_lock_generation",
+        forbidden,
+    )
+
+    script = (
+        "import sys; "
+        f"sys.stderr.write({'Diagnostic: ' + diagnostic + chr(10)!r}); "
+        "raise SystemExit(7)"
+    )
+    with pytest.raises(AssertionError, match="bootstrap-support-lock failed with 7"):
+        harness._run_fresh_rextio(
+            [sys.executable, "-c", script],
+            cwd=tmp_path,
+            stage="policy/bootstrap-support-lock",
+            timeout=10,
+            expect_two_cargo_builds=False,
+            support_lock_diagnostic_project=tmp_path,
+        )
+
+    captured = capsys.readouterr()
+    assert captured.err == (
+        f"[full-c6-e2e] support-lock diagnostic: {diagnostic}\n"
+    )
+
+
+def test_fresh_rextio_rejects_forged_initial_diagnostic_and_reruns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = _load_harness_module()
+    forged_role = "private-host-secret"
+    forged = (
+        "toolchain support verification differs "
+        f"(manifests=0,roots=1,kind=root,role={forged_role},"
+        f"before={'a' * 64},after={'b' * 64},hbefore=none,hafter=none)"
+    )
+    observed: list[Path] = []
+
+    def diagnose(
+        project: Path,
+        *,
+        inherited_environment: dict[str, str],
+    ) -> str:
+        assert inherited_environment["PYTHONNOUSERSITE"] == "1"
+        observed.append(project)
+        return "[full-c6-e2e] support-lock diagnostic: bounded-rerun-cause"
+
+    monkeypatch.setattr(harness, "_diagnose_support_lock_generation", diagnose)
+
+    script = (
+        "import sys; "
+        f"sys.stderr.write({'Diagnostic: ' + forged + chr(10)!r}); "
+        "raise SystemExit(8)"
+    )
+    with pytest.raises(AssertionError, match="bootstrap-support-lock failed with 8"):
+        harness._run_fresh_rextio(
+            [sys.executable, "-c", script],
+            cwd=tmp_path,
+            stage="policy/bootstrap-support-lock",
+            timeout=10,
+            expect_two_cargo_builds=False,
+            support_lock_diagnostic_project=tmp_path,
+        )
+
+    assert observed == [tmp_path]
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "[full-c6-e2e] support-lock diagnostic: bounded-rerun-cause\n"
+    )
+    assert forged_role not in captured.err
+
+
 def test_fresh_rextio_success_does_not_run_support_lock_diagnostic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

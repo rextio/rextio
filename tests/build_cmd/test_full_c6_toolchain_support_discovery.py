@@ -16,6 +16,7 @@ from rextio.build.full_c6_read_sandbox import MacOSPlatformAnchor
 from rextio.build.toolchain_identity import capture_tool_identity
 from rextio.build.toolchain_support_lock import (
     ToolchainSupportLockError,
+    ToolchainSupportVerificationDriftError,
     create_toolchain_support_locator,
     generate_toolchain_support_lock,
 )
@@ -832,8 +833,16 @@ def test_changed_deep_support_bytes_are_detected_by_explicit_rewalk(
     with pytest.raises(
         support.FullC6ToolchainSupportError,
         match="support bytes differ",
-    ):
+    ) as caught:
         support.verify_full_c6_toolchain_support_lock(plan, lock)
+
+    cause = caught.value.__cause__
+    assert type(cause) is ToolchainSupportVerificationDriftError
+    assert cause.manifest_difference_count == 0
+    assert cause.root_difference_count == 1
+    assert cause.first_difference_kind == "root"
+    assert cause.first_logical_role == "rust-sysroot"
+    assert cause.before_merkle_sha256 != cause.after_merkle_sha256
 
 
 def test_plan_access_is_cheap_but_stage_revalidation_detects_tool_mutation(

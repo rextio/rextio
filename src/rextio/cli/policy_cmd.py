@@ -13,8 +13,24 @@ from rextio.build.full_c6_policy_completion import (
 from rextio.build.full_c6_toolchain_support import (
     FullC6ToolchainSupportError,
     bootstrap_full_c6_toolchain_support_lock,
+    expected_full_c6_toolchain_support_roles,
+)
+from rextio.build.toolchain_support_lock import (
+    ToolchainSupportLockError,
+    ToolchainSupportVerificationDriftError,
 )
 from rextio.cli.reporter import Reporter
+
+
+_FULL_C6_SUPPORT_DIAGNOSTIC_ROLES = frozenset(
+    role
+    for target in (
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+    )
+    for roles in expected_full_c6_toolchain_support_roles(target)
+    for role in roles
+)
 
 
 def run_finalize(args: Namespace) -> int:
@@ -75,6 +91,9 @@ def run_bootstrap_support_lock(args: Namespace) -> int:
     except (FullC6PolicyCompletionError, FullC6ToolchainSupportError) as exc:
         reporter.error("RXT060 Full C6 support-lock bootstrap failed.")
         reporter.error(f"Cause: {exc}")
+        diagnostic = _support_lock_verification_diagnostic(exc)
+        if diagnostic is not None:
+            reporter.error(f"Diagnostic: {diagnostic}")
         reporter.error(
             "Suggestion: use a supported CPython 3.11 host, the exact configured "
             "Python/Cargo toolchain, and a new project-relative output below an "
@@ -110,6 +129,58 @@ def run_bootstrap_support_lock(args: Namespace) -> int:
         data=data,
     )
     return 0
+
+
+def _support_lock_verification_diagnostic(error: BaseException) -> str | None:
+    """Extract only one exact validated path-free verifier drift."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    for _depth in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if type(current) is ToolchainSupportVerificationDriftError:
+            candidate = current.diagnostic
+            if (
+                type(candidate) is not str
+                or current.first_logical_role
+                not in _FULL_C6_SUPPORT_DIAGNOSTIC_ROLES
+                or type(current.args) is not tuple
+                or len(current.args) != 1
+                or type(current.args[0]) is not str
+            ):
+                return None
+            try:
+                canonical = ToolchainSupportVerificationDriftError(
+                    manifest_difference_count=current.manifest_difference_count,
+                    root_difference_count=current.root_difference_count,
+                    first_difference_kind=current.first_difference_kind,
+                    first_logical_role=current.first_logical_role,
+                    before_merkle_sha256=current.before_merkle_sha256,
+                    after_merkle_sha256=current.after_merkle_sha256,
+                    hardlink_before_observation_sha256=(
+                        current.hardlink_before_observation_sha256
+                    ),
+                    hardlink_after_observation_sha256=(
+                        current.hardlink_after_observation_sha256
+                    ),
+                )
+            except ToolchainSupportLockError:
+                return None
+            if (
+                candidate == canonical.diagnostic
+                and current.args[0] == candidate
+                and candidate.isascii()
+                and len(candidate.encode("ascii")) <= 512
+                and all(
+                    character.isalnum() or character in " -_=,()"
+                    for character in candidate
+                )
+            ):
+                return candidate
+            return None
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def _absolute_path(value: object) -> Path:

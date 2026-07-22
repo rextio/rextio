@@ -213,6 +213,22 @@ _SUPPORT_LOCK_ROLES = {
         ),
     ),
 }
+_SUPPORT_LOCK_FIXED_ROLES = frozenset(
+    role
+    for manifest_roles, root_roles in _SUPPORT_LOCK_ROLES.values()
+    for role in (*manifest_roles, *root_roles)
+)
+_SUPPORT_LOCK_VERIFICATION_DIAGNOSTIC_RE = re.compile(
+    r"toolchain support verification differs \("
+    r"manifests=(?P<manifests>[0-9]{1,2}),"
+    r"roots=(?P<roots>[0-9]{1,2}),"
+    r"kind=(?P<kind>manifest|root),"
+    r"role=(?P<role>[a-z0-9-]{1,128}),"
+    r"before=(?P<before>[0-9a-f]{64}),"
+    r"after=(?P<after>[0-9a-f]{64}),"
+    r"hbefore=(?P<hbefore>none|[0-9a-f]{64}),"
+    r"hafter=(?P<hafter>none|[0-9a-f]{64})\)"
+)
 
 
 def _recover_x(y: int) -> int:
@@ -2785,6 +2801,46 @@ def _emit_full_c6_build_failure_report(project: Path) -> None:
     print(_read_full_c6_build_failure_report(project), file=sys.stderr, flush=True)
 
 
+def _initial_support_lock_verification_diagnostic(stderr: str) -> str | None:
+    """Retain one exact path-free verifier delta from the initial child."""
+    prefix = "Diagnostic: "
+    matches: list[str] = []
+    for line in stderr.splitlines():
+        if not line.startswith(prefix):
+            continue
+        candidate = line[len(prefix) :]
+        match = _SUPPORT_LOCK_VERIFICATION_DIAGNOSTIC_RE.fullmatch(candidate)
+        if (
+            match is None
+            or not candidate.isascii()
+            or len(candidate.encode("ascii")) > 512
+            or any(
+                not (character.isalnum() or character in " -_=,()")
+                for character in candidate
+            )
+        ):
+            continue
+        manifests = int(match.group("manifests"))
+        roots = int(match.group("roots"))
+        kind = match.group("kind")
+        if (
+            not 0 <= manifests <= 64
+            or not 0 <= roots <= 64
+            or manifests + roots == 0
+            or (kind == "manifest" and manifests == 0)
+            or (kind == "root" and roots == 0)
+            or match.group("role") not in _SUPPORT_LOCK_FIXED_ROLES
+        ):
+            continue
+        matches.append(candidate)
+    if len(matches) != 1:
+        return None
+    diagnostic = f"[full-c6-e2e] support-lock diagnostic: {matches[0]}"
+    if not diagnostic.isascii() or len(diagnostic.encode("ascii")) > 512:
+        return None
+    return diagnostic
+
+
 def _run_fresh_rextio(
     command: list[str],
     *,
@@ -2862,23 +2918,25 @@ def _run_fresh_rextio(
         if build_failure_report_project is not None:
             _emit_full_c6_build_failure_report(build_failure_report_project)
         if support_lock_diagnostic_project is not None:
-            try:
-                diagnostic = _diagnose_support_lock_generation(
-                    support_lock_diagnostic_project,
-                    inherited_environment=child_environment,
-                )
-                if (
-                    type(diagnostic) is not str
-                    or not diagnostic.isascii()
-                    or "\n" in diagnostic
-                    or "\r" in diagnostic
-                    or len(diagnostic.encode("utf-8")) > 512
-                ):
-                    raise ValueError("unsafe harness diagnostic")
-            except BaseException:
-                diagnostic = (
-                    "[full-c6-e2e] support-lock diagnostic: unavailable"
-                )
+            diagnostic = _initial_support_lock_verification_diagnostic(stderr)
+            if diagnostic is None:
+                try:
+                    diagnostic = _diagnose_support_lock_generation(
+                        support_lock_diagnostic_project,
+                        inherited_environment=child_environment,
+                    )
+                    if (
+                        type(diagnostic) is not str
+                        or not diagnostic.isascii()
+                        or "\n" in diagnostic
+                        or "\r" in diagnostic
+                        or len(diagnostic.encode("utf-8")) > 512
+                    ):
+                        raise ValueError("unsafe harness diagnostic")
+                except BaseException:
+                    diagnostic = (
+                        "[full-c6-e2e] support-lock diagnostic: unavailable"
+                    )
             print(diagnostic, file=sys.stderr, flush=True)
         raise AssertionError(
             f"{stage} failed with {process.returncode}\n"
