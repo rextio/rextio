@@ -1537,6 +1537,32 @@ def test_real_macos_anchor_and_sandbox_exec_enforce_profile() -> None:
     assert completed.returncode == 0, completed.stderr
 
 
+def _nearest_xcode_developer_root(executable: Path) -> Path | None:
+    """Return the nearest resolved ``Contents/Developer`` ancestor."""
+    return next(
+        (
+            parent
+            for parent in executable.parents
+            if parent.parts[-2:] == ("Contents", "Developer")
+        ),
+        None,
+    )
+
+
+def test_nearest_xcode_developer_root_uses_versioned_resolved_bundle() -> None:
+    executable = Path(
+        "/Applications/Xcode_26.5.app/Contents/Developer/Library/Frameworks/"
+        "Python3.framework/Versions/3.9/bin/python3.9"
+    )
+
+    assert _nearest_xcode_developer_root(executable) == Path(
+        "/Applications/Xcode_26.5.app/Contents/Developer"
+    )
+    assert (
+        _nearest_xcode_developer_root(Path("/opt/homebrew/bin/python3")) is None
+    )
+
+
 @pytest.mark.skipif(
     sys.platform != "darwin" or os.uname().machine.lower() not in {"arm64", "aarch64"},
     reason="real sandbox-exec executable-map gate is macOS arm64 only",
@@ -1609,7 +1635,11 @@ def test_real_macos_profile_denies_inherited_mutable_executable_mapping() -> Non
     if not python_executable.is_file():
         pytest.skip("Xcode's direct Python probe interpreter is unavailable")
     python_executable = python_executable.resolve(strict=True)
-    python_root = Path("/Applications/Xcode.app/Contents/Developer")
+    python_root = _nearest_xcode_developer_root(python_executable)
+    if python_root is None or not python_root.is_dir():
+        pytest.skip(
+            "resolved Xcode Python is not below an available Contents/Developer root"
+        )
     ancestor_literals = " ".join(
         f"(literal {sandbox_module._sandbox_literal(os.fspath(parent))})"
         for parent in reversed(python_root.parents)
