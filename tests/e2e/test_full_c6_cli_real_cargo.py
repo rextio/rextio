@@ -239,6 +239,50 @@ def test_support_lock_diagnostic_exposes_only_bounded_static_causes() -> None:
     assert len(diagnostic.encode("utf-8")) <= 512
 
 
+def test_support_lock_diagnostic_preserves_contextual_mode_over_generic_context() -> None:
+    harness = _load_harness_module()
+    generic_message = "toolchain support permission mode is invalid"
+    path_sha256 = "a" * 64
+    contextual_message = (
+        f"{generic_message} "
+        "(origin=tree-member-receipt, "
+        "target_triple=x86_64-unknown-linux-gnu, "
+        "logical_role=linux-runtime-support, kind=regular, "
+        f"relative_path_sha256={path_sha256}, mode=4755)"
+    )
+    generic_error = ToolchainSupportLockError(generic_message)
+    contextual_error = ToolchainSupportLockError(contextual_message)
+    contextual_error.__context__ = generic_error
+    contextual_error.__suppress_context__ = True
+
+    diagnostic = harness._format_support_lock_diagnostic(contextual_error)
+
+    assert diagnostic == (
+        "[full-c6-e2e] support-lock diagnostic: "
+        f"ToolchainSupportLockError={contextual_message}; "
+        "OSError=<unavailable>; errno=<unavailable>; "
+        "OtherErrorType=<unavailable>; OtherErrorMessage=<unavailable>"
+    )
+    assert len(contextual_message) <= 278
+    assert len(diagnostic.encode("utf-8")) <= 512
+
+
+def test_support_lock_diagnostic_preserves_standalone_generic_mode_cause() -> None:
+    harness = _load_harness_module()
+    generic_message = "toolchain support permission mode is invalid"
+
+    diagnostic = harness._format_support_lock_diagnostic(
+        ToolchainSupportLockError(generic_message)
+    )
+
+    assert diagnostic == (
+        "[full-c6-e2e] support-lock diagnostic: "
+        f"ToolchainSupportLockError={generic_message}; "
+        "OSError=<unavailable>; errno=<unavailable>; "
+        "OtherErrorType=<unavailable>; OtherErrorMessage=<unavailable>"
+    )
+
+
 def test_support_lock_diagnostic_preserves_bounded_hardlink_fields() -> None:
     harness = _load_harness_module()
     path_sha256 = "a" * 64

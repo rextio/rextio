@@ -74,6 +74,7 @@ _PATH_FREE_SUPPORT_LOCK_MESSAGES_WITH_SEMANTIC_SLASH = frozenset(
         "toolchain support locators contain an NFC/casefold role alias",
     }
 )
+_GENERIC_PERMISSION_MODE_CAUSE = "toolchain support permission mode is invalid"
 _LINUX_FOLDED_NAME_CAUSE = (
     "toolchain support directory contains an NFC/casefold alias"
 )
@@ -2265,6 +2266,12 @@ def _format_support_lock_diagnostic(error: BaseException) -> str:
                     or all(
                         character.isalnum() or character in " -_.,()="
                         for character in candidate
+                    )
+                )
+                and not (
+                    candidate == _GENERIC_PERMISSION_MODE_CAUSE
+                    and support_message.startswith(
+                        f"{_GENERIC_PERMISSION_MODE_CAUSE} ("
                     )
                 )
             ):
