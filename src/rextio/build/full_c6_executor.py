@@ -56,10 +56,13 @@ from rextio.build.full_c6_pyo3_config import (
 )
 from rextio.build.full_c6_linux_launcher import (
     FULL_C6_LINUX_CARGO,
+    FULL_C6_LINUX_LAUNCHER_FAILURE_PREFIX,
+    FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES,
     FULL_C6_LINUX_PYTHON_ROOT,
     FULL_C6_LINUX_PYO3_CONFIG,
     FullC6LinuxLauncherError,
     canonical_linux_payload_environment,
+    linux_launcher_failure_marker,
 )
 from rextio.build.full_c6_read_sandbox import (
     FullC6ReadSandboxError,
@@ -203,6 +206,12 @@ class FullC6ExecutorError(ReproducibilityError):
     """The strict Full C6 executor could not establish its bounded receipt."""
 
 
+_LINUX_LAUNCHER_STDERR_REASONS = {
+    linux_launcher_failure_marker(stage).decode("ascii"): (
+        f"linux-launcher-{stage}"
+    )
+    for stage in FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES
+}
 _NATIVE_SANDBOX_STDERR_MESSAGES = {
     reason: f"strict native sandbox build failed: {reason}"
     for reason in (
@@ -219,6 +228,7 @@ _NATIVE_SANDBOX_STDERR_MESSAGES = {
         "native-permission",
         "native-missing-path",
         "native-compile",
+        *tuple(_LINUX_LAUNCHER_STDERR_REASONS.values()),
     )
 }
 
@@ -227,7 +237,12 @@ def _classify_native_sandbox_stderr(stderr: object) -> str | None:
     """Reduce captured native stderr to one non-authorizing static category."""
     if type(stderr) is not str or not stderr:
         return None
+    launcher_reason = _LINUX_LAUNCHER_STDERR_REASONS.get(stderr)
+    if launcher_reason is not None:
+        return launcher_reason
     lowered = stderr.casefold()
+    if FULL_C6_LINUX_LAUNCHER_FAILURE_PREFIX.casefold() in lowered:
+        return None
     if re.search(r"(?m)^bwrap:", lowered) is not None:
         if "seccomp" in lowered:
             return "native-bwrap-seccomp-failed"

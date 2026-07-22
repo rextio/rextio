@@ -46,6 +46,9 @@ from rextio.build.full_c6_host_inputs import (
 from rextio.build.full_c6_gate import FullC6GateError
 from rextio.build.full_c6_external_execution import FullC6ExternalExecutionError
 from rextio.build.full_c6_executor import FullC6ExecutorError
+from rextio.build.full_c6_linux_launcher import (
+    FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES,
+)
 from rextio.build.full_c6_pyo3_config import FullC6Pyo3ConfigError
 from rextio.build.full_c6_pipeline import (
     FULL_C6_DISTRIBUTION_POLICY,
@@ -273,6 +276,15 @@ _FULL_C6_FAILURE_REASON_CODES: dict[tuple[type[BaseException], str], str] = {
         "Full C6 critical support path changed",
     ): "toolchain-critical-path-changed",
 }
+_FULL_C6_FAILURE_REASON_CODES.update(
+    {
+        (
+            FullC6ExecutorError,
+            f"strict native sandbox build failed: linux-launcher-{stage}",
+        ): f"linux-launcher-{stage}"
+        for stage in FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES
+    }
+)
 
 
 def _full_c6_failure_reason_code(error: BaseException) -> str:

@@ -269,6 +269,34 @@ def test_build_failure_report_diagnostic_emits_only_allowlisted_scalars(
     )
 
 
+@pytest.mark.parametrize(
+    "reason_code",
+    (
+        "linux-launcher-cpython-runtime",
+        "linux-launcher-environment-argv",
+        "linux-launcher-pyo3-config",
+        "linux-launcher-descriptors",
+        "linux-launcher-landlock",
+        "linux-launcher-cargo-exec",
+    ),
+)
+def test_build_failure_report_diagnostic_allows_static_launcher_stage(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    reason_code: str,
+) -> None:
+    path = _failure_report_path(tmp_path)
+    path.write_text(
+        json.dumps(_full_c6_failure_report(reason_code=reason_code)),
+        encoding="utf-8",
+    )
+
+    line = _emit_failure_report_line(tmp_path, capsys)
+
+    assert f'"reason_code":"{reason_code}"' in line
+    assert "unavailable" not in line
+
+
 def test_build_failure_report_diagnostic_is_fixed_when_report_is_missing(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

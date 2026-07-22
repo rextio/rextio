@@ -407,6 +407,101 @@ def test_launcher_orders_validation_fd_close_landlock_then_exec(
     )
 
 
+@pytest.mark.parametrize(
+    "failure_stage",
+    (
+        "cpython-runtime",
+        "environment-argv",
+        "pyo3-config",
+        "descriptors",
+        "landlock",
+        "cargo-exec",
+    ),
+)
+def test_launcher_main_emits_only_the_exact_static_failure_stage(
+    failure_stage: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _environment()
+    argv = _argv(environment)
+    calls: list[str] = []
+    writes: list[tuple[int, bytes]] = []
+    private = "/private/runner/project secret diagnostics"
+
+    def stage_action(stage: str, result: object = None):
+        def action(*_args: object) -> object:
+            calls.append(stage)
+            if stage == failure_stage:
+                raise RuntimeError(private)
+            return result
+
+        return action
+
+    monkeypatch.setattr(launcher.sys, "argv", list(argv))
+    monkeypatch.setattr(launcher.os, "environ", environment)
+    monkeypatch.setattr(
+        launcher,
+        "validate_isolated_python_runtime",
+        stage_action("cpython-runtime"),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "validate_linux_launcher_argv",
+        stage_action(
+            "environment-argv",
+            (launcher.FULL_C6_LINUX_CARGO, "build"),
+        ),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "verify_full_c6_pyo3_config",
+        stage_action("pyo3-config"),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "close_untrusted_file_descriptors",
+        stage_action("descriptors"),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "apply_full_c6_landlock",
+        stage_action("landlock"),
+    )
+    monkeypatch.setattr(
+        launcher.os,
+        "execve",
+        stage_action("cargo-exec"),
+    )
+    monkeypatch.setattr(
+        launcher.os,
+        "write",
+        lambda descriptor, data: writes.append((descriptor, data)) or len(data),
+    )
+
+    assert launcher._main() == 125
+    assert calls == list(
+        (
+            "cpython-runtime",
+            "environment-argv",
+            "pyo3-config",
+            "descriptors",
+            "landlock",
+            "cargo-exec",
+        )[: calls.index(failure_stage) + 1]
+    )
+    assert writes == [
+        (
+            2,
+            (
+                "Rextio Full C6 Linux launcher failed closed: "
+                f"{failure_stage}\n"
+            ).encode("ascii"),
+        )
+    ]
+    assert private.encode("utf-8") not in writes[0][1]
+    assert len(writes[0][1]) < 128
+
+
 def test_launcher_file_uses_no_external_imports() -> None:
     source = Path(launcher.__file__).read_text(encoding="utf-8")
 

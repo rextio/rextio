@@ -990,6 +990,12 @@ def test_full_c6_failure_reason_code_classifies_normal_cargo_failure() -> None:
         "native-permission",
         "native-missing-path",
         "native-compile",
+        "linux-launcher-cpython-runtime",
+        "linux-launcher-environment-argv",
+        "linux-launcher-pyo3-config",
+        "linux-launcher-descriptors",
+        "linux-launcher-landlock",
+        "linux-launcher-cargo-exec",
     ],
 )
 def test_full_c6_failure_reason_code_prefers_static_native_stderr_category(
@@ -1048,12 +1054,16 @@ def test_full_c6_failure_report_serializes_only_static_deep_reason_code(
     assert "secret" not in serialized
 
 
+@pytest.mark.parametrize(
+    "reason_code",
+    ("native-sandbox-bubblewrap", "linux-launcher-landlock"),
+)
 def test_full_c6_failure_report_serializes_only_static_native_stderr_category(
-    tmp_path: Path,
+    tmp_path: Path, reason_code: str
 ) -> None:
     project = tmp_path.resolve()
     detail = build_cmd.FullC6ExecutorError(
-        "strict native sandbox build failed: native-sandbox-bubblewrap"
+        f"strict native sandbox build failed: {reason_code}"
     )
     executor = build_cmd.FullC6ExecutorError(
         "strict Cargo build failed with exit status 1"
@@ -1079,7 +1089,7 @@ def test_full_c6_failure_report_serializes_only_static_native_stderr_category(
         encoding="utf-8"
     )
     report = json.loads(serialized)
-    assert report["error"]["reason_code"] == "native-sandbox-bubblewrap"
+    assert report["error"]["reason_code"] == reason_code
     assert "/private" not in serialized
     assert "secret" not in serialized
 

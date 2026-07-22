@@ -24,6 +24,17 @@ import sys
 
 
 FULL_C6_LINUX_LAUNCHER_DOMAIN = "rextio.full-c6-linux-launcher.v1"
+FULL_C6_LINUX_LAUNCHER_FAILURE_PREFIX = (
+    "Rextio Full C6 Linux launcher failed closed: "
+)
+FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES = (
+    "cpython-runtime",
+    "environment-argv",
+    "pyo3-config",
+    "descriptors",
+    "landlock",
+    "cargo-exec",
+)
 FULL_C6_LINUX_TOOLCHAIN_ROOT = "/rextio/toolchain"
 FULL_C6_LINUX_CARGO = "/rextio/toolchain/bin/cargo"
 FULL_C6_LINUX_PYTHON_ROOT = "/rextio/python"
@@ -160,6 +171,17 @@ _LANDLOCK_RULES = (
 
 class FullC6LinuxLauncherError(RuntimeError):
     """The post-namespace launcher contract is unavailable or inconsistent."""
+
+
+def linux_launcher_failure_marker(stage: object) -> bytes:
+    """Return one bounded path-free marker for an exact static stage."""
+    if type(stage) is not str or stage not in FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES:
+        raise FullC6LinuxLauncherError(
+            "Full C6 Linux launcher failure stage is invalid"
+        )
+    return (
+        f"{FULL_C6_LINUX_LAUNCHER_FAILURE_PREFIX}{stage}\n".encode("ascii")
+    )
 
 
 def canonical_linux_payload_environment(
@@ -573,13 +595,38 @@ def _libc_prctl() -> Callable[..., int]:
 
 def _main() -> int:
     try:
-        run_linux_launcher()
+        validate_isolated_python_runtime()
     except BaseException:
-        try:
-            os.write(2, b"Rextio Full C6 Linux launcher failed closed\n")
-        except OSError:
-            pass
-        return 125
+        return _fail_linux_launcher_stage("cpython-runtime")
+    try:
+        environment = dict(os.environ)
+        payload = validate_linux_launcher_argv(sys.argv, environment)
+    except BaseException:
+        return _fail_linux_launcher_stage("environment-argv")
+    try:
+        verify_full_c6_pyo3_config()
+    except BaseException:
+        return _fail_linux_launcher_stage("pyo3-config")
+    try:
+        close_untrusted_file_descriptors()
+    except BaseException:
+        return _fail_linux_launcher_stage("descriptors")
+    try:
+        apply_full_c6_landlock()
+    except BaseException:
+        return _fail_linux_launcher_stage("landlock")
+    try:
+        os.execve(payload[0], payload, environment)
+    except BaseException:
+        return _fail_linux_launcher_stage("cargo-exec")
+    return _fail_linux_launcher_stage("cargo-exec")
+
+
+def _fail_linux_launcher_stage(stage: str) -> int:
+    try:
+        os.write(2, linux_launcher_failure_marker(stage))
+    except BaseException:
+        pass
     return 125
 
 
@@ -591,6 +638,8 @@ __all__ = [
     "FULL_C6_LINUX_CARGO",
     "FULL_C6_LINUX_LAUNCHER",
     "FULL_C6_LINUX_LAUNCHER_DOMAIN",
+    "FULL_C6_LINUX_LAUNCHER_FAILURE_PREFIX",
+    "FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES",
     "FULL_C6_LINUX_PYTHON",
     "FULL_C6_LINUX_PYTHON_PREFIX",
     "FULL_C6_LINUX_PYTHON_ROOT",
@@ -603,6 +652,7 @@ __all__ = [
     "canonical_linux_payload_environment",
     "close_untrusted_file_descriptors",
     "expected_linux_pyo3_environment_signature",
+    "linux_launcher_failure_marker",
     "linux_payload_environment_digest",
     "run_linux_launcher",
     "validate_isolated_python_runtime",

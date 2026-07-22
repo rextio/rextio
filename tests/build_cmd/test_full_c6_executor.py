@@ -145,6 +145,36 @@ def test_native_sandbox_stderr_classifier_returns_only_static_categories(
     assert executor._classify_native_sandbox_stderr(stderr) == expected
 
 
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "cpython-runtime",
+        "environment-argv",
+        "pyo3-config",
+        "descriptors",
+        "landlock",
+        "cargo-exec",
+    ),
+)
+def test_native_sandbox_stderr_classifier_accepts_exact_launcher_stage_only(
+    stage: str,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    marker = f"Rextio Full C6 Linux launcher failed closed: {stage}\n"
+
+    assert executor._classify_native_sandbox_stderr(marker) == (
+        f"linux-launcher-{stage}"
+    )
+    assert executor._classify_native_sandbox_stderr(
+        marker + "permission denied"
+    ) is None
+    assert executor._classify_native_sandbox_stderr(
+        marker.replace(stage, "private-arbitrary-stage")
+    ) is None
+    assert executor._classify_native_sandbox_stderr(marker.upper()) is None
+
+
 def test_native_sandbox_stderr_error_never_retains_private_input() -> None:
     import rextio.build.full_c6_executor as executor
 
