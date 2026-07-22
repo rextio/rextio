@@ -2395,30 +2395,40 @@ def _verification_drift_error(
         if before != after
     )
     if manifest_differences:
-        before, after = manifest_differences[0]
+        manifest_before, manifest_after = manifest_differences[0]
+        if manifest_before.logical_role != manifest_after.logical_role:
+            raise ToolchainSupportLockError(
+                "toolchain support verification receipt roles are inconsistent"
+            )
         kind = "manifest"
+        first_logical_role = manifest_before.logical_role
+        before_merkle_sha256 = manifest_before.merkle_sha256
+        after_merkle_sha256 = manifest_after.merkle_sha256
         hardlink_before = None
         hardlink_after = None
     elif root_differences:
-        before, after = root_differences[0]
+        root_before, root_after = root_differences[0]
+        if root_before.logical_role != root_after.logical_role:
+            raise ToolchainSupportLockError(
+                "toolchain support verification receipt roles are inconsistent"
+            )
         kind = "root"
-        hardlink_before = _verification_hardlink_observation(before)
-        hardlink_after = _verification_hardlink_observation(after)
+        first_logical_role = root_before.logical_role
+        before_merkle_sha256 = root_before.merkle_sha256
+        after_merkle_sha256 = root_after.merkle_sha256
+        hardlink_before = _verification_hardlink_observation(root_before)
+        hardlink_after = _verification_hardlink_observation(root_after)
     else:
         raise ToolchainSupportLockError(
             "toolchain support verification drift accounting is inconsistent"
-        )
-    if before.logical_role != after.logical_role:
-        raise ToolchainSupportLockError(
-            "toolchain support verification receipt roles are inconsistent"
         )
     return ToolchainSupportVerificationDriftError(
         manifest_difference_count=len(manifest_differences),
         root_difference_count=len(root_differences),
         first_difference_kind=kind,
-        first_logical_role=before.logical_role,
-        before_merkle_sha256=before.merkle_sha256,
-        after_merkle_sha256=after.merkle_sha256,
+        first_logical_role=first_logical_role,
+        before_merkle_sha256=before_merkle_sha256,
+        after_merkle_sha256=after_merkle_sha256,
         hardlink_before_observation_sha256=hardlink_before,
         hardlink_after_observation_sha256=hardlink_after,
     )
