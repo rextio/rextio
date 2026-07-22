@@ -155,6 +155,7 @@ _LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS = frozenset(
         "/llvm-17/lib/libclang-cpp.so.17",
         "/llvm-18/lib/libLLVM.so.1",
         "/llvm-18/lib/libclang-cpp.so.18.1",
+        "/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so",
         "/python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a",
     }
 )
@@ -760,7 +761,7 @@ def _validate_linux_unmapped_virtual_targets(
         for value in sorted(_LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS)
     )
     if (
-        len(targets) != 5
+        len(targets) != 6
         or any(
             not target.is_absolute()
             or target.as_posix() not in _LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS

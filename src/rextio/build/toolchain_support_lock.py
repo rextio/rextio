@@ -115,6 +115,12 @@ _LINUX_UNMAPPED_SYMLINK_ROOT = Path("/usr/lib/x86_64-linux-gnu")
 _LINUX_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256 = (
     "8cb7b098c3bba9a6c8a0257da50a363ac54fbe6eb28b46be38a5231be7b5e80a"
 )
+_LINUX_GCC_UNMAPPED_SYMLINK_ROOT = Path(
+    "/usr/lib/gcc/x86_64-linux-gnu/13"
+)
+_LINUX_GCC_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256 = (
+    "fc92c0ab8a96a0a6c852f2b7289a763216bbbc99a2faae062fa8ed08a624e528"
+)
 _LOCK_FIELDS = {
     "kind",
     "schema_version",
@@ -1435,6 +1441,23 @@ _LINUX_UNMAPPED_SYMLINK_DISPOSITION_PATHS = frozenset(
 )
 _LINUX_UNMAPPED_SYMLINK_MINIMAL_VARIANT = "minimal-host"
 _LINUX_UNMAPPED_SYMLINK_GITHUB_RUNNER_VARIANT = "github-runner"
+_LINUX_GCC_UNMAPPED_SYMLINK_DISPOSITIONS = (
+    _FixedSymlinkDisposition(
+        relative_path="liblto_plugin.so",
+        raw_link_target=(
+            "../../../../libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so"
+        ),
+        disposition="deny-unmapped-virtual-target",
+        resolved_path_sha256=(
+            "b0d3612fd801488c96c48b9ee4320633da71497f0b7507d849754b017c9ebd00"
+        ),
+    ),
+)
+_LINUX_GCC_UNMAPPED_SYMLINK_DISPOSITION_PATHS = frozenset(
+    item.relative_path for item in _LINUX_GCC_UNMAPPED_SYMLINK_DISPOSITIONS
+)
+_LINUX_GCC_UNMAPPED_SYMLINK_MINIMAL_VARIANT = "minimal-host"
+_LINUX_GCC_UNMAPPED_SYMLINK_RUNNER_VARIANT = "ubuntu-24.04-gcc13"
 _FIXED_SYMLINK_DISPOSITIONS: dict[
     tuple[str, str],
     tuple[_FixedSymlinkDisposition, ...],
@@ -1451,6 +1474,10 @@ _FIXED_SYMLINK_DISPOSITIONS: dict[
         "x86_64-unknown-linux-gnu",
         "linux-runtime-support",
     ): _LINUX_UNMAPPED_SYMLINK_DISPOSITIONS,
+    (
+        "x86_64-unknown-linux-gnu",
+        "linux-gcc-support",
+    ): _LINUX_GCC_UNMAPPED_SYMLINK_DISPOSITIONS,
 }
 
 
@@ -2171,6 +2198,30 @@ def _fixed_symlink_disposition_map(
     return result
 
 
+def _deny_unmapped_symlink_profile(
+    *,
+    target_triple: str | None,
+    logical_role: str,
+) -> tuple[Path, str]:
+    if target_triple != "x86_64-unknown-linux-gnu":
+        raise ToolchainSupportLockError(
+            "toolchain support unmapped virtual target is outside the exact Linux profile"
+        )
+    if logical_role == "linux-runtime-support":
+        return (
+            _LINUX_UNMAPPED_SYMLINK_ROOT,
+            _LINUX_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256,
+        )
+    if logical_role == "linux-gcc-support":
+        return (
+            _LINUX_GCC_UNMAPPED_SYMLINK_ROOT,
+            _LINUX_GCC_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256,
+        )
+    raise ToolchainSupportLockError(
+        "toolchain support unmapped virtual target is outside the exact Linux role"
+    )
+
+
 def _validate_lock_symlink_dispositions(
     *,
     scope: ToolchainSupportScope,
@@ -2229,9 +2280,15 @@ def _validate_lock_symlink_dispositions(
                         "toolchain support denied site-packages disposition is stale"
                     )
             elif policy.disposition == "deny-unmapped-virtual-target":
+                _profile_root, profile_locator_path_sha256 = (
+                    _deny_unmapped_symlink_profile(
+                        target_triple=scope.target_triple,
+                        logical_role=root.logical_role,
+                    )
+                )
                 if (
                     root.locator_path_sha256
-                    != _LINUX_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256
+                    != profile_locator_path_sha256
                     or receipt.external_manifest_merkle_sha256 is not None
                     or receipt.external_support_root_role is not None
                     or receipt.external_support_root_merkle_sha256 is not None
@@ -2436,6 +2493,18 @@ def _select_fixed_symlink_disposition_variant(
             return _LINUX_UNMAPPED_SYMLINK_GITHUB_RUNNER_VARIANT
         if not observed_paths:
             return _LINUX_UNMAPPED_SYMLINK_MINIMAL_VARIANT
+    elif (
+        target_triple == "x86_64-unknown-linux-gnu"
+        and logical_role == "linux-gcc-support"
+    ):
+        if expected_paths != _LINUX_GCC_UNMAPPED_SYMLINK_DISPOSITION_PATHS:
+            raise ToolchainSupportLockError(
+                "toolchain support Linux GCC unmapped symlink policy is incomplete"
+            )
+        if observed_paths == _LINUX_GCC_UNMAPPED_SYMLINK_DISPOSITION_PATHS:
+            return _LINUX_GCC_UNMAPPED_SYMLINK_RUNNER_VARIANT
+        if not observed_paths:
+            return _LINUX_GCC_UNMAPPED_SYMLINK_MINIMAL_VARIANT
     elif observed_paths == expected_paths:
         return _FIXED_SYMLINK_DISPOSITION_VARIANT
     raise ToolchainSupportLockError(
@@ -2496,12 +2565,16 @@ def _finalize_symlink_dispositions(
         external_merkle: str | None = None
         resolved_relative: str | None = None
         if policy.disposition == "deny-unmapped-virtual-target":
+            profile_root, profile_locator_path_sha256 = (
+                _deny_unmapped_symlink_profile(
+                    target_triple=target_triple,
+                    logical_role=logical_role,
+                )
+            )
             if (
-                target_triple != "x86_64-unknown-linux-gnu"
-                or logical_role != "linux-runtime-support"
-                or root_path != _LINUX_UNMAPPED_SYMLINK_ROOT
+                root_path != profile_root
                 or _locator_path_digest(root_path)
-                != _LINUX_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256
+                != profile_locator_path_sha256
             ):
                 raise ToolchainSupportLockError(
                     "toolchain support unmapped virtual target is outside the exact Linux profile"

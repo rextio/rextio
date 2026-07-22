@@ -271,6 +271,88 @@ _LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS = {
         "python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"
     ),
 }
+_LINUX_GCC_LTO_RELATIVE_PATH = "liblto_plugin.so"
+_LINUX_GCC_LTO_RAW_TARGET = (
+    "../../../../libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so"
+)
+
+
+def _linux_gcc_lto_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    include_lto: bool = True,
+    raw_target: str = _LINUX_GCC_LTO_RAW_TARGET,
+    extra_alias: bool = False,
+) -> tuple[
+    list[ToolchainSupportLocator],
+    list[ToolchainSupportLocator],
+    Path,
+    Path,
+]:
+    manifests, roots, gcc_root, runtime_root = _linux_cross_root_inputs(tmp_path)
+    if include_lto:
+        (gcc_root / _LINUX_GCC_LTO_RELATIVE_PATH).symlink_to(raw_target)
+    if extra_alias:
+        (gcc_root / "liblto_plugin-13.so").symlink_to(
+            _LINUX_GCC_LTO_RAW_TARGET
+        )
+    policy_key = ("x86_64-unknown-linux-gnu", "linux-gcc-support")
+    production_rows = support_lock._FIXED_SYMLINK_DISPOSITIONS[policy_key]
+    assert len(production_rows) == 1
+    assert production_rows[0].relative_path == _LINUX_GCC_LTO_RELATIVE_PATH
+    assert production_rows[0].raw_link_target == _LINUX_GCC_LTO_RAW_TARGET
+    assert production_rows[0].resolved_path_sha256 == (
+        support_lock._locator_path_digest(
+            Path(
+                "/usr/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so"
+            )
+        )
+    )
+    assert support_lock._LINUX_GCC_UNMAPPED_SYMLINK_ROOT == Path(
+        "/usr/lib/gcc/x86_64-linux-gnu/13"
+    )
+    assert (
+        support_lock._LINUX_GCC_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256
+        == support_lock._locator_path_digest(
+            Path("/usr/lib/gcc/x86_64-linux-gnu/13")
+        )
+    )
+    resolved = (
+        tmp_path
+        / "usr"
+        / "libexec"
+        / "gcc"
+        / "x86_64-linux-gnu"
+        / "13"
+        / "liblto_plugin.so"
+    )
+    cloned_rows = tuple(
+        replace(
+            row,
+            resolved_path_sha256=support_lock._locator_path_digest(resolved),
+        )
+        for row in production_rows
+    )
+    monkeypatch.setattr(
+        support_lock,
+        "_FIXED_SYMLINK_DISPOSITIONS",
+        {
+            **support_lock._FIXED_SYMLINK_DISPOSITIONS,
+            policy_key: cloned_rows,
+        },
+    )
+    monkeypatch.setattr(
+        support_lock,
+        "_LINUX_GCC_UNMAPPED_SYMLINK_ROOT",
+        gcc_root,
+    )
+    monkeypatch.setattr(
+        support_lock,
+        "_LINUX_GCC_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256",
+        support_lock._locator_path_digest(gcc_root),
+    )
+    return manifests, roots, gcc_root, runtime_root
 
 
 def _linux_unmapped_virtual_target_inputs(
@@ -1115,6 +1197,103 @@ def test_linux_gcc_cross_root_symlink_is_bound_and_input_order_invariant(
         manifests=manifests,
         roots=list(reversed(roots)),
     )
+
+
+def test_linux_gcc13_lto_unmapped_alias_coexists_with_runtime_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, gcc_root, _runtime_root = _linux_gcc_lto_inputs(
+        tmp_path,
+        monkeypatch,
+    )
+    lock = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=manifests,
+        roots=roots,
+    )
+    gcc_receipt = next(
+        item for item in lock.roots if item.logical_role == "linux-gcc-support"
+    )
+    receipts = {
+        item.relative_path: item for item in gcc_receipt.symlink_dispositions
+    }
+    assert gcc_receipt.symlink_count == 2
+    assert gcc_receipt.symlink_disposition_count == 2
+    assert receipts["libasan.so"].disposition == "bind-external-support-root"
+    lto = receipts[_LINUX_GCC_LTO_RELATIVE_PATH]
+    assert lto.disposition == "deny-unmapped-virtual-target"
+    assert lto.raw_link_target == _LINUX_GCC_LTO_RAW_TARGET
+    assert lto.canonical_link_target is None
+    assert lto.external_manifest_role is None
+    assert lto.external_manifest_merkle_sha256 is None
+    assert lto.external_support_root_role is None
+    assert lto.external_support_root_merkle_sha256 is None
+    assert lto.resolved_relative_path is None
+    assert lto.resolved_path_sha256 == support_lock._locator_path_digest(
+        gcc_root.parents[3]
+        / "libexec"
+        / "gcc"
+        / "x86_64-linux-gnu"
+        / "13"
+        / "liblto_plugin.so"
+    )
+    parsed = parse_toolchain_support_lock(
+        lock.canonical_bytes,
+        expected_raw_sha256=lock.raw_sha256,
+    )
+    assert parsed == lock
+    assert verify_toolchain_support_lock(
+        parsed,
+        manifests=manifests,
+        roots=roots,
+    )
+
+
+def test_linux_gcc13_minimal_variant_omits_lto_disposition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, _gcc_root, _runtime_root = _linux_gcc_lto_inputs(
+        tmp_path,
+        monkeypatch,
+        include_lto=False,
+    )
+    lock = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=manifests,
+        roots=roots,
+    )
+    gcc_receipt = next(
+        item for item in lock.roots if item.logical_role == "linux-gcc-support"
+    )
+    assert tuple(
+        item.relative_path for item in gcc_receipt.symlink_dispositions
+    ) == ("libasan.so",)
+
+
+@pytest.mark.parametrize("mutation", ("extra", "drift"))
+def test_linux_gcc13_lto_topology_drift_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    manifests, roots, _gcc_root, _runtime_root = _linux_gcc_lto_inputs(
+        tmp_path,
+        monkeypatch,
+        raw_target=(
+            "../../../../libexec/gcc/x86_64-linux-gnu/14/liblto_plugin.so"
+            if mutation == "drift"
+            else _LINUX_GCC_LTO_RAW_TARGET
+        ),
+        extra_alias=mutation == "extra",
+    )
+    with pytest.raises(ToolchainSupportLockError):
+        generate_toolchain_support_lock(
+            target_triple="x86_64-unknown-linux-gnu",
+            manifests=manifests,
+            roots=roots,
+        )
 
 
 def test_linux_runtime_exact_casefold_topology_is_bound_without_double_count(

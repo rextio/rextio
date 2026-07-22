@@ -57,6 +57,7 @@ _LINUX_UNMAPPED_FINAL_VIRTUAL_TARGETS = frozenset(
         "/llvm-17/lib/libclang-cpp.so.17",
         "/llvm-18/lib/libLLVM.so.1",
         "/llvm-18/lib/libclang-cpp.so.18.1",
+        "/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so",
         "/python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a",
     }
 )
@@ -307,6 +308,10 @@ def test_linux_unmapped_runtime_symlink_targets_remain_outside_all_mappings(
         posixpath.join(source_prefix, relative_path): raw_target
         for relative_path, raw_target in _LINUX_UNMAPPED_RAW_TARGETS.items()
     }
+    gcc_source_prefix = "/rextio/support/gcc-toolchain"
+    fixed_sources[posixpath.join(gcc_source_prefix, "liblto_plugin.so")] = (
+        "../../../../libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so"
+    )
     final_targets: set[str] = set()
     for source in fixed_sources:
         current = source
@@ -330,6 +335,10 @@ def test_linux_unmapped_runtime_symlink_targets_remain_outside_all_mappings(
         not target.startswith(f"{source_prefix}/")
         for target in final_targets
     )
+    assert all(
+        not target.startswith(f"{gcc_source_prefix}/")
+        for target in final_targets
+    )
     destinations = tuple(
         destination
         for rule in plan.rules
@@ -348,7 +357,14 @@ def test_linux_unmapped_runtime_symlink_targets_remain_outside_all_mappings(
 
 @pytest.mark.parametrize(
     "forbidden_destination",
-    ("/llvm-16", "/llvm-17", "/llvm-18", "/python3.12", "/"),
+    (
+        "/llvm-16",
+        "/llvm-17",
+        "/llvm-18",
+        "/libexec",
+        "/python3.12",
+        "/",
+    ),
 )
 def test_linux_plan_rejects_mapping_an_unmapped_virtual_target_ancestor(
     tmp_path: Path,
