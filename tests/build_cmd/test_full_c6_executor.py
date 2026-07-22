@@ -396,6 +396,7 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
         "native-linux-cargo-parallelism",
         "native-linux-rustc-exec-permission",
         "native-linux-cargo-cache-lock",
+        "native-linux-permission-gcc-lto-plugin",
         "native-linux-permission-build-root",
         "native-linux-permission-project-root",
     )
@@ -423,6 +424,29 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
     assert classify(
         "failed to acquire package cache lock: private\nPermission denied"
     ) == "native-permission"
+    assert classify(
+        "/rextio/support/gcc-toolchain/liblto_plugin.so: Permission denied"
+    ) == "native-linux-permission-gcc-lto-plugin"
+    assert classify(
+        "error loading plugin: "
+        "/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so\n"
+        "Operation not permitted"
+    ) == "native-linux-permission-gcc-lto-plugin"
+    assert classify(
+        "/rextio/support/gcc-toolchain/liblto_plugin.so and "
+        "/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so: Permission denied"
+    ) == "native-linux-permission-gcc-lto-plugin"
+    for near_miss in (
+        "/rextio/support/gcc-toolchain/liblto_plugin.so-private",
+        "/private/rextio/support/gcc-toolchain/liblto_plugin.so",
+        "/libexec/gcc/x86_64-linux-gnu/14/liblto_plugin.so",
+        "/unmapped/liblto_plugin.so: error loading plugin",
+    ):
+        assert classify(f"{near_miss}: Permission denied") == "native-permission"
+    assert classify(
+        "/rextio/support/gcc-toolchain/opaque-plugin: error loading plugin\n"
+        "Permission denied"
+    ) == "native-linux-permission-gcc-lto-plugin"
     assert classify("/rextio/build/target/output: Permission denied") == (
         "native-linux-permission-build-root"
     )
@@ -432,9 +456,17 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
     assert classify(
         "/rextio/build/target and /rextio/project/src: Permission denied"
     ) == "native-permission"
+    assert classify(
+        "/rextio/support/gcc-toolchain/liblto_plugin.so and "
+        "/rextio/build/target: Permission denied"
+    ) == "native-permission"
     assert classify(f"{'x' * (64 * 1024)}\n{parallelism}\nPermission denied") == (
         "native-permission"
     )
+    assert classify(
+        f"{'x' * (64 * 1024)}\n"
+        "/rextio/support/gcc-toolchain/liblto_plugin.so: Permission denied"
+    ) == "native-permission"
     forged = SimpleNamespace(
         target_triple="x86_64-unknown-linux-gnu",
         engine="linux-bwrap-landlock-v1",
@@ -442,6 +474,18 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
     )
     assert classify(f"{parallelism}\nPermission denied", active_plan=forged) == (
         "native-permission"
+    )
+    lto_stderr = (
+        "/rextio/support/gcc-toolchain/liblto_plugin.so: Permission denied"
+    )
+    assert classify(lto_stderr, active_plan=forged) == "native-permission"
+    assert (
+        executor._classify_native_sandbox_stderr(
+            lto_stderr,
+            sandbox_plan=plan,
+            target_triple="aarch64-apple-darwin",
+        )
+        == "native-permission"
     )
 
 

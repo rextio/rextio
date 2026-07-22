@@ -989,6 +989,7 @@ def test_full_c6_failure_reason_code_classifies_normal_cargo_failure() -> None:
         "native-linux-cargo-cache-lock",
         "native-linux-cargo-parallelism",
         "native-linux-permission-build-root",
+        "native-linux-permission-gcc-lto-plugin",
         "native-linux-permission-project-root",
         "native-linux-rustc-exec-permission",
         "native-macos-permission-build-root",

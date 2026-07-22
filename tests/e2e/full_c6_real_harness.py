@@ -103,6 +103,7 @@ _FULL_C6_BUILD_FAILURE_REASON_CODES = frozenset(
         "native-linux-cargo-cache-lock",
         "native-linux-cargo-parallelism",
         "native-linux-permission-build-root",
+        "native-linux-permission-gcc-lto-plugin",
         "native-linux-permission-project-root",
         "native-linux-rustc-exec-permission",
         "native-macos-permission-build-root",

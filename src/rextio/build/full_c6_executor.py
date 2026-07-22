@@ -211,6 +211,16 @@ _MAX_LINUX_SANDBOX_DIAGNOSTIC_BYTES = 64 * 1024
 _LINUX_SANDBOX_TARGET = "x86_64-unknown-linux-gnu"
 _LINUX_SANDBOX_ENGINE = "linux-bwrap-landlock-v1"
 _LINUX_RUSTC_VIRTUAL_PATH = Path("/rextio/toolchain/bin/rustc")
+_LINUX_GCC_LTO_VIRTUAL_PREFIXES = (
+    "/rextio/support/gcc-toolchain/",
+    "/libexec/gcc/x86_64-linux-gnu/13/",
+)
+_LINUX_GCC_LTO_PLUGIN_NAME_RE = re.compile(
+    r"(?<![\w.-])liblto_plugin\.so(?![\w.-])"
+)
+_LINUX_GCC_LTO_LOAD_FAILURE_RE = re.compile(
+    r"(?<![\w-])error loading plugin(?![\w-])"
+)
 _CARGO_MACOS_CPU_COUNT_FAILURE = (
     "failed to determine the amount of parallelism available"
 )
@@ -238,6 +248,7 @@ FULL_C6_LINUX_SANDBOX_PERMISSION_REASONS = (
     "native-linux-cargo-parallelism",
     "native-linux-rustc-exec-permission",
     "native-linux-cargo-cache-lock",
+    "native-linux-permission-gcc-lto-plugin",
     "native-linux-permission-build-root",
     "native-linux-permission-project-root",
 )
@@ -415,6 +426,14 @@ def _classify_linux_sandbox_permission(stderr: str) -> str | None:
         for line in lines
     ):
         candidates.add("native-linux-cargo-cache-lock")
+    if any(
+        _context_mentions_exact_virtual_prefix(context, prefix)
+        for prefix in _LINUX_GCC_LTO_VIRTUAL_PREFIXES
+    ) and (
+        _LINUX_GCC_LTO_PLUGIN_NAME_RE.search(context) is not None
+        or _LINUX_GCC_LTO_LOAD_FAILURE_RE.search(lowered) is not None
+    ):
+        candidates.add("native-linux-permission-gcc-lto-plugin")
     for prefix, reason in (
         (f"{_BUILD_ROOT_TOKEN}/", "native-linux-permission-build-root"),
         (f"{_PROJECT_ROOT_TOKEN}/", "native-linux-permission-project-root"),

@@ -296,6 +296,23 @@ def test_build_failure_report_diagnostic_allows_static_launcher_stage(
     assert "unavailable" not in line
 
 
+def test_build_failure_report_diagnostic_allows_static_gcc_lto_permission(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    reason_code = "native-linux-permission-gcc-lto-plugin"
+    path = _failure_report_path(tmp_path)
+    path.write_text(
+        json.dumps(_full_c6_failure_report(reason_code=reason_code)),
+        encoding="utf-8",
+    )
+
+    line = _emit_failure_report_line(tmp_path, capsys)
+
+    assert f'"reason_code":"{reason_code}"' in line
+    assert "unavailable" not in line
+
+
 def test_build_failure_report_diagnostic_is_fixed_when_report_is_missing(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
