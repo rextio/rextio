@@ -123,8 +123,12 @@ Python 3.11:
   `validate-linux-cuda.sh` wrapper (wrapper builds the host binary; no separate
   `cargo build` step). GitHub-hosted runners typically have no GPU, so
   `LIBCUDA_SO_NOT_FOUND` / `LIBCUDA_SO_LOAD_FAILED` are expected and accepted.
+- A separate **windows-latest** job compiles and tests the dependency-free
+  `x86_64-pc-windows-msvc` probe, then runs `validate-windows-cuda.ps1` and
+  validates its JSON schema and invariant `support_claim: false`. An absent
+  NVIDIA driver/GPU is an accepted `unavailable` report, not a failed job.
 
-None of that CI lane is real-GPU evidence or CUDA certification.
+None of these CI lanes is real-GPU evidence or CUDA certification.
 
 ## What the report means
 
@@ -164,7 +168,8 @@ For each candidate the probe:
 3. `dlopen`s only the canonical regular-file target;
 4. requires that target to remain under reviewed system roots
    (`/usr/lib`, `/usr/lib64`, `/usr/local/nvidia/lib`, `/usr/local/nvidia/lib64`);
-5. rejects group- or world-writable path ancestry (`mode & 0o022 != 0`);
+5. rejects a group- or world-writable canonical regular-file leaf and any
+   group- or world-writable directory ancestry (`mode & 0o022 != 0`);
 6. opens with explicit `RTLD_NOW | RTLD_LOCAL`;
 7. never emits `dlerror` text or filesystem paths in the JSON report.
 

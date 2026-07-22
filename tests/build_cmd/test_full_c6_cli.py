@@ -1082,6 +1082,19 @@ def test_full_c6_failure_report_serializes_only_static_deep_reason_code(
         encoding="utf-8"
     )
     report = json.loads(serialized)
+    assert set(report) == {
+        "analysis",
+        "contract_version",
+        "distribution_authorized",
+        "error",
+        "fallback",
+        "lifecycle",
+        "stage",
+        "status",
+    }
+    assert set(report["error"]) == {"code", "domain", "message", "reason_code"}
+    assert report["error"]["code"] == "RXT060"
+    assert report["error"]["domain"] == "FullC6ProductionError"
     assert report["error"]["reason_code"] == "linux-launcher-exit-125"
     assert "/private" not in serialized
     assert "secret" not in serialized

@@ -54,11 +54,12 @@ def test_windows_cuda_probe_writes_a_truthful_non_support_report(tmp_path: Path)
     assert report["probe"] == "rextio-cuda-driver-probe"
     assert report["support_claim"] is False
     assert report["target"]["os"] == "windows"
-    assert report["status"] in {"probe-complete", "unavailable", "unsupported", "error"}
+    assert report["target"]["arch"] == "x86_64"
+    assert report["platform_supported"] is True
+    assert report["status"] in {"probe-complete", "unavailable", "error"}
     assert isinstance(report["devices"], list)
 
     if report["status"] == "probe-complete":
-        assert report["platform_supported"] is True
         assert report["driver_loaded"] is True
         assert isinstance(report["driver_version"], int)
         assert report["device_count"] == len(report["devices"])

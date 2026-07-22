@@ -960,10 +960,18 @@ Rextio does not invent owner decisions and never accepts, creates, or retains a
 private signing key. Any input or staged-bundle byte change
 detected before the final rename, path alias, unsafe file, platform/scope
 mismatch, stale analysis, unexpected dependency, alternate publication
-destination/name, or pre-existing/concurrent destination fails closed. A later
-external mutation does not retroactively invalidate the completed transaction
-receipt, but the changed bytes no longer match that receipt or the publication
-manifest and must be treated as invalid by any consumer.
+destination/name fails closed. An existing or concurrently created publication
+target also fails closed unless it qualifies for the sole existing-target
+success: an idempotent retry after a bundle was already committed. The target
+must still be an owner-private mode-`0700` directory containing the exact
+closed bundle expected by the current verified request. Every original bundle
+source and the trusted public key must remain identical under safe recapture
+between repeated descriptor/name-binding and member-byte validation passes. A
+different, mutated, unsafe, or concurrently replaced target is
+never accepted or overwritten. A later external mutation does not
+retroactively invalidate the completed transaction receipt, but the changed
+bytes no longer match that receipt or the publication manifest and must be
+treated as invalid by any consumer.
 
 This is a bounded **CLI Alpha**, not a general release workflow. `rextio build`
 coordinates the frozen policy-bootstrap/signing/publication lifecycle but

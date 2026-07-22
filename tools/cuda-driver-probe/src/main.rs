@@ -643,6 +643,7 @@ mod linux_probe {
                 if !canonical.is_absolute()
                     || !is_regular_file(&canonical)
                     || !is_under_reviewed_root(&canonical)
+                    || is_group_or_world_writable_regular_file(&canonical)
                     || has_group_or_world_writable_path_ancestry(&canonical)
                 {
                     // Fail closed provenance guard (not a hard sandbox).
@@ -710,6 +711,15 @@ mod linux_probe {
             .any(|root| path_str == *root || path_str.starts_with(&format!("{root}/")))
     }
 
+    /// Reject a mutable canonical library leaf even when every ancestor is
+    /// trusted. Metadata errors fail closed because the caller has already
+    /// observed the path and must not continue to `dlopen` an unverified leaf.
+    fn is_group_or_world_writable_regular_file(path: &Path) -> bool {
+        fs::metadata(path)
+            .map(|meta| !meta.is_file() || (meta.permissions().mode() & 0o022) != 0)
+            .unwrap_or(true)
+    }
+
     /// Provenance guard (not a sandbox): reject libraries whose ancestor
     /// directories are group- or world-writable (`mode & 0o022 != 0`), which can
     /// allow unprivileged substitution of the driver library.
@@ -734,6 +744,34 @@ mod linux_probe {
             }
         }
         false
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::is_group_or_world_writable_regular_file;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        #[test]
+        fn writable_regular_library_leaf_is_rejected() {
+            let path = std::env::temp_dir().join(format!(
+                "rextio-libcuda-leaf-{}-{}",
+                std::process::id(),
+                std::thread::current().name().unwrap_or("test")
+            ));
+            fs::write(&path, b"fixture").expect("create leaf fixture");
+            let result = (|| {
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o666))
+                    .expect("make fixture writable");
+                assert!(is_group_or_world_writable_regular_file(&path));
+
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+                    .expect("make fixture trusted");
+                assert!(!is_group_or_world_writable_regular_file(&path));
+            })();
+            let _ = fs::remove_file(&path);
+            result
+        }
     }
 
     macro_rules! resolve {
