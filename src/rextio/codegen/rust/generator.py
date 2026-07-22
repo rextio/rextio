@@ -6,7 +6,10 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 
-from rextio.codegen.native_names import native_function_name
+from rextio.codegen.native_names import (
+    native_function_name,
+    native_function_name_collisions,
+)
 from rextio.exceptions import BUILTIN_EXCEPTION_TO_PYO3
 from rextio.codegen.rust.checked_arith import (
     checked_arith_helpers as _checked_arith_helpers,
@@ -133,6 +136,7 @@ def generate_rust_module(
     their ``RxtPluginType`` so claim result types resolve during inference.
     Both are None/empty for plugin-free builds, which render exactly as before.
     """
+    _require_unique_native_function_symbols(module_ir.functions)
     names_by_qualname = {
         function.qualname: rust_identifier(native_function_name(function.qualname))
         for function in module_ir.functions
@@ -326,6 +330,7 @@ def generate_rust_crate_module(
     direct_functions = [
         function for function in module_ir.functions if function.qualname not in excluded
     ]
+    _require_unique_native_function_symbols(direct_functions)
     if not direct_functions:
         raise RustCodegenError(
             "no direct Rust native functions are available for a Rust-importable crate"
@@ -541,6 +546,19 @@ def rust_identifier(value: str) -> str:
     if identifier in RUST_RAWABLE_KEYWORDS:
         return f"r#{identifier}"
     return identifier
+
+
+def _require_unique_native_function_symbols(functions: list[FunctionIR]) -> None:
+    """Defensively reject colliding symbols in caller-constructed module IR."""
+    collisions = native_function_name_collisions(function.qualname for function in functions)
+    if not collisions:
+        return
+    symbol, qualnames = collisions[0]
+    rendered = ", ".join(repr(qualname) for qualname in qualnames)
+    raise RustCodegenError(
+        f"native Rust symbol collision: {rendered} all lower to '{symbol}'; "
+        "rename one function or module so each native qualname is distinct after Rust mangling"
+    )
 
 
 def _render_runtime_semantics_function(function: FunctionIR) -> str:

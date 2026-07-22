@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from rextio.analyzer.project_scanner import analyze_project
+from rextio.codegen.rust.errors import RustCodegenError
 from rextio.codegen.rust.generator import generate_rust_module
 from rextio.codegen.rust.cargo import render_cargo_config_toml, render_cargo_toml
 from rextio.config.schema import ImportPackagePolicy, ImportsConfig
@@ -254,6 +255,78 @@ def calculate(x: int) -> int:
     assert rust.count("demo_pkg__affine(") == 2
     assert "wrap_pyfunction!(app__calculate, m)" in rust
     assert "wrap_pyfunction!(demo_pkg__affine, m)" not in rust
+
+
+def test_project_and_external_functions_cannot_share_one_native_symbol(
+    tmp_path: Path,
+) -> None:
+    external_module = "demo.pkg"
+    external_package = "demo"
+    external_plan = analyze_external_source_snapshot(
+        ExternalSourceSnapshot(
+            module=SourceModule(
+                module_name=external_module,
+                path=f"distributions/{DIST}/demo/pkg.py",
+                is_package_init=False,
+                source_origin=SourceOrigin.DISTRIBUTION,
+                sha256=hashlib.sha256(EXTERNAL_SOURCE).hexdigest(),
+                dependency_depth=1,
+                distribution=DIST,
+                version=VERSION,
+                license="MIT",
+            ),
+            source_bytes=EXTERNAL_SOURCE,
+        )
+    )
+    imports = ImportsConfig(
+        packages={
+            external_package: ImportPackagePolicy(
+                policy="try-native",
+                max_depth=1,
+                distribution=DIST,
+                version=VERSION,
+            )
+        }
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "demo__pkg.py").write_text(
+        """\
+from demo.pkg import affine as f
+
+def affine(x: int) -> int:
+    return x + 2
+
+def calculate(x: int) -> int:
+    return f(x) + affine(x)
+""",
+        encoding="utf-8",
+    )
+    first = analyze_project(project, imports_config=imports)
+    linkage = importlib.import_module("rextio.source.external_linkage")
+    registry = linkage.build_external_native_registry(
+        first,
+        (external_plan,),
+        package=external_package,
+        distribution=DIST,
+        version=VERSION,
+    )
+    strict = analyze_project(
+        project,
+        imports_config=imports,
+        external_native_registry=registry,
+    )
+
+    module_ir = lower_project(strict, external_native_registry=registry)
+
+    with pytest.raises(
+        RustCodegenError,
+        match=(
+            "native Rust symbol collision: 'demo.pkg.affine', "
+            "'demo__pkg.affine' all lower to 'demo__pkg__affine'"
+        ),
+    ):
+        generate_rust_module(module_ir)
 
 
 def test_registry_rejects_project_source_drift_before_private_ir_composition(

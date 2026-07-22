@@ -35,7 +35,6 @@ from rextio.analyzer.models import (
     SourcePosition,
     SourceRange,
 )
-from rextio.analyzer.module_init import build_module_init_ir
 from rextio.analyzer.unsupported_patterns import validate_native_function
 from rextio.ir.lowering import LoweringError, lower_function
 from rextio.ir.module_init import ModuleInitIR
@@ -409,6 +408,13 @@ def _analyze_external_source_snapshot(
                 lowered_ir_sha256=_domain_hash(EXTERNAL_FUNCTION_IR_DOMAIN, ir_payload),
             )
         )
+
+    # Keep this import local.  ``rextio.analyzer.module_init`` depends on the
+    # source graph package, whose public ``rextio.source`` facade eagerly
+    # exposes this analysis module.  Importing the planner here, after both
+    # modules are initialized, prevents that facade from creating an
+    # import-order-dependent analyzer/source cycle.
+    from rextio.analyzer.module_init import build_module_init_ir
 
     module_init = build_module_init_ir(
         snapshot.source_bytes,

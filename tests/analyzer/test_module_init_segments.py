@@ -202,3 +202,47 @@ def test_future_import_is_metadata_for_the_bounded_initializer(tmp_path: Path) -
     assert len(plan.metadata_ranges) == 1
     assert [segment.kind for segment in plan.segments] == [ModuleInitSegmentKind.NATIVE]
     assert is_initial_module_init_eligible(plan, graph)
+
+
+def test_eager_annotations_reject_names_shadowed_before_definition() -> None:
+    plan = build_module_init_ir(
+        "list = 1\ndef main(argv: list[str]) -> int:\n    return 0\n",
+        module_name="app",
+    )
+
+    assert [segment.kind for segment in plan.segments] == [
+        ModuleInitSegmentKind.NATIVE,
+        ModuleInitSegmentKind.FALLBACK_BARRIER,
+    ]
+    assert plan.segments[1].barrier_reason == (
+        "function definition annotations require preserved Python source-order evaluation"
+    )
+    assert not plan.bounded_candidate
+
+
+def test_eager_annotations_use_source_order_not_later_shadowing() -> None:
+    plan = build_module_init_ir(
+        "def main(argv: list[str]) -> int:\n    return 0\nlist = 1\n",
+        module_name="app",
+    )
+
+    assert [segment.kind for segment in plan.segments] == [
+        ModuleInitSegmentKind.DEFINITION_PUBLICATION,
+        ModuleInitSegmentKind.NATIVE,
+    ]
+    assert not plan.has_fallback_barrier
+
+
+def test_postponed_annotations_do_not_lookup_shadowed_runtime_names() -> None:
+    plan = build_module_init_ir(
+        "from __future__ import annotations\n"
+        "list = 1\n"
+        "def main(argv: list[str]) -> int:\n    return 0\n",
+        module_name="app",
+    )
+
+    assert [segment.kind for segment in plan.segments] == [
+        ModuleInitSegmentKind.NATIVE,
+        ModuleInitSegmentKind.DEFINITION_PUBLICATION,
+    ]
+    assert not plan.has_fallback_barrier

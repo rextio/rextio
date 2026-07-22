@@ -24,6 +24,32 @@ if TYPE_CHECKING:
     from rextio.analyzer.models import ProjectAnalysis
 
 
+# Runtime annotations are evaluated while a function definition executes
+# unless ``from __future__ import annotations`` is active.  The first module
+# initializer slice can prove these builtins only while no earlier statement
+# may have rebound them.  Names from typing modules or user classes remain a
+# preserved-Python boundary because resolving them would require executing
+# prior source.
+_SAFE_RUNTIME_ANNOTATION_BUILTINS = frozenset(
+    {
+        "bool",
+        "bytes",
+        "complex",
+        "dict",
+        "float",
+        "frozenset",
+        "int",
+        "list",
+        "memoryview",
+        "object",
+        "set",
+        "str",
+        "tuple",
+        "type",
+    }
+)
+
+
 def build_module_init_ir(
     source: str | bytes,
     *,
@@ -78,6 +104,8 @@ def build_module_init_ir(
     segments: list[ModuleInitSegment] = []
     metadata_ranges: list[SourceRange] = []
     future_annotations = False
+    runtime_shadowed_names: set[str] = set()
+    runtime_namespace_unknown = False
     for statement_index, statement in enumerate(tree.body):
         if statement_index == 0 and _is_module_docstring(statement):
             metadata_ranges.append(_source_range(statement))
@@ -93,11 +121,20 @@ def build_module_init_ir(
             module_name=module_name,
             is_package_init=package_init,
             future_annotations=future_annotations,
+            runtime_shadowed_names=frozenset(runtime_shadowed_names),
+            runtime_namespace_unknown=runtime_namespace_unknown,
         )
         if segments and _can_merge(segments[-1], segment):
             segments[-1] = _merge_segments(segments[-1], segment)
         else:
             segments.append(segment)
+        facts = _binding_facts(statement)
+        # A definite deletion exposes the builtin again; a conditional deletion
+        # does not.  Every possible binding is retained conservatively so a
+        # source-order annotation lookup can never be silently changed.
+        runtime_shadowed_names.difference_update(facts.must_deleted)
+        runtime_shadowed_names.update(facts.may)
+        runtime_namespace_unknown = runtime_namespace_unknown or facts.namespace_unknown
 
     ordered = tuple(replace(segment, ordinal=index) for index, segment in enumerate(segments))
     return ModuleInitIR(
@@ -202,6 +239,8 @@ def _segment_for_statement(
     module_name: str,
     is_package_init: bool,
     future_annotations: bool,
+    runtime_shadowed_names: frozenset[str],
+    runtime_namespace_unknown: bool,
 ) -> ModuleInitSegment:
     facts = _binding_facts(statement)
     bindings = tuple(sorted(facts.may))
@@ -217,6 +256,8 @@ def _segment_for_statement(
     ) and not _definition_header_effectful(
         statement,
         future_annotations=future_annotations,
+        runtime_shadowed_names=runtime_shadowed_names,
+        runtime_namespace_unknown=runtime_namespace_unknown,
     ):
         kind = ModuleInitSegmentKind.DEFINITION_PUBLICATION
         disposition = ModuleInitDisposition.PYTHON_PRESERVED
@@ -228,7 +269,12 @@ def _segment_for_statement(
     else:
         kind = ModuleInitSegmentKind.FALLBACK_BARRIER
         disposition = ModuleInitDisposition.PYTHON_PRESERVED
-        barrier_reason = _barrier_reason(statement)
+        barrier_reason = _barrier_reason(
+            statement,
+            future_annotations=future_annotations,
+            runtime_shadowed_names=runtime_shadowed_names,
+            runtime_namespace_unknown=runtime_namespace_unknown,
+        )
     return ModuleInitSegment(
         ordinal=statement_index,
         kind=kind,
@@ -266,6 +312,8 @@ def _definition_header_effectful(
     statement: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     future_annotations: bool,
+    runtime_shadowed_names: frozenset[str],
+    runtime_namespace_unknown: bool,
 ) -> bool:
     if statement.decorator_list or statement.args.defaults:
         return True
@@ -273,6 +321,16 @@ def _definition_header_effectful(
         return True
     if future_annotations:
         return False
+    return _definition_annotations_require_preserved_runtime(
+        statement,
+        runtime_shadowed_names=runtime_shadowed_names,
+        runtime_namespace_unknown=runtime_namespace_unknown,
+    )
+
+
+def _definition_annotations(
+    statement: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[ast.expr, ...]:
     annotations: list[ast.expr] = []
     if statement.returns is not None:
         annotations.append(statement.returns)
@@ -283,18 +341,69 @@ def _definition_header_effectful(
         annotations.append(statement.args.vararg.annotation)
     if statement.args.kwarg is not None and statement.args.kwarg.annotation is not None:
         annotations.append(statement.args.kwarg.annotation)
-    return any(not _is_passive_annotation(annotation) for annotation in annotations)
+    return tuple(annotations)
 
 
-def _is_passive_annotation(annotation: ast.expr) -> bool:
-    if isinstance(annotation, (ast.Name, ast.Constant)):
+def _definition_annotations_require_preserved_runtime(
+    statement: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    runtime_shadowed_names: frozenset[str],
+    runtime_namespace_unknown: bool,
+) -> bool:
+    return any(
+        not _is_runtime_safe_annotation(
+            annotation,
+            runtime_shadowed_names=runtime_shadowed_names,
+            runtime_namespace_unknown=runtime_namespace_unknown,
+        )
+        for annotation in _definition_annotations(statement)
+    )
+
+
+def _is_runtime_safe_annotation(
+    annotation: ast.expr,
+    *,
+    runtime_shadowed_names: frozenset[str],
+    runtime_namespace_unknown: bool,
+) -> bool:
+    """Prove that evaluating one eager annotation cannot run project code."""
+    if isinstance(annotation, ast.Constant):
         return True
+    if isinstance(annotation, ast.Name):
+        return (
+            not runtime_namespace_unknown
+            and annotation.id in _SAFE_RUNTIME_ANNOTATION_BUILTINS
+            and annotation.id not in runtime_shadowed_names
+        )
     if isinstance(annotation, ast.Subscript):
-        return _is_passive_annotation(annotation.value) and _is_passive_annotation(annotation.slice)
+        return _is_runtime_safe_annotation(
+            annotation.value,
+            runtime_shadowed_names=runtime_shadowed_names,
+            runtime_namespace_unknown=runtime_namespace_unknown,
+        ) and _is_runtime_safe_annotation(
+            annotation.slice,
+            runtime_shadowed_names=runtime_shadowed_names,
+            runtime_namespace_unknown=runtime_namespace_unknown,
+        )
     if isinstance(annotation, (ast.Tuple, ast.List)):
-        return all(_is_passive_annotation(item) for item in annotation.elts)
+        return all(
+            _is_runtime_safe_annotation(
+                item,
+                runtime_shadowed_names=runtime_shadowed_names,
+                runtime_namespace_unknown=runtime_namespace_unknown,
+            )
+            for item in annotation.elts
+        )
     if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
-        return _is_passive_annotation(annotation.left) and _is_passive_annotation(annotation.right)
+        return _is_runtime_safe_annotation(
+            annotation.left,
+            runtime_shadowed_names=runtime_shadowed_names,
+            runtime_namespace_unknown=runtime_namespace_unknown,
+        ) and _is_runtime_safe_annotation(
+            annotation.right,
+            runtime_shadowed_names=runtime_shadowed_names,
+            runtime_namespace_unknown=runtime_namespace_unknown,
+        )
     return False
 
 
@@ -347,7 +456,21 @@ def _is_bounded_native_expression(expression: ast.expr) -> bool:
     return False
 
 
-def _barrier_reason(statement: ast.stmt) -> str:
+def _barrier_reason(
+    statement: ast.stmt,
+    *,
+    future_annotations: bool,
+    runtime_shadowed_names: frozenset[str],
+    runtime_namespace_unknown: bool,
+) -> str:
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not future_annotations and _definition_annotations_require_preserved_runtime(
+            statement,
+            runtime_shadowed_names=runtime_shadowed_names,
+            runtime_namespace_unknown=runtime_namespace_unknown,
+        ):
+            return "function definition annotations require preserved Python source-order evaluation"
+        return "function definition header requires preserved Python execution"
     if any(isinstance(node, ast.Call) for node in ast.walk(statement)):
         return "top-level call requires preserved Python execution"
     if isinstance(statement, ast.Expr):
