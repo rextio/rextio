@@ -226,12 +226,15 @@ def _full_c6_failure_report(
         "error": {
             "code": "RXT060",
             "domain": "FullC6ProductionError",
-            "message": "RXT060 strict Full C6 production-authority failed closed.",
+            "message": (
+                "RXT060 strict evidence distribution policy production-authority "
+                "failed closed."
+            ),
             "reason_code": reason_code,
         },
         "lifecycle": "failed",
         "stage": "production-authority",
-        "status": "full-c6-required-failed",
+        "status": "strict-evidence-failed",
         **extra,
     }
 
@@ -268,7 +271,7 @@ def test_build_failure_report_diagnostic_emits_only_allowlisted_scalars(
         '"event":"full-c6-build-failure-report","lifecycle":"failed",'
         '"reason_code":"linux-launcher-exit-125",'
         '"stage":"production-authority",'
-        '"status":"full-c6-required-failed"}\n'
+        '"status":"strict-evidence-failed"}\n'
     )
 
 

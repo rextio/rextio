@@ -160,7 +160,8 @@ def _assert_fixed_projection_failure(
     assert stdout.getvalue() == ""
     message = stderr.getvalue()
     assert message == (
-        "RXT060 strict Full C6 analysis report projection failed closed.\n"
+        "RXT060 strict evidence distribution policy analysis report projection "
+        "failed closed.\n"
         "Suggestion: keep analyzer report paths canonical and project-contained, "
         "then rerun.\n"
     )
@@ -884,7 +885,7 @@ def test_publication_domain_failures_are_redacted_and_fail_closed(
     )
     report = json.loads(serialized)
     assert report["stage"] == expected_stage
-    assert report["status"] == "full-c6-required-failed"
+    assert report["status"] == "strict-evidence-failed"
     assert report["distribution_authorized"] is False
     assert "/private" not in serialized
     assert "key bytes" not in serialized
@@ -1193,7 +1194,7 @@ def test_run_routes_exact_strict_preflight_and_lexical_root(
     monkeypatch.chdir(tmp_path)
     config = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_evidence_policy="required",
         )
     )
@@ -1259,7 +1260,7 @@ def test_scope_collection_failure_is_redacted_before_analysis(
         stale_payloads[name] = (reports / name).read_bytes()
     config = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_evidence_policy="required",
         )
     )

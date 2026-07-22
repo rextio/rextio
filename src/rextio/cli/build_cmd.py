@@ -486,7 +486,9 @@ def _report_full_c6_pipeline_failure(
         )
     except FullC6PipelineError:
         return _report_full_c6_projection_failure(reports_dir, reporter)
-    public_message = f"RXT060 strict Full C6 {stage} failed closed."
+    public_message = (
+        f"RXT060 strict evidence distribution policy {stage} failed closed."
+    )
     (reports_dir / "build.json").write_text(
         json.dumps(
             {
@@ -501,7 +503,7 @@ def _report_full_c6_pipeline_failure(
                 "fallback": fallback,
                 "lifecycle": "failed",
                 "stage": stage,
-                "status": "full-c6-required-failed",
+                "status": "strict-evidence-failed",
                 "distribution_authorized": False,
             },
             indent=2,
@@ -529,7 +531,9 @@ def _report_full_c6_preanalysis_failure(
     # ``.rextio`` may be an attacker-controlled symlink.  Keep this stage
     # stderr-only and never serialize host paths or attacker detail.
     del project_root, fallback, error
-    public_message = "RXT060 strict Full C6 analysis scope failed closed."
+    public_message = (
+        "RXT060 strict evidence distribution policy analysis scope failed closed."
+    )
     reporter.error(public_message)
     reporter.error(
         "Suggestion: verify the exact project root, absent custom ignore file, "
@@ -540,7 +544,8 @@ def _report_full_c6_preanalysis_failure(
 
 def _full_c6_report_projection_error(reason: str) -> FullC6PipelineError:
     return FullC6PipelineError(
-        f"RXT060 strict Full C6 analysis report projection rejected {reason}"
+        "RXT060 strict evidence distribution policy analysis report projection "
+        f"rejected {reason}"
     )
 
 
@@ -562,7 +567,10 @@ def _report_full_c6_projection_failure(
 ) -> int:
     """Emit one fixed path-free boundary when strict report projection fails."""
     _clear_full_c6_reports(reports_dir)
-    reporter.error("RXT060 strict Full C6 analysis report projection failed closed.")
+    reporter.error(
+        "RXT060 strict evidence distribution policy analysis report projection "
+        "failed closed."
+    )
     reporter.error(
         "Suggestion: keep analyzer report paths canonical and project-contained, "
         "then rerun."
@@ -741,10 +749,14 @@ def _full_c6_typed_receipt(value: object, *, label: str) -> dict[str, object]:
     """Project one already-validated path-free receipt into a report."""
     to_dict = getattr(value, "to_dict", None)
     if not callable(to_dict):
-        raise FullC6PipelineError(f"RXT060 strict Full C6 {label} receipt is invalid")
+        raise FullC6PipelineError(
+            f"RXT060 strict evidence distribution policy {label} receipt is invalid"
+        )
     payload = to_dict()
     if type(payload) is not dict:
-        raise FullC6PipelineError(f"RXT060 strict Full C6 {label} receipt is invalid")
+        raise FullC6PipelineError(
+            f"RXT060 strict evidence distribution policy {label} receipt is invalid"
+        )
     return payload
 
 
@@ -791,7 +803,7 @@ def _report_full_c6_pipeline_success(
     reporter.print_result(
         text="\n".join(
             (
-                "Rextio strict Full C6 lifecycle:",
+                "Rextio strict evidence distribution policy lifecycle:",
                 f"  lifecycle: {lifecycle}",
                 f"  status: {status}",
                 "  distribution authorized: "

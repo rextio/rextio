@@ -43,7 +43,7 @@ def _config() -> RextioConfig:
             fallback_threshold=17,
             build_timeout_seconds=23.5,
             artifact_evidence_policy="required",
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_source_lock_manifest="locks/source.json",
             artifact_source_lock_signature="locks/source.sig",
             artifact_policy_manifest="locks/policy.json",

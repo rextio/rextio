@@ -20,7 +20,7 @@ def _full_c6_toml(
     return f"""
 [build]
 artifact_evidence_policy = "required"
-artifact_distribution_policy = "full-c6-required"
+artifact_distribution_policy = "strict-evidence"
 artifact_source_lock_manifest = "locks/source-lock.v2.json"
 artifact_source_lock_signature = "locks/source-lock.v2.sig.json"
 artifact_policy_manifest = "locks/rextio.full-c6-policy.json"
@@ -79,7 +79,7 @@ def test_full_c6_distribution_config_accepts_exact_frozen_profile(tmp_path: Path
     config = load_config(tmp_path)
     package = config.imports.packages["demo_math"]
 
-    assert config.build.artifact_distribution_policy == "full-c6-required"
+    assert config.build.artifact_distribution_policy == "strict-evidence"
     assert config.build.artifact_source_lock_manifest == "locks/source-lock.v2.json"
     assert config.build.artifact_source_lock_signature == "locks/source-lock.v2.sig.json"
     assert config.build.artifact_policy_manifest == "locks/rextio.full-c6-policy.json"
@@ -116,7 +116,7 @@ def test_full_c6_distribution_config_accepts_policy_bootstrap_path_without_diges
 
     config = load_config(tmp_path)
 
-    assert config.build.artifact_distribution_policy == "full-c6-required"
+    assert config.build.artifact_distribution_policy == "strict-evidence"
     assert config.build.artifact_policy_manifest == "locks/rextio.full-c6-policy.json"
     assert config.build.artifact_policy_manifest_sha256 is None
 
@@ -371,27 +371,27 @@ def test_full_c6_path_fields_reject_non_string_values(
         (
             'artifact_source_lock_manifest = "locks/source-lock.v2.json"\n'
             'artifact_source_lock_signature = "locks/source-lock.v2.sig.json"\n',
-            "full-c6-required",
+            "strict-evidence",
         ),
         (
             'artifact_policy_manifest = "locks/rextio.full-c6-policy.json"\n'
             f'artifact_policy_manifest_sha256 = "{_SHA_B}"\n',
-            "full-c6-required",
+            "strict-evidence",
         ),
         (
             'artifact_cargo_vendor = "vendor/cargo"\n'
             f'artifact_cargo_vendor_sha256 = "{_SHA_A}"\n',
-            "full-c6-required",
+            "strict-evidence",
         ),
         (
             'artifact_cargo_lock = "locks/Cargo.lock"\n'
             f'artifact_cargo_lock_sha256 = "{_SHA_B}"\n',
-            "full-c6-required",
+            "strict-evidence",
         ),
         (
             'artifact_toolchain_support_lock = "locks/toolchain-support.json"\n'
             f'artifact_toolchain_support_lock_sha256 = "{_SHA_A}"\n',
-            "full-c6-required",
+            "strict-evidence",
         ),
         (
             'artifact_trusted_public_key = "keys/release.pub"\n'
@@ -401,7 +401,7 @@ def test_full_c6_path_fields_reject_non_string_values(
         (
             "artifact_signing_request_output = "
             '"build/rextio.full-c6-final-authorization-request.json"\n',
-            "full-c6-required",
+            "strict-evidence",
         ),
     ],
 )
@@ -582,7 +582,7 @@ def test_full_c6_distribution_config_rejects_profile_expansion(
         config_text, encoding="utf-8"
     )
 
-    with pytest.raises(ConfigError, match="full-c6-required"):
+    with pytest.raises(ConfigError, match="strict-evidence"):
         load_config(tmp_path)
 
 
@@ -592,7 +592,7 @@ def test_full_c6_config_survives_override_serialization(tmp_path: Path) -> None:
 
     rebuilt = override_config(config, {("build", "fallback_threshold"): 7})
 
-    assert rebuilt.build.artifact_distribution_policy == "full-c6-required"
+    assert rebuilt.build.artifact_distribution_policy == "strict-evidence"
     assert rebuilt.build.artifact_source_lock_manifest == "locks/source-lock.v2.json"
     assert rebuilt.build.artifact_cargo_vendor == "vendor/cargo"
     assert rebuilt.build.artifact_cargo_vendor_sha256 == _SHA_A

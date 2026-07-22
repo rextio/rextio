@@ -781,7 +781,7 @@ def collect_full_c6_analysis_scope(
     """
     if (
         type(config) is not RextioConfig
-        or config.build.artifact_distribution_policy != "full-c6-required"
+        or config.build.artifact_distribution_policy != "strict-evidence"
     ):
         raise FullC6HostInputsError(
             "Full C6 analysis scope requires exact strict typed config"
@@ -945,7 +945,7 @@ def _require_full_c6_analysis_scope(
     if (
         not seal_valid
         or value._config is not config
-        or config.build.artifact_distribution_policy != "full-c6-required"
+        or config.build.artifact_distribution_policy != "strict-evidence"
         or value._project_root != root
         or type(value._cargo_workspace)
         is not FullC6CargoDependencyWorkspaceReceipt
@@ -1458,7 +1458,7 @@ def _validated_production_material(authority: object) -> _FullC6ProductionMateri
 
 def _validate_host_layout(root: Path, config: RextioConfig) -> None:
     """Reject overlap among persistent output state and pinned Cargo inputs."""
-    if config.build.artifact_distribution_policy == "full-c6-required":
+    if config.build.artifact_distribution_policy == "strict-evidence":
         _require_strict_rextioignore_absent(root)
     request = config.build.artifact_signing_request_output
     vendor = config.build.artifact_cargo_vendor

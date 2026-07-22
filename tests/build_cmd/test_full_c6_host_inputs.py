@@ -888,7 +888,7 @@ def _analysis_scope_inputs(
         extra_files=extra_files,
     )
     config = _host_config(
-        artifact_distribution_policy="full-c6-required",
+        artifact_distribution_policy="strict-evidence",
         artifact_cargo_lock=lock.relative_to(project).as_posix(),
         artifact_cargo_lock_sha256=lock_sha256,
         artifact_cargo_vendor=vendor.relative_to(project).as_posix(),
@@ -933,7 +933,7 @@ def test_analysis_scope_rejects_every_present_rextioignore(
     project.mkdir()
     lock, vendor, lock_sha256, vendor_sha256 = _write_cargo_workspace(project)
     config = _host_config(
-        artifact_distribution_policy="full-c6-required",
+        artifact_distribution_policy="strict-evidence",
         artifact_cargo_lock=lock.relative_to(project).as_posix(),
         artifact_cargo_lock_sha256=lock_sha256,
         artifact_cargo_vendor=vendor.relative_to(project).as_posix(),

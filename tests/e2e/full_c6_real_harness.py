@@ -533,7 +533,7 @@ def _typed_config(
     return RextioConfig(
         build=BuildConfig(
             artifact_evidence_policy="required",
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_source_lock_manifest="authority/rextio.external-source.lock.v2.json",
             artifact_source_lock_signature=(
                 "authority/rextio.external-source.lock.v2.sig.json"
@@ -588,7 +588,7 @@ def _write_config(project: Path, config: Any) -> None:
         'fallback_backend = "cpython"',
         "build_timeout_seconds = 900",
         'artifact_evidence_policy = "required"',
-        'artifact_distribution_policy = "full-c6-required"',
+        'artifact_distribution_policy = "strict-evidence"',
         f'artifact_source_lock_manifest = "{build.artifact_source_lock_manifest}"',
         f'artifact_source_lock_signature = "{build.artifact_source_lock_signature}"',
         f'artifact_policy_manifest = "{build.artifact_policy_manifest}"',
@@ -2827,7 +2827,7 @@ def _read_full_c6_build_failure_report(project: Path) -> str:
             or type(stage) is not str
             or stage not in _FULL_C6_BUILD_FAILURE_STAGES
             or type(status_value) is not str
-            or status_value != "full-c6-required-failed"
+            or status_value != "strict-evidence-failed"
             or type(lifecycle) is not str
             or lifecycle != "failed"
             or distribution_authorized is not False
